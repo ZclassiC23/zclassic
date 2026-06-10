@@ -13,6 +13,7 @@
 
 #include "services/block_index_integrity.h"
 #include "validation/main_state.h"
+#include "chain/chainparams.h"
 #include "chain/pow.h"
 #include "models/database.h"
 #include "event/event.h"
@@ -464,6 +465,10 @@ static int t_height_repair(void)
         block_map_insert(&ms.map_block_index, &hashes[i], &blocks[i]);
     }
 
+    /* The root must be the REAL genesis (by hash): repair only anchors
+     * height 0 — and only propagates fixes — from the true genesis. */
+    hashes[0] = chain_params_get()->consensus.hashGenesisBlock;
+
     /* Genesis should have height 0 but we scrambled it */
     blocks[0].nHeight = 42;
 
@@ -567,18 +572,94 @@ static int t_height_repair_single(void)
     struct block_index genesis;
     struct uint256 hash;
     memset(&genesis, 0, sizeof(genesis));
-    memset(&hash, 0, sizeof(hash));
-    hash.data[0] = 0x01;
+    hash = chain_params_get()->consensus.hashGenesisBlock;
     genesis.phashBlock = &hash;
     genesis.pprev = NULL;
     genesis.nHeight = 99; /* wrong */
     genesis.nBits = 0x2007ffff;
     block_map_insert(&ms.map_block_index, &hash, &genesis);
 
+    /* A parentless NON-genesis entry must keep its stored height: it is
+     * a detached root, not genesis (positional genesis tests relabeled
+     * the whole index by -2 on 2026-06-10). */
+    struct block_index stray;
+    struct uint256 stray_hash;
+    memset(&stray, 0, sizeof(stray));
+    memset(&stray_hash, 0, sizeof(stray_hash));
+    stray_hash.data[0] = 0x77;
+    stray.phashBlock = &stray_hash;
+    stray.pprev = NULL;
+    stray.nHeight = 1234;
+    stray.nBits = 0x2007ffff;
+    block_map_insert(&ms.map_block_index, &stray_hash, &stray);
+
     int repaired = block_index_repair_heights(&ms);
 
     BII_RUN("bii: single genesis block repaired to height 0",
             genesis.nHeight == 0 && repaired >= 0);
+    BII_RUN("bii: detached non-genesis root keeps its stored height",
+            stray.nHeight == 1234);
+
+    main_state_free(&ms);
+    return failures;
+}
+
+/* ── 15b. Detached-root subtree is never re-anchored ─────────────
+ * The 2026-06-10 live incident: an early header's pprev link was lost,
+ * the old repair stamped that detached root to height 0 and forward
+ * propagation relabeled all 3.14M descendants by -2 — internally
+ * consistent, so every later pass reported "correct", every new network
+ * block failed bad-cb-height, and the tip froze. The repair must leave
+ * the (canonical) descendant labels alone until pprev repair relinks
+ * the root, after which a re-run heals the root's own label. */
+
+static int t_height_repair_detached_subtree(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+
+    struct block_index g, h1, h2, h3, h4;
+    struct uint256 gh, h1h, h2h, h3h, h4h;
+    memset(&g, 0, sizeof(g));   memset(&h1, 0, sizeof(h1));
+    memset(&h2, 0, sizeof(h2)); memset(&h3, 0, sizeof(h3));
+    memset(&h4, 0, sizeof(h4));
+    gh = chain_params_get()->consensus.hashGenesisBlock;
+    memset(&h1h, 0, sizeof(h1h)); h1h.data[0] = 0xA1;
+    memset(&h2h, 0, sizeof(h2h)); h2h.data[0] = 0xA2;
+    memset(&h3h, 0, sizeof(h3h)); h3h.data[0] = 0xA3;
+    memset(&h4h, 0, sizeof(h4h)); h4h.data[0] = 0xA4;
+
+    g.phashBlock = &gh;   g.nHeight = 0; g.nBits = 0x2007ffff;
+    h1.phashBlock = &h1h; h1.pprev = &g;  h1.nHeight = 1;
+    h1.nBits = 0x2007ffff;
+    /* h2: detached root persisted at 0 (the corrupted flat-save state);
+     * its TRUE height is 2 and its descendants carry canonical labels. */
+    h2.phashBlock = &h2h; h2.pprev = NULL; h2.nHeight = 0;
+    h2.nBits = 0x2007ffff;
+    h3.phashBlock = &h3h; h3.pprev = &h2; h3.nHeight = 3;
+    h3.nBits = 0x2007ffff;
+    h4.phashBlock = &h4h; h4.pprev = &h3; h4.nHeight = 4;
+    h4.nBits = 0x2007ffff;
+
+    block_map_insert(&ms.map_block_index, &gh, &g);
+    block_map_insert(&ms.map_block_index, &h1h, &h1);
+    block_map_insert(&ms.map_block_index, &h2h, &h2);
+    block_map_insert(&ms.map_block_index, &h3h, &h3);
+    block_map_insert(&ms.map_block_index, &h4h, &h4);
+
+    (void)block_index_repair_heights(&ms);
+    BII_RUN("bii: detached subtree keeps canonical descendant labels",
+            h2.nHeight == 0 && h3.nHeight == 3 && h4.nHeight == 4 &&
+            g.nHeight == 0 && h1.nHeight == 1);
+
+    /* pprev repair relinks the root (simulated); the boot sequence then
+     * re-runs the height repair, which must heal ONLY the root label. */
+    h2.pprev = &h1;
+    int repaired = block_index_repair_heights(&ms);
+    BII_RUN("bii: relinked root heals to its canonical height",
+            repaired > 0 && h2.nHeight == 2 &&
+            h3.nHeight == 3 && h4.nHeight == 4);
 
     main_state_free(&ms);
     return failures;
@@ -631,6 +712,7 @@ int test_block_index_integrity(void)
     failures += t_height_repair_empty();
     failures += t_height_repair_cycle();
     failures += t_height_repair_single();
+    failures += t_height_repair_detached_subtree();
     failures += t_anchor_repair_null_inputs();
     return failures;
 }

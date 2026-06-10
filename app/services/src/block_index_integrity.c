@@ -32,6 +32,7 @@
 #include "event/event.h"
 #include "core/uint256.h"
 #include "validation/main_state.h"
+#include "chain/chainparams.h"
 #include "chain/pow.h"
 #include "storage/disk_block_io.h"
 
@@ -114,6 +115,22 @@ void bii_get_recovery_status(struct bii_recovery_status *out)
 
 /* ── Bulk block index height repair ────────────────────────── */
 
+/* True iff `b` is the real genesis block BY HASH. Positional genesis
+ * tests (`!pprev`) are forbidden in every repair below: an entry whose
+ * parent header is merely missing/unlinked is a DETACHED ROOT, not
+ * genesis. Stamping such a root to height 0 and propagating relabeled
+ * this node's entire 3.14M-block index by -2 on 2026-06-10 (the parent
+ * existed in the map but the pprev link was lost) — internally
+ * consistent, so every later pass called it "correct", every new
+ * network block then failed bad-cb-height, and the tip froze. */
+static bool bii_is_genesis(const struct block_index *b)
+{
+    const struct chain_params *cp = chain_params_get();
+    if (!b || !b->phashBlock || !cp)
+        return false;
+    return uint256_eq(b->phashBlock, &cp->consensus.hashGenesisBlock);
+}
+
 static _Atomic bool g_heights_repaired = false;
 
 bool block_index_heights_repaired(void)
@@ -127,6 +144,31 @@ static int bii_cmp_height(const void *a, const void *b)
     const struct block_index *pa = *(const struct block_index *const *)a;
     const struct block_index *pb = *(const struct block_index *const *)b;
     return (pa->nHeight > pb->nHeight) - (pa->nHeight < pb->nHeight);
+}
+
+/* Pointer-identity sort + lookup for the genesis-reachability marks in
+ * block_index_repair_heights (no spare field on block_index to borrow). */
+static int bii_cmp_ptr(const void *a, const void *b)
+{
+    uintptr_t pa = (uintptr_t)*(const struct block_index *const *)a;
+    uintptr_t pb = (uintptr_t)*(const struct block_index *const *)b;
+    return (pa > pb) - (pa < pb);
+}
+
+/* Index of `b` in the pointer-sorted array, or `n` when absent (an
+ * entry whose pprev points outside the map snapshot). */
+static size_t bii_ptr_index(struct block_index *const *byptr, size_t n,
+                            const struct block_index *b)
+{
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((uintptr_t)byptr[mid] < (uintptr_t)b)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return (lo < n && byptr[lo] == b) ? lo : n;
 }
 
 static int bii_cmp_disk_pos(const void *a, const void *b)
@@ -169,17 +211,39 @@ int block_index_repair_heights(struct main_state *ms)
         return 0;
     }
 
-    /* Pass 1: count entries with wrong heights. */
+    /* Pass 1: count entries with wrong heights. Parentless entries are
+     * judged BY HASH: only the true genesis must sit at 0. A parentless
+     * non-genesis entry is a detached root — its stored height is the
+     * only truth we have until block_index_repair_pprev relinks it from
+     * the durable prev-hash record, so it is reported, never counted as
+     * "wrong" (see bii_is_genesis for the -2 relabel post-mortem). */
     int wrong = 0;
+    int detached = 0;
     {
         size_t iter = 0;
         struct block_index *pi;
+        const struct block_index *first_detached = NULL;
         while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
             if (!pi) continue;
             if (pi->pprev && pi->nHeight != pi->pprev->nHeight + 1)
                 wrong++;
-            else if (!pi->pprev && pi->nHeight != 0)
-                wrong++;
+            else if (!pi->pprev) {
+                if (bii_is_genesis(pi)) {
+                    if (pi->nHeight != 0)
+                        wrong++;
+                } else if (pi->nHeight != 0 || (pi->nStatus & BLOCK_HAVE_DATA)) {
+                    detached++;
+                    if (!first_detached)
+                        first_detached = pi;
+                }
+            }
+        }
+        if (detached > 0 && first_detached && first_detached->phashBlock) {
+            char hex[65];
+            uint256_get_hex(first_detached->phashBlock, hex);
+            LOG_WARN("height", "[height-repair] %d detached non-genesis root(s) "
+                     "(first %s h=%d) — heights preserved; pprev repair must "
+                     "relink them", detached, hex, first_detached->nHeight);
         }
     }
 
@@ -209,40 +273,84 @@ int block_index_repair_heights(struct main_state *ms)
     }
     n = idx;
 
-    /* Pass 2: Fix heights via multi-pass forward propagation.
-     * Each pass sets height = pprev->height + 1 for entries where pprev
-     * already has the correct height.  Converges in O(max_depth) passes
-     * but typically 1-3 for a well-linked chain. */
-    int repaired = 0;
-    for (int pass = 0; pass < 20; pass++) {
-        int fixed_this_pass = 0;
-        for (size_t i = 0; i < n; i++) {
-            struct block_index *b = arr[i];
-            if (!b->pprev) {
-                /* Genesis: height must be 0 */
-                if (b->nHeight != 0) {
-                    b->nHeight = 0;
-                    fixed_this_pass++;
-                }
-                continue;
-            }
-            int expected = b->pprev->nHeight + 1;
-            if (b->nHeight != expected) {
-                b->nHeight = expected;
-                fixed_this_pass++;
-            }
-        }
-        repaired += fixed_this_pass;
-        if (fixed_this_pass == 0)
-            break;
-    }
-
-    /* Pass 3: Recompute nChainWork now that heights are correct.
-     * Must sort by height first for correct forward propagation. */
+    /* Pass 2: Fix heights via multi-pass forward propagation — but ONLY
+     * through entries reachable from the TRUE genesis (by hash). A fix
+     * may not flow out of a detached non-genesis root: its stored label
+     * can be arbitrary (the 2026-06-10 incident persisted one at 0), so
+     * propagating from it re-anchors an entire — otherwise canonical —
+     * subtree (that relabel froze the tip on bad-cb-height). Detached
+     * subtrees keep their stored heights untouched until
+     * block_index_repair_pprev relinks the root; the boot sequence then
+     * re-runs this repair and the genesis-rooted propagation fixes any
+     * residual labels. Reachability marks live in a parallel array;
+     * pprev->mark lookups go through a pointer-sorted copy (bsearch).
+     * Iteration stays height-sorted so propagation converges in ~1-3
+     * passes exactly as before. */
     qsort(arr, n, sizeof(*arr), bii_cmp_height);
+    struct block_index **byptr =
+        zcl_malloc(n * sizeof(*byptr), "height_repair_byptr");
+    uint8_t *mark = zcl_calloc(n, 1, "height_repair_mark");
+    int repaired = 0;
+    if (!byptr || !mark) {
+        LOG_WARN("height", "[height-repair] mark alloc failed for %zu "
+                 "entries — heights left as stored this boot", n);
+        free(byptr);
+        free(mark);
+        free(arr);
+        atomic_store(&g_heights_repaired, true);
+        return 0;
+    }
+    memcpy(byptr, arr, n * sizeof(*byptr));
+    qsort(byptr, n, sizeof(*byptr), bii_cmp_ptr);
 
     for (size_t i = 0; i < n; i++) {
         struct block_index *b = arr[i];
+        if (!b->pprev && bii_is_genesis(b)) {
+            if (b->nHeight != 0) {
+                b->nHeight = 0;
+                repaired++;
+            }
+            size_t gi = bii_ptr_index(byptr, n, b);
+            if (gi < n)
+                mark[gi] = 1;
+        }
+    }
+
+    for (int pass = 0; pass < 20; pass++) {
+        int progressed = 0;
+        for (size_t i = 0; i < n; i++) {
+            struct block_index *b = arr[i];
+            if (!b->pprev)
+                continue;
+            size_t bi_idx = bii_ptr_index(byptr, n, b);
+            if (bi_idx >= n || mark[bi_idx])
+                continue;
+            size_t pp_idx = bii_ptr_index(byptr, n, b->pprev);
+            if (pp_idx >= n || !mark[pp_idx])
+                continue; /* parent not (yet) genesis-rooted */
+            int expected = b->pprev->nHeight + 1;
+            if (b->nHeight != expected) {
+                b->nHeight = expected;
+                repaired++;
+            }
+            mark[bi_idx] = 1;
+            progressed++;
+        }
+        if (progressed == 0)
+            break;
+    }
+
+    /* Pass 3: Recompute nChainWork now that heights are correct — same
+     * genesis-rooted gate: chain work derived from a detached root's
+     * label would be equally wrong. Re-sort by the CORRECTED heights:
+     * the earlier sort used the pre-repair labels, and parents must be
+     * recomputed before their children. */
+    qsort(arr, n, sizeof(*arr), bii_cmp_height);
+    for (size_t i = 0; i < n; i++) {
+        struct block_index *b = arr[i];
+        size_t bi_idx = bii_ptr_index(byptr, n, b);
+        if (bi_idx >= n || !mark[bi_idx])
+            continue;
         struct arith_uint256 proof = GetBlockProof(b);
         if (b->pprev)
             arith_uint256_add(&b->nChainWork, &b->pprev->nChainWork, &proof);
@@ -250,6 +358,8 @@ int block_index_repair_heights(struct main_state *ms)
             b->nChainWork = proof;
     }
 
+    free(byptr);
+    free(mark);
     free(arr);
 
     struct timespec t1;
@@ -299,7 +409,11 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
     size_t iter = 0, count = 0;
     struct block_index *pi;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
-        if (pi && pi->nHeight > 0 && (pi->nStatus & BLOCK_HAVE_DATA) &&
+        /* By hash, not by height: a detached root relabeled to 0 (or
+         * loaded that way from a corrupted flat save) is EXACTLY the
+         * entry this pass must relink — the old `nHeight > 0` filter
+         * excluded it forever. Only the true genesis has no parent. */
+        if (pi && !bii_is_genesis(pi) && (pi->nStatus & BLOCK_HAVE_DATA) &&
             pi->nFile >= 0 && pi->nDataPos > 0)
             arr[count++] = pi;
     }
@@ -491,6 +605,17 @@ int bii_repair_post_activation_anchor(
         while (cur && cur->pprev && steps++ < max_steps) {
             int expected = cur->nHeight - 1;
             if (cur->pprev->nHeight != expected) {
+                /* A walk that wants the true genesis at a nonzero
+                 * height proves the ANCHOR is mislabeled — abort the
+                 * relabel rather than shift the whole ancestry (the
+                 * -2 global relabel class, see bii_is_genesis). */
+                if (bii_is_genesis(cur->pprev) && expected != 0) {
+                    LOG_WARN("bii", "[bii-anchor] refused: walk from "
+                             "anchor h=%d reaches genesis at h=%d — "
+                             "anchor height is wrong, not the chain",
+                             pre_scan_coins_h, expected);
+                    break;
+                }
                 cur->pprev->nHeight = expected;
                 fixed++;
             }
@@ -504,25 +629,14 @@ int bii_repair_post_activation_anchor(
                    fixed, pre_scan_coins_h);
     }
 
-    /* Step 3: re-propagate heights forward across the whole map */
+    /* Step 3: re-propagate heights forward across the whole map.
+     * Routed through block_index_repair_heights so the propagation is
+     * gated on genesis-reachability — the hand-rolled loop this
+     * replaces propagated positionally and would re-anchor a detached
+     * root's subtree at runtime, the exact -2 relabel incident class
+     * the repair itself now refuses (see bii_is_genesis). */
     {
-        int total = 0;
-        for (int pass = 0; pass < 20; pass++) {
-            int pf = 0;
-            size_t gi = 0;
-            struct block_index *gb;
-            while (block_map_next(
-                &ms->map_block_index, &gi, NULL, &gb)) {
-                if (!gb || !gb->pprev) continue;
-                int exp = gb->pprev->nHeight + 1;
-                if (gb->nHeight != exp) {
-                    gb->nHeight = exp;
-                    pf++;
-                }
-            }
-            total += pf;
-            if (pf == 0) break;
-        }
+        int total = block_index_repair_heights(ms);
         result->heights_repropagated = total;
         if (total > 0)
             printf("[bii-anchor] re-propagated %d heights forward\n",
