@@ -89,7 +89,8 @@ static void snapsync_seed_projection_boot(struct node_db *ndb,
 
     /* (3) Durable tip cursor + finalize-log row at the anchor height. */
     if (!tip_finalize_stage_seed_anchor(svc->offered_height,
-                                        svc->offered_block_hash))
+                                        svc->offered_block_hash,
+                                        true /* SHA3-verified snapshot */))
         LOG_WARN("snapshot_sync",
                  "event-log seed: tip cursor anchor seed skipped/failed "
                  "(h=%d)", svc->offered_height);

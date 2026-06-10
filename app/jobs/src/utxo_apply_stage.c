@@ -11,11 +11,11 @@
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/stage_helpers.h"
 #include "utxo_apply_log_store.h"
+#include "utxo_apply_stage_internal.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
-#include "json/json.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
@@ -56,21 +56,28 @@ static void *g_reader_user = NULL;
 static utxo_apply_lookup_fn g_lookup = NULL;
 static void *g_lookup_user = NULL;
 
-static _Atomic uint64_t g_verified_total = 0;
-static _Atomic uint64_t g_spend_unknown_total = 0;
-static _Atomic uint64_t g_utxo_collision_total = 0;
-static _Atomic uint64_t g_value_overflow_total = 0;
-static _Atomic uint64_t g_coinbase_protect_total = 0;
-static _Atomic uint64_t g_bad_cb_amount_total = 0;
-static _Atomic uint64_t g_shielded_double_spend_total = 0;
-static _Atomic uint64_t g_upstream_failed_total = 0;
-static _Atomic uint64_t g_internal_error_total = 0;
-static _Atomic uint64_t g_reorg_unwound_total = 0;
-static _Atomic uint64_t g_total_outputs_added = 0;
-static _Atomic uint64_t g_total_outputs_spent = 0;
-static _Atomic int64_t  g_last_step_unix = 0;
-static _Atomic int64_t  g_last_blocked_unix = 0;
-static _Atomic int64_t  g_last_advance_height = -1;
+/* Module state shared with utxo_apply_stage_dump.c (the zcl_state dump TU)
+ * via utxo_apply_stage_internal.h — written here, atomic_load-only there. */
+_Atomic uint64_t g_ua_verified_total = 0;
+_Atomic uint64_t g_ua_spend_unknown_total = 0;
+_Atomic uint64_t g_ua_utxo_collision_total = 0;
+_Atomic uint64_t g_ua_value_overflow_total = 0;
+_Atomic uint64_t g_ua_coinbase_protect_total = 0;
+_Atomic uint64_t g_ua_bad_cb_amount_total = 0;
+_Atomic uint64_t g_ua_shielded_double_spend_total = 0;
+_Atomic uint64_t g_ua_upstream_failed_total = 0;
+_Atomic uint64_t g_ua_internal_error_total = 0;
+_Atomic uint64_t g_ua_reorg_unwound_total = 0;
+_Atomic uint64_t g_ua_total_outputs_added = 0;
+_Atomic uint64_t g_ua_total_outputs_spent = 0;
+_Atomic int64_t  g_ua_last_step_unix = 0;
+_Atomic int64_t  g_ua_last_blocked_unix = 0;
+_Atomic int64_t  g_ua_last_advance_height = -1;
+_Atomic uint64_t g_ua_upstream_hole_total = 0;
+_Atomic int64_t  g_ua_upstream_hole_height = -1;
+_Atomic int64_t  g_ua_upstream_hole_first_unix = 0;
+_Atomic uint64_t g_ua_upstream_hole_consec = 0;
+_Atomic uint64_t g_ua_upstream_hole_warn_total = 0;
 
 /* CS-F4 blocked-reject dedup. A consensus-rejected height returns
  * JOB_BLOCKED and recomputes every tick BY DESIGN (an upstream repair can
@@ -132,6 +139,76 @@ static void reject_memo_clear(void)
     g_last_reject_status[0] = '\0';
     g_reject_repeat_ticks = 0;
     pthread_mutex_unlock(&g_reject_lock);
+}
+
+/* FIX-4 durable-upstream-hole observability (counters declared above, dumped
+ * by utxo_apply_stage_dump.c). The transition memo is touched ONLY by the
+ * single-threaded step path — the g_cursor_gap_warn convention from
+ * tip_finalize_stage.c — so it needs no lock. */
+static struct { int64_t h; uint64_t reps; int64_t last_log; }
+    g_upstream_hole_warn = { .h = -1 };
+
+/* tipfin_warn_throttled shape (tip_finalize_stage.c:78): emit on a height
+ * TRANSITION (first occurrence never suppressed) or as a 300 s keep-alive
+ * carrying the suppressed-tick count; suppressed calls still count. */
+static bool upstream_hole_warn_throttled(bool changed, int64_t now,
+                                         uint64_t *reps, int64_t *last_log,
+                                         uint64_t *out_shown)
+{
+    if (changed) {
+        *out_shown = *reps;  /* repeats of the PRIOR hole */
+        *reps = 0;
+        *last_log = now;
+        return true;
+    }
+    *out_shown = ++*reps;
+    if (now - *last_log < 300) return false;
+    *last_log = now;
+    return true;
+}
+
+static void upstream_hole_note(int height, uint64_t pv_cursor)
+{
+    int64_t now = platform_time_wall_unix();
+    bool changed = g_upstream_hole_warn.h != (int64_t)height;
+    if (changed) {
+        g_upstream_hole_warn.h = (int64_t)height;
+        atomic_fetch_add(&g_ua_upstream_hole_total, 1);
+        atomic_store(&g_ua_upstream_hole_height, (int64_t)height);
+        atomic_store(&g_ua_upstream_hole_first_unix, now);
+        atomic_store(&g_ua_upstream_hole_consec, (uint64_t)1);
+    } else {
+        atomic_fetch_add(&g_ua_upstream_hole_consec, 1);
+    }
+    uint64_t shown = 0;
+    if (upstream_hole_warn_throttled(changed, now,
+                                     &g_upstream_hole_warn.reps,
+                                     &g_upstream_hole_warn.last_log,
+                                     &shown)) {
+        atomic_fetch_add(&g_ua_upstream_hole_warn_total, 1);
+        LOG_WARN(STAGE_NAME,
+                 "[utxo_apply] durable upstream hole: proof_validate_log row "
+                 "ABSENT at height=%d while proof_validate cursor=%llu is "
+                 "already past it (suppressed=%llu); stage stays JOB_IDLE by "
+                 "design — the reconcile-light Condition is the healer, this "
+                 "WARN/dump is the alarm",
+                 height, (unsigned long long)pv_cursor,
+                 (unsigned long long)shown);
+    }
+}
+
+/* The row at the previously-holed height is present again: close the
+ * transition memo so a RE-opened hole at the same height counts and logs as
+ * a new hole, and zero consec (the dump's "currently observing" signal).
+ * total/height/first_unix stay as last-hole evidence. */
+static void upstream_hole_healed(int height)
+{
+    if (g_upstream_hole_warn.h == (int64_t)height) {
+        g_upstream_hole_warn.h = -1;
+        g_upstream_hole_warn.reps = 0;
+        g_upstream_hole_warn.last_log = 0;
+        atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
+    }
 }
 
 /* Author the validated block delta into the progress.kv `coins` table
@@ -199,13 +276,13 @@ static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
                  BLOCKER_TRANSIENT, reason);
     c->blocker.escape_deadline_secs = 60;
     c->blocker.retry_budget = 5;
-    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
     return JOB_BLOCKED;
 }
 
 static job_result_t step_apply(struct stage_step_ctx *c)
 {
-    atomic_store(&g_last_step_unix, platform_time_wall_unix());
+    atomic_store(&g_ua_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
@@ -218,7 +295,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     uint64_t pv_cursor = stage_cursor_persisted(db, "proof_validate",
                                                STAGE_NAME);
     if ((uint64_t)next_h >= pv_cursor) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -226,19 +303,29 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     int found = utxo_apply_proof_validate_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* Reaching here implies next_h < pv_cursor (the >= guard above
+         * returned otherwise), so this is a DURABLE upstream hole — a
+         * stale-replay / self-restart artifact — never "not yet" (FIX-4).
+         * DELIBERATELY JOB_IDLE, not JOB_BLOCKED: JOB_BLOCKED feeds the
+         * supervisor escalation/restart ladder, and a watchdog self-restart
+         * is what manufactured this hole class in the first place. The L1
+         * reconcile-light Condition is the healer; the counters/WARN here
+         * are the alarm. */
+        upstream_hole_note(next_h, pv_cursor);
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
+    upstream_hole_healed(next_h);
 
     if (upstream.ok == 0) {
-        atomic_fetch_add(&g_upstream_failed_total, 1);
+        atomic_fetch_add(&g_ua_upstream_failed_total, 1);
         return block_apply_failure(c, next_h, "upstream_failed",
                                    "proof_validate", NULL);
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -248,7 +335,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                            : stage_default_block_reader;
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
         block_free(&blk);
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
 
@@ -296,33 +383,33 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     if (summary.ok) {
-        atomic_fetch_add(&g_verified_total, 1);
-        atomic_fetch_add(&g_total_outputs_added,
+        atomic_fetch_add(&g_ua_verified_total, 1);
+        atomic_fetch_add(&g_ua_total_outputs_added,
                          (uint64_t)summary.added_count);
-        atomic_fetch_add(&g_total_outputs_spent,
+        atomic_fetch_add(&g_ua_total_outputs_spent,
                          (uint64_t)summary.spent_count);
     } else {
         /* The event label is zclassicd's exact reject string where one
          * exists; dedup + keep-alive policy lives in reject_count_and_emit. */
-        _Atomic uint64_t *counter = &g_internal_error_total;
+        _Atomic uint64_t *counter = &g_ua_internal_error_total;
         const char *label = "internal_error";
         if (strcmp(summary.status, "spend_unknown_utxo") == 0) {
-            counter = &g_spend_unknown_total;
+            counter = &g_ua_spend_unknown_total;
             label = "spend_unknown_utxo";
         } else if (strcmp(summary.status, "utxo_collision") == 0) {
-            counter = &g_utxo_collision_total;
+            counter = &g_ua_utxo_collision_total;
             label = "utxo_collision";
         } else if (strcmp(summary.status, "value_overflow") == 0) {
-            counter = &g_value_overflow_total;
+            counter = &g_ua_value_overflow_total;
             label = "value_overflow";
         } else if (strcmp(summary.status, "coinbase_protect") == 0) {
-            counter = &g_coinbase_protect_total;
+            counter = &g_ua_coinbase_protect_total;
             label = "bad-txns-coinbase-spend-has-transparent-outputs";
         } else if (strcmp(summary.status, "bad_cb_amount") == 0) {
-            counter = &g_bad_cb_amount_total;
+            counter = &g_ua_bad_cb_amount_total;
             label = "bad-cb-amount";
         } else if (strcmp(summary.status, "shielded_double_spend") == 0) {
-            counter = &g_shielded_double_spend_total;
+            counter = &g_ua_shielded_double_spend_total;
             label = "bad-txns-joinsplit-requirements-not-met";
         }
         reject_count_and_emit(next_h, summary.status, counter, label);
@@ -360,7 +447,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
         return JOB_FATAL;
 
-    atomic_store(&g_last_advance_height, (int64_t)next_h);
+    atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
     reject_memo_clear();
     c->cursor_out = next_cursor;
     return JOB_ADVANCED;
@@ -541,8 +628,8 @@ job_result_t utxo_apply_stage_step_once(void)
     progress_store_tx_lock();
     bool unwind_ok =
         utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
-                                          &g_reorg_unwound_total,
-                                          &g_last_blocked_unix);
+                                          &g_ua_reorg_unwound_total,
+                                          &g_ua_last_blocked_unix);
     if (!unwind_ok) {
         progress_store_tx_unlock();
         return JOB_FATAL;
@@ -573,21 +660,29 @@ void utxo_apply_stage_shutdown(void)
     g_reader_user = NULL;
     g_lookup = NULL;
     g_lookup_user = NULL;
-    atomic_store(&g_verified_total, (uint64_t)0);
-    atomic_store(&g_spend_unknown_total, (uint64_t)0);
-    atomic_store(&g_utxo_collision_total, (uint64_t)0);
-    atomic_store(&g_value_overflow_total, (uint64_t)0);
-    atomic_store(&g_coinbase_protect_total, (uint64_t)0);
-    atomic_store(&g_bad_cb_amount_total, (uint64_t)0);
-    atomic_store(&g_shielded_double_spend_total, (uint64_t)0);
-    atomic_store(&g_upstream_failed_total, (uint64_t)0);
-    atomic_store(&g_internal_error_total, (uint64_t)0);
-    atomic_store(&g_reorg_unwound_total, (uint64_t)0);
-    atomic_store(&g_total_outputs_added, (uint64_t)0);
-    atomic_store(&g_total_outputs_spent, (uint64_t)0);
-    atomic_store(&g_last_step_unix, (int64_t)0);
-    atomic_store(&g_last_blocked_unix, (int64_t)0);
-    atomic_store(&g_last_advance_height, (int64_t)-1);
+    atomic_store(&g_ua_verified_total, (uint64_t)0);
+    atomic_store(&g_ua_spend_unknown_total, (uint64_t)0);
+    atomic_store(&g_ua_utxo_collision_total, (uint64_t)0);
+    atomic_store(&g_ua_value_overflow_total, (uint64_t)0);
+    atomic_store(&g_ua_coinbase_protect_total, (uint64_t)0);
+    atomic_store(&g_ua_bad_cb_amount_total, (uint64_t)0);
+    atomic_store(&g_ua_shielded_double_spend_total, (uint64_t)0);
+    atomic_store(&g_ua_upstream_failed_total, (uint64_t)0);
+    atomic_store(&g_ua_internal_error_total, (uint64_t)0);
+    atomic_store(&g_ua_reorg_unwound_total, (uint64_t)0);
+    atomic_store(&g_ua_total_outputs_added, (uint64_t)0);
+    atomic_store(&g_ua_total_outputs_spent, (uint64_t)0);
+    atomic_store(&g_ua_last_step_unix, (int64_t)0);
+    atomic_store(&g_ua_last_blocked_unix, (int64_t)0);
+    atomic_store(&g_ua_last_advance_height, (int64_t)-1);
+    atomic_store(&g_ua_upstream_hole_total, (uint64_t)0);
+    atomic_store(&g_ua_upstream_hole_height, (int64_t)-1);
+    atomic_store(&g_ua_upstream_hole_first_unix, (int64_t)0);
+    atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
+    atomic_store(&g_ua_upstream_hole_warn_total, (uint64_t)0);
+    g_upstream_hole_warn.h = -1;
+    g_upstream_hole_warn.reps = 0;
+    g_upstream_hole_warn.last_log = 0;
     reject_memo_clear();
     pthread_mutex_unlock(&g_lock);
 }
@@ -611,6 +706,13 @@ void utxo_apply_stage_set_lookup(utxo_apply_lookup_fn fn, void *user)
 uint64_t utxo_apply_stage_cursor(void)
 {
     return g_stage ? stage_cursor(g_stage) : 0;
+}
+
+/* Internal (utxo_apply_stage_internal.h): the dump TU reads the live stage
+ * handle lock-free, exactly as the pre-extraction in-TU dump did. */
+stage_t *utxo_apply_stage_handle(void)
+{
+    return g_stage;
 }
 
 bool utxo_apply_stage_succeeded_at(int height)
@@ -644,156 +746,48 @@ bool utxo_apply_stage_succeeded_at(int height)
 
 uint64_t utxo_apply_stage_verified_total(void)
 {
-    return atomic_load(&g_verified_total);
+    return atomic_load(&g_ua_verified_total);
 }
 
 uint64_t utxo_apply_stage_spend_unknown_total(void)
 {
-    return atomic_load(&g_spend_unknown_total);
+    return atomic_load(&g_ua_spend_unknown_total);
 }
 
 uint64_t utxo_apply_stage_utxo_collision_total(void)
 {
-    return atomic_load(&g_utxo_collision_total);
+    return atomic_load(&g_ua_utxo_collision_total);
 }
 
 uint64_t utxo_apply_stage_value_overflow_total(void)
 {
-    return atomic_load(&g_value_overflow_total);
+    return atomic_load(&g_ua_value_overflow_total);
 }
 
 uint64_t utxo_apply_stage_upstream_failed_total(void)
 {
-    return atomic_load(&g_upstream_failed_total);
+    return atomic_load(&g_ua_upstream_failed_total);
 }
 
 uint64_t utxo_apply_stage_internal_error_total(void)
 {
-    return atomic_load(&g_internal_error_total);
+    return atomic_load(&g_ua_internal_error_total);
 }
 
 uint64_t utxo_apply_stage_reorg_unwound_total(void)
 {
-    return atomic_load(&g_reorg_unwound_total);
+    return atomic_load(&g_ua_reorg_unwound_total);
 }
 
 uint64_t utxo_apply_stage_outputs_added_total(void)
 {
-    return atomic_load(&g_total_outputs_added);
+    return atomic_load(&g_ua_total_outputs_added);
 }
 
 uint64_t utxo_apply_stage_outputs_spent_total(void)
 {
-    return atomic_load(&g_total_outputs_spent);
+    return atomic_load(&g_ua_total_outputs_spent);
 }
 
-/* Surface the lowest ok=0 row (status/reason kind/txid/vout) into `out`,
- * mirroring the validate_headers_report failure-summary query convention.
- * The reason kind is utxo_apply's first_failure_kind (e.g. lookup_spend,
- * spend_unknown_utxo); the txid|vout is decoded from the 36-byte detail
- * blob. No-op if the db is unavailable or there is no failing row. Takes
- * its own tx lock since dump_state runs outside any stage txn. */
-static void dump_first_failure(struct json_value *out, sqlite3 *db)
-{
-    if (!db) return;
-    progress_store_tx_lock();
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT height, COALESCE(status,''), "
-        "       COALESCE(first_failure_kind,''), first_failure_detail "
-        "  FROM utxo_apply_log WHERE ok=0 "
-        " ORDER BY height ASC LIMIT 1",
-        -1, &st, NULL) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
-        json_push_kv_int(out, "first_failure_height",
-                         sqlite3_column_int64(st, 0));
-        const unsigned char *status = sqlite3_column_text(st, 1);
-        const unsigned char *kind = sqlite3_column_text(st, 2);
-        json_push_kv_str(out, "first_failure_status",
-                         status ? (const char *)status : "");
-        json_push_kv_str(out, "first_failure_kind",
-                         kind ? (const char *)kind : "");
-        const uint8_t *d = sqlite3_column_blob(st, 3);
-        char hex[65] = {0};
-        int64_t vout = -1;
-        if (d && sqlite3_column_bytes(st, 3) == 36) {
-            struct uint256 t;
-            memcpy(t.data, d, 32);
-            uint256_get_hex(&t, hex);
-            vout = (int64_t)d[32] | ((int64_t)d[33] << 8) |
-                   ((int64_t)d[34] << 16) | ((int64_t)d[35] << 24);
-        }
-        json_push_kv_str(out, "first_failure_txid", hex);
-        json_push_kv_int(out, "first_failure_vout", vout);
-    }
-    sqlite3_finalize(st);
-    progress_store_tx_unlock();
-}
-
-bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
-{
-    (void)key;
-    if (!out) return false;
-    json_set_object(out);
-
-    sqlite3 *db = progress_store_db();
-    int64_t now = platform_time_wall_unix();
-    int64_t last = atomic_load(&g_last_step_unix);
-
-    stage_dump_header(out, STAGE_NAME, g_stage);
-    json_push_kv_int (out, "verified_total",
-                      (int64_t)atomic_load(&g_verified_total));
-    json_push_kv_int (out, "spend_unknown_total",
-                      (int64_t)atomic_load(&g_spend_unknown_total));
-    json_push_kv_int (out, "utxo_collision_total",
-                      (int64_t)atomic_load(&g_utxo_collision_total));
-    json_push_kv_int (out, "value_overflow_total",
-                      (int64_t)atomic_load(&g_value_overflow_total));
-    json_push_kv_int (out, "coinbase_protect_total",
-                      (int64_t)atomic_load(&g_coinbase_protect_total));
-    json_push_kv_int (out, "bad_cb_amount_total",
-                      (int64_t)atomic_load(&g_bad_cb_amount_total));
-    json_push_kv_int (out, "shielded_double_spend_total",
-                      (int64_t)atomic_load(&g_shielded_double_spend_total));
-    json_push_kv_int (out, "upstream_failed_total",
-                      (int64_t)atomic_load(&g_upstream_failed_total));
-    json_push_kv_int (out, "internal_error_total",
-                      (int64_t)atomic_load(&g_internal_error_total));
-    json_push_kv_int (out, "reorg_unwound_total",
-                      (int64_t)atomic_load(&g_reorg_unwound_total));
-    json_push_kv_int (out, "outputs_added_total",
-                      (int64_t)atomic_load(&g_total_outputs_added));
-    json_push_kv_int (out, "outputs_spent_total",
-                      (int64_t)atomic_load(&g_total_outputs_spent));
-    json_push_kv_int (out, "last_advance_height",
-                      atomic_load(&g_last_advance_height));
-    json_push_kv_int (out, "last_step_unix", last);
-    json_push_kv_int (out, "last_step_age_seconds",
-                      last > 0 ? now - last : -1);
-    json_push_kv_int (out, "last_blocked_unix",
-                      atomic_load(&g_last_blocked_unix));
-    json_push_kv_int (out, "log_rows",
-                      db ? stage_log_row_count(db, STAGE_NAME,
-                                               "utxo_apply_log") : 0);
-
-    /* P2 self-heal input: the contiguous applied frontier and whether it equals
-     * the durable utxo_apply cursor (the invariant the co-commit sites enforce).
-     * Surfaced here so `zcl_state subsystem=utxo_apply` shows the invariant
-     * directly — frontier_eq_cursor must be true on every quiescent path.
-     * coins_applied_height == -1 means ABSENT (a virgin / un-synced datadir),
-     * which is a clean "unknown", not a violation. */
-    if (db) {
-        int32_t frontier = -1;
-        bool fr_found = false;
-        bool fr_ok = coins_kv_get_applied_height(db, &frontier, &fr_found);
-        uint64_t ua_cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
-        json_push_kv_int(out, "coins_applied_height",
-                         (fr_ok && fr_found) ? (int64_t)frontier : -1);
-        json_push_kv_bool(out, "frontier_eq_cursor",
-                          fr_ok && fr_found &&
-                          (uint64_t)frontier == ua_cursor);
-    }
-    dump_first_failure(out, db);
-    stage_dump_counters(out, g_stage);
-    return true;
-}
+/* utxo_apply_dump_state_json (+ its first-failure summary helper) lives in
+ * utxo_apply_stage_dump.c — see utxo_apply_stage_internal.h. */

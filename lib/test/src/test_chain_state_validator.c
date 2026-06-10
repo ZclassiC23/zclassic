@@ -238,7 +238,8 @@ int test_chain_state_validator(void)
              * the tip_finalize_log anchor row but only stamps the cursor when
              * g_stage is wired, so we stamp the 'tip_finalize' cursor directly. */
             bool row = tip_finalize_stage_seed_anchor(tip->nHeight,
-                                                      tip->phashBlock->data);
+                                                      tip->phashBlock->data,
+                                                      false);
             char sql[160];
             snprintf(sql, sizeof(sql),
                      "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"

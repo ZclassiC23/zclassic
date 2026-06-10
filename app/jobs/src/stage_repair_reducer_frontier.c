@@ -266,6 +266,13 @@ static bool read_frontier_snapshot(sqlite3 *db,
     out->lowest_validate_headers_hash_split = -1;
     out->lowest_body_fetch_refill_hole = -1;
     out->lowest_body_persist_refill_hole = -1;
+    out->lowest_script_validate_refill_hole = -1;
+    out->lowest_proof_validate_refill_hole = -1;
+    out->script_validate_cursor_before = -1;
+    out->script_validate_cursor_after = -1;
+    out->proof_validate_cursor_before = -1;
+    out->proof_validate_cursor_after = -1;
+    out->tipfin_backfill_height = -1;
     out->coins_applied_found = coins_found;
     out->coins_applied_height = coins_found ? coins_applied : -1;
     if (!coins_found)
@@ -415,6 +422,13 @@ static bool reducer_frontier_reconcile_light_impl(
     local.lowest_validate_headers_hash_split = -1;
     local.lowest_body_fetch_refill_hole = -1;
     local.lowest_body_persist_refill_hole = -1;
+    local.lowest_script_validate_refill_hole = -1;
+    local.lowest_proof_validate_refill_hole = -1;
+    local.script_validate_cursor_before = -1;
+    local.script_validate_cursor_after = -1;
+    local.proof_validate_cursor_before = -1;
+    local.proof_validate_cursor_after = -1;
+    local.tipfin_backfill_height = -1;
     local.coins_applied_height = -1;
 
     if (!stage_table_ensure(db))
@@ -439,6 +453,32 @@ static bool reducer_frontier_reconcile_light_impl(
         if (out)
             *out = local;
         return true;
+    }
+
+    /* Pre-refusal repairs, ordered: FIX-2a (clamp script/proof cursors back
+     * to the lowest unapplied rowless hole) then FIX-1 (tip_finalize_log
+     * backfill). Both exist for the coin-tear pin ONLY (see the decls in
+     * stage_repair_reducer_frontier_internal.h) and run BEFORE the
+     * coin-tear refusal so a healed frontier passes it arithmetically;
+     * diagnostics live inside the callees. The tear gate lives HERE, not
+     * just in the callees: the reconcile-light Condition polls _needed()
+     * every 5s on any stalled node (tear or not), and the FIX-2a callee
+     * treats a no-tear invocation as a contract violation worth an
+     * unthrottled WARN — gating keeps the healthy/no-tear path silent. */
+    if (local.refused_coin_tear) {
+        bool handled_pre_refusal = false;
+        if (!stage_reducer_frontier_try_unapplied_hole_clamp(
+                db, apply, &local, &handled_pre_refusal))
+            return false;
+        if (!handled_pre_refusal &&
+            !stage_reducer_frontier_try_tipfin_backfill(
+                db, apply, &local, &handled_pre_refusal))
+            return false;
+        if (handled_pre_refusal) {
+            if (out)
+                *out = local;
+            return true;
+        }
     }
 
     if (local.refused_coin_tear) {
@@ -490,6 +530,10 @@ static bool reducer_frontier_reconcile_light_impl(
                      local.clamped_validate_headers ||
                      local.clamped_body_fetch ||
                      local.clamped_body_persist ||
+                     local.clamped_script_validate ||
+                     local.clamped_proof_validate ||
+                     local.pre_refusal_unapplied_clamp ||
+                     local.tipfin_backfill_count > 0 ||
                      local.scripts_set > 0 ||
                      local.have_data_set > 0 ||
                      local.have_data_cleared > 0 ||
@@ -504,7 +548,11 @@ static bool reducer_frontier_reconcile_light_impl(
                  "have_data_set=%d have_data_cleared=%d "
                  "validate_refill_hole=%d body_refill_hole=%d "
                  "validate_hash_split=%d body_persist_refill_hole=%d "
-                 "failed_mask_cleared=%d",
+                 "failed_mask_cleared=%d "
+                 "script_validate=%d->%d proof_validate=%d->%d "
+                 "script_refill_hole=%d proof_refill_hole=%d "
+                 "unapplied_clamp=%d tipfin_backfill_h=%d "
+                 "tipfin_backfill_n=%d",
                  local.hstar, local.served_floor, local.coins_applied_height,
                  local.sweep_top, local.validate_headers_cursor_before,
                  local.validate_headers_cursor_after,
@@ -520,7 +568,16 @@ static bool reducer_frontier_reconcile_light_impl(
                  local.lowest_body_fetch_refill_hole,
                  local.lowest_validate_headers_hash_split,
                  local.lowest_body_persist_refill_hole,
-                 local.failed_mask_cleared);
+                 local.failed_mask_cleared,
+                 local.script_validate_cursor_before,
+                 local.script_validate_cursor_after,
+                 local.proof_validate_cursor_before,
+                 local.proof_validate_cursor_after,
+                 local.lowest_script_validate_refill_hole,
+                 local.lowest_proof_validate_refill_hole,
+                 (int)local.pre_refusal_unapplied_clamp,
+                 local.tipfin_backfill_height,
+                 local.tipfin_backfill_count);
     }
 
     if (out)

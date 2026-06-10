@@ -377,7 +377,7 @@ int test_reducer_forward_progress_gate(void)
     }
 
     RFP_CHECK("tip_finalize anchor seed at genesis",
-              tip_finalize_stage_seed_anchor(0, genesis_hash.data));
+              tip_finalize_stage_seed_anchor(0, genesis_hash.data, false));
 
     bool stages_ok =
         header_admit_stage_init(&ms) &&

@@ -146,6 +146,22 @@ struct stage_reducer_frontier_reconcile_result {
     int coin_backfill_scan_next;
     bool coin_backfill_owner_refused;
     bool coin_backfill_genuinely_invalid;
+    int lowest_script_validate_refill_hole;
+    int lowest_proof_validate_refill_hole;
+    bool clamped_script_validate;
+    bool clamped_proof_validate;
+    int script_validate_cursor_before;
+    int script_validate_cursor_after;
+    int proof_validate_cursor_before;
+    int proof_validate_cursor_after;
+    bool pre_refusal_unapplied_clamp;
+    int tipfin_backfill_height;
+    int tipfin_backfill_count;
+    bool tipfin_backfill_marker_seen;
+    /* enum tipfin_refused_reason code (stage_repair_reducer_frontier_tipfin.c
+     * — values mirrored by test_stage_repair_tipfin_backfill.c, keep stable);
+     * 0 = TIPFIN_REFUSED_NONE. The refusal WARN names the guard in text. */
+    int tipfin_backfill_refused_reason;
 };
 
 /* Reconcile a reducer cursor/coins desync that wedges the chain.

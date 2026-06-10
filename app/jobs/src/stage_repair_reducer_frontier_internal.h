@@ -45,4 +45,34 @@ bool stage_reducer_frontier_reconcile_validate_hash_split_cursor(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
+/* FIX-2a: pre-refusal clamp of the script_validate / proof_validate cursors
+ * back to the lowest rowless (unapplied) hole at or above the coins-applied
+ * floor. PRECONDITION: a coin-tear refusal must be pending
+ * (out->refused_coin_tear set by the frontier snapshot) — the call site
+ * MUST gate on it; this repair exists for the coin-tear pin only, and the
+ * callee WARNs (unthrottled, contract violation) on a no-tear invocation.
+ * Sets *handled=true (and clears refused_coin_tear in `out`) only when a
+ * clamp was performed; on zero progress sets *handled=false so the caller
+ * falls through to the next repair. Diagnostics are logged by the callee.
+ * Returns false only on store errors. */
+bool stage_reducer_frontier_try_unapplied_hole_clamp(
+    struct sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out,
+    bool *handled);
+
+/* FIX-1: pre-refusal tip_finalize_log backfill of the span below the pinned
+ * frontier (insert-only; never writes at/above served_floor and never where
+ * any row exists). PRECONDITION: a coin-tear refusal must be pending
+ * (out->refused_coin_tear) — the call site MUST gate on it; without a tear
+ * there is no pinned span to restore and the callee no-ops. Sets
+ * *handled=true when a batch made progress; on zero progress sets
+ * *handled=false so the same tick can run the next repair. Diagnostics are
+ * logged by the callee. Returns false only on store errors. */
+bool stage_reducer_frontier_try_tipfin_backfill(
+    struct sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out,
+    bool *handled);
+
 #endif /* ZCL_JOBS_STAGE_REPAIR_REDUCER_FRONTIER_INTERNAL_H */

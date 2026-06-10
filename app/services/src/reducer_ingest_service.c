@@ -343,7 +343,8 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     if (anchor_tip && anchor_tip->phashBlock &&
         tip_finalize_stage_cursor() < (uint64_t)anchor_tip->nHeight + 1u)
         (void)tip_finalize_stage_seed_anchor(anchor_tip->nHeight,
-                                             anchor_tip->phashBlock->data);
+                                             anchor_tip->phashBlock->data,
+                                             false /* runtime re-seed */);
 
     /* Body-INDEPENDENT prefix drain: run ONLY header_admit + validate_headers
      * to convergence so the block_index is created and the header is validated

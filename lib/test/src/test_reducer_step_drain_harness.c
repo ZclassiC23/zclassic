@@ -269,7 +269,7 @@ int test_reducer_step_drain_harness(void)
     SD_CHECK("seed genesis utxo_apply row",
              sd_seed_genesis_utxo_apply_row(progress_store_db()));
     SD_CHECK("tip_finalize anchor seed at genesis",
-             tip_finalize_stage_seed_anchor(0, genesis_hash.data));
+             tip_finalize_stage_seed_anchor(0, genesis_hash.data, false));
 
     sqlite3 *db = progress_store_db();
 

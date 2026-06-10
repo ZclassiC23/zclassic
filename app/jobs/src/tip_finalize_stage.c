@@ -3,9 +3,9 @@
 
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
-#include "jobs/stage_anchor.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/block_header_emit.h"
+#include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_post_step.h"
 #include "tip_finalize_log_store.h"
 
@@ -109,50 +109,17 @@ static bool get_last_advance(int64_t *height, uint8_t hash[32])
 }
 
 
-static bool ensure_authority_anchor_row(sqlite3 *db, int height,
-                                        const uint8_t hash[32])
+/* Cross-TU seam for tip_finalize_anchor.c (tip_finalize_anchor_internal.h):
+ * the anchor/seed TU reads the live stage handle at call time and publishes
+ * the served tip through the same single update path as the step body. */
+stage_t *tip_finalize_stage_handle(void)
 {
-    struct finalized_tip_row row;
-    if (!finalized_tip_row_at(db, height, &row))
-        return false;
-    if (row.found && row.ok && row.has_tip_hash &&
-        memcmp(row.tip_hash.data, hash, 32) == 0)
-        return true;
-
-    struct uint256 tip_hash;
-    memcpy(tip_hash.data, hash, 32);
-    return log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash);
+    return g_stage;
 }
 
-static bool anchor_cursor_to_authority(sqlite3 *db, int height,
-                                       const uint8_t hash[32], bool anchor_upstream,
-                                       bool require_prior_progress, const char *reason)
+void tip_finalize_publish_last_advance(int height, const uint8_t hash[32])
 {
-    if (!db || !g_stage || height < 0 || !hash)
-        return true;
-
-    uint64_t target = (uint64_t)height + 1u;
-    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
-    int64_t rows = stage_log_row_count(db, STAGE_NAME, "tip_finalize_log");
-    if (require_prior_progress && cursor == 0 && rows <= 0)
-        return true;
-    if (!ensure_authority_anchor_row(db, height, hash))
-        return false;
-    if (anchor_upstream &&
-        !stage_anchor_upstream_cursors_to(db, target, STAGE_NAME, reason))
-        return false;
-    if (cursor >= target)
-        return true;
-    if (!stage_set_cursor(g_stage, db, target)) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] authority anchor cursor failed from=%llu to=%llu reason=%s",
-                 (unsigned long long)cursor, (unsigned long long)target, reason ? reason : "");
-        return false;
-    }
-    LOG_INFO("tip_finalize",
-             "[tip_finalize] authority anchor cursor from=%llu to=%llu reason=%s",
-             (unsigned long long)cursor, (unsigned long long)target, reason ? reason : "");
-    return true;
+    update_last_advance(height, hash);
 }
 
 static int reorg_depth_from(struct block_index *old_tip,
@@ -562,7 +529,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
 
     if (g_stage != NULL) {
         if (existing_tip && existing_tip->phashBlock &&
-            !anchor_cursor_to_authority(db, existing_tip->nHeight,
+            !tip_finalize_anchor_cursor_to_authority(db, existing_tip->nHeight,
                 existing_tip->phashBlock->data, false, false, "init_existing_tip_reanchor")) {
             pthread_mutex_unlock(&g_lock);
             return false;
@@ -590,7 +557,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
      * authority cursor, but only explicit seed anchors may align upstream
      * reducer cursors. */
     if (existing_tip && existing_tip->phashBlock &&
-        !anchor_cursor_to_authority(db, existing_tip->nHeight,
+        !tip_finalize_anchor_cursor_to_authority(db, existing_tip->nHeight,
                 existing_tip->phashBlock->data, false, true, "init_existing_tip")) {
         stage_destroy(s);
         g_stage = NULL;
@@ -658,17 +625,8 @@ void tip_finalize_stage_shutdown(void)
     pthread_mutex_unlock(&g_lock);
 }
 
-void tip_finalize_stage_set_authoritative_tip(int height,
-                                              const uint8_t hash[32])
-{
-    update_last_advance(height, hash);
-    sqlite3 *db = progress_store_db();
-    if (db && g_stage) {
-        progress_store_tx_lock();
-        (void)anchor_cursor_to_authority(db, height, hash, false, false, "trusted_tip");
-        progress_store_tx_unlock();
-    }
-}
+/* tip_finalize_stage_set_authoritative_tip and tip_finalize_stage_seed_anchor
+ * live in tip_finalize_anchor.c (E1 extraction + FIX-3 frontier caps). */
 
 bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
                                          uint8_t out_hash[32])
@@ -686,53 +644,6 @@ bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
         return false;
     }
     memcpy(out_hash, row.tip_hash.data, 32);
-    progress_store_tx_unlock();
-    return true;
-}
-
-bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
-{
-    if (height < 0 || !hash)
-        return false;
-
-    sqlite3 *db = progress_store_db();
-    if (!db) {
-        /* Not wired (very early boot, or unit tests without a progress
-         * store). The cold-start seed is best-effort until the stage is
-         * available. */
-        return false;
-    }
-    progress_store_tx_lock();
-    if (!ensure_log_schema(db)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    struct uint256 tip_hash;
-    memcpy(tip_hash.data, hash, 32);
-
-    /* Snapshot/trusted anchors have no per-block work or UTXO delta. */
-    if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    if (!stage_anchor_upstream_cursors_to(db, (uint64_t)height + 1u,
-                                          STAGE_NAME, "seed_anchor")) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    /* Resume after the anchor; rebuild reads cursor-1 == anchor. */
-    if (g_stage && !stage_set_cursor(g_stage, db, (uint64_t)height + 1)) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] anchor seed: cursor stamp to %d failed", height + 1);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    /* Publish immediately, not only after the next boot. */
-    update_last_advance(height, hash);
     progress_store_tx_unlock();
     return true;
 }

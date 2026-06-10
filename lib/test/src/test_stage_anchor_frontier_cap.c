@@ -1,0 +1,477 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Tests for the FIX-3 log-frontier cap — the source guard that kills the
+ * log-hole wedge class at its manufacturing site (the seed-anchor cursor
+ * bulldozer). Covers the shared helper and both tip_finalize jump sites:
+ *
+ *   T5  — stage_anchor_cap_target_at_log_frontier four-prong cap rule
+ *         (direct calls on a synthetic log).
+ *   T5b — panel regression: a FRESH-datadir seed above the compiled
+ *         checkpoint must survive (anchor row + cursor at H+1, accepted by
+ *         the reducer trusted-anchor scan) — the write-ordering defeat that
+ *         a naive post-insert "log empty" probe would cause. Repeat seeds
+ *         must not spuriously cap.
+ *   T7  — a cursor held at a rowless H is NOT bulldozed by
+ *         set_authoritative_tip(H+k); with the successor present the stage
+ *         then finalizes H normally (the 3,135,516 class).
+ *   T8  — panel interleave: with script/proof cursors clamped to a log
+ *         hole, the per-ingest seed (trusted_seed=false) cannot re-tear the
+ *         clamp; once the hole is refilled the next seed stamps
+ *         contiguously.
+ *
+ * Fixture style mirrors test_tip_finalize_stage.c (synthetic block_index
+ * chain + mirrored progress.kv schemas) and test_stage_anchor.c (private
+ * on-disk sqlite DBs, public API only). */
+
+#include "test/test_helpers.h"
+
+#include "chain/chain.h"
+#include "jobs/reducer_frontier.h"
+#include "jobs/stage_anchor.h"
+#include "jobs/tip_finalize_stage.h"
+#include "storage/progress_store.h"
+#include "util/stage.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+
+#include <sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define FC_CHECK(name, expr) do { \
+    printf("frontier_cap: %s... ", (name)); \
+    if ((expr)) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* ── Shared SQL mirrors (test-seed only) ───────────────────────────── */
+
+static bool fc_exec(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);  // raw-sql-ok:test-seed
+    if (rc != SQLITE_OK) {
+        printf("frontier_cap: SQL failed: %s\n", err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+/* Minimal mirror of a stage log table — the cap only reads `height`. The
+ * `ok` column makes the "any-ok row counts" assertion meaningful. */
+static bool fc_make_log(sqlite3 *db, const char *table)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "CREATE TABLE IF NOT EXISTS %s ("
+             " height INTEGER PRIMARY KEY, ok INTEGER NOT NULL DEFAULT 1)",
+             table);
+    return fc_exec(db, sql);
+}
+
+static bool fc_put_row(sqlite3 *db, const char *table, int height, int ok)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO %s(height, ok) VALUES(%d, %d)",
+             table, height, ok);
+    return fc_exec(db, sql);
+}
+
+static uint64_t fc_cursor(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    uint64_t out = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:test-readback
+        out = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
+static bool fc_seed_cursor(sqlite3 *db, const char *name, int cursor)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+             "VALUES('%s',%d,1)", name, cursor);
+    return fc_exec(db, sql);
+}
+
+/* tip_finalize_log row readback: ok + status at height (-1 ok = absent). */
+static int fc_tip_row(sqlite3 *db, int height, char *status, size_t n)
+{
+    if (status && n) status[0] = 0;
+    sqlite3_stmt *st = NULL;
+    int ok = -1;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok, status FROM tip_finalize_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, height);
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:test-readback
+        ok = sqlite3_column_int(st, 0);
+        const unsigned char *txt = sqlite3_column_text(st, 1);
+        if (txt && status && n)
+            snprintf(status, n, "%s", (const char *)txt);
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* ── T5: the helper's four-prong cap rule ──────────────────────────── */
+
+static int fc_case_helper(void)
+{
+    int failures = 0;
+    char path[128];
+    snprintf(path, sizeof(path), "test_frontier_cap_%d.db", (int)getpid());
+    unlink(path);
+    sqlite3 *db = NULL;
+    FC_CHECK("T5: db open", sqlite3_open(path, &db) == SQLITE_OK);
+    if (!db) return failures + 1;
+
+    FC_CHECK("T5: make log", fc_make_log(db, "script_validate_log"));
+    bool seeded = true;
+    for (int h = 100; h <= 120; h++) {
+        if (h == 110) continue;  /* the hole */
+        seeded = seeded && fc_put_row(db, "script_validate_log", h, 1);
+    }
+    FC_CHECK("T5: seed rows 100..120 minus 110", seeded);
+
+    uint64_t capped = 0;
+    /* Prong 4: lowest rowless height inside [cursor, requested) caps. */
+    FC_CHECK("T5: hole inside jump -> capped at the hole",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "script_validate_log", 100, 121, false, &capped) &&
+             capped == 110);
+    /* Prong 4: cursor itself rowless caps at the cursor (no-op jump). */
+    FC_CHECK("T5: rowless cursor -> capped at the cursor",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "script_validate_log", 99, 121, false, &capped) &&
+             capped == 99);
+    /* Prong 1: a target at/behind the cursor passes through unchanged. */
+    FC_CHECK("T5: requested <= cursor -> pass-through",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "script_validate_log", 121, 110, false, &capped) &&
+             capped == 110);
+    /* Prong 2: caller-declared seed exemption skips the scan entirely. */
+    FC_CHECK("T5: seed_exempt=true -> full jump over the hole",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "script_validate_log", 100, 121, true, &capped) &&
+             capped == 121);
+    /* Any-ok row counts as coverage: an ok=0 row fills the hole. */
+    FC_CHECK("T5: fill hole with ok=0 row",
+             fc_put_row(db, "script_validate_log", 110, 0));
+    FC_CHECK("T5: ok=0 row covers the height -> full jump",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "script_validate_log", 100, 121, false, &capped) &&
+             capped == 121);
+    /* Prong 3: an empty log is a fresh seed, never a hole. */
+    FC_CHECK("T5: make empty log", fc_make_log(db, "proof_validate_log"));
+    FC_CHECK("T5: empty log -> full jump",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "proof_validate_log", 5, 5000, false, &capped) &&
+             capped == 5000);
+    /* Prong 3: rows only at/above requested == nothing below to tear. */
+    FC_CHECK("T5: seed high-only rows",
+             fc_put_row(db, "proof_validate_log", 200, 1) &&
+             fc_put_row(db, "proof_validate_log", 201, 1));
+    FC_CHECK("T5: no row below requested -> full jump",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "proof_validate_log", 10, 50, false, &capped) &&
+             capped == 50);
+    /* A log TABLE that does not exist yet is fresh-seed semantics too
+     * (upstream anchors can run before a stage's schema is created). */
+    FC_CHECK("T5: missing table -> full jump",
+             stage_anchor_cap_target_at_log_frontier(db,
+                 "body_persist_log", 0, 4242, false, &capped) &&
+             capped == 4242);
+
+    sqlite3_close(db);
+    unlink(path);
+    return failures;
+}
+
+/* ── T5b: fresh-datadir seed above the compiled checkpoint ─────────── */
+
+static int fc_case_fresh_seed(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "frontier_cap", "fresh_seed");
+    FC_CHECK("T5b: progress store opens", progress_store_open(dir));
+    sqlite3 *db = progress_store_db();
+    if (!db) { progress_store_close(); return failures + 1; }
+
+    /* The reducer-frontier scan needs every success-checked log table. */
+    bool tables =
+        fc_exec(db,
+            "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+            " height INTEGER PRIMARY KEY, ok INTEGER NOT NULL, hash BLOB)") &&
+        fc_exec(db,
+            "CREATE TABLE IF NOT EXISTS script_validate_log ("
+            " height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+            " block_hash BLOB)") &&
+        fc_make_log(db, "body_persist_log") &&
+        fc_make_log(db, "proof_validate_log") &&
+        fc_make_log(db, "utxo_apply_log");
+    FC_CHECK("T5b: frontier log tables created", tables);
+
+    struct main_state ms;
+    memset(&ms, 0, sizeof(ms));
+    main_state_init(&ms);
+    FC_CHECK("T5b: stage init on an empty chain",
+             tip_finalize_stage_init(&ms));
+    FC_CHECK("T5b: cursor starts at 0", tip_finalize_stage_cursor() == 0);
+
+    const int H = (int)REDUCER_FRONTIER_TRUSTED_ANCHOR + 7;
+    struct uint256 hash;
+    uint256_set_null(&hash);
+    hash.data[0] = 0x5b;
+
+    /* The ingest-shaped seed (trusted_seed=false): the log is empty BEFORE
+     * the call, so the pre-insert-empty prong exempts the self-stamp even
+     * though the anchor row is written before the cursor (the panel's
+     * write-ordering defeat — a post-insert probe would cap this to 0 and
+     * wedge every fresh cold-sync above the compiled checkpoint). */
+    FC_CHECK("T5b: fresh seed above checkpoint succeeds",
+             tip_finalize_stage_seed_anchor(H, hash.data, false));
+    FC_CHECK("T5b: cursor stamped to H+1",
+             tip_finalize_stage_cursor() == (uint64_t)H + 1u &&
+             fc_cursor(db, "tip_finalize") == (uint64_t)H + 1u);
+    FC_CHECK("T5b: upstream cursors aligned to H+1 (empty-log prong)",
+             fc_cursor(db, "script_validate") == (uint64_t)H + 1u &&
+             fc_cursor(db, "proof_validate") == (uint64_t)H + 1u &&
+             fc_cursor(db, "utxo_apply") == (uint64_t)H + 1u);
+    char status[32];
+    FC_CHECK("T5b: anchor row written at H",
+             fc_tip_row(db, H, status, sizeof(status)) == 1 &&
+             strcmp(status, "anchor") == 0);
+
+    /* The reducer trusted-anchor scan must ACCEPT the seed: H* anchors at
+     * H (not back at the compiled checkpoint). */
+    int32_t hstar = 0, served = 0;
+    progress_store_tx_lock();
+    bool hs_ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    progress_store_tx_unlock();
+    FC_CHECK("T5b: reducer accepts the seed anchor (H* == H)",
+             hs_ok && hstar == H && served == H);
+
+    /* Repeat the call: the log is now non-empty, but the anchor row covers
+     * H, so the scan finds no rowless height — no spurious cap. */
+    FC_CHECK("T5b: repeat seed still succeeds",
+             tip_finalize_stage_seed_anchor(H, hash.data, false));
+    FC_CHECK("T5b: repeat seed leaves the cursor at H+1",
+             tip_finalize_stage_cursor() == (uint64_t)H + 1u);
+    progress_store_tx_lock();
+    hs_ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    progress_store_tx_unlock();
+    FC_CHECK("T5b: H* still anchored at H after the repeat",
+             hs_ok && hstar == H);
+
+    tip_finalize_stage_shutdown();
+    main_state_free(&ms);
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* ── T7: held cursor at a rowless H survives set_authoritative_tip ─── */
+
+#define FC_N 4
+
+struct fc_chain {
+    struct block_index *blocks;
+    struct uint256     *hashes;
+};
+
+static bool fc_chain_build(struct fc_chain *sc, struct main_state *ms)
+{
+    sc->blocks = calloc(FC_N, sizeof(struct block_index));
+    sc->hashes = calloc(FC_N, sizeof(struct uint256));
+    if (!sc->blocks || !sc->hashes) return false;
+    for (int i = 0; i < FC_N; i++) {
+        uint256_set_null(&sc->hashes[i]);
+        sc->hashes[i].data[0] = (uint8_t)(0xc0 + i);
+        block_index_init(&sc->blocks[i]);
+        sc->blocks[i].phashBlock = &sc->hashes[i];
+        sc->blocks[i].nHeight = i;
+        sc->blocks[i].nVersion = 4;
+        sc->blocks[i].nTime = (uint32_t)(1700009000u + (uint32_t)i);
+        sc->blocks[i].nBits = 0x1f07ffff;
+        sc->blocks[i].nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        arith_uint256_set_u64(&sc->blocks[i].nChainWork, (uint64_t)i + 1);
+        if (i > 0) sc->blocks[i].pprev = &sc->blocks[i - 1];
+        if (!block_map_insert(&ms->map_block_index, sc->blocks[i].phashBlock,
+                              &sc->blocks[i]))
+            return false;
+    }
+    return active_chain_move_window_tip(&ms->chain_active,
+                                        &sc->blocks[FC_N - 1]);
+}
+
+static bool fc_seed_utxo_apply(sqlite3 *db, int rows)
+{
+    if (!fc_exec(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+            " height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
+            " ok INTEGER NOT NULL, spent_count INTEGER NOT NULL,"
+            " added_count INTEGER NOT NULL,"
+            " total_value_delta INTEGER NOT NULL,"
+            " first_failure_kind TEXT, first_failure_detail BLOB,"
+            " applied_at INTEGER NOT NULL)"))
+        return false;
+    for (int h = 0; h < rows; h++) {
+        char sql[200];
+        snprintf(sql, sizeof(sql),
+                 "INSERT OR REPLACE INTO utxo_apply_log"
+                 "(height,status,ok,spent_count,added_count,"
+                 " total_value_delta,applied_at) "
+                 "VALUES(%d,'verified',1,1,2,1,1)", h);
+        if (!fc_exec(db, sql))
+            return false;
+    }
+    return fc_seed_cursor(db, "utxo_apply", rows);
+}
+
+static int fc_case_held_cursor(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "frontier_cap", "held_cursor");
+    FC_CHECK("T7: progress store opens", progress_store_open(dir));
+    sqlite3 *db = progress_store_db();
+    if (!db) { progress_store_close(); return failures + 1; }
+
+    struct main_state ms;
+    memset(&ms, 0, sizeof(ms));
+    main_state_init(&ms);
+    struct fc_chain sc = {0};
+    FC_CHECK("T7: chain 0..3 built", fc_chain_build(&sc, &ms));
+    FC_CHECK("T7: utxo_apply rows 0..2 + cursor=3",
+             fc_seed_utxo_apply(db, 3));
+    FC_CHECK("T7: stage init", tip_finalize_stage_init(&ms));
+
+    /* Finalize height 0 only: the cursor lands ON the rowless height 1. */
+    FC_CHECK("T7: first step finalizes h=0",
+             tip_finalize_stage_step_once() == JOB_ADVANCED);
+    FC_CHECK("T7: cursor held at 1, no row at 1",
+             tip_finalize_stage_cursor() == 1 &&
+             fc_tip_row(db, 1, NULL, 0) == -1);
+
+    /* The bulldozer: a trusted re-anchor at the tip. Without FIX-3 this
+     * jumps the cursor to 4, stranding heights 1..2 behind a rowless span
+     * forever (anchor writes are monotonic). The cap pins it at 1. */
+    tip_finalize_stage_set_authoritative_tip(FC_N - 1,
+                                             sc.hashes[FC_N - 1].data);
+    FC_CHECK("T7: cursor capped at the rowless height (not bulldozed)",
+             tip_finalize_stage_cursor() == 1 &&
+             fc_cursor(db, "tip_finalize") == 1);
+    char status[32];
+    FC_CHECK("T7: authority anchor row still written at the tip",
+             fc_tip_row(db, FC_N - 1, status, sizeof(status)) == 1 &&
+             strcmp(status, "anchor") == 0);
+
+    /* With the successor present, the held height finalizes normally. */
+    FC_CHECK("T7: next step finalizes h=1",
+             tip_finalize_stage_step_once() == JOB_ADVANCED);
+    FC_CHECK("T7: h=1 row finalized, cursor at 2",
+             fc_tip_row(db, 1, status, sizeof(status)) == 1 &&
+             strcmp(status, "finalized") == 0 &&
+             tip_finalize_stage_cursor() == 2);
+
+    tip_finalize_stage_shutdown();
+    main_state_free(&ms);
+    free(sc.blocks);
+    free(sc.hashes);
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* ── T8: clamp/seed interleave at a script+proof log hole ──────────── */
+
+static int fc_case_interleave(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "frontier_cap", "interleave");
+    FC_CHECK("T8: progress store opens", progress_store_open(dir));
+    sqlite3 *db = progress_store_db();
+    if (!db) { progress_store_close(); return failures + 1; }
+
+    const int tip = 9, hole = 5;
+    bool seeded = fc_make_log(db, "script_validate_log") &&
+                  fc_make_log(db, "proof_validate_log");
+    for (int h = 0; h <= tip && seeded; h++) {
+        if (h == hole) continue;  /* the repair-clamped hole */
+        seeded = fc_put_row(db, "script_validate_log", h, 1) &&
+                 fc_put_row(db, "proof_validate_log", h, 1);
+    }
+    /* FIX-2-shaped state: repair clamped both cursors to the hole. */
+    seeded = seeded &&
+             fc_seed_cursor(db, "script_validate", hole) &&
+             fc_seed_cursor(db, "proof_validate", hole);
+    FC_CHECK("T8: rows 0..9 minus the hole + clamped cursors", seeded);
+
+    struct uint256 hash;
+    uint256_set_null(&hash);
+    hash.data[0] = 0x78;
+
+    /* The per-ingest re-seed (trusted_seed=false). Pre-FIX-3 this
+     * re-bulldozed the clamps to tip+1 every ~150 s — the
+     * clamp->bulldoze->re-clamp livelock. */
+    FC_CHECK("T8: ingest-shaped seed succeeds",
+             tip_finalize_stage_seed_anchor(tip, hash.data, false));
+    FC_CHECK("T8: script_validate clamp NOT re-torn (capped at the hole)",
+             fc_cursor(db, "script_validate") == (uint64_t)hole);
+    FC_CHECK("T8: proof_validate clamp NOT re-torn (capped at the hole)",
+             fc_cursor(db, "proof_validate") == (uint64_t)hole);
+    /* Stages whose logs do not exist yet keep fresh-seed semantics — the
+     * cap is strictly per-stage. */
+    FC_CHECK("T8: logless stage still aligned to tip+1",
+             fc_cursor(db, "validate_headers") == (uint64_t)tip + 1u);
+    char status[32];
+    FC_CHECK("T8: anchor row written at the tip",
+             fc_tip_row(db, tip, status, sizeof(status)) == 1 &&
+             strcmp(status, "anchor") == 0);
+
+    /* Drain/repair refills the hole (simulated by the refill row), after
+     * which the next seed stamps contiguously to tip+1. */
+    FC_CHECK("T8: refill the hole rows",
+             fc_put_row(db, "script_validate_log", hole, 1) &&
+             fc_put_row(db, "proof_validate_log", hole, 1));
+    FC_CHECK("T8: post-refill seed succeeds",
+             tip_finalize_stage_seed_anchor(tip, hash.data, false));
+    FC_CHECK("T8: cursors stamp contiguously once the hole is gone",
+             fc_cursor(db, "script_validate") == (uint64_t)tip + 1u &&
+             fc_cursor(db, "proof_validate") == (uint64_t)tip + 1u);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+int test_stage_anchor_frontier_cap(void);
+int test_stage_anchor_frontier_cap(void)
+{
+    printf("\n=== stage_anchor frontier-cap (FIX-3) tests ===\n");
+    int failures = 0;
+
+    failures += fc_case_helper();
+    failures += fc_case_fresh_seed();
+    failures += fc_case_held_cursor();
+    failures += fc_case_interleave();
+
+    printf("=== stage_anchor frontier-cap tests: %s ===\n\n",
+           failures ? "FAILED" : "ALL PASS");
+    return failures;
+}

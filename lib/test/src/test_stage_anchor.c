@@ -112,7 +112,7 @@ int test_stage_anchor(void)
         }
 
         bool ok = stage_anchor_upstream_cursors_to(db, 5000, "test",
-                                                   "atomic-advance");
+                                                   "atomic-advance", false);
         SA_CHECK("anchor advance returns true", ok);
 
         bool all_at_target = true;
@@ -142,7 +142,7 @@ int test_stage_anchor(void)
         }
 
         ok = stage_anchor_upstream_cursors_to(db, target, "test",
-                                              "forward-only");
+                                              "forward-only", false);
         SA_CHECK("anchor with one-above returns true", ok);
 
         SA_CHECK("above-target cursor NOT rewound",
@@ -156,7 +156,7 @@ int test_stage_anchor(void)
         SA_CHECK("below-target cursors advanced to target", others_advanced);
 
         /* Anchor to a value BELOW every current cursor → pure no-op. */
-        ok = stage_anchor_upstream_cursors_to(db, 50, "test", "below-all");
+        ok = stage_anchor_upstream_cursors_to(db, 50, "test", "below-all", false);
         SA_CHECK("anchor below-all returns true", ok);
         SA_CHECK("high cursor still high after below-all anchor",
                  sa_read(db, "script_validate") == high);
@@ -177,7 +177,7 @@ int test_stage_anchor(void)
         sqlite3 *db = sa_open(path);
 
         bool ok = stage_anchor_upstream_cursors_to(db, 4242, "test",
-                                                   "first-anchor");
+                                                   "first-anchor", false);
         SA_CHECK("first anchor returns true", ok);
         bool first_at_target = true;
         for (size_t i = 0; i < SA_N; i++)
@@ -185,7 +185,7 @@ int test_stage_anchor(void)
         SA_CHECK("first anchor set all cursors", first_at_target);
 
         ok = stage_anchor_upstream_cursors_to(db, 4242, "test",
-                                              "re-anchor");
+                                              "re-anchor", false);
         SA_CHECK("re-anchor returns true", ok);
         bool unchanged = true;
         for (size_t i = 0; i < SA_N; i++)
@@ -212,7 +212,7 @@ int test_stage_anchor(void)
                  sa_set_coins_applied(db, 700));
 
         ok = stage_anchor_upstream_cursors_to(db, 5000, "test",
-                                              "coins-cap");
+                                              "coins-cap", false);
         SA_CHECK("coins_cap: anchor returns true", ok);
 
         bool non_coin_stages_at_target = true;
@@ -234,7 +234,7 @@ int test_stage_anchor(void)
     /* ── Bad-arg guards: NULL db is a hard failure (false) ────────── */
     {
         SA_CHECK("NULL db returns false",
-                 !stage_anchor_upstream_cursors_to(NULL, 1, "test", "null"));
+                 !stage_anchor_upstream_cursors_to(NULL, 1, "test", "null", false));
     }
 
     if (failures == 0) {

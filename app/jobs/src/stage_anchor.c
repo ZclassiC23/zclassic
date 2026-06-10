@@ -9,6 +9,7 @@
 #include "util/stage.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 static bool anchor_target_for_stage(sqlite3 *db, const char *stage,
@@ -58,34 +59,250 @@ static bool anchor_target_for_stage(sqlite3 *db, const char *stage,
     return true;
 }
 
+/* ── FIX-3: log-frontier cap ───────────────────────────────────────────
+ *
+ * See stage_anchor.h for the four-prong cap rule. The helpers below keep
+ * the table-existence probe separate so a missing log TABLE (a stage whose
+ * schema is not created yet on a cold datadir) is fresh-seed semantics
+ * (prong 3), distinguishable from a real SQLite error. */
+
+/* *exists = true iff `log_table` exists in db. Returns false on a real
+ * SQLite error (logged). */
+static bool frontier_log_table_exists(sqlite3 *db, const char *log_table,
+                                      bool *exists)
+{
+    *exists = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("stage_anchor",
+                 "frontier cap: table probe prepare failed table=%s: %s",
+                 log_table, sqlite3_errmsg(db));
+    sqlite3_bind_text(st, 1, log_table, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    bool ok = true;
+    if (rc == SQLITE_ROW) {
+        *exists = true;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_anchor",
+                 "frontier cap: table probe step failed table=%s: %s",
+                 log_table, sqlite3_errmsg(db));
+        ok = false;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Single-row int64 probe over a fixed-set log table name (never caller
+ * input). *found = a row came back; *value = its first column (when the
+ * column is non-NULL). Returns false on a real SQLite error (logged). */
+static bool frontier_probe_row(sqlite3 *db, const char *sql,
+                               const char *log_table,
+                               int64_t bind1, int64_t bind2, int nbinds,
+                               bool *found, int64_t *value)
+{
+    *found = false;
+    if (value)
+        *value = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("stage_anchor",
+                 "frontier cap: probe prepare failed table=%s: %s",
+                 log_table, sqlite3_errmsg(db));
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)bind1);
+    if (nbinds > 1)
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)bind2);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    bool ok = true;
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(st, 0) != SQLITE_NULL) {
+            *found = true;
+            if (value)
+                *value = sqlite3_column_int64(st, 0);
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_anchor",
+                 "frontier cap: probe step failed table=%s: %s",
+                 log_table, sqlite3_errmsg(db));
+        ok = false;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool stage_anchor_cap_target_at_log_frontier(sqlite3 *db,
+                                             const char *log_table,
+                                             uint64_t cursor,
+                                             uint64_t requested,
+                                             bool seed_exempt,
+                                             uint64_t *capped)
+{
+    if (!capped)
+        LOG_FAIL("stage_anchor", "frontier cap: NULL capped out table=%s",
+                 log_table ? log_table : "(null)");
+    *capped = requested;
+    if (!db || !log_table || !log_table[0])
+        LOG_FAIL("stage_anchor", "frontier cap: invalid args db=%p table=%s",
+                 (void *)db, log_table ? log_table : "(null)");
+
+    /* (1) Never raise a target; at-or-behind requests pass through. */
+    if (requested <= cursor)
+        return true;
+    /* (2) Caller-declared seed exemption (a PRE-INSERT verdict — header). */
+    if (seed_exempt)
+        return true;
+    if (requested > (uint64_t)INT64_MAX)
+        LOG_FAIL("stage_anchor",
+                 "frontier cap: target out of range table=%s requested=%llu",
+                 log_table, (unsigned long long)requested);
+
+    char sql[256];
+    bool ok = true;
+    bool cap_hit = false;
+    uint64_t cap_at = requested;
+    bool found = false;
+    int64_t gap = -1;
+
+    progress_store_tx_lock();
+    do {
+        bool exists = false;
+        if (!frontier_log_table_exists(db, log_table, &exists)) {
+            ok = false;
+            break;
+        }
+        if (!exists)
+            break; /* (3) absent table == empty log == fresh seed. */
+
+        /* (3) No row below requested -> fresh log, full jump. */
+        int n = snprintf(sql, sizeof(sql),
+                         "SELECT 1 FROM %s WHERE height < ? LIMIT 1",
+                         log_table);
+        if (n < 0 || n >= (int)sizeof(sql)) {
+            LOG_WARN("stage_anchor", "frontier cap: sql overflow table=%s",
+                     log_table);
+            ok = false;
+            break;
+        }
+        if (!frontier_probe_row(db, sql, log_table, (int64_t)requested, 0, 1,
+                                &found, NULL)) {
+            ok = false;
+            break;
+        }
+        if (!found)
+            break;
+
+        /* (4a) Point-probe: a rowless cursor caps the jump immediately. */
+        n = snprintf(sql, sizeof(sql),
+                     "SELECT 1 FROM %s WHERE height = ? LIMIT 1", log_table);
+        if (n < 0 || n >= (int)sizeof(sql)) {
+            LOG_WARN("stage_anchor", "frontier cap: sql overflow table=%s",
+                     log_table);
+            ok = false;
+            break;
+        }
+        if (!frontier_probe_row(db, sql, log_table, (int64_t)cursor, 0, 1,
+                                &found, NULL)) {
+            ok = false;
+            break;
+        }
+        if (!found) {
+            cap_hit = true;
+            cap_at = cursor;
+            break;
+        }
+
+        /* (4b) Lowest rowless height in (cursor, requested): one indexed
+         * first-gap query (the PK index makes both sides O(log n)) — NOT a
+         * per-height loop. With a row at `cursor` (proved by 4a), the lowest
+         * rowless height necessarily follows an existing row >= cursor. */
+        n = snprintf(sql, sizeof(sql),
+                     "SELECT MIN(t1.height + 1) FROM %s t1 "
+                     "WHERE t1.height >= ? AND t1.height + 1 < ? "
+                     "AND NOT EXISTS (SELECT 1 FROM %s t2 "
+                     "WHERE t2.height = t1.height + 1)",
+                     log_table, log_table);
+        if (n < 0 || n >= (int)sizeof(sql)) {
+            LOG_WARN("stage_anchor", "frontier cap: sql overflow table=%s",
+                     log_table);
+            ok = false;
+            break;
+        }
+        if (!frontier_probe_row(db, sql, log_table, (int64_t)cursor,
+                                (int64_t)requested, 2, &found, &gap)) {
+            ok = false;
+            break;
+        }
+        if (found && gap >= 0 && (uint64_t)gap < requested) {
+            cap_hit = true;
+            cap_at = (uint64_t)gap;
+        }
+    } while (0);
+    progress_store_tx_unlock();
+
+    if (!ok)
+        return false;  // raw-return-ok:logged-in-probe-helpers
+    if (cap_hit) {
+        *capped = cap_at;
+        LOG_WARN("stage_anchor",
+                 "[stage_anchor] anchor jump capped at log frontier "
+                 "stage=%s from=%llu requested=%llu capped=%llu "
+                 "reason=log_frontier",
+                 log_table, (unsigned long long)cursor,
+                 (unsigned long long)requested, (unsigned long long)cap_at);
+    }
+    return true;
+}
+
 bool stage_anchor_upstream_cursors_to(sqlite3 *db, uint64_t target,
                                       const char *owner,
-                                      const char *reason)
+                                      const char *reason,
+                                      bool seed_exempt)
 {
     if (!db)
         return false;
-    static const char *const upstream[] = {
-        "header_admit",
-        "validate_headers",
-        "body_fetch",
-        "body_persist",
-        "script_validate",
-        "proof_validate",
-        "utxo_apply",
+    static const struct {
+        const char *stage;
+        const char *log_table;
+    } upstream[] = {
+        { "header_admit",     "header_admit_log"     },
+        { "validate_headers", "validate_headers_log" },
+        { "body_fetch",       "body_fetch_log"       },
+        { "body_persist",     "body_persist_log"     },
+        { "script_validate",  "script_validate_log"  },
+        { "proof_validate",   "proof_validate_log"   },
+        { "utxo_apply",       "utxo_apply_log"       },
     };
     const char *tag = owner && owner[0] ? owner : "stage_anchor";
 
     for (size_t i = 0; i < sizeof(upstream) / sizeof(upstream[0]); i++) {
         uint64_t stage_target = target;
-        if (!anchor_target_for_stage(db, upstream[i], target, tag, reason,
-                                     &stage_target))
+        if (!anchor_target_for_stage(db, upstream[i].stage, target, tag,
+                                     reason, &stage_target))
             return false;
-        uint64_t before = stage_cursor_persisted(db, upstream[i], tag);
-        if (!stage_set_named_cursor_if_behind(db, upstream[i], stage_target)) {
+        uint64_t before = stage_cursor_persisted(db, upstream[i].stage, tag);
+        /* FIX-3: never jump a cursor past a rowless height in the stage's
+         * OWN log — that jump is what manufactures the log-hole wedge
+         * class. Applied AFTER the utxo_apply coins-cap above so the
+         * tighter bound wins. */
+        if (!stage_anchor_cap_target_at_log_frontier(db,
+                                                     upstream[i].log_table,
+                                                     before, stage_target,
+                                                     seed_exempt,
+                                                     &stage_target)) {
+            LOG_WARN(tag,
+                     "[%s] anchor upstream cursor failed "
+                     "stage=%s from=%llu reason=frontier_cap_error caller=%s",
+                     tag, upstream[i].stage, (unsigned long long)before,
+                     reason ? reason : "");
+            return false;
+        }
+        if (!stage_set_named_cursor_if_behind(db, upstream[i].stage,
+                                              stage_target)) {
             LOG_WARN(tag,
                      "[%s] anchor upstream cursor failed "
                      "stage=%s from=%llu to=%llu reason=%s",
-                     tag, upstream[i], (unsigned long long)before,
+                     tag, upstream[i].stage, (unsigned long long)before,
                      (unsigned long long)stage_target, reason ? reason : "");
             return false;
         }
@@ -93,7 +310,7 @@ bool stage_anchor_upstream_cursors_to(sqlite3 *db, uint64_t target,
             LOG_INFO(tag,
                      "[%s] anchor upstream cursor stage=%s "
                      "from=%llu to=%llu reason=%s",
-                     tag, upstream[i], (unsigned long long)before,
+                     tag, upstream[i].stage, (unsigned long long)before,
                      (unsigned long long)stage_target, reason ? reason : "");
         }
     }

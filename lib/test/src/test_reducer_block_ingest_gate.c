@@ -382,7 +382,7 @@ int test_reducer_block_ingest_gate(void)
      * (the block we ingest) flows through. This is the SAME cold-start seed
      * the snapshot-apply path uses (app/services/src/snapshot_apply.c). */
     RBI_CHECK("tip_finalize anchor seed at genesis",
-              tip_finalize_stage_seed_anchor(0, genesis_hash.data));
+              tip_finalize_stage_seed_anchor(0, genesis_hash.data, false));
 
     /* Init the eight reducer stages against this chainstate (production
      * defaults — no injected readers/validators). header_admit must be inited

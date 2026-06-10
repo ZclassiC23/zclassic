@@ -47,8 +47,18 @@ bool tip_finalize_stage_finalized_tip_at(struct sqlite3 *db, int height,
  * the tip purely from the log/cursor. Also seeds the runtime
  * authoritative tip. Best-effort, non-fatal: returns false (no mutation
  * beyond the log row) if the progress store / stage are not yet wired.
- * `hash` is the 32-byte snapshot anchor block hash. */
-bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32]);
+ * `hash` is the 32-byte snapshot anchor block hash.
+ *
+ * `trusted_seed` is the FIX-3 cap exemption (stage_anchor.h): true ONLY
+ * for an externally-verified trusted base (the SHA3-verified snapshot
+ * accept). Runtime re-seeds — the per-ingest at-tip re-anchor, regtest
+ * stamps — MUST pass false: a fresh datadir is still exempt via the
+ * pre-insert-empty-log prong, while a stamp across a rowless span of
+ * tip_finalize_log (or any upstream stage's log) is capped at the first
+ * hole so the reducer re-finalizes forward instead of manufacturing the
+ * log-hole wedge. */
+bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
+                                    bool trusted_seed);
 
 job_result_t tip_finalize_stage_step_once(void);
 int tip_finalize_stage_drain(int max_steps);

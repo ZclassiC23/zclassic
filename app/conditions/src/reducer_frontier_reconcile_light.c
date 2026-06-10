@@ -2,6 +2,7 @@
 
 #include "conditions/reducer_frontier_reconcile_light.h"
 
+#include "platform/time_compat.h"
 #include "framework/condition.h"
 #include "jobs/stage_repair.h"
 #include "net/connman.h"
@@ -29,7 +30,27 @@ static _Atomic int g_tip_finalize_cursor_at_detect = -1;
  * 0 = record absent at detect, 1 = record present at detect. */
 static _Atomic int g_coin_backfill_scan_present_at_detect = -1;
 static _Atomic int g_coin_backfill_scan_next_at_detect = -1;
+/* tipfin backfill progress record snapshot (FIX-5), same convention. */
+static _Atomic int g_tipfin_backfill_present_at_detect = -1;
+static _Atomic int g_tipfin_backfill_progress_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
+static _Atomic int g_tear_bypass_warn_total = 0;
+
+/* FIX-5 peer-gate visibility memos. detect runs only on the serial
+ * condition-engine tick thread, so these plain statics need no lock (the
+ * g_cursor_gap_warn convention). */
+static bool g_tear_bypass_active;
+static struct { bool active; uint64_t reps; int64_t last_log; }
+    g_gate_suppress;
+
+#ifdef ZCL_TESTING
+/* Test-only post-remedy hook: simulates the TIPFIN backfill bumping its
+ * tipfin_backfill.progress record DURING the remedy (the production writer
+ * lives in the TIPFIN package; this Condition only snapshots/witnesses the
+ * record). Lets the T10 harness prove the witness channel through the real
+ * engine without that package. */
+static void (*g_test_post_remedy_hook)(void);
+#endif
 
 static bool read_reducer_cursor(sqlite3 *db, const char *name, int *out)
 {
@@ -206,6 +227,91 @@ static bool coin_backfill_scan_witnessed(sqlite3 *db)
     return present_now && next_now != next_before;
 }
 
+/* ── FIX-5 tipfin backfill witness channel ──────────────────────────────
+ * The TIPFIN no-spend backfill persists a progress_meta record keyed
+ * tipfin_backfill.progress whose value begins [progress i32 LE], bumped
+ * after every repaired batch (that package owns the writes/deletes; this
+ * Condition only snapshots/witnesses). Mirrors the coin_backfill.scan
+ * channel exactly, INCLUDING the absent->present (backfill started) and
+ * present->absent (backfill completed and consumed) transitions: a
+ * row-only backfill moves NO stage cursor and NO chain height, so it is
+ * structurally unwitnessable through the channels above — without this one
+ * the attempt budget freezes at max_attempts and pages the operator while
+ * the repair is genuinely progressing (panel constraint: FIX-1
+ * attempt-budget starvation). */
+static bool read_tipfin_backfill_progress(sqlite3 *db, bool *present,
+                                          int *progress)
+{
+    *present = false;
+    *progress = -1;
+    if (!db)
+        return false;
+
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT value FROM progress_meta "
+            "WHERE key = 'tipfin_backfill.progress'",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] tipfin_backfill "
+                 "progress record prepare failed: %s",
+                 sqlite3_errmsg(db));
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *present = true;
+        const uint8_t *v = sqlite3_column_blob(st, 0);
+        if (v && sqlite3_column_bytes(st, 0) >= 4)
+            *progress = (int)((uint32_t)v[0] | (uint32_t)v[1] << 8 |
+                              (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] tipfin_backfill "
+                 "progress record step failed rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+    return true;
+}
+
+static void snapshot_tipfin_backfill(sqlite3 *db)
+{
+    bool present = false;
+    int progress = -1;
+    if (!read_tipfin_backfill_progress(db, &present, &progress))
+        return;
+    atomic_store(&g_tipfin_backfill_present_at_detect, present ? 1 : 0);
+    atomic_store(&g_tipfin_backfill_progress_at_detect, progress);
+}
+
+/* Same baseline semantics as coin_backfill_scan_witnessed: an ABSENT record
+ * at detect is a valid baseline; only "no detect snapshot at all" refuses. */
+static bool tipfin_backfill_witnessed(sqlite3 *db)
+{
+    int present_before = atomic_load(&g_tipfin_backfill_present_at_detect);
+    if (present_before < 0)
+        return false;
+    int progress_before = atomic_load(&g_tipfin_backfill_progress_at_detect);
+
+    bool present_now = false;
+    int progress_now = -1;
+    if (!read_tipfin_backfill_progress(db, &present_now, &progress_now))
+        return false;
+
+    if ((present_before != 0) != present_now)
+        return true;
+    return present_now && progress_now != progress_before;
+}
+
 static bool peer_lag_allows_repair(struct main_state *ms)
 {
     struct connman *cm = sync_monitor_connman();
@@ -226,6 +332,91 @@ static bool peer_lag_allows_repair(struct main_state *ms)
     return connman_get_node_count(cm) == 0;
 }
 
+/* Peer-gate BYPASS for a pending refused_coin_tear (FIX-5): the gate's
+ * purpose — refusing repairs without peer-staleness evidence — does not
+ * apply here, because coins_applied_height sitting above H*+1 is durable
+ * internal-store evidence of damage, independent of any peer's height
+ * (panel constraint: peer-gate silent idle). Transition-logged: one WARN
+ * when the bypass engages, re-armed when the tear state ends. */
+static void note_tear_bypass(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (g_tear_bypass_active)
+        return;
+    g_tear_bypass_active = true;
+    atomic_fetch_add(&g_tear_bypass_warn_total, 1);
+    LOG_WARN("condition",
+             "[condition:reducer_frontier_reconcile_light] peer-gate BYPASS: "
+             "refused_coin_tear pending (coins_applied_height=%d hstar=%d) — "
+             "a durable internal-state tear is peer-independent evidence, "
+             "detect proceeds with no peer ahead",
+             rr->coins_applied_height, rr->hstar);
+}
+
+/* True when the dry-run reports any refusal/backfill-pending signal, or a
+ * backfill progress record (coin or tipfin) is live on disk. Used only to
+ * decide whether a gate suppression must be LOUD. */
+static bool repair_evidence_pending(
+    sqlite3 *db,
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (rr->value_overflow_repair_owner_refused ||
+        rr->value_overflow_repair_attempted ||
+        rr->coin_backfill_owner_refused ||
+        rr->coin_backfill_attempted ||
+        rr->stale_script_repair_attempted ||
+        rr->tipfin_backfill_count > 0 ||
+        rr->tipfin_backfill_refused_reason)
+        return true;
+
+    bool present = false;
+    int v = -1;
+    if (read_coin_backfill_scan_cursor(db, &present, &v) && present)
+        return true;
+    if (read_tipfin_backfill_progress(db, &present, &v) && present)
+        return true;
+    return false;
+}
+
+/* The peer gate suppressing an actionable detect used to idle the WHOLE L1
+ * layer with no log. Stay quiet only for the plain cursor-churn class with
+ * no other repair evidence (the gate's intended job); otherwise WARN on the
+ * transition plus a 300 s keep-alive carrying the suppressed-tick count
+ * (storm-safe: first occurrence never suppressed). */
+static void note_gate_suppressed(
+    sqlite3 *db,
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (!repair_evidence_pending(db, rr)) {
+        g_gate_suppress.active = false;
+        g_gate_suppress.reps = 0;
+        return;
+    }
+    int64_t now = platform_time_wall_unix();
+    if (!g_gate_suppress.active) {
+        g_gate_suppress.active = true;
+        g_gate_suppress.reps = 0;
+        g_gate_suppress.last_log = now;
+    } else {
+        g_gate_suppress.reps++;
+        if (now - g_gate_suppress.last_log < 300)
+            return;
+        g_gate_suppress.last_log = now;
+    }
+    LOG_WARN("condition",
+             "[condition:reducer_frontier_reconcile_light] peer gate "
+             "suppressed an actionable detect (repaired=%d "
+             "vo_owner_refused=%d vo_attempted=%d cb_owner_refused=%d "
+             "cb_attempted=%d stale_script_attempted=%d) while "
+             "repair/backfill evidence is pending and no peer is ahead "
+             "(suppressed_ticks=%llu)",
+             rr->repaired, rr->value_overflow_repair_owner_refused,
+             rr->value_overflow_repair_attempted,
+             rr->coin_backfill_owner_refused, rr->coin_backfill_attempted,
+             rr->stale_script_repair_attempted,
+             (unsigned long long)g_gate_suppress.reps);
+}
+
 static bool detect_reducer_frontier_reconcile_light(void)
 {
     int64_t tip_age = sync_monitor_tip_advance_age();
@@ -236,14 +427,39 @@ static bool detect_reducer_frontier_reconcile_light(void)
     struct main_state *ms = sync_monitor_main_state();
     if (!db || !ms)
         return false;
-    if (!peer_lag_allows_repair(ms))
-        return false;
 
+    /* FIX-5: the read-only dry-run runs BEFORE the peer gate so a durable
+     * internal tear can bypass it. No new steady-state cost: it already ran
+     * on every detect tick whenever a peer was ahead. */
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light_needed(db, ms, &rr))
         return false;
     if (rr.refused_coin_unknown)
         return false;
+    if (!rr.refused_coin_tear && !rr.repaired) {
+        /* Nothing actionable: both transition memos re-arm. */
+        g_tear_bypass_active = false;
+        g_gate_suppress.active = false;
+        g_gate_suppress.reps = 0;
+        return false;
+    }
+
+    if (!peer_lag_allows_repair(ms)) {
+        if (rr.refused_coin_tear) {
+            note_tear_bypass(&rr);
+        } else {
+            /* Gate KEPT for the plain cursor-churn repair class: peers that
+             * exist but are not ahead are no staleness evidence. The tear
+             * state (if any) ended, so the bypass memo re-arms. */
+            g_tear_bypass_active = false;
+            note_gate_suppressed(db, &rr);
+            return false;
+        }
+    } else {
+        g_tear_bypass_active = false;
+    }
+    g_gate_suppress.active = false;
+    g_gate_suppress.reps = 0;
 
     atomic_store(&g_local_height_at_detect,
                  active_chain_height(&ms->chain_active));
@@ -251,7 +467,8 @@ static bool detect_reducer_frontier_reconcile_light(void)
     atomic_store(&g_sweep_top_at_detect, rr.sweep_top);
     snapshot_reducer_cursors(db);
     snapshot_coin_backfill_scan(db);
-    return rr.refused_coin_tear || rr.repaired;
+    snapshot_tipfin_backfill(db);
+    return true;
 }
 
 static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void)
@@ -262,6 +479,12 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
         return COND_REMEDY_SKIP;
 
     atomic_fetch_add(&g_remedy_calls, 1);
+#ifdef ZCL_TESTING
+    /* Stands in for the TIPFIN backfill's in-remedy progress-record bump
+     * (see the hook's declaration comment). */
+    if (g_test_post_remedy_hook)
+        g_test_post_remedy_hook();
+#endif
 
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light(db, ms, &rr))
@@ -337,7 +560,9 @@ static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
     sqlite3 *db = progress_store_db();
     if (reducer_cursor_witnessed(db))
         return true;
-    return coin_backfill_scan_witnessed(db);
+    if (coin_backfill_scan_witnessed(db))
+        return true;
+    return tipfin_backfill_witnessed(db);
 }
 
 static struct condition c_reducer_frontier_reconcile_light = {
@@ -373,7 +598,15 @@ void reducer_frontier_reconcile_light_test_reset(void)
     atomic_store(&g_tip_finalize_cursor_at_detect, -1);
     atomic_store(&g_coin_backfill_scan_present_at_detect, -1);
     atomic_store(&g_coin_backfill_scan_next_at_detect, -1);
+    atomic_store(&g_tipfin_backfill_present_at_detect, -1);
+    atomic_store(&g_tipfin_backfill_progress_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
+    atomic_store(&g_tear_bypass_warn_total, 0);
+    g_tear_bypass_active = false;
+    g_gate_suppress.active = false;
+    g_gate_suppress.reps = 0;
+    g_gate_suppress.last_log = 0;
+    g_test_post_remedy_hook = NULL;
     condition_reset_state(&c_reducer_frontier_reconcile_light);
     atomic_store(&s->last_remedy_unix, (int64_t)0);
     atomic_store(&s->last_operator_needed_unix, (int64_t)0);
@@ -389,5 +622,22 @@ void reducer_frontier_reconcile_light_test_clear_backoff(void)
 int reducer_frontier_reconcile_light_test_remedy_calls(void)
 {
     return atomic_load(&g_remedy_calls);
+}
+
+/* src-private test hooks (mirrored by test_reducer_reconcile_witness.c, the
+ * test_utxo_apply_stage.c delta-internal pattern — not in the public
+ * header). */
+void reducer_frontier_reconcile_light_test_set_post_remedy_hook(
+    void (*fn)(void));
+void reducer_frontier_reconcile_light_test_set_post_remedy_hook(
+    void (*fn)(void))
+{
+    g_test_post_remedy_hook = fn;
+}
+
+int reducer_frontier_reconcile_light_test_bypass_warns(void);
+int reducer_frontier_reconcile_light_test_bypass_warns(void)
+{
+    return atomic_load(&g_tear_bypass_warn_total);
 }
 #endif

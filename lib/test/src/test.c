@@ -997,6 +997,16 @@ int main(void)
     failures += test_reducer_step_drain_harness();
     failures += test_stage_reducer_unwedge();
     failures += test_stage_repair_coin_backfill();
+    { extern int test_stage_anchor_frontier_cap(void);
+      failures += test_stage_anchor_frontier_cap(); }
+    { extern int test_stage_repair_script_refill(void);
+      failures += test_stage_repair_script_refill(); }
+    { extern int test_stage_repair_tipfin_backfill(void);
+      failures += test_stage_repair_tipfin_backfill(); }
+    { extern int test_utxo_apply_upstream_hole(void);
+      failures += test_utxo_apply_upstream_hole(); }
+    { extern int test_reducer_reconcile_witness(void);
+      failures += test_reducer_reconcile_witness(); }
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
     failures += test_domain_consensus_subsidy();
