@@ -57,7 +57,15 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
         /* No on-disk body (HAVE_DATA absent / read failed). The legacy
          * path always has the just-connected block in hand; here we read
          * it back from disk, so a missing body is a benign skip — the tip
-         * still advanced, only the derived side effects are deferred. */
+         * still advanced, only the derived side effects are deferred.
+         * The skip must be DIAGNOSED, never silent: all six side effects
+         * (wallet sync, note decrypt, nullifier spend, mempool remove,
+         * MMR, MMB) are dropped for this height. */
+        LOG_WARN("tip_finalize",
+                 "post-finalize side effects skipped h=%d have_data=%d: "
+                 "body unreadable; wallet/mempool/MMR/MMB deferred",
+                 pindex_new->nHeight,
+                 (pindex_new->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
         return;
     }
 

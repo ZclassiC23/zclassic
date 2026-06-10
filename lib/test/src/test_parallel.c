@@ -141,7 +141,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
     X(coins_view_atomicity) X(coins_anchor_reconcile_all) X(make_lint_gates) X(multisig) \
     X(mcp_fuzz) X(rpc_auth_hardening) \
-    X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
+    X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
+    X(chain_advance_coordinator) \
     X(chain_advance_atomicity) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
@@ -175,7 +176,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(script_validate_stage) X(script_validate_contextual_gate) \
     X(proof_validate_stage) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
-    X(tip_finalize_stage) X(reducer_frontier) \
+    X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(reducer_frontier_reconcile_light) \
     X(reducer_stage_fuzz) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
@@ -273,6 +274,7 @@ struct group_result {
     time_t start;
     char out_path[128];  /* owned by the slot; copied here on reap */
     int skipped;         /* 1 if excluded by --only=SUBSTR (not run) */
+    int skip_markers;    /* "SKIP (" sentinel lines in captured output */
 };
 
 static int get_nproc(void)
@@ -354,6 +356,26 @@ static void print_captured(const char *path)
         fputs(line, stdout);
     }
     fclose(fp);
+}
+
+/* Count lines carrying the suite's skip sentinel ("SKIP ("). Gated
+ * groups (the five ZCL_STRESS_TESTS MVP acceptance gates, the stress
+ * harnesses) and environment-starved subtests print it and still exit
+ * 0, so a green run can hide unexecuted coverage. The summary counts
+ * the markers so "ALL TESTS PASSED" can never silently absorb a skip;
+ * the gates themselves stay opt-in (they are gated for runtime
+ * reasons — visibility, not force-enabling, is the contract). */
+static int count_skip_markers(const char *path)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    char line[4096];
+    int n = 0;
+    while (fgets(line, sizeof(line), fp))
+        if (strstr(line, "SKIP ("))
+            n++;
+    fclose(fp);
+    return n;
 }
 
 static bool group_requires_exclusive_repo(const char *name)
@@ -616,23 +638,40 @@ int main(int argc, char **argv)
         (double)(t_end.tv_nsec - t_start.tv_nsec) / 1e9;
 
     int failed_groups = 0;
+    int skip_groups = 0;
     for (size_t i = 0; i < g_num_groups; i++) {
         if (results[i].skipped) continue;
         bool pass =
             !results[i].signaled && results[i].exit_code == 0;
-        printf("\n==================== %s (%s, %.0fs) ====================\n",
+        results[i].skip_markers = results[i].out_path[0]
+            ? count_skip_markers(results[i].out_path) : 0;
+        if (results[i].skip_markers > 0) skip_groups++;
+        char skip_note[32] = "";
+        if (results[i].skip_markers > 0)
+            snprintf(skip_note, sizeof(skip_note), ", %d SKIP",
+                     results[i].skip_markers);
+        printf("\n==================== %s (%s%s, %.0fs) ====================\n",
                g_groups[i].name,
                results[i].signaled ? "SIGNALED" : (pass ? "PASS" : "FAIL"),
-               results[i].wall_seconds);
+               skip_note, results[i].wall_seconds);
         if (!pass) failed_groups++;
         print_captured(results[i].out_path);
         if (pass && results[i].out_path[0]) unlink(results[i].out_path);
     }
 
-    printf("\n%s — %d/%zu groups failed (%.1fs wall, %d workers)%s\n",
+    printf("\n%s — %d/%zu groups failed, %d skipped (%.1fs wall, %d workers)%s\n",
            failed_groups == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED",
-           failed_groups, g_num_groups - pre_skipped, wall, jobs,
+           failed_groups, g_num_groups - pre_skipped, skip_groups, wall, jobs,
            only ? " [--only filtered]" : "");
+    if (skip_groups > 0) {
+        printf("Skipped coverage (self-skipped groups — most need "
+               "ZCL_STRESS_TESTS=1 + an isolated run):\n");
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped || results[i].skip_markers == 0) continue;
+            printf("  - %s: %d skip marker(s)\n",
+                   g_groups[i].name, results[i].skip_markers);
+        }
+    }
     if (failed_groups > 0) {
         printf("Failed groups:\n");
         for (size_t i = 0; i < g_num_groups; i++) {

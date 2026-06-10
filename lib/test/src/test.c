@@ -999,6 +999,7 @@ int main(void)
     failures += test_utxo_apply_stage();
     failures += test_utxo_apply_crash_replay();
     failures += test_tip_finalize_stage();
+    failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
     failures += test_reducer_frontier_reconcile_light();
     failures += test_reducer_stage_fuzz();
@@ -1058,6 +1059,7 @@ int main(void)
     failures += test_rpc_auth_hardening();
     failures += test_disk_block_io();
     failures += test_msg_handlers();
+    failures += test_process_headers_adversarial();
     failures += test_zclassicd_oracle();
     failures += test_header_probe();
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
