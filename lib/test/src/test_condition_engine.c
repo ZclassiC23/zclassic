@@ -305,7 +305,6 @@ int test_condition_engine(void)
             "sync_violation_lag",
             "tip_wedged_resnapshot",
             "snapshot_receive_stalled",
-            "legacy_mirror_stuck",
             "snapshot_offer_ready",
             "snapshot_negotiation_stalled",
             "snapshot_failed_reset",

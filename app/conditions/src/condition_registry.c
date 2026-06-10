@@ -15,7 +15,6 @@ void register_peer_floor_violated(void);
 void register_sync_violation_lag(void);
 void register_tip_wedged_resnapshot(void);
 void register_snapshot_receive_stalled(void);
-void register_legacy_mirror_stuck(void);
 void register_snapshot_offer_ready(void);
 void register_snapshot_negotiation_stalled(void);
 void register_snapshot_failed_reset(void);
@@ -43,7 +42,6 @@ void condition_registry_register_all(void)
     register_sync_violation_lag();
     register_tip_wedged_resnapshot();
     register_snapshot_receive_stalled();
-    register_legacy_mirror_stuck();
     register_snapshot_offer_ready();
     register_snapshot_negotiation_stalled();
     register_snapshot_failed_reset();
