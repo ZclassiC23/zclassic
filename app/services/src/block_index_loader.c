@@ -350,40 +350,35 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     }
     free(by_height);
 
-    /* Recompute nChainWork and nChainTx from pprev chain.
-     * The flat file may have stale values for blocks that were connected
-     * via P2P after the LevelDB post-load but before the file was saved.
-     * These blocks can have truncated chain_work (only low 32 bits set)
-     * because an earlier validation pass computed them with a pprev that had
-     * wrong state. Recomputing from the sorted array with correct pprev fixes
-     * this. */
+    /* Recompute every pointer-graph-derived field through the canonical
+     * forward pass (nChainWork, nChainTx, skip links, cached branch id,
+     * failed-child propagation) — the same helper the LevelDB loader and
+     * the projection rebuild use. The flat file may carry stale values
+     * for blocks saved mid-sync; the hand-rolled fix-up this replaces
+     * additionally KEPT a stale nonzero nChainTx whenever an ancestor
+     * was header-only (pprev->nChainTx == 0), leaving wrongly-eligible
+     * entries for find_most_work_chain. The forward pass zeroes those:
+     * nChainTx > 0 again means "every ancestor's tx count is known".
+     * Inserted entries are marked by phashBlock != NULL (dropped and
+     * duplicate arena slots never get it set). */
     {
-        int fixed_work = 0, fixed_tx = 0;
-        for (uint32_t i = 0; i < count; i++) {
-            struct block_index *pi = &arena[i];
-            if (!pi->pprev) continue;
-
-            /* Recompute chain_work from pprev */
-            struct arith_uint256 proof = GetBlockProof(pi);
-            struct arith_uint256 expected;
-            arith_uint256_add(&expected, &pi->pprev->nChainWork, &proof);
-            if (arith_uint256_compare(&expected, &pi->nChainWork) != 0) {
-                pi->nChainWork = expected;
-                fixed_work++;
+        struct block_index **sorted =
+            zcl_malloc((size_t)count * sizeof(*sorted), "flat forward pass");
+        if (sorted) {
+            size_t n = 0;
+            for (uint32_t i = 0; i < count; i++) {
+                if (arena[i].phashBlock)
+                    sorted[n++] = &arena[i];
             }
-
-            /* Fix nChainTx */
-            if (pi->nTx > 0 && pi->pprev->nChainTx > 0) {
-                uint32_t expected_ctx = pi->pprev->nChainTx + pi->nTx;
-                if (pi->nChainTx != expected_ctx) {
-                    pi->nChainTx = expected_ctx;
-                    fixed_tx++;
-                }
-            }
+            qsort(sorted, n, sizeof(*sorted), cmp_height);
+            block_index_forward_pass(sorted, n);
+            free(sorted);
+        } else {
+            /* boot's later multi-pass nChainTx propagation still runs;
+             * work/skip recompute is what we lose — log it. */
+            fprintf(stderr, "block_index_flat: forward-pass alloc failed "
+                    "(%u entries) — chain stats may be stale\n", count);
         }
-        if (fixed_work > 0 || fixed_tx > 0)
-            printf("Block index flat: fixed %d chain_work, %d chain_tx\n",
-                   fixed_work, fixed_tx);
     }
 
     munmap(data, file_size);
