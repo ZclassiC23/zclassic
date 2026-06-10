@@ -11,10 +11,11 @@
 // Non-fallible surfaces:
 //   - load_state() returns the state enum (a getter); freeze() is void but
 //     ALWAYS names itself (no-silent-halt) and persists the reason.
-//   - the bool helpers (u256_nonzero/equal, load_u256,
-//     has_*_required, persist_state/i64/blob, state_allows_tip_promotion) are
-//     PRIVATE predicates feeding the result enum; parse_state/state_get_i32 are
-//     pure decoders with defaults. 32-byte presence checks use the canonical
+//   - the bool helpers (u256_nonzero, has_*_required, persist_state/i64/blob,
+//     state_allows_tip_promotion) are PRIVATE predicates feeding the result
+//     enum; parse_state is a pure decoder with defaults. The startup
+//     reconcile lives in chain_evidence_reconstruct.c (the recovery half).
+//     32-byte presence checks use the canonical
 //     zcl_chainwork_is_zero predicate (validation/sync_evidence_policy.h).
 // No public fallible operation returns a bare reason-less bool. Behavior
 // bit-for-bit.
@@ -103,22 +104,6 @@ static bool u256_nonzero(const struct uint256 *u)
     return u && !zcl_chainwork_is_zero(u->data);
 }
 
-static bool load_u256(struct node_db *ndb, const char *key,
-                      struct uint256 *out)
-{
-    size_t len = 0;
-    if (!out)
-        return false;
-    memset(out, 0, sizeof(*out));
-    return ndb && node_db_state_get(ndb, key, out->data, 32, &len) &&
-           len == 32;
-}
-
-static bool u256_equal(const struct uint256 *a, const struct uint256 *b)
-{
-    return a && b && memcmp(a->data, b->data, 32) == 0;
-}
-
 bool chain_evidence_record_has_block_index_required(
     const struct chain_evidence_record *evidence)
 {
@@ -167,139 +152,6 @@ static bool persist_blob(struct chain_evidence_controller *a, const char *key,
     return a && a->ndb && node_db_state_set(a->ndb, key, value, len);
 }
 
-static int state_get_i32(struct node_db *ndb, const char *key, int def);
-
-static void chain_evidence_controller_reconcile_startup(
-    struct chain_evidence_controller *authority)
-{
-    if (!authority || !authority->ndb || !authority->csr)
-        return;
-
-    /* A persisted freeze is advisory, not permanent. We always re-derive
-     * evidence for the current active tip below; if it proves consistent
-     * we LIFT the freeze (a stale freeze must not outlive the condition
-     * that caused it). If it genuinely cannot be proven, reconstruct
-     * re-freezes with a precise reason. This is what keeps a frozen node
-     * self-healing instead of silently parked forever. */
-    bool was_frozen = (authority->state == CEC_CONTRADICTION_FROZEN);
-
-    struct chain_state_view csv;
-    memset(&csv, 0, sizeof(csv));
-    csr_snapshot(authority->csr, &csv);
-    if (csv.tip_height < 0)
-        return;
-
-    struct block_index *active_tip = authority->csr->chain_active
-        ? active_chain_tip(authority->csr->chain_active) : NULL;
-    if (!active_tip || !active_tip->phashBlock)
-        return;
-
-    struct uint256 persisted_hash;
-    bool has_persisted_hash =
-        load_u256(authority->ndb, "cec.active_tip_hash", &persisted_hash);
-    int persisted_height = state_get_i32(authority->ndb,
-                                         "cec.active_tip_height", -1);
-    struct chain_evidence_record active_evidence;
-    bool has_active_evidence =
-        chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
-                      &active_evidence).ok;
-
-    if (has_persisted_hash &&
-        !u256_equal(&persisted_hash, active_tip->phashBlock)) {
-        if (persisted_height > active_tip->nHeight) {
-            LOG_WARN("cec", "[cec] startup tip drift: refusing to rewrite "
-                     "persisted high tip h=%d down to in-memory h=%d",
-                     persisted_height, active_tip->nHeight);
-            return;
-        }
-        char old_hex[65], new_hex[65];
-        uint256_get_hex(&persisted_hash, old_hex);
-        uint256_get_hex(active_tip->phashBlock, new_hex);
-        LOG_WARN("cec", "[cec] startup tip drift: persisted=%s in-memory=%s — " "updating persisted to in-memory (h=%d)", old_hex, new_hex, active_tip->nHeight);
-        persist_blob(authority, "cec.active_tip_hash",
-                     active_tip->phashBlock, sizeof(*active_tip->phashBlock));
-        persist_i64(authority, "cec.active_tip_height",
-                    active_tip->nHeight);
-    }
-    if (persisted_height >= 0 && persisted_height != active_tip->nHeight) {
-        if (persisted_height > active_tip->nHeight) {
-            LOG_WARN("cec", "[cec] startup tip drift: refusing lower height h=%d -> h=%d",
-                     persisted_height, active_tip->nHeight);
-            return;
-        }
-        LOG_WARN("cec", "[cec] startup tip drift: persisted_height=%d " "in-memory_height=%d — updating persisted", persisted_height, active_tip->nHeight);
-        persist_i64(authority, "cec.active_tip_height",
-                    active_tip->nHeight);
-    }
-    /* coins_best_block lagging active_tip is recoverable on the running
-     * node — the next block commit advances the coins cursor. Reaching
-     * this point with a mismatch during reconcile_startup almost always
-     * means the controller observed a transient mid-boot state (coins
-     * view loaded before active chain restored, or vice versa). Hard
-     * contradictions where the persisted active_tip_hash itself diverges
-     * are still caught above. Log and continue. */
-    if (!u256_equal(&csv.coins_best_block, active_tip->phashBlock)) {
-        LOG_WARN("cec", "[cec] reconcile_startup: coins_best_block != active_tip " "hash (transient or post-shutdown lag) — deferring to " "next commit");
-    }
-    /* Derived-state lag is not a contradiction. After a clean shutdown the
-     * persisted pindex_best_header / blocks-table max can be behind the
-     * active tip; the active tip is the source of truth. Self-heal
-     * pindex_best_header forward and log a one-liner; the lagging signal
-     * will catch up via P2P / projection. A freeze here was sticky and
-     * required manual node.db surgery to clear. */
-    if (csv.header_height >= 0 && csv.header_height < active_tip->nHeight) {
-        LOG_INFO("cec", "[cec] reconcile_startup: pindex_best_header h=%d behind " "active_tip h=%d — advancing in-memory tracker", csv.header_height, active_tip->nHeight);
-        if (authority->csr && authority->csr->pindex_best_hdr)
-            *authority->csr->pindex_best_hdr = active_tip;
-    }
-    if (csv.sql_max_height >= 0 && csv.sql_max_height < active_tip->nHeight) {
-        LOG_INFO("cec", "[cec] reconcile_startup: blocks.max_height=%lld behind " "active_tip h=%d — projection will backfill", (long long)csv.sql_max_height, active_tip->nHeight);
-    }
-
-    bool tip_evidence_ok =
-        has_active_evidence &&
-        chain_evidence_record_has_block_index_required(&active_evidence);
-    if (!tip_evidence_ok) {
-        char reason[192];
-        if (cec_reconstruct_active_tip_evidence(authority, active_tip, &csv,
-                                                reason)) {
-            tip_evidence_ok = true;
-        } else {
-            /* Reconstruct only fails when the tip genuinely cannot be
-             * proven consistent. It always fills a precise reason; never
-             * freeze with an empty/generic string (that produces a halt
-             * that does not name itself). */
-            if (reason[0] == '\0')
-                snprintf(reason, sizeof(reason),
-                         "active_tip_evidence_unrecoverable (h=%d)",
-                         active_tip->nHeight);
-            chain_evidence_controller_freeze(authority, reason);
-            return;
-        }
-    }
-
-    /* The active tip now carries valid block-index evidence (reconstructed
-     * this boot or already present). If we entered frozen, that freeze is
-     * stale — the tip is provably consistent — so lift it and let the node
-     * publish and advance. */
-    if (was_frozen && tip_evidence_ok) {
-        LOG_WARN("cec",
-                 "[cec] lifting stale freeze: active tip h=%d is provably "
-                 "consistent (evidence re-derived) — clearing "
-                 "contradiction and resuming",
-                 active_tip->nHeight);
-        authority->state = CEC_EMPTY;
-        memset(authority->contradiction_reason, 0,
-               sizeof(authority->contradiction_reason));
-        (void)node_db_state_set(authority->ndb, "cec.sync_state",
-                                "empty", strlen("empty") + 1);
-        (void)node_db_state_set(authority->ndb,
-                                "cec.contradiction_reason", "", 1);
-        (void)persist_i64(authority, "cec.publish_state",
-                          CEC_PUBLISH_LOCAL_EVIDENCE);
-    }
-}
-
 static enum chain_evidence_controller_state parse_state(const char *name)
 {
     if (!name || !*name)
@@ -322,7 +174,7 @@ void chain_evidence_controller_init(struct chain_evidence_controller *authority,
     authority->csr = csr ? csr : csr_instance();
     authority->state = CEC_EMPTY;
     (void)chain_evidence_controller_load_state(authority);
-    chain_evidence_controller_reconcile_startup(authority);
+    cec_reconcile_startup(authority);
 }
 
 enum chain_evidence_controller_state chain_evidence_controller_load_state(
@@ -788,12 +640,4 @@ enum chain_evidence_controller_result chain_evidence_controller_mark_fully_valid
         !persist_state(authority, CEC_FULLY_VALIDATED))
         return CEC_REJECTED_PERSIST;
     return CEC_OK;
-}
-
-static int state_get_i32(struct node_db *ndb, const char *key, int def)
-{
-    int64_t v = def;
-    if (ndb)
-        (void)node_db_state_get_int(ndb, key, &v);
-    return (int)v;
 }

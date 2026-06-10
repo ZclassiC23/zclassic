@@ -188,6 +188,9 @@ bool chain_evidence_record_has_snapshot_required(
 
 #ifdef ZCL_TESTING
 void chain_evidence_controller_test_fail_commit_after_csr(bool fail);
+/* Clears the process-lifetime startup-reconcile once-guard so each test
+ * case gets a fresh reconcile run (production never resets it). */
+void chain_evidence_controller_test_reset_startup_reconcile(void);
 #endif
 
 #endif /* ZCL_SERVICES_CHAIN_EVIDENCE_AUTHORITY_SERVICE_H */

@@ -23,6 +23,9 @@ struct auth_fixture {
 
 static bool auth_fixture_init(struct auth_fixture *f)
 {
+    /* The startup reconcile is once-per-process in production; each test
+     * case needs its own fresh run. */
+    chain_evidence_controller_test_reset_startup_reconcile();
     memset(f, 0, sizeof(*f));
     if (!node_db_open(&f->ndb, ":memory:"))
         return false;
@@ -954,6 +957,188 @@ static int test_reconcile_lifts_stale_freeze_with_arbitrary_reason(void)
     return failures;
 }
 
+/* The startup reconcile is once-per-process: the controller is constructed
+ * by every health probe / condition poll / diagnostics dump, and each
+ * construction must NOT re-run the reconcile (it re-fired identical drift
+ * WARNs forever at a held tip). Observable: after the in-memory tip
+ * advances, a re-construction does NOT re-reconcile the persisted height;
+ * only a fresh process (test reset) does. */
+static int test_startup_reconcile_runs_once_per_process(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.once_guard_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    int64_t h = -1;
+    if (!node_db_state_get_int(&f.ndb, "cec.active_tip_height", &h) || h != 1)
+        failures++;
+
+    struct chain_state_commit advance = {
+        .new_tip = &f.blocks[2],
+        .new_coins_best = *f.blocks[2].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.once_guard_advance",
+    };
+    if (csr_commit_tip(&f.csr, &advance) != CSR_OK)
+        failures++;
+
+    /* Same process: the guard holds — re-construction must not
+     * re-reconcile (cec.active_tip_height stays at the first run's 1). */
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    h = -1;
+    if (!node_db_state_get_int(&f.ndb, "cec.active_tip_height", &h) || h != 1)
+        failures++;
+
+    /* Fresh process (test reset): the reconcile reconverges on the new
+     * tip. */
+    chain_evidence_controller_test_reset_startup_reconcile();
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    h = -1;
+    if (!node_db_state_get_int(&f.ndb, "cec.active_tip_height", &h) || h != 2)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+/* Convergence: the reconstructed LOCAL_IMPORT record persisted by a prior
+ * boot must SATISFY the next boot's reconcile gate (repaired marker +
+ * persisted-tip-hash match + ancestry/chainwork flags). Before the
+ * acceptance, the strict has_block_index_required gate could never pass for
+ * it (nakamoto/bytes flags honestly false until background validation), so
+ * reconstruction re-ran forever. Proof the re-run is actually skipped:
+ * break the tip's ancestry before the second boot — a re-run would freeze
+ * on active_tip_ancestry_unlinkable; acceptance must keep it unfrozen. */
+static int test_reconcile_accepts_prior_reconstructed_evidence(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.convergence_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (!view.repaired_active_tip_evidence)
+        failures++;
+
+    /* "Next boot": fresh once-guard, same persisted evidence. Ancestry
+     * broken so any re-reconstruction would freeze with a named reason. */
+    chain_evidence_controller_test_reset_startup_reconcile();
+    f.blocks[1].pprev = NULL;
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (!view.repaired_active_tip_evidence)
+        failures++;
+    if (view.active_tip_source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+/* A persisted tip AHEAD of the in-memory tip (the refuse-to-rewind branch)
+ * must not short-circuit the reconcile: the stale-freeze lift still runs on
+ * the PROVEN in-memory tip, while nothing rewrites the higher persisted tip
+ * downward (reconstruct runs validation-only under drift_refused). */
+static int test_refused_rewind_still_lifts_freeze_without_downgrade(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.refused_rewind_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    /* Persist a HIGHER tip than the in-memory one, plus a stale freeze
+     * whose reason is NOT in the demoted auto-clear list. */
+    if (!node_db_state_set(&f.ndb, "cec.active_tip_hash",
+                           f.blocks[2].phashBlock->data, 32))
+        failures++;
+    if (!node_db_state_set_int(&f.ndb, "cec.active_tip_height", 2))
+        failures++;
+    const char frozen[] = "contradiction_frozen";
+    const char reason[] = "unspecified_contradiction_persisted_without_reason";
+    if (!node_db_state_set(&f.ndb, "cec.sync_state", frozen, sizeof(frozen)))
+        failures++;
+    if (!node_db_state_set(&f.ndb, "cec.contradiction_reason",
+                           reason, sizeof(reason)))
+        failures++;
+
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+
+    /* The refused rewind no longer parks the freeze: the in-memory tip is
+     * proven and the stale freeze is lifted... */
+    if (f.authority.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    /* ...while the higher persisted tip is left untouched (no downward
+     * rewrite of hash or height)... */
+    int64_t h = -1;
+    if (!node_db_state_get_int(&f.ndb, "cec.active_tip_height", &h) || h != 2)
+        failures++;
+    struct uint256 persisted_hash;
+    size_t len = 0;
+    memset(&persisted_hash, 0, sizeof(persisted_hash));
+    if (!node_db_state_get(&f.ndb, "cec.active_tip_hash",
+                           persisted_hash.data, 32, &len) || len != 32 ||
+        memcmp(persisted_hash.data, f.blocks[2].phashBlock->data, 32) != 0)
+        failures++;
+    /* ...and reconstruct persisted nothing (validation-only: the repaired
+     * marker must not appear). */
+    int64_t repaired = 0;
+    if (node_db_state_get_int(&f.ndb, "cec.repaired_active_tip_evidence",
+                              &repaired) && repaired == 1)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
 int test_chain_evidence_controller(void)
 {
     int failures = 0;
@@ -977,5 +1162,8 @@ int test_chain_evidence_controller(void)
     failures += test_startup_clears_stale_missing_evidence_freeze_with_sql_lag();
     failures += test_startup_coins_cursor_overshoot_does_not_freeze();
     failures += test_startup_repairs_active_tip_hash_mismatch();
+    failures += test_startup_reconcile_runs_once_per_process();
+    failures += test_reconcile_accepts_prior_reconstructed_evidence();
+    failures += test_refused_rewind_still_lifts_freeze_without_downgrade();
     return failures;
 }
