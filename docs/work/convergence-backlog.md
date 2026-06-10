@@ -573,3 +573,30 @@ commitment. Behavior-neutral for valid blocks (returns true, identical path). Pr
 0/371 + repro-on-copy boot-smoke floored to the documented 3132299 (no crash, no lower floor =
 identical to HEAD). This clears the last actionable §12 consensus-decision item; remainder is
 owner-gated (boot.c nChainTx via frozen boot.c, shutdown TU, peer-scoring enum).
+
+### Round 23 (2026-06-09) — remaining-items closure (branches security/remaining-hardening + security/key-material-hardening)
+Owner authorized working the deferred tail. ALL previously-deferred items are now closed:
+- **peer_scoring typed-API adoption — DONE** (`security/remaining-hardening`). The blocker was enum
+  design: value==weight made honest same-weight names impossible. Identities are now sequential with
+  the exact legacy weights in peer_offence_weight() (weight-table test asserts byte-identical ban
+  behaviour). New honest names: offer_rejected(10), invalid_payload(20), invalid_chunk(50),
+  invalid_proof(100), protocol_violation(100); unrequested un-aliased from invalid_message. All ~34
+  raw sites in msgprocessor_snapshot/msg_compact/msgprocessor migrated; msg_blocks keeps the raw
+  fallback for graded 1..49 DoS (constant enum can't represent it). MCP metrics allowlist extended.
+- **disk_block_io.c:231 — DONE** (same branch). getrawtransaction's txindex lookup (the last
+  out-of-module cached-FILE* consumer) moved to disk_block_pread: no shared handle, no unchecked
+  fseek, heap tx buffer, nPos+nTxOffset overflow guard. Also fixed: read-cache replacement leaked
+  the old handle when only the prefix differed (blk vs rev share file numbers).
+- **block_index_loader.c:376 nChainTx — DONE** (same branch) WITHOUT touching frozen boot.c: the
+  flat loader now calls the canonical block_index_forward_pass() over the actually-inserted entries
+  (phashBlock!=NULL marker) instead of the hand-rolled fix-up that kept stale nonzero nChainTx under
+  header-only ancestors. Proven: repro-on-copy boot-smoke on a 3.1M-entry trackb snapshot, tip held
+  3,142,064 over 240s (PASS). boot.c's later multi-pass propagation is now a no-op on correct values.
+- **aes256 state cleanse + bech32/base58 stack caps — DONE** (`security/key-material-hardening`,
+  KAT-gated). aes256_encrypt cleanses its state block (only caller: FF1 with the Sapling dk).
+  Decode caps had already landed; ENCODE sides now capped too (1 KB base58 payloads; bech32 rejects
+  outputs its own decoder rejects). Boundary tests + header contract updates included.
+Still-open (non-security, noted for completeness): mnemonic checksum-bit DRY (pure cleanup),
+round-6 deferred list (lib/keys asserts, znam/zslp logging, mining duplication — consensus-adjacent
+cleanups, not vulnerabilities), and the zk proof-math field files (deliberately not churned).
+Each branch: build green, test_parallel 0/378, lint clean.
