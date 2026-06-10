@@ -25,10 +25,11 @@ static int g_num_miner_threads = 0;
 
 static bool try_solve_equihash(struct block *blk,
                                 const struct chain_params *params,
+                                const struct block_index *pindex_prev,
                                 int height)
 {
-    unsigned int n = chain_params_equihash_n(params, height);
-    unsigned int k = chain_params_equihash_k(params, height);
+    unsigned int n = chain_params_equihash_n_at(params, pindex_prev, height);
+    unsigned int k = chain_params_equihash_k_at(params, pindex_prev, height);
 
     struct equihash_params ep;
     equihash_params_init(&ep, n, k);
@@ -96,19 +97,33 @@ static bool try_solve_equihash(struct block *blk,
         }
         eh_solver_free(solver);
     } else {
-        /* Regtest / small params: brute-force random nonces.
-         * The equihash solution is trivial at low difficulty. */
-        for (unsigned int attempt = 0; attempt < 1000000; attempt++) {
+        /* Every non-(192,7) parameter set goes through the generic
+         * reference solver so the block carries a REAL Equihash
+         * solution. The previous branch brute-forced only the header
+         * hash and produced no solution at all — such blocks fail
+         * check_block on any network that verifies solutions. Slow at
+         * (200,9); competitive post-upgrade mining is external via
+         * getblocktemplate. */
+        if (ep.solution_width > MAX_SOLUTION_SIZE)
+            return false;
+        for (unsigned int attempt = 0; attempt < 4096; attempt++) {
             for (int b = 0; b < 32; b++)
                 blk->header.nNonce.data[b] = (unsigned char)(GetRand(256));
 
+            struct blake2b_ctx curr = base_state;
+            blake2b_update(&curr, blk->header.nNonce.data, 32);
+
+            unsigned char soln[MAX_SOLUTION_SIZE];
+            if (!equihash_basic_solve(&ep, &curr, soln, sizeof(soln)))
+                continue;
+            memcpy(blk->header.nSolution, soln, ep.solution_width);
+            blk->header.nSolutionSize = ep.solution_width;
+
             struct uint256 hash;
             block_header_get_hash(&blk->header, &hash);
-
             if (CheckProofOfWork(hash, blk->header.nBits,
-                                  &params->consensus)) {
+                                  &params->consensus))
                 return true;
-            }
         }
     }
 
@@ -138,7 +153,7 @@ static void *miner_thread(void *arg)
         unsigned int extra_nonce = 0;
         increment_extra_nonce(&tmpl->block, tip, &extra_nonce);
 
-        if (try_solve_equihash(&tmpl->block, ctx->params,
+        if (try_solve_equihash(&tmpl->block, ctx->params, tip,
                                tip->nHeight + 1)) {
             LogPrintf("Found block!\n");
             if (ctx->block_found &&

@@ -279,12 +279,17 @@ bool contextual_check_block_header(const struct block_header *header,
     /* Equihash solution size for this height's (N,K) params.
      * Pre-Bubbles (h<585318): Equihash(200,9) → 1344 bytes.
      * Post-Bubbles:           Equihash(192,7) → 400 bytes.
+     * Post-ehUpgrade (miner-signaled, dynamic height): the upgraded
+     * params from chainparams — resolved through pindex_prev's
+     * ancestry (consensus/versionbits.h).
      * Accept headers with no solution (sol_size==0) — the full solution
      * is verified when the block is downloaded. */
     size_t sol_size = header->nSolutionSize;
     if (sol_size > 0) {
-        unsigned int eh_n = chain_params_equihash_n(params, nHeight);
-        unsigned int eh_k = chain_params_equihash_k(params, nHeight);
+        unsigned int eh_n = chain_params_equihash_n_at(params, pindex_prev,
+                                                       nHeight);
+        unsigned int eh_k = chain_params_equihash_k_at(params, pindex_prev,
+                                                       nHeight);
         size_t expected = ((size_t)1 << eh_k) * (eh_n / (eh_k + 1) + 1) / 8;
         REJECT_IF(sol_size != expected,
                   state, 100, "bad-equihash-solution-size");

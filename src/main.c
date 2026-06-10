@@ -20,6 +20,7 @@
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/ldb_snapshot.h"
 #include "chain/checkpoints.h"
+#include "mining/miner.h"
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
 #include "core/uint256.h"
@@ -714,6 +715,7 @@ static void print_usage(const char *prog)
     printf("  -rpcport=<port>     RPC port (default: 18232; 8232 is legacy zclassicd)\n");
     printf("  -addnode=<ip>       Add peer\n");
     printf("  -gen                Enable mining\n");
+    printf("  -signal-eh-upgrade=0/1  Signal the Equihash upgrade in mined blocks (default 1)\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
@@ -1657,6 +1659,10 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-regtest") == 0) ctx.regtest = true;
         else if (strcmp(argv[i], "-txindex") == 0) ctx.tx_index = true;
         else if (strcmp(argv[i], "-gen") == 0) ctx.gen = true;
+        else if (strcmp(argv[i], "-signal-eh-upgrade=0") == 0)
+            mining_set_signal_eh_upgrade(false);
+        else if (strcmp(argv[i], "-signal-eh-upgrade=1") == 0)
+            mining_set_signal_eh_upgrade(true);
         else if (strncmp(argv[i], "-port=", 6) == 0) { ctx.p2p_port = atoi(argv[i]+6); ctx.listen = true; }
         else if (strncmp(argv[i], "-rpcport=", 9) == 0) ctx.rpc_port = atoi(argv[i]+9);
         else if (strncmp(argv[i], "-httpsport=", 11) == 0) ctx.https_port = atoi(argv[i]+11);

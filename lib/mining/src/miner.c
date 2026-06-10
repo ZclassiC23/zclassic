@@ -16,6 +16,7 @@
 #include "validation/sigops.h"
 #include "validation/update_coins.h"
 #include "validation/main_constants.h"
+#include <stdatomic.h>
 #include "chain/subsidy.h"
 #include "chain/pow.h"
 #include "consensus/upgrades.h"
@@ -40,6 +41,22 @@ static void block_compute_merkle_root(struct block *b)
         txids[i] = b->vtx[i].hash;
     b->header.hashMerkleRoot = compute_merkle_root(txids, b->num_vtx);
     free(txids);
+}
+
+/* Whether templates signal the miner-activated Equihash upgrade by
+ * setting ehUpgrade.nSignalBit in nVersion. Defaults ON: signaling is
+ * how the network expresses support; operators opt out with
+ * -signal-eh-upgrade=0. */
+static _Atomic bool g_signal_eh_upgrade = true;
+
+void mining_set_signal_eh_upgrade(bool enable)
+{
+    atomic_store(&g_signal_eh_upgrade, enable);
+}
+
+bool mining_get_signal_eh_upgrade(void)
+{
+    return atomic_load(&g_signal_eh_upgrade);
 }
 
 void block_template_init(struct block_template *bt)
@@ -179,6 +196,10 @@ struct block_template *create_new_block(const struct script *coinbase_script,
     /* Fill in header */
     if (!pindex_prev->phashBlock) return NULL;
     bt->block.header.hashPrevBlock = *pindex_prev->phashBlock;
+    if (params->consensus.ehUpgrade.enabled &&
+        atomic_load(&g_signal_eh_upgrade))
+        bt->block.header.nVersion |=
+            1 << params->consensus.ehUpgrade.nSignalBit;
     bt->block.header.nTime = (uint32_t)GetAdjustedTime();
     bt->block.header.nBits = GetNextWorkRequired(pindex_prev,
                                                   &bt->block.header, &params->consensus);
@@ -255,16 +276,18 @@ static void miner_build_eh_state(const struct block_header *h,
     blake2b_update(out_state, h->nNonce.data, 32);
 }
 
-bool mine_block_pow(struct block *block, int height,
-                    const struct chain_params *params,
-                    uint64_t max_nonces)
+static bool mine_block_pow_inner(struct block *block,
+                                 const struct block_index *pindex_prev,
+                                 int height,
+                                 const struct chain_params *params,
+                                 uint64_t max_nonces)
 {
     if (!block || !params)
         LOG_FAIL("mining", "mine_block_pow: null %s",
                  !block ? "block" : "params");
 
-    unsigned int n = chain_params_equihash_n(params, height);
-    unsigned int k = chain_params_equihash_k(params, height);
+    unsigned int n = chain_params_equihash_n_at(params, pindex_prev, height);
+    unsigned int k = chain_params_equihash_k_at(params, pindex_prev, height);
 
     struct equihash_params ep;
     equihash_params_init(&ep, n, k);
@@ -319,4 +342,23 @@ bool mine_block_pow(struct block *block, int height,
             "(height %d, N=%u K=%u)\n",
             (unsigned long long)max_nonces, height, n, k);
     return false;
+}
+
+bool mine_block_pow(struct block *block, int height,
+                    const struct chain_params *params,
+                    uint64_t max_nonces)
+{
+    return mine_block_pow_inner(block, NULL, height, params, max_nonces);
+}
+
+bool mine_block_pow_at(struct block *block,
+                       const struct block_index *pindex_prev,
+                       const struct chain_params *params,
+                       uint64_t max_nonces)
+{
+    if (!pindex_prev)
+        LOG_FAIL("mining", "mine_block_pow_at: null pindex_prev");
+    return mine_block_pow_inner(block, pindex_prev,
+                                pindex_prev->nHeight + 1, params,
+                                max_nonces);
 }

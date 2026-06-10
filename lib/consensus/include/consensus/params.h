@@ -53,6 +53,25 @@ struct network_upgrade {
 #define POST_BUTTERCUP_HALVING_INTERVAL (PRE_BUTTERCUP_HALVING_INTERVAL * BUTTERCUP_POW_TARGET_SPACING_RATIO)
 #define POST_BUTTERCUP_REGTEST_HALVING_INTERVAL (PRE_BUTTERCUP_REGTEST_HALVING_INTERVAL * BUTTERCUP_POW_TARGET_SPACING_RATIO)
 
+/* Miner-signaled Equihash parameter change (no flag-day height).
+ * Blocks signal by setting bit nSignalBit of nVersion. Heights are
+ * grouped into fixed nWindow-block windows aligned to multiples of
+ * nWindow; a window PASSES when at least nThreshold of its blocks
+ * signal. After nConsecutiveWindows passing windows in a row (a
+ * failing window resets the streak) the deployment is LOCKED_IN at
+ * that window boundary, and the new parameters become mandatory
+ * nGraceBlocks later (ACTIVE). No expiry: the deployment stays open
+ * until miners reach the threshold. Evaluated purely from headers —
+ * see consensus/versionbits.h. */
+struct eh_upgrade_deployment {
+    bool    enabled;             /* false = machinery fully disabled */
+    int     nSignalBit;          /* nVersion bit index miners set */
+    int64_t nWindow;             /* window size, boundary-aligned */
+    int64_t nThreshold;          /* signaling blocks needed per window */
+    int     nConsecutiveWindows; /* passing streak for LOCKED_IN */
+    int64_t nGraceBlocks;        /* ACTIVE = locked_in + grace */
+};
+
 struct consensus_params {
     struct uint256 hashGenesisBlock;
     bool fCoinbaseMustBeProtected;
@@ -73,6 +92,7 @@ struct consensus_params {
     int64_t nPreButtercupPowTargetSpacing;
     int64_t nPostButtercupPowTargetSpacing;
     struct uint256 nMinimumChainWork;
+    struct eh_upgrade_deployment ehUpgrade;
 };
 
 /* Half of nSubsidySlowStartInterval. This is the block-height offset

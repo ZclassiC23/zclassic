@@ -14,6 +14,7 @@
  * (which has been mirroring this logic since the verify extraction). */
 
 #include "chain/pow.h"
+#include "consensus/versionbits.h"
 #include "domain/consensus/pow.h"
 #include "domain/consensus/verify.h"
 #include "util/util.h"
@@ -49,8 +50,21 @@ unsigned int GetNextWorkRequired(const struct block_index *pindexLast,
 
     int nHeight = pindexLast->nHeight + 1;
 
+    /* The miner-signaled Equihash switch is a PoW-parameter fork like
+     * DiffAdj/Buttercup: hashrate changes discontinuously at its
+     * (dynamic) activation height, so it gets the same graduated
+     * relief window. */
+    int eh_active_height = -1;
+    bool eh_fork_window = false;
     if (params->scaleDifficultyAtUpgradeFork &&
-        ((nHeight >= params->vUpgrades[UPGRADE_DIFFADJ].nActivationHeight &&
+        versionbits_eh_active(params, pindexLast, &eh_active_height))
+        eh_fork_window =
+            nHeight >= eh_active_height &&
+            nHeight < eh_active_height + params->nPowAveragingWindow;
+
+    if (params->scaleDifficultyAtUpgradeFork &&
+        (eh_fork_window ||
+         (nHeight >= params->vUpgrades[UPGRADE_DIFFADJ].nActivationHeight &&
           nHeight < params->vUpgrades[UPGRADE_DIFFADJ].nActivationHeight + params->nPowAveragingWindow) ||
          (nHeight >= params->vUpgrades[UPGRADE_BUTTERCUP].nActivationHeight &&
           nHeight < params->vUpgrades[UPGRADE_BUTTERCUP].nActivationHeight + params->nPowAveragingWindow))) {

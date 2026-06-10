@@ -61,6 +61,12 @@ struct chain_params {
     uint64_t nPruneAfterHeight;
     unsigned int nEquihashN;
     unsigned int nEquihashK;
+    /* Parameters that become mandatory once the miner-signaled
+     * ehUpgrade deployment is ACTIVE (consensus/versionbits.h). Kept
+     * separate from nEquihashN/K: the post-activation set is not the
+     * chain default on every network (regtest upgrades 48,5 -> 96,5). */
+    unsigned int nEquihashUpgradeN;
+    unsigned int nEquihashUpgradeK;
 
     struct dns_seed vSeeds[MAX_DNS_SEEDS];
     size_t nSeeds;
@@ -103,5 +109,18 @@ const unsigned char *chain_params_base58_prefix(const struct chain_params *p,
 
 unsigned int chain_params_equihash_n(const struct chain_params *p, int height);
 unsigned int chain_params_equihash_k(const struct chain_params *p, int height);
+
+/* Chain-context-aware variants: honor the miner-signaled ehUpgrade
+ * deployment (consensus/versionbits.h) when it is ACTIVE at `height`
+ * as judged from `pindex_prev`'s ancestry; otherwise identical to the
+ * bare getters. Use these wherever a pindex_prev is available — they
+ * are the consensus-enforcing pair once the deployment locks in. */
+struct block_index;
+unsigned int chain_params_equihash_n_at(const struct chain_params *p,
+                                        const struct block_index *pindex_prev,
+                                        int height);
+unsigned int chain_params_equihash_k_at(const struct chain_params *p,
+                                        const struct block_index *pindex_prev,
+                                        int height);
 
 #endif

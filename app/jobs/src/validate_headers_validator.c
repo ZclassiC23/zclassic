@@ -227,25 +227,22 @@ static bool header_from_disk_block_file(const struct block_index *bi,
     return true;
 }
 
-
-/* A wrong-epoch (but internally valid) Equihash solution must not ride
- * the forward path: the header-accept check rejects it, but the staged
- * validator did NOT — so a block whose header every peer-facing path
- * refuses could still be applied from a disk body (2026-06-10 trackb:
- * ~93 Equihash 200,9 blocks applied straight through under 192,7
- * rules). Pin the expected size whenever the header carries a full
- * solution; sol_size==0 headers stay permissive (sparse fast-sync
- * tails re-verify with full context later). */
+/* A wrong-epoch (but internally valid) solution must not ride the
+ * forward path: pin the expected size whenever ancestry allows. Stays
+ * permissive when pprev is unresolved (sparse fast-sync tails) — the
+ * contextual header check and bg_validation re-verify those with full
+ * context. Honors the miner-signaled ehUpgrade deployment via the _at
+ * getters. Shared by every header source below. */
 static bool header_solution_size_in_epoch(const struct block_header *h,
-                                          int height,
+                                          const struct block_index *bi,
                                           const struct chain_params *cp,
                                           char *out_reason,
                                           size_t out_reason_size)
 {
-    if (h->nSolutionSize == 0)
+    if (!bi->pprev || h->nSolutionSize == 0)
         return true;
-    unsigned int en = chain_params_equihash_n(cp, height);
-    unsigned int ek = chain_params_equihash_k(cp, height);
+    unsigned int en = chain_params_equihash_n_at(cp, bi->pprev, bi->nHeight);
+    unsigned int ek = chain_params_equihash_k_at(cp, bi->pprev, bi->nHeight);
     size_t expected = (((size_t)1 << ek) * (en / (ek + 1) + 1)) / 8;
     if (h->nSolutionSize != expected) {
         snprintf(out_reason, out_reason_size, "bad-equihash-solution-size");
@@ -277,7 +274,7 @@ static bool validate_from_disk_block_file(
 
     if (had_hash_bound_header)
         *had_hash_bound_header = true;
-    if (!header_solution_size_in_epoch(&h, bi->nHeight, cp, out_reason,
+    if (!header_solution_size_in_epoch(&h, bi, cp, out_reason,
                                        out_reason_size))
         return false;
     return validate_header_fields(&h, cp, out_reason, out_reason_size);
@@ -438,7 +435,7 @@ static bool validate_from_source(header_source_fn fn,
 
     if (had_hash_bound_header)
         *had_hash_bound_header = true;
-    if (!header_solution_size_in_epoch(&h, bi->nHeight, cp, out_reason,
+    if (!header_solution_size_in_epoch(&h, bi, cp, out_reason,
                                        out_reason_size))
         return false;
     return validate_header_fields(&h, cp, out_reason, out_reason_size);

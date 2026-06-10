@@ -6,6 +6,7 @@
 
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
+#include "consensus/versionbits.h"
 #include "encoding/utilstrencodings.h"
 #include <assert.h>
 #include <string.h>
@@ -122,6 +123,18 @@ static void init_main_params(void)
     p->consensus.nPowAllowMinDifficultyEnabled = false;
     p->consensus.scaleDifficultyAtUpgradeFork = true;
 
+    /* Miner-signaled return to Equihash 200,9: 8 consecutive ~3.75-day
+     * windows each with >=51% of blocks signaling (a sustained month of
+     * majority), then a one-month grace before the switch. Grace is a
+     * multiple of nWindow so the activation height lands on a window
+     * boundary. See docs/design/equihash-200-9-versionbits.md. */
+    p->consensus.ehUpgrade.enabled = true;
+    p->consensus.ehUpgrade.nSignalBit = 16;
+    p->consensus.ehUpgrade.nWindow = 4320;
+    p->consensus.ehUpgrade.nThreshold = 2204;       /* 51.02% of 4320 */
+    p->consensus.ehUpgrade.nConsecutiveWindows = 8;
+    p->consensus.ehUpgrade.nGraceBlocks = 34560;    /* 8 * 4320 */
+
     p->consensus.vUpgrades[BASE_SPROUT].nProtocolVersion = 170002;
     p->consensus.vUpgrades[BASE_SPROUT].nActivationHeight = NETWORK_UPGRADE_ALWAYS_ACTIVE;
     p->consensus.vUpgrades[UPGRADE_TESTDUMMY].nProtocolVersion = 170002;
@@ -149,6 +162,8 @@ static void init_main_params(void)
     p->nPruneAfterHeight = 100000;
     p->nEquihashN = 200;
     p->nEquihashK = 9;
+    p->nEquihashUpgradeN = 200;
+    p->nEquihashUpgradeK = 9;
 
     uint256_set_hex(&p->consensus.hashGenesisBlock,
         "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602");
@@ -506,6 +521,15 @@ static void init_test_params(void)
     p->consensus.nPowAllowMinDifficultyEnabled = true;
     p->consensus.scaleDifficultyAtUpgradeFork = false;
 
+    /* Faster cadence than mainnet: ~1.25-day windows, ~5 days of
+     * sustained majority, ~2.5-day grace. */
+    p->consensus.ehUpgrade.enabled = true;
+    p->consensus.ehUpgrade.nSignalBit = 16;
+    p->consensus.ehUpgrade.nWindow = 1440;
+    p->consensus.ehUpgrade.nThreshold = 735;        /* 51.04% of 1440 */
+    p->consensus.ehUpgrade.nConsecutiveWindows = 4;
+    p->consensus.ehUpgrade.nGraceBlocks = 2880;     /* 2 * 1440 */
+
     p->consensus.vUpgrades[BASE_SPROUT].nProtocolVersion = 170002;
     p->consensus.vUpgrades[BASE_SPROUT].nActivationHeight = NETWORK_UPGRADE_ALWAYS_ACTIVE;
     p->consensus.vUpgrades[UPGRADE_TESTDUMMY].nProtocolVersion = 170002;
@@ -533,6 +557,8 @@ static void init_test_params(void)
     p->nPruneAfterHeight = 1000;
     p->nEquihashN = 200;
     p->nEquihashK = 9;
+    p->nEquihashUpgradeN = 200;
+    p->nEquihashUpgradeK = 9;
 
     uint256_set_hex(&p->consensus.hashGenesisBlock,
         "03e1c4bb705c871bf9bfda3e74b7f8f86bff267993c215a89d5795e3708e5e1f");
@@ -592,6 +618,16 @@ static void init_regtest_params(void)
     p->consensus.nPowAllowMinDifficultyEnabled = true;
     p->consensus.scaleDifficultyAtUpgradeFork = false;
 
+    /* Tiny windows so `generate`-driven tests can walk the whole state
+     * machine: 4 consecutive 16-block windows at >=9/16 signaling lock
+     * in; active 32 blocks later. */
+    p->consensus.ehUpgrade.enabled = true;
+    p->consensus.ehUpgrade.nSignalBit = 16;
+    p->consensus.ehUpgrade.nWindow = 16;
+    p->consensus.ehUpgrade.nThreshold = 9;          /* 56.25% of 16 */
+    p->consensus.ehUpgrade.nConsecutiveWindows = 4;
+    p->consensus.ehUpgrade.nGraceBlocks = 32;       /* 2 * 16 */
+
     p->consensus.vUpgrades[BASE_SPROUT].nProtocolVersion = 170002;
     p->consensus.vUpgrades[BASE_SPROUT].nActivationHeight = NETWORK_UPGRADE_ALWAYS_ACTIVE;
     p->consensus.vUpgrades[UPGRADE_TESTDUMMY].nProtocolVersion = 170002;
@@ -619,6 +655,8 @@ static void init_regtest_params(void)
     p->nPruneAfterHeight = 1000;
     p->nEquihashN = 48;
     p->nEquihashK = 5;
+    p->nEquihashUpgradeN = 96;
+    p->nEquihashUpgradeK = 5;
 
     uint256_set_hex(&p->consensus.hashGenesisBlock,
         "0575f78ee8dc057deee78ef691876e3be29833aaee5e189bb0459c087451305a");
@@ -701,4 +739,32 @@ unsigned int chain_params_equihash_k(const struct chain_params *p, int height)
     int epoch = consensus_current_epoch(height, &p->consensus);
     unsigned int k = EquihashUpgradeInfo[epoch].K;
     return (k == EQUIHASH_DEFAULT_PARAMS) ? p->nEquihashK : k;
+}
+
+/* Chain-context-aware Equihash params: consult the miner-signaled
+ * ehUpgrade deployment first; below its (dynamic) activation height —
+ * or when the ancestry needed to evaluate it is incomplete, e.g. a
+ * sparse fast-sync tail — fall back to the static epoch table above.
+ * The bare (params, height) getters remain for callers without chain
+ * context; they see only the table and are correct pre-activation. */
+unsigned int chain_params_equihash_n_at(const struct chain_params *p,
+                                        const struct block_index *pindex_prev,
+                                        int height)
+{
+    int h_a = -1;
+    if (versionbits_eh_active(&p->consensus, pindex_prev, &h_a) &&
+        height >= h_a)
+        return p->nEquihashUpgradeN;
+    return chain_params_equihash_n(p, height);
+}
+
+unsigned int chain_params_equihash_k_at(const struct chain_params *p,
+                                        const struct block_index *pindex_prev,
+                                        int height)
+{
+    int h_a = -1;
+    if (versionbits_eh_active(&p->consensus, pindex_prev, &h_a) &&
+        height >= h_a)
+        return p->nEquihashUpgradeK;
+    return chain_params_equihash_k(p, height);
 }

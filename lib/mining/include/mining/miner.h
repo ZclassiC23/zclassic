@@ -57,4 +57,19 @@ bool mine_block_pow(struct block *block, int height,
                     const struct chain_params *params,
                     uint64_t max_nonces);
 
+/* Chain-context-aware variant: resolves the Equihash (N,K) through the
+ * miner-signaled ehUpgrade deployment (consensus/versionbits.h) from
+ * pindex_prev's ancestry, so post-activation blocks are solved with
+ * the upgraded parameters. The bare-height variant above sees only the
+ * static epoch table and is for tests at pre-activation heights. */
+bool mine_block_pow_at(struct block *block,
+                       const struct block_index *pindex_prev,
+                       const struct chain_params *params,
+                       uint64_t max_nonces);
+
+/* Whether create_new_block sets the ehUpgrade signal bit in nVersion
+ * (default: true). Wire from -signal-eh-upgrade=0/1. */
+void mining_set_signal_eh_upgrade(bool enable);
+bool mining_get_signal_eh_upgrade(void);
+
 #endif
