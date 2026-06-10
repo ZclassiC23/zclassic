@@ -43,6 +43,8 @@
 #include <signal.h>
 #include <unistd.h>
 
+extern void db_iter_check_error(struct db_iterator *it);
+
 extern volatile sig_atomic_t g_shutdown_requested;
 
 /* ── Controller-private symbols this Service forward-declares ──────────
@@ -624,13 +626,19 @@ struct zcl_result node_db_import_service_run(struct node_db *ndb,
         chunk->num_entries = 0;
         chunk->num_rows = 0;
 
+        bool end_of_range = false;
         while (chunk->num_entries < IMPORT_CHUNK_ENTRIES &&
                db_iter_valid(&it)) {
             if (import_ctx_should_stop(ctx))
                 goto reader_done;
             size_t key_len;
             const char *key_data = db_iter_key(&it, &key_len);
-            if (key_len < 1 || key_data[0] != 'c') goto reader_done;
+            if (key_len < 1 || key_data[0] != 'c') {
+                /* Coins range ended: publish the in-fill chunk first —
+                 * a goto here dropped the last ~1500 records (tail). */
+                end_of_range = true;
+                break;
+            }
             if (key_len < 33) { db_iter_next(&it); continue; }
 
             struct utxo_import_raw_entry *e =
@@ -663,20 +671,18 @@ struct zcl_result node_db_import_service_run(struct node_db *ndb,
         } else {
             atomic_store(&chunk->state, 0); /* empty, release */
         }
+        if (end_of_range)
+            break;
     }
 reader_done:
-    /* Check for iterator errors — checksum failures can cause early
-     * termination, silently dropping remaining entries. */
-    {
-        extern void db_iter_check_error(struct db_iterator *it);
-        db_iter_check_error(&it);
-    }
+    /* Checksum failures can end iteration early, dropping entries. */
+    db_iter_check_error(&it);
     db_iter_free(&it);
     db_wrapper_snapshot_end(&cvdb->db);
     atomic_store(&ctx->reader_done, true);
 
-    printf("UTXO import: read %d txids from LevelDB\n", total_entries);
-    fflush(stdout);
+    printf("UTXO import: read %d txids from LevelDB (%d skipped)\n",
+           total_entries, skipped_entries);
     fflush(stdout);
 
     /* ── Wait for decoders ────────────────────────────────────────── */
