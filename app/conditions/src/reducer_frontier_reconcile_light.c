@@ -436,8 +436,11 @@ static bool detect_reducer_frontier_reconcile_light(void)
         return false;
     if (rr.refused_coin_unknown)
         return false;
-    if (!rr.refused_coin_tear && !rr.repaired) {
-        /* Nothing actionable: both transition memos re-arm. */
+    if (!rr.refused_coin_tear && !rr.repaired &&
+        rr.noncanonical_found == 0) {
+        /* Nothing actionable: both transition memos re-arm.
+         * noncanonical_found counts relabel/reorg-residue rows the
+         * dry-run judged stale — the apply purge is the remedy. */
         g_tear_bypass_active = false;
         g_gate_suppress.active = false;
         g_gate_suppress.reps = 0;

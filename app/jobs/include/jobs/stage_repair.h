@@ -162,6 +162,13 @@ struct stage_reducer_frontier_reconcile_result {
      * — values mirrored by test_stage_repair_tipfin_backfill.c, keep stable);
      * 0 = TIPFIN_REFUSED_NONE. The refusal WARN names the guard in text. */
     int tipfin_backfill_refused_reason;
+    /* Non-canonical row purge (stage_repair_reducer_frontier_purge.c):
+     * stage-log rows whose stored hash doesn't match the canonical block
+     * at their height — relabel/reorg residue. found counts rows judged
+     * stale (dry-run too); purged counts actual deletions (apply only). */
+    int noncanonical_found;
+    int noncanonical_purged;
+    int lowest_noncanonical;
 };
 
 /* Reconcile a reducer cursor/coins desync that wedges the chain.

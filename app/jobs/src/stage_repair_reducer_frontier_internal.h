@@ -61,6 +61,21 @@ bool stage_reducer_frontier_try_unapplied_hole_clamp(
     struct stage_reducer_frontier_reconcile_result *out,
     bool *handled);
 
+/* Purge hash-bearing stage-log rows in (hstar, min(sweep_top, tip)]
+ * whose stored hash != the canonical active-chain block at their height
+ * (relabel/reorg residue — e.g. the 2026-06-10 -2 incident's false
+ * bad-cb-height verdicts), plus the hashless downstream rows at those
+ * heights. Dry-run (apply=false) only counts into out->noncanonical_*.
+ * Purged rows become ordinary rowless holes for the existing refill +
+ * cursor machinery. Genuine consensus rejects keep their rows (their
+ * hash IS canonical). Returns false only on store errors.
+ * Implemented in stage_repair_reducer_frontier_purge.c. */
+bool stage_reducer_frontier_purge_noncanonical(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
+
 /* FIX-1: pre-refusal tip_finalize_log backfill of the span below the pinned
  * frontier (insert-only; never writes at/above served_floor and never where
  * any row exists). PRECONDITION: a coin-tear refusal must be pending

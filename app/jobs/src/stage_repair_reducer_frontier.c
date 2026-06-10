@@ -447,7 +447,8 @@ static bool rf_result_clean(
            !r->coin_backfill_attempted &&
            !r->coin_backfill_owner_refused &&
            r->tipfin_backfill_count == 0 &&
-           r->tipfin_backfill_refused_reason == 0;
+           r->tipfin_backfill_refused_reason == 0 &&
+           r->noncanonical_found == 0;
 }
 
 static bool reducer_frontier_reconcile_light_impl(
@@ -505,11 +506,20 @@ static bool reducer_frontier_reconcile_light_impl(
     local.proof_validate_cursor_after = -1;
     local.tipfin_backfill_height = -1;
     local.coins_applied_height = -1;
+    local.lowest_noncanonical = -1;
 
     if (!stage_table_ensure(db))
         return false;
     if (!read_frontier_snapshot(db, &local))
         return false;
+
+    /* Non-canonical residue purge runs FIRST: rows describing the wrong
+     * block at their height (relabel/reorg residue) become ordinary
+     * rowless holes, so every repair below sees a consistent world. */
+    if (!stage_reducer_frontier_purge_noncanonical(db, ms, apply, &local))
+        return false;
+    if (local.noncanonical_purged > 0)
+        local.repaired = true;
 
     if (local.refused_coin_unknown) {
         LOG_WARN("stage_repair",

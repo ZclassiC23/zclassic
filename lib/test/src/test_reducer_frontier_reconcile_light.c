@@ -781,6 +781,84 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
+    /* ── non-canonical residue purge (the 2026-06-10 -2 relabel class) ──
+     * Rows recorded for the WRONG block at their height (hash != the
+     * canonical active-chain block) must be purged — including the false
+     * ok=0 bad-cb-height verdicts no other repair touches — while a
+     * GENUINE consensus reject (ok=0 with the canonical hash) survives. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("noncanon: setup fixture", setup_fixture(&fx, "noncanon"));
+        sqlite3 *db = progress_store_db();
+
+        RFRL_CHECK("noncanon: active chain installs",
+                   active_chain_move_window_tip(&fx.ms.chain_active,
+                                                fx.idx[3]));
+
+        /* Stale row at A+2: recorded with A+3's hash (a relabel wrote the
+         * wrong block's verdict here). False ok=0, like bad-cb-height. */
+        RFRL_CHECK("noncanon: seed stale script row",
+                   put_script_status(db, A + 2, 0, "contextual_invalid",
+                                     &fx.hashes[3]));
+        /* Genuine reject at A+3: ok=0 but hash IS canonical — kept. */
+        RFRL_CHECK("noncanon: seed genuine reject",
+                   put_script_status(db, A + 3, 0, "contextual_invalid",
+                                     &fx.hashes[3]));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        RFRL_CHECK("noncanon: dry-run succeeds",
+                   stage_reducer_frontier_reconcile_light_needed(
+                       db, &fx.ms, &dry));
+        RFRL_CHECK("noncanon: dry-run finds, does not purge",
+                   dry.noncanonical_found >= 1 &&
+                   dry.noncanonical_purged == 0 &&
+                   dry.lowest_noncanonical == A + 2);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("noncanon: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("noncanon: apply purges the stale row",
+                   rr.noncanonical_purged >= 1 && rr.repaired);
+
+        sqlite3_stmt *st = NULL;
+        int stale_left = -1, genuine_left = -1, vh_left = -1;
+        if (sqlite3_prepare_v2(db,
+                "SELECT "
+                " (SELECT COUNT(*) FROM script_validate_log WHERE height=?),"
+                " (SELECT COUNT(*) FROM script_validate_log WHERE height=?),"
+                " (SELECT COUNT(*) FROM validate_headers_log WHERE height=?)",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(st, 1, A + 2);
+            sqlite3_bind_int(st, 2, A + 3);
+            sqlite3_bind_int(st, 3, A + 2);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                stale_left = sqlite3_column_int(st, 0);
+                genuine_left = sqlite3_column_int(st, 1);
+                vh_left = sqlite3_column_int(st, 2);
+            }
+        }
+        sqlite3_finalize(st);
+        RFRL_CHECK("noncanon: stale gone, genuine + canonical rows kept",
+                   stale_left == 0 && genuine_left == 1 && vh_left == 1);
+
+        int dep_left = -1;
+        if (sqlite3_prepare_v2(db,
+                "SELECT (SELECT COUNT(*) FROM proof_validate_log "
+                "WHERE height=?) + (SELECT COUNT(*) FROM body_persist_log "
+                "WHERE height=?)",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(st, 1, A + 2);
+            sqlite3_bind_int(st, 2, A + 2);
+            if (sqlite3_step(st) == SQLITE_ROW)
+                dep_left = sqlite3_column_int(st, 0);
+        }
+        sqlite3_finalize(st);
+        RFRL_CHECK("noncanon: hashless downstream rows purged transitively",
+                   dep_left == 0);
+
+        teardown_fixture(&fx);
+    }
+
     printf("reducer_frontier_reconcile_light: %d failures\n", failures);
     return failures;
 }
