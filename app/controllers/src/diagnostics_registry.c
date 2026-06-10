@@ -21,6 +21,8 @@
 #include "validation/chainstate.h"
 #include "validation/contextual_check_tx.h"
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "consensus/versionbits.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
 #include "json/json.h"
@@ -244,6 +246,62 @@ static bool block_index_dump_state_json(struct json_value *out, const char *key)
     return true;
 }
 
+/* Miner-signaled Equihash upgrade tally (consensus/versionbits.h),
+ * evaluated as of the block AFTER `key` (height or hash; default: the
+ * active tip). Mirrors the getdeploymentinfo RPC. */
+static bool versionbits_dump_state_json(struct json_value *out,
+                                        const char *key)
+{
+    if (!out) return false;
+    json_set_object(out);
+
+    const struct chain_params *cp = chain_params_get();
+    const struct eh_upgrade_deployment *d = &cp->consensus.ehUpgrade;
+    struct block_index *prev = NULL;
+    if (key && key[0]) {
+        prev = find_block_index_by_key(g_diag.main_state, key);
+        if (!prev) {
+            json_push_kv_bool(out, "found", false);
+            json_push_kv_str(out, "key", key);
+            return true;
+        }
+    } else if (g_diag.main_state) {
+        prev = active_chain_tip(&g_diag.main_state->chain_active);
+    }
+    int next_h = (prev ? prev->nHeight : -1) + 1;
+
+    json_push_kv_bool(out, "enabled", d->enabled);
+    json_push_kv_int(out, "signal_bit", d->nSignalBit);
+    json_push_kv_int(out, "window", d->nWindow);
+    json_push_kv_int(out, "threshold", d->nThreshold);
+    json_push_kv_int(out, "consecutive_windows_required",
+                     d->nConsecutiveWindows);
+    json_push_kv_int(out, "grace_blocks", d->nGraceBlocks);
+    json_push_kv_int(out, "evaluated_at_height",
+                     prev ? prev->nHeight : -1);
+    json_push_kv_int(out, "equihash_next_n",
+                     (int64_t)chain_params_equihash_n_at(cp, prev, next_h));
+    json_push_kv_int(out, "equihash_next_k",
+                     (int64_t)chain_params_equihash_k_at(cp, prev, next_h));
+
+    struct vbits_info info;
+    struct zcl_result r = versionbits_eh_query(&cp->consensus, prev, &info);
+    if (!r.ok) {
+        json_push_kv_str(out, "state", "unavailable");
+        json_push_kv_str(out, "error", r.message);
+        return true;
+    }
+    json_push_kv_str(out, "state", vbits_state_name(info.state));
+    json_push_kv_int(out, "streak", info.streak);
+    json_push_kv_int(out, "window_position",
+                     d->nWindow > 0 ? next_h % d->nWindow : -1);
+    json_push_kv_int(out, "window_signal_count", info.window_signal_count);
+    json_push_kv_int(out, "last_boundary_height", info.last_boundary_height);
+    json_push_kv_int(out, "locked_in_height", info.locked_in_height);
+    json_push_kv_int(out, "active_height", info.active_height);
+    return true;
+}
+
 static void push_evidence_record_json(struct json_value *out, const char *key,
                                       const struct chain_evidence_record *e)
 {
@@ -440,6 +498,11 @@ static const struct dump_entry g_dumpers[] = {
                      "healthy/repairing) + last transition reason" },
     { "block_index", block_index_dump_state_json,
                      "block_index entry by height or hash (in `key`)" },
+    { "versionbits", versionbits_dump_state_json,
+                     "miner-signaled Equihash upgrade: state "
+                     "(disabled/defined/locked_in/active), streak, window "
+                     "tally, locked_in/active heights; `key` = evaluate at "
+                     "a specific height/hash instead of the tip" },
     { "health",      health_dump_state_json,
                      "unified heartbeat ring: registered subsystems, ages, stall fires" },
     { "oracle",      zclassicd_oracle_dump_state_json,

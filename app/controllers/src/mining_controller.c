@@ -10,6 +10,7 @@
 #include "chain/chainparams.h"
 #include "chain/pow.h"
 #include "consensus/upgrades.h"
+#include "consensus/versionbits.h"
 #include "core/core_io.h"
 #include "core/serialize.h"
 #include "encoding/utilstrencodings.h"
@@ -168,8 +169,7 @@ static bool rpc_generate(const struct json_value *params, bool help,
          * stateless check_block(check_pow=true) gate. Without this the
          * block carries an empty solution and is rejected at intake, so
          * the tip never advances. Fast for regtest/testnet (small N,K). */
-        int new_height = (tip ? tip->nHeight : 0) + 1;
-        if (!mine_block_pow(&tmpl->block, new_height, cp, 0)) {
+        if (!tip || !mine_block_pow_at(&tmpl->block, tip, cp, 0)) {
             block_template_free(tmpl);
             free(tmpl);
             break;
@@ -395,10 +395,142 @@ static bool rpc_getblocksubsidy(const struct json_value *params, bool help,
     return true;
 }
 
+static const char *upgrade_state_name(enum upgrade_state s)
+{
+    switch (s) {
+    case UPGRADE_DISABLED: return "disabled";
+    case UPGRADE_PENDING:  return "pending";
+    case UPGRADE_ACTIVE:   return "active";
+    }
+    return "unknown";
+}
+
+/* One flag-day deployment row (vUpgrades[idx]) into `out`. */
+static void push_flagday_deployment(struct json_value *out,
+                                    const struct chain_params *cp,
+                                    enum upgrade_index idx, int next_h)
+{
+    const struct network_upgrade *u = &cp->consensus.vUpgrades[idx];
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "type", "flagday");
+    json_push_kv_str(&obj, "info", NetworkUpgradeInfo[idx].strInfo);
+    json_push_kv_str(&obj, "status",
+                     upgrade_state_name(consensus_upgrade_state(
+                         next_h, &cp->consensus, idx)));
+    json_push_kv_int(&obj, "activation_height", u->nActivationHeight);
+    json_push_kv_int(&obj, "protocol_version", u->nProtocolVersion);
+    char branch[16];
+    snprintf(branch, sizeof(branch), "0x%08x",
+             NetworkUpgradeInfo[idx].nBranchId);
+    json_push_kv_str(&obj, "branch_id", branch);
+    unsigned int en = EquihashUpgradeInfo[idx].N;
+    unsigned int ek = EquihashUpgradeInfo[idx].K;
+    json_push_kv_int(&obj, "equihash_n",
+                     en == EQUIHASH_DEFAULT_PARAMS ? cp->nEquihashN : en);
+    json_push_kv_int(&obj, "equihash_k",
+                     ek == EQUIHASH_DEFAULT_PARAMS ? cp->nEquihashK : ek);
+    json_push_kv(out, NetworkUpgradeInfo[idx].strName, &obj);
+    json_free(&obj);
+}
+
+/* The miner-signaled versionbits deployment row into `out`. */
+static void push_eh_upgrade_deployment(struct json_value *out,
+                                       const struct chain_params *cp,
+                                       const struct block_index *tip,
+                                       int next_h)
+{
+    const struct eh_upgrade_deployment *d = &cp->consensus.ehUpgrade;
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "type", "versionbits");
+    json_push_kv_str(&obj, "info",
+                     "Miner-signaled return to Equihash upgrade params "
+                     "(docs/design/equihash-200-9-versionbits.md)");
+    json_push_kv_bool(&obj, "enabled", d->enabled);
+    json_push_kv_int(&obj, "signal_bit", d->nSignalBit);
+    json_push_kv_int(&obj, "window", d->nWindow);
+    json_push_kv_int(&obj, "threshold", d->nThreshold);
+    json_push_kv_int(&obj, "consecutive_windows_required",
+                     d->nConsecutiveWindows);
+    json_push_kv_int(&obj, "grace_blocks", d->nGraceBlocks);
+    json_push_kv_bool(&obj, "signaling", mining_get_signal_eh_upgrade());
+    json_push_kv_int(&obj, "equihash_upgrade_n",
+                     (int64_t)cp->nEquihashUpgradeN);
+    json_push_kv_int(&obj, "equihash_upgrade_k",
+                     (int64_t)cp->nEquihashUpgradeK);
+
+    struct vbits_info info;
+    struct zcl_result r = versionbits_eh_query(&cp->consensus, tip, &info);
+    if (!r.ok) {
+        /* Tally unevaluable (e.g. sparse fast-sync ancestry): consensus
+         * falls back to the static epoch table; say so instead of lying
+         * with a fabricated state. */
+        json_push_kv_str(&obj, "status", "unavailable");
+        json_push_kv_str(&obj, "error", r.message);
+    } else {
+        json_push_kv_str(&obj, "status", vbits_state_name(info.state));
+        json_push_kv_int(&obj, "streak", info.streak);
+        json_push_kv_int(&obj, "window_position",
+                         d->nWindow > 0 ? next_h % d->nWindow : -1);
+        json_push_kv_int(&obj, "window_signal_count",
+                         info.window_signal_count);
+        json_push_kv_int(&obj, "last_boundary_height",
+                         info.last_boundary_height);
+        json_push_kv_int(&obj, "locked_in_height", info.locked_in_height);
+        json_push_kv_int(&obj, "active_height", info.active_height);
+    }
+    json_push_kv(out, "eh_upgrade", &obj);
+    json_free(&obj);
+}
+
+static bool rpc_getdeploymentinfo(const struct json_value *params, bool help,
+                                  struct json_value *result)
+{
+    struct mining_context *ctx = mining_ctx();
+    (void)params;
+    RPC_HELP(help, result,
+        "getdeploymentinfo\n"
+        "Status of every consensus deployment, evaluated for the next\n"
+        "block: the flag-day network upgrades (Sprout..Buttercup, with\n"
+        "activation height, branch id, and the Equihash (N,K) of that\n"
+        "epoch) and the miner-signaled versionbits eh_upgrade (state\n"
+        "disabled/defined/locked_in/active, streak, window tally,\n"
+        "locked_in/active heights, and whether this node's templates\n"
+        "signal via -signal-eh-upgrade).");
+
+    if (!ctx->main_state) {
+        json_set_str(result, "Mining state not initialized");
+        LOG_FAIL("mining", "getdeploymentinfo: ctx->main_state is NULL");
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    int next_h = (tip ? tip->nHeight : -1) + 1;
+
+    json_set_object(result);
+    json_push_kv_int(result, "height", tip ? tip->nHeight : -1);
+    json_push_kv_int(result, "equihash_next_n",
+                     (int64_t)chain_params_equihash_n_at(cp, tip, next_h));
+    json_push_kv_int(result, "equihash_next_k",
+                     (int64_t)chain_params_equihash_k_at(cp, tip, next_h));
+
+    struct json_value deployments = {0};
+    json_set_object(&deployments);
+    for (int idx = BASE_SPROUT; idx < MAX_NETWORK_UPGRADES; idx++)
+        push_flagday_deployment(&deployments, cp,
+                                (enum upgrade_index)idx, next_h);
+    push_eh_upgrade_deployment(&deployments, cp, tip, next_h);
+    json_push_kv(result, "deployments", &deployments);
+    json_free(&deployments);
+    return true;
+}
+
 void register_mining_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "mining", "getmininginfo",     rpc_getmininginfo,    true },
+        { "mining", "getdeploymentinfo", rpc_getdeploymentinfo, true },
         { "mining", "generate",          rpc_generate,         true },
         { "mining", "submitblock",       rpc_submitblock,      true },
         { "mining", "getblocktemplate",  rpc_getblocktemplate, true },
