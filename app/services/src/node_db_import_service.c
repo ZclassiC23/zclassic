@@ -21,6 +21,7 @@
 
 #include "services/node_db_import_service.h"
 
+#include "node_db_import_internal.h"
 #include "platform/time_compat.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_import_pipeline.h"
@@ -45,8 +46,6 @@
 
 extern void db_iter_check_error(struct db_iterator *it);
 
-extern volatile sig_atomic_t g_shutdown_requested;
-
 /* ── Controller-private symbols this Service forward-declares ──────────
  * The job-status setters + turbo-mode scope are external-linkage functions
  * defined in app/controllers/src/sync_controller.c, declared only in the
@@ -64,45 +63,10 @@ bool sync_db_turbo_scope_begin(struct sync_db_turbo_scope *scope,
 bool sync_db_turbo_scope_end(struct sync_db_turbo_scope *scope);
 
 void sync_job_import_begin(void);
-void sync_job_import_progress(int total_rows);
 void sync_job_import_finish(int total_rows);
 
-/* A chunk of raw LevelDB entries for decode workers */
-#define IMPORT_CHUNK_ENTRIES 2048
-/* Max outputs per chunk. Must be large enough to hold all outputs from
- * 2048 entries. Worst case: 2048 entries * 468 outputs = 958,464.
- * In practice ~5500 rows per chunk. Use 32768 for 4x safety margin. */
-#define IMPORT_MAX_ROWS_PER_CHUNK 32768
-
-struct import_chunk {
-    struct utxo_import_raw_entry entries[IMPORT_CHUNK_ENTRIES];
-    int num_entries;
-    struct utxo_import_row rows[IMPORT_MAX_ROWS_PER_CHUNK];
-    int num_rows;
-    _Atomic int state; /* 0=free, 1=filled, 2=decoded */
-};
-
-#define IMPORT_NUM_CHUNKS 64
-/* Auto-detect decoder count: use all cores minus 2 (reader + writer).
- * Minimum 4, maximum 32. More decoders = faster LevelDB deserialization. */
-
-struct import_context {
-    struct import_chunk chunks[IMPORT_NUM_CHUNKS];
-    _Atomic int total_txids;
-    _Atomic int total_rows;
-    _Atomic int decode_failures;
-    _Atomic int skipped_outputs;
-    _Atomic bool cancel_requested;
-    _Atomic bool reader_done;
-    _Atomic bool decoders_done;
-    _Atomic int chunks_produced;  /* total chunks filled by reader */
-    _Atomic int chunks_consumed;  /* total chunks written by writer */
-    /* LevelDB reader state (single-threaded) */
-    struct coins_view_db *cvdb;
-    /* Writer state */
-    struct node_db *ndb;
-    int write_next; /* next chunk index to write (in-order) */
-};
+/* Chunk-ring structs, constants, ctx helpers and the worker-thread entry
+ * points live in node_db_import_internal.h / node_db_import_pipeline.c. */
 
 struct import_job {
     struct import_context *ctx;
@@ -113,34 +77,7 @@ struct import_job {
     bool writer_thread_started;
 };
 
-static void *import_decoder_thread(void *arg);
-static void *import_writer_thread(void *arg);
 static void import_job_join_decoders(struct import_job *job);
-
-static bool import_ctx_should_stop(const struct import_context *ctx)
-{
-    return (ctx && atomic_load(&ctx->cancel_requested)) || g_shutdown_requested;
-}
-
-static void import_ctx_request_stop(struct import_context *ctx)
-{
-    if (!ctx)
-        return;
-    atomic_store(&ctx->cancel_requested, true);
-}
-
-static void import_chunk_reset(struct import_chunk *chunk)
-{
-    if (!chunk)
-        return;
-    for (int ei = 0; ei < chunk->num_entries; ei++)
-        free(chunk->entries[ei].value);
-    for (int ri = 0; ri < chunk->num_rows; ri++)
-        free(chunk->rows[ri].script_overflow);
-    chunk->num_entries = 0;
-    chunk->num_rows = 0;
-    atomic_store(&chunk->state, 0);
-}
 
 static void import_context_release_chunks(struct import_context *ctx)
 {
@@ -168,8 +105,8 @@ static bool import_job_start_decoders(struct import_job *job)
 
     for (int i = 0; i < job->num_decoders; i++) {
         int rc = thread_registry_spawn_ex("zcl_utxo_dec",
-                                           import_decoder_thread, job->ctx,
-                                           &job->decoders[i]);
+                                           node_db_import_decoder_thread,
+                                           job->ctx, &job->decoders[i]);
         if (rc != 0) {
             LOG_WARN("sync", "UTXO import: thread_registry_spawn_ex decoder[%d] failed: %d", i, rc);
             import_ctx_request_stop(job->ctx);
@@ -186,7 +123,7 @@ static bool import_job_start_writer(struct import_job *job)
     if (!job || !job->ctx)
         LOG_FAIL("sync", "import_start_writer: invalid args (job=%p)", (void *)job);
     if (thread_registry_spawn_ex("zcl_utxo_wr",
-                                  import_writer_thread, job->ctx,
+                                  node_db_import_writer_thread, job->ctx,
                                   &job->writer_thread) != 0) {
         fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");
         import_ctx_request_stop(job->ctx);
@@ -224,242 +161,6 @@ static bool import_job_start(struct import_job *job)
         LOG_FAIL("sync", "import_job_start: writer failed to start");
     }
     return true;
-}
-
-/* Decoder worker thread — picks filled chunks, decodes, marks decoded */
-static void *import_decoder_thread(void *arg)
-{
-    struct import_context *ctx = (struct import_context *)arg;
-
-    for (;;) {
-        if (import_ctx_should_stop(ctx))
-            break;
-        /* Find a filled chunk to decode */
-        struct import_chunk *chunk = NULL;
-        for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
-            int expected = 1; /* filled */
-            if (atomic_compare_exchange_strong(&ctx->chunks[i].state,
-                                              &expected, -1)) {
-                atomic_thread_fence(memory_order_acquire);
-                chunk = &ctx->chunks[i];
-                break;
-            }
-        }
-        if (!chunk) {
-            if (atomic_load(&ctx->reader_done)) {
-                /* Check once more for any remaining chunks */
-                bool found = false;
-                for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
-                    if (atomic_load(&ctx->chunks[i].state) == 1) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) break;
-            }
-            /* Yield briefly — spin is fine on 32 cores */
-            struct timespec ts = {0, 100000}; /* 100μs */
-            nanosleep(&ts, NULL);
-            continue;
-        }
-
-        if (import_ctx_should_stop(ctx)) {
-            import_chunk_reset(chunk);
-            break;
-        }
-
-        /* Decode all entries in this chunk */
-        chunk->num_rows = 0;
-        int skipped_in_chunk = 0;
-        for (int i = 0; i < chunk->num_entries; i++) {
-            if (import_ctx_should_stop(ctx))
-                break;
-            int space = IMPORT_MAX_ROWS_PER_CHUNK - chunk->num_rows;
-            if (space <= 0) { skipped_in_chunk += chunk->num_entries - i; break; }
-            int n = utxo_import_decode_entry(&chunk->entries[i],
-                                             &chunk->rows[chunk->num_rows],
-                                             space);
-            if (n == 0) {
-                atomic_fetch_add(&ctx->decode_failures, 1);
-            }
-            chunk->num_rows += n;
-        }
-        if (skipped_in_chunk > 0) {
-            atomic_fetch_add(&ctx->skipped_outputs, skipped_in_chunk);
-            LOG_WARN("sync", "UTXO import: chunk overflow! %d entries skipped " "(rows=%d, max=%d)", skipped_in_chunk, chunk->num_rows, IMPORT_MAX_ROWS_PER_CHUNK);
-        }
-
-        if (import_ctx_should_stop(ctx))
-            import_chunk_reset(chunk);
-        else
-            atomic_store(&chunk->state, 2); /* decoded */
-    }
-    return NULL;
-}
-
-/* Writer thread — consumes decoded chunks, inserts into SQLite */
-static void *import_writer_thread(void *arg)
-{
-    struct import_context *ctx = (struct import_context *)arg;
-    if (!ctx) LOG_NULL("sync", "import_writer_thread: ctx is NULL");
-    struct node_db *ndb = ctx->ndb;
-    if (!ndb || !ndb->open || !ndb->stmt_utxo_insert) {
-        fprintf(stderr, "UTXO import writer: invalid node_db statement/db state\n");
-        import_ctx_request_stop(ctx);
-        return NULL;
-    }
-    sqlite3_stmt *ins = ndb->stmt_utxo_insert;
-    int total_rows = 0;
-    int next_chunk = 0;
-
-    if (!node_db_begin(ndb)) {
-        LOG_WARN("sync", "UTXO import writer: BEGIN failed");
-        import_ctx_request_stop(ctx);
-    }
-
-    for (;;) {
-        if (import_ctx_should_stop(ctx))
-            break;
-        /* Look for any decoded chunk to write */
-        struct import_chunk *chunk = NULL;
-        for (int i = 0; i < IMPORT_NUM_CHUNKS; i++) {
-            int idx = (next_chunk + i) % IMPORT_NUM_CHUNKS;
-            int expected = 2; /* decoded */
-            if (atomic_compare_exchange_strong(&ctx->chunks[idx].state,
-                                              &expected, -1)) {
-                chunk = &ctx->chunks[idx];
-                next_chunk = (idx + 1) % IMPORT_NUM_CHUNKS;
-                break;
-            }
-        }
-        if (!chunk) {
-            if (atomic_load(&ctx->decoders_done)) {
-                /* Decoders are done. Use definitive chunk count to
-                 * know when we're truly finished — no race possible. */
-                int produced = atomic_load(&ctx->chunks_produced);
-                int consumed = atomic_load(&ctx->chunks_consumed);
-                if (consumed >= produced) break;
-                /* Still have chunks to consume — scan harder */
-                atomic_thread_fence(memory_order_seq_cst);
-            }
-            struct timespec ts = {0, 100000}; /* 100μs */
-            nanosleep(&ts, NULL);
-            continue;
-        }
-
-        if (import_ctx_should_stop(ctx)) {
-            import_chunk_reset(chunk);
-            break;
-        }
-
-        /* Insert all rows from this chunk */
-        for (int ri = 0; ri < chunk->num_rows; ri++) {
-            if (import_ctx_should_stop(ctx))
-                break;
-            struct utxo_import_row *r = &chunk->rows[ri];
-            const uint8_t *sc = r->script_overflow ?
-                                r->script_overflow : r->script;
-            bool row_ok = true;
-
-            row_ok &= utxo_import_writer_bind_checked(ins, "sqlite3_reset",
-                                                      sqlite3_reset(ins),
-                                                      ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_blob(txid)",
-                sqlite3_bind_blob(ins, 1, r->txid, 32, SQLITE_STATIC),
-                ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_int(vout)",
-                sqlite3_bind_int(ins, 2, (int)r->vout), ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_int64(value)",
-                sqlite3_bind_int64(ins, 3, r->value), ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_blob(script)",
-                sqlite3_bind_blob(ins, 4, sc, (int)r->script_len,
-                                  SQLITE_STATIC), ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_int(script_type)",
-                sqlite3_bind_int(ins, 5, r->script_type), ndb,
-                total_rows).ok;
-            if (r->has_address)
-                row_ok &= utxo_import_writer_bind_checked(ins,
-                    "sqlite3_bind_blob(address_hash)",
-                    sqlite3_bind_blob(ins, 6, r->address_hash, 20,
-                                      SQLITE_STATIC), ndb, total_rows).ok;
-            else
-                row_ok &= utxo_import_writer_bind_checked(ins,
-                    "sqlite3_bind_null(address_hash)",
-                    sqlite3_bind_null(ins, 6), ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_int(height)",
-                sqlite3_bind_int(ins, 7, r->height), ndb, total_rows).ok;
-            row_ok &= utxo_import_writer_bind_checked(ins,
-                "sqlite3_bind_int(is_coinbase)",
-                sqlite3_bind_int(ins, 8, r->is_coinbase), ndb,
-                total_rows).ok;
-            row_ok &= utxo_import_writer_step_checked(ins, ndb,
-                                                      total_rows).ok;
-            if (!row_ok) {
-                import_ctx_request_stop(ctx);
-                break;
-            }
-            total_rows++;
-        }
-
-        if (import_ctx_should_stop(ctx)) {
-            import_chunk_reset(chunk);
-            break;
-        }
-
-        /* Commit every ~100K rows */
-        if (total_rows % 100000 < chunk->num_rows) {
-            if (!node_db_commit(ndb)) {
-                LOG_WARN("sync", "UTXO import writer: COMMIT failed");
-                if (!node_db_rollback(ndb))
-                    LOG_WARN("sync", "UTXO import writer: ROLLBACK failed after commit failure");
-                import_ctx_request_stop(ctx);
-                import_chunk_reset(chunk);
-                break;
-            }
-            sync_job_import_progress(total_rows);
-            printf("UTXO import: %d rows written...\n", total_rows);
-            fflush(stdout);
-            if (!node_db_begin(ndb)) {
-                LOG_WARN("sync", "UTXO import writer: BEGIN restart failed");
-                if (!node_db_rollback(ndb))
-                    LOG_WARN("sync", "UTXO import writer: rollback after BEGIN restart failure failed");
-                import_ctx_request_stop(ctx);
-                import_chunk_reset(chunk);
-                break;
-            }
-        }
-
-        /* Free buffers and release chunk */
-        for (int ei = 0; ei < chunk->num_entries; ei++) {
-            free(chunk->entries[ei].value);
-            chunk->entries[ei].value = NULL;
-        }
-        for (int ri = 0; ri < chunk->num_rows; ri++) {
-            free(chunk->rows[ri].script_overflow);
-            chunk->rows[ri].script_overflow = NULL;
-        }
-        chunk->num_entries = 0;
-        chunk->num_rows = 0;
-        atomic_fetch_add(&ctx->chunks_consumed, 1);
-        atomic_store(&chunk->state, 0); /* free for reuse */
-    }
-
-    if (!import_ctx_should_stop(ctx)) {
-        if (!node_db_commit(ndb))
-            LOG_WARN("sync", "UTXO import writer: final COMMIT failed");
-    } else {
-        if (!node_db_rollback(ndb))
-            LOG_WARN("sync", "UTXO import writer: rollback requested by stop flag failed");
-    }
-    sync_job_import_progress(total_rows);
-    atomic_store(&ctx->total_rows, total_rows);
-    return NULL;
 }
 
 struct zcl_result node_db_import_service_run(struct node_db *ndb,
