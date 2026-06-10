@@ -110,3 +110,76 @@ bool coins_kv_boot_rebuild_if_needed(sqlite3 *progress_db,
                  (long long)coins_kv_count(progress_db));
     return ok;
 }
+
+/* Seed coins_kv directly from node.db's `utxos` table after a cold
+ * LevelDB import. The generic boot rebuild above copies from the utxo
+ * PROJECTION, which is still EMPTY on the import boot (it catches up
+ * from the event log later) — leaving coins_kv empty, which strands
+ * script_validate's prevout resolver for every pre-anchor coin
+ * (trackb 2026-06-10: prevout_unresolved ok=0 at the first
+ * post-anchor block with a spend, anchor candidate rejected, tip
+ * pinned at the import anchor). Same ATTACH-copy + done-stamp shape;
+ * idempotent via the same migration key. */
+bool coins_kv_seed_from_node_db(sqlite3 *progress_db,
+                                const char *node_db_path)
+{
+    if (!progress_db || !node_db_path || !node_db_path[0])
+        return false;
+    if (!coins_kv_ensure_schema(progress_db) ||
+        !progress_meta_table_ensure(progress_db))
+        return false;
+    if (migration_done(progress_db))
+        return true;
+    if (coins_kv_count(progress_db) > 0) {
+        uint8_t one = 1;
+        (void)progress_meta_set(progress_db, COINS_KV_MIGRATION_KEY, &one, 1);
+        return true;
+    }
+
+    sqlite3_stmt *att = NULL;
+    if (sqlite3_prepare_v2(progress_db, "ATTACH DATABASE ? AS coinssrc",
+                           -1, &att, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_kv", "[coins_kv] import seed ATTACH prepare failed: %s",
+                 sqlite3_errmsg(progress_db));
+        return false;
+    }
+    sqlite3_bind_text(att, 1, node_db_path, -1, SQLITE_TRANSIENT);
+    int arc = sqlite3_step(att);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(att);
+    if (arc != SQLITE_DONE) {
+        LOG_WARN("coins_kv", "[coins_kv] import seed ATTACH failed rc=%d", arc);
+        return false;
+    }
+
+    bool ok = true;
+    char *err = NULL;
+    if (sqlite3_exec(progress_db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && sqlite3_exec(progress_db,
+            "INSERT OR REPLACE INTO coins"
+            "(txid,vout,value,height,is_coinbase,script) "
+            "SELECT txid,vout,value,height,is_coinbase,script "
+            "FROM coinssrc.utxos",
+            NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok) {
+        uint8_t one = 1;
+        if (!progress_meta_set_in_tx(progress_db, COINS_KV_MIGRATION_KEY, &one, 1))
+            ok = false;
+    }
+    if (ok && sqlite3_exec(progress_db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        LOG_WARN("coins_kv", "[coins_kv] import seed copy failed: %s",
+                 err ? err : "(no message)");
+        sqlite3_exec(progress_db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (err) sqlite3_free(err);
+    sqlite3_exec(progress_db, "DETACH DATABASE coinssrc", NULL, NULL, NULL);
+
+    if (ok)
+        LOG_INFO("coins_kv",
+                 "[coins_kv] import seed migrated %lld UTXOs from node.db",
+                 (long long)coins_kv_count(progress_db));
+    return ok;
+}
