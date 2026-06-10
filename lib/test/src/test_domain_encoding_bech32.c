@@ -173,5 +173,32 @@ int test_domain_encoding_bech32(void)
         BCH_CHECK("encode rejects small out buf", !ok);
     }
 
+    /* (9) Stack-VLA cap: encode rejects anything that would produce a
+     * string longer than the 1023-char decode cap; at-cap succeeds and
+     * round-trips. */
+    {
+        static char big_out[2048];
+        static uint8_t vals[1024];
+        memset(vals, 7, sizeof vals);
+        /* hrp "bc" (2) + '1' + values + 6 checksum + NUL: needed = values+10.
+         * 1015 values -> needed 1025 -> reject; 1014 -> 1024 -> accept. */
+        BCH_CHECK("encode rejects output over the decode cap",
+                  !domain_encoding_bech32_encode(big_out, sizeof big_out, "bc",
+                                                 vals, 1015));
+        bool ok = domain_encoding_bech32_encode(big_out, sizeof big_out, "bc",
+                                                vals, 1014);
+        BCH_CHECK("encode accepts output at the cap", ok);
+        if (ok) {
+            char hrp[8];
+            static uint8_t back[1024];
+            size_t back_len = 0;
+            BCH_CHECK("at-cap string round-trips through decode",
+                      domain_encoding_bech32_decode(hrp, sizeof hrp, back,
+                                                    sizeof back, &back_len,
+                                                    big_out) &&
+                      back_len == 1014 && memcmp(back, vals, 1014) == 0);
+        }
+    }
+
     return failures;
 }

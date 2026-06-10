@@ -3,6 +3,7 @@
  * AES-256 block cipher — pure C23 implementation (encrypt only). */
 
 #include "crypto/aes256.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 static const uint8_t sbox[256] = {
@@ -116,4 +117,8 @@ void aes256_encrypt(const struct aes256_ctx *ctx,
     }
 
     memcpy(out, s, 16);
+    /* The state mixes round keys derived from the caller's secret key
+     * (FF1 diversifier derivation feeds the Sapling dk through here);
+     * don't leave the final round's state on the stack. */
+    memory_cleanse(s, sizeof(s));
 }
