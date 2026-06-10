@@ -125,11 +125,44 @@ static int test_offence_names(void)
         ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_TIMEOUT), "timeout");
         ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_INVALID_MESSAGE),
                       "invalid_message");
+        ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_UNREQUESTED),
+                      "unrequested");
+        ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_OFFER_REJECTED),
+                      "offer_rejected");
         ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_FLOOD), "flood");
+        ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_INVALID_PAYLOAD),
+                      "invalid_payload");
         ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_INVALID_HEADER),
                       "invalid_header");
+        ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_INVALID_CHUNK),
+                      "invalid_chunk");
         ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_INVALID_BLOCK),
                       "invalid_block");
+        ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_INVALID_PROOF),
+                      "invalid_proof");
+        ASSERT_STR_EQ(peer_offence_name(PEER_OFFENCE_PROTOCOL_VIOLATION),
+                      "protocol_violation");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_offence_weights(void)
+{
+    int failures = 0;
+    TEST("peer_scoring: weight table preserves the legacy DoS weights") {
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_NONE), 0);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_TIMEOUT), 5);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_INVALID_MESSAGE), 10);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_UNREQUESTED), 10);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_OFFER_REJECTED), 10);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_FLOOD), 20);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_INVALID_PAYLOAD), 20);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_INVALID_HEADER), 50);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_INVALID_CHUNK), 50);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_INVALID_BLOCK), 100);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_INVALID_PROOF), 100);
+        ASSERT_EQ(peer_offence_weight(PEER_OFFENCE_PROTOCOL_VIOLATION), 100);
         PASS();
     } _test_next:;
     return failures;
@@ -454,6 +487,7 @@ int test_peer_scoring(void)
     failures += test_env_overrides();
     failures += test_invalid_env();
     failures += test_offence_names();
+    failures += test_offence_weights();
     failures += test_record_increments();
     failures += test_none_noop();
     failures += test_autoban_single_hit();

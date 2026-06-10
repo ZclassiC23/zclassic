@@ -105,7 +105,7 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
 {
     struct compact_block_msg cb;
     if (!compact_block_msg_deserialize(&cb, s)) {
-        peer_misbehaving(mp->net_mgr, node, 20, "invalid cmpctblock");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD, "invalid cmpctblock");
         LOG_FAIL("compact", "failed to deserialize cmpctblock from %s", node->addr_name);
     }
 
@@ -219,7 +219,7 @@ bool process_getblocktxn(struct msg_processor *mp, struct p2p_node *node,
 {
     struct block_txn_request req;
     if (!block_txn_request_deserialize(&req, s)) {
-        peer_misbehaving(mp->net_mgr, node, 20, "invalid getblocktxn");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD, "invalid getblocktxn");
         LOG_FAIL("compact", "failed to deserialize getblocktxn from %s", node->addr_name);
     }
 
@@ -262,8 +262,8 @@ bool process_getblocktxn(struct msg_processor *mp, struct p2p_node *node,
             block_txn_response_free(&resp);
             block_free(&blk);
             block_txn_request_free(&req);
-            peer_misbehaving(mp->net_mgr, node, 100,
-                             "getblocktxn index out of range");
+            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
+                                "getblocktxn index out of range");
             LOG_FAIL("compact", "index %lu >= %zu in getblocktxn from %s",
                      (unsigned long)req.indices[i], blk.num_vtx, node->addr_name);
         }
@@ -296,7 +296,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
 {
     struct block_txn_response resp;
     if (!block_txn_response_deserialize(&resp, s)) {
-        peer_misbehaving(mp->net_mgr, node, 20, "invalid blocktxn");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD, "invalid blocktxn");
         LOG_FAIL("compact", "failed to deserialize blocktxn from %s", node->addr_name);
     }
 
@@ -331,7 +331,7 @@ bool process_blocktxn(struct msg_processor *mp, struct p2p_node *node,
                                     node->compact_num_missing)) {
         LOG_WARN("compact", "peer %s: blocktxn %s — fill_missing failed",
                  node->addr_name, hex);
-        peer_misbehaving(mp->net_mgr, node, 10, "bad blocktxn response");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE, "bad blocktxn response");
         compact_pending_clear(node);
         block_txn_response_free(&resp);
         return true;

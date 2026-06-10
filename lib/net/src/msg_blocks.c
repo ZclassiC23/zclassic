@@ -524,10 +524,11 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
             printf("Peer %s: invalid block (dos=%d): %s\n",
                    node->addr_name, dos, state.reject_reason);
             /* DoS from validation is graded: treat the common [50, 100]
-             * range as the two typed categories so the enum values
-             * drive the score increment. Anything else falls through to
-             * the raw peer_misbehaving() path so we still honour the
-             * caller's intent without losing precision. */
+             * range as the two typed categories so peer_offence_weight()
+             * drives the score increment. Anything else (graded 1..49)
+             * falls through to the raw peer_misbehaving() path so we
+             * still honour the validator's exact grade — a constant
+             * enum can't represent it. */
             const char *rr = state.reject_reason[0] ? state.reject_reason
                                                     : "invalid block";
             if (dos >= 100) {

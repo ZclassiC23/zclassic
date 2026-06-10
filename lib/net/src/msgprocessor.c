@@ -227,7 +227,7 @@ static bool handle_bip37_rejected(struct msg_processor *mp, struct p2p_node *nod
     if (!bip37_enabled()) {
         char reason[64];
         snprintf(reason, sizeof(reason), "%s rejected: BIP37 disabled", cmd);
-        peer_misbehaving(mp->net_mgr, node, 100, reason);
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION, reason);
         LOG_FAIL("bip37", "%s from %s — BIP37 disabled, disconnecting",
                  cmd, node->addr_name);
     }
