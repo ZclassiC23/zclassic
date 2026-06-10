@@ -515,6 +515,7 @@ int test_script_validate_stage(void);
 int test_script_validate_contextual_gate(void);
 int test_proof_validate_stage(void);
 int test_utxo_apply_stage(void);
+int test_utxo_apply_crash_replay(void);
 int test_tip_finalize_stage(void);
 int test_reducer_frontier(void);
 int test_reducer_stage_fuzz(void);

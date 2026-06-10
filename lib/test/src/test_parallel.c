@@ -56,14 +56,18 @@ volatile sig_atomic_t g_shutdown_requested = 0;
  */
 
 #define TEST_LIST(X) \
-    X(load_balancer) X(game) X(crypto) X(crypto_registry) X(encoding) X(chain) X(keys) \
+    X(load_balancer) X(game) X(crypto) X(crypto_registry) X(encoding) X(chain) \
+    X(pprev_walk) X(chain_tip) X(checkpoint) X(keys) \
     X(script) X(net) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
-    X(activerecord) X(validation) X(sapling) X(sapling_crypto) \
+    X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
     X(bn254) X(merkle_tree) X(slp) X(models) X(core) X(znam) X(htlc) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
-    X(explorer) X(mining) X(utxo_commitment) X(mmr) X(mmb) \
-    X(flyclient) X(flyclient_chainwork_floor) X(scan_util) X(tor) X(event) X(download) X(consensus) \
+    X(explorer) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
+    X(flyclient) X(flyclient_chainwork_floor) X(scan_util) X(tor) \
+    X(onion_bootstrap) X(cold_start_sync) X(kill9_recovery) \
+    X(shielded_payment_gate) X(store_e2e_gate) X(soak_harness) \
+    X(event) X(download) X(consensus) \
     X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
     X(node_health_service) X(chain_state_repo) X(recovery_policy) \
     X(chain_evidence_controller) \
@@ -138,6 +142,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(coins_view_atomicity) X(coins_anchor_reconcile_all) X(make_lint_gates) X(multisig) \
     X(mcp_fuzz) X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(chain_advance_coordinator) \
+    X(chain_advance_atomicity) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
     X(sync_watchdog_conditions) X(peer_snapshot_conditions) \
@@ -169,7 +174,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(nullifier_kv) \
     X(script_validate_stage) X(script_validate_contextual_gate) \
     X(proof_validate_stage) \
-    X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_frontier) \
+    X(utxo_apply_stage) X(utxo_apply_crash_replay) \
+    X(tip_finalize_stage) X(reducer_frontier) \
     X(reducer_frontier_reconcile_light) \
     X(reducer_stage_fuzz) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
@@ -200,11 +206,12 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bg_validation_store_port) \
     X(zslp_store_port) \
     X(sapling_tree) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
-    X(chainstate_legacy_reader) X(chain_stall_repro) \
+    X(chainstate_legacy_reader) X(ldb_snapshot) X(utxo_snapshot_loader) \
+    X(chain_stall_repro) \
     X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
     X(failed_child_cap) X(header_probe) \
     X(power_node_contract_spec) X(process_block_revalidate) \
-    X(rpc_safety) X(service_kernel) X(sync_state_fsm) \
+    X(rpc_safety) X(service_kernel) X(thread_registry) X(sync_state_fsm) \
     X(unclean_shutdown_advance) X(utxo_audit) X(utxo_parity_service) \
     X(zclassicd_oracle) X(oracle_policy) \
     X(script_interp_edge) X(sighash_edge) X(sigops_edge) \
