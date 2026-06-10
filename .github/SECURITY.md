@@ -23,6 +23,27 @@ The safety boundary, scanner context, local gates, MCP controls, release
 integrity checks, and reviewer checklist are documented in
 [`docs/SECURITY_AND_INTEGRITY.md`](../docs/SECURITY_AND_INTEGRITY.md).
 
+## Automated review of pull requests
+
+Every pull request — including from forks — is automatically security-reviewed
+before it can be merged, by two workflows in `.github/workflows/`:
+
+- **`pr-security-review.yml`** runs `tools/scripts/pr_security_scan.sh` over the
+  PR diff: consensus divergence from `zclassicd`
+  ([`docs/CONSENSUS_PARITY_DOCTRINE.md`](../docs/CONSENSUS_PARITY_DOCTRINE.md)),
+  supply-chain execution (fetch-and-run / decode-and-run / dynamic load / remote
+  installs / new submodules + workflows), committed secrets, and dangerous C
+  calls. A **HIGH** finding fails the check and blocks the merge.
+- **`pr-security-comment.yml`** posts the verdict as a friendly PR comment.
+
+This is intentionally **fork-safe**. The scan runs on the `pull_request` trigger
+with a **read-only token, no repo secrets, and never executes PR code** (it only
+diffs and greps), so a hostile PR has nothing to steal. The comment is posted by
+the separate `workflow_run` workflow in the trusted base context, which likewise
+**never runs PR code**. We do **not** use `pull_request_target`, which would
+expose secrets to untrusted code. The pass/fail check is the gate and works on
+every PR regardless of origin.
+
 ## Reporting a vulnerability
 
 Please report vulnerabilities **privately** via GitHub security
