@@ -25,15 +25,30 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len)
 {
     if (!ndb->open) return false;
-    sqlite3_stmt *s = ndb->stmt_state_set;
-    sqlite3_reset(s);
-    sqlite3_clear_bindings(s);
+
+    /* Per-call prepare, NOT the cached ndb->stmt_state_set: SQLite
+     * statements are not thread-safe, and state_set is called from the
+     * chain_advance worker, the cec persistence service, and boot-state
+     * writers concurrently — the same shared-statement race that
+     * SIGABRTed state_get (see the comment there) applies to writes.
+     * The cached stmt_state_set field is kept for source compatibility
+     * but no longer used. */
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR REPLACE INTO node_state(key,value) VALUES(?,?)",
+            -1, &s, NULL) != SQLITE_OK || !s) {
+        LOG_WARN("node_db", "state_set prepare failed key=%s: %s",
+                 key ? key : "(null)", sqlite3_errmsg(ndb->db));
+        return false;
+    }
     sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
     sqlite3_bind_blob(s, 2, value, (int)len, SQLITE_STATIC);
     int rc = sqlite3_step(s);  // raw-sql-ok:kv-state-primitive
-    sqlite3_reset(s);
-    sqlite3_clear_bindings(s);
+    sqlite3_finalize(s);
     node_db_note_activity(ndb, "state_set", rc);
+    if (rc != SQLITE_DONE)
+        LOG_WARN("node_db", "state_set step failed key=%s rc=%d: %s",
+                 key ? key : "(null)", rc, sqlite3_errmsg(ndb->db));
     return rc == SQLITE_DONE;
 }
 
