@@ -89,17 +89,41 @@ bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
                 struct db_tx_index *out)
 {
     if (!ndb->open) return false;
-    sqlite3_stmt *s = ndb->stmt_tx_find;
-    sqlite3_reset(s);
+
+    /* Prepare a fresh statement per call rather than reusing the cached
+     * ndb->stmt_tx_find. SQLite statements are not thread-safe: the
+     * self-heal/repair thread (coin-backfill resolve_creator), the
+     * explorer/onion request threads (tx + address pages) and wallet
+     * paths reach this lookup concurrently, and interleaved
+     * reset/bind/step on one shared statement corrupts its internal
+     * state — the same class that SIGABRTed node_db_state_get before
+     * its per-call fix. Sub-millisecond cost; not a per-block path.
+     * The cached stmt_tx_find stays allocated but unused. */
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT block_hash,block_height,tx_index,"
+            "file_num,file_pos,is_coinbase"
+            " FROM transactions WHERE txid=?",
+            -1, &s, NULL) != SQLITE_OK || !s) {
+        LOG_WARN("tx_index", "tx_find prepare failed: %s",
+                 sqlite3_errmsg(ndb->db));
+        return false;
+    }
     AR_BIND_BLOB(s, 1, txid, 32);
-    AR_FIND_ONE_CACHED(s, out,
-        memcpy(out->txid, txid, 32);
-        AR_READ_BLOB(s, 0, out->block_hash, 32);
-        out->block_height = (int)AR_COL_INT(s, 1);
-        out->tx_index = (int)AR_COL_INT(s, 2);
-        out->file_num = (int)AR_COL_INT(s, 3);
-        out->file_pos = (int)AR_COL_INT(s, 4);
-        out->is_coinbase = AR_COL_INT(s, 5) != 0);
+    if (!AR_STEP_ROW(s)) {
+        sqlite3_finalize(s);
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    memcpy(out->txid, txid, 32);
+    AR_READ_BLOB(s, 0, out->block_hash, 32);
+    out->block_height = (int)AR_COL_INT(s, 1);
+    out->tx_index = (int)AR_COL_INT(s, 2);
+    out->file_num = (int)AR_COL_INT(s, 3);
+    out->file_pos = (int)AR_COL_INT(s, 4);
+    out->is_coinbase = AR_COL_INT(s, 5) != 0;
+    sqlite3_finalize(s);
+    return true;
 }
 
 bool db_tx_find_native_or_reversed(struct node_db *ndb,
