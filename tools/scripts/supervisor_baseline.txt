@@ -1,0 +1,22 @@
+# Lint gate #15 baseline — grandfathered long-running services that
+# do not yet register a supervisor liveness contract.
+#
+# Each entry is a long-running service in app/services/src/ that
+# spawns threads or subscribes to lib/health periodic callbacks but
+# was not migrated to supervisor_register() in Round 5. Future rounds
+# will pick these off one by one; the gate fails on any NEW long-
+# running file that isn't in this list and isn't supervised.
+#
+# How to remove an entry:
+#   1. In the service's start function, after the existing health/
+#      pthread setup, declare a static liveness_contract, init it,
+#      and call supervisor_register(). See chain_tip_watchdog.c
+#      for the canonical pattern (contract + on_tick + on_stall).
+#   2. Decide whether the contract drives the work (period_secs > 0)
+#      or just observes a heartbeat the service already emits.
+#   3. Wire a meaningful on_stall — log + emit an event + try a local
+#      remediation; do NOT panic or block.
+#   4. Delete the matching line below.
+#   5. Re-run `make lint` to confirm.
+#
+# Format: one file path per line. Blank lines and # comments ignored.

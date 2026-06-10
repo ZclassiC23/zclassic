@@ -1,0 +1,7 @@
+<div style='margin-top:16px;padding:12px;background:#0a1f14;
+border-radius:8px'>
+<div style='color:#34d399;font-size:18px;font-weight:700'>
+{{{total}}} ZCL</div>
+<div style='color:#888;font-size:14px;margin-top:4px'>
+{{{transparent}}} public + {{{shielded}}} private</div>
+</div>

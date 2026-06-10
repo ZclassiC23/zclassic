@@ -1,0 +1,21 @@
+<div style='display:flex;gap:10px;margin:20px 0'>
+<a href='/wallet/send' class='btn-secondary'
+style='flex:1;text-align:center;text-decoration:none;
+display:flex;align-items:center;justify-content:center'>Cancel</a>
+<form method='POST' action='zcl://node/wallet/send/confirm'
+style='flex:2;margin:0'>
+<input type='hidden' name='address' value='{{address}}'>
+<input type='hidden' name='amount' value='{{{amount}}}'>
+<button type='submit' class='btn-primary'
+ style='background:{{{btn_color}}};color:{{{btn_text}}}'
+ id='confirm-btn'>
+Confirm Send</button></form></div>
+<div id='send-loading' class='loading-overlay' style='display:none'>
+<div class='spinner'></div>
+<p>Sending transaction...</p></div>
+<script>
+document.getElementById('confirm-btn').addEventListener('click',
+function(e){e.preventDefault();this.disabled=true;
+document.getElementById('send-loading').style.display='flex';
+this.form.submit();});
+</script>

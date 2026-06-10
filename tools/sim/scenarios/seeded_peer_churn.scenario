@@ -1,0 +1,13 @@
+# Seed-driven peer churn chooses deterministic peers to drop.
+
+seed        0x0000000000000008
+boot_phase  listening
+peer_count  6
+random_kill_peers count=3
+advance_clock +3m
+
+expect      no_crash
+expect      active_peers == 3
+expect      killed_peers == 3
+expect      tip_height >= 3
+expect      consensus_rejects == 0

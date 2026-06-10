@@ -1,0 +1,11 @@
+<a href='{{{link}}}' style='text-decoration:none;
+color:inherit;display:block'>
+<div class='tx-row'>
+<div>
+<span class='tx-amount {{{direction_class}}}'>{{{sign}}}{{{amount}}}</span>
+<span style='color:#888;font-size:14px;
+margin-left:6px'>ZCL</span></div>
+<div class='tx-meta'>
+<span class='tx-time'{{{time_style}}}>{{{time_label}}}</span>
+<span class='tx-conf'>{{{conf_label}}}</span>
+</div></div></a>

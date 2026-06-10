@@ -1,0 +1,466 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Regression tests for the L0 authority reducer_frontier_compute_hstar.
+ *
+ * Each case builds a throwaway in-memory progress.kv with the REAL stage-log
+ * schema (the same CREATE TABLE text the production *_log_store.c modules
+ * emit), populates it for a specific tear topology, then asserts the exact
+ * (hstar, served_floor) the algorithm must return. Assertions check exact
+ * equality so they fail if compute_hstar drifts by even one height —
+ * mutation-sensitive by construction.
+ *
+ * The fixture writes rows with plain sqlite3_exec/INSERT — this is TEST
+ * scaffolding building the durable image, not production reducer code, so it
+ * does not route through the AR lifecycle (no model, no progress.kv handle).
+ * compute_hstar itself is the SELECT-only unit under test. */
+
+#include "test/test_helpers.h"
+
+#include "jobs/reducer_frontier.h"
+
+#include <sqlite3.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#define RF_CHECK(name, expr) do {                                  \
+    printf("reducer_frontier: %s... ", (name));                    \
+    if (expr) { printf("OK\n"); }                                  \
+    else { printf("FAIL\n"); failures++; }                         \
+} while (0)
+
+/* The anchor the production algorithm clamps to. Fixtures sit just above it
+ * so the contiguous-prefix walk has something to traverse without building
+ * three million rows. */
+#define A REDUCER_FRONTIER_TRUSTED_ANCHOR  /* 3056758 */
+
+/* ── fixture builder ─────────────────────────────────────────────────── */
+
+/* Create the per-stage log tables and the stage_cursor / progress_meta
+ * tables exactly as production does. Returns false on any SQLite error. */
+static bool build_schema(sqlite3 *db)
+{
+    static const char *const ddl =
+        "CREATE TABLE stage_cursor (name TEXT PRIMARY KEY, cursor INTEGER);"
+        "CREATE TABLE progress_meta (key TEXT PRIMARY KEY, value BLOB);"
+        "CREATE TABLE validate_headers_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "  fail_reason TEXT, validated_at INTEGER);"
+        "CREATE TABLE script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  block_hash BLOB);"
+        "CREATE TABLE body_persist_log ("
+        "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE proof_validate_log ("
+        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
+        "CREATE TABLE utxo_apply_log ("
+        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+        "  spent_count INTEGER, added_count INTEGER);"
+        "CREATE TABLE tip_finalize_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  tip_hash BLOB);";
+    char *err = NULL;
+    if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[test_reducer_frontier] schema: %s\n",
+                err ? err : "(null)");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static bool set_cursor(sqlite3 *db, const char *name, int64_t cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, cursor);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Insert an ok row into a *_log table that has a (height, ok) shape plus an
+ * optional 32-byte hash blob in `hash_col` (NULL hash_col => no hash). For
+ * validate_headers_log the hash column is NOT NULL, so a hash is always
+ * supplied there via hbyte. */
+static bool put_log_row(sqlite3 *db, const char *table, const char *hash_col,
+                        int32_t height, int ok, const uint8_t hash[32],
+                        const char *status)
+{
+    char sql[256];
+    /* status column exists only on script_validate_log/tip_finalize_log; we
+     * pass status=NULL for the others and skip the column there. */
+    if (hash_col && status)
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s(height,status,ok,%s) VALUES(?,?,?,?)",
+                 table, hash_col);
+    else if (hash_col)
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s(height,ok,%s) VALUES(?,?,?)",
+                 table, hash_col);
+    else if (status)
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s(height,status,ok) VALUES(?,?,?)", table);
+    else
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s(height,ok) VALUES(?,?)", table);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[test_reducer_frontier] prepare %s: %s\n",
+                table, sqlite3_errmsg(db));
+        return false;
+    }
+    int col = 1;
+    sqlite3_bind_int64(st, col++, height);
+    if (status)
+        sqlite3_bind_text(st, col++, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, col++, ok);
+    if (hash_col) {
+        if (hash) sqlite3_bind_blob(st, col++, hash, 32, SQLITE_STATIC);
+        else      sqlite3_bind_null(st, col++);
+    }
+    bool done = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!done)
+        fprintf(stderr, "[test_reducer_frontier] step %s h=%d: %s\n",
+                table, height, sqlite3_errmsg(db));
+    return done;
+}
+
+/* A deterministic 32-byte hash keyed by height + a tag byte, so we can make
+ * two logs agree (same tag) or disagree (different tag) at a height. */
+static void synth_hash(uint8_t out[32], int32_t h, uint8_t tag)
+{
+    memset(out, 0, 32);
+    out[0] = (uint8_t)(h & 0xff);
+    out[1] = (uint8_t)((h >> 8) & 0xff);
+    out[2] = (uint8_t)((h >> 16) & 0xff);
+    out[31] = tag;
+}
+
+/* Write a full consistent ok=1 row across ALL stage logs at height h, with
+ * validate_headers.hash and script_validate.block_hash AGREEING (tag 0). */
+static bool put_consistent_height(sqlite3 *db, int32_t h)
+{
+    uint8_t hh[32];
+    synth_hash(hh, h, 0);
+    return put_log_row(db, "validate_headers_log", "hash", h, 1, hh, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", h, 1, hh,
+                       "ok")
+        && put_log_row(db, "body_persist_log", NULL, h, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, h, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, h, 1, NULL, NULL)
+	        && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+}
+
+static bool put_tip_anchor(sqlite3 *db, int32_t h)
+{
+    return put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "anchor");
+}
+
+static bool set_all_cursors(sqlite3 *db, int64_t c)
+{
+    return set_cursor(db, "validate_headers", c)
+        && set_cursor(db, "body_fetch", c)
+        && set_cursor(db, "body_persist", c)
+        && set_cursor(db, "proof_validate", c)
+        && set_cursor(db, "script_validate", c)
+        && set_cursor(db, "utxo_apply", c)
+        && set_cursor(db, "tip_finalize", c);
+}
+
+/* ── cases ───────────────────────────────────────────────────────────── */
+
+/* (a) Fully-consistent multi-row fixture: every log ok=1 and hashes agree
+ *     over [A+1 .. A+5]. H* must reach the tip A+5; served_floor == A+5. */
+static int case_consistent(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("consistent: schema", build_schema(db));
+
+    const int32_t tip = A + 5;
+    bool built = true;
+    for (int32_t h = A + 1; h <= tip; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("consistent: rows built", built);
+    /* cursor names the NEXT height to process == tip+1. */
+    RF_CHECK("consistent: cursors", set_all_cursors(db, tip + 1));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("consistent: returns true", ok);
+    /* Mutation-sensitive: if the prefix walk stops early or off-by-one,
+     * hstar != tip and this fails. */
+    RF_CHECK("consistent: hstar == tip", hstar == tip);
+    RF_CHECK("consistent: served_floor == tip", served == tip);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* (b) Torn fixture mirroring the live tear: utxo_apply has run forward (high
+ *     cursor + ok=1 coin rows), but script_validate hit a not_script_valid
+ *     ok=0 laggard at A+4. The contiguous-prefix MIN across logs caps at the
+ *     block BEFORE that failure (A+3), even though utxo_apply/coins are
+ *     applied much further. tip_finalize has stale ok=0 debris above A+3 AND
+ *     a fresh ok=1 at A+3, so served_floor == A+3. */
+static int case_torn(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("torn: schema", build_schema(db));
+
+    bool built = true;
+    /* A+1..A+3 fully consistent and finalized. */
+    for (int32_t h = A + 1; h <= A + 3; h++)
+        built = built && put_consistent_height(db, h);
+
+    /* script_validate FAILS at A+4 (not_script_valid). validate_headers is
+     * authoritative ahead (ok=1) and body/proof are ok=1 too, but the MIN
+     * over logs is bounded by script_validate's break at A+4 => prefix A+3. */
+    uint8_t h4[32]; synth_hash(h4, A + 4, 0);
+    built = built
+        && put_log_row(db, "validate_headers_log", "hash", A + 4, 1, h4, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", A + 4, 0, NULL,
+                       "not_script_valid")
+        && put_log_row(db, "body_persist_log", NULL, A + 4, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, A + 4, 1, NULL, NULL)
+        /* utxo_apply forged forward (ok=1) far past the finalize laggard. */
+        && put_log_row(db, "utxo_apply_log", NULL, A + 4, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, A + 5, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, A + 6, 1, NULL, NULL)
+        /* tip_finalize: stale ok=0 debris above A+3 (the laggard never
+         * advanced) — must NOT raise served_floor above the real ok=1. */
+        && put_log_row(db, "tip_finalize_log", NULL, A + 4, 0, NULL, "stale")
+        && put_log_row(db, "tip_finalize_log", NULL, A + 5, 0, NULL, "stale");
+    RF_CHECK("torn: rows built", built);
+    RF_CHECK("torn: vh hash", true);
+
+    /* Cursors mirror the live drift: validate_headers authoritative far
+     * ahead, utxo_apply ahead, tip_finalize lagging at the failure. */
+    bool cur = set_cursor(db, "validate_headers", A + 7)
+            && set_cursor(db, "body_fetch", A + 7)
+            && set_cursor(db, "body_persist", A + 7)
+            && set_cursor(db, "proof_validate", A + 7)
+            && set_cursor(db, "script_validate", A + 5)
+            && set_cursor(db, "utxo_apply", A + 7)
+            && set_cursor(db, "tip_finalize", A + 5);
+    RF_CHECK("torn: cursors", cur);
+
+    /* coins_applied ahead of H* (the live "coins consistent, flag drift"
+     * case): an 8-byte LE int64 blob, like coins_kv writes. */
+    int64_t applied = A + 6;
+    uint8_t blob[8];
+    for (int i = 0; i < 8; i++) blob[i] = (uint8_t)((uint64_t)applied >> (8*i));
+    sqlite3_stmt *st = NULL;
+    bool meta_ok =
+        sqlite3_prepare_v2(db,
+            "INSERT INTO progress_meta(key,value) "
+            "VALUES('coins_applied_height',?)", -1, &st, NULL) == SQLITE_OK;
+    if (meta_ok) {
+        sqlite3_bind_blob(st, 1, blob, 8, SQLITE_STATIC);
+        meta_ok = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+    }
+    RF_CHECK("torn: coins_applied meta", meta_ok);
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("torn: returns true", ok);
+    /* The prefix caps at A+3 (block before script_validate's ok=0). If the
+     * algorithm wrongly trusted the forward utxo_apply cursor or ignored the
+     * script_validate hole, hstar would be A+6 and this fails. */
+    RF_CHECK("torn: hstar == A+3", hstar == A + 3);
+    /* served_floor is the deepest ok=1 finalize (A+3) — the stale ok=0 debris
+     * at A+4/A+5 must NOT raise it. */
+    RF_CHECK("torn: served_floor == A+3", served == A + 3);
+    /* H* must never exceed served_floor in a torn view (invariant). */
+    RF_CHECK("torn: hstar <= served_floor", hstar <= served);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* (b2) Sparse imported base: the reducer logs are intentionally absent across
+ *      the imported/checkpointed middle, then a seed-anchor row marks a later
+ *      trusted base and dense rows continue above it. H* must start from that
+ *      valid seed anchor, not the compiled SHA3 checkpoint, and must ignore a
+ *      stale higher active-tip anchor whose upstream cursors never reached it. */
+static int case_sparse_seed_anchor(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("sparse-anchor: schema", build_schema(db));
+
+    const int32_t base = A + 100;
+    const int32_t stale_high = A + 200;
+    const int32_t tip = base + 5;
+    bool built = put_tip_anchor(db, stale_high) && put_tip_anchor(db, base);
+    for (int32_t h = base + 1; h <= tip; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("sparse-anchor: rows built", built);
+    RF_CHECK("sparse-anchor: cursors", set_all_cursors(db, tip + 1));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("sparse-anchor: returns true", ok);
+    RF_CHECK("sparse-anchor: hstar reaches dense tip", hstar == tip);
+    RF_CHECK("sparse-anchor: stale high anchor ignored", hstar < stale_high);
+    RF_CHECK("sparse-anchor: served_floor sees stale public anchor",
+             served == stale_high);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* (c) Clamp-up: the only logged rows are an ok=0 failure just ABOVE the
+ *     anchor, so the contiguous prefix would compute to (anchor) and a hash
+ *     split below the anchor must never pull it lower. Even with an empty
+ *     finalize log (served_floor 0), H* is clamped UP to the trusted anchor,
+ *     never below it. */
+static int case_clamp_up(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("clamp: schema", build_schema(db));
+
+    /* script_validate fails immediately at anchor+1 -> contiguous prefix is
+     * exactly the anchor. No tip_finalize ok=1 rows at all. */
+    /* validate_headers_log has no `status` column (its hash is NOT NULL), so
+     * supply status=NULL there; script_validate_log carries the status text. */
+    uint8_t zero[32] = {0};
+    bool built =
+        put_log_row(db, "script_validate_log", "block_hash", A + 1, 0, NULL,
+                    "not_script_valid")
+        && put_log_row(db, "validate_headers_log", "hash", A + 1, 0,
+                       zero, NULL);
+    RF_CHECK("clamp: rows built", built);
+    RF_CHECK("clamp: cursors", set_all_cursors(db, A + 2));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("clamp: returns true", ok);
+    /* The hard guard raises H* to the anchor; it must NEVER be below it. */
+    RF_CHECK("clamp: hstar == anchor", hstar == A);
+    RF_CHECK("clamp: hstar >= TRUSTED_ANCHOR", hstar >= A);
+    RF_CHECK("clamp: served_floor == 0 (no ok=1 finalize)", served == 0);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* (d) Hash split: validate_headers and script_validate both present with
+ *     non-NULL hashes that DISAGREE at A+3. H* must cap at A+2 even though
+ *     every log shows ok=1 through A+5. Guards C3. */
+static int case_hash_split(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("split: schema", build_schema(db));
+
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 2; h++)
+        built = built && put_consistent_height(db, h);
+
+    /* A+3: both ok=1 in every log, but the two hash columns DISAGREE
+     * (tag 0 vs tag 9). */
+    uint8_t hv[32], hs[32];
+    synth_hash(hv, A + 3, 0);
+    synth_hash(hs, A + 3, 9);
+    built = built
+        && put_log_row(db, "validate_headers_log", "hash", A + 3, 1, hv, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", A + 3, 1, hs,
+                       "ok")
+        && put_log_row(db, "body_persist_log", NULL, A + 3, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, A + 3, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, A + 3, 1, NULL, NULL)
+        && put_log_row(db, "tip_finalize_log", NULL, A + 3, 1, NULL, "ok");
+    for (int32_t h = A + 4; h <= A + 5; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("split: rows built", built);
+    RF_CHECK("split: cursors", set_all_cursors(db, A + 6));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("split: returns true", ok);
+    /* H* caps at A+2 (block before the split). If C3 were skipped hstar would
+     * be A+5 and this fails. */
+    RF_CHECK("split: hstar == A+2", hstar == A + 2);
+    /* served_floor still reaches the deepest ok=1 finalize (A+5). */
+    RF_CHECK("split: served_floor == A+5", served == A + 5);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* (e) Hash split at the VERY FIRST height above the anchor (A+1): every log
+ *     is ok=1 through A+3 so the contiguous prefix would reach A+3, but the
+ *     two hashes disagree at A+1. C3 must cap H* at A (anchor) — exercising
+ *     its "never below the anchor" lower clamp, h-1 == anchor here. This is
+ *     the only fixture that drives H* down onto the anchor floor via C3, so a
+ *     regression that drops the lower clamp is caught. */
+static int case_split_at_floor(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("floor: schema", build_schema(db));
+
+    /* A+1: ok=1 everywhere but hashes disagree (tag 0 vs tag 7). */
+    uint8_t hv[32], hs[32];
+    synth_hash(hv, A + 1, 0);
+    synth_hash(hs, A + 1, 7);
+    bool built =
+        put_log_row(db, "validate_headers_log", "hash", A + 1, 1, hv, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", A + 1, 1, hs,
+                       "ok")
+        && put_log_row(db, "body_persist_log", NULL, A + 1, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, A + 1, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, A + 1, 1, NULL, NULL)
+        && put_log_row(db, "tip_finalize_log", NULL, A + 1, 1, NULL, "ok");
+    for (int32_t h = A + 2; h <= A + 3; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("floor: rows built", built);
+    RF_CHECK("floor: cursors", set_all_cursors(db, A + 4));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("floor: returns true", ok);
+    /* The split is at the first height above the anchor; H* must clamp to the
+     * anchor itself, never A (=A+1-1) which already equals the anchor — and
+     * NEVER below it. */
+    RF_CHECK("floor: hstar == anchor", hstar == A);
+    RF_CHECK("floor: hstar >= TRUSTED_ANCHOR", hstar >= A);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+int test_reducer_frontier(void)
+{
+    int failures = 0;
+    printf("\n--- reducer_frontier (L0 H* authority) ---\n");
+    failures += case_consistent();
+    failures += case_torn();
+    failures += case_sparse_seed_anchor();
+    failures += case_clamp_up();
+    failures += case_hash_split();
+    failures += case_split_at_floor();
+    if (failures == 0)
+        printf("reducer_frontier: all cases passed\n");
+    else
+        printf("reducer_frontier: %d failure(s)\n", failures);
+    return failures;
+}

@@ -1,0 +1,12 @@
+# Phase 6c smoke scenario: boot, idle for 60s, and remain healthy.
+
+seed        0x0000000000000001
+boot_phase  idb_complete
+peer_count  0
+partition_network for=5s
+advance_clock +60s
+
+expect      no_crash
+expect      clock_advance_count == 1
+expect      tip_height >= 0
+expect      consensus_rejects == 0

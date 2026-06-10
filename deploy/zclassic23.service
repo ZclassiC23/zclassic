@@ -1,0 +1,117 @@
+[Unit]
+Description=ZClassic23 Full Node + Block Explorer
+After=network-online.target
+Wants=network-online.target
+# P7.6: widened restart-loop budget.  The old burst=3 / interval=300s
+# could permanently disable the service after three crashes in 5min —
+# worse than a visible restart-loop is a silently-down-after-3-crashes
+# node that the operator doesn't see until they notice the outage.
+# 10 attempts over 10min gives real triage time; the P7.2 boot halt
+# path makes sure a cold chain-state bug eventually drains the burst
+# and the unit stops cleanly for operator attention.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+# Type=simple — main node is operator-controlled, never auto-restarted
+# by systemd. A 120s stall during heavy fsync, big block, or LevelDB
+# compaction is normal under load; auto-restart would loop and burn
+# peer reputation (memory: 15 restarts in 8h crashed peer count 5→1,
+# 12-48h recovery via addrman gossip). Failure signal comes via
+# health.healthy=false + EV_LAG_SLO_BREACH events + Prometheus
+# metrics — operator picks the restart window.
+#
+# The binary still supports Type=notify (boot_sd_watchdog_start
+# emits READY=1) — see deploy/zclassic23-test.service for the
+# auto-restart variant used on the test instance.
+Type=simple
+
+# P5.2: operator-specific flags (externalip + addnodes) live in
+# ~/.config/zclassic23/env, NOT here. The `-` prefix makes the file
+# optional: a fresh clone without the env file still starts cleanly
+# and falls back to DNS seeds + addrman for peer discovery. See
+# deploy/zclassic23.env.example for the expected variable shape.
+EnvironmentFile=-%h/.config/zclassic23/env
+
+ExecStart=%h/zclassic23/build/bin/zclassic23 \
+    -datadir=%h/.zclassic-c23 \
+    -port=8023 \
+    -rpcport=18232 \
+    -listen \
+    -txindex \
+    -tor \
+    $ZCL_EXTERNALIP_FLAG \
+    $ZCL_ADDNODE_FLAGS \
+    -showmetrics=0
+# Local dev/operator port contract: zclassic23 listens on 8023 so a sibling
+# legacy zclassicd/zcashd can own the historical ZClassic/Zcash ports. The
+# node still dials external ZClassic peers on their advertised ports through
+# addrman/addnode; this setting controls only our local listener.
+# Restart=always (not on-failure) so the self-recovery escape hatch in
+# process_block.c (g_shutdown_requested=1 after 10 consecutive UTXO
+# failures at the same height) causes a systemd restart.  That restart
+# is what consumes the needs_reimport flag in boot.c and runs the LDB
+# UTXO reimport.  StartLimitBurst still bounds crash-loops for operator
+# attention, and `systemctl stop` is still honored as an intentional stop.
+Restart=always
+RestartSec=10
+
+# systemd's implicit stop signal is normally enough, but this node is
+# too stateful to tolerate a lost or delayed stop transition. Send a
+# few idempotent SIGTERM pulses explicitly through ExecStop so
+# restart/stop reliably trips the binary's shutdown flag before the
+# manager starts its TimeoutStopSec clock.
+ExecStop=/bin/sh -c 'for i in 1 2 3; do /bin/kill -TERM "$MAINPID" 2>/dev/null || exit 0; sleep 2; done'
+
+# WAL drain + Tor teardown budget. The earlier 90s ceiling was
+# breached in the 2026-05-18 session (15 restarts in 8 hours, every
+# stop SIGKILL'd because WAL fsync + Tor teardown didn't complete in
+# 90s on a busy node). Each SIGKILL costs peer reputation — remote
+# peers flag us as flaky, throttle reconnect attempts. Bump to 300s
+# so the worst-case shutdown is clean; if it ever exceeds 300s
+# something is genuinely wedged and warrants investigation.
+TimeoutStopSec=300
+
+# control-group ensures the embedded Tor pthread (and any helper
+# processes) die with the parent instead of lingering.
+KillMode=control-group
+
+# Memory pressure — drop OOMScoreAdjust so the kernel evicts other user
+# processes first. MemoryHigh=6G soft-caps RSS without the kill-switch
+# behavior of MemoryMax.
+OOMScoreAdjust=-500
+MemoryHigh=6G
+
+# Sandboxing. ProtectSystem=strict makes / read-only except the explicit
+# ReadWritePaths below. Tor writes its state inside vendor/tor/etc and
+# the datadir; nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.zclassic-c23 %h/zclassic23/vendor/tor/etc
+
+# PrivateTmp=yes gives the unit a unit-private /tmp — safer than
+# sharing /tmp with other services. Tor currently does not use /tmp for
+# sockets in our embedded build (dynhost is in-process), so this is
+# safe. If Tor ever regresses to a /tmp unix socket, drop this.
+PrivateTmp=yes
+
+StandardOutput=append:%h/.zclassic-c23/node.log
+StandardError=append:%h/.zclassic-c23/node.log
+
+# P7.7: the first SIGABRT on the live node today produced no usable
+# post-mortem because the kernel's default RLIMIT_CORE is 0 under
+# systemd's user manager.  Lift the ceiling and hint a core-dump
+# directory via env; the binary creates the dir lazily on first abort
+# if ZCL_CORE_DIR is set (no ExecStartPre=mkdir to keep the unit tidy).
+# The system still needs a core_pattern that writes into the per-user
+# dir — e.g. as root, once per host:
+#   sysctl -w kernel.core_pattern='|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h'
+# systemd-coredump will then archive the dump under /var/lib/systemd/coredump/.
+# Alternatively, a non-systemd-coredump host can set:
+#   sysctl -w kernel.core_pattern='%e.%p.core'
+# and change to the ZCL_CORE_DIR before dumping.
+LimitCORE=infinity
+Environment="ZCL_CORE_DIR=%h/.zclassic-c23/cores"
+
+[Install]
+WantedBy=default.target

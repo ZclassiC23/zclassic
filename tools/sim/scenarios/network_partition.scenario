@@ -1,0 +1,14 @@
+# Drop peer traffic while a simulated network partition is active.
+
+seed        0x0000000000000007
+boot_phase  listening
+peer_count  1
+partition_network for=30s
+send_block  peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture
+send_malformed_block peer=0 type=invalid_pow
+
+expect      no_crash
+expect      partition_drops == 2
+expect      blocks_sent == 0
+expect      consensus_rejects == 0
+expect      tip_height == 0

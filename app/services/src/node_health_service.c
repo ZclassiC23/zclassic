@@ -1,0 +1,535 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+// one-result-type-ok:health-no-fallible-surface
+/* E2 (one-result-type) override. This service owns no fallible public
+ * surface: node_health_collect() returns void (it best-effort fills a
+ * caller-owned snapshot, defaulting fields it cannot read rather than
+ * failing), and node_health_chain_advance_synced() is a pure predicate
+ * (a yes/no question over a cac_decision, not an operation that can
+ * fail for a reason). There is no error to carry, so zcl_result would
+ * add a code/message that is always ZCL_OK. Marker, not a baseline
+ * entry, per check_one_result_type.sh's override path. */
+
+#include "platform/time_compat.h"
+#include "services/node_health_service.h"
+#include "jobs/tip_finalize_stage.h"
+#include "services/block_source_policy.h"
+#include "services/chain_evidence_authority_service.h"
+#include "services/chain_state_service.h"
+#include "services/legacy_mirror_sync_service.h"
+#include "services/sync_monitor.h"
+#include "config/runtime.h"
+#include "controllers/sync_controller.h"
+#include "controllers/network_controller.h"
+#include "models/block.h"
+#include "models/database.h"
+#include "net/onion_service.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "net/connman.h"
+#include "net/download.h"
+#include "net/msg_internal.h"
+#include "net/tor_integration.h"
+#include "adapters/outbound/persistence/node_health_store_sqlite.h"
+#include "ports/node_health_store_port.h"
+#include <stdio.h>
+#include <errno.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "util/log_macros.h"
+#include "util/alerts.h"
+
+/* Read process start time from /proc/self/stat (field 22, starttime in
+ * clock ticks since boot).  Combined with /proc/uptime this gives the
+ * true process age even on the very first healthcheck call. */
+static int64_t proc_uptime_seconds(void)
+{
+    /* System uptime */
+    double sys_up = 0;
+    FILE *f = fopen("/proc/uptime", "r");
+    if (!f) return 0;
+    if (fscanf(f, "%lf", &sys_up) != 1) { fclose(f); return 0; }
+    fclose(f);
+
+    /* Process start time (field 22 of /proc/self/stat) */
+    f = fopen("/proc/self/stat", "r");
+    if (!f) return 0;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return 0;
+    buf[n] = '\0';
+
+    /* Skip past comm field (contains parens, may have spaces) */
+    const char *p = strrchr(buf, ')');
+    if (!p) return 0;
+    p++;
+    /* Fields after ')': state(3)..starttime(22) — skip 19 fields */
+    for (int i = 0; i < 19; i++) {
+        while (*p == ' ') p++;
+        while (*p && *p != ' ') p++;
+    }
+    while (*p == ' ') p++;
+    long long starttime = 0;
+    if (sscanf(p, "%lld", &starttime) != 1) return 0;
+
+    long clk = sysconf(_SC_CLK_TCK);
+    if (clk <= 0) clk = 100;
+    double proc_start_sec = (double)starttime / (double)clk;
+    double age = sys_up - proc_start_sec;
+    return age > 0 ? (int64_t)age : 0;
+}
+
+static int64_t get_rss_kb(void)
+{
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f)
+        LOG_RETURN((int64_t)-1, "health",
+                   "get_rss_kb: fopen /proc/self/status failed: %s",
+                   strerror(errno));
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            int64_t kb = 0;
+            sscanf(line + 6, " %lld", (long long *)&kb);
+            fclose(f);
+            return kb;
+        }
+    }
+    fclose(f);
+    LOG_RETURN((int64_t)-1, "health",
+               "get_rss_kb: VmRSS line not found in /proc/self/status");
+}
+static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
+static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
+
+bool node_health_chain_advance_synced(const struct cac_decision *decision)
+{
+    if (!decision)
+        return false;
+    if (decision->result != CAC_DECISION_USE_SOURCE)
+        return false;
+    if (decision->selected_source <= CAC_SOURCE_NONE ||
+        decision->selected_source >= CAC_SOURCE_NUM)
+        return false;
+    if (decision->blocker[0] != '\0')
+        return false;
+    if (decision->local_height < 0 || decision->target_height < 0)
+        return false;
+    if (decision->local_height + 1 < decision->target_height)
+        return false;
+    const struct cac_source_status *source =
+        &decision->sources[decision->selected_source];
+    return source->available && source->healthy && source->selectable &&
+           !source->blocked && source->selection_reason[0] == '\0';
+}
+
+void node_health_collect(struct node_health_snapshot *snapshot,
+                         struct node_db *ndb,
+                         const struct main_state *ms)
+{
+    struct node_health_snapshot empty = {0};
+    if (!snapshot) return;
+    *snapshot = empty;
+
+    if (!ndb)
+        ndb = app_runtime_node_db();
+    if (!ms)
+        ms = sync_monitor_main_state();
+
+    snapshot->sync_state = sync_get_state();
+    snapshot->synced = (snapshot->sync_state == SYNC_AT_TIP);
+    snapshot->tip_height = -1;
+    snapshot->header_height = -1;
+    snapshot->peer_best_height = -1;
+    snapshot->log_head = -1;
+    snapshot->log_head_gap = -1;
+    snapshot->last_error_age_seconds = -1;
+    snapshot->tor_enabled = tor_integration_is_enabled();
+    snapshot->tor_ready = tor_integration_is_ready();
+    snapshot->onion_service_ready = false;
+
+    {
+        const char *onion = onion_service_get_address();
+        if (onion && onion[0]) {
+            snprintf(snapshot->onion_address, sizeof(snapshot->onion_address),
+                     "%s", onion);
+            snapshot->onion_service_ready = true;
+        }
+    }
+
+    struct connman *cm = rpc_net_get_connman();
+    snapshot->peer_count = cm ? connman_get_node_count(cm) : 0;
+    snapshot->has_peers = snapshot->peer_count > 0;
+
+    /* Classify handshaked peers by subver so /api/health.network can
+     * report magicbean vs zclassic-c23 counts (Goal 3 — magic-bean
+     * reporting). Uses the same msg_version_classify_peer() helper as
+     * getnetworkinfo so the two surfaces never drift. */
+    if (cm) {
+        zcl_mutex_lock(&cm->manager.cs_nodes);
+        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+            struct p2p_node *node = cm->manager.nodes[i];
+            if (!node || node->disconnect) continue;
+            if (node->state < PEER_HANDSHAKE_COMPLETE) continue;
+            bool is_mb = false, is_z23 = false;
+            msg_version_classify_peer(node->sub_ver, node->services,
+                                      &is_mb, &is_z23);
+            if (is_mb) snapshot->magicbean_peer_count++;
+            if (is_z23) snapshot->zclassic_c23_peer_count++;
+        }
+        zcl_mutex_unlock(&cm->manager.cs_nodes);
+    }
+
+    if (ms) {
+        struct block_index *tip = active_chain_tip(&ms->chain_active);
+        if (tip) {
+            snapshot->tip_height = tip->nHeight;
+            if (tip->nTime > 0) {
+                int64_t now = (int64_t)platform_time_wall_time_t();
+                if (now > (int64_t)tip->nTime) {
+                    snapshot->tip_stale_seconds = now - (int64_t)tip->nTime;
+                    snapshot->tip_stale = snapshot->tip_stale_seconds > 600;
+                }
+            }
+        }
+    }
+
+    if (ndb && ndb->open) {
+        struct node_db_status dbs = {0};
+        struct db_service *dbsvc = app_runtime_db_service();
+        struct db_service_status svc_status = {0};
+        /* The three persistent reads node_health does go through the
+         * node_health_store port so the service never names sqlite. The
+         * two SELECTs read the shared query connection; the WAL stat
+         * resolves the primary node-DB filename. Same SQL, same WAL path,
+         * same fall-back-to-in-memory-estimate behaviour as before. */
+        struct node_health_store_sqlite_ctx store_ctx;
+        struct node_health_store_port store = {0};
+        node_health_store_sqlite_bind(&store_ctx, app_runtime_query_db(),
+                                      ndb->db, &store);
+        node_db_get_status(ndb, &dbs);
+        db_service_get_status(dbsvc, &svc_status);
+        snapshot->db_open = dbs.open;
+        snapshot->db_tx_open = dbs.tx_open;
+        snapshot->db_turbo_mode = dbs.turbo_mode;
+        snapshot->db_last_sqlite_rc = dbs.last_sqlite_rc;
+        snapshot->db_service_started = svc_status.started;
+        snapshot->db_service_worker_started = svc_status.worker_started;
+        snapshot->db_service_stop_requested = svc_status.stop_requested;
+        snapshot->db_service_queue_depth = svc_status.queue_depth;
+        if (svc_status.started_at > 0) {
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            if (now >= svc_status.started_at)
+                snapshot->db_service_uptime_seconds =
+                    now - svc_status.started_at;
+        }
+        snprintf(snapshot->db_last_op, sizeof(snapshot->db_last_op),
+                 "%s", dbs.last_op);
+        if (dbs.last_activity_time > 0) {
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            if (now >= dbs.last_activity_time)
+                snapshot->db_last_activity_age_seconds =
+                    now - dbs.last_activity_time;
+        }
+        if (snapshot->tip_height < 0) {
+            if (!store.tip_height_from_blocks(store.self,
+                                              &snapshot->tip_height)) {
+                snapshot->tip_height = db_block_max_height(ndb);
+            }
+        }
+        if (!store.utxo_count(store.self, &snapshot->utxo_count)) {
+            snapshot->utxo_count = node_db_utxo_count(ndb);
+        }
+
+        int64_t wal_bytes = 0;
+        if (store.wal_size_bytes(store.self, &wal_bytes))
+            snapshot->wal_size_bytes = wal_bytes;
+    }
+
+    if (ms && ms->pindex_best_header)
+        snapshot->header_height = ms->pindex_best_header->nHeight;
+    if (snapshot->header_height < 0)
+        snapshot->header_height = snapshot->tip_height;
+
+    if (cm) {
+        int64_t newest_peer_block_time = 0;
+        zcl_mutex_lock(&cm->manager.cs_nodes);
+        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+            const struct p2p_node *node = cm->manager.nodes[i];
+            if (!node) continue;
+            if (node->starting_height > snapshot->peer_best_height)
+                snapshot->peer_best_height = node->starting_height;
+            if (node->last_block_time > newest_peer_block_time)
+                newest_peer_block_time = node->last_block_time;
+        }
+        zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+        (void)newest_peer_block_time;
+    }
+
+    if (snapshot->peer_best_height >= 0 && snapshot->tip_height >= 0 &&
+        snapshot->peer_best_height > snapshot->tip_height) {
+        snapshot->tip_lag = snapshot->peer_best_height - snapshot->tip_height;
+    }
+
+    /* Prime Directive health = network_tip - log_head. log_head is the
+     * tip_finalize cursor (the reducer's finalized height). */
+    {
+        uint64_t lh = tip_finalize_stage_cursor();
+        snapshot->log_head = (lh > 0) ? (int)(lh - 1) : -1;
+        if (snapshot->peer_best_height >= 0 && snapshot->log_head >= 0)
+            snapshot->log_head_gap =
+                snapshot->peer_best_height - snapshot->log_head;
+    }
+
+    {
+        struct cac_decision decision;
+        block_source_policy_get_status(&decision);
+        if (node_health_chain_advance_synced(&decision))
+            snapshot->synced = true;
+    }
+
+    dl_get_stats(msg_get_download_mgr(),
+                 &snapshot->blocks_requested,
+                 &snapshot->blocks_received,
+                 &snapshot->blocks_timed_out,
+                 &snapshot->in_flight,
+                 &snapshot->queued);
+    snapshot->queue_backed_up =
+        (snapshot->queued > 256 || snapshot->in_flight > 128);
+
+    {
+        struct node_db_sync_job_status jobs = {0};
+        node_db_sync_get_job_status(&jobs);
+        snapshot->catchup_active = jobs.catchup_active;
+        snapshot->catchup_height = jobs.catchup_height;
+        snapshot->catchup_target_height = jobs.catchup_target_height;
+        snapshot->import_active = jobs.import_active;
+        snapshot->import_rows_written = jobs.import_rows_written;
+        if (jobs.catchup_started_at > 0) {
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            if (now >= jobs.catchup_started_at)
+                snapshot->catchup_uptime_seconds = now - jobs.catchup_started_at;
+        }
+        if (jobs.catchup_last_progress_at > 0) {
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            if (now >= jobs.catchup_last_progress_at)
+                snapshot->catchup_progress_age_seconds =
+                    now - jobs.catchup_last_progress_at;
+        }
+        if (jobs.import_started_at > 0) {
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            if (now >= jobs.import_started_at)
+                snapshot->import_uptime_seconds = now - jobs.import_started_at;
+        }
+        if (jobs.import_last_progress_at > 0) {
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            if (now >= jobs.import_last_progress_at)
+                snapshot->import_progress_age_seconds =
+                    now - jobs.import_last_progress_at;
+        }
+
+        struct error_ring *er = error_ring_global();
+        const struct error_entry *last_err = error_ring_last(er);
+        snapshot->error_total = error_ring_total(er);
+        if (last_err && last_err->message[0]) {
+            int64_t now_us = (int64_t)platform_time_wall_time_t() * 1000000;
+            if (last_err->timestamp_us > 0) {
+                if (now_us >= last_err->timestamp_us) {
+                    snapshot->last_error_age_seconds =
+                        (now_us - last_err->timestamp_us) / 1000000;
+                } else if (last_err->timestamp_us - now_us < 1000000) {
+                    snapshot->last_error_age_seconds = 0;
+                }
+            }
+            snapshot->last_error_recent =
+                snapshot->last_error_age_seconds >= 0 &&
+                snapshot->last_error_age_seconds <= HEALTH_RECENT_ERROR_SECONDS;
+            snprintf(snapshot->last_error, sizeof(snapshot->last_error),
+                     "%s", last_err->message);
+            snprintf(snapshot->last_error_type, sizeof(snapshot->last_error_type),
+                     "%s", event_type_name(last_err->type));
+        }
+    }
+
+    snapshot->uptime_seconds = proc_uptime_seconds();
+
+    {
+        int64_t rss_kb = get_rss_kb();
+        snapshot->memory_rss_mb = (rss_kb > 0) ? rss_kb / 1024 : -1;
+    }
+
+    if (!snapshot->has_peers) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "no_peers");
+    } else if (snapshot->catchup_active &&
+               snapshot->catchup_progress_age_seconds > HEALTH_JOB_STALL_SECONDS) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "catchup_stalled_%llds",
+                 (long long)snapshot->catchup_progress_age_seconds);
+    } else if (snapshot->import_active &&
+               snapshot->import_progress_age_seconds > HEALTH_JOB_STALL_SECONDS) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "import_stalled_%llds",
+                 (long long)snapshot->import_progress_age_seconds);
+    } else if (!snapshot->synced) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "sync_state_%s", sync_state_name(snapshot->sync_state));
+    } else if (snapshot->header_height > snapshot->tip_height + 1) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "headers_ahead_%d", snapshot->header_height - snapshot->tip_height);
+    } else if (snapshot->tip_lag > 1) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "tip_lag_%d", snapshot->tip_lag);
+    } else if (snapshot->tip_stale) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "tip_stale");
+    } else if (snapshot->queue_backed_up) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "download_queue_backed_up");
+    } else if (snapshot->db_service_started &&
+               !snapshot->db_service_worker_started) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "db_service_worker_down");
+    } else if (snapshot->db_service_queue_depth > 32) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "db_service_queue_%zu", snapshot->db_service_queue_depth);
+    } else if (snapshot->db_tx_open &&
+               snapshot->db_last_activity_age_seconds > 60) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "db_tx_open_%llds",
+                 (long long)snapshot->db_last_activity_age_seconds);
+    } else if (snapshot->memory_rss_mb > 4096) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "high_memory_usage");
+    }
+
+    snapshot->healthy = snapshot->synced &&
+                        snapshot->has_peers &&
+                        snapshot->header_height <= snapshot->tip_height + 1 &&
+                        !snapshot->tip_stale &&
+                        snapshot->tip_lag <= 1;
+
+    /* Surface tip-advance age + flip healthy when the watchdog deadman
+     * threshold is crossed in any non-tip state with peers. Threshold
+     * matches sync_watchdog_service.c state_stuck_timeout for
+     * HEADERS_DOWNLOAD / BLOCKS_DOWNLOAD (600s). */
+    snapshot->tip_advance_age_seconds = sync_monitor_tip_advance_age();
+    if (snapshot->tip_advance_age_seconds > 600 &&
+        snapshot->has_peers &&
+        snapshot->sync_state != SYNC_AT_TIP &&
+        snapshot->degraded_reason[0] == '\0') {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "tip_advance_age_%llds_in_%s",
+                 (long long)snapshot->tip_advance_age_seconds,
+                 sync_state_name(snapshot->sync_state));
+        snapshot->healthy = false;
+    }
+
+    /* Watchdog stats */
+    {
+        struct watchdog_stats wd;
+        sync_monitor_get_stats(&wd);
+        snapshot->wd_checks_run = wd.checks_run;
+        snapshot->wd_recoveries = wd.recoveries_total;
+        snapshot->wd_blocks_per_sec = wd.blocks_per_sec;
+        snapshot->wd_escalation_level = wd.escalation_level;
+        snapshot->wd_last_recovery_time = wd.last_recovery_time;
+        snapshot->wd_last_recovery_type = (int)wd.last_recovery;
+        snapshot->wd_last_recovery_target_height =
+            wd.last_recovery_target_height;
+        snapshot->wd_last_recovery_manifest_height =
+            wd.last_recovery_manifest_height;
+        snprintf(snapshot->wd_last_recovery_name,
+                 sizeof(snapshot->wd_last_recovery_name),
+                 "%s", watchdog_recovery_type_name(wd.last_recovery));
+        snprintf(snapshot->wd_last_recovery_reason,
+                 sizeof(snapshot->wd_last_recovery_reason),
+                 "%s", wd.last_recovery_reason);
+        snprintf(snapshot->wd_last_recovery_trigger,
+                 sizeof(snapshot->wd_last_recovery_trigger),
+                 "%s", wd.last_recovery_trigger);
+    }
+
+    /* Mirror lag SLO breach → loud health degradation. When mirror
+     * reports "fatal" severity, flip healthy=false so the sd_notify
+     * heartbeat thread stops pinging WatchdogSec and systemd restarts
+     * the unit. This is the hard half of fail-loud-and-fast. */
+    {
+        struct chain_evidence_controller cec;
+        struct chain_evidence_controller_view view;
+        chain_evidence_controller_init(&cec, ndb, csr_instance());
+        chain_evidence_controller_snapshot(&cec, &view);
+        if (view.state == CEC_CONTRADICTION_FROZEN) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "%s", view.health_reason[0] ? view.health_reason
+                                                       : "chain_evidence_contradiction");
+            }
+            snapshot->healthy = false;
+        } else if (view.health_reason[0]) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "%s", view.health_reason);
+            }
+            snapshot->healthy = false;
+        }
+    }
+
+    {
+        struct legacy_mirror_sync_stats ms = {0};
+        legacy_mirror_sync_stats_snapshot(&ms);
+        snapshot->mirror_lag_blocks = ms.lag;
+        snapshot->mirror_lag_breach_seconds = ms.lag_breach_seconds;
+        snapshot->mirror_lag_critical_seconds = ms.lag_critical_seconds;
+        snprintf(snapshot->mirror_lag_breach_severity,
+                 sizeof(snapshot->mirror_lag_breach_severity), "%s",
+                 ms.lag_breach_severity);
+        if (ms.unsafe_overrides_total > 0) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "mirror_unsafe_overrides_%lld",
+                         (long long)ms.unsafe_overrides_total);
+            }
+            snapshot->healthy = false;
+        }
+        if (strcmp(ms.lag_breach_severity, "fatal") == 0) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "mirror_lag_fatal_%lld_blocks_%llds",
+                         (long long)ms.lag,
+                         (long long)ms.lag_critical_seconds);
+            }
+            snapshot->healthy = false;
+        }
+    }
+
+    /* Operator-needed latch — the loudest signal in the system. When the
+     * auto-healing condition engine exhausts its remedies it emits
+     * EV_OPERATOR_NEEDED, which lib/util/alerts.c latches. Reflect it here
+     * so a halt that no remedy could clear shows up as DEGRADED in
+     * zcl_status and stops the sd_notify heartbeat. Overrides any softer
+     * degraded_reason because it means automation has given up. */
+    {
+        char detail[sizeof(snapshot->operator_needed_detail)] = {0};
+        snapshot->operator_needed =
+            alerts_operator_needed(detail, sizeof(detail), NULL);
+        if (snapshot->operator_needed) {
+            snprintf(snapshot->operator_needed_detail,
+                     sizeof(snapshot->operator_needed_detail), "%s", detail);
+            snprintf(snapshot->degraded_reason,
+                     sizeof(snapshot->degraded_reason),
+                     "operator_needed:%s", detail[0] ? detail : "unspecified");
+            snapshot->healthy = false;
+        }
+    }
+}

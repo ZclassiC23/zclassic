@@ -1,0 +1,10 @@
+<a href='/wallet/tx/{{{txid}}}' style='text-decoration:none;color:inherit'>
+<div class='tx-card' style='border-left-color:#a78bfa'>
+<div style='display:flex;justify-content:space-between;
+align-items:baseline'>
+<span style='color:#a78bfa;font-weight:700'>
+&#x1F512; Shielded</span>
+<span class='pill pill-private'>t &rarr; z</span></div>
+<div class='tx-meta'>
+<span class='tx-time' title='{{timestamp}}'>{{{rel_time}}}</span>
+</div></div></a>

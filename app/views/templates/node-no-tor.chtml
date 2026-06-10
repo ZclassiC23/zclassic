@@ -1,0 +1,11 @@
+<h3>Tor Hidden Service</h3>
+<div style='background:#111;border:1px solid #1e1e1e;
+border-radius:10px;padding:16px;margin:8px 0'>
+<div style='display:flex;align-items:center;gap:8px'>
+<div style='width:8px;height:8px;border-radius:50%;
+background:#666'></div>
+<span style='color:#666;font-weight:700;font-size:14px'>
+Not configured</span></div>
+<div style='color:#555;font-size:13px;margin-top:8px'>
+Tor hidden service will start automatically when Tor is available.</div>
+</div>

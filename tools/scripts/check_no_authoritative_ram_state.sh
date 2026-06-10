@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Lint gate E7 — no-authoritative-RAM-state (RATCHET).
+#
+# Consensus authority must live in the log, projections, and durable cursors.
+# In-memory chain indexes can exist only as derived caches. This gate blocks
+# new direct access to active_chain internals and new global/static active_chain
+# instances, both of which make RAM look authoritative again.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+BASELINE=tools/scripts/no_authoritative_ram_state_baseline.txt
+[ -f "$BASELINE" ] || touch "$BASELINE"
+
+declare -A baseline
+baseline_count=0
+while IFS= read -r line; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    baseline["$line"]=1
+    baseline_count=$((baseline_count + 1))
+done < "$BASELINE"
+
+pattern='(\.|->)chain_active\.(height|chain|capacity)|(^|[[:space:]])static[[:space:]]+struct[[:space:]]+active_chain[[:space:]]+[A-Za-z_][A-Za-z0-9_]*|(^|[[:space:]])struct[[:space:]]+active_chain[[:space:]]+g_[A-Za-z_][A-Za-z0-9_]*'
+
+violations=()
+while IFS= read -r f; do
+    while IFS= read -r match; do
+        key=$(printf '%s:%s\n' "$f" "$match" | sed -E 's/[[:space:]]+/ /g')
+        line_content="${key#*:}"
+        line_content="${line_content#*:}"
+        if printf '%s\n' "$line_content" | grep -qE '//[[:space:]]*ram-state-ok:[A-Za-z][A-Za-z0-9_-]*'; then
+            continue
+        fi
+        if [ -n "${baseline[$key]+x}" ]; then
+            continue
+        fi
+        violations+=("$key")
+    done < <(grep -nE "$pattern" "$f" || true)
+done < <(find app lib config tools -type f \( -name '*.c' -o -name '*.h' \) \
+    ! -path '*/test/*' \
+    ! -path 'tools/scripts/*' \
+    ! -path 'tools/lint/*' \
+    | sort)
+
+if [ "${#violations[@]}" -eq 0 ]; then
+    echo "check_no_authoritative_ram_state: clean — $baseline_count grandfathered RAM-authority surface(s), no new ones"
+    exit 0
+fi
+
+echo ""
+echo "check_no_authoritative_ram_state: ${#violations[@]} NEW RAM-authority surface(s)"
+echo ""
+for v in "${violations[@]}"; do
+    echo "  $v"
+done
+echo ""
+echo "Use active_chain accessors for derived reads, and keep authoritative"
+echo "consensus state in log/projection/cursor storage. If this is a deliberate"
+echo "derived cache, add '// ram-state-ok:<tag>' with the invariant."
+exit 1

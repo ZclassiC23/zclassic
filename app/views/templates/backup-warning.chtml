@@ -1,0 +1,12 @@
+<div class='card' style='border-left-color:#f87171;margin:16px 0'>
+<div style='display:flex;align-items:center;gap:8px'>
+<span style='font-size:20px'>&#x26A0;</span>
+<div>
+<div style='color:#f87171;font-weight:700;font-size:14px'>
+Back Up Your Wallet</div>
+<div style='color:#888;font-size:14px'>
+Private keys are only on this device. Export to a safe location.</div>
+</div></div>
+<div style='margin-top:10px;font-size:13px;color:#555'>
+Terminal: <code>zcl-rpc dumpprivkey {{address}}</code></div>
+</div>

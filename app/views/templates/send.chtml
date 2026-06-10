@@ -1,0 +1,40 @@
+<div style='text-align:center;padding:16px 0'>
+<div style='color:#34d399;font-size:24px;font-weight:700'>
+{{{spendable}}} ZCL</div>
+<div style='color:#888;font-size:14px;margin-top:2px'>
+Spendable balance</div>
+{{{shielded_note}}}
+</div>
+
+<form id='send-form' method='POST' action='zcl://node/wallet/send/review' 
+onsubmit='return validateSend()' autocomplete='off'>
+<div class='form-group'>
+<label class='form-label' for='addr'>To</label>
+<input class='form-input' type='text' id='addr' name='address' 
+placeholder='Recipient address (t1... or zs1...)' required 
+list='contacts'>
+<div id='addr-err' class='form-error'></div>
+<div id='privacy-hint' style='font-size:14px;margin-top:4px;
+height:16px'></div></div>
+
+{{{currency_selector}}}
+
+<div class='form-group'>
+<label class='form-label' for='amt'>Amount</label>
+<div style='display:flex;gap:8px;align-items:center'>
+<input class='form-input' type='text' id='amt' name='amount' 
+inputmode='decimal' style='flex:1' placeholder='0.00' required 
+oninput='updateRemaining()'>
+<button type='button' class='send-max' 
+onclick='document.getElementById(\"amt\").value=
+(BAL-{{{fee}}}).toFixed(8);updateRemaining()'>Max</button></div>
+<div id='remaining' class='remaining' 
+style='color:#888;font-size:14px;margin:4px 0'></div>
+<div id='amt-err' class='form-error'></div>
+<div style='color:#888;font-size:14px;margin:4px 0'>
+Network fee: <span style='color:#f59e0b'>{{{fee}}} ZCL</span>
+</div></div>
+<button type='submit' class='btn-primary' style='margin-top:16px' 
+id='review-btn'>Review Send</button>
+</form>
+{{{contacts_datalist}}}

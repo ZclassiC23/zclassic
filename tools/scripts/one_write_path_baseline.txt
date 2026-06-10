@@ -1,0 +1,10 @@
+# E6 ratchet baseline: legacy chain-state write surfaces to delete in B8.
+# Format: <file>:<line>: <matched source>
+#
+# The legacy validation engine (process_new_block / accept_block / connect_tip
+# / disconnect_tip / activate_best_chain) has been DELETED — the reducer
+# (reducer_ingest_block / reducer_kick) is the sole block-connect engine.
+#
+# Intentionally empty. Destination reducer/stage, boot, shutdown, and canonical
+# SQLite writer surfaces use inline `one-write-path-ok:<tag>` markers so any
+# untagged new chain-state writer fails this ratchet immediately.

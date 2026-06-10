@@ -1,0 +1,6 @@
+<div class='empty-state'>
+<div style='color:#a78bfa;font-size:14px'>
+No private addresses yet</div>
+<div style='color:#888;font-size:14px;margin-top:4px'>
+Generate one: <code>zcl-rpc z_getnewaddress</code></div>
+</div>

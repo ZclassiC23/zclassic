@@ -1,0 +1,44 @@
+<div class='card' style='border-left-color:#a78bfa;padding:20px;
+background:linear-gradient(135deg,#141414,#1a1a2a)'>
+<div style='text-align:center'>
+<div style='font-size:14px;color:#888;margin-bottom:8px'>
+&#x1F512; Securing</div>
+<div style='font-size:40px;color:#a78bfa;font-weight:800'>
+{{{amount}}} ZCL</div>
+<div style='color:#888;font-size:14px;margin-top:8px'>
+Fee: {{{fee}}} ZCL &middot; Total: {{{total}}} ZCL</div>
+</div></div>
+
+<div class='card'>
+<div style='color:#888;font-size:14px;line-height:1.6'>
+<div style='margin-bottom:8px'>
+<span style='color:#34d399;font-weight:700'>Step 1:</span> 
+Your public ZCL moves to a private address (~2.5 min).</div>
+<div style='margin-bottom:8px'>
+<span style='color:#a78bfa;font-weight:700'>Step 2:</span> 
+Funds are spendable immediately. For maximum privacy, wait ~6 hours 
+so timing analysis cannot link back to the public source.</div>
+<div>
+<span style='color:#60a5fa;font-weight:700'>Step 3:</span> 
+Spend from your private balance with no on-chain link to your identity.</div>
+</div></div>
+
+<div style='display:flex;gap:10px;margin:16px 0'>
+<a href='/wallet' class='btn-secondary' 
+style='flex:1;text-align:center;text-decoration:none;
+display:flex;align-items:center;justify-content:center'>Cancel</a>
+<form method='POST' action='zcl://node/wallet/shield/confirm' 
+style='flex:2;margin:0'>
+<input type='hidden' name='amount' value='{{{amount}}}'>
+<button type='submit' class='btn-primary' 
+style='background:#a78bfa;color:#fff'
+ id='shield-btn'>Confirm</button></form></div>
+<div id='shield-loading' class='loading-overlay' style='display:none'>
+<div class='spinner'></div>
+<p>Securing funds...</p></div>
+<script>
+document.getElementById('shield-btn').addEventListener('click',
+function(e){e.preventDefault();this.disabled=true;
+document.getElementById('shield-loading').style.display='flex';
+this.form.submit();});
+</script>

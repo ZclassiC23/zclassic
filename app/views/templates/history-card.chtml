@@ -1,0 +1,9 @@
+<a href='/wallet/tx/{{{txid}}}' style='text-decoration:none;color:inherit'>
+<div class='tx-card' style='border-left-color:{{{color}}}'>
+<div style='display:flex;justify-content:space-between;
+align-items:baseline'>
+<span class='tx-amount {{{amount_class}}}'>{{{sign}}}{{{amount}}} ZCL</span>
+<span class='pill {{{pill_class}}}'>{{{pill_label}}}</span></div>
+<div class='tx-meta'>
+<span class='tx-time' title='{{timestamp}}'>{{{rel_time}}}</span>
+</div></div></a>

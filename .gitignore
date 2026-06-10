@@ -1,0 +1,49 @@
+# Build artifacts
+build/
+
+# Vendor (built from source, not tracked)
+vendor/lib/
+vendor/zclassic-ref/
+vendor/sqlite3.c
+vendor/tor/
+
+# Data / runtime
+*.db
+*.db-wal
+*.db-shm
+*.log
+node.log
+crash_log.txt
+/core
+/core.*
+/vgcore.*
+
+# Test artifacts (Tor integration temp dirs)
+zcl_torrc_hs_*/
+zcl_torrc_path_*/
+zcl_hostname_*/
+zcl_persist_*/
+.zcl_test_*/
+.zcl_blog_*/
+
+test-tmp/
+leak-*
+
+# Editor / OS
+.DS_Store
+.vscode/
+*.swp
+*~
+tags
+TAGS
+.idea/
+.zcl_test_render/
+
+# Claude Code agent worktrees (runtime)
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Other AI tool local state
+.antigravitycli/
+.gemini/
+.aider*

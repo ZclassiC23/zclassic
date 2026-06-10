@@ -1,0 +1,6 @@
+<div class='result-warning'>
+<div class='icon'>&#x1F50D;</div>
+<h2>Transaction Not Found</h2>
+<p>This transaction is not in your wallet.</p>
+<a href='/wallet/history' style='color:#34d399'>Back to History</a>
+</div>

@@ -1,0 +1,381 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Round-trip tests for wallet_sqlite: open, write, close, reopen,
+ * read, confirm keys survived.  This is the regression test for
+ * the silent-open bug (see WALLET_PERSISTENCE_PLAN.md §2) at the
+ * service layer — Agent 3's spec_e2e_wallet_restart covers the
+ * same ground through a real forked daemon.
+ *
+ * Also exercises wallet_sqlite_self_test, invariant rejection in
+ * wallet_sqlite_write_key_r, and wallet_sqlite_get_health. */
+
+#include "test/test_helpers.h"
+#include "wallet/wallet_sqlite.h"
+#include "wallet/wallet.h"
+#include "wallet/keystore.h"
+#include "keys/key.h"
+#include "util/result.h"
+#include "support/cleanse.h"
+#include "util/safe_alloc.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Minimal schema mirroring the production tables wallet_sqlite.c
+ * prepares statements against.  wallet_watch_only is included —
+ * omitting it was the original bug. */
+static const char *k_full_schema =
+    "CREATE TABLE wallet_keys ("
+    "  pubkey_hash BLOB PRIMARY KEY,"
+    "  pubkey BLOB NOT NULL,"
+    "  privkey BLOB NOT NULL,"
+    "  compressed INTEGER NOT NULL DEFAULT 1,"
+    "  created_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE wallet_sapling_keys ("
+    "  ivk BLOB PRIMARY KEY,xsk BLOB NOT NULL,xfvk BLOB NOT NULL,"
+    "  diversifier BLOB NOT NULL,pk_d BLOB NOT NULL,"
+    "  child_index INTEGER NOT NULL,"
+    "  address TEXT NOT NULL DEFAULT '');"
+    "CREATE TABLE wallet_scripts ("
+    "  script_hash BLOB PRIMARY KEY,"
+    "  redeem_script BLOB NOT NULL);"
+    "CREATE TABLE wallet_seed ("
+    "  id INTEGER PRIMARY KEY CHECK(id=1),"
+    "  seed BLOB NOT NULL,next_child INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE wallet_transactions ("
+    "  txid BLOB PRIMARY KEY,raw_tx BLOB NOT NULL,"
+    "  block_hash BLOB,block_height INTEGER,"
+    "  time_received INTEGER NOT NULL,"
+    "  from_me INTEGER NOT NULL DEFAULT 0,fee INTEGER);"
+    "CREATE TABLE wallet_watch_only ("
+    "  address_hash BLOB PRIMARY KEY,"
+    "  address TEXT NOT NULL,"
+    "  created_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE node_state ("
+    "  key TEXT PRIMARY KEY,value BLOB);";
+
+static sqlite3 *open_fixture_db(const char *path, bool apply_schema)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK) return NULL;
+    if (apply_schema &&
+        sqlite3_exec(db, k_full_schema, NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_close(db);
+        return NULL;
+    }
+    return db;
+}
+
+static void make_test_key(struct privkey *key, struct pubkey *pk, uint8_t seed)
+{
+    privkey_init(key);
+    /* Fill with a pattern that definitely isn't all-zero and isn't
+     * a trivial scalar.  Two tweaked bytes ensure uniqueness across
+     * seeds. */
+    memset(key->vch, seed, 32);
+    key->vch[0] = seed;
+    key->vch[1] = (uint8_t)(seed ^ 0xAA);
+    key->vch[31] = (uint8_t)(seed + 1);
+    key->fValid = true;
+    key->fCompressed = true;
+    privkey_get_pubkey(key, pk);
+}
+
+static struct wallet *alloc_wallet(void)
+{
+    struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet");
+    if (w) {
+        keystore_init(&w->keystore);
+        sapling_keystore_init(&w->sapling_keys);
+        zcl_mutex_init(&w->cs);
+    }
+    return w;
+}
+
+static void free_wallet(struct wallet *w)
+{
+    if (!w) return;
+    keystore_free(&w->keystore);
+    free(w);
+}
+
+/* Make the tests deterministic by wiping any env that would change
+ * the encrypted-at-rest path.  Individual tests can set it later. */
+static void clear_passphrase(void)
+{
+    unsetenv("ZCL_WALLET_PASSPHRASE");
+}
+
+/* ── Tests ─────────────────────────────────────────────────────── */
+
+static int test_open_empty_schema_ok(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: open() on empty schema returns ZCL_OK") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        struct zcl_result r = wallet_sqlite_open_r(&ws, db);
+        ASSERT(r.ok);
+        ASSERT(r.code == 0);
+        ASSERT(ws.open);
+
+        struct wallet_sqlite_health h = wallet_sqlite_get_health(&ws, 0);
+        ASSERT(h.open);
+        ASSERT(h.row_count == 0);
+        ASSERT(!h.mismatch);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_self_test_passes(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: self_test round-trips through node_state") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct zcl_result r = wallet_sqlite_self_test(&ws);
+        ASSERT(r.ok);
+        ASSERT(ws.canary_ok);
+        ASSERT(ws.canary_last_ok_ts > 0);
+
+        /* Second call must also pass — probe is replaced each time. */
+        r = wallet_sqlite_self_test(&ws);
+        ASSERT(r.ok);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_write_then_reopen_preserves_keys(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: 3 keys survive close + reopen") {
+        clear_passphrase();
+
+        /* Use a file DB so we can actually close and reopen. */
+        char path[64];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/wallet_persist_%d.db", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        unlink(path);
+
+        sqlite3 *db = open_fixture_db(path, true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct privkey keys[3];
+        struct pubkey pks[3];
+        for (int i = 0; i < 3; i++) {
+            make_test_key(&keys[i], &pks[i], (uint8_t)(0x10 + i));
+            struct zcl_result r =
+                wallet_sqlite_write_key_r(&ws, &pks[i], &keys[i]);
+            ASSERT(r.ok);
+        }
+
+        struct wallet_sqlite_health h = wallet_sqlite_get_health(&ws, 3);
+        ASSERT(h.row_count == 3);
+        ASSERT(!h.mismatch);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+
+        /* Reopen and verify keys load back. */
+        db = open_fixture_db(path, false);
+        ASSERT(db);
+
+        struct wallet_sqlite ws2;
+        ASSERT(wallet_sqlite_open_r(&ws2, db).ok);
+
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        struct zcl_result r = wallet_sqlite_read_keys_r(&ws2, w);
+        ASSERT(r.ok);
+        ASSERT(w->keystore.num_keys == 3);
+
+        /* Every written private key must be retrievable by pubkey. */
+        for (int i = 0; i < 3; i++) {
+            struct privkey got;
+            privkey_init(&got);
+            struct zcl_result rr =
+                wallet_sqlite_read_single_key(&ws2, &pks[i], &got);
+            ASSERT(rr.ok);
+            ASSERT(memcmp(got.vch, keys[i].vch, 32) == 0);
+            memory_cleanse(got.vch, 32);
+        }
+
+        wallet_sqlite_close(&ws2);
+        sqlite3_close(db);
+        free_wallet(w);
+        unlink(path);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_read_single_key_not_found(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: read_single_key returns WSQL_READ_FAIL for unknown pubkey") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x77);
+
+        struct privkey got;
+        privkey_init(&got);
+        struct zcl_result r = wallet_sqlite_read_single_key(&ws, &pk, &got);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_READ_FAIL);
+        ASSERT(r.message[0] != '\0');
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_delete_key_roundtrip(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: delete_key_r removes persisted key") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x88);
+        ASSERT(wallet_sqlite_write_key_r(&ws, &pk, &key).ok);
+
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(wallet_sqlite_read_single_key(&ws, &pk, &got).ok);
+        memory_cleanse(got.vch, 32);
+
+        struct zcl_result r = wallet_sqlite_delete_key_r(&ws, &pk);
+        ASSERT(r.ok);
+
+        privkey_init(&got);
+        r = wallet_sqlite_read_single_key(&ws, &pk, &got);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_READ_FAIL);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_write_key_invariants(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: write_key_r rejects invalid pubkey/privkey") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct privkey good_key;
+        struct pubkey good_pk;
+        make_test_key(&good_key, &good_pk, 0x33);
+
+        /* invariant: NULL pubkey */
+        struct zcl_result r = wallet_sqlite_write_key_r(&ws, NULL, &good_key);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_INVARIANT_PUBKEY);
+
+        /* invariant: NULL privkey */
+        r = wallet_sqlite_write_key_r(&ws, &good_pk, NULL);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_INVARIANT_PRIVKEY);
+
+        /* invariant: fValid false */
+        struct privkey bad;
+        privkey_init(&bad);
+        memcpy(bad.vch, good_key.vch, 32);
+        bad.fValid = false;
+        bad.fCompressed = true;
+        r = wallet_sqlite_write_key_r(&ws, &good_pk, &bad);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_INVARIANT_PRIVKEY);
+
+        /* invariant: all-zero privkey */
+        struct privkey zero;
+        privkey_init(&zero);
+        memset(zero.vch, 0, 32);
+        zero.fValid = true;
+        zero.fCompressed = true;
+        r = wallet_sqlite_write_key_r(&ws, &good_pk, &zero);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_INVARIANT_PRIVKEY);
+
+        /* Good write still works. */
+        r = wallet_sqlite_write_key_r(&ws, &good_pk, &good_key);
+        ASSERT(r.ok);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_health_snapshot_without_open(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: get_health handles closed handle") {
+        struct wallet_sqlite ws;
+        memset(&ws, 0, sizeof(ws));
+        struct wallet_sqlite_health h = wallet_sqlite_get_health(&ws, 7);
+        ASSERT(!h.open);
+        ASSERT(h.row_count == 0);
+        ASSERT(h.keystore_count == 7);
+        ASSERT(h.mismatch);  /* 0 != 7 */
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+int test_wallet_persistence_cycle(void)
+{
+    int failures = 0;
+    failures += test_open_empty_schema_ok();
+    failures += test_self_test_passes();
+    failures += test_write_then_reopen_preserves_keys();
+    failures += test_read_single_key_not_found();
+    failures += test_delete_key_roundtrip();
+    failures += test_write_key_invariants();
+    failures += test_health_snapshot_without_open();
+    return failures;
+}

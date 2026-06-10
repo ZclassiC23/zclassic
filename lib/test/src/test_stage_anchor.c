@@ -1,0 +1,246 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Unit tests for stage_anchor (app/jobs/src/stage_anchor.c).
+ *
+ * stage_anchor_upstream_cursors_to() aligns upstream reducer stage cursors
+ * (header_admit .. utxo_apply) to a trusted anchor target, with utxo_apply
+ * capped by coins_applied_height when that durable frontier is present.
+ * It was recently churned (commit 392f7256d) and had zero coverage. The
+ * load-bearing invariants this test pins:
+ *
+ *   - ATOMIC advance: every upstream cursor that is BEHIND the target ends
+ *     up exactly AT the target after one anchor call, except utxo_apply when
+ *     coins_applied_height caps it lower.
+ *   - FORWARD-ONLY monotonicity: a cursor already AT or ABOVE the target is
+ *     NEVER rewound — anchoring to a lower value is a no-op for that cursor.
+ *   - IDEMPOTENT re-anchor: anchoring twice to the same target leaves every
+ *     cursor unchanged on the second call.
+ *   - P2 CAP: utxo_apply is never anchored above coins_applied_height.
+ *
+ * Only the real public API is used: stage_anchor_upstream_cursors_to() to
+ * advance, stage_set_named_cursor_if_behind() to prime, and the public
+ * stage_cursor_persisted() reader (jobs/stage_helpers.h) to observe.
+ *
+ * Parallel-runner safe: each block opens its OWN uniquely-named on-disk DB,
+ * unlinks it before and after, and never touches global node state. The
+ * progress_store recursive tx-lock used by the anchor self-inits via
+ * pthread_once, so no progress_store_open() is required. */
+
+#include "jobs/stage_anchor.h"
+#include "jobs/stage_helpers.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+#include "test/test_helpers.h"
+#include "util/stage.h"
+
+#include <sqlite3.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+#define SA_CHECK(name, expr) do { \
+    printf("stage_anchor: %s... ", (name)); \
+    if ((expr)) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* The exact upstream set stage_anchor advances, mirrored here so the test
+ * can prime and observe each one through the public API. Kept in the SAME
+ * order as stage_anchor.c. */
+static const char *const SA_UPSTREAM[] = {
+    "header_admit",
+    "validate_headers",
+    "body_fetch",
+    "body_persist",
+    "script_validate",
+    "proof_validate",
+    "utxo_apply",
+};
+#define SA_N (sizeof(SA_UPSTREAM) / sizeof(SA_UPSTREAM[0]))
+
+/* Open a fresh on-disk DB with just the stage_cursor table. */
+static sqlite3 *sa_open(const char *path)
+{
+    unlink(path);
+    sqlite3 *db = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK) return NULL;
+    if (!stage_table_ensure(db)) { sqlite3_close(db); return NULL; }
+    return db;
+}
+
+static uint64_t sa_read(sqlite3 *db, const char *name)
+{
+    /* Public read path used by every stage and by stage_anchor itself. */
+    return stage_cursor_persisted(db, name, "test_stage_anchor");
+}
+
+static bool sa_set_coins_applied(sqlite3 *db, int32_t height)
+{
+    if (!progress_meta_table_ensure(db))
+        return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = coins_kv_set_applied_height_in_tx(db, height);
+    const char *finish = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, finish, NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return ok;
+}
+
+int test_stage_anchor(void)
+{
+    printf("\n=== stage_anchor tests ===\n");
+    int failures = 0;
+
+    /* ── ATOMIC advance of multiple behind cursors to the target ──── */
+    {
+        const char *path = "test_stage_anchor_advance.db";
+        sqlite3 *db = sa_open(path);
+        SA_CHECK("db open", db != NULL);
+
+        /* Prime cursors at staggered values, all strictly below 5000.
+         * Indices 0..6 → 100, 200, ..., 700. */
+        for (size_t i = 0; i < SA_N; i++) {
+            bool ok = stage_set_named_cursor_if_behind(
+                db, SA_UPSTREAM[i], (uint64_t)((i + 1) * 100));
+            SA_CHECK("prime behind cursor", ok);
+        }
+
+        bool ok = stage_anchor_upstream_cursors_to(db, 5000, "test",
+                                                   "atomic-advance");
+        SA_CHECK("anchor advance returns true", ok);
+
+        bool all_at_target = true;
+        for (size_t i = 0; i < SA_N; i++)
+            if (sa_read(db, SA_UPSTREAM[i]) != 5000) all_at_target = false;
+        SA_CHECK("all behind cursors advanced to target", all_at_target);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── FORWARD-ONLY: a cursor at/above target is NEVER rewound ──── */
+    {
+        const char *path = "test_stage_anchor_norewind.db";
+        sqlite3 *db = sa_open(path);
+
+        /* Seed one cursor ABOVE the future target and the rest below it. */
+        const uint64_t target = 3000;
+        const uint64_t high   = 9000;   /* above target → must not rewind */
+        const uint64_t low    = 1000;   /* below target → advances        */
+
+        bool ok = stage_set_named_cursor_if_behind(db, "script_validate", high);
+        SA_CHECK("prime high cursor", ok);
+        for (size_t i = 0; i < SA_N; i++) {
+            if (i == 4 /* script_validate */) continue;
+            stage_set_named_cursor_if_behind(db, SA_UPSTREAM[i], low);
+        }
+
+        ok = stage_anchor_upstream_cursors_to(db, target, "test",
+                                              "forward-only");
+        SA_CHECK("anchor with one-above returns true", ok);
+
+        SA_CHECK("above-target cursor NOT rewound",
+                 sa_read(db, "script_validate") == high);
+
+        bool others_advanced = true;
+        for (size_t i = 0; i < SA_N; i++) {
+            if (i == 4) continue;
+            if (sa_read(db, SA_UPSTREAM[i]) != target) others_advanced = false;
+        }
+        SA_CHECK("below-target cursors advanced to target", others_advanced);
+
+        /* Anchor to a value BELOW every current cursor → pure no-op. */
+        ok = stage_anchor_upstream_cursors_to(db, 50, "test", "below-all");
+        SA_CHECK("anchor below-all returns true", ok);
+        SA_CHECK("high cursor still high after below-all anchor",
+                 sa_read(db, "script_validate") == high);
+        bool none_rewound = true;
+        for (size_t i = 0; i < SA_N; i++) {
+            if (i == 4) continue;
+            if (sa_read(db, SA_UPSTREAM[i]) != target) none_rewound = false;
+        }
+        SA_CHECK("no cursor rewound by below-all anchor", none_rewound);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── IDEMPOTENT re-anchor to the same target is a no-op ───────── */
+    {
+        const char *path = "test_stage_anchor_idem.db";
+        sqlite3 *db = sa_open(path);
+
+        bool ok = stage_anchor_upstream_cursors_to(db, 4242, "test",
+                                                   "first-anchor");
+        SA_CHECK("first anchor returns true", ok);
+        bool first_at_target = true;
+        for (size_t i = 0; i < SA_N; i++)
+            if (sa_read(db, SA_UPSTREAM[i]) != 4242) first_at_target = false;
+        SA_CHECK("first anchor set all cursors", first_at_target);
+
+        ok = stage_anchor_upstream_cursors_to(db, 4242, "test",
+                                              "re-anchor");
+        SA_CHECK("re-anchor returns true", ok);
+        bool unchanged = true;
+        for (size_t i = 0; i < SA_N; i++)
+            if (sa_read(db, SA_UPSTREAM[i]) != 4242) unchanged = false;
+        SA_CHECK("re-anchor to same target left cursors unchanged",
+                 unchanged);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── P2: utxo_apply never advances past coins_applied_height ──── */
+    {
+        const char *path = "test_stage_anchor_coins_cap.db";
+        sqlite3 *db = sa_open(path);
+        SA_CHECK("coins_cap: db open", db != NULL);
+
+        bool ok = true;
+        for (size_t i = 0; i < SA_N; i++)
+            ok = ok && stage_set_named_cursor_if_behind(
+                db, SA_UPSTREAM[i], (uint64_t)((i + 1) * 100));
+        SA_CHECK("coins_cap: prime cursors", ok);
+        SA_CHECK("coins_cap: stamp coins_applied_height=700",
+                 sa_set_coins_applied(db, 700));
+
+        ok = stage_anchor_upstream_cursors_to(db, 5000, "test",
+                                              "coins-cap");
+        SA_CHECK("coins_cap: anchor returns true", ok);
+
+        bool non_coin_stages_at_target = true;
+        for (size_t i = 0; i < SA_N; i++) {
+            if (strcmp(SA_UPSTREAM[i], "utxo_apply") == 0)
+                continue;
+            if (sa_read(db, SA_UPSTREAM[i]) != 5000)
+                non_coin_stages_at_target = false;
+        }
+        SA_CHECK("coins_cap: non-coin cursors advanced",
+                 non_coin_stages_at_target);
+        SA_CHECK("coins_cap: utxo_apply capped at coins frontier",
+                 sa_read(db, "utxo_apply") == 700);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── Bad-arg guards: NULL db is a hard failure (false) ────────── */
+    {
+        SA_CHECK("NULL db returns false",
+                 !stage_anchor_upstream_cursors_to(NULL, 1, "test", "null"));
+    }
+
+    if (failures == 0) {
+        printf("=== stage_anchor tests: ALL PASS ===\n\n");
+    } else {
+        printf("=== stage_anchor tests: %d FAILURE(S) ===\n\n", failures);
+    }
+    return failures;
+}

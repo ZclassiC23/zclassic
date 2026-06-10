@@ -1,0 +1,5 @@
+<div class='result-error'>
+<div class='icon'>&#x2717;</div>
+<h2>Invalid Transaction ID</h2>
+<a href='/wallet/history' style='color:#34d399'>Back to History</a>
+</div>

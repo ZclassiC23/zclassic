@@ -1,0 +1,11 @@
+# Send a checked-in synthetic block fixture from a connected peer.
+
+seed        0x0000000000000006
+boot_phase  listening
+peer_count  1
+send_block  peer=0 file=tests/fixtures/blocks/synthetic_good_block.fixture
+
+expect      no_crash
+expect      blocks_sent == 1
+expect      tip_height == 1
+expect      active_peers == 1

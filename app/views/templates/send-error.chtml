@@ -1,0 +1,8 @@
+<div class='result-error'>
+<div class='icon'>&#x2717;</div>
+<h2>{{{heading}}}</h2>
+<p>{{message}}</p>
+<div style='margin-top:16px;display:flex;gap:16px;justify-content:center'>
+<a href='/wallet' style='color:#999'>Back to Wallet</a>
+<a href='/wallet/send' style='color:#34d399'>Try Again</a>
+</div></div>

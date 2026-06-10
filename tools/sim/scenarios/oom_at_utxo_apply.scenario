@@ -1,0 +1,11 @@
+# Force an allocation failure at the utxo_apply label.
+
+seed        0x0000000000000005
+boot_phase  mempool_open
+peer_count  0
+trigger_oom_at utxo_apply
+
+expect      no_crash
+expect      alloc_faults == 1
+expect      graceful_shutdowns == 1
+expect      consensus_rejects == 0

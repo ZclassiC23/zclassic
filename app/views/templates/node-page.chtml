@@ -1,0 +1,60 @@
+<h2 style='color:#34d399'>Command Center</h2>
+<div style='color:#888;font-size:14px;margin-bottom:16px'>
+You are running a sovereign full node on the ZClassic network.</div>
+
+<div class='stats' style='margin-bottom:20px'>
+<div class='stat' style='border-left:3px solid #34d399'>
+<div class='n'>{{{height}}}</div>
+<div class='l'>Block Height</div></div>
+<div class='stat' style='border-left:3px solid #a78bfa'>
+<div class='n' style='color:#a78bfa'>{{{peers}}}</div>
+<div class='l'>Connected Peers</div></div>
+<div class='stat' style='border-left:3px solid #fbbf24'>
+<div class='n' style='color:#fbbf24'>{{{mempool}}}</div>
+<div class='l'>Mempool TXs</div></div>
+<div class='stat' style='border-left:3px solid #60a5fa'>
+<div class='n' style='color:#60a5fa'>{{{difficulty}}}</div>
+<div class='l'>Difficulty</div></div>
+</div>
+
+<h3>Network Status</h3>
+<div class='detail-grid'>
+<div class='lbl'>Sync</div>
+<div class='val'><span class='pill {{{sync_class}}}'>{{{sync_label}}}</span></div>
+<div class='lbl'>Chain</div>
+<div class='val'>ZClassic mainnet (Equihash 192,7)</div>
+<div class='lbl'>Protocol</div>
+<div class='val'>NODE_NETWORK | NODE_BLOOM | NODE_ZCL23</div>
+<div class='lbl'></div>
+<div class='val' style='color:#555;font-size:12px'>
+Full relay + validation. Every block verified independently.</div>
+<div class='lbl'>Version</div>
+<div class='val' style='color:#34d399'>/ZClassic-C23:0.1.0/</div>
+</div>
+
+{{{tor_section}}}
+
+<h3>Connected Peers</h3>
+{{{peer_table}}}
+
+<h3>Mempool</h3>
+<div class='detail-grid'>
+<div class='lbl'>Pending</div>
+<div class='val'>{{{mempool}}} transactions</div>
+<div class='lbl'>UTXO Set</div>
+<div class='val'>{{{utxo_count}}} outputs</div>
+<div class='lbl'>Supply</div>
+<div class='val'>{{{supply}}} ZCL</div>
+</div>
+
+<h3>Quick Actions</h3>
+<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0'>
+<a href='/explorer' class='btn-secondary'
+ style='text-align:center;padding:12px;font-size:14px'>Block Explorer</a>
+<a href='/wallet/coins' class='btn-secondary'
+ style='text-align:center;padding:12px;font-size:14px'>Coin Audit</a>
+<a href='/explorer/tokens' class='btn-secondary'
+ style='text-align:center;padding:12px;font-size:14px'>ZSLP Tokens</a>
+<a href='/explorer/stats' class='btn-secondary'
+ style='text-align:center;padding:12px;font-size:14px'>Network Stats</a>
+</div>

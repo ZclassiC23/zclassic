@@ -1,0 +1,14 @@
+<h3>Tor Hidden Service</h3>
+<div style='background:linear-gradient(135deg,#0a1428,#1a0a28);
+border:1px solid #2a1a3a;border-radius:10px;padding:16px;margin:8px 0'>
+<div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>
+<div style='width:8px;height:8px;border-radius:50%;
+background:{{{tor_color}}}'></div>
+<span style='color:{{{tor_color}}};font-weight:700;font-size:14px'>
+{{{tor_status}}}</span></div>
+<div class='addr-display-sm' style='color:#a78bfa;font-size:12px'>
+{{{onion_addr}}}</div>
+<div style='color:#666;font-size:13px;margin-top:8px'>
+Your node serves blog, store, and web apps over Tor.
+Only accessible via .onion address.</div>
+</div>

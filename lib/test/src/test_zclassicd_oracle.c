@@ -1,0 +1,681 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Tests for the zclassicd oracle service. The mock RPC server is a
+ * single-threaded loop that listens on a high port and replies to one
+ * HTTP/1.1 JSON-RPC POST with a canned `result` hex string.
+ *
+ * Coverage:
+ *   1. probe agrees when local block_index hash matches mock response.
+ *   2. probe disagrees when mock returns a different hash.
+ *   3. probe records rpc_errors when the mock listener is shut down.
+ *   4. supervisor tick increments probes_total.
+ */
+
+#include "test/test_helpers.h"
+#include "services/zclassicd_oracle_service.h"
+#include "services/chain_evidence_authority_service.h"
+#include "services/legacy_mirror_sync_service.h"
+#include "services/sync_monitor.h"
+#include "controllers/wallet_helpers.h"
+#include "validation/process_block.h"
+#include "validation/main_state.h"
+#include "validation/chainstate.h"
+#include "validation/mirror_consensus.h"
+#include "chain/chain.h"
+#include "core/uint256.h"
+#include "event/event.h"
+#include "util/supervisor.h"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#define _GNU_SOURCE 1
+#define _DEFAULT_SOURCE 1
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <time.h>
+#include <unistd.h>
+
+#define ZO_CHECK(name, expr) do {              \
+    printf("oracle: %s... ", (name));          \
+    if ((expr)) printf("OK\n");                \
+    else { printf("FAIL\n"); failures++; }     \
+} while (0)
+
+/* ── Mock RPC server ──────────────────────────────────────────────
+ *
+ * Single-shot listener: accepts one connection, reads (and discards)
+ * the HTTP request, writes a canned JSON-RPC response, closes. Spawns
+ * a fresh thread per test so each test's port is fresh.
+ *
+ * `canned_hex` may be NULL (sends a JSON error body) or a 64-char
+ * hex string for the .result field. */
+
+struct mock_server {
+    int listen_fd;
+    int port;
+    const char *canned_hex;       /* NULL → respond with JSON error */
+    int chain_blocks;             /* >=0 → getblockchaininfo response */
+    _Atomic int requests_served;
+    _Atomic bool stop;
+    pthread_t thread;
+};
+
+static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
+{
+    struct mock_server *m = arg;
+    while (!atomic_load(&m->stop)) {
+        struct sockaddr_in cli;
+        socklen_t cl = sizeof(cli);
+        int cfd = accept(m->listen_fd, (struct sockaddr *)&cli, &cl);
+        if (cfd < 0) break;
+
+        /* Read until we see end-of-headers marker (\r\n\r\n), then
+         * consume up to Content-Length more bytes. Time-bounded by
+         * the recv timeout below. */
+        char buf[4096];
+        size_t got = 0;
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        for (;;) {
+            ssize_t n = recv(cfd, buf + got, sizeof(buf) - 1 - got, 0);
+            if (n <= 0) break;
+            got += (size_t)n;
+            buf[got] = '\0';
+            if (strstr(buf, "\r\n\r\n")) break;
+            if (got >= sizeof(buf) - 1) break;
+        }
+
+        /* Build JSON-RPC body */
+        char body[256];
+        int bl;
+        if (m->chain_blocks >= 0 && strstr(buf, "getblockchaininfo")) {
+            bl = snprintf(body, sizeof(body),
+                "{\"result\":{\"blocks\":%d,\"headers\":%d},"
+                "\"error\":null,\"id\":\"zcl-oracle\"}\n",
+                m->chain_blocks, m->chain_blocks);
+        } else if (m->canned_hex) {
+            bl = snprintf(body, sizeof(body),
+                "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-oracle\"}\n",
+                m->canned_hex);
+        } else {
+            bl = snprintf(body, sizeof(body),
+                "{\"result\":null,\"error\":{\"code\":-1,"
+                "\"message\":\"mock failure\"},\"id\":\"zcl-oracle\"}\n");
+        }
+
+        char resp[512];
+        int rl = snprintf(resp, sizeof(resp),
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %d\r\n"
+            "Connection: close\r\n"
+            "\r\n%s", bl, body);
+        (void)send(cfd, resp, (size_t)rl, 0);
+        close(cfd);
+        atomic_fetch_add(&m->requests_served, 1);
+    }
+    return NULL;
+}
+
+static bool mock_server_start(struct mock_server *m, const char *canned_hex)
+{
+    memset(m, 0, sizeof(*m));
+    m->canned_hex = canned_hex;
+    m->chain_blocks = -1;
+    m->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (m->listen_fd < 0) return false;
+
+    int one = 1;
+    setsockopt(m->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;  /* OS-chosen */
+    if (bind(m->listen_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        close(m->listen_fd);
+        return false;
+    }
+    socklen_t sl = sizeof(sa);
+    if (getsockname(m->listen_fd, (struct sockaddr *)&sa, &sl) < 0) {
+        close(m->listen_fd);
+        return false;
+    }
+    m->port = ntohs(sa.sin_port);
+    if (listen(m->listen_fd, 4) < 0) {
+        close(m->listen_fd);
+        return false;
+    }
+    /* raw-pthread-ok: short-burst-joined-immediately */
+    if (pthread_create(&m->thread, NULL, mock_server_loop, m) != 0) {
+        close(m->listen_fd);
+        return false;
+    }
+    return true;
+}
+
+static bool mock_server_start_chain(struct mock_server *m,
+                                    const char *canned_hex,
+                                    int blocks)
+{
+    bool ok = mock_server_start(m, canned_hex);
+    if (ok)
+        m->chain_blocks = blocks;
+    return ok;
+}
+
+static void mock_server_stop(struct mock_server *m)
+{
+    atomic_store(&m->stop, true);
+    /* Closing the listen fd interrupts accept() so the thread exits. */
+    if (m->listen_fd >= 0) {
+        shutdown(m->listen_fd, SHUT_RDWR);
+        close(m->listen_fd);
+        m->listen_fd = -1;
+    }
+    pthread_join(m->thread, NULL);
+}
+
+/* ── Fixture: a tiny main_state with one block at height 7 ─────── */
+
+static struct main_state g_zo_ms;
+static struct uint256    g_zo_hash7;
+
+static void zo_build_fixture(const char *hex64_at_h7)
+{
+    main_state_init(&g_zo_ms);
+    uint256_set_hex(&g_zo_hash7, hex64_at_h7);
+
+    /* Insert blocks 0..7 with synthetic hashes; height 7 = our fixture. */
+    struct uint256 fillers[8];
+    memset(fillers, 0, sizeof(fillers));
+    for (int h = 0; h < 7; h++) {
+        fillers[h].data[0] = (uint8_t)(0xC0 + h);
+        struct block_index *bi = chainstate_insert_block_index(
+            (struct chainstate *)&g_zo_ms, &fillers[h]);
+        if (bi) bi->nHeight = h;
+    }
+    struct block_index *bi7 = chainstate_insert_block_index(
+        (struct chainstate *)&g_zo_ms, &g_zo_hash7);
+    if (bi7) bi7->nHeight = 7;
+
+    /* Build active_chain[0..7] */
+    for (int h = 0; h <= 7; h++) {
+        const struct uint256 *hp = (h < 7) ? &fillers[h] : &g_zo_hash7;
+        struct block_index *bi = block_map_find(&g_zo_ms.map_block_index, hp);
+        active_chain_move_window_tip(&g_zo_ms.chain_active, bi);
+    }
+
+    /* Wire main_state into wallet_rpc_context (read by oracle service). */
+    extern struct wallet_rpc_context g_wallet_ctx;
+    g_wallet_ctx.main_state = &g_zo_ms;
+}
+
+static void zo_teardown(void)
+{
+    extern struct wallet_rpc_context g_wallet_ctx;
+    g_wallet_ctx.main_state = NULL;
+    main_state_free(&g_zo_ms);
+    zclassicd_oracle_reset_for_test();
+}
+
+/* ── Tests ─────────────────────────────────────────────────────── */
+
+int test_zclassicd_oracle(void);
+
+int test_zclassicd_oracle(void)
+{
+    printf("\n=== zclassicd oracle tests ===\n");
+    int failures = 0;
+
+    const char *AGREE_HEX =
+        "1111111122222222333333334444444455555555666666667777777788888888";
+    const char *DISAGREE_HEX =
+        "ffffffffeeeeeeeeddddddddccccccccbbbbbbbbaaaaaaaa9999999988888888";
+
+    /* Test 1: probe agrees when mock returns the matching hash. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (agree)",
+                 mock_server_start(&srv, AGREE_HEX));
+
+        struct zclassicd_oracle_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .heights_per_tick = 1,
+        };
+        ZO_CHECK("init", zclassicd_oracle_init(&cfg).ok);
+
+        struct zclassicd_oracle_probe_result r;
+        bool ok = zclassicd_oracle_probe(7, &r).ok;
+        ZO_CHECK("probe returned true", ok);
+        ZO_CHECK("no rpc error",    !r.error);
+        ZO_CHECK("our_have_block",   r.our_have_block);
+        ZO_CHECK("hashes match",     r.match);
+        ZO_CHECK("their_hash set",
+                 strcasecmp(r.their_hash, AGREE_HEX) == 0);
+
+        struct zclassicd_oracle_stats st;
+        zclassicd_oracle_stats_snapshot(&st);
+        ZO_CHECK("probes_total=1",    st.probes_total == 1);
+        ZO_CHECK("probes_agree=1",    st.probes_agree == 1);
+        ZO_CHECK("probes_disagree=0", st.probes_disagree == 0);
+        ZO_CHECK("rpc_errors=0",      st.rpc_errors == 0);
+
+        mock_server_stop(&srv);
+        zo_teardown();
+    }
+
+    /* Legacy advisory disagreement must block mirror adoption, not freeze
+     * native publication evidence. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        struct node_db ndb;
+        ZO_CHECK("mock server starts (legacy contradiction)",
+                 mock_server_start_chain(&srv, DISAGREE_HEX, 7));
+        ZO_CHECK("legacy contradiction node_db opens",
+                 node_db_open(&ndb, ":memory:"));
+        process_block_set_node_db(&ndb);
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for contradiction",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-contradiction");
+        ZO_CHECK("legacy mirror catchup rejects contradiction",
+                 !catchup.ok);
+        ZO_CHECK("legacy mirror catchup names blocker",
+                 strstr(catchup.message, "hash-disagreement") != NULL);
+
+        struct chain_state_repository empty_csr = {0};
+        struct chain_evidence_controller authority;
+        struct chain_evidence_controller_view view;
+        chain_evidence_controller_init(&authority, &ndb, &empty_csr);
+        chain_evidence_controller_snapshot(&authority, &view);
+        ZO_CHECK("legacy contradiction does not freeze evidence",
+                 view.state != CEC_CONTRADICTION_FROZEN);
+        ZO_CHECK("legacy contradiction leaves no freeze reason",
+                 view.contradiction_reason[0] == '\0');
+
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("legacy contradiction surfaces blocker",
+                 strcmp(lms.last_blocker_id, "hash-disagreement") == 0);
+        ZO_CHECK("legacy contradiction does not claim rewind",
+                 lms.authority_rewind_target == 0);
+
+        process_block_set_node_db(NULL);
+        node_db_close(&ndb);
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+    }
+
+    /* Test 2: probe disagrees when mock returns a different hash. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (disagree)",
+                 mock_server_start(&srv, DISAGREE_HEX));
+
+        struct zclassicd_oracle_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u", .rpc_password = "p",
+            .cadence_secs = 60, .heights_per_tick = 1,
+        };
+        ZO_CHECK("init (disagree)", zclassicd_oracle_init(&cfg).ok);
+
+        struct zclassicd_oracle_probe_result r;
+        (void)zclassicd_oracle_probe(7, &r);
+        ZO_CHECK("disagree: no rpc error", !r.error);
+        ZO_CHECK("disagree: !match",       !r.match);
+        ZO_CHECK("disagree: have_block",    r.our_have_block);
+
+        struct zclassicd_oracle_stats st;
+        zclassicd_oracle_stats_snapshot(&st);
+        ZO_CHECK("probes_disagree=1", st.probes_disagree == 1);
+        ZO_CHECK("probes_agree=0",    st.probes_agree == 0);
+
+        mock_server_stop(&srv);
+        zo_teardown();
+    }
+
+    /* Test 3: RPC error path — kill the mock listener mid-test. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (err)",
+                 mock_server_start(&srv, AGREE_HEX));
+        int dead_port = srv.port;
+        mock_server_stop(&srv);  /* listener gone */
+
+        struct zclassicd_oracle_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = dead_port,
+            .rpc_user = "u", .rpc_password = "p",
+            .cadence_secs = 60, .heights_per_tick = 1,
+        };
+        ZO_CHECK("init (err)", zclassicd_oracle_init(&cfg).ok);
+
+        struct zclassicd_oracle_probe_result r;
+        (void)zclassicd_oracle_probe(7, &r);
+        ZO_CHECK("error flag set", r.error);
+
+        struct zclassicd_oracle_stats st;
+        zclassicd_oracle_stats_snapshot(&st);
+        ZO_CHECK("rpc_errors >= 1", st.rpc_errors >= 1);
+
+        zo_teardown();
+    }
+
+    /* Test 4: supervisor tick increments probes_total. We fire the
+     * supervisor at sub-second cadence by setting a small interval, and
+     * lower the tip safety margin so our synthetic chain at h=7 still
+     * has a valid probe range. */
+    {
+        setenv("ZCL_ORACLE_TIP_MARGIN", "0", 1);
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (tick)",
+                 mock_server_start(&srv, AGREE_HEX));
+
+        struct zclassicd_oracle_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u", .rpc_password = "p",
+            .cadence_secs = 1,     /* fastest cadence */
+            .heights_per_tick = 1,
+        };
+        ZO_CHECK("init (tick)", zclassicd_oracle_init(&cfg).ok);
+
+        supervisor_reset_for_testing();
+        supervisor_set_tick_ms_for_testing(50);
+        ZO_CHECK("oracle_start", zclassicd_oracle_start().ok);
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int snap_n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        bool saw_contract = false;
+        bool period_ok = false;
+        bool deadline_ok = false;
+        for (int i = 0; i < snap_n; i++) {
+            if (strcmp(snaps[i].name, "oracle.zclassicd") == 0) {
+                saw_contract = true;
+                period_ok = snaps[i].period_secs == 1;
+                deadline_ok = snaps[i].deadline_secs == 0;
+            }
+        }
+        ZO_CHECK("supervisor contract registered", saw_contract);
+        ZO_CHECK("supervisor period is cadence", period_ok);
+        ZO_CHECK("supervisor deadline disabled", deadline_ok);
+
+        /* Wait up to ~3s for the periodic tick. */
+        bool saw_tick = false;
+        for (int i = 0; i < 60; i++) {
+            struct zclassicd_oracle_stats st;
+            zclassicd_oracle_stats_snapshot(&st);
+            if (st.probes_total >= 1) { saw_tick = true; break; }
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
+            nanosleep(&ts, NULL);
+        }
+        ZO_CHECK("periodic tick fired", saw_tick);
+
+        zclassicd_oracle_stop();
+        supervisor_reset_for_testing();
+        mock_server_stop(&srv);
+        zo_teardown();
+        unsetenv("ZCL_ORACLE_TIP_MARGIN");
+    }
+
+    {
+        /* F-1e: scope/auth machinery deleted. Tests now verify the
+         * surviving observability primitives:
+         *   - mirror_consensus_record_override (emits decision event)
+         *   - mirror_consensus_record_blocker  (typed-blocker primitive)
+         *   - mirror_consensus_stats_snapshot   (counters)
+         * All overrides are classified "unsafe" now since there is no
+         * authorized scope to validate them. */
+        char events[4096];
+        size_t events_len;
+        event_log_init();
+        mirror_consensus_reset_for_test();
+        mirror_consensus_set_enabled(true);
+        mirror_consensus_record_override(7, "bad-txns-BIP30");
+        struct mirror_consensus_stats ms;
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("mirror override counted", ms.overrides_total == 1);
+        ZO_CHECK("mirror override classified unsafe (no scope)",
+                 ms.unsafe_overrides_total == 1);
+        ZO_CHECK("mirror override marked unsafe", !ms.last_override_safe);
+        ZO_CHECK("mirror override scope recorded",
+                 strcmp(ms.last_override_scope,
+                        "unsafe_no_authorized_scope") == 0);
+        ZO_CHECK("mirror blockers initially zero", ms.blockers_total == 0);
+        ZO_CHECK("mirror override height", ms.last_override_height == 7);
+        ZO_CHECK("mirror override reason",
+                 strcmp(ms.last_override_reason, "bad-txns-BIP30") == 0);
+        events_len = event_dump_json(events, sizeof(events), 8);
+        events[events_len < sizeof(events) ? events_len : sizeof(events) - 1] =
+            '\0';
+        ZO_CHECK("mirror override event visible",
+                 strstr(events, "mirror.consensus_decision") != NULL);
+        ZO_CHECK("mirror override event authority",
+                 strstr(events,
+                        "authority=local_consensus_validation") != NULL);
+        ZO_CHECK("mirror override event advisory",
+                 strstr(events,
+                        "trust=bounded_advisory_fallback") != NULL);
+        ZO_CHECK("mirror override event reason",
+                 strstr(events, "reason=bad-txns-BIP30") != NULL);
+        ZO_CHECK("mirror override event count",
+                 strstr(events, "overrides=1") != NULL);
+        mirror_consensus_record_blocker("activation-no-progress");
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("mirror blocker counted", ms.blockers_total == 1);
+        ZO_CHECK("mirror blocker records precise code",
+                 strcmp(ms.activation_blocker_reason,
+                        "activation-no-progress") == 0);
+        events_len = event_dump_json(events, sizeof(events), 8);
+        events[events_len < sizeof(events) ? events_len : sizeof(events) - 1] =
+            '\0';
+        ZO_CHECK("mirror blocker event visible",
+                 strstr(events, "op=blocker") != NULL);
+        ZO_CHECK("mirror blocker event reason",
+                 strstr(events, "reason=activation-no-progress") != NULL);
+        ZO_CHECK("mirror blocker event count",
+                 strstr(events, "blockers=1") != NULL);
+        ZO_CHECK("mirror blocker event blocker code",
+                 strstr(events, "blk=activation-no-progress") != NULL);
+        mirror_consensus_reset_for_test();
+    }
+
+    {
+        struct legacy_mirror_sync_stats stats;
+        struct json_value root;
+        const struct json_value *state;
+        const struct json_value *authority;
+        const struct json_value *mirror_enabled;
+        const struct json_value *trust;
+        const struct json_value *overrides;
+        const struct json_value *blockers_total;
+        const struct json_value *override_height;
+        const struct json_value *override_reason;
+        const struct json_value *unsafe_overrides;
+        const struct json_value *override_safe;
+        const struct json_value *override_scope;
+        const struct json_value *blocker;
+        const struct json_value *last_blocker_code;
+        const struct json_value *stalls_total;
+        const struct json_value *local_recovery_active;
+        const struct json_value *local_retries_exhausted;
+
+        sync_monitor_init();
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_set_enabled(true);
+        mirror_consensus_record_override(123, "body-hash-mismatch");
+        mirror_consensus_record_blocker("body-hash-mismatch");
+
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.legacy_height = 1000;
+        stats.legacy_headers = 1000;
+        stats.local_height = 999;
+        stats.best_header_height = 1000;
+        stats.target_height = 1000;
+        stats.stalls_total = 2;
+        snprintf(stats.stuck_reason, sizeof(stats.stuck_reason),
+                 "%s", "no-authorized-child");
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "body-hash-mismatch");
+        legacy_mirror_sync_test_set_stats(&stats, NULL);
+
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("legacy mirror dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&root, NULL));
+        state = json_get(&root, "state");
+        authority = json_get(&root, "consensus_authority");
+        mirror_enabled = json_get(&root, "mirror_authorization_enabled");
+        trust = json_get(&root, "candidate_trust");
+        overrides = json_get(&root, "overrides_total");
+        unsafe_overrides = json_get(&root, "unsafe_overrides_total");
+        blockers_total = json_get(&root, "blockers_total");
+        override_height = json_get(&root, "last_override_height");
+        override_safe = json_get(&root, "last_override_safe");
+        override_scope = json_get(&root, "last_override_scope");
+        override_reason = json_get(&root, "last_override_reason");
+        blocker = json_get(&root, "activation_blocker");
+        last_blocker_code = json_get(&root, "last_blocker_code");
+        stalls_total = json_get(&root, "stalls_total");
+        local_recovery_active = json_get(&root, "local_recovery_active");
+        local_retries_exhausted = json_get(&root, "local_retries_exhausted");
+
+        ZO_CHECK("legacy mirror dump state is blocked",
+                 state && strcmp(json_get_str(state), "blocked") == 0);
+        ZO_CHECK("legacy mirror dump authority stays local",
+                 authority &&
+                 strcmp(json_get_str(authority),
+                        "local_consensus_validation") == 0);
+        ZO_CHECK("legacy mirror dump omits mirror authorization",
+                 mirror_enabled == NULL);
+        ZO_CHECK("legacy mirror dump trust is bounded advisory",
+                 trust &&
+                 strcmp(json_get_str(trust),
+                        "bounded_advisory_fallback") == 0);
+        ZO_CHECK("legacy mirror dump override count",
+                 overrides && json_get_int(overrides) == 1);
+        ZO_CHECK("legacy mirror dump unsafe override count",
+                 unsafe_overrides && json_get_int(unsafe_overrides) == 1);
+        ZO_CHECK("legacy mirror dump blocker count",
+                 blockers_total && json_get_int(blockers_total) == 1);
+        ZO_CHECK("legacy mirror dump override height",
+                 override_height && json_get_int(override_height) == 123);
+        ZO_CHECK("legacy mirror dump override safe flag",
+                 override_safe && !json_get_bool(override_safe));
+        ZO_CHECK("legacy mirror dump override scope",
+                 override_scope &&
+                 strcmp(json_get_str(override_scope),
+                        "unsafe_no_authorized_scope") == 0);
+        ZO_CHECK("legacy mirror dump override reason",
+                 override_reason &&
+                 strcmp(json_get_str(override_reason),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror dump activation blocker",
+                 blocker &&
+                 strcmp(json_get_str(blocker),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror dump last blocker code",
+                 last_blocker_code &&
+                 strcmp(json_get_str(last_blocker_code),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror dump stall count",
+                 stalls_total && json_get_int(stalls_total) == 2);
+        ZO_CHECK("legacy mirror dump local recovery field",
+                 local_recovery_active &&
+                 !json_get_bool(local_recovery_active));
+        ZO_CHECK("legacy mirror dump local retry field",
+                 local_retries_exhausted &&
+                 !json_get_bool(local_retries_exhausted));
+        json_free(&root);
+        legacy_mirror_sync_reset_for_test();
+    }
+
+    {
+        struct legacy_mirror_sync_stats stats;
+        struct legacy_mirror_sync_stats snap;
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.local_height = 7;
+        stats.legacy_height = 7;
+        stats.legacy_headers = 7;
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+        mirror_consensus_record_blocker("activation-no-progress");
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror at tip suppresses stale activation blocker",
+                 snap.activation_blocker_reason[0] == '\0' &&
+                 snap.last_blocker_id[0] == '\0');
+        ZO_CHECK("legacy mirror at tip reports healthy after catchup",
+                 strcmp(snap.state, "healthy") == 0);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        zo_teardown();
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.legacy_height = 4;
+        stats.legacy_headers = 4;
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "");
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror behind local observes",
+                 strcmp(snap.state, "observing") == 0);
+        ZO_CHECK("legacy mirror behind local has negative lag",
+                 snap.lag < 0);
+        ZO_CHECK("legacy mirror behind local not blocked",
+                 snap.activation_blocker_reason[0] == '\0' &&
+                 snap.last_blocker_id[0] == '\0');
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+    }
+
+    if (failures == 0)
+        printf("=== zclassicd oracle: all checks passed ===\n");
+    else
+        printf("=== zclassicd oracle: %d failure(s) ===\n", failures);
+    return failures;
+}

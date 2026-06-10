@@ -1,0 +1,208 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * ZClassic23 MCP Server — Model Context Protocol for AI agents.
+ *
+ * Install:  claude mcp add zcl23 -- build/bin/zclassic23 -mcp
+ * Usage:    Claude calls tools like zcl_status, zcl_getblock, zcl_peers
+ *
+ * Architecture:
+ *   Claude Code <--stdio--> build/bin/zclassic23 -mcp <--HTTP--> zclassic23 RPC
+ *
+ * This file owns the MCP wire protocol only.  It:
+ *
+ *   1. Configures the RPC client (tools/mcp/rpc_client.c)
+ *   2. Resets the router and calls each domain controller's
+ *      mcp_register_XXX() in tools/mcp/controllers/.
+ *   3. Runs the stdio loop, translating JSON-RPC messages into
+ *      router calls and rendering results back to MCP content blocks.
+ *
+ * All parameter validation, schema JSON and error enveloping happens
+ * inside tools/mcp/router.{h,c}.  Adding a new tool means touching a
+ * controller file — not this file. */
+
+#include "mcp/router.h"
+#include "mcp/middleware.h"
+#include "mcp/metrics.h"
+#include "mcp/replay.h"
+#include "mcp/controllers.h"
+#include "mcp/rpc_client.h"
+
+#include "json/json.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+#include "util/safe_alloc.h"
+
+/* Process-wide middleware.  Populated from environment at boot. */
+/* MCP middleware singleton lives in middleware.c so test_zcl (which
+ * links the controller lib but not mcp_server.c) can still resolve the
+ * accessor symbol used by zcl_config_reload. */
+
+/* ── MCP protocol ────────────────────────────────────────────── */
+
+static void mcp_send(const char *json)
+{
+    fprintf(stdout, "%s\n", json);
+    fflush(stdout);
+}
+
+static void handle_initialize(const struct json_value *req)
+{
+    const struct json_value *id = json_get(req, "id");
+    char resp[512];
+    snprintf(resp, sizeof(resp),
+        "{\"jsonrpc\":\"2.0\",\"id\":%lld,\"result\":{"
+        "\"protocolVersion\":\"2024-11-05\","
+        "\"capabilities\":{\"tools\":{}},"
+        "\"serverInfo\":{\"name\":\"zcl23\",\"version\":\"1.0.0\"}"
+        "}}",
+        id ? (long long)json_get_int(id) : 0LL);
+    mcp_send(resp);
+}
+
+static void handle_tools_list(const struct json_value *req)
+{
+    const struct json_value *id = json_get(req, "id");
+    size_t cap = 65536;
+    char *buf = zcl_malloc(cap, "mcp tools list buf");
+    if (!buf) return;
+
+    int pos = snprintf(buf, cap,
+        "{\"jsonrpc\":\"2.0\",\"id\":%lld,\"result\":{\"tools\":",
+        id ? (long long)json_get_int(id) : 0LL);
+
+    size_t written = mcp_router_tools_list_json(buf + pos, cap - (size_t)pos);
+    pos += (int)written;
+    pos += snprintf(buf + pos, cap - (size_t)pos, "}}");
+    mcp_send(buf);
+    free(buf);
+}
+
+static void handle_tools_call(const struct json_value *req)
+{
+    const struct json_value *id = json_get(req, "id");
+    const struct json_value *params = json_get(req, "params");
+    const struct json_value *name_v = params ? json_get(params, "name") : NULL;
+    const struct json_value *args = params ? json_get(params, "arguments") : NULL;
+
+    if (!name_v) {
+        char resp[256];
+        snprintf(resp, sizeof(resp),
+            "{\"jsonrpc\":\"2.0\",\"id\":%lld,"
+            "\"error\":{\"code\":-32602,\"message\":\"missing tool name\"}}",
+            id ? (long long)json_get_int(id) : 0LL);
+        mcp_send(resp);
+        return;
+    }
+
+    /* Bearer token, if the caller embedded one in the request metadata. */
+    const char *bearer = NULL;
+    const struct json_value *meta = params ? json_get(params, "_meta") : NULL;
+    if (meta) {
+        const struct json_value *auth = json_get(meta, "authorization");
+        if (auth && auth->type == JSON_STR) bearer = json_get_str(auth);
+    }
+
+    struct mcp_middleware *mw = mcp_middleware_get_global();
+    char *result = mcp_middleware_dispatch(mw,
+                                            json_get_str(name_v), args, bearer);
+    if (!result) result = strdup("null");
+
+    /* Embed result as MCP text content, escaping for JSON. */
+    size_t rlen = strlen(result);
+    size_t cap = rlen * 2 + 512;
+    char *resp = zcl_malloc(cap, "mcp tools call response");
+    char *escaped = zcl_malloc(rlen * 2 + 1, "mcp tools call escaped");
+    size_t ei = 0;
+    for (size_t i = 0; i < rlen; i++) {
+        char c = result[i];
+        if (c == '"')       { escaped[ei++] = '\\'; escaped[ei++] = '"'; }
+        else if (c == '\\') { escaped[ei++] = '\\'; escaped[ei++] = '\\'; }
+        else if (c == '\n') { escaped[ei++] = '\\'; escaped[ei++] = 'n'; }
+        else if (c == '\r') { escaped[ei++] = '\\'; escaped[ei++] = 'r'; }
+        else if (c == '\t') { escaped[ei++] = '\\'; escaped[ei++] = 't'; }
+        else                { escaped[ei++] = c; }
+    }
+    escaped[ei] = 0;
+
+    snprintf(resp, cap,
+        "{\"jsonrpc\":\"2.0\",\"id\":%lld,\"result\":{"
+        "\"content\":[{\"type\":\"text\",\"text\":\"%s\"}]}}",
+        id ? (long long)json_get_int(id) : 0LL, escaped);
+
+    mcp_send(resp);
+    free(escaped);
+    free(resp);
+    free(result);
+}
+
+/* ── Main loop ──────────────────────────────────────────────── */
+
+static void register_all_controllers(void)
+{
+    mcp_router_reset();
+    mcp_register_ops();
+    mcp_register_diagnostics();
+    mcp_register_chain();
+    mcp_register_net();
+    mcp_register_wallet();
+    mcp_register_app();
+    mcp_register_meta();
+}
+
+int mcp_server_main(const char *datadir, int rpc_port)
+{
+    mcp_rpc_client_init(datadir, rpc_port);
+    register_all_controllers();
+    mcp_middleware_init_global();
+    mcp_metrics_init();
+    mcp_replay_init();
+
+    char line[65536];
+    while (fgets(line, sizeof(line), stdin)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+            line[--len] = 0;
+        if (len == 0) continue;
+
+        struct json_value req;
+        if (!json_read(&req, line, len)) {
+            mcp_send("{\"jsonrpc\":\"2.0\",\"id\":null,"
+                     "\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}");
+            continue;
+        }
+
+        const struct json_value *method = json_get(&req, "method");
+        if (!method || method->type != JSON_STR) {
+            json_free(&req);
+            continue;
+        }
+
+        const char *m = json_get_str(method);
+
+        if (strcmp(m, "initialize") == 0)
+            handle_initialize(&req);
+        else if (strcmp(m, "notifications/initialized") == 0)
+            { /* no response */ }
+        else if (strcmp(m, "tools/list") == 0)
+            handle_tools_list(&req);
+        else if (strcmp(m, "tools/call") == 0)
+            handle_tools_call(&req);
+        else {
+            const struct json_value *id = json_get(&req, "id");
+            char resp[256];
+            snprintf(resp, sizeof(resp),
+                "{\"jsonrpc\":\"2.0\",\"id\":%lld,"
+                "\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}",
+                id ? (long long)json_get_int(id) : 0LL);
+            mcp_send(resp);
+        }
+
+        json_free(&req);
+    }
+
+    return 0;
+}

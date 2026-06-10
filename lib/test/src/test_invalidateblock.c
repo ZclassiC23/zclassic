@@ -1,0 +1,278 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Unit tests for process_block_invalidate / process_block_reconsider —
+ * the operator recovery lever (Bitcoin Core invalidateblock /
+ * reconsiderblock semantics).
+ *
+ * What is unit-testable here (pure, in-memory, no LevelDB / no live
+ * activation controller):
+ *
+ *   (a) invalidate a tip block → it is marked BLOCK_FAILED_VALID and
+ *       chain selection (find_most_work_chain) now picks the sibling
+ *       fork instead. The "tip changes" outcome is observed through the
+ *       canonical selector the production reorg path uses.
+ *   (b) reconsiderblock → the failure marks are cleared and the original
+ *       chain is selectable again.
+ *   (c) invalidate a DEEPER block → the block AND its descendant subtree
+ *       are marked failed (FAILED_VALID on the target, FAILED_CHILD on
+ *       descendants), so the whole branch drops out of selection.
+ *
+ * The full disconnect-and-reorg of the *active* chain (which calls the
+ * real disconnect_tip against coins/undo + LevelDB via the activation
+ * controller) is an integration concern — exercised by test_reorg_safety
+ * for the disconnect machinery and by `make deploy` + zcl_status for the
+ * end-to-end lever. Here we prove the mark/clear core + that the
+ * canonical selector honors it, which is the consensus-relevant contract.
+ *
+ * Fixture style mirrors test_reorg_safety.c (synthetic block_index forks)
+ * and test_process_block_revalidate.c (main_state + block_map_insert).
+ */
+
+#include "test/test_helpers.h"
+
+#include "chain/chain.h"
+#include "core/arith_uint256.h"
+#include "core/uint256.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "validation/process_block.h"
+#include "validation/process_block_invalidate.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define IB_CHECK(name, expr) do { \
+    printf("invalidateblock: %s... ", (name)); \
+    if ((expr)) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* find_most_work_chain is the canonical selector the reorg path uses; it
+ * skips BLOCK_FAILED entries. Declared in process_block_core.c. */
+struct block_index *find_most_work_chain(struct main_state *ms);
+
+/* Build a heap block_index at `height` with `work`, owned hash from
+ * `seed`, prev link `prev`, and clean (valid+have-data) status. Inserts
+ * into the block_map. Returns the pindex. */
+static struct block_index *mk_idx(struct main_state *ms, int height,
+                                  uint64_t work, uint8_t seed,
+                                  struct block_index *prev)
+{
+    struct block_index *bi = calloc(1, sizeof(*bi));
+    struct uint256 *hp = malloc(sizeof(*hp));
+    memset(hp, seed, sizeof(*hp));
+    /* Make the height part of the hash so siblings at the same height
+     * (different seeds) get distinct hashes. */
+    hp->data[0] = (uint8_t)height;
+    bi->nHeight = height;
+    bi->phashBlock = hp;
+    bi->pprev = prev;
+    bi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+    bi->nTx = 1;
+    bi->nChainTx = prev ? prev->nChainTx + 1 : 1;
+    arith_uint256_set_u64(&bi->nChainWork, work);
+    block_map_insert(&ms->map_block_index, hp, bi);
+    return bi;
+}
+
+static void free_idx(struct block_index *bi)
+{
+    if (!bi) return;
+    free((void *)(uintptr_t)bi->phashBlock);
+    free(bi);
+}
+
+int test_invalidateblock(void)
+{
+    printf("\n=== invalidateblock / reconsiderblock tests ===\n");
+    int failures = 0;
+
+    /* ── 1. Result-name mappings (stable strings for RPC/MCP/logs) ── */
+    IB_CHECK("name(INVALIDATE_OK)",
+             strcmp(invalidate_result_name(INVALIDATE_OK), "ok") == 0);
+    IB_CHECK("name(INVALIDATE_BLOCK_NOT_FOUND)",
+             strcmp(invalidate_result_name(INVALIDATE_BLOCK_NOT_FOUND),
+                    "block_not_found") == 0);
+    IB_CHECK("name(INVALIDATE_IS_GENESIS)",
+             strcmp(invalidate_result_name(INVALIDATE_IS_GENESIS),
+                    "is_genesis") == 0);
+    IB_CHECK("name(INVALIDATE_DISCONNECT_FAIL)",
+             strcmp(invalidate_result_name(INVALIDATE_DISCONNECT_FAIL),
+                    "disconnect_failed") == 0);
+    IB_CHECK("name(INVALIDATE_PERSIST_FAILED)",
+             strcmp(invalidate_result_name(INVALIDATE_PERSIST_FAILED),
+                    "persist_failed") == 0);
+    IB_CHECK("name(RECONSIDER_OK)",
+             strcmp(reconsider_result_name(RECONSIDER_OK), "ok") == 0);
+    IB_CHECK("name(RECONSIDER_NO_FAILURE)",
+             strcmp(reconsider_result_name(RECONSIDER_NO_FAILURE),
+                    "no_failure") == 0);
+    IB_CHECK("name(RECONSIDER_BLOCK_NOT_FOUND)",
+             strcmp(reconsider_result_name(RECONSIDER_BLOCK_NOT_FOUND),
+                    "block_not_found") == 0);
+
+    /* ── 2. Bad-args + not-found paths ─────────────────────────────── */
+    {
+        struct uint256 h;
+        memset(&h, 0xAB, sizeof(h));
+        IB_CHECK("invalidate NULL ms → NOT_ATTEMPTED",
+                 process_block_invalidate(NULL, &h, NULL) ==
+                     INVALIDATE_NOT_ATTEMPTED);
+        IB_CHECK("reconsider NULL ms → NOT_ATTEMPTED",
+                 process_block_reconsider(NULL, &h, NULL) ==
+                     RECONSIDER_NOT_ATTEMPTED);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        IB_CHECK("invalidate unknown hash → BLOCK_NOT_FOUND",
+                 process_block_invalidate(&ms, &h, NULL) ==
+                     INVALIDATE_BLOCK_NOT_FOUND);
+        IB_CHECK("reconsider unknown hash → BLOCK_NOT_FOUND",
+                 process_block_reconsider(&ms, &h, NULL) ==
+                     RECONSIDER_BLOCK_NOT_FOUND);
+        main_state_free(&ms);
+    }
+
+    /* ── 3. Invalidate a tip block → selection picks the sibling ───── */
+    /*
+     *   genesis(0) → A1(1,w=10) → A2(2,w=20)        [chain A, the tip]
+     *             ↘ B1(1,w=11) → B2(2,w=21)         [chain B, more work]
+     *
+     * With everything clean, find_most_work_chain picks B2. After we
+     * invalidate B2 (the most-work tip), B2 + descendants drop out and
+     * the selector falls back to A2.
+     */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+
+        struct block_index *g  = mk_idx(&ms, 0, 1,  0x00, NULL);
+        struct block_index *a1 = mk_idx(&ms, 1, 10, 0x0A, g);
+        struct block_index *a2 = mk_idx(&ms, 2, 20, 0x0B, a1);
+        struct block_index *b1 = mk_idx(&ms, 1, 11, 0x1A, g);
+        struct block_index *b2 = mk_idx(&ms, 2, 21, 0x1B, b1);
+
+        /* Active tip = A2 (chain A). pindex_best_header = the
+         * most-work header so selection is honest. */
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, a1);
+        active_chain_move_window_tip(&ms.chain_active, a2);
+        ms.pindex_best_header = b2;
+
+        IB_CHECK("pre-invalidate: selector picks B2 (most work)",
+                 find_most_work_chain(&ms) == b2);
+
+        /* Invalidate B2 (pure mark — no activation/coins needed). */
+        size_t marked_children = 0;
+        process_block_mark_invalid(&ms, b2, &marked_children);
+
+        IB_CHECK("invalidate tip: B2 carries BLOCK_FAILED_VALID",
+                 (b2->nStatus & BLOCK_FAILED_VALID) != 0);
+        /* Core semantics: validity level is preserved (not lowered) so
+         * reconsider restores selectability by clearing only FAILED. */
+        IB_CHECK("invalidate tip: B2 keeps its validity level",
+                 (b2->nStatus & BLOCK_VALID_MASK) != 0);
+        /* B2 has no descendants → zero FAILED_CHILD marks. */
+        IB_CHECK("invalidate tip: no descendants marked",
+                 marked_children == 0);
+        IB_CHECK("invalidate tip: selector now picks A2 (reorg target)",
+                 find_most_work_chain(&ms) == a2);
+
+        /* ── 4. reconsiderblock → B2 cleared, B2 selectable again ── */
+        size_t cleared = 0;
+        process_block_clear_invalid(&ms, b2, &cleared);
+        IB_CHECK("reconsider: cleared count == 1 (just B2)",
+                 cleared == 1);
+        IB_CHECK("reconsider: B2 failure bits cleared",
+                 (b2->nStatus & BLOCK_FAILED_ANY_MASK) == 0);
+        IB_CHECK("reconsider: selector picks B2 again",
+                 find_most_work_chain(&ms) == b2);
+
+        free_idx(g); free_idx(a1); free_idx(a2);
+        free_idx(b1); free_idx(b2);
+        main_state_free(&ms);
+    }
+
+    /* ── 5. Invalidate a DEEPER block → whole subtree drops out ────── */
+    /*
+     *   genesis(0) → A1(1,w=10) → A2(2,w=20)              [chain A, tip]
+     *             ↘ B1(1,w=11) → B2(2,w=21) → B3(3,w=31)  [chain B]
+     *
+     * Invalidate B1 (the fork root, deeper than the B tip). B1 gets
+     * FAILED_VALID; B2 and B3 inherit FAILED_CHILD. Selection falls back
+     * to A2 even though the B branch had more raw work.
+     */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+
+        struct block_index *g  = mk_idx(&ms, 0, 1,  0x00, NULL);
+        struct block_index *a1 = mk_idx(&ms, 1, 10, 0x0A, g);
+        struct block_index *a2 = mk_idx(&ms, 2, 20, 0x0B, a1);
+        struct block_index *b1 = mk_idx(&ms, 1, 11, 0x1A, g);
+        struct block_index *b2 = mk_idx(&ms, 2, 21, 0x1B, b1);
+        struct block_index *b3 = mk_idx(&ms, 3, 31, 0x1C, b2);
+
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, a1);
+        active_chain_move_window_tip(&ms.chain_active, a2);
+        ms.pindex_best_header = b3;
+
+        IB_CHECK("deeper: pre-invalidate selector picks B3",
+                 find_most_work_chain(&ms) == b3);
+
+        size_t marked_children = 0;
+        process_block_mark_invalid(&ms, b1, &marked_children);
+
+        IB_CHECK("deeper: B1 carries FAILED_VALID",
+                 (b1->nStatus & BLOCK_FAILED_VALID) != 0);
+        IB_CHECK("deeper: B2 inherited FAILED_CHILD",
+                 (b2->nStatus & BLOCK_FAILED_CHILD) != 0);
+        IB_CHECK("deeper: B3 inherited FAILED_CHILD",
+                 (b3->nStatus & BLOCK_FAILED_CHILD) != 0);
+        IB_CHECK("deeper: 2 descendants marked",
+                 marked_children == 2);
+        IB_CHECK("deeper: A-chain untouched (A2 clean)",
+                 (a2->nStatus & BLOCK_FAILED_ANY_MASK) == 0);
+        IB_CHECK("deeper: selector falls back to A2",
+                 find_most_work_chain(&ms) == a2);
+
+        /* reconsider B1 clears the whole subtree (B1 + B2 + B3 = 3). */
+        size_t cleared = 0;
+        process_block_clear_invalid(&ms, b1, &cleared);
+        IB_CHECK("deeper: reconsider clears B1+B2+B3 (3)",
+                 cleared == 3);
+        IB_CHECK("deeper: B3 failure bits cleared",
+                 (b3->nStatus & BLOCK_FAILED_ANY_MASK) == 0);
+        IB_CHECK("deeper: selector picks B3 again after reconsider",
+                 find_most_work_chain(&ms) == b3);
+
+        free_idx(g); free_idx(a1); free_idx(a2);
+        free_idx(b1); free_idx(b2); free_idx(b3);
+        main_state_free(&ms);
+    }
+
+    /* ── 6. reconsider on a clean block → NO_FAILURE no-op ─────────── */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        struct block_index *g  = mk_idx(&ms, 0, 1,  0x00, NULL);
+        struct block_index *a1 = mk_idx(&ms, 1, 10, 0x0A, g);
+
+        size_t cleared = 0;
+        process_block_clear_invalid(&ms, a1, &cleared);
+        IB_CHECK("reconsider clean block: nothing cleared", cleared == 0);
+
+        free_idx(g); free_idx(a1);
+        main_state_free(&ms);
+    }
+
+    printf("invalidateblock: %d failures\n", failures);
+    return failures;
+}

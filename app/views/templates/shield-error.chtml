@@ -1,0 +1,9 @@
+<div class='result-error'>
+<div class='icon'>&#x26A0;</div>
+<h2>Shield Failed</h2>
+<p>{{message}}</p>
+<div style='margin-top:12px'>
+<a href='/wallet/shield' style='color:#34d399'>Try Again</a>
+<span style='color:#555;margin:0 8px'>|</span>
+<a href='/wallet' style='color:#888'>Back to Wallet</a>
+</div></div>

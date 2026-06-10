@@ -1,0 +1,15 @@
+<div class='card' style='border-left-color:#34d399;padding:20px'>
+<div style='text-align:center'>
+<div style='font-size:40px;margin-bottom:8px'>&#x2705;</div>
+<div style='font-size:20px;color:#34d399;font-weight:700'>
+&#x1F512; Shielding {{{amount}}} ZCL</div>
+<div style='color:#888;font-size:14px;margin-top:8px'>
+z_sendmany initiated. Funds moving from t-address to z-address.
+The link between your transparent and shielded balance is broken on-chain.</div>
+<div style='color:#888;font-size:14px;margin-top:12px;
+font-family:monospace;word-break:break-all'>{{opid}}</div>
+<div style='color:#555;font-size:14px;margin-top:12px'>
+Spendable immediately. For maximum privacy, wait ~6 hours
+before spending so timing analysis can't link back.</div>
+{{{balance_card}}}
+</div></div>

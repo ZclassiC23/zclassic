@@ -1,0 +1,11 @@
+<div class='privacy-card' style='display:flex;align-items:center;
+gap:12px;text-align:left;border-color:#a78bfa'>
+<div class='spinner' style='width:24px;height:24px;
+border:3px solid #333;border-top-color:#a78bfa;
+border-radius:50%;flex-shrink:0'></div>
+<div style='flex:1'>
+<div class='title' style='margin:0;color:#a78bfa'>
+&#x1F512; Securing funds...</div>
+<div class='desc' style='margin:0;margin-top:2px'>
+Your funds are being made private ({{{elapsed}}} sec ago). 
+Confirms in ~2.5 min.</div></div></div>

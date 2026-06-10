@@ -1,0 +1,343 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+#include "test/test_helpers.h"
+
+#include "conditions/condition_registry.h"
+#include "event/event.h"
+#include "framework/condition.h"
+#include "json/json.h"
+
+#include <stdatomic.h>
+#include <string.h>
+
+#define CE_CHECK(name, expr) do { \
+    printf("condition_engine: %s... ", (name)); \
+    if (expr) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+static _Atomic bool g_detect;
+static _Atomic bool g_witness;
+static _Atomic int g_detect_calls;
+static _Atomic int g_remedy_calls;
+static _Atomic int g_operator_events;
+
+static bool ce_detect(void)
+{
+    atomic_fetch_add(&g_detect_calls, 1);
+    return atomic_load(&g_detect);
+}
+
+static enum condition_remedy_result ce_remedy(void)
+{
+    atomic_fetch_add(&g_remedy_calls, 1);
+    return COND_REMEDY_OK;
+}
+
+static bool ce_witness(int64_t target_at_detect)
+{
+    (void)target_at_detect;
+    return atomic_load(&g_witness);
+}
+
+static void operator_observer(enum event_type type, uint32_t peer_id,
+                              const void *payload, uint32_t payload_len,
+                              void *ctx)
+{
+    (void)type;
+    (void)peer_id;
+    (void)payload;
+    (void)payload_len;
+    (void)ctx;
+    atomic_fetch_add(&g_operator_events, 1);
+}
+
+static void reset_fixture(void)
+{
+    condition_engine_reset_for_testing();
+    event_clear_all_observers();
+    atomic_store(&g_detect, false);
+    atomic_store(&g_witness, false);
+    atomic_store(&g_detect_calls, 0);
+    atomic_store(&g_remedy_calls, 0);
+    atomic_store(&g_operator_events, 0);
+}
+
+static bool ce_json_conditions_has(const struct json_value *conditions,
+                                   const char *name)
+{
+    if (!conditions || !name)
+        return false;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = cond ? json_get(cond, "name") : NULL;
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return true;
+    }
+    return false;
+}
+
+int test_condition_engine(void)
+{
+    printf("\n=== condition engine tests ===\n");
+    int failures = 0;
+
+    static struct condition c_basic = {
+        .name = "ce_basic",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 30,
+        .max_attempts = 3,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        CE_CHECK("register + first remedy", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 1;
+        CE_CHECK("backoff suppresses immediate retry", ok);
+    }
+
+    static struct condition c_slow_poll = {
+        .name = "ce_slow_poll",
+        .severity = COND_WARN,
+        .poll_secs = 60,
+        .backoff_secs = 0,
+        .max_attempts = 1,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_slow_poll);
+        atomic_store(&g_detect, false);
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_detect_calls) == 1;
+        ok = ok && atomic_load(&g_remedy_calls) == 0;
+        CE_CHECK("poll interval suppresses immediate recheck", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();
+        atomic_store(&g_witness, true);
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && atomic_load(&c_basic.state.cleared_count) == 1;
+        CE_CHECK("witness clears active state", ok);
+    }
+
+    static struct condition c_max = {
+        .name = "ce_max",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 0,
+        .max_attempts = 2,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_max);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 2;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok && atomic_load(&c_max.state.operator_needed_emitted);
+        ok = ok && atomic_load(&c_max.state.last_operator_needed_unix) > 0;
+        CE_CHECK("max attempts emits operator event", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
+        ok = ok && !condition_register(&c_basic);
+        CE_CHECK("duplicate registration rejected", ok);
+    }
+
+    /* P0 RESILIENCE REGRESSION: a remedy that returns COND_REMEDY_OK but whose
+     * symptom never clears (witness stays false) must NOT be reported as `ok`,
+     * must accrue attempts, and must escalate to operator_needed after
+     * max_attempts. This is the "self-heal LIES" wedge: peer_floor_violated
+     * fired 46x result=ok while the tip stayed frozen. */
+    static struct condition c_unwitnessed = {
+        .name = "ce_unwitnessed",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 0,
+        .max_attempts = 3,
+        .detect = ce_detect,
+        .remedy = ce_remedy,       /* always returns COND_REMEDY_OK */
+        .witness = ce_witness,     /* stays false → symptom never clears */
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_unwitnessed);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_witness, false); /* symptom NEVER clears */
+
+        /* Run enough ticks to exhaust max_attempts. */
+        condition_engine_tick();
+        condition_engine_tick();
+        condition_engine_tick();
+        condition_engine_tick();
+
+        /* Remedy returned OK every time, but because the witness never
+         * confirmed the symptom cleared, the reported outcome must be
+         * UNWITNESSED — never OK. A frozen tip cannot self-report success. */
+        ok = ok && atomic_load(&c_unwitnessed.state.last_outcome) ==
+                       COND_REMEDY_UNWITNESSED;
+        /* The condition must still be active and never marked cleared. */
+        ok = ok && atomic_load(&c_unwitnessed.state.currently_active);
+        ok = ok && atomic_load(&c_unwitnessed.state.cleared_count) == 0;
+        /* After max_attempts un-witnessed remedies it must escalate. */
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok &&
+             atomic_load(&c_unwitnessed.state.operator_needed_emitted);
+        ok = ok &&
+             atomic_load(&c_unwitnessed.state.last_operator_needed_unix) > 0;
+        CE_CHECK("unwitnessed remedy is not ok and escalates", ok);
+    }
+
+    {
+        /* Counter-case: once the symptom DOES clear, a witnessed remedy clears
+         * the condition and never escalates — even after prior failed attempts. */
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_unwitnessed);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_witness, false);
+        condition_engine_tick();            /* attempt 1: unwitnessed */
+        ok = ok && atomic_load(&c_unwitnessed.state.last_outcome) ==
+                       COND_REMEDY_UNWITNESSED;
+        atomic_store(&g_witness, true);     /* symptom now resolved */
+        condition_engine_tick();            /* early-witness clears it */
+        ok = ok && atomic_load(&c_unwitnessed.state.cleared_count) == 1;
+        ok = ok && condition_engine_get_active_count() == 0;
+        CE_CHECK("witnessed clear after unwitnessed attempt resolves", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
+        struct condition_runtime_snapshot snap;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok &&
+             condition_engine_get_registered_snapshot("ce_basic", &snap);
+        ok = ok && snap.registered;
+        ok = ok && snap.severity == COND_CRITICAL;
+        ok = ok && snap.poll_secs == 1;
+        ok = ok && snap.backoff_secs == 30;
+        ok = ok && snap.max_attempts == 3;
+        ok = ok && snap.witness_window_secs == 60;
+        ok = ok && !snap.currently_active;
+        ok = ok && snap.attempts == 0;
+        ok = ok &&
+             !condition_engine_get_registered_snapshot("not_a_condition",
+                                                       &snap);
+        CE_CHECK("registered snapshot exposes guardable state", ok);
+    }
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_basic);
+        struct json_value out;
+        json_init(&out);
+        json_set_object(&out);
+        ok = ok && condition_engine_dump_state_json(&out, NULL);
+        ok = ok && json_get(&out, "registered_count") != NULL;
+        ok = ok && json_get(&out, "conditions") != NULL;
+        json_free(&out);
+        CE_CHECK("dump json includes registry", ok);
+    }
+
+    {
+        reset_fixture();
+        condition_registry_register_all();
+        struct json_value out;
+        json_init(&out);
+        json_set_object(&out);
+        bool ok = condition_engine_dump_state_json(&out, NULL);
+        const struct json_value *conditions = json_get(&out, "conditions");
+        const struct json_value *registered = json_get(&out,
+                                                       "registered_count");
+        static const char *expected[] = {
+            "block_failed_mask_at_tip",
+            "contradiction_frozen",
+            "chain_integrity_failed",
+            "utxo_activation_paused",
+            "utxo_drift_detected",
+            "header_stall_at_height",
+            "sync_state_stuck",
+            "download_queue_starved",
+            "local_header_refill_needed",
+            "peer_floor_violated",
+            "sync_violation_lag",
+            "tip_wedged_resnapshot",
+            "snapshot_receive_stalled",
+            "legacy_mirror_stuck",
+            "snapshot_offer_ready",
+            "snapshot_negotiation_stalled",
+            "snapshot_failed_reset",
+            "snapshot_complete_resume",
+            "body_fetch_missing_have_data",
+            "have_data_unreadable",
+            "orphan_utxo_above_tip",
+            "tip_fork_stale",
+            "tip_stall_oracle_rebuild",
+            "stale_validate_headers_repair",
+            "reducer_frontier_reconcile_light",
+        };
+        const int expected_count =
+            (int)(sizeof(expected) / sizeof(expected[0]));
+        ok = ok && registered && json_get_int(registered) == expected_count;
+        ok = ok && conditions && json_size(conditions) == (size_t)expected_count;
+        for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
+            ok = ok && ce_json_conditions_has(conditions, expected[i]);
+        ok = ok &&
+             condition_engine_has_registered("body_fetch_missing_have_data");
+        ok = ok &&
+             condition_engine_has_registered("have_data_unreadable");
+        ok = ok &&
+             condition_engine_has_registered("stale_validate_headers_repair");
+        ok = ok &&
+             condition_engine_has_registered(
+                 "reducer_frontier_reconcile_light");
+        ok = ok && !condition_engine_has_registered("not_a_condition");
+        json_free(&out);
+        CE_CHECK("register_all exposes current self-heal set", ok);
+    }
+
+    reset_fixture();
+    return failures;
+}

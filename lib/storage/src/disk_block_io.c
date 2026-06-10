@@ -1,0 +1,520 @@
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#include "storage/disk_block_io.h"
+#include "core/serialize.h"
+#include "core/hash.h"
+#include "util/log_macros.h"
+#include <errno.h>
+#include <stdint.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <pthread.h>
+#include "util/safe_alloc.h"
+
+void get_block_pos_filename(char *buf, size_t buflen,
+                            const char *datadir,
+                            const struct disk_block_pos *pos,
+                            const char *prefix)
+{
+    if (pos->nFile == 255)
+        snprintf(buf, buflen, "%s/blocks/%s_sync.dat", datadir, prefix);
+    else
+        snprintf(buf, buflen, "%s/blocks/%s%05d.dat", datadir, prefix, pos->nFile);
+}
+
+static bool ensure_directory(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) == 0)
+        return S_ISDIR(st.st_mode);
+    return mkdir(path, 0755) == 0;
+}
+
+static bool choose_append_block_pos(struct disk_block_pos *pos,
+                                    uint32_t block_size,
+                                    const char *datadir)
+{
+    if (!pos || !datadir)
+        return false;
+
+    char blocks_dir[512];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
+    if (!ensure_directory(blocks_dir))
+        return false;
+
+    int last_file = 0;
+    unsigned int last_size = 0;
+    for (int i = 0; i <= 9999; i++) {
+        char path[512];
+        struct disk_block_pos probe = { .nFile = i, .nPos = 0 };
+        get_block_pos_filename(path, sizeof(path), datadir, &probe, "blk");
+        struct stat st;
+        if (stat(path, &st) != 0)
+            break;
+        last_file = i;
+        last_size = (unsigned int)st.st_size;
+    }
+
+    if (last_size + block_size + 8u > 0x8000000u) {
+        last_file++;
+        last_size = 0;
+    }
+    if (last_file > 9999)
+        return false;
+
+    pos->nFile = last_file;
+    pos->nPos = last_size;
+    return true;
+}
+
+/* ── Read-only file handle cache ──────────────────────────────────
+ * During sequential IBD, consecutive blocks are almost always in the
+ * same blk*.dat file. Keeping the last-opened read-only FILE* avoids
+ * ~99% of open/close syscalls. Write paths bypass the cache.
+ * Protected by mutex for thread safety (bg_validation, P2P, RPC). */
+static pthread_mutex_t g_file_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static FILE *g_cached_file = NULL;
+static int   g_cached_nfile = -1;
+static char  g_cached_prefix[8] = {0};
+
+/* Expose mutex for callers that read block/undo files directly
+ * (e.g., transaction_controller, bg_validation undo reads).
+ * All fread/fseek/fclose on blk*.dat and rev*.dat MUST be wrapped
+ * in lock/unlock to prevent SIGSEGV from concurrent FILE* access. */
+void disk_block_io_lock(void)
+{
+    pthread_mutex_lock(&g_file_cache_mutex);
+}
+
+void disk_block_io_unlock(void)
+{
+    pthread_mutex_unlock(&g_file_cache_mutex);
+}
+
+void disk_block_io_release_handle(FILE *f)
+{
+    /* If this is the cached handle, don't close it — the cache owns it.
+     * Closing the cached handle leaves g_cached_file as a dangling pointer
+     * that causes SIGSEGV in the next reader (fseek/fread on freed memory). */
+    if (f && f != g_cached_file)
+        fclose(f);
+}
+
+/* Caller-owned-lock variant: used from paths that already hold
+ * g_file_cache_mutex (e.g. block_pruning_service during the
+ * invalidate-then-unlink sequence, where re-entering the lock
+ * would self-deadlock on a NORMAL mutex). */
+static void disk_block_io_close_cache_locked(void)
+{
+    if (g_cached_file) {
+        fclose(g_cached_file);
+        g_cached_file = NULL;
+        g_cached_nfile = -1;
+    }
+}
+
+void disk_block_io_close_cache(void)
+{
+    pthread_mutex_lock(&g_file_cache_mutex);
+    disk_block_io_close_cache_locked();
+    pthread_mutex_unlock(&g_file_cache_mutex);
+}
+
+void disk_block_io_close_cache_while_locked(void)
+{
+    disk_block_io_close_cache_locked();
+}
+
+FILE *open_disk_file(const char *datadir,
+                     const struct disk_block_pos *pos,
+                     const char *prefix, bool read_only)
+{
+    if (pos->nFile < 0)
+        return NULL;
+
+    char blocks_dir[512];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
+    ensure_directory(blocks_dir);
+
+    /* Try the read-only cache: same file number and prefix → reuse handle */
+    if (read_only && g_cached_file &&
+        g_cached_nfile == pos->nFile &&
+        strcmp(g_cached_prefix, prefix) == 0) {
+        if (fseek(g_cached_file, (long)pos->nPos, SEEK_SET) == 0)
+            return g_cached_file;
+        /* Seek failed — close and reopen */
+        fclose(g_cached_file);
+        g_cached_file = NULL;
+        g_cached_nfile = -1;
+    }
+
+    /* Invalidate cache if opening same file for writing — prevents
+     * stale stdio buffers after the write handle modifies the file. */
+    if (!read_only && g_cached_file && g_cached_nfile == pos->nFile &&
+        strcmp(g_cached_prefix, prefix) == 0) {
+        fclose(g_cached_file);
+        g_cached_file = NULL;
+        g_cached_nfile = -1;
+    }
+
+    char path[512];
+    get_block_pos_filename(path, sizeof(path), datadir, pos, prefix);
+
+    FILE *file = fopen(path, "rb+");
+    if (!file && !read_only)
+        file = fopen(path, "wb+");
+    if (!file) {
+        fprintf(stderr, "open_disk_file: cannot open %s: %s\n",
+                path, strerror(errno));
+        return NULL;
+    }
+
+    if (pos->nPos) {
+        if (fseek(file, (long)pos->nPos, SEEK_SET)) {
+            fprintf(stderr, "open_disk_file: fseek to %u failed in %s: %s\n",
+                    pos->nPos, path, strerror(errno));
+            fclose(file);
+            return NULL;
+        }
+    }
+
+    /* Cache read-only handles for sequential access */
+    if (read_only) {
+        /* Close previous cached handle if different file */
+        if (g_cached_file && g_cached_nfile != pos->nFile)
+            fclose(g_cached_file);
+        g_cached_file = file;
+        g_cached_nfile = pos->nFile;
+        snprintf(g_cached_prefix, sizeof(g_cached_prefix), "%s", prefix);
+    }
+
+    return file;
+}
+
+bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
+                         const char *datadir,
+                         const unsigned char message_start[4])
+{
+    /* Serialize first (outside lock) to minimize lock hold time */
+    struct byte_stream s;
+    stream_init(&s, 4096);
+    if (!block_serialize(b, &s)) {
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: block serialization failed");
+    }
+    uint32_t nSize = (uint32_t)s.size;
+
+    /* Hold mutex for entire file operation to prevent concurrent
+     * read_block_from_disk from seeing partial writes or getting a
+     * stale cached FILE* handle. */
+    pthread_mutex_lock(&g_file_cache_mutex);
+    if (pos->nFile < 0 &&
+        !choose_append_block_pos(pos, nSize, datadir)) {
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: append position allocation failed");
+    }
+
+    FILE *file = open_block_file(datadir, pos, false);
+    if (!file) {
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: open_block_file failed for file=%d", pos->nFile);
+    }
+
+    long file_pos = ftell(file);
+    if (file_pos < 0) {
+        fclose(file);
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: ftell failed");
+    }
+
+    if (fwrite(message_start, 1, 4, file) != 4 || // disk-io-lock: held (internal)
+        fwrite(&nSize, sizeof(nSize), 1, file) != 1) {
+        fclose(file);
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: fwrite header failed for file=%d", pos->nFile);
+    }
+
+    long data_pos = ftell(file);
+    if (data_pos < 0 || (unsigned long)data_pos > UINT32_MAX) {
+        fclose(file);
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: data position out of range (pos=%ld)", data_pos);
+    }
+
+    if (fwrite(s.data, 1, s.size, file) != s.size) { // disk-io-lock: held (internal)
+        fclose(file);
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: fwrite block data failed (size=%zu)", s.size);
+    }
+
+    /* Flush to disk before reporting success — prevents silent data loss
+     * on power failure. fdatasync skips metadata update (faster). */
+    if (fflush(file) != 0 || fdatasync(fileno(file)) != 0) {
+        fprintf(stderr, "write_block_to_disk: fdatasync failed: %s\n",
+                strerror(errno));
+        fclose(file);
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        return false;
+    }
+
+    /* Only record position AFTER data is confirmed on disk.
+     * If we crash before this, caller retries from scratch — safe. */
+    pos->nPos = (unsigned int)data_pos;
+
+    fclose(file);
+    pthread_mutex_unlock(&g_file_cache_mutex);
+    stream_free(&s);
+    return true;
+}
+
+bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
+                          const char *datadir)
+{
+    /* Delegate to pread()-based implementation — thread-safe without
+     * the shared FILE* cache or mutex. All callers automatically
+     * benefit from concurrent-safe reads. */
+    return read_block_from_disk_pread(b, pos, datadir);
+}
+
+bool read_block_from_disk_index(struct block *b,
+                                const struct block_index *pindex,
+                                const char *datadir)
+{
+    /* Delegate to pread()-based implementation — thread-safe. */
+    return read_block_from_disk_index_pread(b, pindex, datadir);
+}
+
+/* ── Thread-safe pread()-based I/O ───────────────────────────────
+ * No shared state, no mutex, no FILE* cache. Safe for concurrent
+ * use from any number of threads simultaneously. */
+
+ssize_t disk_block_pread(const char *datadir, const struct disk_block_pos *pos,
+                         const char *prefix, uint8_t *buf, size_t len)
+{
+    if (!datadir || !pos || !buf || pos->nFile < 0)
+        LOG_ERR("disk_block_io", "pread: invalid arguments (datadir=%p pos=%p buf=%p)",
+                (const void *)datadir, (const void *)pos, (const void *)buf);
+
+    char path[512];
+    get_block_pos_filename(path, sizeof(path), datadir, pos, prefix);
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        LOG_ERR("disk_block_io", "pread: cannot open %s", path);
+
+    ssize_t nread = pread(fd, buf, len, (off_t)pos->nPos);
+    close(fd);
+    return nread;
+}
+
+static bool disk_block_frame_header_valid(const uint8_t hdr[8],
+                                          uint32_t *out_size)
+{
+    bool magic_ok = (hdr[0] == 0x24 && hdr[1] == 0xe9 &&
+                     hdr[2] == 0x27 && hdr[3] == 0x64) ||
+                    (hdr[0] == 0xfa && hdr[1] == 0x1a &&
+                     hdr[2] == 0xf9 && hdr[3] == 0xbf) ||
+                    (hdr[0] == 0xaa && hdr[1] == 0xe8 &&
+                     hdr[2] == 0x3f && hdr[3] == 0x5f);
+    uint32_t block_size = 0;
+    memcpy(&block_size, hdr + 4, 4);
+    if (!magic_ok || block_size == 0 || block_size > 2000000u)
+        return false;
+    if (out_size)
+        *out_size = block_size;
+    return true;
+}
+
+static bool disk_block_locate_payload(int fd,
+                                      const struct disk_block_pos *pos,
+                                      uint32_t *out_payload_pos,
+                                      size_t *out_size)
+{
+    if (!pos || !out_payload_pos || !out_size)
+        return false;
+
+    uint8_t hdr[8];
+    uint32_t block_size = 0;
+
+    /* Canonical block indexes store the payload offset. Check the
+     * frame header immediately before it first. */
+    if (pos->nPos >= 8) {
+        ssize_t hr = pread(fd, hdr, sizeof(hdr), (off_t)(pos->nPos - 8));
+        if (hr == (ssize_t)sizeof(hdr) &&
+            disk_block_frame_header_valid(hdr, &block_size)) {
+            *out_payload_pos = pos->nPos;
+            *out_size = block_size;
+            return true;
+        }
+    }
+
+    /* Some recovery/import paths may hand us the frame offset instead
+     * of the payload offset. Accept that shape too; it is cheaper and
+     * safer to read the block than to strand validation behind a
+     * recoverable offset convention mismatch. */
+    ssize_t hr = pread(fd, hdr, sizeof(hdr), (off_t)pos->nPos);
+    if (hr == (ssize_t)sizeof(hdr) &&
+        disk_block_frame_header_valid(hdr, &block_size)) {
+        if (pos->nPos > UINT32_MAX - 8u)
+            return false;
+        *out_payload_pos = pos->nPos + 8u;
+        *out_size = block_size;
+        return true;
+    }
+
+    *out_payload_pos = pos->nPos;
+    *out_size = 2000000u;
+    return true;
+}
+
+bool read_block_from_disk_pread(struct block *b,
+                                const struct disk_block_pos *pos,
+                                const char *datadir)
+{
+    block_init(b);
+
+    if (!datadir || !pos || pos->nFile < 0)
+        LOG_FAIL("disk_block_io", "read_block_pread: invalid arguments (datadir=%p pos=%p)",
+                 (const void *)datadir, (const void *)pos);
+
+    char path[512];
+    get_block_pos_filename(path, sizeof(path), datadir, pos, "blk");
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        LOG_FAIL("disk_block_io", "read_block_pread: cannot open %s", path);
+
+    uint32_t payload_pos = pos->nPos;
+    size_t bufsize = 2000000u;
+    if (!disk_block_locate_payload(fd, pos, &payload_pos, &bufsize)) {
+        close(fd);
+        LOG_FAIL("disk_block_io",
+                 "read_block_pread: locate payload failed for file=%d pos=%u",
+                 pos->nFile, pos->nPos);
+    }
+
+    unsigned char *buf = zcl_malloc(bufsize, "read_block_pread_buf");
+    if (!buf) {
+        close(fd);
+        LOG_FAIL("disk_block_io", "read_block_pread: malloc(%zu) failed", bufsize);
+    }
+
+    ssize_t nread = pread(fd, buf, bufsize, (off_t)payload_pos);
+    close(fd);
+
+    if (nread <= 0) {
+        free(buf);
+        LOG_FAIL("disk_block_io", "read_block_pread: pread returned %zd for file=%d pos=%u",
+                 nread, pos->nFile, payload_pos);
+    }
+
+    struct byte_stream s;
+    stream_init_from_data(&s, buf, (size_t)nread);
+    bool ok = block_deserialize(b, &s);
+    stream_free(&s);
+    free(buf);
+    return ok;
+}
+
+bool read_block_from_disk_index_pread(struct block *b,
+                                      const struct block_index *pindex,
+                                      const char *datadir)
+{
+    if (!pindex)
+        LOG_FAIL("disk_block_io", "read_block_from_disk_index_pread: pindex is NULL");
+    if (!(pindex->nStatus & BLOCK_HAVE_DATA) || pindex->nFile < 0)
+        return false;
+
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    pos.nFile = pindex->nFile;
+    pos.nPos = pindex->nDataPos;
+
+    if (!read_block_from_disk_pread(b, &pos, datadir)) {
+        fprintf(stderr, "read_block_pread_fail: h=%d file=%d pos=%u\n",
+                pindex->nHeight, pos.nFile, pos.nPos);
+        return false;
+    }
+
+    struct uint256 block_hash;
+    block_get_hash(b, &block_hash);
+    if (pindex->phashBlock &&
+        uint256_cmp(&block_hash, pindex->phashBlock) != 0) {
+        char got[65], want[65];
+        uint256_get_hex(&block_hash, got);
+        uint256_get_hex(pindex->phashBlock, want);
+        fprintf(stderr, "read_block_pread_hash_mismatch: h=%d got=%.16s want=%.16s\n",
+                pindex->nHeight, got, want);
+        block_free(b);
+        return false;
+    }
+    return true;
+}
+
+bool block_index_have_data_readable(const struct block_index *pindex,
+                                    const char *datadir)
+{
+    if (!pindex || !datadir || !(pindex->nStatus & BLOCK_HAVE_DATA) ||
+        pindex->nFile < 0 || !pindex->phashBlock)
+        return false;
+
+    struct block blk;
+    block_init(&blk);
+    bool ok = read_block_from_disk_index_pread(&blk, pindex, datadir);
+    block_free(&blk);
+    return ok;
+}
+
+bool block_index_set_have_data_verified(struct block_index *pindex,
+                                        const struct disk_block_pos *pos,
+                                        const char *datadir)
+{
+    if (!pindex || !pos || !datadir || pos->nFile < 0)
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: invalid argument (pindex=%p pos=%p)",
+                 (void *)pindex, (const void *)pos);
+    if (!pindex->phashBlock)
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: missing block hash at h=%d",
+                 pindex->nHeight);
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_pread(&blk, pos, datadir)) {
+        block_free(&blk);
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: read-back failed h=%d file=%d pos=%u",
+                 pindex->nHeight, pos->nFile, pos->nPos);
+    }
+
+    struct uint256 got;
+    block_get_hash(&blk, &got);
+    bool hash_ok = uint256_cmp(&got, pindex->phashBlock) == 0;
+    block_free(&blk);
+    if (!hash_ok) {
+        char got_hex[65], want_hex[65];
+        uint256_get_hex(&got, got_hex);
+        uint256_get_hex(pindex->phashBlock, want_hex);
+        LOG_FAIL("disk_block_io",
+                 "set_have_data_verified: hash mismatch h=%d got=%.16s want=%.16s",
+                 pindex->nHeight, got_hex, want_hex);
+    }
+
+    pindex->nFile = pos->nFile;
+    pindex->nDataPos = pos->nPos;
+    pindex->nStatus |= BLOCK_HAVE_DATA;
+    return true;
+}

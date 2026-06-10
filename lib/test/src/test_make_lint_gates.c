@@ -1,0 +1,2961 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Self-test for the `make check-raw-sqlite` gate.
+ *
+ * Problem: the `check-raw-sqlite` lint is the only thing stopping new
+ * raw `sqlite3_step` calls from reintroducing the 2026-04-10 UTXO-wipe
+ * class of bug. If someone loosens the grep pattern ("oh, it's
+ * annoying on this PR, let me add another exemption"), the gate
+ * silently stops catching violations. This test prevents that.
+ *
+ * Approach:
+ *   1. Copy the fixture (`lib/test/fixtures/raw_sqlite_step_fixture.c`)
+ *      into `app/` under a unique temp name so the Makefile's grep
+ *      scope actually sees it.
+ *   2. Run `make check-raw-sqlite`.
+ *   3. Assert exit code != 0 (the gate caught the fixture).
+ *   4. Remove the temp file and rerun to confirm the gate passes again.
+ *
+ * Gated by `ZCL_TESTING` so the shell-out + make invocation only fires
+ * when the suite is built by `make test`; standalone compilations of
+ * test_zcl without the macro silently turn this into a no-op pass. */
+
+#define _POSIX_C_SOURCE 200809L
+
+#include "test/test_helpers.h"
+
+#ifdef ZCL_TESTING
+
+#include <errno.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
+#define FIXTURE_DST_REL "app/_lint_gate_fixture_tmp.c"
+#define COINS_FIXTURE_SRC_REL "lib/test/fixtures/coins_lookup_guard_fixture.c"
+#define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
+#define OBS_FIXTURE_SRC_REL "lib/test/fixtures/observability_unpaired_stderr_fixture.c"
+#define OBS_FIXTURE_DST_REL "app/_observability_lint_fixture_tmp.c"
+#define OBS_OK_FIXTURE_SRC_REL "lib/test/fixtures/observability_paired_stderr_fixture.c"
+#define OBS_OK_FIXTURE_DST_REL "app/_observability_ok_lint_fixture_tmp.c"
+#define RAW_MALLOC_FIXTURE_DST_REL "app/_raw_malloc_lint_fixture_tmp.c"
+#define RAW_MALLOC_OK_FIXTURE_DST_REL "app/_raw_malloc_ok_lint_fixture_tmp.c"
+#define RAW_MALLOC_SCRIPT_REL "tools/scripts/check_raw_malloc.sh"
+
+static const char *repo_root(void)
+{
+    static char root[PATH_MAX];
+    static int cached = 0;
+
+    if (cached) return root[0] ? root : NULL;
+
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0 || n >= (ssize_t)sizeof(exe) - 1) {
+        cached = 1;
+        root[0] = '\0';
+        return NULL;
+    }
+    exe[n] = '\0';
+
+    char *slash = strrchr(exe, '/');
+    if (!slash) {
+        cached = 1;
+        root[0] = '\0';
+        return NULL;
+    }
+    *slash = '\0';
+
+    if (snprintf(root, sizeof(root), "%s", exe) >= (int)sizeof(root)) {
+        cached = 1;
+        root[0] = '\0';
+        return NULL;
+    }
+
+    cached = 1;
+    return root;
+}
+
+static int repo_path(char *out, size_t outsz, const char *rel)
+{
+    const char *root = repo_root();
+    if (!root || !out || outsz == 0 || !rel) return -1;
+    return snprintf(out, outsz, "%s/%s", root, rel) >= (int)outsz ? -1 : 0;
+}
+
+static int copy_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        fprintf(stderr, "copy_file: fopen(%s) failed: %s\n",
+                src, strerror(errno));
+        return -1;
+    }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fprintf(stderr, "copy_file: fopen(%s) failed: %s\n",
+                dst, strerror(errno));
+        fclose(in);
+        return -1;
+    }
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            fprintf(stderr, "copy_file: fwrite failed: %s\n",
+                    strerror(errno));
+            fclose(in); fclose(out);
+            return -1;
+        }
+    }
+    fclose(in);
+    fclose(out);
+    return 0;
+}
+
+static bool has_c_suffix(const char *path)
+{
+    size_t len = strlen(path);
+    return len >= 2 && strcmp(path + len - 2, ".c") == 0;
+}
+
+static bool has_ch_suffix(const char *path)
+{
+    size_t len = strlen(path);
+    return len >= 2 &&
+           (strcmp(path + len - 2, ".c") == 0 ||
+            strcmp(path + len - 2, ".h") == 0);
+}
+
+static bool raw_sqlite_line_allowed(const char *line)
+{
+    return strstr(line, "// raw-sql-ok") ||
+           strstr(line, "AR_STEP_ROW") ||
+           strstr(line, "AR_STEP_DONE") ||
+           strstr(line, "AR_STEP_ROW_READONLY") ||
+           strstr(line, "safe_alloc");
+}
+
+static int check_raw_sqlite_file(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "sqlite3_step(") && !raw_sqlite_line_allowed(line)) {
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int read_entire_file(const char *path, char **out_buf)
+{
+    *out_buf = NULL;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    long len = ftell(fp);
+    if (len < 0) {
+        fclose(fp);
+        return -1;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    char *buf = calloc((size_t)len + 1, 1);
+    if (!buf) {
+        fclose(fp);
+        return -1;
+    }
+
+    if (len > 0 && fread(buf, 1, (size_t)len, fp) != (size_t)len) {
+        free(buf);
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    *out_buf = buf;
+    return 0;
+}
+
+static int check_coins_guard_file(const char *path)
+{
+    char *buf = NULL;
+    if (read_entire_file(path, &buf) != 0) return -1;
+
+    int rc = 0;
+    if (strstr(buf, "coins_view_cache_get_coins(") &&
+        !strstr(buf, "rpc_require_chainstate_lookup_ready(")) {
+        rc = 1;
+    }
+
+    free(buf);
+    return rc;
+}
+
+static bool line_has_obs_ok(const char *line)
+{
+    const char *tag = strstr(line, "// obs-ok:");
+    return tag && tag[10] != '\0' && tag[10] != '\n' && tag[10] != ' ';
+}
+
+static bool line_has_event_emit(const char *line)
+{
+    return strstr(line, "event_emit(") || strstr(line, "event_emitf(");
+}
+
+static bool line_has_terminal_propagation(const char *line)
+{
+    return strstr(line, "return false;") ||
+           strstr(line, "return -1;") ||
+           strstr(line, "return 1;") ||
+           strstr(line, "return NULL;") ||
+           strstr(line, "exit(") ||
+           strstr(line, "abort(");
+}
+
+static bool observability_line_allowed(char lines[][4096], size_t count,
+                                       size_t idx)
+{
+    if (line_has_obs_ok(lines[idx])) return true;
+
+    size_t start = idx > 3 ? idx - 3 : 0;
+    size_t end = idx + 3 < count ? idx + 3 : count - 1;
+    for (size_t i = start; i <= end; i++) {
+        if (line_has_event_emit(lines[i])) return true;
+        if (i >= idx && line_has_terminal_propagation(lines[i])) return true;
+    }
+    return false;
+}
+
+static int check_observability_file(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    char lines[512][4096];
+    size_t count = 0;
+    while (count < 512 && fgets(lines[count], sizeof(lines[count]), fp)) {
+        count++;
+    }
+    int read_error = ferror(fp) ? -1 : 0;
+    fclose(fp);
+    if (read_error != 0) return read_error;
+
+    for (size_t i = 0; i < count; i++) {
+        if (strstr(lines[i], "fprintf(stderr") &&
+            !observability_line_allowed(lines, count, i))
+            return 1;
+    }
+    return 0;
+}
+
+static bool active_chain_set_tip_file_allowed(const char *path)
+{
+    return strstr(path, "/app/services/src/chain_tip.c") ||
+           strstr(path, "/app/services/src/chain_state_service.c");
+}
+
+static int check_active_chain_set_tip_file(const char *path)
+{
+    if (active_chain_set_tip_file_allowed(path))
+        return 0;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    char line[4096];
+    while (fgets(line, sizeof(line), fp)) {
+        char *hit = strstr(line, "active_chain_set_tip(");
+        if (!hit)
+            continue;
+        char *block_comment = strstr(line, "/*");
+        char *star_comment = strstr(line, "*");
+        char *line_comment = strstr(line, "//");
+        bool comment_only = (block_comment && block_comment < hit) ||
+                            (star_comment && star_comment < hit) ||
+                            (line_comment && line_comment < hit);
+        if (!comment_only) {
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int walk_c_files(const char *dirpath,
+                        int (*check_file)(const char *path))
+{
+    DIR *dir = opendir(dirpath);
+    if (!dir) return -1;
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", dirpath, ent->d_name) >=
+            (int)sizeof(path)) {
+            closedir(dir);
+            return -1;
+        }
+
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            int rc = walk_c_files(path, check_file);
+            if (rc != 0) {
+                closedir(dir);
+                return rc;
+            }
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode) || !has_c_suffix(path))
+            continue;
+
+        int rc = check_file(path);
+        if (rc != 0) {
+            closedir(dir);
+            return rc;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+static int walk_ch_files(const char *dirpath,
+                         int (*check_file)(const char *path))
+{
+    DIR *dir = opendir(dirpath);
+    if (!dir) return -1;
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", dirpath, ent->d_name) >=
+            (int)sizeof(path)) {
+            closedir(dir);
+            return -1;
+        }
+
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            int rc = walk_ch_files(path, check_file);
+            if (rc != 0) {
+                closedir(dir);
+                return rc;
+            }
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode) || !has_ch_suffix(path))
+            continue;
+
+        int rc = check_file(path);
+        if (rc != 0) {
+            closedir(dir);
+            return rc;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+static int check_deleted_engine_names_file(const char *path)
+{
+    if (strstr(path, "/lib/test/") || strstr(path, "/app/views/"))
+        return 0;
+
+    char *buf = NULL;
+    if (read_entire_file(path, &buf) != 0)
+        return -1;
+
+    const char *stale[] = {
+        "connect_tip",
+        "disconnect_tip",
+        "activate_best_chain",
+        "process_new_block",
+        "accept_block()",
+    };
+    for (size_t i = 0; i < sizeof(stale) / sizeof(stale[0]); i++) {
+        if (strstr(buf, stale[i])) {
+            fprintf(stderr,
+                    "deleted engine name %s still present in %s\n",
+                    stale[i], path);
+            free(buf);
+            return 1;
+        }
+    }
+
+    free(buf);
+    return 0;
+}
+
+static int run_check_raw_sqlite(void)
+{
+    char app_dir[PATH_MAX];
+    char tools_dir[PATH_MAX];
+    if (repo_path(app_dir, sizeof(app_dir), "app") != 0 ||
+        repo_path(tools_dir, sizeof(tools_dir), "tools") != 0)
+        return -1;
+
+    int rc = walk_c_files(app_dir, check_raw_sqlite_file);
+    if (rc != 0) return rc;
+    return walk_c_files(tools_dir, check_raw_sqlite_file);
+}
+
+static int run_check_coins_lookup_nullcheck(void)
+{
+    char controllers_dir[PATH_MAX];
+    if (repo_path(controllers_dir, sizeof(controllers_dir),
+                  "app/controllers/src") != 0)
+        return -1;
+    return walk_c_files(controllers_dir, check_coins_guard_file);
+}
+
+static int run_check_service_tip_mutation_gate(void)
+{
+    char services_dir[PATH_MAX];
+    if (repo_path(services_dir, sizeof(services_dir), "app/services/src") != 0)
+        return -1;
+    return walk_c_files(services_dir, check_active_chain_set_tip_file);
+}
+
+static int run_check_deleted_engine_names(void)
+{
+    const char *roots[] = {"app", "lib", "config", "tools"};
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        char dir[PATH_MAX];
+        if (repo_path(dir, sizeof(dir), roots[i]) != 0)
+            return -1;
+        int rc = walk_ch_files(dir, check_deleted_engine_names_file);
+        if (rc != 0)
+            return rc;
+    }
+    return 0;
+}
+
+static int t_observability_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), OBS_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), OBS_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve observability fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant observability fixture -- aborting\n");
+        return 1;
+    }
+    int rc = check_observability_file(fixture_dst);
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] unpaired stderr fixture trips observability gate") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_observability_positive_controls_pass(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), OBS_OK_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), OBS_OK_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve observability-ok fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant observability-ok fixture -- aborting\n");
+        return 1;
+    }
+    int rc = check_observability_file(fixture_dst);
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] observable stderr positive controls pass") {
+        ASSERT(rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_baseline_passes(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] baseline passes (no fixture)") {
+        ASSERT(run_check_raw_sqlite() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw sqlite fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr, "[lint-gate] could not plant fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_raw_sqlite();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] planted fixture trips the gate (exit != 0)") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_gate_recovers_after_removal(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw sqlite fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] gate passes again after fixture removed") {
+        ASSERT(run_check_raw_sqlite() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_coins_guard_baseline_passes(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] baseline guarded coin-lookups pass") {
+        ASSERT(run_check_coins_lookup_nullcheck() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_coins_guard_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), COINS_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst), COINS_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve coins guard fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant coins guard fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_coins_lookup_nullcheck();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] unguarded coin lookup fixture trips the gate (exit != 0)") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int write_file(const char *path, const char *contents)
+{
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    size_t n = strlen(contents);
+    int ok = fwrite(contents, 1, n, fp) == n;
+    fclose(fp);
+    return ok ? 0 : -1;
+}
+
+/* Invokes tools/scripts/check_raw_malloc.sh and returns the script's
+ * exit status (0 = clean, non-zero = violations). */
+static int run_check_raw_malloc_script(void)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), RAW_MALLOC_SCRIPT_REL) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_raw_malloc_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+/* Generalized gate-script runner: fork/exec the script at repo-relative
+ * path `script_rel`, optionally with ZCL_LINT_MODE set to `mode` (NULL to
+ * leave unset). Returns the script's exit status (0 = clean, non-zero =
+ * violations), or -1 on harness failure. Mirrors run_check_raw_malloc_script
+ * but parameterized so the four E-series gates share one driver. */
+static int run_gate_script(const char *script_rel, const char *mode)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (mode)
+            (void)setenv("ZCL_LINT_MODE", mode, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+/* Like run_gate_script but ALSO exports ZCL_SUPERVISOR_WORKER_FILES so the
+ * widened Gate #21 background-worker scan reads a planted fixture file
+ * instead of the live config/src/boot_background_workers.c. `worker_files`
+ * is a space-separated repo-relative path list; it is resolved to absolute
+ * paths before export so the gate (which runs from repo root) finds it
+ * regardless of cwd. Mirrors run_gate_script's fork/exec/redirect plumbing. */
+static int run_gate_script_with_worker_files(const char *script_rel,
+                                             const char *mode,
+                                             const char *worker_files_rel)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char worker_abs[PATH_MAX];
+    if (worker_files_rel &&
+        repo_path(worker_abs, sizeof(worker_abs), worker_files_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (mode)
+            (void)setenv("ZCL_LINT_MODE", mode, 1);
+        if (worker_files_rel)
+            (void)setenv("ZCL_SUPERVISOR_WORKER_FILES", worker_abs, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
+#define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
+#define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
+#define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
+#define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
+#define E10_SHAPE_FIXTURE_DST "app/_e10_shape_fixture_tmp.c"
+#define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
+#define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
+#define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
+#define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
+#define E2_FIXTURE_DST   "app/services/src/_e2_one_result_fixture_tmp.c"
+#define E3_SCRIPT_REL    "tools/scripts/check_shape_includes_header.sh"
+#define E3_FIXTURE_DST   "app/conditions/src/_e3_shape_include_fixture_tmp.c"
+#define E4_SCRIPT_REL    "tools/scripts/check_projections_pure.sh"
+#define E4_FIXTURE_DST   "lib/storage/src/_e4_pure_fixture_projection.c"
+#define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
+#define E5_FIXTURE_DST   "app/jobs/src/_e5_stage_fixture_tmp_stage.c"
+#define E6_SCRIPT_REL    "tools/scripts/check_one_write_path.sh"
+#define E6_FIXTURE_DST   "app/services/src/_e6_write_path_fixture_tmp.c"
+#define E7_SCRIPT_REL    "tools/scripts/check_no_authoritative_ram_state.sh"
+#define E7_FIXTURE_DST   "app/services/src/_e7_ram_state_fixture_tmp.c"
+#define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
+/* A foreign-shape suffix (*_controller) planted under app/services/src. */
+#define FSUF_FIXTURE_DST "app/services/src/_fsuf_fixture_tmp_controller.c"
+#define E12_SCRIPT_REL   "tools/lint/check_honest_witness.sh"
+/* A condition .c with a PURE-INVERSE witness (the canonical Law-7 lie:
+ * "return !detect_x()"), planted under app/conditions/src so the gate's
+ * scan scope sees it. */
+#define E12_FIXTURE_DST  "app/conditions/src/_e12_honest_witness_fixture_tmp.c"
+/* Gate #21 background-worker lock-in: the widened check_supervisor_domain.sh
+ * also scans the boot worker file (config/src/boot_background_workers.c) and
+ * fails any spawn (pthread_create / thread_registry_spawn) not paired with a
+ * supervisor_register_in_domain. The fixtures are planted under test-tmp/ and
+ * fed to the gate via ZCL_SUPERVISOR_WORKER_FILES so the assertion does not
+ * depend on the live worker file's state. */
+#define SUPDOM_SCRIPT_REL     "tools/lint/check_supervisor_domain.sh"
+/* A worker that spawns a thread but registers NO domain contract — the lie
+ * the widened gate must catch (an unsupervised background worker). */
+#define SUPDOM_BAD_WORKER_REL "test-tmp/_supdom_unsupervised_worker_fixture_tmp.c"
+/* The same worker WITH a supervisor_register_in_domain pairing — passes. */
+#define SUPDOM_OK_WORKER_REL  "test-tmp/_supdom_supervised_worker_fixture_tmp.c"
+
+static int plant_oversized_file(const char *rel, int n_lines)
+{
+    char path[PATH_MAX];
+    if (repo_path(path, sizeof(path), rel) != 0) return -1;
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    for (int i = 0; i < n_lines; i++)
+        fputs("// fixture line\n", fp);
+    fclose(fp);
+    return 0;
+}
+
+static void unlink_rel(const char *rel)
+{
+    char path[PATH_MAX];
+    if (repo_path(path, sizeof(path), rel) == 0)
+        (void)unlink(path);
+}
+
+/* E1 — file-size ceiling: a NEW (non-baselined) app/.c file over the
+ * 800-line ceiling trips the gate; removing it restores green. */
+static int t_e1_file_size_ceiling(void)
+{
+    int failures = 0;
+    unlink_rel(E1_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    int planted = plant_oversized_file(E1_FIXTURE_DST, 900);
+    int trip_rc = planted == 0 ? run_gate_script(E1_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E1_FIXTURE_DST);
+    int recover_rc = run_gate_script(E1_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E1 file-size ceiling: clean, trips on oversized, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E9 — operator-needed sink: the live tree satisfies the pairing
+ * (emit + alerts.c subscriber), so the gate passes. (HARD gate; the
+ * negative control is covered by the sandbox check in the standalone
+ * script and would require mutating lib/util/src/alerts.c, which we do
+ * not do in-tree.) */
+static int t_e9_operator_needed_sink(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] E9 operator-needed sink pairing present in tree") {
+        ASSERT(run_gate_script(E9_SCRIPT_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E10a — framework shape RATCHET: an off-shape app/.c file (not in the
+ * allowlist) trips the gate in RATCHET mode; removing it restores green. */
+static int t_e10_framework_shape_ratchet(void)
+{
+    int failures = 0;
+    unlink_rel(E10_SHAPE_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E10_SHAPE_SCRIPT_REL, "RATCHET");
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E10_SHAPE_FIXTURE_DST) == 0 &&
+                   write_file(path, "int e10_shape_fixture;\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E10_SHAPE_SCRIPT_REL, "RATCHET") : -1;
+    unlink_rel(E10_SHAPE_FIXTURE_DST);
+    int recover_rc = run_gate_script(E10_SHAPE_SCRIPT_REL, "RATCHET");
+    TEST("[lint-gate] E10 framework-shape RATCHET: clean, trips off-shape, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E10b — no-raw-sqlite-in-controllers RATCHET: a NEW controller file
+ * (not in the baseline) with a raw sqlite call trips the gate; removing
+ * it restores green. */
+static int t_e10_no_raw_sqlite_ratchet(void)
+{
+    int failures = 0;
+    unlink_rel(E10_SQL_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET");
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E10_SQL_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "void f(void){ sqlite3_prepare_v2(d, s, n, &st, 0); }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET") : -1;
+    unlink_rel(E10_SQL_FIXTURE_DST);
+    int recover_rc = run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET");
+    TEST("[lint-gate] E10 no-raw-sqlite RATCHET: clean, trips new file, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate #22 — framework filename suffix (HARD): a file in a shape folder
+ * whose name carries a FOREIGN shape suffix (here a *_controller.c planted
+ * under app/services/src/) trips the gate; removing it restores green. */
+static int t_gate22_framework_filename_suffix(void)
+{
+    int failures = 0;
+    unlink_rel(FSUF_FIXTURE_DST);
+    int baseline_rc = run_gate_script(FSUF_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), FSUF_FIXTURE_DST) == 0 &&
+                   write_file(path, "int fsuf_fixture;\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(FSUF_SCRIPT_REL, NULL) : -1;
+    unlink_rel(FSUF_FIXTURE_DST);
+    int recover_rc = run_gate_script(FSUF_SCRIPT_REL, NULL);
+    TEST("[lint-gate] #22 framework-filename-suffix: clean, trips foreign suffix, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E11 — doc accuracy: the in-tree DEFENSIVE_CODING.md gate block matches
+ * the Makefile lint: target, so the gate passes. */
+static int t_e11_doc_accuracy(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] E11 doc gate list matches Makefile lint: target") {
+        ASSERT(run_gate_script(E11_SCRIPT_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E2 — one-result-type RATCHET: a NEW (non-baselined) service file that
+ * returns bare bool (no struct zcl_result) trips the gate; removing it
+ * restores green. */
+static int t_e2_one_result_type(void)
+{
+    int failures = 0;
+    unlink_rel(E2_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E2_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E2_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include <stdbool.h>\n"
+                       "bool e2_fixture(void){ return false; }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E2_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E2_FIXTURE_DST);
+    int recover_rc = run_gate_script(E2_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E2 one-result-type RATCHET: clean, trips bare-bool service, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E3 — shape-includes-header HARD: a condition file that includes neither
+ * framework/condition.h nor a conditions/ header trips the gate; removing
+ * it restores green. */
+static int t_e3_shape_includes_header(void)
+{
+    int failures = 0;
+    unlink_rel(E3_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E3_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E3_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* mislabeled condition: no shape header */\n"
+                       "int e3_fixture;\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E3_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E3_FIXTURE_DST);
+    int recover_rc = run_gate_script(E3_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E3 shape-includes-header HARD: clean, trips headerless condition, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E4 — projections-pure HARD: a projection file that includes an app-layer
+ * (services/) header trips the gate; removing it restores green. */
+static int t_e4_projections_pure(void)
+{
+    int failures = 0;
+    unlink_rel(E4_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E4_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E4_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include \"services/sync_monitor.h\"\n"
+                       "int e4_fixture;\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E4_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E4_FIXTURE_DST);
+    int recover_rc = run_gate_script(E4_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E4 projections-pure HARD: clean, trips app-layer include, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E5 — stage-advances-or-blocks HARD: a Job step file that only ever returns
+ * JOB_ADVANCED and references no cursor trips the gate; removing it restores
+ * green. */
+static int t_e5_stage_advances_or_blocks(void)
+{
+    int failures = 0;
+    unlink_rel(E5_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E5_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E5_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* mislabeled Job stage: advances only, no cursor */\n"
+                       "typedef int job_result_t;\n"
+                       "#define JOB_ADVANCED 0\n"
+                       "job_result_t fixture_stage_step_once(void){ return JOB_ADVANCED; }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E5_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E5_FIXTURE_DST);
+    int recover_rc = run_gate_script(E5_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E5 stage-advances-or-blocks HARD: clean, trips advance-only stage, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E6 — one-write-path RATCHET: a new production write surface outside the
+ * baseline trips the gate; removing it restores green. */
+static int t_e6_one_write_path(void)
+{
+    int failures = 0;
+    unlink_rel(E6_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E6_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E6_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "struct active_chain; struct block_index;\n"
+                       "int active_chain_set_tip(struct active_chain *, struct block_index *);\n"
+                       "int e6_fixture(struct active_chain *c, struct block_index *b){ return active_chain_set_tip(c, b); }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E6_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E6_FIXTURE_DST);
+    int recover_rc = run_gate_script(E6_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E6 one-write-path RATCHET: clean, trips new writer, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E7 — no-authoritative-RAM-state RATCHET: a new direct active_chain
+ * internals access trips the gate; removing it restores green. */
+static int t_e7_no_authoritative_ram_state(void)
+{
+    int failures = 0;
+    unlink_rel(E7_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E7_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E7_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "struct main_state { struct { int height; } chain_active; };\n"
+                       "int e7_fixture(struct main_state *s){ return s->chain_active.height; }\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E7_SCRIPT_REL, NULL) : -1;
+    unlink_rel(E7_FIXTURE_DST);
+    int recover_rc = run_gate_script(E7_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E7 no-authoritative-RAM-state RATCHET: clean, trips direct RAM state, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E12 — honest witness (Law 7). The live tree is clean (FAIL mode passes:
+ * every witness reads observable progress or carries a reviewed
+ * // honest-witness-ok hatch). Plant a condition .c whose witness is a
+ * PURE-INVERSE of detect ("return !detect_x()") — the canonical Law-7 lie
+ * a no-op/self-certifying remedy hides behind — and assert the gate trips;
+ * removing it restores green. This proves the gate has teeth and the
+ * baseline is honestly empty. */
+static int t_e12_honest_witness(void)
+{
+    int failures = 0;
+    unlink_rel(E12_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E12_SCRIPT_REL, "FAIL");
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E12_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include <stdbool.h>\n"
+                       "#include <stdint.h>\n"
+                       "static bool detect_e12_fixture(void){ return true; }\n"
+                       "static bool witness_e12_fixture(int64_t t){\n"
+                       "    (void)t;\n"
+                       "    return !detect_e12_fixture();\n"
+                       "}\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E12_SCRIPT_REL, "FAIL") : -1;
+    unlink_rel(E12_FIXTURE_DST);
+    int recover_rc = run_gate_script(E12_SCRIPT_REL, "FAIL");
+    TEST("[lint-gate] E12 honest-witness FAIL: clean tree, trips pure-inverse witness, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate #21 background-worker lock-in (Shape 5 — Supervisor). The widened
+ * check_supervisor_domain.sh ALSO scans the boot worker file and fails any
+ * thread spawn not paired with supervisor_register_in_domain. This self-test
+ * proves the widened scan has teeth and the (intentionally empty) baseline is
+ * honest: plant a worker that spawns a pthread with NO register and assert the
+ * gate FLAGS it (exit != 0); then a worker WITH a register and assert it
+ * PASSES (exit == 0). Fixtures are fed via ZCL_SUPERVISOR_WORKER_FILES so the
+ * result does not depend on the live boot_background_workers.c state. */
+static int t_gate21_supervisor_worker_lockin(void)
+{
+    int failures = 0;
+    char bad_path[PATH_MAX];
+    char ok_path[PATH_MAX];
+    if (repo_path(bad_path, sizeof(bad_path), SUPDOM_BAD_WORKER_REL) != 0 ||
+        repo_path(ok_path, sizeof(ok_path), SUPDOM_OK_WORKER_REL) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not resolve supervisor worker fixture paths\n");
+        return 1;
+    }
+
+    /* Unsupervised worker: spawns a thread, never registers a contract. */
+    const char *bad =
+        "/* fixture: boot background worker without a liveness contract */\n"
+        "void *worker(void *a){ return a; }\n"
+        "int boot_start_fixture_service(void){\n"
+        "    pthread_create(&t, 0, worker, 0);\n"
+        "    return 0;\n"
+        "}\n";
+    /* Same worker, now paired with a domain registration. */
+    const char *ok =
+        "/* fixture: boot background worker with a liveness contract */\n"
+        "void *worker(void *a){ return a; }\n"
+        "int boot_start_fixture_service(void){\n"
+        "    pthread_create(&t, 0, worker, 0);\n"
+        "    supervisor_register_in_domain(g_op_sup, &g_fixture_contract);\n"
+        "    return 0;\n"
+        "}\n";
+
+    (void)unlink(bad_path);
+    (void)unlink(ok_path);
+    int planted_bad = write_file(bad_path, bad);
+    int trip_rc = planted_bad == 0
+        ? run_gate_script_with_worker_files(SUPDOM_SCRIPT_REL, "FAIL",
+                                            SUPDOM_BAD_WORKER_REL)
+        : -1;
+    (void)unlink(bad_path);
+
+    int planted_ok = write_file(ok_path, ok);
+    int pass_rc = planted_ok == 0
+        ? run_gate_script_with_worker_files(SUPDOM_SCRIPT_REL, "FAIL",
+                                            SUPDOM_OK_WORKER_REL)
+        : -1;
+    (void)unlink(ok_path);
+
+    TEST("[lint-gate] #21 supervisor worker lock-in: unsupervised spawn trips, registered passes") {
+        ASSERT(planted_bad == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(planted_ok == 0);
+        ASSERT(pass_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static void unlink_lint_fixtures(void)
+{
+    const char *fixtures[] = {
+        FIXTURE_DST_REL,
+        COINS_FIXTURE_DST_REL,
+        OBS_FIXTURE_DST_REL,
+        OBS_OK_FIXTURE_DST_REL,
+        RAW_MALLOC_FIXTURE_DST_REL,
+        RAW_MALLOC_OK_FIXTURE_DST_REL,
+        E1_FIXTURE_DST,
+        E10_SHAPE_FIXTURE_DST,
+        E10_SQL_FIXTURE_DST,
+        E2_FIXTURE_DST,
+        E3_FIXTURE_DST,
+        E4_FIXTURE_DST,
+        E5_FIXTURE_DST,
+        E6_FIXTURE_DST,
+        E7_FIXTURE_DST,
+        E12_FIXTURE_DST,
+        SUPDOM_BAD_WORKER_REL,
+        SUPDOM_OK_WORKER_REL,
+    };
+
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        char path[PATH_MAX];
+        if (repo_path(path, sizeof(path), fixtures[i]) == 0)
+            (void)unlink(path);
+    }
+}
+
+static int t_raw_malloc_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), RAW_MALLOC_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw_malloc fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    const char *bad = "/* fixture */\n#include <stdlib.h>\nvoid *f(void){return malloc(16);}\n";
+    if (write_file(fixture_dst, bad) != 0) {
+        fprintf(stderr, "[lint-gate] could not plant raw_malloc fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_raw_malloc_script();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] raw malloc fixture trips the gate (exit != 0)") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_raw_malloc_zcl_fixture_passes(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), RAW_MALLOC_OK_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw_malloc-ok fixture path\n");
+        return 1;
+    }
+    unlink_lint_fixtures();
+    const char *good =
+        "/* fixture */\n"
+        "#include \"util/safe_alloc.h\"\n"
+        "void *f(void){return zcl_malloc(16, \"fixture\");}\n";
+    if (write_file(fixture_dst, good) != 0) {
+        fprintf(stderr, "[lint-gate] could not plant raw_malloc-ok fixture — aborting\n");
+        return 1;
+    }
+    int rc = run_check_raw_malloc_script();
+    unlink_lint_fixtures();
+    TEST("[lint-gate] zcl_malloc-only fixture passes the gate (exit == 0)") {
+        ASSERT(rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_raw_malloc_gate_recovers(void)
+{
+    int failures = 0;
+    char fixture_dst1[PATH_MAX];
+    char fixture_dst2[PATH_MAX];
+    if (repo_path(fixture_dst1, sizeof(fixture_dst1), RAW_MALLOC_FIXTURE_DST_REL) != 0 ||
+        repo_path(fixture_dst2, sizeof(fixture_dst2), RAW_MALLOC_OK_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve raw_malloc fixture paths\n");
+        return 1;
+    }
+    (void)fixture_dst1;
+    (void)fixture_dst2;
+    unlink_lint_fixtures();
+    TEST("[lint-gate] raw_malloc gate passes after fixtures removed") {
+        ASSERT(run_check_raw_malloc_script() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_coins_guard_gate_recovers(void)
+{
+    int failures = 0;
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_dst, sizeof(fixture_dst), COINS_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve coins guard fixture path\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] guarded coin-lookups pass again after fixture removed") {
+        ASSERT(run_check_coins_lookup_nullcheck() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_tools_z_mirror_fallback_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tools/z mirror fallback preserves local authority contract") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf,
+                      "\"consensus_authority\":\"local_consensus_validation\"")
+               != NULL);
+        ASSERT(strstr(buf, "\"candidate_source\":\"legacy_advisory\"")
+               != NULL);
+        ASSERT(strstr(buf, "\"candidate_trust\":\"bounded_advisory_fallback\"")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "\"legacy_advisory_gated_by_native_retries\":false")
+               != NULL);
+        ASSERT(strstr(buf, "mirror_authorization_enabled") == NULL);
+        ASSERT(strstr(buf, "mirror_source_trust") == NULL);
+        ASSERT(strstr(buf, "\"blockers_total\":0") != NULL);
+        ASSERT(strstr(buf, "\"stalls_total\":0") != NULL);
+        ASSERT(strstr(buf, "\"unsafe_overrides_total\":0") != NULL);
+        ASSERT(strstr(buf, "\"last_override_safe\":false") != NULL);
+        ASSERT(strstr(buf, "\"last_override_scope\":\"\"") != NULL);
+        ASSERT(strstr(buf, "blockers=%s") != NULL);
+        ASSERT(strstr(buf, "stalls=%s") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);
+        ASSERT(strstr(buf, "last_override_safe=%s") != NULL);
+        ASSERT(strstr(buf, "legacy_advisory_gated=%s") != NULL);
+        ASSERT(strstr(buf, "mirror_gated=%s") == NULL);
+        ASSERT(strstr(buf, "\"consensus_authority\":\"zclassicd\"") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_service_tip_mutation_gate(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] services do not bypass canonical tip publication") {
+        ASSERT(run_check_service_tip_mutation_gate() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_legacy_candidate_source_has_no_override_scope(void)
+{
+    int failures = 0;
+    char *mirror = NULL;
+    TEST("legacy mirror monitor has no tip-mutation path") {
+        char mirror_path[PATH_MAX];
+        ASSERT(repo_path(mirror_path, sizeof(mirror_path),
+                         "app/services/src/legacy_mirror_sync_service.c") == 0);
+        ASSERT(read_entire_file(mirror_path, &mirror) == 0);
+        ASSERT(strstr(mirror, "CSR_ROLLBACK_SOURCE_MIRROR") == NULL);
+        ASSERT(strstr(mirror, "chain_set_active_tip(") == NULL);
+        ASSERT(strstr(mirror, "active_chain_set_tip(") == NULL);
+        PASS();
+    } _test_next:;
+    free(mirror);
+    return failures;
+}
+
+static int t_tools_z_operator_diagnostics_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tools/z exposes canonical operator diagnostics") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/z") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "network|net)") != NULL);
+        ASSERT(strstr(buf, "rpc getnetworkinfo") != NULL);
+        ASSERT(strstr(buf, "status|health)") != NULL);
+        ASSERT(strstr(buf, "rpc healthcheck") != NULL);
+        ASSERT(strstr(buf, "advance|chain-advance)") != NULL);
+        ASSERT(strstr(buf, "rpc dumpstate chain_advance_coordinator") != NULL);
+        ASSERT(strstr(buf, "peerlife|peer-lifecycle)") != NULL);
+        ASSERT(strstr(buf, "rpc dumpstate peer_lifecycle") != NULL);
+        ASSERT(strstr(buf, "P2P reachability and handshake summary") != NULL);
+        ASSERT(strstr(buf,
+                      "Chain advance source scoring and selection blockers")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "Peer lifecycle attempts, handshakes, failures by source")
+               != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "docs/RUNBOOK.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "sources[].selectable=false") != NULL);
+        ASSERT(strstr(buf, "selection_blocker") != NULL);
+        ASSERT(strstr(buf, "initialized=true") != NULL);
+        ASSERT(strstr(buf, "has_connman=true") != NULL);
+        ASSERT(strstr(buf, "has_main_state=true") != NULL);
+        ASSERT(strstr(buf, "has_node_db=true") != NULL);
+        ASSERT(strstr(buf, "blockers_total") != NULL);
+        ASSERT(strstr(buf, "stalls_total") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides_total") != NULL);
+        ASSERT(strstr(buf, "last_override_safe") != NULL);
+        ASSERT(strstr(buf, "last_override_scope") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "tools/deploy_verify.sh") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "canonical diagnostics ready") != NULL);
+        ASSERT(strstr(buf, "chain_advance_coordinator") != NULL);
+        ASSERT(strstr(buf, "local_consensus_validation") != NULL);
+        ASSERT(strstr(buf, "handshaked_connections") != NULL);
+        ASSERT(strstr(buf, "peer_lifecycle") != NULL);
+        ASSERT(strstr(buf, "legacy_mirror") != NULL);
+        ASSERT(strstr(buf, "blockers_total") != NULL);
+        ASSERT(strstr(buf, "stalls_total") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides_total") != NULL);
+        ASSERT(strstr(buf, "unsafe_overrides_total 0") != NULL);
+        ASSERT(strstr(buf, "last_override_safe") != NULL);
+        ASSERT(strstr(buf, "last_override_scope") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_chain_advance_diagnostics_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot wiring initializes chain advance before diagnostics") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *init = strstr(buf, "block_source_policy_init(");
+        char *diag_state = strstr(buf, "diagnostics_controller_set_state(");
+        char *diag_register = strstr(buf, "register_diagnostics_rpc_commands(");
+        ASSERT(init != NULL);
+        ASSERT(diag_state != NULL);
+        ASSERT(diag_register != NULL);
+        ASSERT(init < diag_state);
+        ASSERT(init < diag_register);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_addrman_persistence_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot uses one sidecar-protected addrman persistence path") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "connman_load_addrman(") != NULL);
+        ASSERT(strstr(buf, "addr_db_read(") == NULL);
+        ASSERT(strstr(buf, "addr_db_write(") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_lib_runtime_gauges_are_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("lib runtime gauges and peer preference are callback injected") {
+        char path[PATH_MAX];
+        /* The external-gauge injection moved with app_start_metrics into
+         * config/src/boot_node_utilities.c (boot composition-root unit). */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_node_utilities.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_metrics_external_gauges") != NULL);
+        ASSERT(strstr(buf, "svc->metrics->external_gauges =") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "connman_set_known_zcl23_peer_source") != NULL);
+        ASSERT(strstr(buf, "db_peer_fast_zcl23") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/metrics/src/metrics.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "ctx->external_gauges") != NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
+        ASSERT(strstr(buf, "services/legacy_mirror_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/node_health_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/connman.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "known_zcl23_peers") != NULL);
+        ASSERT(strstr(buf, "models/peer.h") == NULL);
+        ASSERT(strstr(buf, "config/runtime.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_shutdown_persistence_order_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("shutdown persists block index after network quiesce") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
+        char *replay_join = strstr(buf, "boot_join_replay_service(svc);");
+        char *coins_flushed = strstr(buf, "Coins cache flushed.");
+        char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
+        char *connman_join = strstr(buf, "connman_join(svc->connman);");
+        ASSERT(network_stop != NULL);
+        ASSERT(replay_join != NULL);
+        ASSERT(coins_flushed != NULL);
+        ASSERT(fast != NULL);
+        ASSERT(connman_join != NULL);
+        ASSERT(network_stop < fast);
+        ASSERT(replay_join < fast);
+        ASSERT(coins_flushed < fast);
+        ASSERT(fast < connman_join);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_peer_save_busy_reports_db_error(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("peer save lock exhaustion is reported as DB error") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "app/models/src/peer.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "event_emitf(EV_DB_ERROR") != NULL);
+        ASSERT(strstr(buf, "sqlite3_errstr(rc)") != NULL);
+        ASSERT(strstr(buf, "model=peer op=%s rc=%d attempts=%d msg=%s")
+               != NULL);
+        ASSERT(strstr(buf, "peer %s skipped") != NULL);
+        ASSERT(strstr(buf, "event_emitf(EV_MODEL_VALIDATION_FAILED, 0,\n"
+                           "                    \"model=peer op=save") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_handshake_peer_save_is_async(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("handshake peer persistence is advisory async write") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "msg_processor_set_peer_save") != NULL);
+        ASSERT(strstr(buf, "EV_DB_ERROR") == NULL);
+        free(buf);
+        buf = NULL;
+        /* The advisory peer-save callback body (its async-write impl detail)
+         * lives in boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "db_service_enqueue_write(dbsvc") != NULL);
+        ASSERT(strstr(buf, "db_peer_save_advisory") != NULL);
+        ASSERT(strstr(buf, "boot.peer_save_ctx") != NULL);
+        ASSERT(strstr(buf, "enqueue_queue_full") != NULL);
+        ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped") != NULL);
+        ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped_addr") != NULL);
+        ASSERT(strstr(buf, "EV_DB_ERROR") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_version.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->peer_save") != NULL);
+        ASSERT(strstr(buf, "models/peer.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/peer_lifecycle.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "EV_PEER_CACHE_SKIPPED") != NULL);
+        ASSERT(strstr(buf, "\"cache_skipped\"") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_p2p_app_persistence_is_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("p2p app persistence is injected into net") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_save_zmsg") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_zmsg_save") != NULL);
+        ASSERT(strstr(buf, "boot_save_file_offer") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "boot_save_file_service") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_file_service_save") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (the DB-write impl detail) live in boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "db_zmsg_save") != NULL);
+        ASSERT(strstr(buf, "db_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "db_file_service_save") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msgprocessor.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->zmsg_save") != NULL);
+        ASSERT(strstr(buf, "mp->file_offer_save") != NULL);
+        ASSERT(strstr(buf, "mp->file_service_save") != NULL);
+        ASSERT(strstr(buf, "db_zmsg_save") == NULL);
+        ASSERT(strstr(buf, "db_file_offer_save") == NULL);
+        ASSERT(strstr(buf, "db_file_service_save") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/file_service.h") == NULL);
+        ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
+        ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_tx_wallet_sync_is_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tx wallet persistence and snapshot state are injected into net") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_wallet_tx_accepted") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_snapshot_anchor_accessors") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_wallet_tx_accepted") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (the wallet-sync impl detail) live in boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "wallet_sync_transaction") != NULL);
+        ASSERT(strstr(buf, "node_db_sync_wallet_tx") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_tx.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->wallet_tx_accepted") != NULL);
+        ASSERT(strstr(buf, "msg_processor_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "wallet_sync_transaction") == NULL);
+        ASSERT(strstr(buf, "node_db_sync_wallet_tx") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_p2p_block_submit_is_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("p2p block submission is injected into net") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_submit_p2p_block") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_block_submit") != NULL);
+        ASSERT(strstr(buf, "boot_block_connected_observer") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_block_connected") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (block-submit + observer impl detail) live in
+         * boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "REDUCER_SRC_P2P") != NULL);
+        ASSERT(strstr(buf, "sync_monitor_on_block_connected") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_blocks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->block_submit") != NULL);
+        ASSERT(strstr(buf, "msg_processor_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_note_block_connected") != NULL);
+        ASSERT(strstr(buf, "msg_processor_request_invalid_block_headers") != NULL);
+        ASSERT(strstr(buf, "msg_processor_plan_valid_block_acceptance") != NULL);
+        ASSERT(strstr(buf, "reducer_ingest_block") == NULL);
+        ASSERT(strstr(buf, "boot_activation_controller") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
+        ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_flyclient_proof_builder_is_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("FlyClient proof builder is injected into net snapshot handler") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_build_flyclient_proof") != NULL);
+        ASSERT(strstr(buf, "snapsync_build_fc_response") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_flyclient_proof_builder") != NULL);
+        ASSERT(strstr(buf, "boot_load_block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "boot_compute_utxo_sha3") != NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_utxo_sha3_compute") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/net/src/msgprocessor_snapshot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->flyclient_proof") != NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") != NULL);
+        ASSERT(strstr(buf, "msg_snapshot_sync(") != NULL);
+        ASSERT(strstr(buf, "msg_snapshot_sync_ensure") != NULL);
+        ASSERT(strstr(buf, "mp->block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "mp->utxo_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") == NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") == NULL);
+        ASSERT(strstr(buf, "rpc_blockchain_get_mmb") == NULL);
+        ASSERT(strstr(buf, "g_mmb_leaf_store") == NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/mmb_leaf_store.h") == NULL);
+        ASSERT(strstr(buf, "models/block.h") == NULL);
+        ASSERT(strstr(buf, "coins/utxo_commitment.h") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "snapshot_sync_" "service.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_fast_sync_uses_lib_sqlite_helpers(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("fast sync avoids direct AR, DB, and UTXO model includes") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/fast_sync.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "util/ar_step_readonly.h") != NULL);
+        ASSERT(strstr(buf, "AR_STEP_WRITE") != NULL);
+        ASSERT(strstr(buf, "models/activerecord.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/utxo.h") == NULL);
+        ASSERT(strstr(buf, "db_utxo_serialize_snapshot") == NULL);
+        ASSERT(strstr(buf, "AR_BIND_") == NULL);
+        ASSERT(strstr(buf, "AR_STEP_DONE") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/include/net/fast_sync.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "fast_sync_snapshot_serialize_fn") != NULL);
+        ASSERT(strstr(buf, "struct node_db") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_serialize_utxo_snapshot") != NULL);
+        ASSERT(strstr(buf, "db_utxo_serialize_snapshot") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_framework_reexport_headers_stay_deleted(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("framework primitive re-export headers stay deleted") {
+        char path[PATH_MAX];
+        struct stat st;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/framework/include/framework/mailbox.h") == 0);
+        errno = 0;
+        ASSERT(stat(path, &st) != 0 && errno == ENOENT);
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/framework/include/framework/projection.h") == 0);
+        errno = 0;
+        ASSERT(stat(path, &st) != 0 && errno == ENOENT);
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/include/services/header_admit_inbox.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "util/mailbox.h") != NULL);
+        ASSERT(strstr(buf, "framework/mailbox.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/src/chain_projection.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "util/projection.h") != NULL);
+        ASSERT(strstr(buf, "framework/projection.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/framework/README.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "only purpose is to re-export") != NULL);
+        ASSERT(strstr(buf, "include/framework/mailbox.h") == NULL);
+        ASSERT(strstr(buf, "include/framework/projection.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_utxo_reimport_flag_is_storage_owned(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("utxo reimport flag is storage owned") {
+        char path[PATH_MAX];
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/include/services/utxo_recovery_service.h")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "storage/utxo_reimport_flag.h") == NULL);
+        ASSERT(strstr(buf, "re-export") == NULL);
+        ASSERT(strstr(buf, "re-exports") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_check_and_clear") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "storage/utxo_reimport_flag.h") != NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_check_and_clear") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_hot_loop.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "storage/utxo_reimport_flag.h") != NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_net_sync_planners_are_lib_owned(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("net sync planners use lib-owned contract") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_headers.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
+        ASSERT(strstr(buf, "msg_processor_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_snapshot_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_snapshot_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_request_activation") != NULL);
+        ASSERT(strstr(buf, "msg_processor_clear_activation_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_repair_post_activation_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_scan_block_files") != NULL);
+        ASSERT(strstr(buf, "msg_processor_block_index_heights_repaired") != NULL);
+        ASSERT(strstr(buf, "msg_processor_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "msg_processor_recommit_snapshot_anchor") != NULL);
+        ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "services/block_index_integrity.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
+        ASSERT(strstr(buf, "config/boot_internal.h") == NULL);
+        ASSERT(strstr(buf, "boot_activation_controller") == NULL);
+        ASSERT(strstr(buf, "activation_request_connect") == NULL);
+        ASSERT(strstr(buf, "activation_clear_anchor") == NULL);
+        ASSERT(strstr(buf, "bii_repair_post_activation_anchor") == NULL);
+        ASSERT(strstr(buf, "csr_commit_tip") == NULL);
+        ASSERT(strstr(buf, "csr_commit_header_tip") == NULL);
+        ASSERT(strstr(buf, "csr_instance") == NULL);
+        ASSERT(strstr(buf, "chain_state_commit") == NULL);
+        ASSERT(strstr(buf, "scan_block_files_mark_data") == NULL);
+        ASSERT(strstr(buf, "block_index_heights_repaired()") == NULL);
+        ASSERT(strstr(buf, "snapsync_is_active") == NULL);
+        ASSERT(strstr(buf, "snapsync_get_anchor") == NULL);
+        ASSERT(strstr(buf, "snapsync_set_anchor") == NULL);
+        ASSERT(strstr(buf, "TIP_FROM_P2P_REPAIR") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_request_header_activation") != NULL);
+        ASSERT(strstr(buf, "boot_clear_header_activation_anchor") != NULL);
+        ASSERT(strstr(buf, "boot_repair_header_post_activation_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_activation_hooks") != NULL);
+        ASSERT(strstr(buf, "boot_scan_header_block_files") != NULL);
+        ASSERT(strstr(buf, "scan_block_files_mark_data") != NULL);
+        ASSERT(strstr(buf, "boot_header_block_index_heights_repaired") != NULL);
+        ASSERT(strstr(buf, "block_index_heights_repaired") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_header_index_hooks") != NULL);
+        ASSERT(strstr(buf, "boot_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "boot_recommit_snapshot_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_header_chainstate_hooks") != NULL);
+        free(buf);
+        buf = NULL;
+        /* The background_utxo_replay worker drives the post-snapshot activation
+         * connect + chainstate commit. It moved with the other long-lived
+         * worker threads into boot_background_workers.c, so its
+         * activation_request_connect / csr_commit_tip call sites live there —
+         * still boot-owned (config/src), never in lib/net. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_background_workers.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "activation_request_connect") != NULL);
+        ASSERT(strstr(buf, "csr_commit_tip") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (the activation/index/chainstate impl detail) live in
+         * boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "activation_clear_anchor") != NULL);
+        ASSERT(strstr(buf, "bii_repair_post_activation_anchor") != NULL);
+        ASSERT(strstr(buf, "csr_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "chain_set_active_tip") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/sync/include/sync/sync_planner.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "struct sync_header_processing_plan") != NULL);
+        ASSERT(strstr(buf, "struct sync_stall_recovery") != NULL);
+        ASSERT(strstr(buf, "syncsvc_plan_periodic_getheaders") != NULL);
+        ASSERT(strstr(buf, "syncsvc_assign_peer_blocks") != NULL);
+        ASSERT(strstr(buf, "services/") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/event/include/event/event.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "EV_SYNC_STATE_CHANGE") != NULL);
+        ASSERT(strstr(buf, "#include \"sync/sync_state.h\"") == NULL);
+        ASSERT(strstr(buf, "enum sync_state") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_header_peer_votes_are_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("header peer votes are injected into net") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_record_peer_header_vote") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_peer_header_vote") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback body (the quorum-oracle impl detail) lives in
+         * boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "quorum_oracle_record_peer_header_vote") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_headers.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "msg_processor_record_peer_header_vote") != NULL);
+        ASSERT(strstr(buf, "quorum_oracle_record_peer_header_vote") == NULL);
+        ASSERT(strstr(buf, "services/quorum_oracle_service.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_process_block_node_db_access_is_runtime_owned(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("process block node_db access is runtime owned") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_flush_policy.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_state_set") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_sync_flush_if_needed") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_wal_checkpoint") != NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_self_heal.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
+        ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/tx_index.h") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
+        ASSERT(strstr(buf, "process_block_json_string") == NULL);
+        ASSERT(strstr(buf, "process_block_legacy_rpc_body") == NULL);
+        ASSERT(strstr(buf,
+                      "process_block_recover_missing_utxo_from_sqlite_tx_index(")
+               == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
+        ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_chain_scan(")
+               == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_scan_depth_limit") == NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_stats_snapshot") == NULL);
+        ASSERT(strstr(buf, "g_self_heal_scan_hits") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
+        ASSERT(strstr(buf, "last_reimport_attempted") == NULL);
+        ASSERT(strstr(buf, "process_block_inject_missing_utxo(") == NULL);
+        ASSERT(strstr(buf, "coins_from_transaction") == NULL);
+        ASSERT(strstr(buf, "coins_view_cache_modify_new") == NULL);
+        ASSERT(strstr(buf, "COINS_CACHE_DIRTY") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_hot_loop.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_maybe_write_needs_reimport_flag")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_maybe_trigger_hot_loop_exit")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_get_utxo_activation_paused_height")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_clear_utxo_activation_pause_range")
+               != NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") != NULL);
+        ASSERT(strstr(buf, "FATAL_HOT_LOOP") != NULL);
+        ASSERT(strstr(buf, "last_reimport_attempted") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_scan_state.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_self_heal_scan_depth_limit") != NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_scan_enabled") != NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_stats_snapshot") != NULL);
+        ASSERT(strstr(buf, "g_self_heal_scan_hits") != NULL);
+        ASSERT(strstr(buf, "ZCL_SELF_HEAL_SCAN_DEPTH") != NULL);
+        ASSERT(strstr(buf, "ZCL_SELF_HEAL_SCAN_ENABLE") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_core.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/tx_index.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_evidence_authority_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
+        ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick") == NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks") == NULL);
+        ASSERT(strstr(buf, "process_block_propagate_failed_child(") == NULL);
+        ASSERT(strstr(buf, "block_index_hydrate_from_disk(") == NULL);
+        ASSERT(strstr(buf, "find_block_pos(") == NULL);
+        ASSERT(strstr(buf, "block_index_refresh_header(") == NULL);
+        ASSERT(strstr(buf, "process_block_commit_tip(") == NULL);
+        ASSERT(strstr(buf, "process_block_publish_tip(") == NULL);
+        ASSERT(strstr(buf, "process_block_clear_tip(") == NULL);
+        ASSERT(strstr(buf, "process_block_tip_is_best_work(") == NULL);
+        ASSERT(strstr(buf, "process_block_verify_active_tip_child_on_disk(")
+               == NULL);
+        ASSERT(strstr(buf, "find_best_active_tip_child(") == NULL);
+        ASSERT(strstr(buf, "find_verified_unlinked_active_tip_child(") == NULL);
+        ASSERT(strstr(buf, "process_block_should_skip_contextual_header(")
+               == NULL);
+        ASSERT(strstr(buf, "process_block_pow_window_complete(") == NULL);
+        ASSERT(strstr(buf, "consensus/params.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_contextual_header.c")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_should_skip_contextual_header")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_pow_window_complete") != NULL);
+        ASSERT(strstr(buf, "find_most_work_chain") == NULL);
+        ASSERT(strstr(buf, "process_block_kick_gap_fill") == NULL);
+        ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_tip_child.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_verify_active_tip_child_on_disk")
+               != NULL);
+        ASSERT(strstr(buf, "find_best_active_tip_child") != NULL);
+        ASSERT(strstr(buf, "find_verified_unlinked_active_tip_child") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_tip_publish.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_commit_tip") != NULL);
+        ASSERT(strstr(buf, "update_tip") != NULL);
+        ASSERT(strstr(buf, "process_block_tip_is_best_work") != NULL);
+        ASSERT(strstr(buf, "process_block_publish_tip") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_index.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "find_block_pos") != NULL);
+        ASSERT(strstr(buf, "block_index_refresh_header") != NULL);
+        ASSERT(strstr(buf, "block_index_hydrate_from_disk") != NULL);
+        ASSERT(strstr(buf, "block_index_snapshot_for_persist") != NULL);
+        ASSERT(strstr(buf, "disk_block_index_init") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_invalidate.c")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "block_index_snapshot_for_persist") != NULL);
+        ASSERT(strstr(buf, "disk_block_index_init") == NULL);
+        ASSERT(strstr(buf, "nCachedBranchId") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_revalidate.c")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "block_index_snapshot_for_persist") != NULL);
+        ASSERT(strstr(buf, "disk_block_index_init") == NULL);
+        ASSERT(strstr(buf, "nCachedBranchId") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_runtime_hooks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "process_block_kick_gap_fill") != NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks") != NULL);
+        ASSERT(strstr(buf, "process_block_publish_tip") != NULL);
+        ASSERT(strstr(buf, "process_block_clear_tip") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_failed_child.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_propagate_failed_child") != NULL);
+        ASSERT(strstr(buf, "PROPAGATE_FAILED_CHILD_SKIP_RATE_LIMITED") != NULL);
+        ASSERT(strstr(buf, "zcl_malloc") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/runtime.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_state_set") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_sync_flush_if_needed") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_wal_checkpoint") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") != NULL);
+        ASSERT(strstr(buf, "db_tx_find_native_or_reversed") != NULL);
+        ASSERT(strstr(buf, "SELECT MAX(height) FROM utxos") != NULL);
+        ASSERT(strstr(buf, "node_db_state_set") != NULL);
+        ASSERT(strstr(buf, "node_db_sync_flush") != NULL);
+        ASSERT(strstr(buf, "ndb->open") != NULL);
+        free(buf);
+        buf = NULL;
+
+        /* The process-block hooks were extracted to boot_tip_hooks.c
+         * (behavior-neutral, Wave D). boot_services.c wires them via the seam
+         * call and retains the inline NULL teardown; the hook bodies + the
+         * non-NULL registration live in boot_tip_hooks.c. node_db is still
+         * reached via svc (runtime-owned) in both. */
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_register_process_block_hooks(svc)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick(NULL, NULL)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(NULL, NULL, NULL)") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_tip_hooks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "boot_process_block_commit_tip") != NULL);
+        ASSERT(strstr(buf, "boot_process_block_clear_tip") != NULL);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick(boot_gap_fill_kick, svc)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(boot_process_block_commit_tip") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_repaired_index_persistence_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot persists repaired canonical block index") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *height_repair = strstr(buf, "block_index_repair_heights(&g_state)");
+        char *pprev_repair = strstr(buf, "block_index_repair_pprev(&g_state");
+        char *repaired_save = strstr(buf, "Block index repaired: saving canonical flat file");
+        char *integrity = strstr(buf, "bii_verify(ctx->datadir");
+        ASSERT(height_repair != NULL);
+        ASSERT(pprev_repair != NULL);
+        ASSERT(repaired_save != NULL);
+        ASSERT(integrity != NULL);
+        ASSERT(height_repair < repaired_save);
+        ASSERT(pprev_repair < repaired_save);
+        ASSERT(repaired_save < integrity);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_boot_genesis_init_preserves_restored_authority_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot genesis init preserves restored non-genesis authority tip") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *restore = strstr(buf, "utxo_recovery_restore_chain_tip");
+        char *guard = strstr(buf, "boot_restored_authority_tip = true");
+        char *skip = strstr(buf, "skipped genesis_init");
+        char *genesis = strstr(buf, "\"genesis_init\"");
+        char *skip_activate = strstr(buf, "skip_initial_activate");
+        ASSERT(restore != NULL);
+        ASSERT(guard != NULL);
+        ASSERT(skip != NULL);
+        ASSERT(genesis != NULL);
+        ASSERT(skip_activate != NULL);
+        ASSERT(restore < guard);
+        ASSERT(guard < genesis);
+        ASSERT(skip < genesis);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/utxo_recovery_restore.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "coins_best_block is genesis but UTXOs reach")
+               != NULL);
+        ASSERT(strstr(buf, "utxo_recovery_find_disk_backed_utxo_tip")
+               != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_sha3_window_tool_check_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("gen_sha3_windows supports single-window source proof checks") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/gen_sha3_windows.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *flag = strstr(buf, "--check-window=");
+        char *no_write = strstr(buf, "without writing output files");
+        char *compare = strstr(buf, "expected=%s actual=%s");
+        char *return_mismatch = strstr(buf, "return ok ? 0 : 1");
+        ASSERT(flag != NULL);
+        ASSERT(no_write != NULL);
+        ASSERT(compare != NULL);
+        ASSERT(return_mismatch != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "lib/chain/src/sha3_windows.c") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_block_index_flat_atomic_save_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("block index flat save is atomic") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/block_index_loader.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *tmp = strstr(buf, "block_index.bin\", datadir");
+        char *tmp_suffix = strstr(buf, "\"%s.tmp\", path");
+        char *unlink_tmp = strstr(buf, "(void)unlink(tmp_path)");
+        char *open_tmp = strstr(buf, "fopen(tmp_path, \"wb\")");
+        char *rename_tmp = strstr(buf, "rename(tmp_path, path)");
+        char *sidecar = strstr(buf, "bii_write_sidecar(datadir)");
+        ASSERT(tmp != NULL);
+        ASSERT(tmp_suffix != NULL);
+        ASSERT(unlink_tmp != NULL);
+        ASSERT(open_tmp != NULL);
+        ASSERT(rename_tmp != NULL);
+        ASSERT(sidecar != NULL);
+        ASSERT(tmp_suffix < unlink_tmp);
+        ASSERT(unlink_tmp < open_tmp);
+        ASSERT(open_tmp < rename_tmp);
+        ASSERT(rename_tmp < sidecar);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_process_block_split_uses_reducer_language(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("process-block split comments name reducer, not deleted engines") {
+        const char *files[] = {
+            "lib/validation/include/validation/process_block.h",
+            "lib/validation/include/validation/process_block_internals.h",
+            "lib/validation/include/validation/process_block_invalidate.h",
+            "lib/validation/src/process_block.c",
+            "lib/validation/src/process_block_core.c",
+            "lib/validation/src/process_block_crash_hooks.c",
+            "lib/validation/src/process_block_failed_child.c",
+            "lib/validation/src/process_block_internal.h",
+            "lib/validation/src/process_block_revalidate.c",
+            "lib/validation/src/process_block_tip_child.c",
+            "lib/validation/src/process_block_tip_publish.c",
+        };
+        const char *stale[] = {
+            "connect_tip",
+            "disconnect_tip",
+            "activate_best_chain",
+            "process_new_block",
+            "accept_block()",
+        };
+
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[PATH_MAX];
+            ASSERT(repo_path(path, sizeof(path), files[i]) == 0);
+            ASSERT(read_entire_file(path, &buf) == 0);
+            for (size_t j = 0; j < sizeof(stale) / sizeof(stale[0]); j++)
+                ASSERT(strstr(buf, stale[j]) == NULL);
+            free(buf);
+            buf = NULL;
+        }
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("production comments name purpose, not refactor scaffold labels") {
+        const char *files[] = {
+            "config/src/boot_services.c",
+            "config/src/boot_background_workers.c",
+            "config/src/boot_msg_callbacks.c",
+            "config/src/boot.c",
+            "lib/storage/include/storage/utxo_reimport_flag.h",
+            "lib/validation/include/validation/process_block.h",
+            "lib/validation/src/process_block_core.c",
+            "lib/net/src/connman.c",
+            "app/jobs/include/jobs/header_probe_poll.h",
+            "app/services/include/services/block_source_policy.h",
+            "app/services/src/block_source_policy_runtime.c",
+            "app/services/src/block_source_policy_status.c",
+            "app/services/src/block_source_policy_persist.c",
+            "app/services/src/block_source_policy_decisions.c",
+            "app/services/src/chain_restore_executor.c",
+            "app/services/src/chain_restore_repair.c",
+            "lib/storage/src/utxo_reimport_flag.c",
+            "app/services/src/utxo_recovery_restore.c",
+            "lib/util/include/util/stage.h",
+            "lib/storage/include/storage/progress_store.h",
+            "app/supervisors/include/supervisors/staged_sync_supervisor.h",
+            "app/jobs/include/jobs/utxo_apply_delta.h",
+            "app/jobs/include/jobs/header_admit_stage.h",
+            "app/jobs/include/jobs/validate_headers_stage.h",
+            "app/jobs/include/jobs/body_fetch_stage.h",
+            "app/jobs/src/utxo_apply_delta.c",
+            "app/jobs/src/utxo_apply_delta_reorg.c",
+            "app/jobs/src/utxo_apply_stage.c",
+            "app/jobs/include/jobs/block_header_emit.h",
+            "app/jobs/include/jobs/body_persist_stage.h",
+            "app/jobs/include/jobs/script_validate_stage.h",
+            "app/jobs/include/jobs/proof_validate_stage.h",
+            "app/jobs/include/jobs/utxo_apply_stage.h",
+            "app/jobs/include/jobs/tip_finalize_stage.h",
+            "app/jobs/include/jobs/job.h",
+            "app/jobs/include/jobs/stage_helpers.h",
+            "app/jobs/README.md",
+            "app/jobs/src/body_persist_stage.c",
+            "app/jobs/src/script_validate_stage.c",
+            "app/jobs/src/proof_validate_stage.c",
+            "app/jobs/src/tip_finalize_stage.c",
+            "app/jobs/src/header_admit_stage.c",
+            "app/jobs/src/tip_finalize_post_step.h",
+            "app/jobs/src/validate_headers_internal.h",
+            "app/jobs/src/validate_headers_report.c",
+            "app/jobs/src/validate_headers_validator.c",
+            "app/controllers/src/wallet_controller_history.c",
+            "app/controllers/src/transaction_controller_sign.c",
+            "app/controllers/src/wallet_controller_keys.c",
+            "app/controllers/src/repair_controller_utxo.c",
+            "app/controllers/src/wallet_controller_multisig.c",
+            "app/controllers/src/store_controller_schema.c",
+            "app/controllers/src/wallet_shielded_send.c",
+            "app/controllers/src/wallet_shielded_keys.c",
+            "app/controllers/src/wallet_shielded_send_shielded.c",
+            "app/controllers/src/wallet_shielded_controller.c",
+            "app/controllers/src/wallet_rescan_controller_coins.c",
+            "app/controllers/src/wallet_rescan_controller_witness.c",
+            "app/controllers/src/wallet_view_emit.c",
+            "app/controllers/src/wallet_view_sync.c",
+            "app/controllers/src/sync_controller_import.c",
+            "app/controllers/src/sync_controller_catchup.c",
+            "app/controllers/src/sync_controller_catchup_jobs.c",
+            "app/controllers/include/controllers/diagnostics_controller.h",
+            "app/controllers/src/api_controller_node.c",
+            "app/controllers/src/blockchain_controller_chain.c",
+            "app/controllers/src/explorer_controller_block.c",
+            "app/controllers/src/explorer_controller_pages.c",
+            "app/controllers/src/explorer_controller_dashboard.c",
+            "app/controllers/src/explorer_controller_address.c",
+            "app/controllers/src/wallet_view_helpers.c",
+            "app/controllers/src/sync_controller_blocks.c",
+            "app/controllers/src/sync_controller_writers.c",
+            "app/views/include/views/explorer_stats_view.h",
+            "app/views/include/views/explorer_block_view.h",
+            "app/views/include/views/explorer_pages_view.h",
+            "app/views/include/views/explorer_dashboard_view.h",
+            "app/views/include/views/store_internal.h",
+            "app/views/include/views/explorer_address_view.h",
+            "app/views/include/views/explorer_pages_loading_view.h",
+            "app/views/include/views/explorer_tx_view.h",
+            "app/views/include/views/wallet_gui_internal.h",
+            "app/views/src/store_view.c",
+            "app/views/src/explorer_factoids_view.c",
+            "app/views/src/explorer_stats_view.c",
+            "app/views/src/explorer_factoids_history.c",
+            "app/views/src/explorer_factoids_chaindata.c",
+            "app/views/include/views/explorer_factoids_view.h",
+            "app/views/src/explorer_pages_hodl.c",
+            "app/views/src/explorer_block_view.c",
+            "app/views/src/explorer_stats_gather.c",
+            "app/views/src/explorer_stats_sections.c",
+            "app/views/src/explorer_pages_loading_view.c",
+            "app/views/src/explorer_address_view.c",
+            "app/views/src/explorer_pages_view.c",
+            "app/views/src/explorer_dashboard_view.c",
+            "app/views/src/wallet_gui_bot.c",
+            "app/views/src/wallet_gui.c",
+            "app/views/include/views/explorer_main_view.h",
+            "app/views/src/explorer_main_view.c",
+            "app/views/src/explorer_tx_view.c",
+            "app/views/include/views/wallet_view_coins_view.h",
+            "app/views/src/wallet_view_coins_view.c",
+            "app/views/include/views/wallet_view_dashboard_view.h",
+            "app/views/src/wallet_view_dashboard_view.c",
+            "app/views/include/views/wallet_view_history_view.h",
+            "app/views/src/wallet_view_history_view.c",
+            "app/views/include/views/wallet_view_node_view.h",
+            "app/views/src/wallet_view_node_view.c",
+            "app/views/include/views/wallet_view_shield_view.h",
+            "app/views/src/wallet_view_shield_view.c",
+            "app/services/src/block_source_policy_internal.h",
+            "app/controllers/include/controllers/diagnostics_internal.h",
+            "app/controllers/src/diagnostics_controller.c",
+            "app/services/src/block_index_loader_rebuild.c",
+            "app/services/src/utxo_recovery_service.c",
+            "app/services/src/chain_evidence_reconstruct.c",
+            "app/services/src/bg_validation_scripts.c",
+            "app/services/include/services/block_index_loader.h",
+            "app/services/include/services/utxo_recovery_service.h",
+            "app/services/src/bg_validation_proofs.c",
+            "app/services/src/bg_validation_internal.h",
+            "app/services/src/block_index_loader.c",
+            "app/services/src/chain_evidence_persistence_service.c",
+            "app/services/src/consensus_reject_index.c",
+            "app/services/include/services/chain_state_validator.h",
+            "app/services/src/chain_state_validator.c",
+            "app/services/src/utxo_recovery_backfill.c",
+            "app/services/src/snapshot_sync_service.c",
+            "app/services/src/snapshot_sync_internal.h",
+            "app/services/src/snapshot_offer.c",
+            "app/services/src/snapshot_fetch.c",
+            "app/services/src/snapshot_verify.c",
+            "app/services/src/snapshot_apply.c",
+            "app/services/include/services/chain_activation_service.h",
+            "app/services/src/chain_activation_service.c",
+            "app/supervisors/include/supervisors/chain_supervisor.h",
+            "app/models/include/models/database_internal.h",
+            "app/models/include/models/wallet_tx_internal.h",
+            "app/models/include/models/header_admit_log.h",
+            "app/models/src/database_modes.c",
+            "app/models/src/database_migrate.c",
+            "app/models/src/sapling_note.c",
+            "app/models/src/wallet_tx_reads.c",
+            "app/controllers/src/hodl_controller.c",
+            "app/controllers/src/mining_controller.c",
+            "app/controllers/src/repair_controller_rebuild.c",
+            "app/supervisors/src/net_supervisor.c",
+            "app/supervisors/src/staged_sync_supervisor.c",
+            "app/supervisors/src/chain_supervisor.c",
+            "config/src/boot_snapshot_import.c",
+            "config/src/boot_index.c",
+            "tools/sim/chaos.c",
+            "lib/crypto_registry/include/crypto_registry/crypto_registry.h",
+            "lib/crypto_registry/src/crypto_registry.c",
+            "lib/platform/include/platform/clock.h",
+            "lib/platform/include/platform/rng.h",
+            "lib/platform/include/platform/time_compat.h",
+            "lib/platform/src/clock.c",
+            "lib/platform/src/rng.c",
+            "lib/storage/include/storage/projection_util.h",
+            "lib/storage/include/storage/event_log.h",
+            "lib/storage/include/storage/event_log_payloads.h",
+            "lib/storage/include/storage/block_index_projection.h",
+            "lib/storage/include/storage/utxo_projection.h",
+            "lib/storage/include/storage/sha3_sidecar_io.h",
+            "lib/storage/src/event_log.c",
+            "lib/storage/src/mempool_projection.c",
+            "lib/storage/src/peers_projection.c",
+            "lib/storage/src/utxo_projection.c",
+            "lib/storage/src/wallet_projection.c",
+            "lib/storage/src/znam_projection.c",
+            "app/controllers/src/diagnostics_registry.c",
+            "lib/validation/include/validation/accept_block_header.h",
+            "lib/validation/include/validation/process_block_invalidate.h",
+            "lib/validation/include/validation/process_block_revalidate.h",
+            "lib/validation/src/accept_block_header.c",
+            "lib/validation/src/process_block.c",
+            "lib/validation/src/process_block_crash_hooks.c",
+            "lib/validation/src/process_block_failed_child.c",
+            "lib/validation/src/process_block_flush_policy.c",
+            "lib/validation/src/process_block_invalidate.c",
+            "lib/validation/src/process_block_internal.h",
+            "lib/validation/src/process_block_revalidate.c",
+            "lib/validation/src/process_block_self_heal.c",
+        };
+        const char *stale[] = {
+            "Phase 3 dissolve",
+            "dissolve PR",
+            "PR-",
+            "B3:",
+            "B3/",
+            "B2:",
+            "B5:",
+            "B5 reorg",
+            "B5 ordering",
+            "C3 split",
+            "D5",
+            "F-1",
+            "docs/dissolve",
+            "dissolved chain_advance_coordinator",
+            "Re-homed verbatim",
+            "verbatim",
+            "Behavior-preserving",
+            "code motion",
+            "Pure code-motion",
+            "pure code move",
+            "Pure code motion",
+            "file-size ceiling E1",
+            "until Phase 3",
+            "Phase 3 unblocks",
+            "Phase 3: release refs",
+            "Split out of",
+            "Split into",
+            "split out of",
+            "specific split",
+            "split files",
+            "behavior byte-identical",
+            "byte-identical",
+            "behavior unchanged",
+            "byte-identically",
+            "pre-split monolith",
+            "extracted from",
+            "checklist item",
+            "checklist D5",
+            "moved out of",
+            "move, not a redesign",
+            "not a redesign",
+            "prior controller implementation",
+            "prior inline",
+            "No behavior change vs the original",
+            "Behavior is byte-identical",
+            "Extracted from",
+            "extracted verbatim",
+            "pure refactor",
+            "pure code motion",
+            "Pure code motion",
+            "single-engine replacement",
+            "single-engine",
+            "Single-engine",
+            "single engine",
+            "copy-pasted",
+            "Compatibility shim",
+            "legacy controller includes",
+            "lifted verbatim",
+            "Moved verbatim",
+            "byte-for-byte",
+            "skeleton",
+            "idle in this PR",
+            "Later Phase",
+            "Phase 5a",
+            "Phase 6a",
+            "Phase 6c",
+            "Phase 4",
+            "Phase 7a",
+            "Wave F-5",
+            "Wave T",
+            "Wave M",
+            "Wave-M",
+            "Wave S",
+            "Wave-S",
+            "WS-6.4",
+            "S-2",
+            "S-3",
+            "S-4",
+            "S-5",
+            "S-6",
+            "S-7",
+            "S-8",
+            "S-9",
+            "Back-compat",
+            "Precedent:",
+            "gate E1",
+            "file-size ceiling",
+            "Phase C",
+            "boot decomposition Phase",
+            "for file size",
+        };
+
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[PATH_MAX];
+            ASSERT(repo_path(path, sizeof(path), files[i]) == 0);
+            ASSERT(read_entire_file(path, &buf) == 0);
+            for (size_t j = 0; j < sizeof(stale) / sizeof(stale[0]); j++) {
+                if (strstr(buf, stale[j])) {
+                    fprintf(stderr, "stale scaffold label %s still present in %s\n",
+                            stale[j], files[i]);
+                    ASSERT(strstr(buf, stale[j]) == NULL);
+                }
+            }
+            free(buf);
+            buf = NULL;
+        }
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_deleted_engine_names_absent_from_production_sources(void)
+{
+    int failures = 0;
+    TEST("deleted engine names are absent from production C/H sources") {
+        ASSERT(run_check_deleted_engine_names() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_projection_deferral_is_not_block_rejected_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("projection deferral is chain advance diagnostic, not block reject") {
+        /* The one-engine deletion removed legacy connect_tip(); the reducer
+         * consensus path (tip_finalize_post_step.c) is now the sole producer
+         * of the projection-deferred DIAGNOSTIC. The contract anchor follows
+         * the live consensus path: a deferred projection write is a
+         * diagnostic counter on the new path, never a block reject. */
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/jobs/src/tip_finalize_post_step.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "block_source_policy_note_projection_deferred") != NULL);
+        ASSERT(strstr(buf, "\"consensus_path\"") != NULL);
+        ASSERT(strstr(buf, "projection-deferred-consensus-path") == NULL);
+        ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/src/sync_controller_blocks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "block_source_policy_note_projection_deferred") != NULL);
+        ASSERT(strstr(buf, "\"no_db_service\"") != NULL);
+        ASSERT(strstr(buf, "projection-deferred-no-db-service") == NULL);
+        ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/block_source_policy_runtime.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "op=projection_deferred reason=%s") != NULL);
+        ASSERT(strstr(buf, "projection_deferred_total") != NULL);
+        ASSERT(strstr(buf, "EV_CHAIN_ADVANCE_DECISION") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+int test_make_lint_gates(void)
+{
+    printf("\n=== make_lint_gates tests ===\n");
+
+    /* Resolve against the built test binary location so later tests can
+     * change cwd without breaking these shell-outs. */
+    struct stat st;
+    char fixture_src[PATH_MAX];
+    char makefile[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src), FIXTURE_SRC_REL) != 0 ||
+        repo_path(makefile, sizeof(makefile), "Makefile") != 0 ||
+        stat(fixture_src, &st) != 0 || stat(makefile, &st) != 0) {
+        printf("[lint-gate] SKIP: repo root not discoverable from test_zcl path\n");
+        return 0;
+    }
+
+    int failures = 0;
+    failures += t_baseline_passes();
+    failures += t_fixture_trips_gate();
+    failures += t_gate_recovers_after_removal();
+    failures += t_coins_guard_baseline_passes();
+    failures += t_coins_guard_fixture_trips_gate();
+    failures += t_coins_guard_gate_recovers();
+    failures += t_observability_fixture_trips_gate();
+    failures += t_observability_positive_controls_pass();
+    failures += t_raw_malloc_fixture_trips_gate();
+    failures += t_raw_malloc_zcl_fixture_passes();
+    failures += t_raw_malloc_gate_recovers();
+    failures += t_service_tip_mutation_gate();
+    failures += t_legacy_candidate_source_has_no_override_scope();
+    failures += t_tools_z_mirror_fallback_contract();
+    failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_boot_chain_advance_diagnostics_contract();
+    failures += t_boot_addrman_persistence_contract();
+    failures += t_lib_runtime_gauges_are_callback_injected();
+    failures += t_boot_shutdown_persistence_order_contract();
+    failures += t_peer_save_busy_reports_db_error();
+    failures += t_handshake_peer_save_is_async();
+    failures += t_p2p_app_persistence_is_callback_injected();
+    failures += t_tx_wallet_sync_is_callback_injected();
+    failures += t_p2p_block_submit_is_callback_injected();
+    failures += t_flyclient_proof_builder_is_callback_injected();
+    failures += t_fast_sync_uses_lib_sqlite_helpers();
+    failures += t_framework_reexport_headers_stay_deleted();
+    failures += t_utxo_reimport_flag_is_storage_owned();
+    failures += t_net_sync_planners_are_lib_owned();
+    failures += t_header_peer_votes_are_callback_injected();
+    failures += t_process_block_node_db_access_is_runtime_owned();
+    failures += t_process_block_split_uses_reducer_language();
+    failures += t_production_comments_do_not_carry_refactor_scaffold_labels();
+    failures += t_deleted_engine_names_absent_from_production_sources();
+    failures += t_boot_repaired_index_persistence_contract();
+    failures += t_boot_genesis_init_preserves_restored_authority_contract();
+    failures += t_sha3_window_tool_check_contract();
+    failures += t_block_index_flat_atomic_save_contract();
+    failures += t_projection_deferral_is_not_block_rejected_contract();
+    failures += t_e1_file_size_ceiling();
+    failures += t_e9_operator_needed_sink();
+    failures += t_e10_framework_shape_ratchet();
+    failures += t_e10_no_raw_sqlite_ratchet();
+    failures += t_gate22_framework_filename_suffix();
+    failures += t_e11_doc_accuracy();
+    failures += t_e2_one_result_type();
+    failures += t_e3_shape_includes_header();
+    failures += t_e4_projections_pure();
+    failures += t_e5_stage_advances_or_blocks();
+    failures += t_e6_one_write_path();
+    failures += t_e7_no_authoritative_ram_state();
+    failures += t_e12_honest_witness();
+    failures += t_gate21_supervisor_worker_lockin();
+    return failures;
+}
+
+#else  /* !ZCL_TESTING */
+
+int test_make_lint_gates(void)
+{
+    /* No-op when the lint-gate integration test is disabled. */
+    return 0;
+}
+
+#endif /* ZCL_TESTING */

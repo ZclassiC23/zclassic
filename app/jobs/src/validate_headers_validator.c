@@ -1,0 +1,527 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * validate_headers_validator — default header validator for the
+ * validate_headers Job. Reconstructs the block header from the in-memory or
+ * persisted block index and checks PoW target plus Equihash solution. No
+ * cursor logic lives here. */
+
+#include "validate_headers_internal.h"
+
+#include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/equihash.h"
+#include "chain/pow.h"
+#include "config/runtime.h"
+#include "core/uint256.h"
+#include "jobs/stage_repair.h"
+#include "models/block.h"
+#include "primitives/block.h"
+#include "storage/disk_block_io.h"
+#include "storage/block_index_db.h"
+#include "storage/progress_store.h"
+#include "validation/check_block.h"
+
+#include <stdio.h>
+#include <string.h>
+
+extern struct block_tree_db *g_active_block_tree;
+
+/* node.db handle for the SQLite solution fallback. Defaults to the live
+ * runtime handle (NULL outside a booted node, e.g. unit tests); tests
+ * inject a fixture handle via validate_headers_validator_set_node_db().
+ * The bytes here are validated IDENTICALLY to the in-memory/persisted
+ * paths — this is purely a different *source* for the same nSolution. */
+static struct node_db *g_fallback_node_db = NULL;
+static bool            g_fallback_node_db_set = false;
+
+void validate_headers_validator_set_node_db(struct node_db *ndb);
+void validate_headers_validator_set_node_db(struct node_db *ndb)
+{
+    g_fallback_node_db     = ndb;
+    g_fallback_node_db_set = true;
+}
+
+static struct node_db *fallback_node_db(void)
+{
+    if (g_fallback_node_db_set)
+        return g_fallback_node_db;
+    return app_runtime_node_db();
+}
+
+/* Source the full header (incl. Equihash nSolution) from the progress.kv
+ * header_solution_repair side-table. header_probe writes this row at
+ * accept_block_header time for the LIVE frontier, so it covers heights
+ * ABOVE the persisted node.db tip (which has no row there) and any
+ * active-chain window position. This is the FIRST source in the ordered
+ * resolver below.
+ *
+ * The bytes are validated IDENTICALLY to every other source — the
+ * assembled header is handed to the SAME validate_header_fields
+ * (CheckProofOfWork + check_equihash_solution). The loader independently
+ * hash-binds the stored row to bi->phashBlock and recomputes the header
+ * hash, so a forged / empty / wrong-height row can never be injected; but
+ * hash-binding is NOT PoW — a hash-binding-yet-non-PoW solution still
+ * fails check_equihash_solution. Returns false (distinct reason) when no
+ * repair row exists, so the resolver falls through to the index/node.db
+ * sources and ultimately keeps failing rather than passing unverified. */
+static bool header_from_repair_table(const struct block_index *bi,
+                                     struct block_header *out,
+                                     char *out_reason,
+                                     size_t out_reason_size)
+{
+    if (!bi || !bi->phashBlock || !out) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        snprintf(out_reason, out_reason_size, "no-repair-store");
+        return false;
+    }
+
+    struct block_header rh;
+    if (!stage_repair_header_solution_load(db, bi->nHeight,
+                                           bi->phashBlock, &rh)) {
+        /* No hash-bound repair row at this height — fall through. */
+        snprintf(out_reason, out_reason_size, "no-repair-header");
+        return false;
+    }
+    if (rh.nSolutionSize == 0 ||
+        rh.nSolutionSize > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+
+    /* The loaded header already hashes to bi->phashBlock (the loader's
+     * round-trip proved it), so copy its stored fields exactly as stored —
+     * including hashPrevBlock from the row, not bi->pprev. */
+    block_header_init(out);
+    out->nVersion = rh.nVersion;
+    out->hashPrevBlock = rh.hashPrevBlock;
+    out->hashMerkleRoot = rh.hashMerkleRoot;
+    out->hashFinalSaplingRoot = rh.hashFinalSaplingRoot;
+    out->nTime = rh.nTime;
+    out->nBits = rh.nBits;
+    out->nNonce = rh.nNonce;
+    memcpy(out->nSolution, rh.nSolution, rh.nSolutionSize);
+    out->nSolutionSize = rh.nSolutionSize;
+    return true;
+}
+
+/* Source the Equihash solution from the node.db blocks.solution BLOB when
+ * the in-memory and persisted block-index records have evicted it. Builds
+ * the SAME struct block_header the index paths build, differing only in
+ * where nSolution came from. Returns false (with a distinct reason) when
+ * node.db has no real solution either — NEVER a synthesized/empty one, so
+ * the caller keeps failing rather than passing without a verified PoW. */
+static bool header_from_node_db_solution(const struct block_index *bi,
+                                         struct block_header *out,
+                                         char *out_reason,
+                                         size_t out_reason_size)
+{
+    struct node_db *ndb = fallback_node_db();
+    if (!ndb) {
+        /* No node.db reachable (e.g. unbooted). The 675,755 rows whose
+         * node.db solution is ALSO empty land here too via the loader's
+         * false return below. */
+        snprintf(out_reason, out_reason_size,
+                 "no-header-solution-backfill-required");
+        return false;
+    }
+
+    unsigned char sol[MAX_SOLUTION_SIZE];
+    size_t sol_len = 0;
+    if (!db_block_load_solution_by_height(ndb, bi->nHeight,
+                                          sol, &sol_len, sizeof(sol))
+        || sol_len == 0) {
+        /* OWNER-GATED BACKFILL: ~675K of 3.13M node.db rows have an empty
+         * solution column. They cannot be validated until a scoped
+         * zclassicd LevelDB solution import is run (stop/import/restart) —
+         * do NOT attempt that here. Until then this header has NO real,
+         * verified solution and MUST fail; never a false pass. */
+        snprintf(out_reason, out_reason_size,
+                 "no-header-solution-backfill-required");
+        return false;
+    }
+    if (sol_len > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+    if (bi->nHeight > 0 && (!bi->pprev || !bi->pprev->phashBlock)) {
+        snprintf(out_reason, out_reason_size, "missing-parent-header");
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = bi->nVersion;
+    if (bi->pprev && bi->pprev->phashBlock)
+        out->hashPrevBlock = *bi->pprev->phashBlock;
+    else
+        memset(out->hashPrevBlock.data, 0, sizeof(out->hashPrevBlock.data));
+    out->hashMerkleRoot = bi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = bi->hashFinalSaplingRoot;
+    out->nTime = bi->nTime;
+    out->nBits = bi->nBits;
+    out->nNonce = bi->nNonce;
+    memcpy(out->nSolution, sol, sol_len);
+    out->nSolutionSize = sol_len;
+    return true;
+}
+
+static bool header_from_node_db_block(const struct block_index *bi,
+                                      struct block_header *out,
+                                      char *out_reason,
+                                      size_t out_reason_size)
+{
+    struct node_db *ndb = fallback_node_db();
+    if (!ndb) {
+        snprintf(out_reason, out_reason_size, "no-node-db-header");
+        return false;
+    }
+    if (!bi || !bi->phashBlock || !out) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+    if (!db_block_load_header_by_hash_height(ndb, bi->nHeight,
+                                             bi->phashBlock->data, out)) {
+        snprintf(out_reason, out_reason_size, "no-node-db-header");
+        return false;
+    }
+    return true;
+}
+
+static bool validate_header_fields(const struct block_header *header,
+                                   const struct chain_params *cp,
+                                   char *out_reason,
+                                   size_t out_reason_size);
+
+static bool header_hash_matches_index(const struct block_header *header,
+                                      const struct block_index *bi);
+
+static bool header_from_disk_block_file(const struct block_index *bi,
+                                        const char *datadir,
+                                        struct block_header *out,
+                                        char *out_reason,
+                                        size_t out_reason_size)
+{
+    if (!bi || !out || !datadir || datadir[0] == 0) {
+        snprintf(out_reason, out_reason_size, "no-disk-block-header");
+        return false;
+    }
+    if (!(bi->nStatus & BLOCK_HAVE_DATA) || bi->nFile < 0) {
+        snprintf(out_reason, out_reason_size, "no-disk-block-header");
+        return false;
+    }
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_index_pread(&blk, bi, datadir)) {
+        block_free(&blk);
+        snprintf(out_reason, out_reason_size, "no-disk-block-header");
+        return false;
+    }
+
+    *out = blk.header;
+    block_free(&blk);
+    return true;
+}
+
+static bool validate_from_disk_block_file(
+    const struct block_index *bi,
+    const char *datadir,
+    const struct chain_params *cp,
+    char *out_reason,
+    size_t out_reason_size,
+    bool *had_hash_bound_header)
+{
+    if (had_hash_bound_header)
+        *had_hash_bound_header = false;
+
+    struct block_header h;
+    if (!header_from_disk_block_file(bi, datadir, &h, out_reason,
+                                     out_reason_size))
+        return false;
+
+    if (!header_hash_matches_index(&h, bi)) {
+        snprintf(out_reason, out_reason_size, "disk-block-hash-mismatch");
+        return false;
+    }
+
+    if (had_hash_bound_header)
+        *had_hash_bound_header = true;
+    return validate_header_fields(&h, cp, out_reason, out_reason_size);
+}
+
+/* ── Default validator: PoW target + Equihash ────────────────────── */
+
+static bool header_from_block_index(const struct block_index *bi,
+                                    struct block_header *out,
+                                    char *out_reason,
+                                    size_t out_reason_size)
+{
+    if (!bi || !out) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+    if (!bi->nSolution || bi->nSolutionSize == 0) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+    if (bi->nSolutionSize > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+    if (bi->nHeight > 0 && (!bi->pprev || !bi->pprev->phashBlock)) {
+        snprintf(out_reason, out_reason_size, "missing-parent-header");
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = bi->nVersion;
+    if (bi->pprev && bi->pprev->phashBlock)
+        out->hashPrevBlock = *bi->pprev->phashBlock;
+    else
+        memset(out->hashPrevBlock.data, 0, sizeof(out->hashPrevBlock.data));
+    out->hashMerkleRoot = bi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = bi->hashFinalSaplingRoot;
+    out->nTime = bi->nTime;
+    out->nBits = bi->nBits;
+    out->nNonce = bi->nNonce;
+    memcpy(out->nSolution, bi->nSolution, bi->nSolutionSize);
+    out->nSolutionSize = bi->nSolutionSize;
+    return true;
+}
+
+static bool header_from_disk_block_index(const struct disk_block_index *dbi,
+                                         struct block_header *out,
+                                         char *out_reason,
+                                         size_t out_reason_size)
+{
+    if (!dbi || !out) {
+        snprintf(out_reason, out_reason_size, "null-disk-block-index");
+        return false;
+    }
+    if (dbi->nSolutionSize == 0) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+    if (dbi->nSolutionSize > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = dbi->nVersion;
+    out->hashPrevBlock = dbi->hashPrev;
+    out->hashMerkleRoot = dbi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = dbi->hashFinalSaplingRoot;
+    out->nTime = dbi->nTime;
+    out->nBits = dbi->nBits;
+    out->nNonce = dbi->nNonce;
+    memcpy(out->nSolution, dbi->nSolution, dbi->nSolutionSize);
+    out->nSolutionSize = dbi->nSolutionSize;
+    return true;
+}
+
+static bool header_from_persisted_block_index(const struct block_index *bi,
+                                              struct block_header *out,
+                                              char *out_reason,
+                                              size_t out_reason_size)
+{
+    if (!g_active_block_tree || !bi || !bi->phashBlock) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+
+    struct disk_block_index dbi;
+    if (!block_tree_db_read_block_index(g_active_block_tree,
+                                        bi->phashBlock, &dbi)) {
+        snprintf(out_reason, out_reason_size, "no-header-solution");
+        return false;
+    }
+    return header_from_disk_block_index(&dbi, out,
+                                        out_reason, out_reason_size);
+}
+
+static bool validate_header_fields(const struct block_header *header,
+                                   const struct chain_params *cp,
+                                   char *out_reason,
+                                   size_t out_reason_size)
+{
+    if (!header || !cp) {
+        snprintf(out_reason, out_reason_size, "missing-header-context");
+        return false;
+    }
+
+    struct uint256 hash;
+    block_header_get_hash(header, &hash);
+    if (!CheckProofOfWork(hash, header->nBits, &cp->consensus)) {
+        snprintf(out_reason, out_reason_size, "high-hash");
+        return false;
+    }
+    if (!check_equihash_solution(header, cp)) {
+        snprintf(out_reason, out_reason_size, "invalid-solution");
+        return false;
+    }
+    return true;
+}
+
+static bool header_hash_matches_index(const struct block_header *header,
+                                      const struct block_index *bi)
+{
+    if (!header || !bi || !bi->phashBlock)
+        return false;
+    struct uint256 hash;
+    block_header_get_hash(header, &hash);
+    return uint256_eq(&hash, bi->phashBlock);
+}
+
+typedef bool (*header_source_fn)(const struct block_index *bi,
+                                 struct block_header *out,
+                                 char *out_reason,
+                                 size_t out_reason_size);
+
+static bool validate_from_source(header_source_fn fn,
+                                 const char *source_name,
+                                 const struct block_index *bi,
+                                 const struct chain_params *cp,
+                                 char *out_reason,
+                                 size_t out_reason_size,
+                                 bool *had_hash_bound_header,
+                                 bool *had_hash_mismatch)
+{
+    if (had_hash_bound_header)
+        *had_hash_bound_header = false;
+
+    struct block_header h;
+    if (!fn(bi, &h, out_reason, out_reason_size))
+        return false;
+
+    if (!header_hash_matches_index(&h, bi)) {
+        if (had_hash_mismatch)
+            *had_hash_mismatch = true;
+        snprintf(out_reason, out_reason_size,
+                 "%s-hash-mismatch", source_name);
+        return false;
+    }
+
+    if (had_hash_bound_header)
+        *had_hash_bound_header = true;
+    return validate_header_fields(&h, cp, out_reason, out_reason_size);
+}
+
+bool validate_headers_default_validator(const struct block_index *bi,
+                                        const char *datadir,
+                                        char *out_reason,
+                                        size_t out_reason_size,
+                                        void *user)
+{
+    (void)user;
+    (void)datadir;
+    if (!bi || !bi->phashBlock) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+
+    /* (1) version. */
+    if (bi->nVersion < MIN_BLOCK_VERSION) {
+        snprintf(out_reason, out_reason_size, "version-too-low");
+        return false;
+    }
+
+    /* (2) PoW target. Cheap — no disk. */
+    const struct chain_params *cp = chain_params_get();
+    if (!cp) {
+        snprintf(out_reason, out_reason_size, "no-chain-params");
+        return false;
+    }
+
+    /* (3) Header source resolution — ONE ordered resolver, five sources.
+     * A source can produce a terminal PoW/Equihash verdict only after its
+     * assembled header hashes back to bi->phashBlock. A mismatch is treated
+     * as a stale/corrupt source and falls through to the next candidate.
+     *
+     * FIRST source: the progress.kv header_solution_repair side-table.
+     * header_probe writes this row at accept_block_header time for the
+     * live frontier, so it is the authoritative source for heights ABOVE
+     * the persisted node.db tip (the wedge). When it holds a (hash-bound)
+     * solution it hashes to bi->phashBlock identically to every other
+     * source, so the PoW/Equihash verdict is source-independent. */
+    bool had_hash_mismatch = false;
+    bool had_hash_bound_header = false;
+    if (validate_from_source(header_from_repair_table, "repair-header",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* node.db blocks rows are keyed by the active-chain hash/height pair
+     * and carry the full stored header. This source must precede the
+     * in-memory index: after a stale block-index load, the index fields can
+     * be inconsistent with phashBlock even though node.db has the canonical
+     * connected header. */
+    if (validate_from_source(header_from_node_db_block, "node-db-header",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* Full block files are the next strongest source on a full datadir copy:
+     * read the indexed block, hash-bind it to bi->phashBlock, then validate
+     * the exact on-disk header. This covers node.db rows with missing/stale
+     * solution bytes without trusting the body source blindly. */
+    if (validate_from_disk_block_file(bi, datadir, cp, out_reason,
+                                      out_reason_size,
+                                      &had_hash_bound_header))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* The block index stores full header fields, including nonce and
+     * Equihash solution, for headers admitted through normal P2P/RPC
+     * paths. Validate from that header snapshot next. */
+    if (validate_from_source(header_from_block_index, "block-index",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* Restart/load paths deliberately keep the Equihash solution out
+     * of the hot in-memory index to save RAM. The persisted block-index
+     * record still owns it, so load that compact header record instead
+     * of making header validation depend on readable block bodies. */
+    if (validate_from_source(header_from_persisted_block_index,
+                             "persisted-index", bi, cp,
+                             out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* Final source: the node.db blocks.solution BLOB. A cold-imported /
+     * near-empty LevelDB leaves both index paths solution-less even though
+     * the real, network-anchored Equihash solution lives in SQLite. We
+     * validate it IDENTICALLY (same validate_header_fields → CheckProofOfWork
+     * + check_equihash_solution). On a node.db that ALSO lacks the solution
+     * this still FAILS with "no-header-solution-backfill-required" — never a
+     * false pass. */
+    if (validate_from_source(header_from_node_db_solution, "node-db-solution",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    if (had_hash_mismatch)
+        snprintf(out_reason, out_reason_size, "header-source-hash-mismatch");
+    return false;
+}

@@ -1,0 +1,12 @@
+# Advance a mempool-open node by one hour and observe prune scheduling.
+
+seed        0x0000000000000004
+boot_phase  mempool_open
+peer_count  0
+advance_clock +1h
+
+expect      no_crash
+expect      clock_advance_count == 1
+expect      clock_advance_seconds == 3600
+expect      mempool_prune_runs >= 1
+expect      consensus_rejects == 0

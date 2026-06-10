@@ -1,0 +1,96 @@
+# Valgrind suppression file for zclassic23 test suite.
+#
+# Usage:
+#   valgrind --suppressions=tools/valgrind.supp --leak-check=full build/bin/test_zcl
+#
+# Vendor code (OpenSSL, libevent, SQLite, LevelDB, secp256k1) may allocate
+# one-time buffers that are never freed (intentional — process lifetime).
+# These are not bugs in zclassic23 code.
+
+# OpenSSL global init allocations (one-time, process lifetime)
+{
+   openssl_global_init
+   Memcheck:Leak
+   ...
+   fun:OPENSSL_init_ssl
+}
+{
+   openssl_engine_init
+   Memcheck:Leak
+   ...
+   fun:ENGINE_load_builtin_engines
+}
+{
+   openssl_crypto_init
+   Memcheck:Leak
+   ...
+   fun:OPENSSL_init_crypto
+}
+
+# libevent global state
+{
+   libevent_global_init
+   Memcheck:Leak
+   ...
+   fun:event_base_new*
+}
+
+# SQLite global state (registered extensions, global mutexes)
+{
+   sqlite3_global_init
+   Memcheck:Leak
+   ...
+   fun:sqlite3_initialize
+}
+{
+   sqlite3_open_allocs
+   Memcheck:Leak
+   ...
+   fun:sqlite3_open_v2
+}
+
+# LevelDB arena allocations (process lifetime caches)
+{
+   leveldb_open
+   Memcheck:Leak
+   ...
+   fun:*leveldb*Open*
+}
+
+# secp256k1 context (allocated once, never freed — intentional)
+{
+   secp256k1_context_create
+   Memcheck:Leak
+   ...
+   fun:secp256k1_context_create
+}
+{
+   secp256k1_ecmult_gen
+   Memcheck:Leak
+   ...
+   fun:secp256k1_ecmult_gen_context_build
+}
+
+# ECC global init (secp256k1 context — process lifetime, freed at exit)
+{
+   ecc_start
+   Memcheck:Leak
+   ...
+   fun:ecc_start
+}
+
+# dlopen internals (shared library loading)
+{
+   dlopen
+   Memcheck:Leak
+   ...
+   fun:dlopen*
+}
+
+# pthread internals
+{
+   pthread_create_stack
+   Memcheck:Leak
+   ...
+   fun:pthread_create*
+}

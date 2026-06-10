@@ -1,0 +1,4 @@
+# E7 ratchet baseline: direct authoritative-RAM-state surfaces.
+# Format: <file>:<line>: <matched source>
+# Empty on 2026-05-28: production code has no direct active_chain internals
+# or global/static active_chain instances outside the sanctioned structs.

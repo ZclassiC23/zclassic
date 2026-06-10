@@ -1,0 +1,34 @@
+{{> breadcrumb}}
+
+<div style='text-align:center;padding:16px 0'>
+<span class='pill {{{pill_class}}}' style='font-size:13px;padding:4px 12px'>
+{{{direction}}}</span>
+<h2 style='margin:12px 0 4px;color:{{{color}}}'>{{{heading}}}</h2>
+<div class='balance-sub'>{{{rel_time}}} &middot; {{{abs_time}}}</div>
+</div>
+
+<div style='margin:0 0 16px'>
+<div style='display:flex;justify-content:space-between;
+font-size:13px;color:#888;margin-bottom:4px'>
+<span>{{{confs}}} confirmation{{{conf_plural}}}</span>
+<span>{{{conf_status}}}</span></div>
+<div class='conf-meter'>
+<div class='fill' style='width:{{{conf_pct}}}%;background:{{{conf_color}}}'></div>
+</div></div>
+
+<div class='detail-grid'>
+<div class='lbl'>TxID</div>
+<div class='val'><a href='/explorer/tx/{{{txid}}}' class='hash'
+style='font-size:13px'>{{{txid}}}</a></div>
+<div class='lbl'>Block</div>
+<div class='val'>{{{block_height}}}</div>
+<div class='lbl'>Direction</div>
+<div class='val'>{{{direction}}}</div>
+{{{fee_row}}}
+</div>
+
+{{{outputs_section}}}
+
+<div style='text-align:center;margin:24px 0'>
+<a href='/explorer/tx/{{{txid}}}' style='color:#60a5fa;font-size:13px'>
+View in Explorer &#x2192;</a></div>

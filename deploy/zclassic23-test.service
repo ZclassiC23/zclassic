@@ -1,0 +1,41 @@
+[Unit]
+Description=ZClassic23 Test Instance (Onion Bootstrap)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=notify + WatchdogSec=120 is SAFE on the test instance because
+# it has no public peers (-addnode=127.0.0.1:8033 only, no externalip).
+# A watchdog-triggered restart costs zero peer reputation and lets us
+# fault-inject lag-SLO breaches without manual recovery.
+#
+# Main runs Type=simple — see deploy/zclassic23.service for the
+# architectural reason. Never copy Type=notify to main.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+# Cold-boot from empty datadir can take 8-10 min today (file_service
+# downloads 6.8 GB snapshot + indexes blk*.dat + activate_best_chain).
+# The default 90s TimeoutStartSec would race the boot and trip a
+# restart loop. Give 15 min headroom. Once the file_service snapshot
+# anchor promotion lands (see memory
+# project_test_bootstrap_no_snapshot_anchor_2026-05-19), this can come
+# back down to ~120s.
+TimeoutStartSec=900
+
+ExecStart=%h/zclassic23/build/bin/zclassic23 \
+    -datadir=%h/.zclassic-c23-test \
+    -port=8035 \
+    -rpcport=18234 \
+    -listen \
+    -tor \
+    -nobgvalidation \
+    -nolegacyimport \
+    -addnode=127.0.0.1:8033 \
+    -showmetrics=0
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=300
+
+[Install]
+WantedBy=default.target

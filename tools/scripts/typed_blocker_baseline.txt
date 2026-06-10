@@ -1,0 +1,4 @@
+# Typed-blocker adoption baseline.
+#
+# Empty by design. Raw `_blocker` string fields and legacy blocker setters must
+# route through the typed blocker primitive instead of being grandfathered.

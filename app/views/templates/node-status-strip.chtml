@@ -1,0 +1,13 @@
+<a href='/wallet/node' style='text-decoration:none;color:inherit'>
+<div style='display:flex;align-items:center;gap:10px;
+background:#111;border-radius:8px;padding:10px 14px;margin:4px 0;
+font-size:13px;color:#888'>
+<span style='color:#34d399;font-weight:700'>Your Node</span>
+<span>{{{peers}}} peers</span>
+<span>&middot;</span>
+<span>Block {{{height}}}</span>
+<span>&middot;</span>
+<span style='color:{{{status_color}}}'>{{{status}}}</span>
+<span style='margin-left:auto;color:#60a5fa;font-size:12px'>
+&#x2192;</span>
+</div></a>

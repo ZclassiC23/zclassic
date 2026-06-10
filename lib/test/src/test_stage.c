@@ -1,0 +1,299 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Unit tests for the stage primitive (lib/util/src/stage.c).
+ *
+ * Coverage:
+ *   - create/destroy: input validation, default cursor at 0
+ *   - run_once: JOB_ADVANCED commits cursor; survives close+reopen
+ *   - run_once: JOB_BLOCKED leaves cursor untouched, blocker recorded
+ *   - run_once: JOB_IDLE leaves cursor untouched
+ *   - run_once: JOB_ADVANCED with non-monotonic cursor_out → ERROR + rollback
+ *   - "crash mid-step" simulation: the step writes to a scratch table,
+ *     then signals ERROR; on next run the scratch row is absent (the
+ *     framework rolled back) and the cursor is the pre-step value.
+ *   - stage_set_cursor: explicit restore round-trips. */
+
+#include "test/test_helpers.h"
+#include "util/blocker.h"
+#include "util/stage.h"
+
+#include <sqlite3.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+#define STG_CHECK(name, expr) do { \
+    printf("stage: %s... ", (name)); \
+    if ((expr)) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* ── Step functions for fixtures ─────────────────────────────────── */
+
+struct ctx_advance_by_one { sqlite3 *db; int times_called; };
+
+static job_result_t step_advance_by_one(struct stage_step_ctx *c)
+{
+    struct ctx_advance_by_one *u = c->user;
+    u->times_called++;
+    c->cursor_out = c->cursor_in + 1;
+    return JOB_ADVANCED;
+}
+
+static job_result_t step_always_blocked(struct stage_step_ctx *c)
+{
+    blocker_init(&c->blocker, "stage-blocked-fixture", "test",
+                 BLOCKER_TRANSIENT, "fixture says no");
+    return JOB_BLOCKED;
+}
+
+static job_result_t step_always_idle(struct stage_step_ctx *c)
+{
+    (void)c;
+    return JOB_IDLE;
+}
+
+static job_result_t step_advance_nonmono(struct stage_step_ctx *c)
+{
+    c->cursor_out = c->cursor_in;  /* contract violation */
+    return JOB_ADVANCED;
+}
+
+/* Writes to a "scratch" table inside the txn, then returns ERROR. The
+ * framework should roll back the scratch row AND leave the cursor at
+ * its pre-step value, exactly as if the process had crashed between
+ * the step body and the cursor commit. */
+struct ctx_crash { sqlite3 *db; };
+static job_result_t step_crash_mid(struct stage_step_ctx *c)
+{
+    struct ctx_crash *u = c->user;
+    sqlite3_exec(u->db,
+        "INSERT INTO scratch(v) VALUES (42)", NULL, NULL, NULL);
+    c->cursor_out = c->cursor_in + 99;
+    return JOB_FATAL;
+}
+
+/* Open a fresh in-memory DB and ensure the cursor table exists. */
+static sqlite3 *open_db_with_schema(const char *path)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK) return NULL;
+    if (!stage_table_ensure(db)) { sqlite3_close(db); return NULL; }
+    sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS scratch (v INTEGER)",
+        NULL, NULL, NULL);
+    return db;
+}
+
+static int64_t scratch_count(sqlite3 *db)
+{
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM scratch", -1, &st, NULL);
+    int64_t n = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
+int test_stage(void)
+{
+    printf("\n=== stage tests ===\n");
+    int failures = 0;
+
+    blocker_module_init();
+
+    /* ── create/destroy + validation ─────────────────────────────── */
+    {
+        stage_t *s = stage_create("alpha", step_always_idle, NULL);
+        STG_CHECK("create OK", s != NULL);
+        STG_CHECK("name matches", strcmp(stage_name(s), "alpha") == 0);
+        STG_CHECK("cursor starts at 0", stage_cursor(s) == 0);
+        stage_destroy(s);
+
+        STG_CHECK("create NULL name → NULL",
+                  stage_create(NULL, step_always_idle, NULL) == NULL);
+        STG_CHECK("create empty name → NULL",
+                  stage_create("", step_always_idle, NULL) == NULL);
+        STG_CHECK("create NULL step → NULL",
+                  stage_create("x", NULL, NULL) == NULL);
+
+        char too_long[STAGE_NAME_MAX + 8];
+        memset(too_long, 'x', sizeof(too_long));
+        too_long[sizeof(too_long) - 1] = '\0';
+        STG_CHECK("create long name → NULL",
+                  stage_create(too_long, step_always_idle, NULL) == NULL);
+
+        stage_destroy(NULL);  /* must not crash */
+    }
+
+    /* ── ADVANCED commits + survives reopen ──────────────────────── */
+    {
+        const char *path = "test_stage_advance.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+        STG_CHECK("db open", db != NULL);
+
+        struct ctx_advance_by_one u = { .db = db, .times_called = 0 };
+        stage_t *s = stage_create("counter", step_advance_by_one, &u);
+
+        job_result_t r = stage_run_once(s, db);
+        STG_CHECK("first run advances", r == JOB_ADVANCED);
+        STG_CHECK("cursor=1 after first", stage_cursor(s) == 1);
+        STG_CHECK("step invoked once", u.times_called == 1);
+
+        r = stage_run_once(s, db);
+        STG_CHECK("second run advances", r == JOB_ADVANCED);
+        STG_CHECK("cursor=2 after second", stage_cursor(s) == 2);
+
+        STG_CHECK("advanced_count=2", stage_advanced_count(s) == 2);
+        STG_CHECK("blocked_count=0",  stage_blocked_count(s) == 0);
+
+        stage_destroy(s);
+        sqlite3_close(db);
+
+        /* Reopen and confirm the cursor persisted. We don't call
+         * step here — just observe via a fresh stage handle. */
+        db = open_db_with_schema(path);
+        struct ctx_advance_by_one u2 = { .db = db, .times_called = 0 };
+        stage_t *s2 = stage_create("counter", step_advance_by_one, &u2);
+
+        /* Force a load via a single run; it should see cursor 2 and
+         * advance to 3. */
+        r = stage_run_once(s2, db);
+        STG_CHECK("reopen sees persisted cursor",
+                  r == JOB_ADVANCED && stage_cursor(s2) == 3);
+
+        stage_destroy(s2);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── BLOCKED leaves cursor untouched, registers a blocker ───── */
+    {
+        blocker_reset_for_testing();
+        const char *path = "test_stage_blocked.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+
+        stage_t *s = stage_create("blocky", step_always_blocked, NULL);
+        job_result_t r = stage_run_once(s, db);
+        STG_CHECK("blocked returns BLOCKED", r == JOB_BLOCKED);
+        STG_CHECK("cursor unchanged after BLOCKED", stage_cursor(s) == 0);
+        STG_CHECK("blocked_count=1", stage_blocked_count(s) == 1);
+        STG_CHECK("blocker recorded",
+                  blocker_exists("stage-blocked-fixture"));
+
+        stage_destroy(s);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── IDLE leaves cursor untouched ─────────────────────────── */
+    {
+        const char *path = "test_stage_idle.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+
+        stage_t *s = stage_create("idler", step_always_idle, NULL);
+        job_result_t r = stage_run_once(s, db);
+        STG_CHECK("idle returns IDLE", r == JOB_IDLE);
+        STG_CHECK("cursor unchanged after IDLE", stage_cursor(s) == 0);
+        STG_CHECK("idle_count=1", stage_idle_count(s) == 1);
+
+        stage_destroy(s);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── non-monotonic ADVANCED → ERROR + rollback ─────────────── */
+    {
+        const char *path = "test_stage_nonmono.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+
+        /* First, get the cursor to 5. */
+        struct ctx_advance_by_one u = { .db = db, .times_called = 0 };
+        stage_t *s = stage_create("monocheck", step_advance_by_one, &u);
+        for (int i = 0; i < 5; i++) stage_run_once(s, db);
+        STG_CHECK("primed to 5", stage_cursor(s) == 5);
+        stage_destroy(s);
+
+        /* Swap in a step that claims ADVANCED but doesn't move. */
+        stage_t *s2 = stage_create("monocheck", step_advance_nonmono, NULL);
+        job_result_t r = stage_run_once(s2, db);
+        STG_CHECK("nonmono ADVANCED → ERROR", r == JOB_FATAL);
+        STG_CHECK("cursor still 5 after nonmono", stage_cursor(s2) == 5);
+        stage_destroy(s2);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── crash-mid-step → rollback ─────────────────────────────── */
+    {
+        const char *path = "test_stage_crash.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+
+        struct ctx_crash u = { .db = db };
+        stage_t *s = stage_create("crasher", step_crash_mid, &u);
+
+        STG_CHECK("scratch empty pre-run", scratch_count(db) == 0);
+        job_result_t r = stage_run_once(s, db);
+        STG_CHECK("ERROR returned", r == JOB_FATAL);
+        STG_CHECK("cursor unchanged after crash", stage_cursor(s) == 0);
+        STG_CHECK("scratch rolled back", scratch_count(db) == 0);
+
+        stage_destroy(s);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── stage_set_cursor explicit restore ─────────────────────── */
+    {
+        const char *path = "test_stage_restore.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+
+        stage_t *s = stage_create("restored", step_advance_by_one, NULL);
+        bool ok = stage_set_cursor(s, db, 1000);
+        STG_CHECK("set_cursor ok", ok);
+        STG_CHECK("cursor=1000 in memory", stage_cursor(s) == 1000);
+        stage_destroy(s);
+
+        /* Reopen and confirm the persisted value via a fresh stage. */
+        struct ctx_advance_by_one u = { .db = db, .times_called = 0 };
+        stage_t *s2 = stage_create("restored", step_advance_by_one, &u);
+        stage_run_once(s2, db);
+        STG_CHECK("restored cursor visible after reload",
+                  stage_cursor(s2) == 1001);
+
+        stage_destroy(s2);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── result name helper ────────────────────────────────────── */
+    {
+        STG_CHECK("name ADVANCED",
+                  strcmp(stage_result_name(JOB_ADVANCED), "advanced") == 0);
+        STG_CHECK("name BLOCKED",
+                  strcmp(stage_result_name(JOB_BLOCKED), "blocked") == 0);
+        STG_CHECK("name IDLE",
+                  strcmp(stage_result_name(JOB_IDLE), "idle") == 0);
+        STG_CHECK("name ERROR",
+                  strcmp(stage_result_name(JOB_FATAL), "error") == 0);
+        STG_CHECK("name invalid",
+                  strcmp(stage_result_name((job_result_t)99),
+                         "(invalid)") == 0);
+    }
+
+    blocker_reset_for_testing();
+
+    if (failures == 0) {
+        printf("=== stage tests: ALL PASS ===\n\n");
+    } else {
+        printf("=== stage tests: %d FAILURE(S) ===\n\n", failures);
+    }
+    return failures;
+}

@@ -1,0 +1,107 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Rhett Creighton
+ *
+ * db_maintenance_sqlite — sqlite implementation of db_maintenance_port.
+ *
+ * The three methods below are the raw maintenance executions that used to
+ * live inline in app/services/src/db_maintenance.c (sqlite3_exec over a
+ * fixed SQL string per op, with the SQLite error message captured into
+ * the caller's state). They are moved behind the port with EXACT same SQL
+ * text and the same sqlite3_exec / sqlite3_free error handling so the
+ * EV_DB_MAINTENANCE_* surface is bit-for-bit identical.
+ */
+
+#include "adapters/outbound/persistence/db_maintenance_sqlite.h"
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/stat.h>
+
+static inline struct db_maintenance_sqlite_ctx *ctx_of(void *self)
+{
+    return (struct db_maintenance_sqlite_ctx *)self;
+}
+
+/* Copy a NUL-terminated error string into the caller's buffer, leaving it
+ * a valid C string in every path. Shared by the three ops. */
+static void dbm_set_err(char *err, size_t errsz, const char *msg)
+{
+    if (!err || errsz == 0)
+        return;
+    snprintf(err, errsz, "%s", msg ? msg : "sqlite error");
+}
+
+/* Run one fixed maintenance statement via sqlite3_exec — the verbatim
+ * path the scheduler used inline. Returns true on SQLITE_OK; on failure
+ * copies the sqlite error text into `err` and frees it. */
+static bool dbm_exec(void *self, const char *sql, char *err, size_t errsz)
+{
+    struct db_maintenance_sqlite_ctx *c = ctx_of(self);
+    if (!c || !c->db) {
+        dbm_set_err(err, errsz, "db_maint: null or closed db");
+        return false;
+    }
+    char *errmsg = NULL;
+    int rc = sqlite3_exec(c->db, sql, NULL, NULL, &errmsg);
+    if (rc != SQLITE_OK) {
+        dbm_set_err(err, errsz, errmsg ? errmsg : "sqlite error");
+        sqlite3_free(errmsg);
+        return false;
+    }
+    sqlite3_free(errmsg);
+    if (err && errsz)
+        err[0] = '\0';
+    return true;
+}
+
+static bool dbm_wal_checkpoint(void *self, char *err, size_t errsz)
+{
+    return dbm_exec(self, "PRAGMA wal_checkpoint(TRUNCATE);", err, errsz);
+}
+
+static bool dbm_analyze(void *self, char *err, size_t errsz)
+{
+    return dbm_exec(self, "ANALYZE;", err, errsz);
+}
+
+static bool dbm_vacuum(void *self, char *err, size_t errsz)
+{
+    return dbm_exec(self, "VACUUM;", err, errsz);
+}
+
+/* Resolve the wrapped connection's "main" filename, then stat
+ * "<path>-wal" — the verbatim WAL-size probe the scheduler used inline. */
+static bool dbm_wal_size_bytes(void *self, int64_t *out)
+{
+    struct db_maintenance_sqlite_ctx *c = ctx_of(self);
+    if (!c || !c->db || !out)
+        return false;
+    const char *db_path = sqlite3_db_filename(c->db, "main");
+    if (!db_path || !db_path[0])
+        return false;
+    char wal_path[1024];
+    struct stat st;
+    snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+    if (stat(wal_path, &st) != 0)
+        return false;
+    *out = (int64_t)st.st_size;
+    return true;
+}
+
+bool db_maintenance_sqlite_bind(struct db_maintenance_sqlite_ctx *ctx,
+                                sqlite3 *db,
+                                struct db_maintenance_port *out_port)
+{
+    if (!ctx || !out_port)
+        return false;
+    ctx->db = db;
+    *out_port = (struct db_maintenance_port){
+        .self           = ctx,
+        .wal_checkpoint = dbm_wal_checkpoint,
+        .analyze        = dbm_analyze,
+        .vacuum         = dbm_vacuum,
+        .wal_size_bytes = dbm_wal_size_bytes,
+    };
+    return true;
+}

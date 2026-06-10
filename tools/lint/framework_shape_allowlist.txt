@@ -1,0 +1,7 @@
+# framework_shape_allowlist.txt
+#
+# Allowlist for tools/lint/framework_shape_check.sh
+# Existing violations get listed here so the ratchet doesn't regress.
+# Goal: empty by Phase 2.
+#
+# Format: one relative path per line; lines starting with # are comments.

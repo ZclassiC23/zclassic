@@ -1,0 +1,25 @@
+{{> breadcrumb}}
+
+<div style='text-align:center;padding:16px 0'>
+<div class='balance-sub'>Shield transparent ZCL to a z-address.
+Breaks the on-chain link to your public address.</div></div>
+<form method='GET' action='/wallet/shield'>
+<div class='form-group'>
+<label class='form-label' for='shield-amt'>Amount to Secure</label>
+<div style='display:flex;gap:8px;align-items:center'>
+<input class='form-input' type='text' id='shield-amt'
+inputmode='decimal' name='amount' placeholder='0.00' required>
+<button type='button' class='send-max'
+onclick='document.getElementById("shield-amt").value="{{{max_amount}}}"'>Max</button>
+</div>
+<div style='color:#888;font-size:14px;margin-top:6px'>
+Available: <span style='color:#34d399'>{{{available}}} ZCL</span>
+</div></div>
+<div id='shield-err' class='form-error'></div>
+<button type='submit' class='btn-primary'
+style='background:#a78bfa;color:#fff;margin-top:8px'
+onclick='var a=parseFloat(document.getElementById("shield-amt").value);if(isNaN(a)||a<=0){document.getElementById("shield-err").textContent="Enter a valid amount";return false;}if(a>{{{max_amount}}}){document.getElementById("shield-err").textContent="Insufficient funds";return false;}'>
+Review</button>
+</form>
+<div style='text-align:center;margin-top:16px'>
+<a href='/wallet' style='color:#888'>Cancel</a></div>

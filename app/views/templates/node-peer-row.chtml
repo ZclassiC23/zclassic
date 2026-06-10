@@ -1,0 +1,6 @@
+<tr>
+<td class='hash' style='font-size:13px'>{{{addr}}}</td>
+<td><span class='pill {{{dir_class}}}'>{{{direction}}}</span></td>
+<td style='font-size:13px'>{{{subver}}}</td>
+<td style='font-size:13px;color:#888'>{{{height}}}</td>
+</tr>

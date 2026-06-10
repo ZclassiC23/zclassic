@@ -1,0 +1,3 @@
+[submodule "vendor/tor"]
+	path = vendor/tor
+	url = git@github.com:RhettCreighton/tor.git

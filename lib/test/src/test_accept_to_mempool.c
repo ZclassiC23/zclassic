@@ -1,0 +1,234 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Regression test for the shared mempool-acceptance gate
+ * accept_to_mempool() (lib/validation). The bug it closes: the relay
+ * paths (P2P `tx` + RPC sendrawtransaction) admitted and fluffed a tx
+ * with a structurally-valid shape and existing prevouts but an INVALID
+ * transparent signature — only block-connect rejected it, after the
+ * invalid-sig flood had already wasted every node's bandwidth.
+ *
+ * The core assertion: a tx with a BAD signature is REJECTED (and so
+ * never relayed); the same tx with a VALID signature is ACCEPTED. */
+
+#include "test/test_helpers.h"
+#include "validation/accept_to_mempool.h"
+#include "validation/txmempool.h"
+#include "validation/sighash.h"
+#include "coins/coins_view.h"
+#include "coins/coins.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
+#include "script/standard.h"
+#include "script/script.h"
+#include "script/sighashtype.h"
+#include "primitives/transaction.h"
+
+/* Stamp a P2PKH UTXO (scriptPubKey = DUP HASH160 <pkh> EQUALVERIFY
+ * CHECKSIG) into the view at `txid`:0 with `value`. */
+static bool atm_add_p2pkh_utxo(struct coins_view_cache *cache,
+                               const struct uint256 *txid, int64_t value,
+                               const struct key_id *kid)
+{
+    struct coins_cache_entry *entry =
+        coins_view_cache_modify_new(cache, txid);
+    if (!entry) return false;
+    coins_alloc(&entry->coins, 1);
+    entry->coins.vout[0].value = value;
+    script_for_p2pkh(&entry->coins.vout[0].script_pub_key, kid);
+    entry->coins.height = 1;
+    entry->coins.version = 1;
+    entry->coins.is_coinbase = false;
+    return true;
+}
+
+/* Build a v1 transparent 1-in/1-out tx spending `prev`:0. scriptSig is
+ * filled in by the caller after sighash. */
+static void atm_build_spend(struct transaction *tx,
+                            const struct uint256 *prev, int64_t out_value)
+{
+    transaction_init(tx);
+    transaction_alloc(tx, 1, 1);
+    tx->version = 1;
+    tx->vin[0].prevout.hash = *prev;
+    tx->vin[0].prevout.n = 0;
+    tx->vin[0].sequence = 0xFFFFFFFF;
+    tx->vout[0].value = out_value;
+    /* Give the output a trivial non-empty scriptPubKey so
+     * check_transaction's standardness probes are satisfied. */
+    uint8_t spk[] = {0x51}; /* OP_1 */
+    script_set(&tx->vout[0].script_pub_key, spk, 1);
+    tx->lock_time = 0;
+}
+
+/* Sign vin[0] of `tx` against `prev_spk`/`amount` with `key`, then
+ * install the P2PKH scriptSig: <sig+hashtype> <pubkey>. If `corrupt`,
+ * flip a byte of the DER signature so the signature is INVALID while
+ * the structure stays well-formed. */
+static void atm_sign_input(struct transaction *tx,
+                           const struct script *prev_spk, int64_t amount,
+                           const struct privkey *key, const struct pubkey *pub,
+                           bool corrupt)
+{
+    struct sighash_type ht = { .raw = SIGHASH_ALL };
+    struct uint256 sighash;
+    uint256_set_null(&sighash);
+    /* branch_id 0: v1 / Sprout transparent sighash. */
+    signature_hash(prev_spk, tx, 0, ht, amount, 0, NULL, &sighash);
+
+    unsigned char sig[80];
+    size_t siglen = sizeof(sig);
+    privkey_sign(key, &sighash, sig, &siglen);
+    /* A DER ECDSA signature is <= 72 bytes; clamp defensively. */
+    if (siglen > 72) siglen = 72;
+    if (corrupt && siglen > 10)
+        sig[siglen - 4] ^= 0xFF; /* still a valid DER int, wrong value */
+    sig[siglen] = SIGHASH_ALL;   /* append hashtype */
+    siglen += 1;
+
+    /* Assemble the P2PKH scriptSig (<push sig+ht> <push pubkey>) into a
+     * fixed local buffer and install via script_set. Both items are well
+     * under 76 bytes, so each push is a single length-prefix byte. Hand-
+     * rolled rather than script_push_data to keep the push length a
+     * statically-bounded value (avoids a false -Warray-bounds under -O3
+     * inlining). */
+    size_t pklen = pub->size; if (pklen > 65) pklen = 65;
+    unsigned char ss_buf[1 + 73 + 1 + 65];
+    size_t n = 0;
+    ss_buf[n++] = (unsigned char)siglen;
+    memcpy(&ss_buf[n], sig, siglen); n += siglen;
+    ss_buf[n++] = (unsigned char)pklen;
+    memcpy(&ss_buf[n], pub->vch, pklen); n += pklen;
+
+    struct script ss;
+    script_init(&ss);
+    script_set(&ss, ss_buf, n);
+    tx->vin[0].script_sig = ss;
+    transaction_compute_hash(tx);
+}
+
+int test_accept_to_mempool(void)
+{
+    int failures = 0;
+
+    struct privkey key;
+    privkey_make_new(&key, true);
+    struct pubkey pub;
+    privkey_get_pubkey(&key, &pub);
+    struct key_id kid = pubkey_get_id(&pub);
+
+    struct script prev_spk;
+    script_for_p2pkh(&prev_spk, &kid);
+    const int64_t utxo_value = 100 * COIN_VALUE;
+
+    /* ================================================================
+     * 1. BAD signature → REJECTED before relay.
+     *    A tx structurally valid, prevout exists, fee positive, but the
+     *    transparent signature is forged. Old relay path accepted+fluffed
+     *    this; the gate must now reject it (MEMPOOL_ACCEPT_INVALID) and
+     *    leave the mempool empty.
+     * ================================================================ */
+    printf("accept_to_mempool: bad-sig tx REJECTED before relay... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        struct uint256 utxo;
+        memset(utxo.data, 0xD1, 32);
+        bool ok = atm_add_p2pkh_utxo(&coins, &utxo, utxo_value, &kid);
+
+        struct transaction tx;
+        atm_build_spend(&tx, &utxo, 50 * COIN_VALUE);
+        atm_sign_input(&tx, &prev_spk, utxo_value, &key, &pub,
+                       /*corrupt=*/true);
+
+        enum mempool_accept_result r =
+            accept_to_mempool(&pool, &coins, NULL, NULL, &tx);
+
+        ok = ok && (r == MEMPOOL_ACCEPT_INVALID);
+        ok = ok && (tx_mempool_size(&pool) == 0);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * 2. VALID signature → ACCEPTED (so it can be relayed).
+     *    Same shape, correctly-signed. The gate must admit it
+     *    (MEMPOOL_ACCEPT_OK) and the mempool holds it.
+     * ================================================================ */
+    printf("accept_to_mempool: valid-sig tx ACCEPTED... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        struct uint256 utxo;
+        memset(utxo.data, 0xD2, 32);
+        bool ok = atm_add_p2pkh_utxo(&coins, &utxo, utxo_value, &kid);
+
+        struct transaction tx;
+        atm_build_spend(&tx, &utxo, 50 * COIN_VALUE);
+        atm_sign_input(&tx, &prev_spk, utxo_value, &key, &pub,
+                       /*corrupt=*/false);
+
+        enum mempool_accept_result r =
+            accept_to_mempool(&pool, &coins, NULL, NULL, &tx);
+
+        ok = ok && (r == MEMPOOL_ACCEPT_OK);
+        ok = ok && (tx_mempool_size(&pool) == 1);
+        ok = ok && tx_mempool_exists(&pool, &tx.hash);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * 3. Missing inputs → MISSING_INPUTS (orphan, not relayed).
+     *    No UTXO seeded for the prevout. Even with a valid-looking
+     *    signature the gate reports the input is unknown.
+     * ================================================================ */
+    printf("accept_to_mempool: missing-input tx → MISSING_INPUTS... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        struct uint256 utxo;
+        memset(utxo.data, 0xD3, 32); /* never added to the view */
+
+        struct transaction tx;
+        atm_build_spend(&tx, &utxo, 50 * COIN_VALUE);
+        atm_sign_input(&tx, &prev_spk, utxo_value, &key, &pub,
+                       /*corrupt=*/false);
+
+        enum mempool_accept_result r =
+            accept_to_mempool(&pool, &coins, NULL, NULL, &tx);
+
+        bool ok = (r == MEMPOOL_ACCEPT_MISSING_INPUTS);
+        ok = ok && (tx_mempool_size(&pool) == 0);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    return failures;
+}

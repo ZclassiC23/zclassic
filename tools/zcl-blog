@@ -1,0 +1,78 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * zcl-blog: embedded webkit viewer for zclassic23 blog.
+ * Connects directly to the blog controller via unix socket —
+ * no TCP port, no network exposure. */
+
+#include <gtk/gtk.h>
+#include <webkit2/webkit2.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static const char *g_datadir = NULL;
+
+static void on_load_changed(WebKitWebView *view,
+                             WebKitLoadEvent event,
+                             gpointer data)
+{
+    (void)data;
+    if (event == WEBKIT_LOAD_FINISHED) {
+        const char *uri = webkit_web_view_get_uri(view);
+        printf("Loaded: %s\n", uri ? uri : "(null)");
+    }
+}
+
+static gboolean on_close(GtkWidget *widget, GdkEvent *event, gpointer data)
+{
+    (void)widget; (void)event; (void)data;
+    gtk_main_quit();
+    return TRUE;
+}
+
+int main(int argc, char *argv[])
+{
+    /* Find blog directory */
+    const char *home = getenv("HOME");
+    char blog_dir[512];
+    if (argc > 1)
+        snprintf(blog_dir, sizeof(blog_dir), "%s", argv[1]);
+    else if (home)
+        snprintf(blog_dir, sizeof(blog_dir), "%s/.zclassic-c23/blog", home);
+    else
+        snprintf(blog_dir, sizeof(blog_dir), ".zclassic-c23/blog");
+
+    char index_path[1024];
+    snprintf(index_path, sizeof(index_path), "%s/index.html", blog_dir);
+
+    struct stat st;
+    if (stat(index_path, &st) != 0) {
+        fprintf(stderr, "Blog not found: %s\n", index_path);
+        fprintf(stderr, "Create %s/index.html first.\n", blog_dir);
+        return 1;
+    }
+
+    char uri[1024];
+    snprintf(uri, sizeof(uri), "file://%s/index.html", blog_dir);
+
+    gtk_init(&argc, &argv);
+
+    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window), "ZClassic23 Blog");
+    gtk_window_set_default_size(GTK_WINDOW(window), 960, 720);
+    g_signal_connect(window, "delete-event", G_CALLBACK(on_close), NULL);
+
+    WebKitWebView *webview = WEBKIT_WEB_VIEW(webkit_web_view_new());
+    g_signal_connect(webview, "load-changed",
+                     G_CALLBACK(on_load_changed), NULL);
+
+    gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(webview));
+    webkit_web_view_load_uri(webview, uri);
+
+    gtk_widget_show_all(window);
+    gtk_main();
+
+    return 0;
+}

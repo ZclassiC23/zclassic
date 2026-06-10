@@ -1,0 +1,80 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Rolling SHA3 anchor extension (T3.1).
+ *
+ * The compile-time `g_sha3_windows[]` table covers a fixed prefix
+ * (genesis..3,110,205 at time of writing). This service extends the
+ * evidence prefix at runtime by hashing 1000-block windows of blocks
+ * past the prefix and persisting the digests to
+ * <datadir>/sha3_windows_runtime.dat.
+ *
+ * Each runtime window is committed ONLY after every block in the
+ * window has reached CONFIRMATION_DEPTH (default 100) confirmations,
+ * AND the oracle_policy state machine is NORMAL.  This prevents a
+ * short-lived fork or a misbehaving zclassicd from poisoning the
+ * persistent anchor.
+ *
+ * Format on disk (binary, little-endian):
+ *   [8  bytes] magic "ZCLRAW1\0"
+ *   [4  bytes] schema (u32) = 1
+ *   [4  bytes] count  (u32)
+ *   count * { i32 start_height; u8 hash[32] }   (36 bytes each)
+ *   [32 bytes] SHA3-256 over everything above
+ *
+ * On load: any failure (bad magic / schema / checksum / non-monotonic
+ * heights / mismatch with compile-time prefix end) discards the file
+ * and falls back to compile-time-only trust.
+ *
+ * See CLAUDE.md "Adding state introspection" — dump_state_json
+ * follows that convention. */
+
+#ifndef ZCL_SERVICES_ROLLING_ANCHOR_SERVICE_H
+#define ZCL_SERVICES_ROLLING_ANCHOR_SERVICE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "util/result.h"
+
+struct main_state;
+struct chain_params;
+struct json_value;
+
+struct rolling_anchor_config {
+    int confirmation_depth;  /* default 100 — depth required to commit anchor */
+    int max_extend_per_call; /* default 10 — per-tick extension cap */
+};
+
+/* Load persisted runtime anchors from <datadir>/sha3_windows_runtime.dat.
+ * Returns ZCL_OK on success or when the file is absent (clean start).
+ * Returns non-ok only when the file is present but corrupt — caller
+ * may delete it. Idempotent; safe to call multiple times. */
+struct zcl_result rolling_anchor_init(const char *datadir,
+                          const struct rolling_anchor_config *cfg);
+
+/* Attempt to commit one or more new 1000-block windows past the
+ * current effective prefix, up to `cfg.max_extend_per_call`. Reads
+ * blocks from disk via the active_chain. No-op when:
+ *   - oracle_policy state is not NORMAL,
+ *   - chain tip is below first uncommitted window + confirmation_depth + 999,
+ *   - max_extend_per_call already hit.
+ * Returns number of newly committed windows. */
+int rolling_anchor_extend_if_due(struct main_state *ms,
+                                  const char *datadir);
+
+/* Boot-time entry: call rolling_anchor_init(datadir) and register a
+ * chain-supervisor tick that invokes rolling_anchor_extend_if_due(ms,
+ * datadir) every ~60 seconds. Idempotent. Returns ZCL_OK on success. */
+struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadir);
+
+/* Stop the periodic tick. Safe to call when not started. */
+void rolling_anchor_stop(void);
+
+/* zcl_state subsystem=rolling_anchor entry. */
+bool rolling_anchor_dump_state_json(struct json_value *out,
+                                     const char *key);
+
+/* Test hook — reset state between unit tests. */
+void rolling_anchor_reset_for_test(void);
+
+#endif /* ZCL_SERVICES_ROLLING_ANCHOR_SERVICE_H */

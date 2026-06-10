@@ -1,0 +1,4 @@
+<tr><td><a href='/explorer/block/{{{height}}}'>{{{height}}}</a></td>
+<td>{{{time}}}</td>
+<td><code style='word-break:break-all'>{{{hash_short}}}...</code></td>
+<td><code>{{{receipt}}}</code></td></tr>

@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+#
+# check_raw_sqlite.sh - ensure code outside vendored/test paths does not use
+# raw sqlite3_step() outside the AR_* wrappers (activerecord.h).
+#
+# Scans app/, tools/, and lib/ for `sqlite3_step(` outside:
+#   - vendor/
+#   - any test/ directory
+#   - the AR_STEP_ROW / AR_STEP_DONE / AR_STEP_ROW_READONLY macros themselves
+#     (which textually contain `sqlite3_step` inside their #define bodies)
+#   - lines annotated with `// raw-sql-ok:<tag>` (no space after the colon;
+#     tag matches [A-Za-z][A-Za-z0-9_-]+)
+#
+# Two distinct hatches, NOT the same thing:
+#
+#   1. Per-line `// raw-sql-ok:<tag>` markers. These are PRINCIPLED, not
+#      debt. The load-bearing one is `progress-kv-kernel-store`: the
+#      reducer pipeline writes its stage cursor + per-stage *_log tables
+#      to progress.kv — a separate singleton WAL KERNEL store that sits
+#      BELOW the AR/domain-model layer (a stage_cursor row is not a model;
+#      see DEFENSIVE_CODING.md §1 "The one principled exception" and
+#      lib/storage/src/progress_store.c). Routing these through AR would be
+#      a category error. The count here is bounded and stable-by-design —
+#      it changes only when the reducer gains/drops a stage table, NOT a
+#      migration that ratchets to zero. progress_store.c's own home-module
+#      sites use the equivalent `kernel-primitive` tag.
+#
+#   2. The whole-file allowlist (raw_sqlite_allowlist.txt). THIS is the
+#      ratchet — files grandfathered through the sqlite3_step →
+#      AR_BEGIN_SAVE migration for node.db *models*. Entries come off as
+#      each subsystem completes migration. It is currently empty; once it
+#      stays empty the allowlist is removed and the lint's whole-file
+#      escape becomes unconditional. The per-line kernel-store markers
+#      above are unaffected by this — they are correct-by-design forever.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$ROOT"
+
+ALLOWLIST="$SCRIPT_DIR/raw_sqlite_allowlist.txt"
+
+declare -A ALLOWED=()
+if [[ -f "$ALLOWLIST" ]]; then
+    while IFS= read -r line; do
+        # strip comments and blanks
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" ]] && continue
+        ALLOWED["$line"]=1
+    done < "$ALLOWLIST"
+fi
+
+raw_hits=$(grep -rn 'sqlite3_step\s*(' app/ tools/ lib/ --include='*.c' 2>/dev/null \
+    | grep -v 'vendor/\|/test/\|AR_STEP_ROW\|AR_STEP_DONE\|AR_STEP_ROW_READONLY\|AR_STEP_WRITE\|safe_alloc\|".*sqlite3_step' \
+    | grep -vE '// raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+' \
+    || true)
+
+# Principled kernel-store hatch: progress.kv stage cursor + *_log sites,
+# correct-by-design below the AR layer. Bounded, NOT migration debt — we
+# report the count for visibility, but it does not gate or ratchet.
+kernel_store_total=$(grep -rn '// raw-sql-ok:progress-kv-kernel-store' \
+    app/ lib/ --include='*.c' 2>/dev/null \
+    | grep -v 'vendor/\|/test/' | wc -l | tr -d ' ')
+
+violations=""
+allowed_total=0
+while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    path="${hit%%:*}"
+    if [[ -n "${ALLOWED[$path]:-}" ]]; then
+        allowed_total=$((allowed_total + 1))
+        continue
+    fi
+    violations="${violations}${hit}"$'\n'
+done <<< "$raw_hits"
+
+if [[ -n "${violations//[[:space:]]/}" ]]; then
+    echo "$violations"
+    echo "FAIL: raw sqlite3_step in production code"
+    echo "  Use AR_STEP_ROW / AR_STEP_DONE / AR_STEP_ROW_READONLY (see"
+    echo "  app/models/include/models/activerecord.h), wrap in AR_BEGIN_SAVE /"
+    echo "  AR_EXEC_BOOL, or — for unavoidable cases like schema bootstrap —"
+    echo "  add a // raw-sql-ok:<tag> comment on the line (no space after the"
+    echo "  colon). progress.kv kernel-store sites use the canonical tag"
+    echo "  // raw-sql-ok:progress-kv-kernel-store (see DEFENSIVE_CODING.md §1)."
+    echo "  Allowlisted files (still pending sqlite3_step → AR migration) accounted for:"
+    echo "    $allowed_total raw call sites across $(wc -l < <(grep -v '^[[:space:]]*#\|^[[:space:]]*$' "$ALLOWLIST" 2>/dev/null || true)) files"
+    exit 1
+fi
+
+if (( allowed_total > 0 )); then
+    file_count=$(grep -cv '^[[:space:]]*#\|^[[:space:]]*$' "$ALLOWLIST" 2>/dev/null || echo 0)
+    echo "check_raw_sqlite: clean outside allowlist"
+    echo "  Allowlisted: $allowed_total raw call sites across $file_count files"
+    echo "  (drives to zero as sqlite3_step → AR_BEGIN_SAVE migration lands)"
+else
+    echo "check_raw_sqlite: clean - no raw sqlite3_step in production code"
+fi
+
+# Surface the principled kernel-store hatch separately. This count is
+# BOUNDED and stable-by-design (progress.kv stage cursor + *_log tables,
+# below the AR layer) — it is not debt and does not gate.
+echo "  Principled kernel-store sites (progress.kv, correct-by-design,"
+echo "  below AR): $kernel_store_total // raw-sql-ok:progress-kv-kernel-store"
+exit 0

@@ -1,0 +1,379 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * reducer_frontier — L0 authority. Compute H* and served_floor from
+ * durable progress.kv state. See reducer_frontier.h for the contract.
+ *
+ * PURE SELECT-only: every statement here is a SELECT. There is no INSERT,
+ * UPDATE, DELETE, REPLACE, BEGIN, or COMMIT in this translation unit. The
+ * raw sqlite3_step sites read the progress.kv kernel store (the same hatch
+ * the sibling *_log_store.c readers use) and carry the canonical
+ * `// raw-sql-ok:progress-kv-kernel-store` marker. The caller holds
+ * progress_store_tx_lock() so the snapshot is internally consistent. */
+
+#include "jobs/reducer_frontier.h"
+
+#include "chain/checkpoints.h"
+#include "storage/coins_kv.h"
+#include "util/log_macros.h"
+
+#include <sqlite3.h>
+#include <stdint.h>
+#include <string.h>
+
+/* Per-row reads return a tri-state so contiguity and discrimination can
+ * tell "no row" apart from "ok=0 row". */
+enum log_row_state {
+    LOG_ROW_ABSENT = 0,   /* no row at this height */
+    LOG_ROW_OK,           /* row present, ok=1 */
+    LOG_ROW_FAIL,         /* row present, ok=0 */
+};
+
+/* The success-checked logs whose contiguous ok=1 prefix bounds H* (C2).
+ * Each entry pairs the log table with its stage cursor name (used only for
+ * the C1 below-anchor diagnostic). validate_headers and script_validate
+ * additionally feed the C3 hash-agreement check below. */
+struct frontier_log {
+    const char *log_table;
+    const char *cursor_name;
+};
+
+static const struct frontier_log k_logs[] = {
+    { "validate_headers_log", "validate_headers" },
+    { "script_validate_log",  "script_validate"  },
+    { "body_persist_log",     "body_persist"     },
+    { "proof_validate_log",   "proof_validate"   },
+    { "utxo_apply_log",       "utxo_apply"       },
+    { "tip_finalize_log",     "tip_finalize"     },
+};
+static const int k_logs_n = (int)(sizeof(k_logs) / sizeof(k_logs[0]));
+
+/* Read the ok column of a *_log row at `height`. *out is set to one of the
+ * tri-states. Returns false ONLY on a real SQLite prepare/step error
+ * (caller propagates as a DB read failure). A missing row is success with
+ * *out = LOG_ROW_ABSENT — that is the contiguity terminator, not an error. */
+static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
+                      enum log_row_state *out)
+{
+    *out = LOG_ROW_ABSENT;
+    /* log_table is a fixed string from k_logs[] (never caller input), so the
+     * concat below cannot inject. Bind the height parameter. */
+    char sql[128];
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT ok FROM %s WHERE height = ?", log_table);
+    if (n < 0 || n >= (int)sizeof(sql))
+        LOG_FAIL("reducer", "log_ok_at sql overflow for table=%s", log_table);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare %s failed: %s",
+                 log_table, sqlite3_errmsg(db));
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int(st, 0) != 0 ? LOG_ROW_OK : LOG_ROW_FAIL;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "step %s at h=%d failed: %s",
+                 log_table, height, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* Walk one success-checked log upward from TRUSTED_ANCHOR+1, returning the
+ * deepest height whose [anchor+1 .. h] run is all ok=1 (the contiguous
+ * prefix). A missing row OR an ok=0 row terminates the run.
+ *
+ * `cursor` bounds the scan: rows are only expected up to `cursor-1` (the
+ * cursor names the NEXT height to process). If cursor <= TRUSTED_ANCHOR the
+ * log holds nothing above the anchor and is trivially consistent there, so
+ * h_contiguous stays at the anchor (does not lower H*).
+ *
+ * On a DB read error returns false; *h_contiguous is then meaningless. */
+static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
+                                  int32_t anchor, int64_t cursor,
+                                  int32_t *h_contiguous)
+{
+    *h_contiguous = anchor;
+    if (cursor <= (int64_t)anchor)
+        return true;  /* nothing above the anchor to disprove the prefix */
+
+    int64_t top = cursor - 1;
+    for (int64_t h = (int64_t)anchor + 1; h <= top; h++) {
+        enum log_row_state row;
+        if (!log_ok_at(db, log_table, (int32_t)h, &row))
+            return false;
+        if (row != LOG_ROW_OK)
+            break;  /* hole or ok=0 — contiguity stops at h-1 */
+        *h_contiguous = (int32_t)h;
+    }
+    return true;
+}
+
+/* Read the persisted cursor of a stage off stage_cursor. *out defaults to 0
+ * (absent row == fresh init). Returns false only on a real SQLite error. */
+static bool cursor_at(sqlite3 *db, const char *name, int64_t *out)
+{
+    *out = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare stage_cursor failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int64(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "step stage_cursor %s failed: %s",
+                 name, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* A tip_finalize status="anchor" row written by tip_finalize_stage_seed_anchor()
+ * is the durable marker for a logless trusted reducer base. Generic active-tip
+ * reanchors use the same row shape, so a candidate is trusted only when every
+ * reducer stage cursor has reached at least H+1 and, if it has advanced beyond
+ * H+1, the first row above the anchor is ok=1. That accepts fresh seed anchors
+ * with no rows yet while rejecting stale served-tip anchors above the upstream
+ * reducer frontier. */
+static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height)
+{
+    int64_t first = (int64_t)height + 1;
+    if (first > INT32_MAX)
+        return false;
+
+    for (int i = 0; i < k_logs_n; i++) {
+        int64_t cursor = 0;
+        if (!cursor_at(db, k_logs[i].cursor_name, &cursor))
+            return false;
+        if (cursor < first)
+            return false;
+        if (cursor == first)
+            continue;
+
+        enum log_row_state row;
+        if (!log_ok_at(db, k_logs[i].log_table, (int32_t)first, &row))
+            return false;
+        if (row != LOG_ROW_OK)
+            return false;
+    }
+    return true;
+}
+
+static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
+                                   int32_t *out)
+{
+    *out = compiled_anchor;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT height FROM tip_finalize_log "
+            "WHERE ok = 1 AND status = 'anchor' AND height >= ? "
+            "ORDER BY height DESC",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare trusted anchor failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, compiled_anchor);
+
+    bool rc_ok = true;
+    while (true) {
+        int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+        if (rc == SQLITE_ROW) {
+            int32_t h = (int32_t)sqlite3_column_int64(st, 0);
+            if (reducer_anchor_candidate_ok(db, h)) {
+                *out = h;
+                break;
+            }
+        } else if (rc == SQLITE_DONE) {
+            break;
+        } else {
+            LOG_WARN("reducer", "step trusted anchor failed: %s",
+                     sqlite3_errmsg(db));
+            rc_ok = false;
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* served_floor = MAX(height FROM tip_finalize_log WHERE ok=1), or 0.
+ * Scans the WHOLE log (including stale-debris rows below H*): served_floor
+ * is reported independently of H* precisely so a torn view (a tip finalized
+ * above the provable prefix) is visible to L1 as "hold, don't drop". */
+static bool tip_finalize_served_floor(sqlite3 *db, int32_t *served_floor)
+{
+    *served_floor = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(MAX(height), 0) FROM tip_finalize_log "
+            "WHERE ok = 1",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare served_floor failed: %s",
+                 sqlite3_errmsg(db));
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *served_floor = (int32_t)sqlite3_column_int64(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "step served_floor failed: %s",
+                 sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* Fetch a 32-byte hash column from a *_log row. *found is set true only when
+ * a row exists AND the column is a non-NULL 32-byte blob. Returns false on a
+ * real SQLite error. A NULL hash (cold-import prefix) is success with
+ * *found=false — it does NOT lower H* (C3). */
+static bool log_hash_at(sqlite3 *db, const char *log_table,
+                        const char *hash_col, int32_t height,
+                        uint8_t out[32], bool *found)
+{
+    *found = false;
+    char sql[160];
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT %s FROM %s WHERE height = ?",
+                     hash_col, log_table);
+    if (n < 0 || n >= (int)sizeof(sql))
+        LOG_FAIL("reducer", "log_hash_at sql overflow for %s.%s",
+                 log_table, hash_col);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare %s.%s failed: %s",
+                 log_table, hash_col, sqlite3_errmsg(db));
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(st, 0);
+        int blen = sqlite3_column_bytes(st, 0);
+        if (blob && blen == 32) {
+            memcpy(out, blob, 32);
+            *found = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "step %s.%s at h=%d failed: %s",
+                 log_table, hash_col, height, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* C3 — cap H* at the height BELOW the first hash split between
+ * validate_headers_log.hash and script_validate_log.block_hash. A split
+ * counts only when BOTH rows are present with non-NULL 32-byte hashes that
+ * differ. Walks anchor+1 .. *hstar; lowers *hstar on the first split.
+ * Returns false on a DB read error. */
+static bool apply_hash_agreement(sqlite3 *db, int32_t anchor, int32_t *hstar)
+{
+    for (int32_t h = anchor + 1; h <= *hstar; h++) {
+        uint8_t vh[32], sv[32];
+        bool vh_found = false, sv_found = false;
+        if (!log_hash_at(db, "validate_headers_log", "hash", h, vh, &vh_found))
+            return false;
+        if (!log_hash_at(db, "script_validate_log", "block_hash", h, sv,
+                         &sv_found))
+            return false;
+        if (vh_found && sv_found && memcmp(vh, sv, 32) != 0) {
+            /* Both logs recorded a hash for h and they disagree: a genuine
+             * defect. H* caps at h-1 (never below the anchor). */
+            *hstar = (h - 1 < anchor) ? anchor : (h - 1);
+            return true;
+        }
+    }
+    return true;
+}
+
+bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
+                                    int32_t *hstar,
+                                    int32_t *served_floor)
+{
+    if (!progress_db)
+        LOG_FAIL("reducer", "compute_hstar: NULL progress_db");
+    if (!hstar || !served_floor)
+        LOG_FAIL("reducer", "compute_hstar: NULL out param(s)");
+
+    /* TRUSTED_ANCHOR: the SHA3-verified UTXO checkpoint height. Fall back to
+     * the compiled constant if the checkpoint table is somehow empty, so H*
+     * still has a hard floor. */
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    int32_t compiled_anchor = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t anchor = compiled_anchor;
+    if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))
+        LOG_FAIL("reducer", "trusted anchor read failed");
+
+    *served_floor = 0;
+    /* served_floor is independent of H* (C-served): report the deepest
+     * finalized ok=1 even when it sits above the provable prefix. */
+    if (!tip_finalize_served_floor(progress_db, served_floor))
+        LOG_FAIL("reducer", "served_floor read failed");
+
+    /* H* = MIN over every success-checked log of its contiguous ok=1 prefix
+     * (C2). MIN-fold from a high sentinel: each log's h_contiguous is >=
+     * anchor (its contiguity floor), so the weakest log bounds H*. A log with
+     * no rows above the anchor returns exactly `anchor`, which correctly pins
+     * H* to the anchor for that log. The hard guard at the end then clamps
+     * the result up to the anchor (and covers the all-logs-empty case where
+     * the sentinel survives). */
+    int32_t hs = INT32_MAX;
+    for (int i = 0; i < k_logs_n; i++) {
+        int64_t cursor = 0;
+        if (!cursor_at(progress_db, k_logs[i].cursor_name, &cursor))
+            LOG_FAIL("reducer", "cursor read failed: %s",
+                     k_logs[i].cursor_name);
+
+        /* C1 diagnostic: a cursor behind the anchor is a defect state the
+         * heal will fix; flag it but do not abort H* computation. */
+        if (cursor < (int64_t)anchor + 1)
+            LOG_WARN("reducer", "cursor below hstar: %s cursor=%lld anchor=%d",
+                     k_logs[i].cursor_name, (long long)cursor, anchor);
+
+        int32_t h_contig = anchor;
+        if (!log_contiguous_prefix(progress_db, k_logs[i].log_table, anchor,
+                                   cursor, &h_contig))
+            LOG_FAIL("reducer", "contiguity walk failed: %s",
+                     k_logs[i].log_table);
+
+        if (h_contig < hs)
+            hs = h_contig;  /* H* = MIN over all logs */
+    }
+    if (hs == INT32_MAX)
+        hs = anchor;  /* no logs scanned (k_logs_n>0, but defensive) */
+
+    /* C3 — hash agreement: cap H* below the first validate_headers vs
+     * script_validate split within [anchor+1 .. hs]. */
+    if (!apply_hash_agreement(progress_db, anchor, &hs))
+        LOG_FAIL("reducer", "hash-agreement walk failed");
+
+    /* C4 diagnostic — coins frontier vs H*. coins_applied_height > H* is a
+     * possible coin tear (L2 domain); do NOT lower H* here. Absent key ==
+     * unknown frontier; that is not a defect for L0. */
+    int32_t coins_applied = 0;
+    bool coins_found = false;
+    if (coins_kv_get_applied_height(progress_db, &coins_applied, &coins_found)
+        && coins_found && coins_applied > hs + 1) {
+        LOG_WARN("reducer",
+                 "coins_applied=%d > hstar_cursor=%d (possible coin tear)",
+                 coins_applied, hs + 1);
+    }
+
+    /* HARD GUARD — never rewind across finality. */
+    if (hs < anchor)
+        hs = anchor;
+
+    *hstar = hs;
+    return true;
+}

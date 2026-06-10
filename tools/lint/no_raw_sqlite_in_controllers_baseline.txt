@@ -1,0 +1,12 @@
+# Lint gate #20 baseline — grandfathered raw-sqlite-in-controllers files.
+#
+# check_no_raw_sqlite_in_controllers (RATCHET mode) flags any controller
+# .c/.h file that calls sqlite3_prepare_v2() or sqlite3_exec() directly
+# instead of going through a projection helper or model. These files
+# pre-date the ratchet and are recorded here. The gate fails when a NEW
+# controller file (not listed) introduces a raw sqlite call. The baseline
+# may only shrink — moving a file's reads behind projections/models lets
+# you delete its line. Goal: empty file.
+#
+# Per-line exception: add // raw-controller-sql-ok on the offending line.
+# Format: one relative path per line; lines starting with # are comments.

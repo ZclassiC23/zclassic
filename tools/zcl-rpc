@@ -1,0 +1,45 @@
+#!/bin/bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+# zcl-rpc — Minimal RPC caller for zclassic23 node.
+# Reads cookie auth automatically. No curl knowledge needed.
+#
+# Usage: zcl-rpc METHOD [PARAM1] [PARAM2] ...
+#   zcl-rpc getblockcount
+#   zcl-rpc getbalance
+#   zcl-rpc z_gettotalbalance
+#   zcl-rpc chainview 100 5
+#   zcl-rpc z_sendmany '"zs1..."' '[{"address":"zs1...","amount":0.001}]'
+#   zcl-rpc sendtoaddress '"t1..."' 0.01
+
+set -e
+DATADIR="${ZCL_DATADIR:-$HOME/.zclassic-c23}"
+PORT="${ZCL_RPCPORT:-18232}"
+COOKIE_FILE="$DATADIR/.cookie"
+
+if [ ! -f "$COOKIE_FILE" ]; then
+    echo "Node not running (no cookie at $COOKIE_FILE)" >&2
+    exit 1
+fi
+
+COOKIE=$(cat "$COOKIE_FILE")
+METHOD="$1"; shift 2>/dev/null || { echo "Usage: zcl-rpc METHOD [args...]" >&2; exit 1; }
+
+# Build params array from remaining args
+PARAMS=""
+for arg in "$@"; do
+    [ -n "$PARAMS" ] && PARAMS="$PARAMS,"
+    # If arg looks like a number or JSON, pass raw; otherwise quote as string
+    case "$arg" in
+        [0-9]*|true|false|null|\[*|\{*|\"*) PARAMS="$PARAMS$arg" ;;
+        *) PARAMS="$PARAMS\"$arg\"" ;;
+    esac
+done
+
+BODY="{\"method\":\"$METHOD\""
+[ -n "$PARAMS" ] && BODY="$BODY,\"params\":[$PARAMS]"
+BODY="$BODY}"
+
+RESULT=$(curl -s -u "$COOKIE" "http://127.0.0.1:$PORT/" \
+    -H "Content-Type: application/json" -d "$BODY")
+
+echo "$RESULT"

@@ -1,0 +1,15 @@
+<h2>Transaction History</h2>
+<div class='filter-tabs'>
+<a href='/wallet/history?filter=all' class='{{{all_active}}}'>All ({{{c_all}}})</a>
+<a href='/wallet/history?filter=sent' class='{{{sent_active}}}'>Sent ({{{c_sent}}})</a>
+<a href='/wallet/history?filter=recv' class='{{{recv_active}}}'>Received ({{{c_recv}}})</a>
+</div>
+<input class='search-input' type='text' id='tx-search' 
+placeholder='Search by txid...' value='{{search}}' 
+aria-label='Search transactions'
+onkeydown='if(event.key==="Enter"){
+var v=this.value.trim();
+window.location="/wallet/history?filter={{{filter}}}"+
+(v?"&amp;q="+v:"");}'>
+<div class='sub'>{{{count}}} transaction{{{count_plural}}} 
+(page {{{page}}} of {{{pages}}})</div>

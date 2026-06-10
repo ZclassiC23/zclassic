@@ -1,0 +1,7 @@
+<script>
+function showTab(t){
+document.getElementById('pane-t').style.display=t==='t'?'':'none';
+document.getElementById('pane-z').style.display=t==='z'?'':'none';
+document.getElementById('tab-t').className=t==='t'?'active':'';
+document.getElementById('tab-z').className=t==='z'?'active-z':'';}
+</script>

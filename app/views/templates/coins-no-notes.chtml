@@ -1,0 +1,8 @@
+<div class='card' style='border-left-color:#f59e0b'>
+<div class='label' style='color:#f59e0b'>
+No private notes found</div>
+<div style='color:#888;font-size:13px'>
+{{{sapling_keys}}} Sapling keys in wallet. 
+Run <code style='color:#f59e0b'>rescanwallet</code> 
+to scan the chain for notes belonging to these keys.
+</div></div>

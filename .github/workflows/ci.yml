@@ -1,0 +1,202 @@
+# ZClassic23 CI — see CLAUDE.md ("make ci runs lint then tests") and
+# tools/release.sh ("Reproducible signed releases").
+#
+# Two independent concerns:
+#   1. `ci`     — gate every push / PR on `make ci` (lint, then the test suite).
+#   2. `repro`  — prove the release artifact is byte-reproducible by building it
+#                 on two distinct runner images and asserting the two SHA3-256
+#                 attestations are identical. Built --unsigned so CI needs no
+#                 GPG secret; the signing step in release.sh is skipped via that
+#                 same escape, so no key material is ever required here.
+name: ci
+
+on:
+  push:
+  pull_request:
+  # Manual trigger for the fixture/network-bound MVP gates (#2 onion, #4
+  # shielded). They need Tor egress / ~/.zcash-params, which the hermetic
+  # push/PR runner does not have, so they are opt-in and never block a PR.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: lint + tests. `make ci` already chains lint -> build -> test suite.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: lint + tests
+    runs-on: ubuntu-24.04
+    # No CI step had a timeout, so a hung test could burn the 360-min job
+    # ceiling. `make ci` now also runs the hermetic MVP gates (ci-mvp-gates:
+    # #3 cold-start FSM, #5 store e2e, #7 kill -9, chain-advance atomicity);
+    # those are deterministic and fast (~tens of seconds total), so a tight
+    # cap turns any hang into a fast, loud failure instead of a silent stall.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release.sh / BUILD_COMMIT want real git history, not a shallow clone.
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          # gcc-13 ships C23 support; openssl provides the sha3 dgst used by
+          # the release/verify path; pkg-config lets the optional GTK/WebKit
+          # probes resolve (they degrade gracefully when absent).
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      - name: make ci (lint, tests, hermetic MVP gates #3/#5/#7)
+        # `ci` chains: lint -> bench-regress -> test_zcl -> ci-mvp-gates
+        # (the hermetic MVP acceptance gates) -> test-crash -> fuzz -> cov.
+        # The non-hermetic MVP gates (#2 onion needs Tor egress, #4 shielded
+        # needs ~/.zcash-params) are deliberately NOT here — they live in
+        # `make ci-stress` and run on a worker that has those resources.
+        run: make ci
+
+  # ---------------------------------------------------------------------------
+  # Job 1a: the SPAWN-harness MVP proxies. Unlike `make ci` (hermetic, no real
+  # processes) and unlike `mvp-stress` (needs Tor egress / ~/.zcash-params),
+  # these proxies spawn REAL isolated regtest nodes on /tmp datadirs + 39xxx
+  # non-live ports — they need NO external network, NO params, NO systemd, so
+  # a stock GitHub-hosted runner CAN run them and they CAN gate. This is the
+  # CI home that makes the #1 / #6 / #7 proxies CI-ENFORCED (the MVP doc's
+  # standing gap was "proxy exists but nothing runs it in CI"):
+  #   - ci-install            (#1) install-to-throwaway-prefix + isolated start
+  #   - test-crash-bootstrap  (#7) full-binary kill-9 boot recovery
+  #   - test-two-node-peer-tip(#7) follower syncs + recovers to PEER tip
+  #   - soak-ci               (#6) ~180s bounded compressed soak verdict
+  # Kept off the hot `ci` job (each spawns processes + soak is ~180s) but gates
+  # push/PR here so a regression in the spawn paths fails loud, not silently.
+  # ---------------------------------------------------------------------------
+  mvp-spawn:
+    name: MVP spawn-harness proxies (#1 install, #6 soak, #7 kill-9 + peer-tip)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      - name: build node + rpc
+        run: make -j"$(nproc)" zclassic23 zcl-rpc
+      - name: "#1 install proxy (ci-install)"
+        run: make ci-install
+      - name: "#7 kill-9 boot recovery (test-crash-bootstrap)"
+        run: make test-crash-bootstrap
+      - name: "#7 restart-to-peer-tip (test-two-node-peer-tip)"
+        run: make test-two-node-peer-tip
+      - name: "#6 bounded soak proxy (soak-ci)"
+        run: make soak-ci
+
+  # ---------------------------------------------------------------------------
+  # Job 1b (opt-in): the fixture/network-bound MVP gates — #2 onion bootstrap
+  # (real Tor + dir-authority egress) and #4 shielded payment (~/.zcash-params).
+  # These CANNOT run hermetically: on a network-isolated / param-less runner
+  # #2 would burn its 90s ceiling then FAIL and #4 would silently SKIP, so they
+  # are NOT in `make ci`. This job runs ONLY on manual dispatch — it never
+  # gates a push/PR — and is the documented home for `make ci-stress`. Wire a
+  # self-hosted runner with Tor egress + a staged ~/.zcash-params here to turn
+  # #2/#4 into real gates; until then it documents where they belong.
+  # ---------------------------------------------------------------------------
+  mvp-stress:
+    name: MVP stress gates (#2 onion, #4 shielded) — opt-in
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      # NOTE: this default GitHub-hosted runner has neither Tor egress nor
+      # ~/.zcash-params, so #2 will fail and #4 will SKIP here. Re-target this
+      # job at a runner that provides both before treating it as a gate.
+      - name: make ci-stress (#2 onion, #4 shielded)
+        run: make ci-stress
+
+  # ---------------------------------------------------------------------------
+  # Job 2 (matrix): build the reproducible release artifact on two distinct
+  # runner images and publish each .sha3 attestation as an artifact.
+  # ---------------------------------------------------------------------------
+  repro-build:
+    name: reproducible release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      - name: Build unsigned reproducible release
+        # --unsigned waives the GPG hard-fail so no key is needed in CI; the
+        # arch is pinned to x86-64-v3 and the build-id dropped inside the
+        # script, so the resulting .sha3 must not depend on the runner image.
+        run: ./tools/release.sh --unsigned ci-repro
+      - name: Extract bare SHA3 hash
+        # The .sha3 file is "<hash>  <name>.tar.gz"; keep only the hash so the
+        # cross-runner compare is independent of any path/name differences.
+        run: |
+          set -euo pipefail
+          sha3_file=$(ls build/release/*.sha3)
+          awk '{print $1}' "$sha3_file" | tr -d '[:space:]' > sha3-hash.txt
+          echo "SHA3 for ${{ matrix.os }}: $(cat sha3-hash.txt)"
+      - name: Upload SHA3 attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha3-${{ matrix.os }}
+          path: sha3-hash.txt
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Job 3: download both attestations and assert they are byte-identical.
+  # A mismatch means the build is NOT reproducible — fail the run loudly.
+  # ---------------------------------------------------------------------------
+  repro-verify:
+    name: cross-runner reproducibility diff
+    runs-on: ubuntu-24.04
+    needs: repro-build
+    steps:
+      - name: Download all SHA3 attestations
+        uses: actions/download-artifact@v4
+        with:
+          path: attestations
+      - name: Assert SHA3 attestations match across runners
+        run: |
+          set -euo pipefail
+          a=$(cat attestations/sha3-ubuntu-22.04/sha3-hash.txt)
+          b=$(cat attestations/sha3-ubuntu-24.04/sha3-hash.txt)
+          echo "ubuntu-22.04: $a"
+          echo "ubuntu-24.04: $b"
+          if [ -z "$a" ] || [ -z "$b" ]; then
+            echo "ERROR: a release SHA3 attestation was empty" >&2
+            exit 1
+          fi
+          if [ "$a" != "$b" ]; then
+            echo "ERROR: release build is NOT reproducible across runners" >&2
+            echo "  ubuntu-22.04 = $a" >&2
+            echo "  ubuntu-24.04 = $b" >&2
+            exit 1
+          fi
+          echo "OK: reproducible — both runners produced SHA3 $a"

@@ -1,0 +1,17 @@
+# zclassic23 benchmark history.
+# Columns: date, commit, bench, value, unit, notes.
+# Numeric value rows are regression-gated by build/bin/zclassic23 -bench-regress.
+# Empty value rows are pending/skipped measurements and are ignored by the gate.
+# Bench names follow docs/USER_BENCHMARKS.md primaries #1..#5.
+# Append-only: do not rewrite old rows; add a correction row instead.
+date,commit,bench,value,unit,notes
+2026-05-25T09:47:53Z,bf206e5de,#1 cold-start to operational,"",s,pending P0/full-chain run; set ZCL_BENCH_RUN_COLD=1 to run cold import against /home/rhett/.zclassic
+2026-05-25T09:47:53Z,bf206e5de,#2 warm-start to operational,"",s,pending: set ZCL_BENCH_SOURCE_DATADIR to a synced seed datadir
+2026-05-25T09:47:53Z,bf206e5de,#3 stay-in-sync MTBF,"",s,pending soak: requires healthy source peer after P0 deploy
+2026-05-25T09:47:53Z,bf206e5de,#4 RAM steady-state,"",MB,pending: set ZCL_BENCH_SOURCE_DATADIR to a seeded isolated datadir
+2026-05-25T09:47:53Z,bf206e5de,#5 kill-9 recovery,"",s,pending: set ZCL_BENCH_SOURCE_DATADIR to a seeded isolated datadir
+2026-05-25T10:01:12Z,43d6d6d46,#1 cold-start to operational,,s,pending P0/full-chain run; use -bench-coldstart after deploy
+2026-05-25T10:01:12Z,43d6d6d46,#2 warm-start to operational,,s,pending seeded datadir; use -bench-warmstart with ZCL_BENCH_SOURCE_DATADIR
+2026-05-25T10:01:12Z,43d6d6d46,#3 stay-in-sync MTBF,,s,pending soak after P0 deploy
+2026-05-25T10:01:12Z,43d6d6d46,#4 RAM steady-state,,MB,pending seeded datadir; sample RSS after isolated node boot
+2026-05-25T10:01:12Z,43d6d6d46,#5 kill-9 recovery,,s,pending seeded datadir; measure RPC-ready recovery histogram

@@ -1,0 +1,76 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * proof_validate_stage — reducer Job stage.
+ *
+ * Consumes `script_validate_log`; for each height where script validation
+ * passed, verifies shielded proofs and Sapling binding signatures, then logs
+ * the result. */
+
+#ifndef ZCL_SERVICES_PROOF_VALIDATE_STAGE_H
+#define ZCL_SERVICES_PROOF_VALIDATE_STAGE_H
+
+#include "core/uint256.h"
+#include "jobs/stage_helpers.h"
+#include "util/stage.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+struct block;
+struct block_index;
+struct json_value;
+struct main_state;
+struct transaction;
+
+#define PROOF_VALIDATE_BATCH_PER_TICK 100
+
+struct proof_validate_tx_report {
+    bool ok;
+    bool internal_error;
+    size_t sapling_spends_total;
+    size_t sapling_outputs_total;
+    size_t sprout_joinsplits_total;
+    const char *first_failure_proof_type;
+};
+
+/* Alias onto the shared stage reader type (jobs/stage_helpers.h); the public
+ * setter name proof_validate_stage_set_reader is unchanged. */
+typedef stage_block_reader_fn proof_validate_reader_fn;
+
+typedef bool (*proof_validate_tx_verify_fn)(
+    const struct transaction *tx,
+    int height,
+    struct proof_validate_tx_report *out,
+    void *user);
+
+bool proof_validate_stage_init(struct main_state *ms);
+void proof_validate_stage_shutdown(void);
+
+job_result_t proof_validate_stage_step_once(void);
+int proof_validate_stage_drain(int max_steps);
+
+uint64_t proof_validate_stage_cursor(void);
+uint64_t proof_validate_stage_verified_total(void);
+uint64_t proof_validate_stage_proof_invalid_total(void);
+uint64_t proof_validate_stage_internal_error_total(void);
+uint64_t proof_validate_stage_upstream_failed_total(void);
+
+uint64_t proof_validate_stage_sapling_spends_verified_total(void);
+uint64_t proof_validate_stage_sapling_spends_failed_total(void);
+uint64_t proof_validate_stage_sapling_outputs_verified_total(void);
+uint64_t proof_validate_stage_sapling_outputs_failed_total(void);
+uint64_t proof_validate_stage_sprout_groth16_verified_total(void);
+uint64_t proof_validate_stage_sprout_groth16_failed_total(void);
+uint64_t proof_validate_stage_sprout_phgr13_verified_total(void);
+uint64_t proof_validate_stage_sprout_phgr13_failed_total(void);
+uint64_t proof_validate_stage_binding_sig_verified_total(void);
+uint64_t proof_validate_stage_binding_sig_failed_total(void);
+
+void proof_validate_stage_set_reader(proof_validate_reader_fn fn, void *user);
+void proof_validate_stage_set_tx_verifier(proof_validate_tx_verify_fn fn,
+                                          void *user);
+
+bool proof_validate_dump_state_json(struct json_value *out, const char *key);
+
+#endif /* ZCL_SERVICES_PROOF_VALIDATE_STAGE_H */

@@ -1,0 +1,18 @@
+# Three simulated peers advance fixture-backed IBD while one peer misbehaves.
+
+seed        0x0000000000000006
+boot_phase  listening
+peer_count  3
+at_event    1 send_block peer=0 file=tests/fixtures/blocks/height-000001.fixture height=1
+at_event    2 send_malformed_block peer=1 type=invalid_pow
+at_event    2 send_block peer=2 file=tests/fixtures/blocks/height-000002.fixture height=2
+at_event    3 send_block peer=0 file=tests/fixtures/blocks/height-000003.fixture height=3
+
+expect      no_crash
+expect      scheduled_events == 4
+expect      blocks_sent == 3
+expect      block_bytes > 0
+expect      malformed_blocks == 1
+expect      consensus_rejects == 1
+expect      active_peers == 3
+expect      tip_height == 3

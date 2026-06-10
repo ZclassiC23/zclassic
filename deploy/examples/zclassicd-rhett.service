@@ -1,0 +1,31 @@
+[Unit]
+Description=ZClassic Native Daemon (Development Peer)
+After=network-online.target
+Wants=network-online.target
+
+# If someone starts zclassicd by hand, the systemd-managed copy hits a
+# LevelDB lock and restart-loops forever. The StartLimit caps the thrash
+# budget; the ExecStartPre check refuses to start at all when a manual
+# zclassicd is already running so the unit fails-fast instead of
+# hammering the filesystem.
+#
+# Operator recovery when this trips:
+#   kill <manual-pid>
+#   systemctl --user reset-failed zclassicd-rhett
+#   systemctl --user start zclassicd-rhett
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Fail fast when a manual zclassicd is holding the datadir lock.
+ExecStartPre=/bin/sh -c '! /usr/bin/pgrep -x zclassicd'
+ExecStart=%h/bin/zclassicd -datadir=%h/.zclassic -nofastsync -showmetrics=0
+Restart=on-failure
+RestartSec=30
+
+OOMScoreAdjust=-500
+MemoryHigh=6G
+
+[Install]
+WantedBy=default.target

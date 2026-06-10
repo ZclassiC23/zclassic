@@ -1,0 +1,22 @@
+# Lint gate #honest-witness baseline — grandfathered dishonest witnesses.
+#
+# check_honest_witness (RATCHET mode) flags any Condition witness in
+# app/conditions/src/*.c whose post-condition is TRIVIAL (constant),
+# PURE-INVERSE (just re-runs detect), or NO-OBSERVABLE (reads only FSM /
+# poison-absence state, never that the symptom MOVED — tip/cursor/block_map/
+# SELECT). These witnesses pre-date the ratchet and are recorded here. The
+# gate fails when a NEW witness (not listed) is dishonest, or when an
+# existing honest witness regresses into a lie.
+#
+# The baseline may only SHRINK — make a listed witness observe real forward
+# progress (the way W2 fixed stale_validate_headers_repair / peer_floor_violated
+# / sync_state_stuck) and delete its line. Goal: empty file.
+#
+# Per-witness exception: add // honest-witness-ok:<reason> inside the body.
+# Format: one witness function name per line; lines starting with # are comments.
+#
+# STATUS: EMPTY. Every witness either reads observable forward progress, or
+# carries a reviewed // honest-witness-ok:<reason> hatch (remedy = FAILED, so
+# it cannot self-certify; or it re-verifies real structural state). The gate
+# runs in FAIL mode and is clean. Do not add names here — fix the witness or
+# document a per-witness hatch instead.

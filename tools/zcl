@@ -1,0 +1,556 @@
+#!/bin/bash
+# Copyright 2026 Rhett Creighton - Apache License 2.0
+# zcl — Simple CLI for zclassic23 full node
+#
+# Usage:
+#   zcl balance           Show transparent + shielded balance
+#   zcl send ADDRESS AMT  Send transparent ZCL
+#   zcl shield AMT        Shield transparent → shielded
+#   zcl zsend ZADDR AMT   Send shielded ZCL (z→z)
+#   zcl unshield AMT      Unshield to transparent (z→t)
+#   zcl receive           Show deposit addresses
+#   zcl history           Transaction history
+#   zcl ledger            Full accounting ledger
+#   zcl utxos             List unspent outputs
+#   zcl peers             Show connected peers
+#   zcl status            Node sync status
+#   zcl hodlwave          UTXO age distribution
+#   zcl audit             Wallet audit
+#   zcl view HEIGHT [N]   View N block headers at HEIGHT
+#   zcl stats [S] [E]     Chain statistics (optional range)
+#   zcl txdetail TXID     UTXO detail for transaction
+#   zcl tree              Sapling commitment tree state
+#   zcl scan S E          Scan blocks for Sapling commitments
+#   zcl verify S E        Verify Sapling tree against block headers
+#   zcl rpc METHOD [ARGS] Raw RPC call
+#   zcl help              Show this help
+
+set -e
+
+DATADIR="${ZCL_DATADIR:-$HOME/.zclassic-c23}"
+PORT="${ZCL_RPCPORT:-18232}"
+COOKIE_FILE="$DATADIR/.cookie"
+
+rpc() {
+    local method="$1"
+    shift
+    local params=""
+    if [ $# -gt 0 ]; then
+        params="$*"
+    fi
+
+    if [ ! -f "$COOKIE_FILE" ]; then
+        echo "Error: Node not running (no cookie at $COOKIE_FILE)" >&2
+        exit 1
+    fi
+
+    local cookie
+    cookie=$(cat "$COOKIE_FILE")
+
+    local body
+    if [ -z "$params" ]; then
+        body="{\"method\":\"$method\"}"
+    else
+        body="{\"method\":\"$method\",\"params\":[$params]}"
+    fi
+
+    curl -s -u "$cookie" "http://127.0.0.1:$PORT/" \
+        -d "$body" \
+        -H "Content-Type: application/json"
+}
+
+fmt_zcl() {
+    echo "$1 ZCL"
+}
+
+cmd_balance() {
+    local result
+    result=$(rpc z_gettotalbalance)
+    local t z total
+    t=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['transparent'])")
+    z=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['private'])")
+    total=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['total'])")
+
+    printf "\n  ZClassic Wallet Balance\n"
+    printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    printf "  Transparent:  %s ZCL\n" "$t"
+    printf "  Shielded:     %s ZCL\n" "$z"
+    printf "  ─────────────────────────────────\n"
+    printf "  Total:        %s ZCL\n\n" "$total"
+}
+
+cmd_send() {
+    local addr="$1" amount="$2"
+    if [ -z "$addr" ] || [ -z "$amount" ]; then
+        echo "Usage: zcl send <address> <amount>"
+        echo "Example: zcl send t1ABC... 0.5"
+        exit 1
+    fi
+    printf "\n  Sending %s ZCL → %s\n" "$amount" "$addr"
+    local result
+    result=$(rpc sendtoaddress "\"$addr\",$amount")
+    local txid err
+    txid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
+    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
+    if [ -n "$err" ] && [ "$err" != "" ]; then
+        printf "  ✗ Error: %s\n\n" "$err"
+        exit 1
+    fi
+    printf "  ✓ Sent! txid: %s\n\n" "$txid"
+}
+
+cmd_shield() {
+    local amount="$1"
+    if [ -z "$amount" ]; then
+        echo "Usage: zcl shield <amount>"
+        echo "Shields transparent ZCL to your default shielded address."
+        exit 1
+    fi
+
+    # Get a transparent address with funds
+    local from
+    from=$(rpc listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+addrs={}
+for u in d['result']:
+    a=u['address']
+    addrs[a]=addrs.get(a,0)+u['amount']
+best=max(addrs,key=addrs.get)
+print(best)
+")
+
+    # Get default z-address
+    local zaddr
+    zaddr=$(rpc z_listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if d['result']:
+    print(d['result'][0]['address'])
+else:
+    print('')
+")
+    if [ -z "$zaddr" ]; then
+        zaddr=$(rpc z_getnewaddress | python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+    fi
+
+    printf "\n  Shielding %s ZCL\n" "$amount"
+    printf "  From: %s\n" "$from"
+    printf "  To:   %s...\n" "${zaddr:0:30}"
+
+    local result
+    result=$(rpc z_sendmany "\"$from\",[{\"address\":\"$zaddr\",\"amount\":$amount}]")
+    local opid err
+    opid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
+    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
+    if [ -n "$err" ] && [ "$err" != "" ]; then
+        printf "  ✗ Error: %s\n\n" "$err"
+        exit 1
+    fi
+    printf "  ✓ Shielding started! opid: %s\n\n" "$opid"
+}
+
+cmd_zsend() {
+    local zaddr="$1" amount="$2"
+    if [ -z "$zaddr" ] || [ -z "$amount" ]; then
+        echo "Usage: zcl zsend <z-address> <amount>"
+        echo "Example: zcl zsend zs1abc... 0.1"
+        exit 1
+    fi
+
+    # Find our z-address with largest balance
+    local from
+    from=$(rpc z_listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+addrs={}
+for n in d['result']:
+    a=n['address']
+    addrs[a]=addrs.get(a,0)+float(n['amount'])
+if addrs:
+    print(max(addrs,key=addrs.get))
+else:
+    print('')
+")
+    if [ -z "$from" ]; then
+        echo "  ✗ No shielded balance available"
+        exit 1
+    fi
+
+    printf "\n  Sending %s ZCL (shielded)\n" "$amount"
+    printf "  From: %s...\n" "${from:0:30}"
+    printf "  To:   %s...\n" "${zaddr:0:30}"
+
+    local result
+    result=$(rpc z_sendmany "\"$from\",[{\"address\":\"$zaddr\",\"amount\":$amount}]")
+    local opid err
+    opid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
+    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
+    if [ -n "$err" ] && [ "$err" != "" ]; then
+        printf "  ✗ Error: %s\n\n" "$err"
+        exit 1
+    fi
+    printf "  ✓ Shielded send started! opid: %s\n\n" "$opid"
+}
+
+cmd_unshield() {
+    local amount="$1"
+    if [ -z "$amount" ]; then
+        echo "Usage: zcl unshield <amount>"
+        echo "Unshields ZCL from shielded to a new transparent address."
+        exit 1
+    fi
+
+    # Find z-address with balance
+    local from
+    from=$(rpc z_listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+addrs={}
+for n in d['result']:
+    a=n['address']
+    addrs[a]=addrs.get(a,0)+float(n['amount'])
+if addrs:
+    print(max(addrs,key=addrs.get))
+")
+
+    # Get a transparent address
+    local taddr
+    taddr=$(rpc getnewaddress | python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+
+    printf "\n  Unshielding %s ZCL\n" "$amount"
+    printf "  From: %s...\n" "${from:0:30}"
+    printf "  To:   %s\n" "$taddr"
+
+    local result
+    result=$(rpc z_sendmany "\"$from\",[{\"address\":\"$taddr\",\"amount\":$amount}]")
+    local opid err
+    opid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
+    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
+    if [ -n "$err" ] && [ "$err" != "" ]; then
+        printf "  ✗ Error: %s\n\n" "$err"
+        exit 1
+    fi
+    printf "  ✓ Unshielding started! opid: %s\n\n" "$opid"
+}
+
+cmd_receive() {
+    printf "\n  Deposit Addresses\n"
+    printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    # Transparent
+    local taddr
+    taddr=$(rpc getnewaddress | python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+    printf "\n  Transparent (t-address):\n"
+    printf "    %s\n" "$taddr"
+
+    # Shielded
+    local zaddr
+    zaddr=$(rpc z_listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+seen=set()
+for n in d['result']:
+    if n['address'] not in seen:
+        print(n['address'])
+        seen.add(n['address'])
+        break
+" 2>/dev/null)
+    if [ -n "$zaddr" ]; then
+        printf "\n  Shielded (z-address):\n"
+        printf "    %s\n\n" "$zaddr"
+    else
+        printf "\n  (No shielded address yet — use 'zcl shield' to create one)\n\n"
+    fi
+}
+
+cmd_history() {
+    rpc getbalanceflow | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+flows=d['result']['flows']
+summary=d['result']['summary']
+
+print()
+print('  Transaction History')
+print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+print(f'  {\"Height\":>8}  {\"Type\":8}  {\"Amount\":>14}  {\"Fee\":>12}  {\"Balance\":>14}  {\"TxID\":16}')
+print('  ' + '─'*76)
+
+for f in flows:
+    h = f.get('height', 0)
+    cat = f.get('category', '?')
+    amt = f.get('amount', 0)
+    fee = f.get('fee', 0)
+    bal = f.get('running_balance', 0)
+    txid = f.get('txid', '?')[:12] + '...'
+    arrow = '→' if cat == 'send' else '←' if cat == 'receive' else '↔'
+    print(f'  {h:>8}  {arrow} {cat:6}  {amt:>+14.8f}  {fee:>12.8f}  {bal:>14.8f}  {txid}')
+
+print()
+print(f'  Total received: {summary[\"total_received\"]:.8f} ZCL')
+print(f'  Total sent:     {summary[\"total_sent\"]:.8f} ZCL')
+print(f'  Total fees:     {summary[\"total_fees\"]:.8f} ZCL')
+print(f'  Final balance:  {summary[\"final_balance\"]:.8f} ZCL')
+print()
+"
+}
+
+cmd_ledger() {
+    rpc walletledger | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+entries=d['result']['entries']
+acct=d['result']['accounting']
+holdings=d['result']['current_holdings']
+
+print()
+print('  ZClassic Full Wallet Ledger')
+print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+
+for e in entries:
+    h = e.get('height', 0)
+    typ = e.get('type', '?')
+    td = e.get('t_debit', '')
+    tc = e.get('t_credit', '')
+    zd = e.get('z_debit', '')
+    zc = e.get('z_credit', '')
+    fee = e.get('fee', '')
+    total = e.get('total_balance', '?')
+    txid = e.get('txid', '?')[:12] + '...'
+
+    icons = {'receive':'  ←','send':'  →','shield':'  ⬡','unshield':'  ⬢','z_transfer':'  ◈','z_receive':'  ◇','z_send':'  ◆','mixed':'  ◎'}
+    icon = icons.get(typ, '  ?')
+
+    parts = []
+    if td: parts.append(f't-{td}')
+    if tc: parts.append(f't+{tc}')
+    if zd: parts.append(f'z-{zd}')
+    if zc: parts.append(f'z+{zc}')
+    if fee: parts.append(f'fee={fee}')
+    detail = '  '.join(parts)
+
+    print(f'  {h:>8} {icon} {typ:12} {detail:50}  bal={total}  {txid}')
+
+print()
+print('  Current Holdings')
+print('  ─────────────────────────────────────────────────')
+for h in holdings.get('transparent', []):
+    print(f'    T  {h[\"amount\"]:>14} ZCL  {h.get(\"address\",\"?\")}')
+for h in holdings.get('shielded', []):
+    addr = h.get('address', '?')
+    memo = f'  [{h[\"memo\"]}]' if 'memo' in h else ''
+    print(f'    Z  {h[\"amount\"]:>14} ZCL  {addr[:40]}...{memo}')
+
+print()
+print('  Accounting')
+print('  ─────────────────────────────────────────────────')
+print(f'    Received (t):     {acct[\"total_t_received\"]} ZCL')
+print(f'    Received (z):     {acct[\"total_z_received\"]} ZCL')
+print(f'    Shielded (t→z):   {acct[\"total_shielded_t_to_z\"]} ZCL')
+print(f'    Total fees:       {acct[\"total_fees\"]} ZCL')
+print(f'    ─────────────────────────────────')
+print(f'    Balance (t):      {acct[\"current_t_balance\"]} ZCL')
+print(f'    Balance (z):      {acct[\"current_z_balance\"]} ZCL')
+print(f'    Total:            {acct[\"current_total\"]} ZCL')
+print(f'    Unaccounted:      {acct[\"unaccounted\"]} ZCL')
+print()
+"
+}
+
+cmd_utxos() {
+    printf "\n  Unspent Outputs\n"
+    printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    rpc listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(f'\n  Transparent UTXOs:')
+for u in d['result']:
+    print(f'    {u[\"amount\"]:>14.8f} ZCL  {u[\"address\"]}  confs={u[\"confirmations\"]}')
+"
+
+    rpc z_listunspent | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(f'\n  Shielded Notes:')
+for n in d['result']:
+    memo = f'  [{n[\"memo\"]}]' if 'memo' in n else ''
+    print(f'    {float(n[\"amount\"]):>14.8f} ZCL  {n[\"address\"][:40]}...  h={n[\"block_height\"]}{memo}')
+print()
+"
+}
+
+cmd_peers() {
+    rpc getpeerinfo | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+peers=d['result']
+print()
+print('  Connected Peers')
+print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+if not peers:
+    print('  (no peers connected)')
+for p in peers:
+    direction = '←in' if p.get('inbound') else '→out'
+    print(f'  {direction}  {p[\"addr\"]:25}  {p.get(\"subver\",\"?\")}  h={p.get(\"startingheight\",0)}')
+print()
+"
+}
+
+cmd_status() {
+    local info balance peers
+    info=$(rpc getblockchaininfo)
+    balance=$(rpc z_gettotalbalance)
+    peers=$(rpc getconnectioncount)
+
+    echo "$info" | python3 -c "
+import json,sys
+info=json.load(sys.stdin)
+r=info['result']
+" > /dev/null 2>&1
+
+    python3 -c "
+import json,sys
+
+info=json.loads('''$info''')
+bal=json.loads('''$balance''')
+peers=json.loads('''$peers''')
+
+r=info['result']
+b=bal['result']
+p=peers['result']
+
+print()
+print('  ZClassic23 Node Status')
+print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+print(f'  Chain:        {r[\"chain\"]}')
+print(f'  Height:       {r[\"blocks\"]}')
+print(f'  Headers:      {r[\"headers\"]}')
+synced = 'Yes' if r['blocks'] >= r['headers'] - 1 else 'No'
+print(f'  Synced:       {synced}')
+print(f'  Peers:        {p}')
+print(f'  T Balance:    {b[\"transparent\"]} ZCL')
+print(f'  Z Balance:    {b[\"private\"]} ZCL')
+print(f'  Total:        {b[\"total\"]} ZCL')
+print()
+"
+}
+
+cmd_hodlwave() {
+    rpc gethodlwave | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+r=d['result']
+
+print()
+print('  ZClassic HODL Wave — Cumulative Supply by Age')
+print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+print(f'  Tip: {r[\"tip_height\"]:,}  |  UTXOs: {r[\"total_utxos\"]:,}  |  Supply: {r[\"total_supply_zcl\"]} ZCL')
+print()
+print(f'  {\"Age\":>12}  {\"Cumul Bar\":40}  {\"ZCL in bucket\":>18}  {\"Bucket\":>7}  {\"Unmoved\":>8}  {\"UTXOs\":>10}')
+print('  ' + '─' * 97)
+
+for b in r['buckets']:
+    cpct = b['cumulative_pct_unmoved']
+    pct = b['pct']
+    bar_len = int(cpct / 2.5)
+    if bar_len > 40: bar_len = 40
+    bar = '█' * bar_len + '░' * (40 - bar_len)
+    print(f'  {b[\"age\"]:>12}  {bar}  {b[\"zcl\"]:>18} ZCL  {pct:6.2f}%  {cpct:7.2f}%  {b[\"utxos\"]:>10,}')
+
+print()
+print('  Unmoved = cumulative % of supply unmoved for at least this long')
+print()
+"
+}
+
+cmd_audit() {
+    rpc walletaudit | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+s=d['result']['summary']
+print()
+print('  Wallet Audit')
+print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+print(f'  Chain height:       {d[\"result\"][\"chain_height\"]}')
+print(f'  Verified balance:   {s[\"verified_balance\"]} ZCL ({s[\"verified_utxos\"]} UTXOs)')
+print(f'  Shielded balance:   {s[\"shielded_balance\"]} ZCL ({s[\"shielded_notes\"]} notes)')
+print(f'  True total:         {s[\"true_total_balance\"]} ZCL')
+print(f'  Phantom balance:    {s[\"phantom_balance\"]} ZCL ({s[\"phantom_utxos\"]} phantom)')
+print(f'  Discrepancy:        {s[\"discrepancy\"]} ZCL')
+print()
+for a in d['result']['addresses']:
+    print(f'    {a[\"address\"]}: {a[\"verified_balance\"]} ZCL ({a[\"verified_utxos\"]} utxos)')
+print()
+"
+}
+
+cmd_help() {
+    cat <<'HELP'
+
+  zcl — ZClassic23 Command Line Interface
+
+  TRANSACTIONS
+    zcl send <addr> <amt>     Send transparent ZCL (t→t)
+    zcl shield <amt>          Shield to z-address (t→z)
+    zcl zsend <zaddr> <amt>   Shielded send (z→z or z→t)
+    zcl unshield <amt>        Unshield to t-address (z→t)
+
+  WALLET
+    zcl balance               Show all balances
+    zcl receive               Show deposit addresses
+    zcl utxos                 List all unspent outputs
+    zcl history               Transaction history
+    zcl ledger                Full double-entry ledger
+    zcl audit                 Wallet health check
+
+  ANALYTICS
+    zcl hodlwave              UTXO age distribution (cumulative)
+    zcl status                Node sync status
+    zcl peers                 Connected peers
+
+  ENVIRONMENT
+    ZCL_DATADIR               Data directory (default: ~/.zclassic-c23)
+    ZCL_RPCPORT               RPC port (default: 18232)
+
+HELP
+}
+
+# Main dispatch
+case "${1:-help}" in
+    balance)   cmd_balance ;;
+    send)      cmd_send "$2" "$3" ;;
+    shield)    cmd_shield "$2" ;;
+    zsend)     cmd_zsend "$2" "$3" ;;
+    unshield)  cmd_unshield "$2" ;;
+    receive)   cmd_receive ;;
+    history)   cmd_history ;;
+    ledger)    cmd_ledger ;;
+    utxos)     cmd_utxos ;;
+    peers)     cmd_peers ;;
+    status)    cmd_status ;;
+    hodlwave)  cmd_hodlwave ;;
+    audit)     cmd_audit ;;
+    # Chain introspection
+    view)      rpc chainview "$2, ${3:-1}" | python3 -m json.tool ;;
+    stats)
+        if [ -n "$2" ] && [ -n "$3" ]; then
+            rpc chainstats "$2, $3" | python3 -m json.tool
+        elif [ -n "$2" ]; then
+            rpc chainstats "$2" | python3 -m json.tool
+        else
+            rpc chainstats | python3 -m json.tool
+        fi ;;
+    txdetail)  rpc gettxdetail "\"$2\"" | python3 -m json.tool ;;
+    tree)      rpc saplingtreeinfo | python3 -m json.tool ;;
+    scan)      rpc scancommitments "$2, $3" | python3 -m json.tool ;;
+    verify)    rpc verifychainroots "$2, $3" | python3 -m json.tool ;;
+    rpc)       shift; rpc "$@" | python3 -m json.tool ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        echo "Unknown command: $1"
+        cmd_help
+        exit 1
+        ;;
+esac

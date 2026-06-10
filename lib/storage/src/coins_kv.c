@@ -1,0 +1,403 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * coins_kv — implementation. See storage/coins_kv.h for the contract and the
+ * durability rationale (docs/work/tip-durability-collapse.md).
+ *
+ * Raw sqlite3_step calls carry // raw-sql-ok:progress-kv-kernel-store, the
+ * sanctioned hatch for the kernel store (same convention as progress_store.c /
+ * utxo_projection.c). The coins set sits BELOW the AR lifecycle — it is reducer
+ * state, not an AR model.
+ */
+#include "storage/coins_kv.h"
+
+#include "coins/coins_view.h"
+#include "coins/utxo_commitment.h"
+#include "crypto/sha3.h"
+#include "primitives/transaction.h"
+#include "script/script.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
+
+#include <sqlite3.h>
+#include <stdint.h>
+#include <string.h>
+
+bool coins_kv_ensure_schema(sqlite3 *db)
+{
+    if (!db) return false;
+    char *err = NULL;
+    int rc = sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS coins ("
+        "  txid        BLOB    NOT NULL,"
+        "  vout        INTEGER NOT NULL,"
+        "  value       INTEGER NOT NULL,"
+        "  height      INTEGER NOT NULL,"
+        "  is_coinbase INTEGER NOT NULL,"
+        "  script      BLOB    NOT NULL,"
+        "  PRIMARY KEY (txid, vout)"
+        ") WITHOUT ROWID",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+                  int64_t value, int32_t height, bool is_coinbase,
+                  const uint8_t *script, size_t script_len)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO coins"
+        "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob (s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int  (s, 2, (int)vout);
+    sqlite3_bind_int64(s, 3, (sqlite3_int64)value);
+    sqlite3_bind_int64(s, 4, (sqlite3_int64)height);
+    sqlite3_bind_int  (s, 5, is_coinbase ? 1 : 0);
+    if (script && script_len > 0)
+        sqlite3_bind_blob(s, 6, script, (int)script_len, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_blob(s, 6, "", 0, SQLITE_STATIC);
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "DELETE FROM coins WHERE txid=? AND vout=?",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int (s, 2, (int)vout);
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
+}
+
+bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT 1 FROM coins WHERE txid=? AND vout=?",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int (s, 2, (int)vout);
+    bool found = sqlite3_step(s) == SQLITE_ROW;  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(s);
+    return found;
+}
+
+bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+                  int64_t *value_out, uint8_t *script_out, size_t script_cap,
+                  size_t *script_len_out)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT value, script FROM coins WHERE txid=? AND vout=?",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int (s, 2, (int)vout);
+    bool found = false;
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        /* A row exists iff the output is live (spend = DELETE). */
+        found = true;
+        if (value_out) *value_out = sqlite3_column_int64(s, 0);
+        int slen = sqlite3_column_bytes(s, 1);
+        const void *sblob = sqlite3_column_blob(s, 1);
+        if (script_len_out) *script_len_out = (size_t)slen;
+        if (script_out && script_cap > 0 && sblob && slen > 0) {
+            size_t copy = (size_t)slen < script_cap
+                        ? (size_t)slen : script_cap;
+            memcpy(script_out, sblob, copy);
+        }
+    }
+    sqlite3_finalize(s);
+    return found;
+}
+
+int64_t coins_kv_count(sqlite3 *db)
+{
+    if (!db) return -1;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM coins",
+                           -1, &s, NULL) != SQLITE_OK)
+        return -1;
+    int64_t n = -1;
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
+        n = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    return n;
+}
+
+bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
+{
+    if (!out) return false;
+    coins_init(out);
+    if (!db || !txid) return false;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT vout, value, script, height, is_coinbase "
+        "FROM coins WHERE txid=?",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+
+    uint32_t max_vout = 0;
+    int nrows = 0, height = 0, is_coinbase = 0;
+    while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
+        if (nrows == 0) {
+            height      = sqlite3_column_int(s, 3);
+            is_coinbase = sqlite3_column_int(s, 4);
+        }
+        if (vi > max_vout) max_vout = vi;
+        nrows++;
+    }
+    if (nrows == 0) {
+        sqlite3_finalize(s);
+        return false;
+    }
+
+    if (!coins_alloc(out, (size_t)(max_vout + 1))) {
+        sqlite3_finalize(s);
+        return false;
+    }
+    out->version     = 1;
+    out->height      = height;
+    out->is_coinbase = (is_coinbase != 0);
+
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
+        if (vi >= out->num_vout) continue;
+        out->vout[vi].value = sqlite3_column_int64(s, 1);
+        const void *script = sqlite3_column_blob(s, 2);
+        int script_len = sqlite3_column_bytes(s, 2);
+        if (script && script_len > 0) {
+            size_t slen = (size_t)script_len;
+            if (slen > MAX_SCRIPT_SIZE) slen = MAX_SCRIPT_SIZE;
+            memcpy(out->vout[vi].script_pub_key.data, script, slen);
+            out->vout[vi].script_pub_key.size = slen;
+        }
+    }
+    coins_cleanup(out);
+    sqlite3_finalize(s);
+    return true;
+}
+
+bool coins_kv_setinfo(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
+                      int64_t *total_amount)
+{
+    if (!db) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(DISTINCT txid), COUNT(*), COALESCE(SUM(value),0) "
+            "FROM coins", -1, &s, NULL) != SQLITE_OK)
+        return false;
+    bool ok = false;
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        if (num_txs)      *num_txs      = sqlite3_column_int64(s, 0);
+        if (num_txouts)   *num_txouts   = sqlite3_column_int64(s, 1);
+        if (total_amount) *total_amount = sqlite3_column_int64(s, 2);
+        ok = true;
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
+int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
+{
+    if (!db || !out) return -1;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT txid, vout, value, script, height, is_coinbase "
+            "FROM coins ORDER BY txid, vout", -1, &s, NULL) != SQLITE_OK)
+        return -1;
+
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+
+    int rc;
+    while ((rc = sqlite3_step(s)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
+        int txid_len = sqlite3_column_bytes(s, 0);
+        if (!txid || txid_len < 32) continue;
+
+        uint32_t vout   = (uint32_t)sqlite3_column_int(s, 1);
+        int64_t  value  = sqlite3_column_int64(s, 2);
+        const uint8_t *script = (const uint8_t *)sqlite3_column_blob(s, 3);
+        int script_len = sqlite3_column_bytes(s, 3);
+        int32_t  height = sqlite3_column_int(s, 4);
+        int cb_int = sqlite3_column_int(s, 5);
+
+        /* Canonical must-never-fork record — see utxo_commitment.h. This is
+         * BYTE-IDENTICAL to utxo_projection_commitment / the legacy `utxos`
+         * commitment because all three share this single encoder. */
+        utxo_commitment_sha3_write_record(&ctx, txid, vout, value,
+                                          (script_len > 0) ? script : NULL,
+                                          (uint32_t)(script_len > 0 ? script_len : 0),
+                                          (uint32_t)height,
+                                          (uint8_t)(cb_int ? 1 : 0));
+    }
+    sqlite3_finalize(s);
+    if (rc != SQLITE_DONE)
+        return -1;
+
+    sha3_256_finalize(&ctx, out);
+    return 0;
+}
+
+/* ── coins_applied_height — contiguous applied-frontier counter ──────────
+ *
+ * Stored as a stable 8-byte little-endian int64 blob under
+ * COINS_APPLIED_HEIGHT_KEY in progress_meta. LE so a value written on one
+ * machine reads back identically on any host (the blob is opaque to the
+ * progress_meta layer, which owns no integer encoding). */
+
+static void le64_put(uint8_t b[8], int64_t v)
+{
+    uint64_t u = (uint64_t)v;
+    for (int i = 0; i < 8; i++)
+        b[i] = (uint8_t)(u >> (8 * i));
+}
+
+static int64_t le64_get(const uint8_t b[8])
+{
+    uint64_t u = 0;
+    for (int i = 0; i < 8; i++)
+        u |= (uint64_t)b[i] << (8 * i);
+    return (int64_t)u;
+}
+
+bool coins_kv_set_applied_height_in_tx(sqlite3 *db, int32_t height)
+{
+    if (!db) return false;
+    /* Joins the caller's ALREADY-OPEN txn (progress_meta_set_in_tx issues NO
+     * inner BEGIN/COMMIT). A PLAIN set — the reorg path legitimately decreases
+     * the frontier, so NO monotonic-floor guard. */
+    uint8_t blob[8];
+    le64_put(blob, (int64_t)height);
+    return progress_meta_set_in_tx(db, COINS_APPLIED_HEIGHT_KEY,
+                                   blob, sizeof(blob));
+}
+
+bool coins_kv_get_applied_height(sqlite3 *db, int32_t *out, bool *found)
+{
+    if (found) *found = false;
+    if (!db) return false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    bool f = false;
+    if (!progress_meta_get(db, COINS_APPLIED_HEIGHT_KEY,
+                           blob, sizeof(blob), &n, &f))
+        return false;
+    if (!f) {
+        /* Absent → clean "unknown"; a fresh datadir is NOT 0-as-applied. */
+        return true;
+    }
+    if (n != sizeof(blob)) {
+        /* A row exists but the blob is the wrong width — malformed; treat as a
+         * hard read error rather than silently mis-decode a frontier. */
+        LOG_WARN("coins_kv",
+                 "[coins_kv] applied_height blob malformed (len=%zu)", n);
+        return false;
+    }
+    if (out) *out = (int32_t)le64_get(blob);
+    if (found) *found = true;
+    return true;
+}
+
+/* Read the durably committed utxo_apply stage cursor straight off the
+ * stage_cursor table on the progress.kv handle. Kept in the storage layer (a
+ * raw kernel-store read, same hatch as coins_kv_count) so the backfill below
+ * does not pull in the app/jobs stage_helpers inline. Returns false with
+ * *found=false when the row is absent (a brand-new datadir). */
+static bool utxo_apply_cursor_persisted(sqlite3 *db, int64_t *out, bool *found)
+{
+    if (found) *found = false;
+    if (!db || !out) return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = 'utxo_apply'",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bool ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int64(st, 0);
+        if (found) *found = true;
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool coins_kv_backfill_applied_height_if_absent(sqlite3 *db)
+{
+    if (!db) return true;  /* store not open yet → no-op, retried later */
+
+    bool present = false;
+    int32_t cur = 0;
+    if (!coins_kv_get_applied_height(db, &cur, &present))
+        return false;
+    if (present)
+        return true;  /* already seeded — never re-seed (allows later rewind) */
+
+    /* Derive the seed from the already-trusted utxo_apply cursor — NEVER from
+     * MAX(coins.height) (which cannot see an interior hole). A brand-new
+     * (virgin) datadir has no cursor row yet: leave the key ABSENT so the
+     * first forward apply writes it in lockstep with the cursor. */
+    int64_t cursor = 0;
+    bool have_cursor = false;
+    progress_store_tx_lock();
+    if (!utxo_apply_cursor_persisted(db, &cursor, &have_cursor)) {
+        progress_store_tx_unlock();
+        LOG_WARN("coins_kv", "[coins_kv] applied_height backfill: cursor read failed");
+        return false;
+    }
+    if (!have_cursor) {
+        progress_store_tx_unlock();
+        return true;  /* virgin datadir — nothing durable to seed from yet */
+    }
+
+    /* The ONE allowed standalone txn: a pure backfill of a derived value that
+     * already equals the durable cursor, with NO coin mutation. */
+    char *err = NULL;
+    bool ok = true;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && !coins_kv_set_applied_height_in_tx(db, (int32_t)cursor))
+        ok = false;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        if (err) LOG_WARN("coins_kv",
+                          "[coins_kv] applied_height backfill failed: %s", err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (err) sqlite3_free(err);
+    progress_store_tx_unlock();
+
+    if (ok)
+        LOG_INFO("coins_kv",
+                 "[coins_kv] backfilled applied_height=%lld from utxo_apply cursor",
+                 (long long)cursor);
+    return ok;
+}

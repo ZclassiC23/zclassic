@@ -1,0 +1,155 @@
+zclassic23
+Copyright 2026 Rhett Creighton
+
+This product is licensed under the Apache License, Version 2.0 (see
+LICENSE file in the root of this source tree, or at
+http://www.apache.org/licenses/LICENSE-2.0).
+
+This product includes software originally developed by other projects,
+redistributed here under their respective licenses. All original
+copyright notices are preserved below as required by the Apache
+License, Version 2.0, Section 4(d) and by the upstream licenses
+themselves.
+
+================================================================================
+
+Bitcoin Core — MIT License
+Copyright (c) 2009-2019 The Bitcoin Core developers
+Copyright (c) 2009-2019 Bitcoin Developers
+
+  Script interpreter semantics (BIP-30 / BIP-34 / BIP-65 / BIP-66),
+  Bloom filter design, compact-blocks protocol, and general Bitcoin
+  consensus surface inherited via zcashd and zclassicd. All identifiable
+  Bitcoin Core code paths have been re-implemented in C23 from scratch
+  in zclassic23; the MIT copyright notice is preserved here because
+  the semantics and test vectors originate with Bitcoin Core.
+
+Repository: https://github.com/bitcoin/bitcoin
+License:    https://github.com/bitcoin/bitcoin/blob/master/COPYING
+
+--------------------------------------------------------------------------------
+
+Zcash (zcashd) — MIT License
+Copyright (c) 2016-2019 The Zcash developers
+
+  Sapling and Sprout zk-SNARK designs, Equihash 200/9 proof-of-work,
+  shielded-pool accounting rules, and nu-series network upgrade
+  ordering. Consensus-critical semantics match zcashd bit-for-bit via
+  the parity-diff service (see AGENT.md row P12.3).
+
+Repository: https://github.com/zcash/zcash
+License:    https://github.com/zcash/zcash/blob/master/COPYING
+
+--------------------------------------------------------------------------------
+
+ZClassic Community (zclassicd, legacy peer) — MIT License
+Copyright (c) 2017-2021 The SoloPool.org Team
+Copyright (c) 2021-2022 ZClassic Community
+
+  Chain history, checkpoint schedule, network magic, and the reference
+  behavior used by zclassic23's parity-diff service. zclassicd remains
+  the canonical legacy peer for bootstrap.
+
+Repository: https://github.com/ZclassicCommunity/zclassic
+License:    https://github.com/ZclassicCommunity/zclassic/blob/master/COPYING
+
+================================================================================
+
+VENDORED DEPENDENCIES
+
+The following third-party components are distributed in source form
+under vendor/ and retain their original licenses.
+
+--------------------------------------------------------------------------------
+
+Tor (modified fork with dynhost extension) — 3-Clause BSD License
+Copyright (c) The Tor Project, Inc.
+
+  Embedded Tor with in-process dynhost API for .onion hidden-service
+  hosting. Fork: https://github.com/RhettCreighton/tor
+
+Upstream:   https://gitlab.torproject.org/tpo/core/tor
+License:    https://gitlab.torproject.org/tpo/core/tor/-/blob/main/LICENSE
+Vendored:   vendor/tor/
+
+--------------------------------------------------------------------------------
+
+SQLite — Public Domain
+  Canonical UTXO store, wallet keystore, block index, application state.
+
+Upstream:   https://sqlite.org
+License:    https://www.sqlite.org/copyright.html
+Vendored:   vendor/ (amalgamation)
+
+--------------------------------------------------------------------------------
+
+secp256k1 — MIT License
+Copyright (c) Pieter Wuille and contributors
+
+  ECDSA curve operations for transparent-address cryptography.
+
+Upstream:   https://github.com/bitcoin-core/secp256k1
+Vendored:   vendor/
+
+--------------------------------------------------------------------------------
+
+LevelDB — BSD-3-Clause License
+Copyright (c) The LevelDB Authors
+
+  Legacy block-index read path (import-only; writes go through the
+  SQLite canonical store).
+
+Upstream:   https://github.com/google/leveldb
+Vendored:   vendor/
+
+--------------------------------------------------------------------------------
+
+dcrdex — Blue Oak Model License 1.0.0
+Copyright (c) The Decred Developers
+
+  Cross-chain atomic swap HTLC script format (97-byte P2SH-wrapped
+  contract). Used by the ZCL Atomic Swap Protocol (ZSWP).
+
+Upstream:   https://github.com/decred/dcrdex
+License:    https://blueoakcouncil.org/license/1.0.0
+Vendored:   vendor/dcrdex/
+
+================================================================================
+
+CONCEPT ATTRIBUTIONS (no code; architectural inspiration only)
+
+zclassic23 adopts architectural concepts from the following projects
+without incorporating their source code. The implementations in
+zclassic23 are written in C23 from scratch and do not link against
+the original projects. We credit them here because it is the right
+thing to do. A per-concept breakdown with commit-level cross-references
+is maintained in ATTRIBUTIONS.md.
+
+  * Erigon (Ethereum execution client) — LGPL-3.0
+      Staged-sync pipeline, ETL bulk-write framework, temporal DB
+      interface, per-subsystem agents.md discipline, spectest harness
+      design, ruleguard-style lint gates. AGENT.md rows P15.5, P15.6,
+      P16.1-P16.7, P17.4, P17.5, P17.6. Apache-2.0 and LGPL-3.0 are
+      compatible per the Free Software Foundation; no verbatim
+      Erigon code is incorporated.
+      Upstream: https://github.com/erigontech/erigon
+
+  * mcp-language-server — MIT
+      LSP-to-MCP bridge pattern (clangd subprocess + MCP-exposed tools).
+      AGENT.md row P22.3.
+      Upstream: https://github.com/isaacphi/mcp-language-server
+
+  * AGENTS.md community convention
+      Portable AI-agent onboarding file at repo root. AGENT.md row P22.1.
+
+  * Codified Context Infrastructure (arXiv 2602.20478)
+      Three-tier hot/specialized/cold memory pattern for AI-native
+      codebases. AGENT.md group P22.
+
+================================================================================
+
+For the full concept-borrow breakdown (per-row cross-references and
+the machine-readable attribution matrix), see docs/ATTRIBUTIONS.md in
+this source tree.
+
+For questions about specific files, contact the project maintainer.

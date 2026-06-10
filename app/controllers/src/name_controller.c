@@ -1,0 +1,288 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * ZCL Names RPC controller.
+ *
+ * Commands:
+ *   name_register  — register a name on-chain via OP_RETURN
+ *   name_resolve   — look up a name's target
+ *   name_list      — list all registered names */
+
+#include "models/znam.h"
+#include "json/json.h"
+#include "rpc/server.h"
+#include "models/database.h"
+#include "wallet/wallet.h"
+#include "validation/txmempool.h"
+#include "services/zslp_command_service.h"
+#include "encoding/utilstrencodings.h"
+#include <string.h>
+#include <stdio.h>
+#include <inttypes.h>
+#include "util/log_macros.h"
+
+/* ── Context ────────────────────────────────────────────────────── */
+
+static struct node_db *g_name_ndb = NULL;
+static struct wallet *g_name_wallet = NULL;
+static struct tx_mempool *g_name_mempool = NULL;
+
+void rpc_name_set_state(struct node_db *ndb)
+{
+    g_name_ndb = ndb;
+}
+
+void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp)
+{
+    g_name_wallet = w;
+    g_name_mempool = mp;
+}
+
+/* ── Helper ─────────────────────────────────────────────────────── */
+
+static const char *type_name(uint8_t t)
+{
+    switch (t) {
+    case ZNAM_TYPE_ONION: return "onion";
+    case ZNAM_TYPE_ZADDR: return "z-address";
+    case ZNAM_TYPE_TADDR: return "t-address";
+    default: return "unknown";
+    }
+}
+
+static uint8_t parse_type(const char *s)
+{
+    if (!s) return 0;
+    if (strcmp(s, "onion") == 0) return ZNAM_TYPE_ONION;
+    if (strcmp(s, "zaddr") == 0 || strcmp(s, "z-address") == 0)
+        return ZNAM_TYPE_ZADDR;
+    if (strcmp(s, "taddr") == 0 || strcmp(s, "t-address") == 0)
+        return ZNAM_TYPE_TADDR;
+    return 0;
+}
+
+static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
+{
+    json_set_object(obj);
+    json_push_kv_str(obj, "name", e->name);
+    json_push_kv_str(obj, "owner", e->owner_address);
+    json_push_kv_str(obj, "type", type_name(e->target_type));
+    json_push_kv_str(obj, "value", e->target_value);
+    json_push_kv_int(obj, "reg_height", e->reg_height);
+    char hex[65];
+    HexStr(e->reg_txid, 32, false, hex, sizeof(hex));
+    json_push_kv_str(obj, "reg_txid", hex);
+}
+
+/* ── name_resolve ───────────────────────────────────────────────── */
+
+static bool rpc_name_resolve(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    if (help || !params || json_size(params) < 1) {
+        json_set_str(result,
+            "name_resolve \"name\"\n"
+            "\nResolve a ZCL Name to its target (.onion, z-addr, t-addr).\n"
+            "\nArguments:\n"
+            "1. name (string, required) The name to resolve\n"
+            "\nResult: the name entry or null.\n");
+        return true;
+    }
+
+    const struct json_value *arg0 = json_at(params, 0);
+    const char *name = arg0 ? json_get_str(arg0) : NULL;
+    if (!name) {
+        json_set_str(result, "name required");
+        return false;
+    }
+
+    struct znam_entry entry;
+    if (!g_name_ndb) {
+        LOG_WARN("controller", "name_resolve: name DB not initialized; cannot resolve '%s'", name);
+        json_set_str(result, "Name not found");
+        return true;
+    }
+    if (!db_znam_find(g_name_ndb, name, &entry)) {
+        json_set_str(result, "Name not found");
+        return true;
+    }
+
+    entry_to_json(&entry, result);
+    return true;
+}
+
+/* ── name_list ──────────────────────────────────────────────────── */
+
+static bool rpc_name_list(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "name_list [\"owner_address\"]\n"
+            "\nList registered ZCL Names, optionally filtered by owner.\n");
+        return true;
+    }
+
+    json_set_array(result);
+    if (!g_name_ndb) return true;
+
+    struct znam_entry entries[100];
+    int count;
+
+    const struct json_value *arg0 = params ? json_at(params, 0) : NULL;
+    const char *owner = arg0 ? json_get_str(arg0) : NULL;
+
+    if (owner && owner[0])
+        count = db_znam_list_by_owner(g_name_ndb, owner, entries, 100);
+    else
+        count = db_znam_list(g_name_ndb, entries, 100);
+
+    for (int i = 0; i < count; i++) {
+        struct json_value e = {0};
+        entry_to_json(&entries[i], &e);
+        json_push_back(result, &e);
+        json_free(&e);
+    }
+
+    return true;
+}
+
+/* ── name_register ──────────────────────────────────────────────── */
+
+static bool rpc_name_register(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    if (help || !params || json_size(params) < 3) {
+        json_set_str(result,
+            "name_register \"name\" \"type\" \"value\"\n"
+            "\nRegister a ZCL Name on-chain via OP_RETURN transaction.\n"
+            "\nArguments:\n"
+            "1. name  (string) Name to register (1-63 chars, lowercase+hyphens)\n"
+            "2. type  (string) Target type: onion, zaddr, taddr\n"
+            "3. value (string) Target value (.onion address, z-addr, t-addr)\n"
+            "\nNote: Requires wallet to create and broadcast the transaction.\n"
+            "For now, returns the OP_RETURN hex that needs to be included\n"
+            "in a transaction's first output.\n");
+        return true;
+    }
+
+    const char *name = json_get_str(json_at(params, 0));
+    const char *type_str = json_get_str(json_at(params, 1));
+    const char *value = json_get_str(json_at(params, 2));
+
+    if (!name || !type_str || !value) {
+        json_set_str(result, "Missing arguments");
+        return false;
+    }
+
+    if (!znam_validate_name(name)) {
+        json_set_str(result, "Invalid name (1-63 chars, lowercase alphanumeric + hyphens)");
+        return false;
+    }
+
+    uint8_t target_type = parse_type(type_str);
+    if (target_type == 0) {
+        json_set_str(result, "Invalid type (use: onion, zaddr, taddr)");
+        return false;
+    }
+
+    /* Check if name already exists */
+    struct znam_entry existing;
+    if (g_name_ndb && db_znam_find(g_name_ndb, name, &existing)) {
+        json_set_str(result, "Name already registered");
+        return false;
+    }
+
+    /* Build the OP_RETURN script */
+    uint8_t script[512];
+    size_t script_len = znam_build_register(script, sizeof(script),
+                                            name, target_type, value);
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build OP_RETURN script");
+        return false;
+    }
+
+    /* If wallet is available, build and broadcast the transaction */
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        /* Build base tx with a dust output (546 satoshi) */
+        if (!zslp_command_build_genesis_base_tx(g_name_wallet, &wtx,
+                                                &fee_paid, &tx_error).ok) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        /* Prepend OP_RETURN, re-sign, broadcast */
+        if (!zslp_command_commit_with_op_return(g_name_wallet, g_name_mempool,
+                                                &wtx, script, script_len).ok) {
+            json_set_str(result, "Failed to broadcast transaction");
+            return false;
+        }
+
+        /* Return success with txid */
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+        json_push_kv_str(result, "type", type_name(target_type));
+        json_push_kv_str(result, "value", value);
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: registered '%s' -> %s (txid: %s)\n",
+               name, value, txid_hex);
+        return true;
+    }
+
+    /* No wallet — return the OP_RETURN hex for manual inclusion */
+    json_set_object(result);
+    json_push_kv_str(result, "name", name);
+    json_push_kv_str(result, "type", type_name(target_type));
+    json_push_kv_str(result, "value", value);
+
+    char hex[1025];
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
+    json_push_kv_str(result, "op_return_hex", hex);
+    json_push_kv_int(result, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(result, "status", "ready");
+    json_push_kv_str(result, "note",
+        "Wallet not loaded. Include this OP_RETURN as vout[0] manually.");
+
+    return true;
+}
+
+/* ── REST API ───────────────────────────────────────────────────── */
+
+bool api_name_list(struct json_value *result)
+{
+    return rpc_name_list(NULL, false, result);
+}
+
+bool rpc_name_resolve_api(const char *name, struct json_value *result)
+{
+    if (!name) LOG_FAIL("name", "rpc_name_resolve_api called with NULL name");
+    if (!g_name_ndb) LOG_FAIL("name", "rpc_name_resolve_api: name database not initialized");
+    struct znam_entry entry;
+    if (!db_znam_find(g_name_ndb, name, &entry)) LOG_FAIL("name", "name '%s' not found in database", name);
+    entry_to_json(&entry, result);
+    return true;
+}
+
+/* ── Registration ───────────────────────────────────────────────── */
+
+void register_name_rpc_commands(struct rpc_table *t)
+{
+    struct rpc_command cmds[] = {
+        { "names", "name_register", rpc_name_register, true },
+        { "names", "name_resolve",  rpc_name_resolve,  true },
+        { "names", "name_list",     rpc_name_list,     true },
+    };
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
+        rpc_table_must_append(t, &cmds[i]);
+}

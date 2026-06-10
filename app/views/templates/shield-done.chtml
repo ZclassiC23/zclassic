@@ -1,0 +1,8 @@
+<div class='privacy-card' style='display:flex;align-items:center;
+gap:12px;text-align:left;border-color:#34d399'>
+<div style='font-size:24px;flex-shrink:0'>&#x2705;</div>
+<div style='flex:1'>
+<div class='title' style='margin:0;color:#34d399'>
+{{{amount}}} ZCL shielded</div>
+<div class='desc' style='margin:0;margin-top:2px'>
+{{{message}}}</div></div></div>

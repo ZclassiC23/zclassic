@@ -1,0 +1,9 @@
+<div class='overflow-x'>
+<table><tr><th>Amount</th>
+<th>Address</th><th>Count</th><th>Height Range</th></tr>
+{{{note_rows}}}
+<tr class='total-row'>
+<td class='zcl'>{{{z_total}}}</td>
+<td></td>
+<td>{{{z_notes}}} note{{{z_plural}}}</td>
+<td></td></tr></table></div>

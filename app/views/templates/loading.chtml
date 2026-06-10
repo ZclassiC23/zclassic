@@ -1,0 +1,7 @@
+<div class='empty-state' style='padding:48px 0'>
+<div style='font-size:40px;margin-bottom:12px'>&#x23F3;</div>
+<div style='color:#e2e2e2;font-size:18px;font-weight:600'>
+Wallet Loading</div>
+<div style='margin-top:8px'>
+The database is not yet available.</div>
+</div>

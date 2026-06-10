@@ -1,0 +1,8 @@
+<div class='result-error'>
+<div class='icon'>&#x2717;</div>
+<h2>{{heading}}</h2>
+<p>{{message}}</p>
+<div style='margin-top:16px;display:flex;gap:16px;justify-content:center'>
+<a href='{{{back_url}}}' style='color:#999'>{{back_label}}</a>
+<a href='{{{retry_url}}}' style='color:#34d399'>Try Again</a>
+</div></div>

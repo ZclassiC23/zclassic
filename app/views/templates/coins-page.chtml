@@ -1,0 +1,57 @@
+{{> breadcrumb}}
+
+<h2>Your Coins</h2>
+<div style='color:#6b7280;font-size:13px;margin-bottom:16px'>
+Every coin in your wallet, verified against the blockchain.</div>
+
+<h3>Public UTXOs (Chain-Verified)</h3>
+<div class='overflow-x'>
+<table><tr><th>Transaction</th><th>Type</th>
+<th>Amount</th><th>Height</th><th>Conf</th></tr>
+{{{utxo_rows}}}
+<tr class='total-row'>
+<td colspan='2'>Total ({{{t_count}}} UTXO{{{t_plural}}})</td>
+<td class='zcl'>{{{t_total}}}</td>
+<td></td><td></td></tr></table></div>
+
+<h3>Private Notes</h3>
+{{{notes_section}}}
+
+<div class='stats' style='margin-top:20px'>
+<div class='stat'>
+<div class='n'>{{{t_total}}}</div>
+<div class='l'>Public</div></div>
+<div class='stat' style='border-color:#a78bfa'>
+<div class='n' style='color:#a78bfa'>{{{z_total}}}</div>
+<div class='l'>Private</div></div>
+<div class='stat' style='border-color:#f59e0b'>
+<div class='n' style='color:#f59e0b'>{{{grand_total}}}</div>
+<div class='l'>Total</div></div>
+</div>
+
+<details style='margin-top:16px'>
+<summary style='color:#999;font-size:13px;font-weight:600;
+text-transform:uppercase;letter-spacing:.05em;cursor:pointer'>
+Diagnostics &#x25BE;</summary>
+<div class='overflow-x'>
+<table><tr><th>Source</th><th>Balance</th>
+<th>UTXOs</th><th>Status</th></tr>
+<tr><td>Chain UTXO set (chain-verified)</td>
+<td class='zcl'>{{{t_total}}}</td><td>{{{t_count}}}</td>
+<td><span class='pill pill-t'>verified</span></td></tr>
+<tr><td>Cached balance</td>
+<td class='zcl'>{{{speed_bal}}}</td><td>{{{speed_utxos}}}</td>
+<td>{{{diag_status}}}</td></tr>
+</table></div></details>
+
+{{{token_section}}}
+
+<h3>Chain Supply</h3>
+<div class='stats'>
+<div class='stat'>
+<div class='n'>{{{chain_supply}}}</div>
+<div class='l'>UTXO Supply (ZCL)</div></div>
+<div class='stat'>
+<div class='n'>{{{chain_utxos}}}</div>
+<div class='l'>Total UTXOs</div></div>
+</div>

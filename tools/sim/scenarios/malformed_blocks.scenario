@@ -1,0 +1,18 @@
+# One simulated peer sends each known malformed block class.
+
+seed        0x0000000000000003
+boot_phase  listening
+peer_count  1
+send_malformed_block peer=0 type=invalid_pow
+send_malformed_block peer=0 type=bad_merkle
+send_malformed_block peer=0 type=bad_timestamp
+send_malformed_block peer=0 type=bad_size
+send_malformed_block peer=0 type=bad_coinbase
+send_malformed_block peer=0 type=duplicate_tx
+send_malformed_block peer=0 type=bad_bits
+send_malformed_block peer=0 type=bad_nonce
+
+expect      no_crash
+expect      malformed_blocks == 8
+expect      consensus_rejects == 8
+expect      active_peers == 1

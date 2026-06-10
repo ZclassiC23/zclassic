@@ -1,0 +1,233 @@
+/* Copyright (c) 2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#include "rpc/client.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "encoding/utilstrencodings.h"
+#include "util/safe_alloc.h"
+
+struct convert_param {
+    const char *method;
+    int idx;
+};
+
+static const struct convert_param convert_table[] = {
+    { "stop", 0 },
+    { "setmocktime", 0 },
+    { "getaddednodeinfo", 0 },
+    { "setgenerate", 0 },
+    { "setgenerate", 1 },
+    { "generate", 0 },
+    { "getnetworkhashps", 0 },
+    { "getnetworkhashps", 1 },
+    { "getnetworksolps", 0 },
+    { "getnetworksolps", 1 },
+    { "sendtoaddress", 1 },
+    { "sendtoaddress", 4 },
+    { "settxfee", 0 },
+    { "getreceivedbyaddress", 1 },
+    { "listreceivedbyaddress", 0 },
+    { "listreceivedbyaddress", 1 },
+    { "listreceivedbyaddress", 2 },
+    { "getbalance", 1 },
+    { "getbalance", 2 },
+    { "getblockhash", 0 },
+    { "move", 2 },
+    { "move", 3 },
+    { "sendfrom", 2 },
+    { "sendfrom", 3 },
+    { "listtransactions", 1 },
+    { "listtransactions", 2 },
+    { "listtransactions", 3 },
+    { "walletpassphrase", 1 },
+    { "getblocktemplate", 0 },
+    { "listsinceblock", 1 },
+    { "listsinceblock", 2 },
+    { "sendmany", 1 },
+    { "sendmany", 2 },
+    { "sendmany", 4 },
+    { "addmultisigaddress", 0 },
+    { "addmultisigaddress", 1 },
+    { "createmultisig", 0 },
+    { "createmultisig", 1 },
+    { "listunspent", 0 },
+    { "listunspent", 1 },
+    { "listunspent", 2 },
+    { "getblock", 1 },
+    { "getblockheader", 1 },
+    { "gettransaction", 1 },
+    { "getrawtransaction", 1 },
+    { "createrawtransaction", 0 },
+    { "createrawtransaction", 1 },
+    { "createrawtransaction", 2 },
+    { "createrawtransaction", 3 },
+    { "signrawtransaction", 1 },
+    { "signrawtransaction", 2 },
+    { "sendrawtransaction", 1 },
+    { "fundrawtransaction", 1 },
+    { "gettxout", 1 },
+    { "gettxout", 2 },
+    { "gettxoutproof", 0 },
+    { "lockunspent", 0 },
+    { "lockunspent", 1 },
+    { "importprivkey", 2 },
+    { "importprivkey", 3 },
+    { "rescanblockchain", 0 },
+    { "rescanblockchain", 1 },
+    { "importaddress", 2 },
+    { "verifychain", 0 },
+    { "verifychain", 1 },
+    { "keypoolrefill", 0 },
+    { "getrawmempool", 0 },
+    { "estimatefee", 0 },
+    { "estimatepriority", 0 },
+    { "prioritisetransaction", 1 },
+    { "prioritisetransaction", 2 },
+    { "setban", 2 },
+    { "setban", 3 },
+    { "getblocksubsidy", 0 },
+    { "z_listaddresses", 0 },
+    { "z_listreceivedbyaddress", 1 },
+    { "z_listunspent", 0 },
+    { "z_listunspent", 1 },
+    { "z_listunspent", 2 },
+    { "z_listunspent", 3 },
+    { "z_getbalance", 1 },
+    { "z_gettotalbalance", 0 },
+    { "z_gettotalbalance", 1 },
+    { "z_gettotalbalance", 2 },
+    { "z_mergetoaddress", 0 },
+    { "z_mergetoaddress", 2 },
+    { "z_mergetoaddress", 3 },
+    { "z_mergetoaddress", 4 },
+    { "z_sendmany", 1 },
+    { "z_sendmany", 2 },
+    { "z_sendmany", 3 },
+    { "z_shieldcoinbase", 2 },
+    { "z_shieldcoinbase", 3 },
+    { "z_getoperationstatus", 0 },
+    { "z_getoperationresult", 0 },
+    { "z_importkey", 2 },
+    { "z_importviewingkey", 2 },
+    { "z_getpaymentdisclosure", 1 },
+    { "z_getpaymentdisclosure", 2 }
+};
+
+#define NUM_CONVERT_PARAMS \
+    (sizeof(convert_table) / sizeof(convert_table[0]))
+
+bool rpc_should_convert_param(const char *method, int param_idx)
+{
+    for (size_t i = 0; i < NUM_CONVERT_PARAMS; i++)
+        if (convert_table[i].idx == param_idx &&
+            strcmp(convert_table[i].method, method) == 0)
+            return true;
+    return false;
+}
+
+bool rpc_convert_values(const char *method, const char **str_params,
+                        size_t num_params, struct json_value *result)
+{
+    json_init(result);
+    json_set_array(result);
+
+    for (size_t i = 0; i < num_params; i++) {
+        if (!rpc_should_convert_param(method, (int)i)) {
+            struct json_value sv;
+            json_init(&sv);
+            json_set_str(&sv, str_params[i]);
+            json_push_back(result, &sv);
+            json_free(&sv);
+        } else {
+            struct json_value parsed;
+            size_t len = strlen(str_params[i]);
+            char *wrapped = zcl_malloc(len + 3, "rpc_wrapped_param");
+            if (!wrapped) return false;
+            wrapped[0] = '[';
+            memcpy(wrapped + 1, str_params[i], len);
+            wrapped[len + 1] = ']';
+            wrapped[len + 2] = '\0';
+            if (!json_read(&parsed, wrapped, len + 2) ||
+                parsed.type != JSON_ARR || json_size(&parsed) != 1) {
+                free(wrapped);
+                json_free(&parsed);
+                return false;
+            }
+            json_push_back(result, json_at(&parsed, 0));
+            json_free(&parsed);
+            free(wrapped);
+        }
+    }
+    return true;
+}
+
+/* ── Shared RPC caller for local node communication ────────────── */
+
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+int rpc_call_local(int port, const char *creds,
+                   const char *method, const char *params_json,
+                   char *out, size_t outmax)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)port);
+
+    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    char body[4096];
+    int blen = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
+        method, params_json);
+
+    /* HTTP Basic auth: base64("user:pass") */
+    char auth_b64[256];
+    EncodeBase64((const unsigned char *)creds, strlen(creds),
+                 auth_b64, sizeof(auth_b64));
+
+    char req[8192];
+    int rlen = snprintf(req, sizeof(req),
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Authorization: Basic %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
+        auth_b64, blen, body);
+
+    if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
+
+    size_t total = 0;
+    while (total < outmax - 1) {
+        ssize_t r = read(fd, out + total, outmax - 1 - total);
+        if (r <= 0) break;
+        total += (size_t)r;
+    }
+    out[total] = '\0';
+    close(fd);
+    return (int)total;
+}
+
+const char *rpc_http_body(const char *response)
+{
+    const char *p = strstr(response, "\r\n\r\n");
+    return p ? p + 4 : response;
+}

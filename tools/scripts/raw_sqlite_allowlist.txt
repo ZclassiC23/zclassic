@@ -1,0 +1,30 @@
+# tools/scripts/raw_sqlite_allowlist.txt
+#
+# Files allowed to contain raw sqlite3_step() calls outside AR_STEP macros.
+# Each entry is a path relative to the repo root.
+#
+# This is a *ratchet* list. Files are removed from it as the
+# sqlite3_step → AR_BEGIN_SAVE migration lands per-subsystem. Once
+# empty, the allowlist itself is removed and the lint becomes
+# unconditional.
+#
+# Adding a file here requires a clear migration follow-up. Do NOT add new
+# entries to dodge the lint — the goal is to drive this list to zero.
+#
+# Convention for individual call sites that must remain raw: annotate the
+# line with `// raw-sql-ok:<tag>` (no space after the colon; tag matches
+# [A-Za-z][A-Za-z0-9_-]+). This is the PER-LINE hatch and is separate from
+# this whole-file ratchet.
+#
+# Per-line markers are NOT necessarily debt. The principled standing one is
+# `// raw-sql-ok:progress-kv-kernel-store`: the reducer pipeline's
+# progress.kv stage cursor + per-stage *_log tables are a singleton WAL
+# KERNEL store below the AR/domain-model layer — routing them through AR
+# would be a category error. That set is bounded and correct-by-design; it
+# does NOT belong on this ratchet and never appears here. See
+# DEFENSIVE_CODING.md §1 "The one principled exception" and
+# lib/storage/src/progress_store.c.
+
+# Migration complete: all production node.db *model* writes now route
+# through AR_STEP_ROW_READONLY / AR_STEP_WRITE / AR_BEGIN_SAVE. This
+# whole-file ratchet is empty.

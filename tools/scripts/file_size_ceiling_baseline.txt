@@ -1,0 +1,16 @@
+# Lint gate E1 baseline — grandfathered oversized .c files (app/ + config/).
+#
+# check-file-size-ceiling flags any app/**/*.c or config/src/*.c whose line
+# count exceeds the ceiling (800). These files pre-date the gate and are
+# recorded here so the ratchet does not regress. Each entry is
+# '<relative path> <LOC>'. The gate fails if:
+#   - a NEW file (not listed here) exceeds the ceiling, OR
+#   - a listed file grows ABOVE its recorded baseline LOC.
+# Shrinking a file below the ceiling lets you delete its baseline line.
+# Goal: empty file. The baseline can only shrink — never grow.
+#
+# Format: <relative-path> <max-loc>   (lines starting with # are comments)
+
+# config/ composition root — boot mega-files, decomposed wave-by-wave.
+config/src/boot.c 3618
+config/src/boot_services.c 1767

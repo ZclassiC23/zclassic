@@ -1,0 +1,5 @@
+<tr><td>{{{index}}}</td>
+<td class='hash'><a href='/explorer/tx/{{{txid}}}'>{{{short_txid}}}</a></td>
+<td>{{{type_tags}}}</td>
+<td>{{{inputs}}}</td><td>{{{outputs}}}</td>
+<td class='amount'>{{{value}}}</td></tr>

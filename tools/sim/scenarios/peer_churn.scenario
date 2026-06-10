@@ -1,0 +1,18 @@
+# Connect 8 simulated peers, drop 4 scheduled peers over 5 simulated minutes.
+
+seed        0x0000000000000002
+boot_phase  listening
+peer_count  8
+at_event    30  kill_peer 0
+at_event    90  kill_peer 1
+at_event    180 kill_peer 2
+at_event    270 kill_peer 3
+advance_clock +5m
+
+expect      no_crash
+expect      scheduled_events == 4
+expect      active_peers == 4
+expect      killed_peers == 4
+expect      tip_height >= 5
+expect      clock_advance_seconds == 300
+expect      consensus_rejects == 0

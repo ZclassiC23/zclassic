@@ -1,0 +1,4 @@
+<div class='tab-toggle'>
+<a id='tab-z' class='active-z' onclick='showTab("z")'>Private (recommended)</a>
+<a id='tab-t' onclick='showTab("t")'>Public</a>
+</div>

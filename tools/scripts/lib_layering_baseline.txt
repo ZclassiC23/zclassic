@@ -1,0 +1,18 @@
+# Lint gate #14 baseline — grandfathered lib/ → app/ includes.
+#
+# Each entry is an existing, accepted lib/ → app/ #include line that
+# pre-dates the lint gate. The gate fails if a new violation appears
+# that is NOT in this baseline.
+#
+# How to shrink this list:
+#   1. Pick an entry.
+#   2. Fix the lib/ file (forward decl, move symbol to lib/, delete
+#      the include if unused).
+#   3. Delete the matching line from this file.
+#   4. Re-run `make lint` to confirm.
+#
+# Each removed entry is permanent progress: CI then enforces that the
+# file stays clean.
+#
+# Format: <file>:<exact #include directive>
+# Order: alphabetical by file path (regenerate via the script if needed).

@@ -1,0 +1,5 @@
+<div id='pane-z' style='text-align:center;padding:16px 0'>
+<div class='balance-sub' style='margin-bottom:4px'>
+Sapling z-address (shielded)</div>
+<div style='color:#34d399;font-size:12px;margin-bottom:12px'>
+Amount, sender, and recipient hidden by zero-knowledge proof</div>

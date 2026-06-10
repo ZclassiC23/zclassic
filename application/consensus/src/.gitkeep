@@ -1,0 +1,6 @@
+Reserved: application-layer (use-case) sources for the consensus context.
+The orphan demo use case application_consensus_validate_block was removed
+(Law 8 — subtraction before addition; zero production callers). This
+directory is kept as the documented hexagonal "application layer" scaffold
+(see Makefile APPLICATION_CONTEXTS) so the next real use case has a home,
+exactly as app/events/ is kept reserved-and-empty by design.

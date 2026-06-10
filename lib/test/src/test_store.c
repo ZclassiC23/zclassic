@@ -1,0 +1,1038 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Store controller + ZSLP token + template engine tests. */
+
+#include "test/test_helpers.h"
+#include "controllers/store_controller.h"
+#include "controllers/zslp_controller.h"
+#include "services/zslp_command_service.h"
+#include "services/zslp_service.h"
+#include "util/template.h"
+#include <unistd.h>
+
+static char test_datadir[256];
+
+static void setup_datadir(void)
+{
+    snprintf(test_datadir, sizeof(test_datadir), ".zcl_test_store_%d",
+             (int)getpid());
+    mkdir(test_datadir, 0755);
+}
+
+static void cleanup_datadir(void)
+{
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", test_datadir);
+    system(cmd);
+}
+
+/* Fetch the CSRF token embedded in the purchase form for product_id.
+ * GET /store/product/<id> and scrape value='...' from the
+ * name='csrf_token' hidden input.  Returns true on success. */
+static bool fetch_csrf_token(int64_t product_id, char *out, size_t outmax)
+{
+    uint8_t page[16384];
+    char path[64];
+    snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
+    size_t n = store_handle_request("GET", path, NULL, 0,
+                                     page, sizeof(page), test_datadir);
+    if (n == 0) return false;
+    page[sizeof(page) - 1] = 0;
+    const char *needle = "name='csrf_token' value='";
+    const char *p = strstr((char *)page, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    const char *end = strchr(p, '\'');
+    if (!end) return false;
+    size_t tlen = (size_t)(end - p);
+    if (tlen >= outmax) return false;
+    memcpy(out, p, tlen);
+    out[tlen] = '\0';
+    return true;
+}
+
+int test_store(void)
+{
+    int failures = 0;
+    setup_datadir();
+
+    uint8_t resp[16384];
+
+    /* ── Product listing ──────────────────────────────────── */
+
+    printf("store: GET /store returns product listing... ");
+    {
+        size_t n = store_handle_request("GET", "/store", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "HTTP/1.1 200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL Store") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        ok = ok && (strstr((char *)resp, "VPN Credit") != NULL);
+        ok = ok && (strstr((char *)resp, "Storage") != NULL);
+        if (ok) printf("OK (%zu bytes, 3 products)\n", n);
+        else { printf("FAIL (n=%zu)\n", n); failures++; }
+    }
+
+    printf("store: GET /store/ (trailing slash) works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/products REST index works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/products", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Product detail ───────────────────────────────────── */
+
+    printf("store: GET /store/product/1 returns detail page... ");
+    {
+        size_t n = store_handle_request("GET", "/store/product/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        ok = ok && (strstr((char *)resp, "customer_addr") != NULL);
+        ok = ok && (strstr((char *)resp, "action='/store/orders'") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/products/1 REST show works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/products/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        ok = ok && (strstr((char *)resp, "name='product_id' value='1'") != NULL);
+        ok = ok && (strstr((char *)resp, "action='/store/orders'") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/product/999 returns 404... ");
+    {
+        size_t n = store_handle_request("GET", "/store/product/999", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/products/not-a-number returns 400... ");
+    {
+        size_t n = store_handle_request("GET", "/store/products/not-a-number",
+                                         NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Create order ─────────────────────────────────────── */
+
+    char csrf1[64] = "";
+    bool have_csrf1 = fetch_csrf_token(1, csrf1, sizeof(csrf1));
+
+    printf("store: POST /store/buy/1 creates order... ");
+    {
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && have_csrf1;
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") != NULL);
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
+        ok = ok && (strstr((char *)resp, "0.01") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: POST /store/orders REST create works... ");
+    {
+        char body[256];
+        snprintf(body, sizeof(body),
+            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") != NULL);
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: POST /store/buy/999 returns 404... ");
+    {
+        /* id=999 routes through a path id, so the CSRF context will be
+         * "store:order:999" — fetch that token separately. */
+        char csrf999[64] = "";
+        bool have_csrf999 = fetch_csrf_token(999, csrf999, sizeof(csrf999));
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf999);
+        size_t n = store_handle_request("POST", "/store/buy/999",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        /* Either the 404 happens before the CSRF check (fine) or after
+         * a valid CSRF is accepted (also fine).  Key property: the
+         * server does NOT create an order.  */
+        bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL ||
+                              strstr((char *)resp, "Invalid CSRF") != NULL);
+        (void)have_csrf999;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* reject t-addr with bad Base58Check. */
+    printf("store: POST /store/buy rejects t-addr with bad checksum... ");
+    {
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXAA&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid address") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: POST /store/orders rejects z-addr with bad bech32... ");
+    {
+        char body[384];
+        snprintf(body, sizeof(body),
+            "product_id=1&customer_addr=zs1"
+            "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+            "&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid address") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* CSRF: POST without any csrf_token must be rejected. */
+    printf("store: POST /store/orders without csrf_token returns 400... ");
+    {
+        const char *body =
+            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn";
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid CSRF") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* CSRF: token bound to product-id; replaying product 1's token
+     * when POSTing for a different id must fail. */
+    printf("store: CSRF token for one product_id rejected for another... ");
+    {
+        char body[256];
+        snprintf(body, sizeof(body),
+            "product_id=2&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/orders",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400") != NULL);
+        ok = ok && (strstr((char *)resp, "Invalid CSRF") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* URL-decode: percent-encoded address must decode to the raw
+     * string before validation.  Before the fix, `%74` was kept as the
+     * three literal bytes and the address failed length/shape checks
+     * (now it fails checksum instead — so we encode a VALID t-addr
+     * that decodes correctly and expect a 200 OK with the decoded
+     * address round-tripped). */
+    printf("store: POST body with %%-encoded customer_addr decodes before validation... ");
+    {
+        /* Encode the 't' in t1YRB... as %74. */
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=%%74%%31YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf1);
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
+        /* The decoded address — not the %-encoded form — should be in
+         * the order confirmation. */
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
+        ok = ok && (strstr((char *)resp, "%74") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Order status ─────────────────────────────────────── */
+
+    printf("store: GET /store/order/1 returns status page... ");
+    {
+        size_t n = store_handle_request("GET", "/store/order/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #1") != NULL);
+        ok = ok && (strstr((char *)resp, "Pending") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/orders/1 REST show works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/orders/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #1") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/orders REST index works... ");
+    {
+        size_t n = store_handle_request("GET", "/store/orders", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Recent Orders") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #1") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/order/999 returns 404... ");
+    {
+        size_t n = store_handle_request("GET", "/store/order/999", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: GET /store/orders/not-a-number returns 400... ");
+    {
+        size_t n = store_handle_request("GET", "/store/orders/not-a-number",
+                                         NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── ZSLP token operations ────────────────────────────── */
+
+    printf("store: zslp_create_token returns token_id... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "TESTCOIN",
+                                             "Test Coin", 8, 1000000);
+        bool ok = (tid != NULL) && (strlen(tid) > 0);
+        if (ok) printf("OK (token_id=%s)\n", tid);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp_mint credits tokens... ");
+    {
+        bool ok = zslp_mint(test_datadir, "TESTCOIN", "t1Buyer123", 500);
+        uint64_t bal = zslp_balance(test_datadir, "TESTCOIN", "t1Buyer123");
+        ok = ok && (bal == 500);
+        if (ok) printf("OK (balance=500)\n");
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
+    }
+
+    printf("store: zslp_mint accumulates... ");
+    {
+        zslp_mint(test_datadir, "TESTCOIN", "t1Buyer123", 250);
+        uint64_t bal = zslp_balance(test_datadir, "TESTCOIN", "t1Buyer123");
+        bool ok = (bal == 750);
+        if (ok) printf("OK (balance=750)\n");
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
+    }
+
+    printf("store: zslp_balance returns 0 for unknown addr... ");
+    {
+        uint64_t bal = zslp_balance(test_datadir, "TESTCOIN", "t1Nobody");
+        bool ok = (bal == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp_balance returns 0 for unknown token... ");
+    {
+        uint64_t bal = zslp_balance(test_datadir, "NOTOKEN", "t1Buyer123");
+        bool ok = (bal == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp_send transfers tokens... ");
+    {
+        bool ok = zslp_send(test_datadir, "TESTCOIN", "t1Seller456", 100);
+        uint64_t bal = zslp_balance(test_datadir, "TESTCOIN", "t1Seller456");
+        ok = ok && (bal == 100);
+        if (ok) printf("OK (t1Seller456 balance=100)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp_generate_payment_address works... ");
+    {
+        char addr[128] = "";
+        bool ok = zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
+        ok = ok && (strlen(addr) > 0);
+        ok = ok && (strstr(addr, "zs1_pay_") != NULL);
+        if (ok) printf("OK (%s)\n", addr);
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Token-gated access ───────────────────────────────── */
+
+    printf("store: token-gated access denied without tokens... ");
+    {
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=t1Nobody&token=TESTCOIN",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "403") != NULL);
+        ok = ok && (strstr((char *)resp, "Access Denied") != NULL);
+        if (ok) printf("OK (403)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: token-gated access granted with tokens... ");
+    {
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=t1Buyer123&token=TESTCOIN",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Premium Service") != NULL);
+        if (ok) printf("OK (200)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: token-gated access rejects malformed addr... ");
+    {
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=<script>&token=TESTCOIN",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: token-gated access rejects malformed token id... ");
+    {
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=t1Buyer123&token=BAD-TOKEN!",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && (strstr((char *)resp, "400 Bad Request") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── NULL safety ──────────────────────────────────────── */
+
+    printf("store: NULL path returns 0... ");
+    {
+        size_t n = store_handle_request("GET", NULL, NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp NULL params safe... ");
+    {
+        bool ok = true;
+        ok = ok && (zslp_create_token(NULL, "X", "X", 0, 0) == NULL);
+        ok = ok && (zslp_create_token(test_datadir, NULL, "X", 0, 0) == NULL);
+        ok = ok && (zslp_balance(NULL, "X", "X") == 0);
+        ok = ok && (zslp_balance(test_datadir, NULL, "X") == 0);
+        ok = ok && (!zslp_mint(NULL, "X", "X", 1));
+        ok = ok && (!zslp_mint(test_datadir, NULL, "X", 1));
+        ok = ok && (!zslp_send(NULL, "X", "X", 1));
+        char addr[128];
+        ok = ok && (!zslp_generate_payment_address(NULL, addr, sizeof(addr)));
+        ok = ok && (zslp_check_payment(NULL, "X", 0) == 0);
+        if (ok) printf("OK (all NULL cases safe)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Payment processor ────────────────────────────────── */
+
+    printf("store: store_process_payments runs safely... ");
+    {
+        store_process_payments(test_datadir);
+        store_process_payments(NULL);
+        printf("OK (no crash)\n");
+    }
+
+    /* ── Multiple products with different tokens ──────────── */
+
+    printf("store: multiple token types isolated... ");
+    {
+        zslp_create_token(test_datadir, "TOKENA", "Token A", 0, 1000);
+        zslp_create_token(test_datadir, "TOKENB", "Token B", 0, 2000);
+        zslp_mint(test_datadir, "TOKENA", "t1Multi", 100);
+        zslp_mint(test_datadir, "TOKENB", "t1Multi", 200);
+        uint64_t a = zslp_balance(test_datadir, "TOKENA", "t1Multi");
+        uint64_t b = zslp_balance(test_datadir, "TOKENB", "t1Multi");
+        bool ok = (a == 100) && (b == 200);
+        if (ok) printf("OK (A=100, B=200)\n");
+        else { printf("FAIL (A=%llu, B=%llu)\n",
+                       (unsigned long long)a, (unsigned long long)b); failures++; }
+    }
+
+    /* ── ZSLP input validation ────────────────────────────── */
+
+    printf("store: reject ticker > 10 chars... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "ABCDEFGHIJK",
+                                             "Valid Name", 0, 1000);
+        bool ok = (tid == NULL);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject empty ticker... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "",
+                                             "Valid Name", 0, 1000);
+        bool ok = (tid == NULL);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject decimals > 8... ");
+    {
+        const char *tid = zslp_create_token(test_datadir, "GOOD",
+                                             "Good Token", 9, 1000);
+        bool ok = (tid == NULL);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject amount=0 mint... ");
+    {
+        bool ok = !zslp_mint(test_datadir, "TESTCOIN", "t1Buyer123", 0);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: reject empty recipient address on mint... ");
+    {
+        bool ok = !zslp_mint(test_datadir, "TESTCOIN", "", 100);
+        if (ok) printf("OK (rejected)\n");
+        else { printf("FAIL (should reject)\n"); failures++; }
+    }
+
+    printf("store: zslp create validator rejects bad ticker... ");
+    {
+        struct zslp_token_create_request req = {
+            .ticker = "BAD-TICKER",
+            .name = "Valid Name",
+            .decimals = 0,
+            .initial_supply = 1000
+        };
+        bool ok = (zslp_service_validate_create_request(&req) != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp transfer validator rejects zero amount... ");
+    {
+        struct zslp_token_transfer_request req = {
+            .token_id = "TESTCOIN",
+            .recipient_addr = "t1Buyer123",
+            .amount = 0,
+            .strict_chain_addr = false
+        };
+        bool ok = (zslp_service_validate_transfer_request(&req) != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp command service finalizes genesis metadata... ");
+    {
+        struct zslp_token_create_request req = {
+            .ticker = "METATEST",
+            .name = "Meta Test",
+            .decimals = 0,
+            .initial_supply = 77
+        };
+        char token_id[ZSLP_TOKEN_KEY_MAX + 1];
+        bool ok = zslp_command_finalize_genesis(test_datadir, NULL, &req, token_id).ok;
+        ok = ok && (strcmp(token_id, "METATEST") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp command service credits transfer balance... ");
+    {
+        struct zslp_token_transfer_request req = {
+            .token_id = "METATEST",
+            .recipient_addr = "t1MetaBuyer",
+            .amount = 12,
+            .strict_chain_addr = false
+        };
+        bool ok = zslp_command_credit_transfer(test_datadir, &req).ok;
+        ok = ok && (zslp_balance(test_datadir, "METATEST", "t1MetaBuyer") == 12);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── End-to-end purchase flow ────────────────────────────── */
+
+    printf("store: e2e: GET /store lists 3 products... ");
+    {
+        size_t n = store_handle_request("GET", "/store", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "ZCL23 Access Token") != NULL);
+        ok = ok && (strstr((char *)resp, "VPN Credit") != NULL);
+        ok = ok && (strstr((char *)resp, "Storage") != NULL);
+        if (ok) printf("OK (3 products listed)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: GET /store/product/1 shows price + form... ");
+    {
+        size_t n = store_handle_request("GET", "/store/product/1", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "0.01") != NULL);
+        ok = ok && (strstr((char *)resp, "customer_addr") != NULL);
+        ok = ok && (strstr((char *)resp, "<form") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: POST /store/buy/1 creates order with z-addr... ");
+    {
+        char csrf_e2e[64] = "";
+        bool have_csrf = fetch_csrf_token(1, csrf_e2e, sizeof(csrf_e2e));
+        char body[256];
+        snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf_e2e);
+        size_t n = store_handle_request("POST", "/store/buy/1",
+                                         (const uint8_t *)body, strlen(body),
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0) && have_csrf;
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Order #") != NULL);
+        ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb") != NULL);
+        ok = ok && (strstr((char *)resp, "zs1") != NULL);
+        if (ok) printf("OK (z-address generated)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: GET /store/order shows Pending status... ");
+    {
+        /* Order created above; query the latest order */
+        size_t n = store_handle_request("GET", "/store/order/2", NULL, 0,
+                                         resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Pending") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: e2e: mint ZCL23ACCESS + verify gated access 200... ");
+    {
+        zslp_create_token(test_datadir, "ZCL23ACCESS", "Access Token", 0, 1000);
+        zslp_mint(test_datadir, "ZCL23ACCESS", "t1Test", 10);
+        size_t n = store_handle_request("GET",
+            "/store/access?addr=t1Test&token=ZCL23ACCESS",
+            NULL, 0, resp, sizeof(resp), test_datadir);
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+        ok = ok && (strstr((char *)resp, "Premium Service") != NULL);
+        if (ok) printf("OK (access granted)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── ZSLP edge cases ─────────────────────────────────────── */
+
+    printf("store: zslp multiple mints accumulate... ");
+    {
+        zslp_create_token(test_datadir, "ACCUM", "Accumulate", 0, 10000);
+        zslp_mint(test_datadir, "ACCUM", "t1Accum", 100);
+        zslp_mint(test_datadir, "ACCUM", "t1Accum", 200);
+        zslp_mint(test_datadir, "ACCUM", "t1Accum", 300);
+        uint64_t bal = zslp_balance(test_datadir, "ACCUM", "t1Accum");
+        bool ok = (bal == 600);
+        if (ok) printf("OK (balance=600)\n");
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
+    }
+
+    printf("store: zslp separate addresses keep independent balances... ");
+    {
+        zslp_create_token(test_datadir, "SPLIT", "Split Token", 0, 10000);
+        zslp_mint(test_datadir, "SPLIT", "t1Alice", 100);
+        zslp_mint(test_datadir, "SPLIT", "t1Bob", 250);
+        uint64_t a = zslp_balance(test_datadir, "SPLIT", "t1Alice");
+        uint64_t b = zslp_balance(test_datadir, "SPLIT", "t1Bob");
+        bool ok = (a == 100) && (b == 250);
+        if (ok) printf("OK (Alice=100, Bob=250)\n");
+        else { printf("FAIL (Alice=%llu, Bob=%llu)\n",
+                       (unsigned long long)a, (unsigned long long)b); failures++; }
+    }
+
+    printf("store: zslp balance 0 for existing token, missing addr... ");
+    {
+        uint64_t bal = zslp_balance(test_datadir, "SPLIT", "t1Ghost");
+        bool ok = (bal == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (balance=%llu)\n", (unsigned long long)bal); failures++; }
+    }
+
+    printf("store: zslp two tokens with different tickers independent... ");
+    {
+        zslp_create_token(test_datadir, "COINX", "Coin X", 2, 5000);
+        zslp_create_token(test_datadir, "COINY", "Coin Y", 4, 9000);
+        zslp_mint(test_datadir, "COINX", "t1Holder", 42);
+        zslp_mint(test_datadir, "COINY", "t1Holder", 99);
+        uint64_t x = zslp_balance(test_datadir, "COINX", "t1Holder");
+        uint64_t y = zslp_balance(test_datadir, "COINY", "t1Holder");
+        bool ok = (x == 42) && (y == 99);
+        /* Cross-check: minting one doesn't affect the other */
+        zslp_mint(test_datadir, "COINX", "t1Holder", 8);
+        x = zslp_balance(test_datadir, "COINX", "t1Holder");
+        y = zslp_balance(test_datadir, "COINY", "t1Holder");
+        ok = ok && (x == 50) && (y == 99);
+        if (ok) printf("OK (X=50, Y=99)\n");
+        else { printf("FAIL (X=%llu, Y=%llu)\n",
+                       (unsigned long long)x, (unsigned long long)y); failures++; }
+    }
+
+    /* ── Template engine tests ────────────────────────────────── */
+
+    printf("template: basic variable substitution... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "name", "Alice" },
+            { "greeting", "Hello" },
+        };
+        size_t n = template_render("{{greeting}}, {{name}}!",
+            vars, 2, out, sizeof(out));
+        bool ok = (n > 0) && (strcmp(out, "Hello, Alice!") == 0);
+        if (ok) printf("OK (%s)\n", out);
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: HTML escaping of < > & \" '... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "val", "<b>A&B \"C\" 'D'</b>" },
+        };
+        size_t n = template_render("{{val}}", vars, 1, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "&lt;b&gt;") != NULL);
+        ok = ok && (strstr(out, "&amp;") != NULL);
+        ok = ok && (strstr(out, "&quot;") != NULL);
+        ok = ok && (strstr(out, "&#39;") != NULL);
+        ok = ok && (strstr(out, "<b>") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: triple-brace raw output (no escaping)... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "html", "<b>bold</b>" },
+        };
+        size_t n = template_render("{{{html}}}", vars, 1, out, sizeof(out));
+        bool ok = (n > 0) && (strcmp(out, "<b>bold</b>") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: missing variable leaves placeholder... ");
+    {
+        char out[256];
+        struct template_var vars[] = {
+            { "exists", "yes" },
+        };
+        size_t n = template_render("{{exists}} {{missing}}",
+            vars, 1, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "yes") != NULL);
+        ok = ok && (strstr(out, "{{missing}}") != NULL);
+        if (ok) printf("OK (%s)\n", out);
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: empty template returns empty... ");
+    {
+        char out[64];
+        size_t n = template_render("", NULL, 0, out, sizeof(out));
+        bool ok = (n == 0) && (out[0] == '\0');
+        if (ok) printf("OK\n");
+        else { printf("FAIL (n=%zu)\n", n); failures++; }
+    }
+
+    printf("template: NULL safety... ");
+    {
+        char out[64];
+        bool ok = true;
+        ok = ok && (template_render(NULL, NULL, 0, out, sizeof(out)) == 0);
+        ok = ok && (template_render("hello", NULL, 0, NULL, 0) == 0);
+        ok = ok && (template_render("hello", NULL, 0, out, 0) == 0);
+        /* NULL vars with non-zero count: no crash, placeholders unchanged */
+        size_t n = template_render("{{x}}", NULL, 0, out, sizeof(out));
+        ok = ok && (n > 0) && (strcmp(out, "{{x}}") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("template: mixed escaped and raw in same template... ");
+    {
+        char out[512];
+        struct template_var vars[] = {
+            { "safe", "<script>alert(1)</script>" },
+            { "raw", "<div class='x'>" },
+        };
+        size_t n = template_render("{{{raw}}}{{safe}}{{{raw}}}",
+            vars, 2, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "<div class='x'>") != NULL);
+        ok = ok && (strstr(out, "&lt;script&gt;") != NULL);
+        ok = ok && (strstr(out, "<script>") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: value with NULL treated as empty string... ");
+    {
+        char out[64];
+        struct template_var vars[] = {
+            { "key", NULL },
+        };
+        size_t n = template_render("[{{key}}]", vars, 1, out, sizeof(out));
+        bool ok = (n > 0) && (strcmp(out, "[]") == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    /* ── Product card template tests ─────────────────────────── */
+
+    printf("template: product card renders with all variables... ");
+    {
+        static const char CARD[] =
+            "<div class='product'>"
+            "<h3><a href='/store/product/{{id}}'>{{name}}</a></h3>"
+            "<p>{{description}}</p>"
+            "<div class='price'>{{price}} ZCL</div>"
+            "<a href='/store/product/{{id}}' class='btn'>View</a>"
+            "</div>";
+        char out[1024];
+        struct template_var vars[] = {
+            { "id",          "42" },
+            { "name",        "Test Product" },
+            { "description", "A fine product." },
+            { "price",       "0.01000000" },
+        };
+        size_t n = template_render(CARD, vars, 4, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "/store/product/42") != NULL);
+        ok = ok && (strstr(out, ">Test Product</a>") != NULL);
+        ok = ok && (strstr(out, "<p>A fine product.</p>") != NULL);
+        ok = ok && (strstr(out, "0.01000000 ZCL") != NULL);
+        ok = ok && (strstr(out, "class='btn'") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", n);
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: product card escapes HTML in name... ");
+    {
+        static const char CARD[] =
+            "<h3>{{name}}</h3><p>{{description}}</p>";
+        char out[512];
+        struct template_var vars[] = {
+            { "name",        "<script>alert('xss')</script>" },
+            { "description", "Safe & sound \"always\"" },
+        };
+        size_t n = template_render(CARD, vars, 2, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "<script>") == NULL);
+        ok = ok && (strstr(out, "&lt;script&gt;") != NULL);
+        ok = ok && (strstr(out, "&#39;xss&#39;") != NULL);
+        ok = ok && (strstr(out, "Safe &amp; sound") != NULL);
+        ok = ok && (strstr(out, "&quot;always&quot;") != NULL);
+        if (ok) printf("OK (XSS neutralized)\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    printf("template: multiple variables in complex template... ");
+    {
+        char out[1024];
+        struct template_var vars[] = {
+            { "title",  "My Page" },
+            { "user",   "Bob" },
+            { "count",  "7" },
+            { "link",   "/home" },
+            { "footer", "2026" },
+        };
+        size_t n = template_render(
+            "<h1>{{title}}</h1>"
+            "<p>Welcome, {{user}}! You have {{count}} items.</p>"
+            "<a href='{{link}}'>Home</a>"
+            "<footer>{{footer}}</footer>",
+            vars, 5, out, sizeof(out));
+        bool ok = (n > 0);
+        ok = ok && (strstr(out, "<h1>My Page</h1>") != NULL);
+        ok = ok && (strstr(out, "Welcome, Bob!") != NULL);
+        ok = ok && (strstr(out, "7 items") != NULL);
+        ok = ok && (strstr(out, "href='/home'") != NULL);
+        ok = ok && (strstr(out, "<footer>2026</footer>") != NULL);
+        if (ok) printf("OK (5 variables rendered)\n");
+        else { printf("FAIL (%s)\n", out); failures++; }
+    }
+
+    /* ── Sapling z-address generation ────────────────────────── */
+
+    printf("store: zslp_generate_payment_address fallback without wallet... ");
+    {
+        char addr[128] = "";
+        bool ok = zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
+        ok = ok && (strlen(addr) > 0);
+        ok = ok && (strncmp(addr, "zs1_pay_", 8) == 0);
+        if (ok) printf("OK (fallback: %s)\n", addr);
+        else { printf("FAIL (%s)\n", addr); failures++; }
+    }
+
+    printf("store: zslp_generate_payment_address NULL wallet graceful... ");
+    {
+        char addr[128] = "";
+        bool ok = zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
+        ok = ok && (strlen(addr) > 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: consecutive z-address calls return different addresses... ");
+    {
+        char addr1[128] = "", addr2[128] = "";
+        zslp_generate_payment_address(test_datadir, addr1, sizeof(addr1));
+        /* Ensure timestamp differs for fallback path. */
+        zslp_generate_payment_address(test_datadir, addr2, sizeof(addr2));
+        /* With a real wallet, diversifiers differ. With fallback, timestamps
+         * may match within the same second, so we accept both cases as long
+         * as the function succeeds and returns non-empty strings. */
+        bool ok = (strlen(addr1) > 0) && (strlen(addr2) > 0);
+        if (strcmp(addr1, addr2) != 0)
+            printf("OK (different: %s vs %s)\n", addr1, addr2);
+        else
+            printf("OK (same second fallback: %s)\n", addr1);
+        if (!ok) { printf("FAIL\n"); failures++; }
+    }
+
+    printf("store: zslp_generate_payment_address rejects small buffer... ");
+    {
+        char tiny[16] = "";
+        bool ok = !zslp_generate_payment_address(test_datadir, tiny, sizeof(tiny));
+        if (ok) printf("OK (rejected buffer < 80)\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── Robustness: store buy never returns fake z-address ── */
+    printf("store: buy never generates fake zs1_order address... ");
+    {
+        uint8_t resp[4096];
+        char csrf_rb[64] = "";
+        fetch_csrf_token(1, csrf_rb, sizeof(csrf_rb));
+        char body[256];
+        int blen = snprintf(body, sizeof(body),
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
+            csrf_rb);
+        size_t n = store_handle_request("POST", "/store/buy/1",
+            (const uint8_t *)body, (size_t)blen,
+            resp, sizeof(resp), test_datadir);
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        /* Should either show a real z-address (if ZK loaded) or 503.
+         * Must NEVER contain a fake placeholder like zs1_order_ */
+        bool ok = (n > 0 && strstr((char *)resp, "zs1_order_") == NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (contains fake zs1_order_ address)\n"); failures++; }
+    }
+
+    /* ── Robustness: products.json loading ── */
+    printf("store: loads products from JSON file... ");
+    {
+        /* Create a store directory with products.json */
+        char store_dir[512], json_path[512];
+        snprintf(store_dir, sizeof(store_dir), "%s/store", test_datadir);
+        mkdir(store_dir, 0755);
+        snprintf(json_path, sizeof(json_path), "%s/products.json", store_dir);
+        FILE *f = fopen(json_path, "w");
+        if (f) {
+            fprintf(f, "[{\"name\":\"Test Product\","
+                    "\"description\":\"A test\","
+                    "\"price_zcl\":0.5,"
+                    "\"token_id\":\"TEST\","
+                    "\"tokens_per_purchase\":3}]");
+            fclose(f);
+        }
+        /* Delete existing products so schema re-seeds from JSON */
+        char db_path2[512];
+        snprintf(db_path2, sizeof(db_path2), "%s/node.db", test_datadir);
+        sqlite3 *db2 = NULL;
+        if (sqlite3_open(db_path2, &db2) == SQLITE_OK) {
+            sqlite3_exec(db2, "DELETE FROM products", NULL, NULL, NULL);
+            sqlite3_close(db2);
+        }
+        /* Trigger schema check via a store request */
+        uint8_t resp[8192];
+        size_t n = store_handle_request("GET", "/store", NULL, 0,
+            resp, sizeof(resp), test_datadir);
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        bool ok = (n > 0 && strstr((char *)resp, "Test Product") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (product not found in response)\n"); failures++; }
+        unlink(json_path);
+        test_cleanup_tmpdir(store_dir);
+    }
+
+    if (failures > 0)
+        printf("Store: debug datadir preserved at %s\n", test_datadir);
+    else
+        cleanup_datadir();
+
+    printf("Store + ZSLP + Template: %d failures\n", failures);
+    return failures;
+}

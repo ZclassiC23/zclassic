@@ -1,0 +1,21 @@
+# tools/scripts/raw_malloc_allowlist.txt
+#
+# Files allowed to contain raw malloc/calloc/realloc() calls outside the
+# zcl_malloc / zcl_calloc / zcl_realloc wrappers (lib/util/include/util/safe_alloc.h).
+# Each entry is a path relative to the repo root.
+#
+# This is a *ratchet* list. Files are removed as each subsystem
+# completes migration from raw alloc to zcl_*. Once empty, the
+# allowlist itself is removed and the lint becomes unconditional.
+#
+# Adding a file here requires a clear migration follow-up. Do NOT add
+# new entries to dodge the lint — the goal is to drive this list to
+# zero.
+#
+# Convention for individual call sites that must remain raw (very rare
+# — e.g., build-time tools, db_service heap job ownership): annotate
+# the line with `// raw-alloc-ok: <one-line justification>`.
+
+# Migration complete: production raw malloc/calloc/realloc calls now route
+# through zcl_malloc / zcl_calloc / zcl_realloc or carry a local
+# raw-alloc-ok exception.

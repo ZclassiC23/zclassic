@@ -1,0 +1,1379 @@
+/* Copyright (c) 2009-2010 Satoshi Nakamoto
+ * Copyright (c) 2009-2014 The Bitcoin Core developers
+ * Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+#include "net/net.h"
+#include "net/net_fault.h"
+#include "net/peer_lifecycle.h"
+#include "net/peer_scoring.h"
+#include "primitives/block.h"
+#include "platform/time_compat.h"
+#include "util/log_json.h"
+#include "util/log_macros.h"
+#include "core/hash.h"
+#include "core/random.h"
+#include "core/utiltime.h"
+#include "core/serialize.h"
+#include "crypto/sha256.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/select.h>
+#include <netinet/tcp.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include "util/safe_alloc.h"
+#include "net/file_market.h"
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0
+#endif
+#else
+#define MSG_NOSIGNAL 0
+#define MSG_DONTWAIT 0
+#endif
+
+/* --- net_message --- */
+/*
+ * Process-wide recv-queue byte budget.
+ *
+ * Per-message size is capped at 2 MB in net_message_read_data below,
+ * but nothing prevented 1000 peers each feeding a 2 MB message into
+ * our recv queue at the same time — 2 GB of kernel-invisible memory
+ * pressure. This counter tracks the sum of every outstanding
+ * msg->recv_alloc across all peers / messages and rejects new
+ * allocations when adding them would push the total past the cap
+ * (default 256 MiB, overridable via ZCL_MAX_RECVBUFFER_TOTAL_BYTES).
+ *
+ * Atomic so the common case (peer-thread read_data) needs no global
+ * mutex. The cap is re-read from the environment on every check so
+ * tests can tune it mid-process without a re-init hook.
+ */
+static _Atomic size_t g_recv_total_bytes = 0;
+
+static size_t recv_total_bytes_cap(void)
+{
+    size_t cap = 256 * 1024 * 1024; /* 256 MiB default */
+    const char *env = getenv("ZCL_MAX_RECVBUFFER_TOTAL_BYTES");
+    if (env && *env) {
+        char *endp = NULL;
+        long long v = strtoll(env, &endp, 10);
+        if (endp != env && v > 0 && (unsigned long long)v < SIZE_MAX)
+            cap = (size_t)v;
+    }
+    return cap;
+}
+
+size_t net_recv_total_bytes(void)
+{
+    return atomic_load(&g_recv_total_bytes);
+}
+
+size_t net_recv_total_bytes_cap(void)
+{
+    return recv_total_bytes_cap();
+}
+
+/*
+ * Process-wide send-queue byte budget — the symmetric mirror of the
+ * recv budget above.
+ *
+ * Receive was already budgeted (g_recv_total_bytes), but SEND was not:
+ * a single getdata for up to MAX_INV_SZ block hashes, or a slow-reader
+ * peer that never drains its socket, would force us to buffer tens of
+ * GB of send_segments -> OOM. This counter tracks the sum of every
+ * live send_segment->size across all peers. process_getdata consults
+ * it (and the per-peer node->send_size) to stop serving once over
+ * budget (Core's fPauseSend behaviour) — it does NOT disconnect the
+ * peer, which is within protocol and will simply re-request later.
+ *
+ * Charged in send_segment_create, released in send_segment_free, so
+ * every path that frees a segment — socket drain, p2p_node_free, and
+ * the connman forced-disconnect cleanup (which now calls
+ * send_segment_free too) — returns its bytes to the budget. The
+ * counter must therefore never leak on a forced disconnect.
+ *
+ * Default cap 512 MiB, overridable via ZCL_MAX_SENDBUFFER_TOTAL_BYTES.
+ */
+static _Atomic size_t g_send_total_bytes = 0;
+
+static size_t send_total_bytes_cap(void)
+{
+    size_t cap = 512 * 1024 * 1024; /* 512 MiB default */
+    const char *env = getenv("ZCL_MAX_SENDBUFFER_TOTAL_BYTES");
+    if (env && *env) {
+        char *endp = NULL;
+        long long v = strtoll(env, &endp, 10);
+        if (endp != env && v > 0 && (unsigned long long)v < SIZE_MAX)
+            cap = (size_t)v;
+    }
+    return cap;
+}
+
+size_t net_send_total_bytes(void)
+{
+    return atomic_load(&g_send_total_bytes);
+}
+
+size_t net_send_total_bytes_cap(void)
+{
+    return send_total_bytes_cap();
+}
+
+bool net_send_over_budget(const struct p2p_node *node)
+{
+    /* Whitelisted / trusted peers are exempt — we never throttle them. */
+    if (node && node->whitelisted)
+        return false;
+
+    /* Per-peer cap stops one slow reader from hoarding the whole budget;
+     * the process-wide cap stops a swarm from doing the same in
+     * aggregate. Either tripping pauses further serving. */
+    if (node && node->send_size > net_send_peer_bytes_cap())
+        return true;
+    return atomic_load(&g_send_total_bytes) >= send_total_bytes_cap();
+}
+
+size_t net_send_peer_bytes_cap(void)
+{
+    size_t cap = 32 * 1024 * 1024; /* 32 MiB per peer default */
+    const char *env = getenv("ZCL_MAX_SENDBUFFER_PEER_BYTES");
+    if (env && *env) {
+        char *endp = NULL;
+        long long v = strtoll(env, &endp, 10);
+        if (endp != env && v > 0 && (unsigned long long)v < SIZE_MAX)
+            cap = (size_t)v;
+    }
+    return cap;
+}
+
+void net_message_init(struct net_message *msg,
+                      const unsigned char msgstart[MESSAGE_START_SIZE])
+{
+    memset(msg, 0, sizeof(*msg));
+    msg->in_data = false;
+    msg->hdr_pos = 0;
+    msg->data_pos = 0;
+    msg->recv_data = NULL;
+    msg->recv_alloc = 0;
+    msg->time_usec = 0;
+    memcpy(msg->expected_msgstart, msgstart, MESSAGE_START_SIZE);
+    msg_header_init(&msg->hdr, msgstart);
+}
+
+void net_message_free(struct net_message *msg)
+{
+    if (msg->recv_data) {
+        /* Return this message's bytes to the process-wide budget. */
+        atomic_fetch_sub(&g_recv_total_bytes, msg->recv_alloc);
+    }
+    free(msg->recv_data);
+    msg->recv_data = NULL;
+    msg->recv_alloc = 0;
+}
+
+bool net_message_complete(const struct net_message *msg)
+{
+    if (!msg->in_data)
+        return false;
+    return msg->hdr.nMessageSize == msg->data_pos;
+}
+
+int net_message_read_header(struct net_message *msg,
+                            const char *pch, unsigned int nbytes)
+{
+    unsigned int remaining = MSG_HEADER_SIZE - msg->hdr_pos;
+    unsigned int copy = remaining < nbytes ? remaining : nbytes;
+
+    memcpy(msg->hdr_buf + msg->hdr_pos, pch, copy);
+    msg->hdr_pos += copy;
+
+    if (msg->hdr_pos < MSG_HEADER_SIZE)
+        return (int)copy;
+
+    memcpy(&msg->hdr, msg->hdr_buf, MSG_HEADER_SIZE);
+
+    /* Validate message start magic and size */
+    if (memcmp(msg->hdr.pchMessageStart, msg->expected_msgstart,
+               MESSAGE_START_SIZE) != 0)
+        LOG_ERR("net", "message start magic mismatch");
+
+    if (msg->hdr.nMessageSize > MAX_SIZE)
+        LOG_ERR("net", "message size %u exceeds MAX_SIZE", msg->hdr.nMessageSize);
+
+    msg->in_data = true;
+    return (int)copy;
+}
+
+int net_message_read_data(struct net_message *msg,
+                          const char *pch, unsigned int nbytes)
+{
+    unsigned int remaining = msg->hdr.nMessageSize - msg->data_pos;
+    unsigned int copy = remaining < nbytes ? remaining : nbytes;
+
+    /* Reject oversized messages BEFORE allocating.
+     * MAX_PROTOCOL_MESSAGE_LENGTH = 2MB. An attacker sending a crafted
+     * header with nMessageSize=2GB would cause OOM without this check. */
+    if (msg->hdr.nMessageSize > 2 * 1024 * 1024) LOG_ERR("net", "message size %u exceeds 2MB limit", msg->hdr.nMessageSize);
+
+    size_t needed = msg->data_pos + copy;
+    if (msg->recv_alloc < needed) {
+        size_t alloc = msg->hdr.nMessageSize;
+        /* charge the delta against the process-wide recv budget
+         * BEFORE reallocating. A swarm of peers each trying to stage a
+         * 2 MB message must not be able to push our resident set past
+         * the configured ceiling. */
+        size_t delta = alloc - msg->recv_alloc;
+        size_t cap = recv_total_bytes_cap();
+        size_t prev = atomic_fetch_add(&g_recv_total_bytes, delta);
+        if (prev + delta > cap) {
+            atomic_fetch_sub(&g_recv_total_bytes, delta);
+            LOG_ERR("net",
+                    "recv queue budget exhausted: cap=%zu used=%zu add=%zu",
+                    cap, prev, delta);
+        }
+        uint8_t *tmp = zcl_realloc(msg->recv_data, alloc, "msg_recv_data");
+        if (!tmp) {
+            atomic_fetch_sub(&g_recv_total_bytes, delta);
+            LOG_ERR("net", "realloc failed for recv_data: size=%zu", alloc);
+        }
+        msg->recv_data = tmp;
+        msg->recv_alloc = alloc;
+    }
+
+    memcpy(msg->recv_data + msg->data_pos, pch, copy);
+    msg->data_pos += copy;
+    return (int)copy;
+}
+
+/* --- send segment helpers --- */
+
+static struct send_segment *send_segment_create(const uint8_t *data, size_t size)
+{
+    struct send_segment *seg = zcl_malloc(sizeof(*seg), "send_segment");
+    if (!seg) LOG_NULL("net", "malloc failed for send_segment");
+    seg->data = zcl_malloc(size, "send_segment_data");
+    if (!seg->data) { free(seg); LOG_NULL("net", "malloc failed for send_segment_data: size=%zu", size); }
+    memcpy(seg->data, data, size);
+    seg->size = size;
+    seg->next = NULL;
+    /* Charge this segment against the process-wide send budget. Released
+     * symmetrically in send_segment_free on every drain/disconnect path. */
+    atomic_fetch_add(&g_send_total_bytes, size);
+    return seg;
+}
+
+/* Exposed (declared in net.h) so the connman forced-disconnect cleanup
+ * frees segments through the same path that releases the send budget,
+ * instead of a raw free() that would leak g_send_total_bytes. */
+void send_segment_free(struct send_segment *seg)
+{
+    if (!seg) return;
+    /* Return this segment's bytes to the process-wide send budget. */
+    atomic_fetch_sub(&g_send_total_bytes, seg->size);
+    free(seg->data);
+    free(seg);
+}
+
+/* --- p2p_node --- */
+
+struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
+                                  const struct net_address *addr,
+                                  const char *name, bool inbound)
+{
+    struct p2p_node *node = zcl_calloc(1, sizeof(*node), "p2p_node");
+    if (!node) LOG_NULL("net", "calloc failed for p2p_node");
+
+    node->socket = sock;
+    node->addr = *addr;
+    if (name && name[0]) {
+        snprintf(node->addr_name, sizeof(node->addr_name), "%s", name);
+    } else {
+        char ipbuf[64];
+        net_addr_to_string(&addr->svc.addr, ipbuf, sizeof(ipbuf));
+        snprintf(node->addr_name, sizeof(node->addr_name), "%s:%u",
+                 ipbuf, addr->svc.port);
+    }
+
+    node->state = inbound ? PEER_CONNECTED : PEER_CONNECTING;
+    node->inbound = inbound;
+    node->recv_version = INIT_PROTO_VERSION;
+    node->time_connected = GetTime();
+    node->starting_height = -1;
+    uint256_set_null(&node->hash_continue);
+    net_service_init(&node->addr_local);
+
+    zcl_mutex_init(&node->cs_send);
+    zcl_mutex_init(&node->cs_recv);
+    zcl_mutex_init(&node->cs_inventory);
+    zcl_mutex_init(&node->cs_filter);
+
+    rolling_bloom_init(&node->addr_known, 5000, 0.001);
+
+    if (bip37_enabled()) {
+        node->pfilter = zcl_calloc(1, sizeof(*node->pfilter), "bloom_filter");
+        if (node->pfilter)
+            bloom_filter_init(node->pfilter, 1, 0.0001, 0, BLOOM_UPDATE_NONE);
+    } else {
+        node->pfilter = NULL;
+    }
+
+    node->min_ping_usec_time = INT64_MAX;
+
+    zcl_mutex_lock(&nm->cs_last_node_id);
+    node->id = nm->last_node_id++;
+    zcl_mutex_unlock(&nm->cs_last_node_id);
+
+    if (nm->signals.initialize_node)
+        nm->signals.initialize_node(nm->signals.ctx, node->id, node);
+
+    event_emitf(inbound ? EV_TCP_ACCEPTED : EV_TCP_CONNECTED,
+                (uint32_t)node->id, "%s", node->addr_name);
+
+    return node;
+}
+
+void p2p_node_free(struct p2p_node *node)
+{
+    if (!node) return;
+
+    close_socket(&node->socket);
+
+    zcl_mutex_lock(&node->cs_send);
+    while (node->send_head) {
+        struct send_segment *seg = node->send_head;
+        node->send_head = seg->next;
+        send_segment_free(seg);
+    }
+    zcl_mutex_unlock(&node->cs_send);
+
+    zcl_mutex_lock(&node->cs_recv);
+    for (size_t i = 0; i < node->recv_msg_count; i++)
+        net_message_free(&node->recv_msgs[i]);
+    node->recv_msg_count = 0;
+    free(node->recv_msgs);
+    node->recv_msgs = NULL;
+    zcl_mutex_unlock(&node->cs_recv);
+
+    free(node->addr_to_send);
+    node->addr_to_send = NULL;
+    free(node->inventory_to_send);
+    node->inventory_to_send = NULL;
+    free(node->inventory_known_hashes);
+    node->inventory_known_hashes = NULL;
+    free(node->askfor_set);
+    node->askfor_set = NULL;
+    free(node->askfor_map);
+    node->askfor_map = NULL;
+
+    if (node->pfilter) {
+        bloom_filter_free(node->pfilter);
+        free(node->pfilter);
+        node->pfilter = NULL;
+    }
+
+    rolling_bloom_free(&node->addr_known);
+
+    /* BIP152: free any pending compact block reconstruction */
+    if (node->compact_pending_block) {
+        block_free(node->compact_pending_block);
+        free(node->compact_pending_block);
+        node->compact_pending_block = NULL;
+    }
+    free(node->compact_missing_indices);
+    node->compact_missing_indices = NULL;
+
+    free(node->blk_bitmap);
+    node->blk_bitmap = NULL;
+
+    zcl_mutex_destroy(&node->cs_send);
+    zcl_mutex_destroy(&node->cs_recv);
+    zcl_mutex_destroy(&node->cs_inventory);
+    zcl_mutex_destroy(&node->cs_filter);
+
+    free(node);
+}
+
+void p2p_node_add_ref(struct p2p_node *node)
+{
+    node->ref_count++;
+}
+
+void p2p_node_release(struct p2p_node *node)
+{
+    node->ref_count--;
+}
+
+int p2p_node_get_ref(struct p2p_node *node)
+{
+    return node->ref_count;
+}
+
+void p2p_node_close_socket(struct p2p_node *node)
+{
+    node->disconnect = true;
+    if (node->socket != ZCL_INVALID_SOCKET)
+        close_socket(&node->socket);
+}
+
+bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
+                             unsigned int nbytes,
+                             const unsigned char msgstart[MESSAGE_START_SIZE])
+{
+    if (net_partition_active_at((int64_t)platform_time_wall_time_t()))
+        return true;
+
+    unsigned int orig_nbytes = nbytes;
+    int msg_idx = 0;
+    while (nbytes > 0) {
+        if (node->recv_msg_count >= MAX_RECV_MESSAGES)
+            LOG_FAIL("net", "recv queue full: count=%zu max=%d", node->recv_msg_count, MAX_RECV_MESSAGES);
+        if (node->recv_msg_count == 0 ||
+            net_message_complete(&node->recv_msgs[node->recv_msg_count - 1])) {
+            /* Enforce message queue limit — prevents OOM from fast senders */
+            if (node->recv_msg_count >= MAX_RECV_MESSAGES) {
+                event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                            "recv queue full (%zu msgs)", node->recv_msg_count);
+                LOG_FAIL("net", "recv queue full after recheck: count=%zu", node->recv_msg_count);
+            }
+            if (node->recv_msg_count >= node->recv_msg_cap) {
+                size_t newcap = node->recv_msg_cap ? node->recv_msg_cap * 2 : 16;
+                if (newcap > MAX_RECV_MESSAGES) newcap = MAX_RECV_MESSAGES;
+                struct net_message *tmp = zcl_realloc(node->recv_msgs,
+                                                   newcap * sizeof(*tmp), "recv_msgs");
+                if (!tmp) LOG_FAIL("net", "realloc failed for recv_msgs: newcap=%zu", newcap);
+                node->recv_msgs = tmp;
+                node->recv_msg_cap = newcap;
+            }
+            net_message_init(&node->recv_msgs[node->recv_msg_count], msgstart);
+            node->recv_msg_count++;
+        }
+
+        struct net_message *msg = &node->recv_msgs[node->recv_msg_count - 1];
+        int handled;
+        if (!msg->in_data)
+            handled = net_message_read_header(msg, data, nbytes);
+        else
+            handled = net_message_read_data(msg, data, nbytes);
+
+        if (handled < 0) {
+            printf("  PARSE FAIL at msg_idx=%d offset=%u/%u in_data=%d "
+                   "hdr_pos=%u data_pos=%u nMessageSize=%u "
+                   "next4: %02x%02x%02x%02x\n",
+                   msg_idx, orig_nbytes - nbytes, orig_nbytes,
+                   msg->in_data, msg->hdr_pos, msg->data_pos,
+                   msg->hdr.nMessageSize,
+                   (unsigned char)data[0],
+                   nbytes>1?(unsigned char)data[1]:0,
+                   nbytes>2?(unsigned char)data[2]:0,
+                   nbytes>3?(unsigned char)data[3]:0);
+            LOG_FAIL("net", "message parse failed at msg_idx=%d offset=%u/%u", msg_idx, orig_nbytes - nbytes, orig_nbytes);
+        }
+
+        if (msg->in_data && msg->hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
+            char dcmd[COMMAND_SIZE + 1];
+            msg_header_get_command(&msg->hdr, dcmd, sizeof(dcmd));
+            printf("Dropped oversized '%s' message: %u bytes > %u\n",
+                   dcmd, msg->hdr.nMessageSize, MAX_PROTOCOL_MESSAGE_LENGTH);
+            LOG_FAIL("net", "oversized message '%s': %u bytes > %u", dcmd, msg->hdr.nMessageSize, MAX_PROTOCOL_MESSAGE_LENGTH);
+        }
+
+        data += handled;
+        nbytes -= (unsigned int)handled;
+        msg_idx++;
+
+        if (net_message_complete(msg)) {
+            msg->time_usec = GetTimeMicros();
+        }
+    }
+    return true;
+}
+
+void p2p_node_copy_stats(const struct p2p_node *node, struct node_stats *stats)
+{
+    memset(stats, 0, sizeof(*stats));
+    stats->nodeid = node->id;
+    stats->services = node->services;
+    stats->last_send = node->last_send;
+    stats->last_recv = node->last_recv;
+    stats->time_connected = node->time_connected;
+    stats->time_offset = node->time_offset;
+    snprintf(stats->addr_name, sizeof(stats->addr_name), "%s", node->addr_name);
+    stats->version = node->version;
+    snprintf(stats->clean_sub_ver, sizeof(stats->clean_sub_ver), "%s",
+             node->clean_sub_ver);
+    stats->inbound = node->inbound;
+    stats->starting_height = node->starting_height;
+    stats->send_bytes = node->send_bytes;
+    stats->recv_bytes = node->recv_bytes;
+    stats->whitelisted = node->whitelisted;
+
+    int64_t ping_wait = 0;
+    if (node->ping_nonce_sent != 0 && node->ping_usec_start != 0)
+        ping_wait = GetTimeMicros() - node->ping_usec_start;
+
+    stats->ping_time = (double)node->ping_usec_time / 1e6;
+    stats->ping_wait = (double)ping_wait / 1e6;
+
+    if (net_addr_is_valid(&node->addr_local.addr)) {
+        char buf[64];
+        net_addr_to_string(&node->addr_local.addr, buf, sizeof(buf));
+        snprintf(stats->addr_local, sizeof(stats->addr_local), "%s:%u",
+                 buf, node->addr_local.port);
+    }
+}
+
+void p2p_node_push_address(struct p2p_node *node, const struct net_address *addr)
+{
+    unsigned char key[NET_SERVICE_KEY_SIZE];
+    net_service_get_key(&addr->svc, key);
+    if (!net_addr_is_valid(&addr->svc.addr) ||
+        rolling_bloom_contains(&node->addr_known, key, NET_SERVICE_KEY_SIZE))
+        return;
+
+    if (node->addr_to_send_count >= MAX_ADDR_TO_SEND) {
+        uint64_t idx;
+        GetRandBytes((unsigned char *)&idx, sizeof(idx));
+        node->addr_to_send[idx % node->addr_to_send_count] = *addr;
+    } else {
+        if (node->addr_to_send_count >= node->addr_to_send_cap) {
+            size_t newcap = node->addr_to_send_cap ? node->addr_to_send_cap * 2 : 64;
+            struct net_address *tmp = zcl_realloc(node->addr_to_send,
+                                               newcap * sizeof(*tmp), "addr_to_send");
+            if (!tmp) return;
+            node->addr_to_send = tmp;
+            node->addr_to_send_cap = newcap;
+        }
+        node->addr_to_send[node->addr_to_send_count++] = *addr;
+    }
+}
+
+void p2p_node_add_inventory_known(struct p2p_node *node, const struct inv_item *inv)
+{
+    zcl_mutex_lock(&node->cs_inventory);
+    if (node->inventory_known_count >= node->inventory_known_cap) {
+        size_t newcap = node->inventory_known_cap ? node->inventory_known_cap * 2 : 1024;
+        if (newcap > MAX_INVENTORY_KNOWN) newcap = MAX_INVENTORY_KNOWN;
+        if (node->inventory_known_count >= newcap) {
+            memmove(node->inventory_known_hashes,
+                    node->inventory_known_hashes + newcap / 2,
+                    (newcap / 2) * sizeof(struct uint256));
+            node->inventory_known_count = newcap / 2;
+        } else {
+            struct uint256 *tmp = zcl_realloc(node->inventory_known_hashes,
+                                           newcap * sizeof(*tmp), "inv_known_hashes");
+            if (!tmp) { zcl_mutex_unlock(&node->cs_inventory); return; }
+            node->inventory_known_hashes = tmp;
+            node->inventory_known_cap = newcap;
+        }
+    }
+    node->inventory_known_hashes[node->inventory_known_count++] = inv->hash;
+    zcl_mutex_unlock(&node->cs_inventory);
+}
+
+static bool inventory_known_contains(struct p2p_node *node,
+                                      const struct uint256 *hash)
+{
+    for (size_t i = 0; i < node->inventory_known_count; i++)
+        if (uint256_eq(&node->inventory_known_hashes[i], hash))
+            return true;
+    return false;
+}
+
+void p2p_node_push_inventory(struct p2p_node *node, const struct inv_item *inv)
+{
+    zcl_mutex_lock(&node->cs_inventory);
+    if (!inventory_known_contains(node, &inv->hash)) {
+        if (node->inventory_to_send_count >= node->inventory_to_send_cap) {
+            size_t newcap = node->inventory_to_send_cap ?
+                            node->inventory_to_send_cap * 2 : 256;
+            struct inv_item *tmp = zcl_realloc(node->inventory_to_send,
+                                            newcap * sizeof(*tmp), "inv_to_send");
+            if (!tmp) { zcl_mutex_unlock(&node->cs_inventory); return; }
+            node->inventory_to_send = tmp;
+            node->inventory_to_send_cap = newcap;
+        }
+        node->inventory_to_send[node->inventory_to_send_count++] = *inv;
+    }
+    zcl_mutex_unlock(&node->cs_inventory);
+}
+
+/* --- message building (byte_stream based send buffer) --- */
+
+static _Thread_local struct byte_stream tls_msg_stream;
+static _Thread_local bool tls_msg_active = false;
+
+bool p2p_node_begin_message(struct p2p_node *node, const char *command,
+                             const unsigned char msgstart[MESSAGE_START_SIZE])
+{
+    zcl_mutex_lock(&node->cs_send);
+    stream_init(&tls_msg_stream, 256);
+    tls_msg_active = true;
+
+    struct msg_header hdr;
+    msg_header_init_full(&hdr, msgstart, command, 0);
+    stream_write(&tls_msg_stream, (const uint8_t *)&hdr, MSG_HEADER_SIZE);
+    return true;
+}
+
+void p2p_node_write_message_data(struct p2p_node *node,
+                                  const uint8_t *data, size_t len)
+{
+    (void)node;
+    if (tls_msg_active)
+        stream_write(&tls_msg_stream, data, len);
+}
+
+bool p2p_node_end_message(struct p2p_node *node)
+{
+    if (!tls_msg_active) {
+        zcl_mutex_unlock(&node->cs_send);
+        LOG_FAIL("net", "end_message called without active tls_msg");
+    }
+
+    size_t total = tls_msg_stream.size;
+    if (total == 0 || tls_msg_stream.error) {
+        stream_free(&tls_msg_stream);
+        tls_msg_active = false;
+        zcl_mutex_unlock(&node->cs_send);
+        LOG_FAIL("net", "message stream empty or error: size=%zu error=%d", total, tls_msg_stream.error);
+    }
+
+    uint8_t *buf = tls_msg_stream.data;
+
+    unsigned int payload_size = (unsigned int)(total - MSG_HEADER_SIZE);
+    buf[MESSAGE_START_SIZE + COMMAND_SIZE] = (uint8_t)(payload_size & 0xff);
+    buf[MESSAGE_START_SIZE + COMMAND_SIZE + 1] = (uint8_t)((payload_size >> 8) & 0xff);
+    buf[MESSAGE_START_SIZE + COMMAND_SIZE + 2] = (uint8_t)((payload_size >> 16) & 0xff);
+    buf[MESSAGE_START_SIZE + COMMAND_SIZE + 3] = (uint8_t)((payload_size >> 24) & 0xff);
+
+    struct uint256 hash;
+    hash256(buf + MSG_HEADER_SIZE, total - MSG_HEADER_SIZE, hash.data);
+    memcpy(buf + MESSAGE_START_SIZE + COMMAND_SIZE + 4, hash.data, 4);
+
+    /* Log every outbound message — extract command from header */
+    {
+        char cmd[COMMAND_SIZE + 1];
+        memcpy(cmd, buf + MESSAGE_START_SIZE, COMMAND_SIZE);
+        cmd[COMMAND_SIZE] = '\0';
+        /* Trim trailing nulls for clean display */
+        for (int ci = COMMAND_SIZE - 1; ci >= 0 && cmd[ci] == '\0'; ci--)
+            cmd[ci] = '\0';
+        event_emitf(EV_MSG_SENT, (uint32_t)node->id,
+                    "%s size=%u", cmd, payload_size);
+    }
+
+    struct send_segment *seg = send_segment_create(buf, total);
+    stream_free(&tls_msg_stream);
+    tls_msg_active = false;
+
+    if (!seg) {
+        zcl_mutex_unlock(&node->cs_send);
+        LOG_FAIL("net", "send_segment_create failed for node id=%d", (int)node->id);
+    }
+
+    if (node->send_tail) {
+        node->send_tail->next = seg;
+        node->send_tail = seg;
+    } else {
+        node->send_head = seg;
+        node->send_tail = seg;
+    }
+    node->send_size += seg->size;
+
+    if (node->send_head == seg)
+        socket_send_data(node);
+
+    zcl_mutex_unlock(&node->cs_send);
+    return true;
+}
+
+/* --- socket_send_data --- */
+
+void socket_send_data(struct p2p_node *node)
+{
+    while (node->send_head) {
+        struct send_segment *seg = node->send_head;
+        size_t remain = seg->size - node->send_offset;
+
+        ssize_t sent = send(node->socket,
+                            (const char *)(seg->data + node->send_offset),
+                            remain, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (sent > 0) {
+            node->last_send = GetTime();
+            node->send_bytes += (uint64_t)sent;
+            node->send_offset += (size_t)sent;
+
+            if (node->send_offset >= seg->size) {
+                node->send_head = seg->next;
+                if (!node->send_head)
+                    node->send_tail = NULL;
+                node->send_size -= seg->size;
+                node->send_offset = 0;
+                send_segment_free(seg);
+            } else {
+                break;
+            }
+        } else {
+            if (sent < 0) {
+                int err = errno;
+                if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR && err != EINPROGRESS)
+                    p2p_node_close_socket(node);
+            }
+            break;
+        }
+    }
+}
+
+/* --- net_manager --- */
+
+void net_manager_init(struct net_manager *nm)
+{
+    memset(nm, 0, sizeof(*nm));
+    nm->discover = true;
+    nm->listen = true;
+    nm->local_services = NODE_NETWORK;
+    nm->max_connections = DEFAULT_MAX_PEER_CONNECTIONS;
+    nm->stop_requested = false;
+
+    addrman_init(&nm->addrman);
+
+    zcl_mutex_init(&nm->cs_nodes);
+    zcl_mutex_init(&nm->cs_local_host);
+    zcl_mutex_init(&nm->cs_banned);
+    zcl_mutex_init(&nm->cs_last_node_id);
+    zcl_mutex_init(&nm->cs_total_bytes_recv);
+    zcl_mutex_init(&nm->cs_total_bytes_sent);
+    zcl_cond_init(&nm->msg_handler_cond);
+    zcl_mutex_init(&nm->msg_handler_mutex);
+}
+
+void net_manager_free(struct net_manager *nm)
+{
+    for (size_t i = 0; i < nm->num_listen_sockets; i++)
+        if (nm->listen_sockets[i].socket != ZCL_INVALID_SOCKET)
+            close_socket(&nm->listen_sockets[i].socket);
+    free(nm->listen_sockets);
+
+    for (size_t i = 0; i < nm->num_nodes; i++)
+        p2p_node_free(nm->nodes[i]);
+    free(nm->nodes);
+
+    for (size_t i = 0; i < nm->num_disconnected; i++)
+        p2p_node_free(nm->nodes_disconnected[i]);
+    free(nm->nodes_disconnected);
+
+    free(nm->local_hosts);
+    free(nm->local_host_info);
+    free(nm->banned);
+    free(nm->whitelisted);
+    free(nm->whitelist_prefix);
+
+    addrman_free(&nm->addrman);
+
+    zcl_mutex_destroy(&nm->cs_nodes);
+    zcl_mutex_destroy(&nm->cs_local_host);
+    zcl_mutex_destroy(&nm->cs_banned);
+    zcl_mutex_destroy(&nm->cs_last_node_id);
+    zcl_mutex_destroy(&nm->cs_total_bytes_recv);
+    zcl_mutex_destroy(&nm->cs_total_bytes_sent);
+    zcl_cond_destroy(&nm->msg_handler_cond);
+    zcl_mutex_destroy(&nm->msg_handler_mutex);
+}
+
+/* --- find node --- */
+
+struct p2p_node *find_node_by_addr(struct net_manager *nm,
+                                    const struct net_addr *addr)
+{
+    zcl_mutex_lock(&nm->cs_nodes);
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        if (net_addr_eq(&nm->nodes[i]->addr.svc.addr, addr)) {
+            zcl_mutex_unlock(&nm->cs_nodes);
+            return nm->nodes[i];
+        }
+    }
+    zcl_mutex_unlock(&nm->cs_nodes);
+    return NULL;
+}
+
+/* Find a matching, NON-disconnect node and take a ref on it atomically under
+ * cs_nodes. Returns the node with ref_count already incremented, or NULL.
+ *
+ * connect_node runs on a different thread (RPC/MCP addnode -> connman_open_
+ * connection) than the socket disconnect sweep, which calls p2p_node_free()
+ * the instant ref_count hits 0. A plain find that unlocks cs_nodes before
+ * returning, then takes the add_ref afterwards, is a TOCTOU use-after-free:
+ * the node can be freed in the gap. Keeping the find + add_ref inside one
+ * cs_nodes acquire closes that window, and skipping disconnect-flagged nodes
+ * avoids re-reffing a peer the sweep is about to reap. */
+static struct p2p_node *find_node_by_service_locked(struct net_manager *nm,
+                                                    const struct net_service *addr)
+{
+    struct p2p_node *existing = NULL;
+    zcl_mutex_lock(&nm->cs_nodes);
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        if (net_addr_eq(&nm->nodes[i]->addr.svc.addr, &addr->addr) &&
+            nm->nodes[i]->addr.svc.port == addr->port &&
+            !nm->nodes[i]->disconnect) {
+            existing = nm->nodes[i];
+            p2p_node_add_ref(existing);
+            break;
+        }
+    }
+    zcl_mutex_unlock(&nm->cs_nodes);
+    return existing;
+}
+
+/* --- add node to manager --- */
+
+static bool nm_add_node(struct net_manager *nm, struct p2p_node *node)
+{
+    if (nm->num_nodes >= nm->nodes_cap) {
+        size_t newcap = nm->nodes_cap ? nm->nodes_cap * 2 : 32;
+        struct p2p_node **tmp = zcl_realloc(nm->nodes, newcap * sizeof(*tmp), "node_list");
+        if (!tmp) LOG_FAIL("net", "realloc failed for node_list: newcap=%zu", newcap);
+        nm->nodes = tmp;
+        nm->nodes_cap = newcap;
+    }
+    nm->nodes[nm->num_nodes++] = node;
+    return true;
+}
+
+/* --- connect_node --- */
+
+struct p2p_node *connect_node(struct net_manager *nm,
+                               struct net_address *addr_connect,
+                               const char *dest)
+{
+    if (!dest && is_local(nm, &addr_connect->svc))
+        LOG_NULL("net", "refusing connection to local address");
+
+    /* Always dedupe by remote service, even for addnode/localhost connects.
+     * The dest override exists to skip the localhost rejection, not to allow
+     * parallel duplicate sockets to the same peer. Duplicate addnode sockets
+     * cause repeated getheaders loops and can split one-shot fast-sync offers
+     * across multiple connections. */
+    struct p2p_node *existing = find_node_by_service_locked(nm, &addr_connect->svc);
+    if (existing)
+        return existing;
+
+    zcl_socket_t sock;
+
+    if (!connect_socket_directly(&addr_connect->svc, &sock, DEFAULT_CONNECT_TIMEOUT)) {
+        char addr_str[64];
+        net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
+        char addr_safe[96];
+        log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
+        log_jsonf(LOG_JSON_WARN, "peer_connect_failed",
+                  "\"addr\":\"%s\"", addr_safe);
+        return NULL;
+    }
+
+    struct p2p_node *node = p2p_node_create(nm, sock, addr_connect,
+                                             dest ? dest : "", false);
+    if (!node) {
+        close_socket(&sock);
+        LOG_NULL("net", "p2p_node_create failed for outbound connection");
+    }
+    p2p_node_add_ref(node);
+
+    zcl_mutex_lock(&nm->cs_nodes);
+    nm_add_node(nm, node);
+    zcl_mutex_unlock(&nm->cs_nodes);
+
+    node->time_connected = GetTime();
+
+    char addr_str[64];
+    net_service_to_string(&addr_connect->svc, addr_str, sizeof(addr_str));
+    char addr_safe[96];
+    log_json_escape(addr_safe, sizeof(addr_safe), addr_str);
+    log_jsonf(LOG_JSON_INFO, "peer_connected",
+              "\"addr\":\"%s\",\"peer_id\":%d",
+              addr_safe, (int)node->id);
+    return node;
+}
+
+/* --- ban management --- */
+
+bool is_banned(struct net_manager *nm, const struct net_addr *addr)
+{
+    /* Localhost is NEVER banned — it's our own zclassicd */
+    static const uint8_t lo_prefix[13] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff,127};
+    if (memcmp(addr->ip, lo_prefix, 13) == 0)
+        return false;
+
+    zcl_mutex_lock(&nm->cs_banned);
+    int64_t now = GetTime();
+    for (size_t i = 0; i < nm->num_banned; i++) {
+        if (net_addr_eq(&nm->banned[i].addr, addr) && now < nm->banned[i].ban_until) {
+            zcl_mutex_unlock(&nm->cs_banned);
+            return true;
+        }
+    }
+    zcl_mutex_unlock(&nm->cs_banned);
+    return false;
+}
+
+void ban_addr(struct net_manager *nm, const struct net_addr *addr,
+              int64_t ban_offset, bool since_epoch)
+{
+    int64_t ban_time = GetTime() + 24 * 60 * 60;
+    if (ban_offset > 0)
+        ban_time = (since_epoch ? 0 : GetTime()) + ban_offset;
+
+    zcl_mutex_lock(&nm->cs_banned);
+    for (size_t i = 0; i < nm->num_banned; i++) {
+        if (net_addr_eq(&nm->banned[i].addr, addr)) {
+            if (nm->banned[i].ban_until < ban_time)
+                nm->banned[i].ban_until = ban_time;
+            zcl_mutex_unlock(&nm->cs_banned);
+            return;
+        }
+    }
+
+    if (nm->num_banned >= nm->banned_cap) {
+        size_t newcap = nm->banned_cap ? nm->banned_cap * 2 : 64;
+        struct ban_entry *tmp = zcl_realloc(nm->banned, newcap * sizeof(*tmp), "ban_list");
+        if (!tmp) { zcl_mutex_unlock(&nm->cs_banned); return; }
+        nm->banned = tmp;
+        nm->banned_cap = newcap;
+    }
+    nm->banned[nm->num_banned].addr = *addr;
+    nm->banned[nm->num_banned].prefix_len = net_addr_is_ipv4(addr) ? 32 : 128;
+    nm->banned[nm->num_banned].ban_until = ban_time;
+    nm->num_banned++;
+    zcl_mutex_unlock(&nm->cs_banned);
+}
+
+/* Check if a peer is a trusted local node (localhost or whitelisted).
+ * These peers are NEVER banned — they are our own infrastructure. */
+static bool is_trusted_peer(const struct p2p_node *node)
+{
+    /* Localhost: 127.0.0.0/8 (IPv4-mapped: ::ffff:127.x.x.x) */
+    static const uint8_t lo_prefix[13] = {0,0,0,0,0,0,0,0,0,0,0xff,0xff,127};
+    if (memcmp(node->addr.svc.addr.ip, lo_prefix, 13) == 0)
+        return true;
+    /* Whitelisted peers (set by -whitelist or listen socket config) */
+    if (node->whitelisted)
+        return true;
+    return false;
+}
+
+void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
+                      int howmuch, const char *reason)
+{
+    if (!nm || !node || howmuch <= 0) return;
+
+    /* NEVER penalize trusted peers (localhost, whitelisted, addnode).
+     * These are our own infrastructure — banning them breaks sync. */
+    if (is_trusted_peer(node))
+        return;
+
+    int new_score = atomic_fetch_add(&node->misbehavior, howmuch) + howmuch;
+    event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
+                "+%d=%d %s", howmuch, new_score,
+                reason ? reason : "");
+
+    /* Thresholds are operator-configurable via peer_scoring_init() / env;
+     * we default to 100 score / 24h ban to match historical behaviour. */
+    int threshold = peer_scoring_ban_threshold();
+    int hours = peer_scoring_ban_hours();
+    if (new_score >= threshold) {
+        event_emitf(EV_PEER_BANNED, (uint32_t)node->id,
+                    "score=%d %s", new_score,
+                    reason ? reason : "threshold");
+        char addr_safe[96];
+        char reason_safe[160];
+        log_json_escape(addr_safe, sizeof(addr_safe), node->addr_name);
+        log_json_escape(reason_safe, sizeof(reason_safe),
+                         reason ? reason : "threshold reached");
+        log_jsonf(LOG_JSON_WARN, "peer_banned",
+                  "\"addr\":\"%s\",\"score\":%d,\"reason\":\"%s\","
+                  "\"ban_hours\":%d",
+                  addr_safe, new_score, reason_safe, hours);
+        ban_addr(nm, &node->addr.svc.addr,
+                 (int64_t)hours * 60 * 60, false);
+        node->disconnect = true;
+    }
+}
+
+bool unban_addr(struct net_manager *nm, const struct net_addr *addr)
+{
+    zcl_mutex_lock(&nm->cs_banned);
+    for (size_t i = 0; i < nm->num_banned; i++) {
+        if (net_addr_eq(&nm->banned[i].addr, addr)) {
+            nm->banned[i] = nm->banned[nm->num_banned - 1];
+            nm->num_banned--;
+            zcl_mutex_unlock(&nm->cs_banned);
+            return true;
+        }
+    }
+    zcl_mutex_unlock(&nm->cs_banned);
+    return false;
+}
+
+void clear_banned(struct net_manager *nm)
+{
+    zcl_mutex_lock(&nm->cs_banned);
+    nm->num_banned = 0;
+    zcl_mutex_unlock(&nm->cs_banned);
+}
+
+/* --- local address management --- */
+
+static int find_local_host(struct net_manager *nm, const struct net_addr *addr)
+{
+    for (size_t i = 0; i < nm->num_local_hosts; i++)
+        if (net_addr_eq(&nm->local_hosts[i], addr))
+            return (int)i;
+    return -1;
+}
+
+bool add_local(struct net_manager *nm, const struct net_service *addr, int score)
+{
+    if (!net_addr_is_routable(&addr->addr))
+        LOG_FAIL("net", "add_local: address is not routable");
+
+    if (!nm->discover && score < LOCAL_MANUAL)
+        LOG_FAIL("net", "add_local: discover disabled and score=%d < LOCAL_MANUAL", score);
+
+    zcl_mutex_lock(&nm->cs_local_host);
+
+    enum zcl_network net = net_addr_get_network(&addr->addr);
+    if (nm->limited[net]) {
+        zcl_mutex_unlock(&nm->cs_local_host);
+        LOG_FAIL("net", "add_local: network %d is limited", (int)net);
+    }
+
+    int idx = find_local_host(nm, &addr->addr);
+    if (idx >= 0) {
+        if (score >= nm->local_host_info[idx].score) {
+            nm->local_host_info[idx].score = score + 1;
+            nm->local_host_info[idx].port = addr->port;
+        }
+    } else {
+        if (nm->num_local_hosts >= nm->local_hosts_cap) {
+            size_t newcap = nm->local_hosts_cap ? nm->local_hosts_cap * 2 : 8;
+            struct net_addr *ha = zcl_realloc(nm->local_hosts, newcap * sizeof(*ha), "local_hosts");
+            struct local_service_info *hi = zcl_realloc(nm->local_host_info,
+                                                      newcap * sizeof(*hi), "local_host_info");
+            if (!ha || !hi) {
+                zcl_mutex_unlock(&nm->cs_local_host);
+                LOG_FAIL("net", "realloc failed for local_hosts: newcap=%zu", newcap);
+            }
+            nm->local_hosts = ha;
+            nm->local_host_info = hi;
+            nm->local_hosts_cap = newcap;
+        }
+        size_t n = nm->num_local_hosts;
+        nm->local_hosts[n] = addr->addr;
+        nm->local_host_info[n].score = score;
+        nm->local_host_info[n].port = addr->port;
+        nm->num_local_hosts++;
+    }
+
+    zcl_mutex_unlock(&nm->cs_local_host);
+    return true;
+}
+
+bool remove_local(struct net_manager *nm, const struct net_service *addr)
+{
+    zcl_mutex_lock(&nm->cs_local_host);
+    int idx = find_local_host(nm, &addr->addr);
+    if (idx >= 0) {
+        nm->local_hosts[idx] = nm->local_hosts[nm->num_local_hosts - 1];
+        nm->local_host_info[idx] = nm->local_host_info[nm->num_local_hosts - 1];
+        nm->num_local_hosts--;
+    }
+    zcl_mutex_unlock(&nm->cs_local_host);
+    return idx >= 0;
+}
+
+bool is_local(struct net_manager *nm, const struct net_service *addr)
+{
+    zcl_mutex_lock(&nm->cs_local_host);
+    int idx = find_local_host(nm, &addr->addr);
+    zcl_mutex_unlock(&nm->cs_local_host);
+    return idx >= 0;
+}
+
+bool is_reachable_net(struct net_manager *nm, enum zcl_network net)
+{
+    zcl_mutex_lock(&nm->cs_local_host);
+    bool result = !nm->limited[net];
+    zcl_mutex_unlock(&nm->cs_local_host);
+    return result;
+}
+
+bool is_reachable_addr(struct net_manager *nm, const struct net_addr *a)
+{
+    enum zcl_network net = net_addr_get_network(a);
+    return is_reachable_net(nm, net);
+}
+
+void set_limited(struct net_manager *nm, enum zcl_network net, bool limited)
+{
+    if (net == NET_UNROUTABLE) return;
+    zcl_mutex_lock(&nm->cs_local_host);
+    nm->limited[net] = limited;
+    zcl_mutex_unlock(&nm->cs_local_host);
+}
+
+/* --- bind/listen --- */
+
+bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,
+                      bool whitelisted)
+{
+    struct sockaddr_storage ss;
+    socklen_t sslen = sizeof(ss);
+    memset(&ss, 0, sizeof(ss));
+
+    if (net_addr_is_ipv4(&addr->addr)) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(addr->port);
+        memcpy(&s4->sin_addr, addr->addr.ip + 12, 4);
+        sslen = sizeof(*s4);
+    } else {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(addr->port);
+        memcpy(&s6->sin6_addr, addr->addr.ip, 16);
+        sslen = sizeof(*s6);
+    }
+
+    zcl_socket_t sock = socket(((struct sockaddr *)&ss)->sa_family,
+                                SOCK_STREAM, IPPROTO_TCP);
+    if (sock == ZCL_INVALID_SOCKET)
+        LOG_FAIL("net", "socket() failed for listen port");
+
+    int one = 1;
+#ifndef _WIN32
+#ifdef SO_NOSIGPIPE
+    setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#else
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
+#endif
+
+    if (!set_socket_nonblocking(sock, true)) {
+        close_socket(&sock);
+        LOG_FAIL("net", "set_socket_nonblocking failed for listen port");
+    }
+
+    if (!net_addr_is_ipv4(&addr->addr)) {
+#ifdef IPV6_V6ONLY
+        setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
+#endif
+    }
+
+    if (bind(sock, (struct sockaddr *)&ss, sslen) == ZCL_SOCKET_ERROR) {
+        close_socket(&sock);
+        LOG_FAIL("net", "bind() failed for listen port");
+    }
+
+    if (listen(sock, SOMAXCONN) == ZCL_SOCKET_ERROR) {
+        close_socket(&sock);
+        LOG_FAIL("net", "listen() failed");
+    }
+
+    if (nm->num_listen_sockets >= nm->listen_sockets_cap) {
+        size_t newcap = nm->listen_sockets_cap ? nm->listen_sockets_cap * 2 : 4;
+        struct listen_socket *tmp = zcl_realloc(nm->listen_sockets, newcap * sizeof(*tmp), "listen_sockets");
+        if (!tmp) { close_socket(&sock); LOG_FAIL("net", "realloc failed for listen_sockets: newcap=%zu", newcap); }
+        nm->listen_sockets = tmp;
+        nm->listen_sockets_cap = newcap;
+    }
+    nm->listen_sockets[nm->num_listen_sockets].socket = sock;
+    nm->listen_sockets[nm->num_listen_sockets].whitelisted = whitelisted;
+    nm->num_listen_sockets++;
+
+    if (net_addr_is_routable(&addr->addr) && nm->discover && !whitelisted)
+        add_local(nm, addr, LOCAL_BIND);
+
+    return true;
+}
+
+/* --- accept connection --- */
+
+bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
+{
+    struct sockaddr_storage ss;
+    socklen_t sslen = sizeof(ss);
+    zcl_socket_t sock = accept(ls->socket, (struct sockaddr *)&ss, &sslen);
+
+    if (sock == ZCL_INVALID_SOCKET)
+        LOG_FAIL("net", "accept() returned invalid socket");
+
+    struct net_address addr;
+    net_address_init(&addr);
+
+    if (ss.ss_family == AF_INET) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        memset(addr.svc.addr.ip, 0, 10);
+        memset(addr.svc.addr.ip + 10, 0xff, 2);
+        memcpy(addr.svc.addr.ip + 12, &s4->sin_addr, 4);
+        addr.svc.port = ntohs(s4->sin_port);
+    } else if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        memcpy(addr.svc.addr.ip, &s6->sin6_addr, 16);
+        addr.svc.port = ntohs(s6->sin6_port);
+    }
+
+    bool is_whitelisted = ls->whitelisted;
+
+    if (is_banned(nm, &addr.svc.addr) && !is_whitelisted) {
+        close_socket(&sock);
+        LOG_FAIL("net", "rejected banned peer on accept");
+    }
+
+    /* Per-IP inbound limit: max 3 connections from same IP.
+     * Prevents a single IP from consuming all inbound slots (sybil). */
+    int inbound_count = 0;
+    int same_ip_count = 0;
+    int max_inbound = nm->max_connections - MAX_OUTBOUND_CONNECTIONS;
+    zcl_mutex_lock(&nm->cs_nodes);
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        if (nm->nodes[i]->inbound)
+            inbound_count++;
+        if (nm->nodes[i]->inbound &&
+            memcmp(nm->nodes[i]->addr.svc.addr.ip, addr.svc.addr.ip, 16) == 0)
+            same_ip_count++;
+    }
+    zcl_mutex_unlock(&nm->cs_nodes);
+
+    if (!is_whitelisted && same_ip_count >= 3) {
+        close_socket(&sock);
+        LOG_FAIL("net", "too many inbound connections from same IP: count=%d", same_ip_count);
+    }
+
+    if (inbound_count >= max_inbound) {
+        close_socket(&sock);
+        LOG_FAIL("net", "max inbound connections reached: %d >= %d", inbound_count, max_inbound);
+    }
+
+    int one = 1;
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
+    struct p2p_node *node = p2p_node_create(nm, sock, &addr, "", true);
+    if (!node) {
+        close_socket(&sock);
+        LOG_FAIL("net", "p2p_node_create failed for inbound connection");
+    }
+    p2p_node_add_ref(node);
+    node->whitelisted = is_whitelisted;
+    peer_lifecycle_note_connected(node, PEER_LIFECYCLE_SOURCE_INBOUND);
+
+    zcl_mutex_lock(&nm->cs_nodes);
+    nm_add_node(nm, node);
+    zcl_mutex_unlock(&nm->cs_nodes);
+
+    return true;
+}
+
+/* --- socket handler loop (one iteration) --- */
+
+
+
+/* --- addr db --- */
+
+bool addr_db_write(const struct net_manager *nm, const char *datadir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/peers.dat", datadir);
+
+    struct byte_stream s;
+    stream_init(&s, 65536);
+
+    stream_write(&s, nm->message_start, MESSAGE_START_SIZE);
+
+    if (!addrman_serialize(&nm->addrman, &s)) {
+        stream_free(&s);
+        LOG_FAIL("net", "addrman_serialize failed for peers.dat");
+    }
+
+    struct uint256 hash;
+    hash256(s.data, s.size, hash.data);
+    stream_write(&s, hash.data, 32);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) { stream_free(&s); LOG_FAIL("net", "fopen failed for peers.dat write: %s", path); }
+    size_t written = fwrite(s.data, 1, s.size, f);
+    fclose(f);
+    stream_free(&s);
+
+    return written == s.size || written > 0;
+}
+
+bool addr_db_read(struct net_manager *nm, const char *datadir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/peers.dat", datadir);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        if (errno == ENOENT)
+            return false; /* clean first-run/cold-start path */
+        LOG_FAIL("net", "fopen failed for peers.dat read: %s", path);
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size < (long)(MESSAGE_START_SIZE + 32)) {
+        fclose(f);
+        LOG_FAIL("net", "peers.dat too small: size=%ld", file_size);
+    }
+
+    uint8_t *buf = zcl_malloc((size_t)file_size, "net_file_buf");
+    if (!buf) { fclose(f); LOG_FAIL("net", "malloc failed for peers.dat: size=%ld", file_size); }
+    if (fread(buf, 1, (size_t)file_size, f) != (size_t)file_size) {
+        free(buf);
+        fclose(f);
+        LOG_FAIL("net", "fread failed for peers.dat: expected %ld bytes", file_size);
+    }
+    fclose(f);
+
+    size_t data_size = (size_t)file_size - 32;
+    struct uint256 stored_hash;
+    memcpy(stored_hash.data, buf + data_size, 32);
+
+    struct uint256 computed_hash;
+    hash256(buf, data_size, computed_hash.data);
+
+    if (!uint256_eq(&stored_hash, &computed_hash)) {
+        free(buf);
+        LOG_FAIL("net", "peers.dat hash mismatch — file corrupted");
+    }
+
+    if (memcmp(buf, nm->message_start, MESSAGE_START_SIZE) != 0) {
+        free(buf);
+        LOG_FAIL("net", "peers.dat message_start mismatch — wrong network");
+    }
+
+    struct byte_stream s;
+    stream_init_from_data(&s, buf + MESSAGE_START_SIZE,
+                          data_size - MESSAGE_START_SIZE);
+
+    bool ok = addrman_deserialize(&nm->addrman, &s);
+    stream_free(&s);
+    free(buf);
+    return ok;
+}
+
+unsigned int receive_flood_size(void) { return 5 * 1000 * 1000; }
+unsigned int send_buffer_size(void) { return 1 * 1000 * 1000; }
