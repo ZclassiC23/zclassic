@@ -333,7 +333,15 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
      * chain to follow orphan forks instead of the main chain. */
     for (uint32_t i = 0; i < count; i++) {
         struct block_index *pindex = &arena[i];
-        if (pindex->nHeight > 0) {
+        /* Link by the entry's own prev_hash, NOT by its stored height:
+         * an entry persisted with a corrupt height 0 (a detached root a
+         * past relabel stamped — the 2026-06-10 global -2 incident) was
+         * skipped by the old `nHeight > 0` test and stayed detached on
+         * every subsequent boot. An all-zero prev_hash is genesis. */
+        bool has_prev = false;
+        for (int pb = 0; pb < 32; pb++)
+            if (entries[i].prev_hash[pb]) { has_prev = true; break; }
+        if (has_prev) {
             /* Look up prev_hash in block_map */
             struct uint256 prev;
             memcpy(prev.data, entries[i].prev_hash, 32);
