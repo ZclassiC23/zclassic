@@ -507,31 +507,12 @@ static int64_t boot_clock_ms(void)
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* ── Move 5: boot.c decomposition ─────────────────────────────────
- *
- * app_init was a 2,300-line monolith. We are decomposing it into
- * named, single-responsibility `boot_step_*` static functions, one
- * commit at a time. Each step takes the app_context (or a smaller
- * subset of its fields) and returns bool — true to continue, false
- * to bail. The contract is "either the precondition holds and the
- * step succeeds, or the process exits non-zero before any other
- * subsystem can observe partial state."
- *
- * Steps already extracted:
- *   - boot_step_init_observability       (signal handler + event log + async)
- *   - boot_step_select_chain_and_datadir (chain params, mkdir, datadir lock)
- *   - boot_step_init_postmortem          (seed tape + crash capsule hook)
- *   - boot_step_detect_unclean_shutdown  (.shutdown_clean marker check)
- *   - boot_step_start_disk_and_ibd_guards (disk_monitor + ibd_throttle)
- *
- * Pending future commits (in app_init order):
- *   - boot_step_init_crypto_and_state (ecc_start, sha256 selftest, main_state_init)
- *   - boot_step_load_block_index
- *   - boot_step_verify_csr_invariants
- *   - boot_step_init_coins_view + boot_step_init_sapling_tree
- *   - boot_step_resolve_chain_tip
- *   - boot_step_init_subsystems + boot_step_start_listeners
- */
+/* ── boot.c decomposition ──────────────────────────────────────────
+ * app_init is split into named, single-responsibility `boot_step_*`
+ * static functions returning bool — true to continue, false to bail.
+ * Contract: either the precondition holds and the step succeeds, or
+ * the process exits non-zero before any other subsystem can observe
+ * partial state. */
 
 static bool boot_step_init_observability(void)
 {
@@ -3589,7 +3570,22 @@ sapling_tree_boot_check_done:
     return svc_ok;
 }
 
-/* Write clean shutdown marker before shutting down */
+/* AS-safe SIGALRM backstop: app_shutdown_svc arms alarm(90), but shutdown
+ * paths that never ran main.c's signal_handler() (chain-tip watchdog,
+ * `stop` RPC, self-heal hot-loop) would otherwise die via SIGALRM's
+ * DEFAULT disposition mid-teardown — silent, and unlogged. */
+static void shutdown_alarm_abort(int sig)
+{
+    (void)sig;
+    static const char msg[] =
+        "[shutdown] alarm fired: graceful shutdown hung - forcing exit\n";
+    (void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    _exit(1);
+}
+
+/* Written LAST in app_shutdown: marker present == every teardown step
+ * completed. An alarm-forced exit mid-shutdown must read as UNCLEAN so
+ * the next boot runs recovery (it used to be written first). */
 static void write_clean_shutdown_marker(void)
 {
     if (!g_datadir) return;
@@ -3606,10 +3602,12 @@ static void write_clean_shutdown_marker(void)
 void app_shutdown(void)
 {
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_REQUESTED);
-    write_clean_shutdown_marker();
+    /* Backstop must be live BEFORE app_shutdown_svc arms alarm(90). */
+    signal(SIGALRM, shutdown_alarm_abort);
     boot_stop_platform_services();
     app_shutdown_svc(&g_svc);
     boot_step_stop_postmortem();
+    write_clean_shutdown_marker();
     release_datadir_lock();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }

@@ -20,14 +20,17 @@
  * Restart is bounded, not infinite (P0 resilience fix). A restart is a
  * remedy; if restarting did NOT make the tip advance, restarting again
  * is a thrash, not a fix. The watchdog persists, in progress.kv, the
- * stuck height and how many consecutive no-progress restarts it has
- * already requested at that exact height. The counter therefore
- * survives the restart it triggers. After it reaches
- * CHAIN_TIP_WD_MAX_RESTARTS it STOPS requesting shutdown and instead
- * pages a human (EV_OPERATOR_NEEDED + a loud stderr line), leaving the
- * node up (degraded) so an operator/MCP can intervene. A transient hang
- * still recovers: as soon as the tip advances past the stuck height the
- * counter resets to 0, so the next hang gets a fresh restart budget.
+ * wedge-episode anchor height and how many consecutive no-progress
+ * restarts it has already requested in that episode. The counter
+ * therefore survives the restart it triggers. Re-wedging within
+ * CHAIN_TIP_WD_EPISODE_MARGIN blocks of the anchor is the SAME episode
+ * (a creeping wedge that gains 1-2 blocks per restart must not refresh
+ * its budget). After the count reaches CHAIN_TIP_WD_MAX_RESTARTS it
+ * STOPS requesting shutdown and instead pages a human
+ * (EV_OPERATOR_NEEDED + a loud stderr line), leaving the node up
+ * (degraded) so an operator/MCP can intervene. A transient hang still
+ * recovers: sustained progress (CHAIN_TIP_WD_EPISODE_CLEAR blocks past
+ * the anchor) resets the counter, so the next hang gets a fresh budget.
  *
  * Persisted keys (progress.kv, progress_meta table):
  *   "chain_tip_wd.stuck_height"          int64  (8 bytes, native order)
@@ -59,10 +62,17 @@ void chain_tip_watchdog_register(struct main_state *ms);
  * existing value unchanged. */
 
 
-/* Hard cap on consecutive no-progress restarts at one stuck height.
+/* Hard cap on consecutive no-progress restarts within one wedge episode.
  * After this many restarts fail to advance the tip, the watchdog stops
  * power-cycling and pages a human (EV_OPERATOR_NEEDED). */
 #define CHAIN_TIP_WD_MAX_RESTARTS 3
+
+/* Wedge-episode window: a stuck height within MARGIN blocks past the
+ * recorded anchor is the same episode (count carries); only CLEAR
+ * blocks of progress past the anchor end the episode and restore a
+ * fresh restart budget. */
+#define CHAIN_TIP_WD_EPISODE_MARGIN  16
+#define CHAIN_TIP_WD_EPISODE_CLEAR  100
 
 /* Snapshot for diagnostics. */
 struct chain_tip_watchdog_stats {
@@ -114,7 +124,8 @@ void chain_tip_watchdog_test_load_persisted(void);
 bool chain_tip_watchdog_test_escalate_restart(int64_t h);
 
 /* Record that the tip advanced to height `h`: resets the no-progress
- * counter (in memory + persisted) if `h` is past the stuck height.
+ * counter (in memory + persisted) if `h` is at least
+ * CHAIN_TIP_WD_EPISODE_CLEAR blocks past the episode anchor.
  * Mirrors the advance branch of the supervisor tick. */
 void chain_tip_watchdog_test_observe_advance(int64_t h);
 #endif

@@ -15,10 +15,13 @@
  *   (a) K no-progress restarts at the SAME height across simulated process
  *       boots → after the cap, NO further shutdown request, operator_needed
  *       fired exactly once at the cap.
- *   (b) tip advancing past stuck_height RESETS the counter, so a later hang
- *       gets a fresh restart budget (transient-hang recovery still works).
+ *   (b) only SUSTAINED progress (CHAIN_TIP_WD_EPISODE_CLEAR blocks past the
+ *       episode anchor) resets the counter; a 1-block creep does NOT.
  *   (c) the persisted counter is what carries across boots — wiping ONLY
- *       in-memory state (not progress.kv) and reloading reproduces the count. */
+ *       in-memory state (not progress.kv) and reloading reproduces the count.
+ *   (d) a creeping wedge (tip gains 1-2 blocks per restart, re-wedges within
+ *       CHAIN_TIP_WD_EPISODE_MARGIN of the anchor) is ONE episode: the count
+ *       carries, the cap still bites; outside the margin is a new episode. */
 
 #include "test/test_helpers.h"
 
@@ -176,8 +179,10 @@ int test_chain_tip_watchdog_bounded_restart(void)
             WD_CHECK("transient count == 1", s.no_progress_restarts == 1);
         }
 
-        /* Process comes back AND the tip advances past the stuck height —
-         * the restart cured the hang. Counter must reset to 0. */
+        /* Process comes back AND the tip advances. A 1-block creep is
+         * exactly the creeping-wedge signature and must NOT clear the
+         * budget — clearing on any advance made the restart loop
+         * infinite. Only sustained progress past the anchor clears. */
         wd_sim_boot();
         {
             struct chain_tip_watchdog_stats s;
@@ -189,11 +194,22 @@ int test_chain_tip_watchdog_bounded_restart(void)
         {
             struct chain_tip_watchdog_stats s;
             chain_tip_watchdog_get_stats(&s);
-            WD_CHECK("advance past stuck resets count to 0",
+            WD_CHECK("1-block creep keeps count",
+                     s.no_progress_restarts == 1);
+            WD_CHECK("1-block creep keeps episode anchor",
+                     s.persisted_stuck_height == STUCK_H);
+        }
+        chain_tip_watchdog_test_observe_advance(
+            STUCK_H + CHAIN_TIP_WD_EPISODE_CLEAR);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("sustained advance resets count to 0",
                      s.no_progress_restarts == 0);
-            WD_CHECK("advance clears persisted_stuck_height",
+            WD_CHECK("sustained advance clears persisted_stuck_height",
                      s.persisted_stuck_height == -1);
-            WD_CHECK("advance clears operator_needed", !s.operator_needed);
+            WD_CHECK("sustained advance clears operator_needed",
+                     !s.operator_needed);
         }
 
         /* The reset must SURVIVE a reboot (was it persisted?). A LATER hang
@@ -254,6 +270,64 @@ int test_chain_tip_watchdog_bounded_restart(void)
                      s.no_progress_restarts == 2);
             WD_CHECK("stuck height survives close+reopen",
                      s.persisted_stuck_height == STUCK_H);
+        }
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── (d) creeping wedge: re-stuck within the margin = SAME episode ── */
+    {
+        char dir[256];
+        wd_tmpdir(dir, sizeof(dir), "creep");
+        wd_mkdir_p(dir);
+        WD_CHECK("open progress.kv (creep)", progress_store_open(dir));
+
+        /* Each restart "helps" by 2 blocks, then the tip re-wedges. The
+         * old exact-height keying saw a NEW stuck height every time and
+         * reset the budget = infinite restart loop. Episode keying must
+         * carry the count and keep the original anchor. */
+        const int64_t ANCHOR = 3132687;
+        int64_t h = ANCHOR;
+        for (int restart = 1; restart <= CAP; restart++) {
+            wd_sim_boot();
+            bool requested = chain_tip_watchdog_test_escalate_restart(h);
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            char label[96];
+            snprintf(label, sizeof(label),
+                     "creep restart %d <= cap requests shutdown", restart);
+            WD_CHECK(label, requested);
+            snprintf(label, sizeof(label),
+                     "creep restart %d carries count across heights", restart);
+            WD_CHECK(label, s.no_progress_restarts == restart);
+            WD_CHECK("creep keeps episode anchor",
+                     s.persisted_stuck_height == ANCHOR);
+            h += 2;  /* tip creeps, stays inside the episode margin */
+        }
+
+        /* Over the cap, still inside the margin: page, do NOT restart. */
+        wd_sim_boot();
+        bool over_cap = chain_tip_watchdog_test_escalate_restart(h);
+        WD_CHECK("creep over cap does NOT request shutdown", !over_cap);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("creep over cap pages operator", s.operator_needed);
+        }
+
+        /* A wedge OUTSIDE the margin is a genuinely new episode. */
+        wd_sim_boot();
+        const int64_t NEW_ANCHOR = ANCHOR + CHAIN_TIP_WD_EPISODE_MARGIN + 1;
+        bool r_new = chain_tip_watchdog_test_escalate_restart(NEW_ANCHOR);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("outside-margin wedge requests shutdown", r_new);
+            WD_CHECK("outside-margin wedge count restarts at 1",
+                     s.no_progress_restarts == 1);
+            WD_CHECK("outside-margin wedge re-anchors",
+                     s.persisted_stuck_height == NEW_ANCHOR);
         }
 
         progress_store_close();

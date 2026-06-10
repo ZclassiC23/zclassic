@@ -72,10 +72,10 @@ static _Atomic int64_t  g_thr_reserved = CHAIN_TIP_WD_DEFAULT_RESERVED_SECS;
 static _Atomic int64_t  g_thr_restart  = CHAIN_TIP_WD_DEFAULT_RESTART_SECS;
 
 /* Bounded-restart memory. Loaded from progress.kv at register(); the
- * (height, count) pair survives the restart it triggers, so a fresh
- * process knows it has already burned N restarts at this exact stuck
- * height and stops thrashing once N hits the cap. -1 == "no stuck
- * height recorded yet". */
+ * (episode anchor, count) pair survives the restart it triggers, so a
+ * fresh process knows it has already burned N restarts in this wedge
+ * episode and stops thrashing once N hits the cap. -1 == "no episode
+ * recorded yet". */
 static _Atomic int64_t  g_persisted_stuck_height = -1;
 static _Atomic int      g_no_progress_restarts   = 0;
 static _Atomic bool     g_operator_needed        = false;
@@ -151,13 +151,14 @@ static bool wd_persist_store(int64_t stuck_height, int restarts)
     return true;
 }
 
-/* Tip advanced to `h`: if it cleared the recorded stuck height, the
- * restart actually worked — forget the wedge so the next hang gets a
- * fresh restart budget. */
+/* Tip advanced to `h`: only SUSTAINED progress past the episode anchor
+ * proves the wedge cleared. A creeping wedge gains 1-2 blocks per
+ * restart; clearing on ANY advance refreshed its budget every restart
+ * — an infinite restart loop. */
 static void wd_note_advance(int64_t h)
 {
     int64_t stuck = atomic_load(&g_persisted_stuck_height);
-    if (stuck >= 0 && h > stuck) {
+    if (stuck >= 0 && h >= stuck + CHAIN_TIP_WD_EPISODE_CLEAR) {
         atomic_store(&g_persisted_stuck_height, -1);
         atomic_store(&g_no_progress_restarts, 0);
         atomic_store(&g_operator_needed, false);
@@ -171,10 +172,13 @@ static void wd_note_advance(int64_t h)
  * instead. `do_shutdown` lets test builds suppress the real syscall. */
 static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown)
 {
-    /* If we are stuck at a NEW height (different from the last recorded
-     * wedge), the previous restarts don't count — start a fresh budget. */
+    /* Episode keying: a stuck height inside [anchor, anchor+margin] is
+     * the SAME wedge creeping forward — carry the count and KEEP the
+     * original anchor. Only a height outside the window (including a
+     * rewind below the anchor) starts a fresh episode and budget. */
     int64_t stuck = atomic_load(&g_persisted_stuck_height);
-    if (stuck != h) {
+    if (stuck < 0 || h < stuck ||
+        h > stuck + CHAIN_TIP_WD_EPISODE_MARGIN) {
         atomic_store(&g_persisted_stuck_height, h);
         atomic_store(&g_no_progress_restarts, 0);
         atomic_store(&g_operator_needed, false);
@@ -196,15 +200,16 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown)
         return false;
     }
 
-    /* Below the cap: record one more restart at this height BEFORE
+    /* Below the cap: record one more restart in this episode BEFORE
      * requesting shutdown, so the fresh process reads back the
-     * incremented count. */
+     * incremented count. Persist the ANCHOR (not h): the anchor must
+     * stay fixed while the tip creeps inside the episode window. */
     restarts += 1;
     atomic_store(&g_no_progress_restarts, restarts);
     atomic_fetch_add(&g_fires_restart, 1u);
-    (void)wd_persist_store(h, restarts);
+    (void)wd_persist_store(stuck, restarts);
 
-    LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] requesting shutdown: h=%lld age=%llds " "(no-progress restart %d/%d at this height)", (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
+    LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] requesting shutdown: h=%lld age=%llds " "(no-progress restart %d/%d in episode anchored at %lld)", (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS, (long long)stuck);
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
         "chain_tip_watchdog request_shutdown h=%lld age=%llds restart=%d/%d",
         (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
@@ -230,9 +235,9 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
         atomic_store(&g_last_advance_us, now_us);
         atomic_store(&g_last_advance_unix, (int64_t)platform_time_wall_time_t());
         atomic_store(&g_escalation, 0);
-        /* Tip moved: if it cleared a recorded wedge, the restart worked —
-         * reset the bounded-restart budget so the next hang gets a fresh
-         * round of restarts (transient-hang recovery must keep working). */
+        /* Tip moved: if it cleared a recorded wedge episode (sustained
+         * progress past the anchor), the restart worked — reset the
+         * bounded-restart budget so the next hang gets a fresh round. */
         wd_note_advance(h);
         supervisor_progress(atomic_load(&g_id), h);
         return;

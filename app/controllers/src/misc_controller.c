@@ -27,6 +27,7 @@
 #include <time.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/thread_registry.h"
 
 struct misc_context {
     struct main_state *main_state;
@@ -189,7 +190,11 @@ static bool rpc_stop(const struct json_value *params, bool help,
         "Stop ZClassic server.");
 
     json_set_str(result, "ZClassic server stopping");
-    exit(0);
+    /* Canonical shutdown request — the same flag SIGTERM's handler sets.
+     * The main loop drains into app_shutdown() with correct teardown
+     * ordering (coins flush before index fsync). A raw exit() here tore
+     * the chainstate by design and dropped this RPC reply. */
+    thread_registry_request_shutdown();
     return true;
 }
 
