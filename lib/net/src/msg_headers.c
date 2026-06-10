@@ -675,7 +675,9 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                    mp->main_state->pindex_best_header &&
                    mp->main_state->pindex_best_header->phashBlock &&
                    mp->main_state->pindex_best_header->nHeight >
-                       pindex_last->nHeight) {
+                       pindex_last->nHeight &&
+                   node->starting_height >
+                       mp->main_state->pindex_best_header->nHeight) {
             /* The whole batch was already known and our best header sits
              * far above it (boot restored a deep header chain, or a
              * periodic re-anchor pulled the conversation back to the
@@ -688,7 +690,14 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
              * best_header; the exponential locator still lets the peer
              * pick an earlier fork point if our best header is stale.
              * Gated on repaired heights — with scrambled heights this
-             * skip used to loop forever, which is why it was removed. */
+             * skip used to loop forever, which is why it was removed.
+             * Also gated on the peer's advertised starting_height being
+             * ABOVE our best header: an honest peer whose tip is below
+             * best_header answers a best_header-anchored getheaders with
+             * the same all-known span every time (their fork point never
+             * moves), so the skip would ping-pong the identical request
+             * with that peer forever. Such peers take the pindex_last
+             * continuation below, which terminates at their tip. */
             push_getheaders_from(mp, node, mp->main_state->pindex_best_header);
         } else {
             /* Advance from pindex_last — the actual last header the peer
