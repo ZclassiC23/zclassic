@@ -230,5 +230,59 @@ int test_accept_to_mempool(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * 4. Dandelion dry-run: every check runs, NOTHING is inserted.
+     *    A valid tx passed with dry_run=true reports OK but stays out
+     *    of the mempool (BIP 156 stem txs must not be in the mempool);
+     *    a second, real call still accepts it (no DUPLICATE from the
+     *    dry pass).
+     * ================================================================ */
+    printf("accept_to_mempool_ex: dry-run validates without insert... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        struct uint256 utxo;
+        memset(utxo.data, 0xD4, 32);
+        bool ok = atm_add_p2pkh_utxo(&coins, &utxo, utxo_value, &kid);
+
+        struct transaction tx;
+        atm_build_spend(&tx, &utxo, 50 * COIN_VALUE);
+        atm_sign_input(&tx, &prev_spk, utxo_value, &key, &pub,
+                       /*corrupt=*/false);
+
+        enum mempool_accept_result dry =
+            accept_to_mempool_ex(&pool, &coins, NULL, NULL, &tx, true);
+        ok = ok && (dry == MEMPOOL_ACCEPT_OK);
+        ok = ok && (tx_mempool_size(&pool) == 0);
+
+        /* Dry-run still rejects a forged signature. */
+        struct transaction bad;
+        atm_build_spend(&bad, &utxo, 50 * COIN_VALUE);
+        atm_sign_input(&bad, &prev_spk, utxo_value, &key, &pub,
+                       /*corrupt=*/true);
+        enum mempool_accept_result dry_bad =
+            accept_to_mempool_ex(&pool, &coins, NULL, NULL, &bad, true);
+        ok = ok && (dry_bad == MEMPOOL_ACCEPT_INVALID);
+
+        /* The real (fluff-time) call inserts as usual. */
+        enum mempool_accept_result wet =
+            accept_to_mempool_ex(&pool, &coins, NULL, NULL, &tx, false);
+        ok = ok && (wet == MEMPOOL_ACCEPT_OK);
+        ok = ok && (tx_mempool_size(&pool) == 1);
+        ok = ok && tx_mempool_exists(&pool, &tx.hash);
+
+        transaction_free(&bad);
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

@@ -1116,6 +1116,16 @@ int test_net(void)
         ok = ok && (strcmp(inv_item_get_command(&inv), "block") == 0);
         ok = ok && inv_item_is_known_type(&inv);
 
+        /* BIP 156: MSG_DANDELION_TX (5) is a known type; the reserved
+         * slot 4 (Bitcoin MSG_CMPCT_BLOCK) is not. */
+        inv_item_init_typed(&inv, MSG_DANDELION_TX, &h);
+        ok = ok && (inv.type == 5);
+        ok = ok && inv_item_is_known_type(&inv);
+        ok = ok && (strcmp(inv_item_get_command(&inv), "dandeliontx") == 0);
+        inv_item_init_typed(&inv, 4, &h);
+        ok = ok && !inv_item_is_known_type(&inv);
+        ok = ok && (strcmp(inv_item_get_command(&inv), "UNKNOWN") == 0);
+
         char str[128];
         inv_item_to_string(&inv, str, sizeof(str));
         ok = ok && (strlen(str) > 0);
