@@ -43,11 +43,9 @@
 
 /* struct proof_validate_row + the utxo_apply_log schema/read/write helpers
  * live in utxo_apply_log_store.c (pure sqlite kernel helpers below the AR
- * layer).
- *
- * struct delta_entry / struct delta_summary plus inverse-delta persistence
- * and reorg-unwind machinery live in jobs/utxo_apply_delta.h /
- * utxo_apply_delta.c. */
+ * layer); the delta structs, free_delta(_arr), the block-delta builder
+ * (utxo_apply_compute_block_delta) and the inverse-delta persistence +
+ * reorg-unwind machinery live in jobs/utxo_apply_delta.h / _delta.c. */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -74,20 +72,77 @@ static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 
-/* The delta structs, free_delta(_arr), and the block-delta builder
- * (utxo_apply_compute_block_delta) live in utxo_apply_delta.c, shared
- * with the inverse-delta persistence + reorg-unwind path. */
+/* CS-F4 blocked-reject dedup. A consensus-rejected height returns
+ * JOB_BLOCKED and recomputes every tick BY DESIGN (an upstream repair can
+ * clear it), but the per-status totals must count BLOCKS — not ticks — and
+ * re-emitting the same EV_BLOCK_REJECTED every tick evicts the
+ * original-failure evidence from the bounded event ring. Counter + emit
+ * fire only on a NEW (height,status) pair, plus a keep-alive re-emit every
+ * REJECT_REEMIT_SECS carrying the cumulative suppressed-tick count (counter
+ * NOT re-bumped). Cleared on JOB_ADVANCED (and shutdown) so a pair re-hit
+ * after a rewind-then-reapply counts as a new block. g_reject_lock guards
+ * the non-atomic fields. */
+#define REJECT_REEMIT_SECS 300
+static _Atomic int64_t g_last_reject_height = -1;
+static pthread_mutex_t g_reject_lock = PTHREAD_MUTEX_INITIALIZER;
+static char     g_last_reject_status[24];
+static int64_t  g_last_reject_emit_unix;
+static uint64_t g_reject_repeat_ticks;
 
-/* Author the validated block delta into the progress.kv `coins` table (coins_kv)
- * on the stage's own db handle, so it lands INSIDE stage_run_once's BEGIN
- * IMMEDIATE — the coin mutation commits or rolls back as ONE atomic unit with
- * the cursor + inverse-delta + log row, closing the tip-wedge tear class
- * (docs/work/tip-durability-collapse.md). coins_kv is now the SOLE live UTXO
- * author and read source (the projection is seed-only). Adds are applied before
- * spends: every UTXO key created in this block is unique (compute_block_delta
- * rejects collisions), and the only intra-block key interaction is
- * create-then-spend of the same output — which add-then-spend resolves to
- * "absent". The coins set is a set, so the final state is order-independent. */
+static void reject_count_and_emit(int height, const char *status,
+                                  _Atomic uint64_t *counter,
+                                  const char *label)
+{
+    if (!status) status = "unknown";
+    int64_t now = platform_time_wall_unix();
+    uint64_t repeats = 0;
+    pthread_mutex_lock(&g_reject_lock);
+    bool same = atomic_load(&g_last_reject_height) == (int64_t)height &&
+                strncmp(g_last_reject_status, status,
+                        sizeof(g_last_reject_status) - 1) == 0;
+    if (same) {
+        repeats = ++g_reject_repeat_ticks;
+        if (now - g_last_reject_emit_unix < REJECT_REEMIT_SECS) {
+            pthread_mutex_unlock(&g_reject_lock);
+            return;
+        }
+    } else {
+        atomic_store(&g_last_reject_height, (int64_t)height);
+        snprintf(g_last_reject_status, sizeof(g_last_reject_status), "%s",
+                 status);
+        g_reject_repeat_ticks = 0;
+    }
+    g_last_reject_emit_unix = now;
+    pthread_mutex_unlock(&g_reject_lock);
+    if (!same) {
+        atomic_fetch_add(counter, 1);
+        event_emitf(EV_BLOCK_REJECTED, 0, "utxo_apply %s height=%d",
+                    label, height);
+    } else {
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "utxo_apply %s height=%d repeats=%llu",
+                    label, height, (unsigned long long)repeats);
+    }
+}
+
+static void reject_memo_clear(void)
+{
+    pthread_mutex_lock(&g_reject_lock);
+    atomic_store(&g_last_reject_height, (int64_t)-1);
+    g_last_reject_status[0] = '\0';
+    g_reject_repeat_ticks = 0;
+    pthread_mutex_unlock(&g_reject_lock);
+}
+
+/* Author the validated block delta into the progress.kv `coins` table
+ * (coins_kv) on the stage's own db handle, INSIDE stage_run_once's BEGIN
+ * IMMEDIATE — the coin mutation commits or rolls back as ONE atomic unit
+ * with the cursor + inverse-delta + log row, closing the tip-wedge tear
+ * class (docs/work/tip-durability-collapse.md). coins_kv is the SOLE live
+ * UTXO author and read source (the projection is seed-only). Adds before
+ * spends: created keys are unique (compute_block_delta rejects collisions)
+ * and intra-block create-then-spend resolves to "absent", so the final set
+ * is order-independent. */
 static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
                            uint32_t height)
 {
@@ -102,10 +157,6 @@ static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
             return false;
     return true;
 }
-
-/* compute_block_delta now lives in utxo_apply_delta.c as
- * utxo_apply_compute_block_delta (it owns the delta structs + the
- * persistence/inversion of the same arrays). */
 
 /* The reducer's port of zclassicd's shielded-double-spend gate (C-3) lives
  * in utxo_apply_nullifiers.c (utxo_apply_check_and_insert_nullifiers + the
@@ -218,13 +269,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    /* Author the canonical coins_kv set from this validated delta when the
-     * stage holds UTXO authority. coins_kv is written in-txn so a failure
-     * here rolls back the whole stage txn (cursor + inverse-delta + log row
-     * + coins) — never a torn partial apply. Scripts in `summary.added`
-     * alias into `blk`, so apply before block_free. The author gate is
-     * retained (UTXO_AUTHOR_STAGE) — it now guards the coins_kv write, the
-     * sole live UTXO author after the projection dual-write was removed. */
+    /* Author the canonical coins_kv set when the stage holds UTXO authority
+     * (UTXO_AUTHOR_STAGE — it guards the sole live UTXO author). In-txn: a
+     * failure rolls back the whole stage txn (cursor + inverse-delta + log
+     * row + coins) — never a torn partial apply. Scripts in `summary.added`
+     * alias into `blk`, so apply before block_free. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         if (!apply_coins_kv(db, &summary, (uint32_t)next_h)) {
             free_delta(&summary);
@@ -233,12 +282,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    /* Persist the per-block inverse-delta so a later disconnect can be
-     * reconstructed without re-reading legacy undo files. Stamped with the
-     * OLD branch hash so a fork at the same height is distinguishable. Inside
-     * the stage txn (stage_run_once's BEGIN IMMEDIATE), so the delta + log row
-     * + cursor land atomically. Persisted only on a successful apply; failure
-     * rows have nothing to invert. */
+    /* Persist the per-block inverse-delta (the later-disconnect source — no
+     * legacy undo files), stamped with the OLD branch hash so a same-height
+     * fork is distinguishable. In the stage txn so delta + log row + cursor
+     * land atomically; only a successful apply persists one (failure rows
+     * have nothing to invert). */
     if (summary.ok) {
         if (!utxo_apply_delta_persist(db, next_h, bi->phashBlock, &summary)) {
             free_delta(&summary);
@@ -253,36 +301,31 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                          (uint64_t)summary.added_count);
         atomic_fetch_add(&g_total_outputs_spent,
                          (uint64_t)summary.spent_count);
-    } else if (strcmp(summary.status, "spend_unknown_utxo") == 0) {
-        atomic_fetch_add(&g_spend_unknown_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply spend_unknown_utxo height=%d", next_h);
-    } else if (strcmp(summary.status, "utxo_collision") == 0) {
-        atomic_fetch_add(&g_utxo_collision_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply utxo_collision height=%d", next_h);
-    } else if (strcmp(summary.status, "value_overflow") == 0) {
-        atomic_fetch_add(&g_value_overflow_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply value_overflow height=%d", next_h);
-    } else if (strcmp(summary.status, "coinbase_protect") == 0) {
-        atomic_fetch_add(&g_coinbase_protect_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply bad-txns-coinbase-spend-has-transparent-outputs "
-                    "height=%d", next_h);
-    } else if (strcmp(summary.status, "bad_cb_amount") == 0) {
-        atomic_fetch_add(&g_bad_cb_amount_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply bad-cb-amount height=%d", next_h);
-    } else if (strcmp(summary.status, "shielded_double_spend") == 0) {
-        atomic_fetch_add(&g_shielded_double_spend_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply bad-txns-joinsplit-requirements-not-met "
-                    "height=%d", next_h);
     } else {
-        atomic_fetch_add(&g_internal_error_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply internal_error height=%d", next_h);
+        /* The event label is zclassicd's exact reject string where one
+         * exists; dedup + keep-alive policy lives in reject_count_and_emit. */
+        _Atomic uint64_t *counter = &g_internal_error_total;
+        const char *label = "internal_error";
+        if (strcmp(summary.status, "spend_unknown_utxo") == 0) {
+            counter = &g_spend_unknown_total;
+            label = "spend_unknown_utxo";
+        } else if (strcmp(summary.status, "utxo_collision") == 0) {
+            counter = &g_utxo_collision_total;
+            label = "utxo_collision";
+        } else if (strcmp(summary.status, "value_overflow") == 0) {
+            counter = &g_value_overflow_total;
+            label = "value_overflow";
+        } else if (strcmp(summary.status, "coinbase_protect") == 0) {
+            counter = &g_coinbase_protect_total;
+            label = "bad-txns-coinbase-spend-has-transparent-outputs";
+        } else if (strcmp(summary.status, "bad_cb_amount") == 0) {
+            counter = &g_bad_cb_amount_total;
+            label = "bad-cb-amount";
+        } else if (strcmp(summary.status, "shielded_double_spend") == 0) {
+            counter = &g_shielded_double_spend_total;
+            label = "bad-txns-joinsplit-requirements-not-met";
+        }
+        reject_count_and_emit(next_h, summary.status, counter, label);
     }
 
     if (!utxo_apply_log_insert(db, next_h, summary.status, summary.ok,
@@ -307,45 +350,41 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     free_delta(&summary);
     block_free(&blk);
 
-    /* Co-commit the contiguous applied frontier = the SAME value written to the
-     * stage cursor (cursor_in + 1), so coins_applied_height == utxo_apply cursor
-     * by construction on every successful apply. Failed verdicts return
-     * JOB_BLOCKED above, the framework rolls back their scratch log row, and
-     * the cursor/frontier stay at the unresolved height. That fail-closed
-     * policy prevents a mixed coins window where later heights are applied over
-     * an un-applied hole. */
+    /* Co-commit the contiguous applied frontier = the SAME value written to
+     * the stage cursor (cursor_in + 1), so coins_applied_height ==
+     * utxo_apply cursor by construction on every successful apply. Failed
+     * verdicts return JOB_BLOCKED above and hold cursor/frontier at the
+     * unresolved height (scratch log row rolled back) — fail-closed, never
+     * a mixed coins window applied over an un-applied hole. */
     uint64_t next_cursor = c->cursor_in + 1;
     if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
         return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
+    reject_memo_clear();
     c->cursor_out = next_cursor;
     return JOB_ADVANCED;
 }
 
 /* Production prevout resolver for utxo_apply, the init-time default for
  * g_lookup — the analogue of script_validate's created_index_prevout
- * self-default, but with the CORRECT semantics for utxo_apply: it must mean
- * "currently UNSPENT". coins_kv DELETEs a coin on spend, so a hit from
- * coins_kv_get_coins == the coin is live/unspent. This is the
- * double-spend-safe source; a creation index (which never deletes spent rows)
- * would report found=true for an already-spent coin and let utxo_apply accept
- * a double-spend (monetary inflation / hard fork) AND false-trip BIP30
- * collision — so it MUST NOT be used here. The full pre-image
- * (value/height/is_coinbase/script) is required for the inverse-delta
- * restore-ADD. A genuine miss returns found=false (compute_block_delta then
- * records spend_unknown_utxo with the exact outpoint — never a silent pass).
+ * self-default, but with the CORRECT semantics for utxo_apply: found must
+ * mean "currently UNSPENT". coins_kv DELETEs a coin on spend, so a hit from
+ * coins_kv_get_coins == the coin is live (double-spend-safe); a creation
+ * index (which never deletes spent rows) would report found=true for an
+ * already-spent coin and let utxo_apply accept a double-spend (monetary
+ * inflation / hard fork) AND false-trip BIP30 collision — it MUST NOT be
+ * used here. The full pre-image (value/height/is_coinbase/script) is
+ * required for the inverse-delta restore-ADD. A genuine miss returns
+ * found=false (compute_block_delta then records spend_unknown_utxo with the
+ * exact outpoint — never a silent pass).
  *
- * FRESHNESS CONTRACT: this reads the authoritative coins set (coins_kv) on the
- * progress.kv handle. Because utxo_apply authors coins_kv IN the stage txn (step
- * 2/3), a coin created by an earlier block is already committed to coins_kv
- * before a later block's step_apply runs — reads are inherently fresh with no
- * catch_up dependency (the projection's last_consumed_offset freshness hack is
- * gone). The read runs inside the apply path's progress_store_tx_lock, so it is
- * consistent with the apply txn. coins_kv DELETEs a coin on spend, so a hit ==
- * the coin is live/unspent (double-spend-safe); a genuine miss returns
- * found=false (compute_block_delta records spend_unknown_utxo with the exact
- * outpoint — never a silent pass). */
+ * FRESHNESS CONTRACT: reads the authoritative coins set on the progress.kv
+ * handle inside the apply path's progress_store_tx_lock, and apply_coins_kv
+ * authors coins_kv IN the stage txn — a coin created by an earlier block is
+ * already committed before a later block's step_apply resolves it, so reads
+ * are inherently fresh with no catch_up dependency (the projection's
+ * last_consumed_offset freshness hack is gone). */
 static bool projection_live_lookup(const struct uint256 *txid, uint32_t vout,
                                    struct utxo_apply_lookup *out, void *user)
 {
@@ -471,12 +510,10 @@ bool utxo_apply_stage_init(struct main_state *ms)
 
     g_ms = ms;
     g_stage = s;
-    /* Wire the production UTXO-set resolver unless a caller (e.g. a test)
-     * already installed one. Without it g_lookup stays NULL and
-     * utxo_apply_compute_block_delta treats EVERY external coin as absent,
-     * rejecting every cross-block transparent spend as spend_unknown_utxo
-     * (live-wedge blocker #5). Symmetric with script_validate's
-     * created_index_prevout self-default (script_validate_stage.c). */
+    /* Wire the production UTXO-set resolver unless a caller (a test)
+     * already installed one: with g_lookup NULL the delta builder treats
+     * EVERY external coin as absent and rejects every cross-block
+     * transparent spend as spend_unknown_utxo (live-wedge blocker #5). */
     if (!g_lookup)
         g_lookup = projection_live_lookup;
     pthread_mutex_unlock(&g_lock);
@@ -512,12 +549,9 @@ job_result_t utxo_apply_stage_step_once(void)
     }
     job_result_t r = stage_run_once(g_stage, db);
     progress_store_tx_unlock();
-    /* No projection catch_up fold: the prevout resolver (projection_live_lookup)
-     * reads coins_kv, which apply_coins_kv writes IN this stage's BEGIN
-     * IMMEDIATE — a coin created by an earlier block is already committed to
-     * coins_kv before a later block in the same drain resolves it, so reads are
-     * inherently fresh with no fold needed (the projection's last_consumed_offset
-     * freshness hack is gone with the dual-write). */
+    /* No projection catch_up fold needed: projection_live_lookup reads the
+     * coins_kv rows apply_coins_kv writes IN this stage's BEGIN IMMEDIATE
+     * (see its FRESHNESS CONTRACT). */
     return r;
 }
 
@@ -554,6 +588,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    reject_memo_clear();
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -588,13 +623,20 @@ bool utxo_apply_stage_succeeded_at(int height)
     progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     bool ok = false;
-    if (sqlite3_prepare_v2(db,
+    int rc = sqlite3_prepare_v2(db,
             "SELECT ok FROM utxo_apply_log WHERE height = ?",
-            -1, &st, NULL) == SQLITE_OK) {
+            -1, &st, NULL);
+    if (rc == SQLITE_OK) {
         sqlite3_bind_int(st, 1, height);
         if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
             ok = sqlite3_column_int(st, 0) == 1;
         sqlite3_finalize(st);
+    } else {
+        /* This accessor gates reducer_pending_body_is_accepted: a silent
+         * false on a store error is indistinguishable from "not applied". */
+        LOG_WARN(STAGE_NAME,
+                 "[utxo_apply] succeeded_at(%d): prepare failed rc=%d (%s); "
+                 "reporting not-applied", height, rc, sqlite3_errmsg(db));
     }
     progress_store_tx_unlock();
     return ok;

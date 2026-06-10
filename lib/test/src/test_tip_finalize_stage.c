@@ -399,6 +399,10 @@ int test_tip_finalize_stage(void)
                  row_ok == 1 && strcmp(status, "anchor") == 0);
         TF_CHECK("stale_cursor: stale lower rows do not replay",
                  tip_finalize_stage_step_once() == JOB_IDLE);
+        /* CS-F3: the repeated cursor_in>utxo_apply gap step still idles —
+         * the per-tick WARN is throttled but the verdict is unchanged. */
+        TF_CHECK("stale_cursor: repeat gap step stays IDLE",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
         TF_CHECK("stale_cursor: public height still restored tip",
                  active_chain_height(&ms.chain_active) == 5);
         tf_teardown(dir, &ms, &sc);
@@ -547,6 +551,24 @@ int test_tip_finalize_stage(void)
         TF_CHECK("precondition: NO junk row written at h=1",
                  log_row_at(progress_store_db(), 1, &ok, status,
                             sizeof(status), &depth, &utxos) == false);
+        /* CS-F1 WARN-storm throttle: repeated holds on the UNCHANGED
+         * (height,reason) pair are counted (precondition_repeat_count in the
+         * zcl_state dump) instead of re-logging the WARN every idle tick. */
+        TF_CHECK("precondition: repeat hold stays IDLE",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+        TF_CHECK("precondition: repeat hold stays IDLE x2",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+        {
+            struct json_value v;
+            json_init(&v);
+            char buf[1536];
+            bool dumped = tip_finalize_dump_state_json(&v, NULL);
+            size_t n = dumped ? json_write(&v, buf, sizeof(buf)) : 0;
+            TF_CHECK("precondition: repeat count == 2 in dump",
+                     n > 0 && n < sizeof(buf) &&
+                     strstr(buf, "\"precondition_repeat_count\":2") != NULL);
+            json_free(&v);
+        }
         /* Land the successor body: block[2] now has HAVE_DATA, so BOTH height 1
          * (lookahead = block[2]) and height 2 (lookahead = the always-ready
          * block[3]) become finalizable. The held frontier drains forward two
@@ -698,6 +720,8 @@ int test_tip_finalize_stage(void)
         TF_CHECK("dump: cursor=2", strstr(buf, "\"cursor\":2") != NULL);
         TF_CHECK("dump: finalized_total=2",
                  strstr(buf, "\"finalized_total\":2") != NULL);
+        TF_CHECK("dump: precondition_repeat_count=0",
+                 strstr(buf, "\"precondition_repeat_count\":0") != NULL);
         json_free(&v);
         tf_teardown(dir, &ms, &sc);
     }

@@ -450,6 +450,12 @@ static void run_fail_case(int *failures_out, enum uv_fail_kind kind,
      * ok=0 row can masquerade as an applied height. */
     UV_CHECK("failure: succeeded_at(1) false (no committed row)",
              !utxo_apply_stage_succeeded_at(1));
+    /* CS-F4: the blocked height recomputes every tick (retry semantics), but
+     * the per-status total counts BLOCKS — a retry tick of the unchanged
+     * (height,status) pair must not inflate it. */
+    UV_CHECK("failure: retry tick stays BLOCKED",
+             utxo_apply_stage_step_once() == JOB_BLOCKED);
+    UV_CHECK("failure: counter still 1 after retry tick", counter() == 1);
     blocker_clear("utxo_apply.apply_failed");
     uv_teardown(dir, &ms, &sc);
     *failures_out += failures;
@@ -530,6 +536,34 @@ int test_utxo_apply_stage(void)
         uv_teardown(dir, &ms, &sc);
     }
 
+    /* CS-F4 memo lifecycle: a held reject ticks without inflating its
+     * counter; once the cause heals, the SAME height applies and the stage
+     * resumes (JOB_ADVANCED clears the memo, so the dedup never wedges
+     * recovery and a later reject counts as a new block). */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        UV_CHECK("dedup: setup",
+                 uv_setup("dedup", 3, UV_FAIL_UNKNOWN, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        UV_CHECK("dedup: drains until failed height",
+                 utxo_apply_stage_drain(100) == 1);
+        UV_CHECK("dedup: counter == 1 after first reject",
+                 utxo_apply_stage_spend_unknown_total() == 1);
+        UV_CHECK("dedup: retry tick 1 stays BLOCKED",
+                 utxo_apply_stage_step_once() == JOB_BLOCKED);
+        UV_CHECK("dedup: retry tick 2 stays BLOCKED",
+                 utxo_apply_stage_step_once() == JOB_BLOCKED);
+        UV_CHECK("dedup: counter still 1 (counts blocks, not ticks)",
+                 utxo_apply_stage_spend_unknown_total() == 1);
+        sc.fail_kind = UV_FAIL_NONE;   /* heal: prevout resolvable again */
+        UV_CHECK("dedup: healed drain applies the rest",
+                 utxo_apply_stage_drain(100) == 2);
+        UV_CHECK("dedup: cursor at 3", utxo_apply_stage_cursor() == 3);
+        blocker_clear("utxo_apply.apply_failed");
+        uv_teardown(dir, &ms, &sc);
+    }
+
     {
         char dir[256]; struct main_state ms; struct synth_chain_uv sc;
         UV_CHECK("idle: setup",
@@ -604,6 +638,8 @@ int test_utxo_apply_stage(void)
                      "kind=bad-txns-joinsplit-requirements-not-met"));
         UV_CHECK("nf sapling: retry stays JOB_BLOCKED",
                  utxo_apply_stage_step_once() == JOB_BLOCKED);
+        UV_CHECK("nf sapling: counter still 1 after retry (CS-F4 dedup)",
+                 uv_dump_has("\"shielded_double_spend_total\":1"));
         UV_CHECK("nf sapling: cursor held at h=2",
                  utxo_apply_stage_cursor() == 2);
         UV_CHECK("nf sapling: h=1 row revealed",
@@ -708,6 +744,73 @@ int test_utxo_apply_stage(void)
                                       NULLIFIER_POOL_SPROUT, &fs, &hs) &&
                      fs && hs == 2);
         }
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* (d2) TG-F6 INTRA-BLOCK cross-pool byte-reuse is LEGAL: the same 32
+     * bytes revealed as a Sapling nullifier (tx1) and a Sprout nullifier
+     * (tx2) in ONE block must apply — nf_seen's accumulator keys on
+     * (pool, bytes); dropping the pool term would false-reject this block
+     * (an opposite-direction fork). Neither (c) (same-pool intra-block) nor
+     * (d) (cross-pool but cross-block) covers it. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("nf xpool intra: setup",
+                 uv_setup("nf_xpool_intra", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        const uint8_t tag[1] = { 0xE1 };
+        UV_CHECK("nf xpool intra: vtx[1] sapling spend attaches",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x6A));
+        UV_CHECK("nf xpool intra: bare tx appends",
+                 uv_append_bare_tx(&sc.bodies[1], 1));
+        UV_CHECK("nf xpool intra: vtx[2] sprout joinsplit (same bytes)",
+                 uv_add_joinsplit_nfs(&sc.bodies[1].vtx[2], 0xE1, 0xE2, 0x6A));
+        UV_CHECK("nf xpool intra: block APPLIES",
+                 utxo_apply_stage_drain(100) == 2);
+        UV_CHECK("nf xpool intra: cursor at 2",
+                 utxo_apply_stage_cursor() == 2);
+        UV_CHECK("nf xpool intra: no blocker recorded",
+                 !blocker_exists("utxo_apply.apply_failed"));
+        {
+            uint8_t nf[32]; bool fz = false, fs = false;
+            int64_t hz = -1, hs = -1;
+            uv_nf_bytes(nf, 0xE1, 0x6A);
+            UV_CHECK("nf xpool intra: sapling row at h=1",
+                     nullifier_kv_get(progress_store_db(), nf,
+                                      NULLIFIER_POOL_SAPLING, &fz, &hz) &&
+                     fz && hz == 1);
+            UV_CHECK("nf xpool intra: sprout row (same bytes) at h=1",
+                     nullifier_kv_get(progress_store_db(), nf,
+                                      NULLIFIER_POOL_SPROUT, &fs, &hs) &&
+                     fs && hs == 1);
+        }
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* (d3) TG-F6 mirror reject: two Sprout txs of the SAME block revealing
+     * the same Sprout nullifier must be rejected — the (c) regression lock
+     * for the Sprout side of the accumulator. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        UV_CHECK("nf sprout intra: setup",
+                 uv_setup("nf_sprout_intra", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("nf sprout intra: vtx[1] joinsplit attaches",
+                 uv_add_joinsplit_nfs(&sc.bodies[1].vtx[1], 0xE5, 0xE6, 0x6B));
+        UV_CHECK("nf sprout intra: bare tx appends",
+                 uv_append_bare_tx(&sc.bodies[1], 1));
+        UV_CHECK("nf sprout intra: vtx[2] dup joinsplit attaches",
+                 uv_add_joinsplit_nfs(&sc.bodies[1].vtx[2], 0xE5, 0xE7, 0x6B));
+        UV_CHECK("nf sprout intra: drains until dup block",
+                 utxo_apply_stage_drain(100) == 1);
+        UV_CHECK("nf sprout intra: counter == 1",
+                 uv_dump_has("\"shielded_double_spend_total\":1"));
+        UV_CHECK("nf sprout intra: cursor held at h=1",
+                 utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf sprout intra: rejected block left zero rows",
+                 uv_nf_rows_at(progress_store_db(), 1) == 0);
+        blocker_clear("utxo_apply.apply_failed");
         uv_teardown(dir, &ms, &sc);
     }
 

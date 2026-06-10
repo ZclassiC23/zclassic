@@ -3,8 +3,11 @@
 #include "services/chain_evidence_persistence_service.h"
 
 #include "models/database.h"
+#include "platform/time_compat.h"
 #include "util/log_macros.h"
 
+#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -144,6 +147,62 @@ struct zcl_result chain_evidence_store_persist(
     return ZCL_OK;
 }
 
+/* Load misses on a fresh/restored datadir are the common, expected case,
+ * and chain_evidence_controller_snapshot issues 4 loads per call from the
+ * health heartbeat, event_controller, and zcl_state — unthrottled that is
+ * 4 identical WARNs per tick, forever. Throttle the WARN per key: log the
+ * first miss, then at most once per 300s with the running miss count. The
+ * typed ZCL_ERR(-3) result is always returned unchanged, so every caller
+ * still receives a contextful error. Keys are a tiny fixed set of cec.*
+ * singletons; if the table somehow fills, fail open to logging. */
+#define CEC_MISS_LOG_SLOTS 8
+#define CEC_MISS_LOG_PERIOD_SECS 300
+
+static bool load_miss_should_log(const char *key, uint64_t *misses_out)
+{
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    static struct {
+        char key[64];
+        uint64_t misses;
+        int64_t last_log_unix;
+    } slots[CEC_MISS_LOG_SLOTS];
+    const char *k = key ? key : "(null)";
+    int64_t now = platform_time_wall_unix();
+    int free_slot = -1;
+
+    pthread_mutex_lock(&mu);
+    for (int i = 0; i < CEC_MISS_LOG_SLOTS; i++) {
+        if (slots[i].key[0] == '\0') {
+            if (free_slot < 0)
+                free_slot = i;
+            continue;
+        }
+        if (strcmp(slots[i].key, k) == 0) {
+            bool log = (now - slots[i].last_log_unix) >=
+                       CEC_MISS_LOG_PERIOD_SECS;
+            slots[i].misses++;
+            *misses_out = slots[i].misses;
+            if (log)
+                slots[i].last_log_unix = now;
+            pthread_mutex_unlock(&mu);
+            return log;
+        }
+    }
+    if (free_slot >= 0) {
+        snprintf(slots[free_slot].key, sizeof(slots[free_slot].key),
+                 "%s", k);
+        slots[free_slot].misses = 1;
+        slots[free_slot].last_log_unix = now;
+        *misses_out = 1;
+        pthread_mutex_unlock(&mu);
+        return true;
+    }
+    /* Table full: unexpected for the fixed cec.* key set — fail open. */
+    *misses_out = 0;
+    pthread_mutex_unlock(&mu);
+    return true;
+}
+
 struct zcl_result chain_evidence_store_load(struct node_db *ndb,
                                             const char *key,
                                             struct chain_evidence_record *out)
@@ -163,9 +222,13 @@ struct zcl_result chain_evidence_store_load(struct node_db *ndb,
     }
     if (!node_db_state_get(ndb, key, &p, sizeof(p), &len)) {
         /* Missing key is the common, expected case at boot; report it but
-         * keep it diagnostic (out stays zeroed, exactly as before). */
-        LOG_WARN("cec.store", "load: node_db_state_get miss key=%s",
-                 key ? key : "(null)");
+         * keep it diagnostic (out stays zeroed, exactly as before). The
+         * WARN is per-key throttled; the typed error is not. */
+        uint64_t misses = 0;
+        if (load_miss_should_log(key, &misses))
+            LOG_WARN("cec.store",
+                     "load: node_db_state_get miss key=%s misses=%llu",
+                     key ? key : "(null)", (unsigned long long)misses);
         return ZCL_ERR(-3, "load: node_db_state_get miss key=%s",
                        key ? key : "(null)");
     }
