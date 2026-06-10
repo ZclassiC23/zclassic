@@ -38,6 +38,18 @@ static bool chain_restore_candidate_matches_disk(
     return chain_restore_block_is_consensus_backed_on_disk(cand, datadir);
 }
 
+/* Slot store under the active_chain writer lock: a concurrent window grow
+ * republishes c->chain, so an unlocked store could land in a just-retired
+ * array and be lost. The store itself stays a plain pointer write per the
+ * active_chain contract. */
+static void chain_restore_store_slot(struct active_chain *c, int h,
+                                     struct block_index *bi)
+{
+    zcl_mutex_lock(&c->write_lock);
+    c->chain[h] = bi;
+    zcl_mutex_unlock(&c->write_lock);
+}
+
 static bool chain_restore_active_slot_is_canonical(
     const struct active_chain *c,
     int h)
@@ -87,24 +99,12 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
      * first. Idempotent when already set. */
     if (active_chain_tip(c) != tip || active_chain_height(c) != tip_h) {
         if (tip_h > 1000000) {
-            if (tip_h >= c->capacity) {
-                int old_cap = c->capacity;
-                int new_cap = tip_h + 1024;
-                struct block_index **nc = zcl_realloc(
-                    c->chain, (size_t)new_cap * sizeof(struct block_index *),
-                    "active_chain/live_tip");
-                if (!nc)
-                    LOG_RETURN(0, "chain_restore",
-                               "live tip install realloc failed (tip_h=%d)",
-                               tip_h);
-                c->chain = nc;
-                memset(&c->chain[old_cap], 0,
-                       (size_t)(new_cap - old_cap) *
-                       sizeof(struct block_index *));
-                c->capacity = new_cap;
-            }
-            c->chain[tip_h] = tip;
-            c->height = tip_h;
+            /* The grow must go through the chainstate retire-not-free
+             * helper — an in-place realloc here would free an array that
+             * lock-free readers (RPC is already serving) may still hold. */
+            if (!active_chain_install_tip_slot(c, tip))
+                LOG_RETURN(0, "chain_restore",
+                           "live tip install failed (tip_h=%d)", tip_h);
             printf("[chain-restore] installed live tip without full "
                    "active_chain walk: h=%d\n", tip_h);
         } else {
@@ -156,9 +156,9 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             (p->nStatus & BLOCK_HAVE_DATA) && p->nDataPos != 0)
             disk_ok = chain_restore_candidate_matches_disk(p, datadir);
         if (disk_ok) {
-            if (c->chain[h] != p) c->chain[h] = p;
+            if (c->chain[h] != p) chain_restore_store_slot(c, h, p);
         } else if (c->chain[h] == p) {
-            c->chain[h] = NULL;
+            chain_restore_store_slot(c, h, NULL);
         }
         if (h < deepest) deepest = h;
         populated++;
@@ -224,6 +224,9 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             by_height[h] = cand;
     }
 
+    /* One write_lock hold across the whole no-I/O sweep (vs per-slot):
+     * the lock-free at()/canonical reads stay valid under it. */
+    zcl_mutex_lock(&c->write_lock);
     for (int h = 0; h <= tip_h; h++) {
         if (chain_restore_active_slot_is_canonical(c, h))
             continue;
@@ -234,6 +237,7 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             c->chain[h] = NULL;
         }
     }
+    zcl_mutex_unlock(&c->write_lock);
 
     free(by_height);
 

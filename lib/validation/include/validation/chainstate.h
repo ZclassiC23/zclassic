@@ -123,6 +123,14 @@ bool active_chain_contains(const struct active_chain *c,
  * authority separately after their durable writes succeed. */
 bool active_chain_move_window_tip(struct active_chain *c,
                                   struct block_index *bi);
+/* Install `bi` as chain[bi->nHeight] and publish the height WITHOUT the
+ * ancestor walk of active_chain_move_window_tip — the boot/restore repair
+ * primitive (callers rebuild + disk-validate ancestry afterwards). The grow
+ * follows the retire-not-free contract; height publishes LAST under
+ * write_lock. Returns false only on grow allocation failure or bad args.
+ * See chainstate.c. */
+bool active_chain_install_tip_slot(struct active_chain *c,
+                                   struct block_index *bi);
 /* Forward-only widen of the visible chain[] window to a most-work candidate
  * that builds on the current tip, WITHOUT publishing an authoritative tip.
  * The reducer's structural analogue of assembling chain[] out to

@@ -294,6 +294,45 @@ bool active_chain_contains(const struct active_chain *c,
     return arr[bi->nHeight] == bi;
 }
 
+/* Grow chain[] to cover min_height. write_lock must be held. A grow never
+ * frees the old array in place (lock-free readers — RPC, net locator builds,
+ * bg verification — may hold it): the new array is fully populated, published,
+ * then the wider capacity, and the old one retired until active_chain_free.
+ * Growth is geometric so the retired set stays O(log height) arrays, bounded
+ * by ~1x the live array. Returns false only on allocation failure (callers
+ * log context). */
+static bool active_chain_grow_locked(struct active_chain *c, int min_height)
+{
+    if (min_height < c->capacity)
+        return true;
+    int old_cap = c->capacity;
+    int new_cap = min_height + 1024;
+    if (old_cap > 0 && old_cap <= INT_MAX / 2 && old_cap * 2 > new_cap)
+        new_cap = old_cap * 2;
+    struct block_index **nc = zcl_malloc(
+        (size_t)new_cap * sizeof(struct block_index *), "active_chain");
+    if (!nc)
+        return false;
+    struct block_index **old = c->chain;
+    if (old_cap > 0)
+        memcpy(nc, old, (size_t)old_cap * sizeof(struct block_index *));
+    memset(&nc[old_cap], 0,
+           (size_t)(new_cap - old_cap) * sizeof(struct block_index *));
+    c->chain = nc;       /* publish fully-populated array first... */
+    c->capacity = new_cap; /* ...then the wider bound */
+    if (old) {
+        struct active_chain_retired *r =
+            zcl_malloc(sizeof(*r), "active_chain_retired");
+        if (r) {
+            r->arr = old;
+            r->next = c->retired;
+            c->retired = r;
+        }
+        /* On node-alloc failure: leak `old` — still reader-safe. */
+    }
+    return true;
+}
+
 /* Physically assemble chain[] so chain[bi->nHeight] == bi and every lower
  * slot holds the ancestor on bi's path (walking pprev), then set c->height
  * = bi->nHeight. This is the structural half of the active-chain window move;
@@ -304,45 +343,17 @@ bool active_chain_contains(const struct active_chain *c,
  * Slots ABOVE new_height are left untouched (a later wider window can still
  * re-expose them).
  *
- * Writers serialize on c->write_lock. A grow never frees the old array in
- * place (lock-free readers — RPC, net locator builds, bg verification — may
- * hold it): the new array is fully populated, published, and the old one
- * retired until active_chain_free. Growth is geometric so the retired set
- * stays O(log height) arrays, bounded by ~1x the live array. height is
- * published LAST — see the reader-discipline comment above. */
+ * Writers serialize on c->write_lock; the grow retires-not-frees the old
+ * array (active_chain_grow_locked above). height is published LAST — see
+ * the reader-discipline comment above. */
 static bool active_chain_fill_window(struct active_chain *c,
                                      struct block_index *bi)
 {
     int new_height = bi->nHeight;
     zcl_mutex_lock(&c->write_lock);
-    if (new_height >= c->capacity) {
-        int old_cap = c->capacity;
-        int new_cap = new_height + 1024;
-        if (old_cap > 0 && old_cap <= INT_MAX / 2 && old_cap * 2 > new_cap)
-            new_cap = old_cap * 2;
-        struct block_index **nc = zcl_malloc(
-            (size_t)new_cap * sizeof(struct block_index *), "active_chain");
-        if (!nc) {
-            zcl_mutex_unlock(&c->write_lock);
-            LOG_FAIL("chainstate", "active_chain_fill_window: alloc failed for height %d", new_height);
-        }
-        struct block_index **old = c->chain;
-        if (old_cap > 0)
-            memcpy(nc, old, (size_t)old_cap * sizeof(struct block_index *));
-        memset(&nc[old_cap], 0,
-               (size_t)(new_cap - old_cap) * sizeof(struct block_index *));
-        c->chain = nc;       /* publish fully-populated array first... */
-        c->capacity = new_cap; /* ...then the wider bound */
-        if (old) {
-            struct active_chain_retired *r =
-                zcl_malloc(sizeof(*r), "active_chain_retired");
-            if (r) {
-                r->arr = old;
-                r->next = c->retired;
-                c->retired = r;
-            }
-            /* On node-alloc failure: leak `old` — still reader-safe. */
-        }
+    if (!active_chain_grow_locked(c, new_height)) {
+        zcl_mutex_unlock(&c->write_lock);
+        LOG_FAIL("chainstate", "active_chain_fill_window: alloc failed for height %d", new_height);
     }
 
     struct block_index **arr = c->chain; /* stable under write_lock */
@@ -388,6 +399,31 @@ bool active_chain_move_window_tip(struct active_chain *c, struct block_index *bi
     if (!active_chain_fill_window(c, bi))
         return false;
 
+    return true;
+}
+
+/* Install `bi` as chain[bi->nHeight] and publish the height WITHOUT the
+ * ancestor walk of active_chain_move_window_tip — the boot/restore repair
+ * primitive (callers rebuild and disk-validate the ancestry afterwards, so
+ * pre-filling lower slots from pprev here would change what they verify).
+ * Same writer contract as active_chain_fill_window: the grow retires (never
+ * frees in place) the old array and publishes array -> capacity -> slot ->
+ * height LAST, all under write_lock. Returns false only on grow allocation
+ * failure or bad args (callers log context). */
+bool active_chain_install_tip_slot(struct active_chain *c,
+                                   struct block_index *bi)
+{
+    if (!c || !bi || bi->nHeight < 0)
+        return false;
+    zcl_mutex_lock(&c->write_lock);
+    if (!active_chain_grow_locked(c, bi->nHeight)) {
+        zcl_mutex_unlock(&c->write_lock);
+        LOG_FAIL("chainstate", "active_chain_install_tip_slot: alloc failed for height %d", bi->nHeight);
+    }
+    struct block_index **arr = c->chain; /* stable under write_lock */
+    arr[bi->nHeight] = bi;
+    c->height = bi->nHeight; /* publish last */
+    zcl_mutex_unlock(&c->write_lock);
     return true;
 }
 

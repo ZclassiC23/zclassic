@@ -28,6 +28,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Slot store under the active_chain writer lock: a concurrent window grow
+ * republishes c->chain, so an unlocked store could land in a just-retired
+ * array and be lost. The store itself stays a plain pointer write per the
+ * active_chain contract. */
+static void chain_restore_disk_store_slot(struct active_chain *c, int h,
+                                          struct block_index *bi)
+{
+    zcl_mutex_lock(&c->write_lock);
+    c->chain[h] = bi;
+    zcl_mutex_unlock(&c->write_lock);
+}
+
 static bool chain_restore_read_header_at_index(
     const struct block_index *bi,
     const char *datadir,
@@ -157,7 +169,7 @@ int chain_restore_rebuild_active_chain_from_disk(
             repaired_hashes++;
         }
 
-        c->chain[h] = cur;
+        chain_restore_disk_store_slot(c, h, cur);
         populated++;
 
         if (h == 0) {
@@ -461,7 +473,7 @@ int chain_restore_rebuild_active_chain_from_block_files(
             child->pprev = cur;
             block_index_build_skip(child);
         }
-        c->chain[h] = cur;
+        chain_restore_disk_store_slot(c, h, cur);
         populated++;
         repaired++;
         child = cur;
