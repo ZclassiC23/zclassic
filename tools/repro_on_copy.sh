@@ -243,11 +243,23 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 
 post_tip="$(tip)"; post_tip="${post_tip:--1}"
+# A --light copy has no blocks/ — any consensus/repair path that reads bodies
+# silently degrades into read-error spam and the proof is environmentally
+# invalid, not evidence about the binary. Detect and refuse the verdict.
+body_read_fails=0
+if [ -f "$DEST/repro_node.log" ]; then
+    body_read_fails="$(grep -c 'cannot open .*/blocks/blk' "$DEST/repro_node.log" 2>/dev/null || echo 0)"
+fi
 echo "========================================================================"
 echo "  repro-on-copy [$SLUG]"
 echo "  copy:      $DEST"
 echo "  first_tip: $first_tip   max_tip: $max_tip   post_tip: $post_tip"
-if [ "$seen_rpc" = "0" ]; then
+if [ "$LIGHT" = "1" ] && [ "$body_read_fails" -gt 0 ]; then
+    echo "  VERDICT:   INVALID — $body_read_fails block-body read failures on a"
+    echo "             --light copy (no blocks/). Re-run with --full; this run"
+    echo "             proves nothing about the binary."
+    RC=2
+elif [ "$seen_rpc" = "0" ]; then
     echo "  VERDICT:   INCONCLUSIVE — node never answered RPC within ${DEADLINE}s"
     echo "             (inspect $DEST/repro_node.log)"
     RC=2
