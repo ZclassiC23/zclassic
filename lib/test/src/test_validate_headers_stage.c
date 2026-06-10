@@ -948,6 +948,62 @@ int test_validate_headers_stage(void)
         chain_params_select(CHAIN_MAIN);
     }
 
+    /* ── wrong-epoch solution size must be PINNED, not self-verified ──
+     * The Equihash verify derives (n,k) FROM the solution size, so an
+     * internally-consistent wrong-epoch solution (here 1344 bytes =
+     * Equihash(200,9) at a height whose epoch pins 48,5 → 36) would
+     * self-verify under the wrong parameters and could ride the staged
+     * path even though every peer-facing accept path rejects it — the
+     * exact asymmetry the epoch pin closes. Asserts the pin's distinct
+     * reject reason fires BEFORE the Equihash verdict. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("epoch-pin: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        chain_params_select(CHAIN_REGTEST);
+        VH_CHECK("epoch-pin: setup default validator",
+                 vh_setup("epoch_pin_reject", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+
+        struct block_header h;
+        block_header_init(&h);
+        h.nVersion = 4;
+        h.hashMerkleRoot.data[0] = 0x61;
+        h.hashFinalSaplingRoot.data[0] = 0x62;
+        h.nTime = 1700000500u;
+        h.nBits = 0x200f0f0f; /* regtest powLimit compact */
+        /* 1344 bytes = Equihash(200,9): plausible for another epoch,
+         * never for regtest's pinned 48,5 (expected 36). */
+        h.nSolutionSize = 1344;
+        memset(h.nSolution, 0x42, h.nSolutionSize);
+        struct uint256 hash;
+        VH_CHECK("epoch-pin: grind PoW-valid synthetic header",
+                 vh_grind_pow(&h, &hash, 100000));
+        VH_CHECK("epoch-pin: save full node.db header",
+                 vh_db_put_header(&ndb, 0, &h, &hash));
+
+        /* Index source carries no solution (rejected as solutionless);
+         * the hash-bound node.db row is the only usable source. */
+        sc.hashes[0] = hash;
+        sc.blocks[0].phashBlock = &sc.hashes[0];
+        sc.blocks[0].nBits = 0x1f07ffff;
+        sc.blocks[0].nNonce.data[0] ^= 0x7f;
+
+        validate_headers_validator_set_node_db(&ndb);
+        char reason[VH_MAX_REASON] = {0};
+        bool ok = validate_headers_default_validator(
+            &sc.blocks[0], dir, reason, sizeof(reason), NULL);
+        VH_CHECK("epoch-pin: wrong-epoch solution size pinned",
+                 !ok && strcmp(reason, "bad-equihash-solution-size") == 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+        chain_params_select(CHAIN_MAIN);
+    }
+
     /* ── disk block source covers stale / empty SQL header sources ───── */
     {
         char dir[256]; struct main_state ms; struct synth_chain_vh sc;
