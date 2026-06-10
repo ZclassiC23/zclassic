@@ -16,7 +16,11 @@
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 
+/* Only referenced from the (x86 && __SHA__) hardware path below; guarding the
+ * definition keeps non-SHA-NI -march=native builds clean under -Werror. */
+#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
 static int sha_ni_available = -1; /* -1 = not checked, 0 = no, 1 = yes */
+#endif
 
 /* Forward declarations for self-test in detect_sha_ni */
 static void sha256_transform_portable(uint32_t *s, const unsigned char *chunk);
@@ -25,6 +29,10 @@ __attribute__((target("sha,sse4.1")))
 static void sha256_transform_shani(uint32_t *state, const unsigned char *data);
 #endif
 
+/* Defined only where it is called: the call sites below are all guarded by
+ * (x86 && __SHA__). On an x86 target whose -march=native does NOT enable
+ * __SHA__, leaving this defined trips -Werror=unused-function. */
+#if (defined(__x86_64__) || defined(__i386__)) && defined(__SHA__)
 static void detect_sha_ni(void)
 {
     unsigned int eax, ebx, ecx, edx;
@@ -64,6 +72,7 @@ static void detect_sha_ni(void)
     sha_ni_available = 0;
 #endif
 }
+#endif /* x86 && __SHA__ */
 
 #ifdef __SHA__
 #include <immintrin.h>
