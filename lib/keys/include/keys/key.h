@@ -49,8 +49,15 @@ static inline bool privkey_is_compressed(const struct privkey *k)
  * setting its compression flag. Aborts the process if the secure RNG fails. */
 void privkey_make_new(struct privkey *k, bool fCompressed);
 /* Derive the secp256k1 public key for k, honoring k's compression flag.
- * Requires (asserts) that k is valid; always returns true on a valid key. */
+ * Returns false (never aborts) if k is invalid or its scalar is out of
+ * range [1, n-1] — externally-sourced WIFs reach this via importprivkey/
+ * signrawtransaction, so an attacker-supplied scalar must not be able to
+ * abort the node. */
 bool privkey_get_pubkey(const struct privkey *k, struct pubkey *pk);
+/* Range-validate an externally-sourced scalar: true iff 0 < vch < the
+ * secp256k1 group order. fValid alone means "bytes were loaded", NOT
+ * "scalar is a usable secret key" — boundary decoders must call this. */
+bool privkey_range_check(const struct privkey *k);
 /* Produce a DER-encoded ECDSA signature over the 32-byte hash using RFC6979
  * deterministic nonces. On entry *siglen is ignored; on success it holds the
  * actual DER length (<= SIGNATURE_SIZE). Returns false if k is invalid. */

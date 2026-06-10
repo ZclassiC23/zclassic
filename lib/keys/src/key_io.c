@@ -103,7 +103,13 @@ bool decode_secret(const char *str,
     privkey_init(key);
     memcpy(key->vch, data + pfx_len, 32);
     key->fCompressed = compressed;
-    key->fValid = true;
+    /* Range-validate the externally-sourced scalar at the boundary: a
+     * WIF whose payload is 0 or >= the secp256k1 group order is not a
+     * usable secret key, and letting it through with fValid=true used
+     * to carry it all the way to an assert() in privkey_get_pubkey. */
+    key->fValid = privkey_range_check(key);
+    if (!key->fValid)
+        memory_cleanse(key->vch, sizeof(key->vch));
 
     memory_cleanse(data, sizeof(data));
     return privkey_is_valid(key);

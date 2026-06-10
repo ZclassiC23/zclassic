@@ -30,14 +30,28 @@ void privkey_make_new(struct privkey *k, bool fCompressed)
     k->fCompressed = fCompressed;
 }
 
+bool privkey_range_check(const struct privkey *k)
+{
+    return k && secp256k1_ec_seckey_verify(secp256k1_ctx_sign, k->vch);
+}
+
+/* These three are total functions on purpose: externally-sourced WIFs
+ * (importprivkey, signrawtransaction privkeys[]) reach them, and
+ * secp256k1 returns 0 for a scalar that is 0 or >= the group order.
+ * assert() is live in release builds (-DNDEBUG is not set), so the old
+ * assert(ret) pattern let one hostile RPC parameter abort the whole
+ * node. Out-of-range scalars now fail cleanly to the caller. */
 bool privkey_get_pubkey(const struct privkey *k, struct pubkey *pk)
 {
-    assert(k->fValid);
+    pubkey_init(pk); /* defined (invalid) output even on the failure paths */
+    if (!k->fValid)
+        return false;
     secp256k1_pubkey pubkey;
     size_t clen = PUBLIC_KEY_SIZE;
     unsigned char buf[PUBLIC_KEY_SIZE];
     int ret = secp256k1_ec_pubkey_create(secp256k1_ctx_sign, &pubkey, k->vch);
-    assert(ret);
+    if (!ret)
+        return false;
     secp256k1_ec_pubkey_serialize(secp256k1_ctx_sign, buf, &clen, &pubkey,
         k->fCompressed ? SECP256K1_EC_COMPRESSED : SECP256K1_EC_UNCOMPRESSED);
     pubkey_set(pk, buf, (unsigned int)clen);
@@ -53,7 +67,8 @@ bool privkey_sign(const struct privkey *k, const struct uint256 *hash,
     int ret = secp256k1_ecdsa_sign(secp256k1_ctx_sign, &esig, hash->data,
                                     k->vch, secp256k1_nonce_function_rfc6979,
                                     NULL);
-    assert(ret);
+    if (!ret)
+        return false;
     secp256k1_ecdsa_signature_serialize_der(secp256k1_ctx_sign, sig,
                                              siglen, &esig);
     return true;
@@ -67,10 +82,12 @@ bool privkey_sign_compact(const struct privkey *k, const struct uint256 *hash,
     secp256k1_ecdsa_recoverable_signature rsig;
     int ret = secp256k1_ecdsa_sign_recoverable(secp256k1_ctx_sign, &rsig,
         hash->data, k->vch, secp256k1_nonce_function_rfc6979, NULL);
-    assert(ret);
+    if (!ret)
+        return false;
     secp256k1_ecdsa_recoverable_signature_serialize_compact(
         secp256k1_ctx_sign, sig + 1, &rec, &rsig);
-    assert(rec != -1);
+    if (rec == -1)
+        return false;
     sig[0] = (unsigned char)(27 + rec + (k->fCompressed ? 4 : 0));
     return true;
 }
