@@ -152,6 +152,34 @@ bool load_block_index_from_projection(struct main_state *ms,
 int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
                                                struct sqlite3 *progress_db);
 
+/* DURABLE, crash-recoverable cold-import staged-sync seed.
+ *
+ * A cold LDB import (utxo_recovery_import_ldb, ldb_import_found branch) seeds
+ * the coins set + CSR-commits the public tip to H but NEVER seeds the 8 staged
+ * reducer stage logs, so reducer_frontier_compute_hstar stays at the compiled
+ * checkpoint and the staged-sync reducer cannot advance past the import floor. The
+ * import path writes a DURABLE anchor (cold_import_seed_anchor_height/hash) to
+ * node_db state; this consumer re-derives the wedge EVERY boot from that
+ * durable marker plus the live frontier, so a kill-9 mid-seed self-heals on the
+ * next boot.
+ *
+ * Fires the TRUSTED seed (tip_finalize_stage_seed_anchor(H, hash, true) — the
+ * same fast-sync trust model snapshot_apply.c uses) ONLY when ALL hold:
+ *   (1) the durable anchor (H, hash) is present (a real ldb_import_found ran),
+ *   (2) the live active tip is exactly that (H, hash) and H >= the SHA3
+ *       checkpoint anchor (partial/rewound import is excluded),
+ *   (3) reducer_frontier_compute_hstar(progress_db) is far below H (the
+ *       genuinely-pinned signal — NOT the tip_finalize cursor, which the boot
+ *       reconcile clamp force-stamps to H+1 on every cold-import boot).
+ * It sets coins_applied_height = H+1 first (the utxo_apply cursor convention),
+ * then seeds. Forward-only, deletes no rows, idempotent (the gate self-clears
+ * once H* == H). Returns 1 = seeded, 0 = no-op, -1 = error.
+ *
+ * WIRED right after block_index_loader_seed_tip_from_finalized in boot_services.c. */
+int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
+                                                    struct node_db *ndb,
+                                                    struct sqlite3 *progress_db);
+
 /* Shared projection-rebuild front door for boot (see the .c for contract).
  * Folds block_index_projection into ms's map, accepts iff the folded map has
  * > min_entries nodes. `publish_tip`=true publishes the cursor tip (the

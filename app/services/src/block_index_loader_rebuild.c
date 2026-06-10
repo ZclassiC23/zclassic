@@ -24,6 +24,10 @@
 #include "chain/chainparams.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/reducer_frontier.h"
+#include "chain/checkpoints.h"
+#include "storage/coins_kv.h"
+#include "models/database.h"
 #include "core/uint256.h"
 
 #include <sqlite3.h>
@@ -419,4 +423,152 @@ bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
     event_emitf(EV_BOOT_BLOCK_INDEX, 0, "rebuilt_from_projection entries=%zu",
                 ms->map_block_index.size);
     return true;
+}
+
+/* Durable cold-import anchor keys, written by the producer
+ * (utxo_recovery_import_ldb, ldb_import_found branch). */
+#define COLD_IMPORT_SEED_HEIGHT_KEY "cold_import_seed_anchor_height"
+#define COLD_IMPORT_SEED_HASH_KEY   "cold_import_seed_anchor_hash"
+
+/* How far H* must trail the imported coins tip H before the wedge-heal seed
+ * fires. A genuine cold import leaves H* at the compiled checkpoint, millions
+ * below H; a normal boot has H* tracking the validated tip (~0 gap). */
+#define COLD_IMPORT_SEED_TRIGGER_GAP 1000
+
+/* Set coins_applied_height to `want` (= H+1, the utxo_apply cursor convention)
+ * only when the current durable value is BEHIND it. NEVER lowers a legitimately
+ * higher coins frontier (a reorg could have advanced applied past H), so a
+ * stale-but-low value is raised while a high value is left intact. Runs in its
+ * own txn — the caller must NOT hold progress_store_tx_lock. */
+static bool cold_import_set_applied_if_behind(sqlite3 *db, int32_t want)
+{
+    progress_store_tx_lock();
+    int32_t cur = 0;
+    bool found = false;
+    if (!coins_kv_get_applied_height(db, &cur, &found)) {
+        progress_store_tx_unlock();
+        LOG_WARN("block_index", "cold-import seed: applied_height read failed");
+        return false;
+    }
+    if (found && cur >= want) {
+        progress_store_tx_unlock();
+        return true;  /* already at or ahead — never lower a higher frontier */
+    }
+    char *err = NULL;
+    bool ok = true;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && !coins_kv_set_applied_height_in_tx(db, want))
+        ok = false;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        if (err) LOG_WARN("block_index",
+                          "cold-import seed: applied_height set failed: %s", err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (err) sqlite3_free(err);
+    progress_store_tx_unlock();
+    return ok;
+}
+
+int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
+                                                    struct node_db *ndb,
+                                                    struct sqlite3 *progress_db)
+{
+    if (!ms || !ndb || !progress_db)
+        return 0;
+
+    /* (1) Durable anchor present? Absent on every NORMAL boot (the producer
+     *     only writes it in the ldb_import_found branch). */
+    int64_t anchor_h = 0;
+    if (!node_db_state_get_int(ndb, COLD_IMPORT_SEED_HEIGHT_KEY, &anchor_h))
+        return 0;  /* no cold-import this datadir's lifetime — normal boot */
+    if (anchor_h <= 0 || anchor_h > INT32_MAX)
+        return 0;
+    uint8_t anchor_hash[32];
+    size_t hn = 0;
+    if (!node_db_state_get(ndb, COLD_IMPORT_SEED_HASH_KEY,
+                           anchor_hash, sizeof(anchor_hash), &hn) ||
+        hn != sizeof(anchor_hash))
+        return 0;
+    int32_t H = (int32_t)anchor_h;
+
+    /* (2) HARD precondition: the live active tip must BE the imported anchor.
+     *     One tip read (no TOCTOU): height + hash from the SAME node. Excludes
+     *     the ldb_import_anchor / rewound-placeholder branches where the tip is
+     *     below H — never trust-stamp above the real coin frontier. */
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (!tip || !tip->phashBlock) {
+        LOG_WARN("block_index",
+                 "cold-import seed: no active tip; skip (anchor H=%d)", H);
+        return 0;
+    }
+    if (tip->nHeight != H ||
+        memcmp(tip->phashBlock->data, anchor_hash, 32) != 0) {
+        LOG_WARN("block_index",
+                 "cold-import seed: live tip h=%d != import anchor H=%d "
+                 "(or hash mismatch); skip — not seeding above coin frontier",
+                 tip->nHeight, H);
+        return 0;
+    }
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    int32_t checkpoint = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    if (H < checkpoint) {
+        LOG_WARN("block_index",
+                 "cold-import seed: import H=%d below checkpoint=%d; skip",
+                 H, checkpoint);
+        return 0;
+    }
+
+    /* (3) GATE on the genuinely-pinned signal — H*, NOT the tip_finalize
+     *     cursor (the boot reconcile clamp force-stamps tf cursor to H+1 on
+     *     every cold-import boot, so a tf-cursor gate would no-op the wedge).
+     *     H* is the MIN over upstream contiguous prefixes; it sits at the
+     *     checkpoint while the upstream cursors are pinned. Fires once; the
+     *     instant H* reaches H the gate self-clears (idempotent). */
+    int32_t hstar = 0, served = 0;
+    progress_store_tx_lock();
+    bool hs_ok = reducer_frontier_compute_hstar(progress_db, &hstar, &served);
+    progress_store_tx_unlock();
+    if (!hs_ok) {
+        LOG_WARN("block_index", "cold-import seed: H* read failed; skip");
+        return 0;
+    }
+    if ((int64_t)H - (int64_t)hstar <= COLD_IMPORT_SEED_TRIGGER_GAP)
+        return 0;  /* not wedged (or already healed) — no-op */
+
+    /* (4) Set the SECOND authority FIRST: coins_applied_height = H+1 (the
+     *     utxo_apply cursor convention; H would cap utxo_apply at H and make
+     *     reducer_anchor_candidate_ok reject the anchor). Raise-only. */
+    if (!cold_import_set_applied_if_behind(progress_db, H + 1))
+        return -1;  // raw-return-ok:cold_import_set_applied_if_behind logs on failure
+
+    /* (5) Seed the tip_finalize anchor + all 7 upstream cursors to H+1.
+     *     trusted_seed=true is the SHA3-verified fast-sync trust model the
+     *     import already established at H — same as snapshot_apply.c. */
+    if (!tip_finalize_stage_seed_anchor(H, anchor_hash, true)) {
+        LOG_WARN("block_index",
+                 "cold-import seed: tip_finalize_stage_seed_anchor failed H=%d "
+                 "— leaving durable anchor for next-boot retry", H);
+        return -1;  // raw-return-ok:logged on the lines above
+    }
+
+    /* (6) Self-check: the seed must have moved H* up to H. If not, the heal
+     *     silently did nothing — keep the durable anchor so the next boot
+     *     retries rather than booting half-seeded. */
+    progress_store_tx_lock();
+    hs_ok = reducer_frontier_compute_hstar(progress_db, &hstar, &served);
+    progress_store_tx_unlock();
+    if (!hs_ok || hstar != H) {
+        LOG_WARN("block_index",
+                 "cold-import seed: post-seed H*=%d != H=%d (heal incomplete) "
+                 "— durable anchor retained for retry", hstar, H);
+        return -1;  // raw-return-ok:logged on the lines above
+    }
+
+    printf("[boot] cold-import staged-sync seed: H*=%d coins_applied=%d "
+           "all 8 cursors -> %d (was wedged at the import floor)\n",
+           hstar, H + 1, H + 1);
+    return 1;
 }

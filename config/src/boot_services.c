@@ -1454,22 +1454,20 @@ bool app_init_services(struct app_context *ctx,
     self_heal_register(svc->state);
     staged_sync_supervisor_register(svc->state);
 
-    /* §3.1: recover the durable finalized frontier that a reboot dropped.
-     * staged_sync_supervisor_register (just above) ran tip_finalize_stage_init,
-     * which registers the chain-height authority and seeds it from the
-     * coins-restore tip — which sits BELOW the durable tip_finalize_log frontier
-     * whenever a prior run finalized past the last coins flush (the "finalized
-     * work dropped on reboot" defect). Adopt that frontier forward-only HERE:
-     * after the authority is registered (so active_chain_height reads the real
-     * coins tip, not genesis) but BEFORE the runtime services / reducer ingest
-     * start (line below) and before the supervisor's first tick — so there is
-     * no race on the active chain. The call is a no-op unless the frontier is a
-     * strictly-higher, contiguous, have-data + script-valid extension landing on
-     * the current tip; it never rewinds, forks, or mutates the cursor/log. */
+    /* §3.1: recover the durable finalized frontier a reboot dropped, then heal
+     * the cold-import staged-sync wedge. staged_sync_supervisor_register (above)
+     * ran tip_finalize_stage_init, registering the chain-height authority seeded
+     * from the coins-restore tip. Adopt the durable frontier forward-only HERE —
+     * after the authority is live (active_chain_height reads the real coins tip)
+     * but BEFORE runtime services / reducer ingest start — so there is no race.
+     * Both calls are no-ops unless their precondition holds; neither rewinds,
+     * forks, or deletes log rows. See block_index_loader.h for each contract. */
     {
         int seeded = block_index_loader_seed_tip_from_finalized(
             svc->state, progress_store_db());
         (void)seeded;  /* logs its own success line; benign no-op otherwise */
+        (void)block_index_loader_seed_stages_from_cold_import(
+            svc->state, boot_node_db(svc), progress_store_db());
     }
 
     /* De-fatal: all runtime specs (bg_validation, gap_fill, legacy_mirror,

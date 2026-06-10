@@ -277,6 +277,21 @@ struct utxo_import_result utxo_recovery_import_ldb(
                     res.skip_activate = true;
                     snprintf(res.anchor_reason, sizeof(res.anchor_reason),
                              "ldb_import_found");
+                    /* DURABLE cold-import seed anchor: the public tip is now
+                     * CSR-committed to exactly (found->nHeight, ldb_best). The
+                     * post-stage-init consumer
+                     * (block_index_loader_seed_stages_from_cold_import) reads
+                     * these keys, re-derives the staged-sync wedge every boot,
+                     * and fires the trusted seed. Written ONLY in this branch
+                     * (the tip is truly at H here); the anchor-only / unknown
+                     * branches below never write them, so the trusted seed
+                     * cannot fire above the real coin frontier. Durable so a
+                     * kill-9 before the consumer self-heals on the next boot. */
+                    (void)node_db_state_set_int(ctx->ndb,
+                        "cold_import_seed_anchor_height",
+                        (int64_t)found->nHeight);
+                    (void)node_db_state_set(ctx->ndb,
+                        "cold_import_seed_anchor_hash", ldb_best.data, 32);
                 }
             } else if (ldb_height > 0) {
                 /* LDB best block NOT in our index — record an activation
