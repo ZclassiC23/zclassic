@@ -41,26 +41,25 @@ struct repair_prevout_view {
     int coin_frontier;
 };
 
-static bool hole_below_cursor_unlocked(sqlite3 *db, int cursor,
-                                       const char *status, int *out_height)
+/* Lowest failed-row height strictly below `cursor` for `sql` (which takes a
+ * single trailing int bind); no hole is success with *out_height == -1.
+ * Caller holds the progress_store tx lock. */
+static bool log_hole_below_unlocked(sqlite3 *db, const char *sql,
+                                    const char *what, int cursor,
+                                    int *out_height)
 {
     *out_height = -1;
     if (cursor <= 0)
         return true;
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT height FROM utxo_apply_log "
-            "WHERE ok = 0 AND status = ? AND height < ? "
-            "ORDER BY height LIMIT 1",
-            -1, &st, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("stage_repair",
                  "[stage_repair] %s hole prepare failed: %s",
-                 status, sqlite3_errmsg(db));
+                 what, sqlite3_errmsg(db));
         return false;
     }
-    sqlite3_bind_text(st, 1, status, -1, SQLITE_STATIC);
-    sqlite3_bind_int(st, 2, cursor);
+    sqlite3_bind_int(st, 1, cursor);
 
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
@@ -68,7 +67,7 @@ static bool hole_below_cursor_unlocked(sqlite3 *db, int cursor,
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] %s hole step failed rc=%d: %s",
-                 status, rc, sqlite3_errmsg(db));
+                 what, rc, sqlite3_errmsg(db));
         sqlite3_finalize(st);
         return false;
     }
@@ -79,38 +78,14 @@ static bool hole_below_cursor_unlocked(sqlite3 *db, int cursor,
 static bool stale_script_hole_unlocked(sqlite3 *db, int cursor,
                                        int *out_height)
 {
-    *out_height = -1;
-    if (cursor <= 0)
-        return true;
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT height FROM script_validate_log "
-            "WHERE ok = 0 "
-            "  AND status IN ('internal_error', 'prevout_unresolved', "
-            "                 'block_decode_failed') "
-            "  AND height < ? "
-            "ORDER BY height LIMIT 1",
-            -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script hole prepare failed: %s",
-                 sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int(st, 1, cursor);
-
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        *out_height = sqlite3_column_int(st, 0);
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script hole step failed rc=%d: %s",
-                 rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
-        return false;
-    }
-    sqlite3_finalize(st);
-    return true;
+    return log_hole_below_unlocked(db,
+        "SELECT height FROM script_validate_log "
+        "WHERE ok = 0 "
+        "  AND status IN ('internal_error', 'prevout_unresolved', "
+        "                 'block_decode_failed') "
+        "  AND height < ? "
+        "ORDER BY height LIMIT 1",
+        "stale script", cursor, out_height);
 }
 
 bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
@@ -522,8 +497,11 @@ static bool maybe_repair_value_overflow(
 
     progress_store_tx_lock();
     bool ok = stage_repair_cursor_at_unlocked(db, "utxo_apply", &cursor) &&
-              hole_below_cursor_unlocked(db, cursor, "value_overflow",
-                                         &height);
+              log_hole_below_unlocked(db,
+                  "SELECT height FROM utxo_apply_log "
+                  "WHERE ok = 0 AND status = 'value_overflow' AND height < ? "
+                  "ORDER BY height LIMIT 1",
+                  "value_overflow", cursor, &height);
     progress_store_tx_unlock();
     if (!ok)
         return false;
@@ -586,6 +564,12 @@ static bool maybe_repair_stale_script(
     int32_t coins_frontier = -1;
     bool coins_found = false;
 
+    /* Held from this snapshot through stale_script_replay_tx's COMMIT: the
+     * rewind below is keyed to these cursors, and a drain advancing
+     * utxo_apply/coins in an unlock gap would commit a stale rewind that
+     * re-tears coins vs frontier. The one disk block read this covers is a
+     * bounded hash-checked pread; the dry-run already reads blocks under
+     * this lock. */
     progress_store_tx_lock();
     bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
                                               &script_cursor) &&
@@ -600,9 +584,10 @@ static bool maybe_repair_stale_script(
               coins_kv_get_applied_height(db, &coins_frontier,
                                            &coins_found) &&
               stale_script_hole_unlocked(db, script_cursor, &height);
-    progress_store_tx_unlock();
-    if (!ok)
+    if (!ok) {
+        progress_store_tx_unlock();
         return false;
+    }
 
     int replay_first = (coins_found && coins_frontier >= 0 &&
                         coins_frontier < height)
@@ -616,10 +601,13 @@ static bool maybe_repair_stale_script(
     out->stale_script_backfill_first = replay_first;
     out->stale_script_backfill_last = body_cursor > 0 ? body_cursor - 1 : -1;
     if (height < 0 || script_cursor <= 0 || height >= script_cursor ||
-        proof_cursor <= height || body_cursor <= height || !coins_found)
+        proof_cursor <= height || body_cursor <= height || !coins_found) {
+        progress_store_tx_unlock();
         return true;
+    }
     if (!apply) {
         out->repaired = true;
+        progress_store_tx_unlock();
         return true;
     }
 
@@ -632,6 +620,7 @@ static bool maybe_repair_stale_script(
                  "[stage_repair] stale script repair refused: cannot read "
                  "canonical block h=%d",
                  height);
+        progress_store_tx_unlock();
         block_free(&blk);
         return true;
     }
@@ -642,11 +631,10 @@ static bool maybe_repair_stale_script(
                  "[stage_repair] stale script repair refused h=%d: "
                  "utxo author is not stage",
                  height);
+        progress_store_tx_unlock();
         block_free(&blk);
         return true;
     }
-
-    progress_store_tx_lock();
 
     struct script_validate_dry_run_report dry;
     int backfill_top = body_cursor - 1;

@@ -14,6 +14,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include <pthread.h>
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -166,6 +167,25 @@ static bool put_hash_log(sqlite3 *db, const char *table, const char *hash_col,
     sqlite3_bind_int(st, 1, height);
     sqlite3_bind_int(st, 2, ok_flag);
     sqlite3_bind_blob(st, 3, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_script_status(sqlite3 *db, int height, int ok_flag,
+                              const char *status,
+                              const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO script_validate_log"
+            "(height,status,ok,block_hash) VALUES(?,?,?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 3, ok_flag);
+    sqlite3_bind_blob(st, 4, hash->data, 32, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -331,6 +351,17 @@ static void teardown_fixture(struct rfrl_fixture *fx)
     main_state_free(&fx->ms);
     progress_store_close();
     test_cleanup_tmpdir(fx->dir);
+}
+
+/* Cross-thread lock probe: acquires + releases the progress lock from a
+ * second thread. A refusal path that leaks the (recursive) lock is invisible
+ * to the calling thread; the probe's join hangs the test binary instead. */
+static void *progress_lock_probe(void *arg)
+{
+    progress_store_tx_lock();
+    progress_store_tx_unlock();
+    *(bool *)arg = true;
+    return NULL;
 }
 
 static int cursor_value(sqlite3 *db, const char *name)
@@ -701,6 +732,52 @@ int test_reducer_frontier_reconcile_light(void)
         condition_engine_reset_for_testing();
         reducer_frontier_reconcile_light_test_reset();
         net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    {
+        /* Stale-script replay refusal (TOCTOU fix): the hole's preconditions
+         * pass but the block is unreadable (fixture nFile == -1), so the
+         * replay refuses AFTER the cursor snapshot — on a path that now runs
+         * under the progress lock held from snapshot to rewind COMMIT. The
+         * probe thread proves every traversed refusal path released it. */
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup stale-script fixture",
+                   setup_fixture(&fx, "stale_script"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("stale-script: seed internal_error hole below cursor",
+                   put_script_status(db, A + 2, 0, "internal_error",
+                                     &fx.hashes[2]));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        RFRL_CHECK("stale-script: dry-run succeeds",
+                   stage_reducer_frontier_reconcile_light_needed(
+                       db, &fx.ms, &dry));
+        RFRL_CHECK("stale-script: dry-run reports the hole without mutation",
+                   dry.repaired &&
+                   dry.stale_script_repair_height == A + 2 &&
+                   !dry.stale_script_repaired &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "utxo_apply") == A + 4);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("stale-script: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("stale-script: unreadable block refuses without rewind",
+                   rr.stale_script_repair_height == A + 2 &&
+                   !rr.stale_script_repaired &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "proof_validate") == A + 4 &&
+                   cursor_value(db, "utxo_apply") == A + 4);
+
+        bool probed = false;
+        pthread_t probe;
+        RFRL_CHECK("stale-script: probe thread starts",
+                   pthread_create(&probe, NULL, progress_lock_probe,
+                                  &probed) == 0);
+        pthread_join(probe, NULL);
+        RFRL_CHECK("stale-script: progress lock released on refusal", probed);
+
         teardown_fixture(&fx);
     }
 
