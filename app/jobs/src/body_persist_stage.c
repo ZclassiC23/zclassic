@@ -5,7 +5,10 @@
  * Consumes body_fetch_log and verifies that bodies observed on disk are
  * readable, hash to the active-chain header, and merkle-reconstruct to the
  * admitted header's root. It writes body_persist_log plus its stage cursor in
- * progress.kv, and emits verified bodies into the append-only event log. */
+ * progress.kv, and emits verified bodies into the append-only event log.
+ * READ-class failures are never persisted as verdicts: the stage clears
+ * BLOCK_HAVE_DATA and holds the cursor until the body is re-fetched (see
+ * requeue_body_for_refetch). */
 
 #include "platform/time_compat.h"
 #include "jobs/body_persist_stage.h"
@@ -17,7 +20,6 @@
 #include "chain/chain.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
-#include "event/event.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
@@ -159,6 +161,34 @@ static void emit_block_body_event(const struct block *blk,
     atomic_fetch_add_explicit(&g_body_emit_total, 1, memory_order_relaxed);
 }
 
+/* READ-class failure discipline (mirrors proof_validate's reader handling
+ * and chain_restore_repair's HAVE_DATA drop): the stored body failed to
+ * read, or read fine but does not belong to the hash-bound active-chain
+ * header (wrong/corrupt/torn block on disk). A re-fetched body can change
+ * every one of these verdicts, so never persist them as permanent ok=0
+ * rows — those statuses sit outside every repair's status set and would
+ * pin H*, utxo_apply and tip_finalize forever. Clear BLOCK_HAVE_DATA and
+ * re-emit the header event (the projection persists the cleared bit across
+ * restarts, same discipline as the success path), hold the cursor, and let
+ * the normal !HAVE_DATA sync path re-download the body; this stage then
+ * retries. While cleared, the HAVE_DATA gate above idles without re-reading,
+ * so the counter advances once per requeue, not per step. Only
+ * upstream_failed (a deterministic header-consensus verdict re-fetch cannot
+ * change) remains a permanent row. */
+static job_result_t requeue_body_for_refetch(struct block_index *bi,
+                                             int height, const char *what,
+                                             _Atomic uint64_t *counter)
+{
+    bi->nStatus &= ~BLOCK_HAVE_DATA;
+    block_index_emit_header_event(bi, STAGE_NAME, &g_header_event_emit_total,
+                                  &g_header_event_emit_fail_total);
+    atomic_fetch_add(counter, 1);
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    LOG_WARN(STAGE_NAME,
+             "[body_persist] %s height=%d: cleared HAVE_DATA, holding cursor "
+             "for body re-fetch", what, height);
+    return JOB_IDLE;
+}
 
 static job_result_t step_persist(struct stage_step_ctx *c)
 {
@@ -207,41 +237,22 @@ static job_result_t step_persist(struct stage_step_ctx *c)
                                              : stage_default_block_reader;
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
         block_free(&blk);
-        if (!body_persist_log_insert(db, next_h, "read_failed", false))
-            return JOB_FATAL;
-        atomic_fetch_add(&g_read_failed_total, 1);
-        atomic_store(&g_last_advance_height, (int64_t)next_h);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "body_persist read_failed height=%d source=%s",
-                    next_h, upstream.source);
-        c->cursor_out = c->cursor_in + 1;
-        return JOB_ADVANCED;
+        return requeue_body_for_refetch(bi, next_h, "read_failed",
+                                        &g_read_failed_total);
     }
 
     struct uint256 disk_hash;
     block_get_hash(&blk, &disk_hash);
     if (uint256_cmp(&disk_hash, bi->phashBlock) != 0) {
         block_free(&blk);
-        if (!body_persist_log_insert(db, next_h, "header_mismatch", false))
-            return JOB_FATAL;
-        atomic_fetch_add(&g_header_mismatch_total, 1);
-        atomic_store(&g_last_advance_height, (int64_t)next_h);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "body_persist header_mismatch height=%d", next_h);
-        c->cursor_out = c->cursor_in + 1;
-        return JOB_ADVANCED;
+        return requeue_body_for_refetch(bi, next_h, "header_mismatch",
+                                        &g_header_mismatch_total);
     }
 
     if (!verify_merkle_root(&blk)) {
         block_free(&blk);
-        if (!body_persist_log_insert(db, next_h, "merkle_mismatch", false))
-            return JOB_FATAL;
-        atomic_fetch_add(&g_merkle_mismatch_total, 1);
-        atomic_store(&g_last_advance_height, (int64_t)next_h);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "body_persist merkle_mismatch height=%d", next_h);
-        c->cursor_out = c->cursor_in + 1;
-        return JOB_ADVANCED;
+        return requeue_body_for_refetch(bi, next_h, "merkle_mismatch",
+                                        &g_merkle_mismatch_total);
     }
 
     /* The body is read, hashes to its header, and merkle-checks; emit it into

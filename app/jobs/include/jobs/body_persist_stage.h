@@ -4,7 +4,9 @@
  *
  * Consumes `body_fetch_log`; for each height where the body is on disk,
  * reads the body, verifies header+merkle consistency, and logs the result.
- * Emits verified block bodies into the append-only event log. */
+ * Emits verified block bodies into the append-only event log. READ-class
+ * failures (unreadable/wrong/corrupt stored body) are requeued for re-fetch
+ * by clearing BLOCK_HAVE_DATA — never persisted as permanent ok=0 rows. */
 
 #ifndef ZCL_SERVICES_BODY_PERSIST_STAGE_H
 #define ZCL_SERVICES_BODY_PERSIST_STAGE_H
@@ -35,6 +37,8 @@ int body_persist_stage_drain(int max_steps);
 uint64_t body_persist_stage_cursor(void);
 uint64_t body_persist_stage_verified_total(void);
 uint64_t body_persist_stage_upstream_failed_total(void);
+/* The three READ-class counters count re-fetch requeues (one per cleared
+ * HAVE_DATA episode), not permanent verdicts. */
 uint64_t body_persist_stage_read_failed_total(void);
 uint64_t body_persist_stage_header_mismatch_total(void);
 uint64_t body_persist_stage_merkle_mismatch_total(void);

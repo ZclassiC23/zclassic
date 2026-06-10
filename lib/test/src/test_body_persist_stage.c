@@ -345,20 +345,37 @@ int test_body_persist_stage(void)
         bp_teardown(dir, &ms, &sc);
     }
 
+    /* READ-class failures must requeue for re-fetch (clear HAVE_DATA, hold
+     * the cursor, no permanent ok=0 row) and heal once the body is back. */
     {
         char dir[256]; struct main_state ms; struct synth_chain_bp sc;
         BP_CHECK("header_mismatch: setup",
                  bp_setup("header", 3, -1, -1, dir, sizeof(dir), &ms, &sc) == 0);
         sc.header_mismatch_height = 2;
-        BP_CHECK("header_mismatch: drains 3",
-                 body_persist_stage_drain(100) == 3);
+        BP_CHECK("header_mismatch: drains 2",
+                 body_persist_stage_drain(100) == 2);
         BP_CHECK("header_mismatch: counter == 1",
                  body_persist_stage_header_mismatch_total() == 1);
+        BP_CHECK("header_mismatch: cursor holds at 2",
+                 body_persist_stage_cursor() == 2);
+        BP_CHECK("header_mismatch: HAVE_DATA cleared",
+                 (sc.blocks[2].nStatus & BLOCK_HAVE_DATA) == 0);
         int ok = -1; char src[32];
-        log_row_at(progress_store_db(), 2, &ok, src, sizeof(src));
-        BP_CHECK("header_mismatch: h=2 ok=0", ok == 0);
-        BP_CHECK("header_mismatch: h=2 source",
-                 strcmp(src, "header_mismatch") == 0);
+        BP_CHECK("header_mismatch: no permanent row",
+                 !log_row_at(progress_store_db(), 2, &ok, src, sizeof(src)));
+        /* Idle while cleared: no re-read, counter does not climb per step. */
+        BP_CHECK("header_mismatch: idles while cleared",
+                 body_persist_stage_step_once() == JOB_IDLE);
+        BP_CHECK("header_mismatch: counter stays 1",
+                 body_persist_stage_header_mismatch_total() == 1);
+        /* Re-fetch lands a good body + HAVE_DATA: the stage heals. */
+        sc.header_mismatch_height = -1;
+        sc.blocks[2].nStatus |= BLOCK_HAVE_DATA;
+        BP_CHECK("header_mismatch: heals after re-fetch",
+                 body_persist_stage_drain(100) == 1);
+        BP_CHECK("header_mismatch: h=2 verified",
+                 log_row_at(progress_store_db(), 2, &ok, src, sizeof(src)) &&
+                 ok == 1 && strcmp(src, "verified") == 0);
         bp_teardown(dir, &ms, &sc);
     }
 
@@ -367,15 +384,24 @@ int test_body_persist_stage(void)
         BP_CHECK("merkle_mismatch: setup",
                  bp_setup("merkle", 3, -1, -1, dir, sizeof(dir), &ms, &sc) == 0);
         sc.merkle_mismatch_height = 1;
-        BP_CHECK("merkle_mismatch: drains 3",
-                 body_persist_stage_drain(100) == 3);
+        BP_CHECK("merkle_mismatch: drains 1",
+                 body_persist_stage_drain(100) == 1);
         BP_CHECK("merkle_mismatch: counter == 1",
                  body_persist_stage_merkle_mismatch_total() == 1);
+        BP_CHECK("merkle_mismatch: cursor holds at 1",
+                 body_persist_stage_cursor() == 1);
+        BP_CHECK("merkle_mismatch: HAVE_DATA cleared",
+                 (sc.blocks[1].nStatus & BLOCK_HAVE_DATA) == 0);
         int ok = -1; char src[32];
-        log_row_at(progress_store_db(), 1, &ok, src, sizeof(src));
-        BP_CHECK("merkle_mismatch: h=1 ok=0", ok == 0);
-        BP_CHECK("merkle_mismatch: h=1 source",
-                 strcmp(src, "merkle_mismatch") == 0);
+        BP_CHECK("merkle_mismatch: no permanent row",
+                 !log_row_at(progress_store_db(), 1, &ok, src, sizeof(src)));
+        sc.merkle_mismatch_height = -1;
+        sc.blocks[1].nStatus |= BLOCK_HAVE_DATA;
+        BP_CHECK("merkle_mismatch: heals after re-fetch",
+                 body_persist_stage_drain(100) == 2);
+        BP_CHECK("merkle_mismatch: h=1 verified",
+                 log_row_at(progress_store_db(), 1, &ok, src, sizeof(src)) &&
+                 ok == 1 && strcmp(src, "verified") == 0);
         bp_teardown(dir, &ms, &sc);
     }
 
@@ -384,15 +410,28 @@ int test_body_persist_stage(void)
         BP_CHECK("read_failed: setup",
                  bp_setup("read", 3, -1, -1, dir, sizeof(dir), &ms, &sc) == 0);
         sc.fail_read_height = 1;
-        BP_CHECK("read_failed: drains 3",
-                 body_persist_stage_drain(100) == 3);
+        BP_CHECK("read_failed: drains 1",
+                 body_persist_stage_drain(100) == 1);
         BP_CHECK("read_failed: counter == 1",
                  body_persist_stage_read_failed_total() == 1);
+        BP_CHECK("read_failed: cursor holds at 1",
+                 body_persist_stage_cursor() == 1);
+        BP_CHECK("read_failed: HAVE_DATA cleared",
+                 (sc.blocks[1].nStatus & BLOCK_HAVE_DATA) == 0);
         int ok = -1; char src[32];
-        log_row_at(progress_store_db(), 1, &ok, src, sizeof(src));
-        BP_CHECK("read_failed: h=1 ok=0", ok == 0);
-        BP_CHECK("read_failed: h=1 source",
-                 strcmp(src, "read_failed") == 0);
+        BP_CHECK("read_failed: no permanent row",
+                 !log_row_at(progress_store_db(), 1, &ok, src, sizeof(src)));
+        BP_CHECK("read_failed: idles while cleared",
+                 body_persist_stage_step_once() == JOB_IDLE);
+        BP_CHECK("read_failed: counter stays 1",
+                 body_persist_stage_read_failed_total() == 1);
+        sc.fail_read_height = -1;
+        sc.blocks[1].nStatus |= BLOCK_HAVE_DATA;
+        BP_CHECK("read_failed: heals after re-fetch",
+                 body_persist_stage_drain(100) == 2);
+        BP_CHECK("read_failed: h=1 verified",
+                 log_row_at(progress_store_db(), 1, &ok, src, sizeof(src)) &&
+                 ok == 1 && strcmp(src, "verified") == 0);
         bp_teardown(dir, &ms, &sc);
     }
 
@@ -527,7 +566,7 @@ int test_body_persist_stage(void)
         BP_CHECK("emit_skip: setup",
                  bp_setup("emitskip", 4, -1, -1, dir, sizeof(dir),
                           &ms, &sc) == 0);
-        sc.fail_read_height = 1;   /* h=1 advances as read_failed, no body */
+        sc.fail_read_height = 1;   /* h=1 requeues for re-fetch, no body */
 
         char logpath[320];
         snprintf(logpath, sizeof(logpath), "%s/events.log", dir);
@@ -535,16 +574,24 @@ int test_body_persist_stage(void)
         BP_CHECK("emit_skip: log open", log != NULL);
         event_log_set_singleton(log);
 
-        BP_CHECK("emit_skip: drains 4", body_persist_stage_drain(100) == 4);
-        /* 3 verified bodies emitted (heights 0,2,3); h=1 read-failed. */
-        BP_CHECK("emit_skip: body_emit_total == 3",
-                 body_persist_stage_body_emit_total() == 3);
+        BP_CHECK("emit_skip: drains 1", body_persist_stage_drain(100) == 1);
+        /* Only h=0 verified+emitted; h=1 read-failed → requeued, no body. */
+        BP_CHECK("emit_skip: body_emit_total == 1",
+                 body_persist_stage_body_emit_total() == 1);
 
         struct body_collect col;
         memset(&col, 0, sizeof(col));
         col.roundtrip_ok = 1;
         event_log_stream(log, 0, body_collect_cb, &col);
-        BP_CHECK("emit_skip: log has 3 bodies", col.count == 3);
+        BP_CHECK("emit_skip: log has 1 body", col.count == 1);
+
+        /* Re-fetch heals: remaining heights verify and emit. */
+        sc.fail_read_height = -1;
+        sc.blocks[1].nStatus |= BLOCK_HAVE_DATA;
+        BP_CHECK("emit_skip: heals after re-fetch",
+                 body_persist_stage_drain(100) == 3);
+        BP_CHECK("emit_skip: body_emit_total == 4",
+                 body_persist_stage_body_emit_total() == 4);
 
         event_log_set_singleton(NULL);
         event_log_close(log);
