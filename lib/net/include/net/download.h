@@ -46,6 +46,14 @@ struct dl_in_flight {
     bool           active;          /* true if slot in use */
 };
 
+/* Queued-hash membership entry (open addressing). state: 0 = virgin
+ * (probe-chain terminator), 1 = live, 2 = tombstone (deleted; probe
+ * continues through it). */
+struct dl_queued_key {
+    struct uint256 hash;
+    uint8_t        state;
+};
+
 /* Per-peer download stats */
 struct dl_peer_stats {
     uint32_t peer_id;
@@ -80,11 +88,25 @@ struct download_manager {
     size_t               queue_len;
     size_t               queue_cap;
 
+    /* Membership set over `queue` (open addressing, power-of-2 size,
+     * load < 50%). Makes the "already queued?" check O(1); the old
+     * per-item linear scan was O(queue_len) and, with the queue pinned
+     * at its 65536 cap during deep IBD, turned every bulk enqueue into
+     * an O(n^2) grind that held `cs` for minutes and starved every
+     * other thread touching the manager (2026-06-09 tracka wedge). */
+    struct dl_queued_key *qset;
+    size_t                qset_slots;   /* capacity (power of 2) */
+    size_t                qset_live;    /* live entries == queue_len */
+    size_t                qset_tombs;   /* tombstoned entries */
+
     /* Global stats */
     uint64_t total_requested;
     uint64_t total_received;
     uint64_t total_timed_out;
     uint64_t total_duplicate;
+    uint64_t total_queue_evicted;   /* high-height entries displaced at cap */
+    uint64_t total_queue_rejected;  /* pushes refused at cap (not lower
+                                     * than the current tail) */
 
     /* Byte throughput tracking */
     uint64_t total_bytes_received;   /* total block bytes downloaded */
