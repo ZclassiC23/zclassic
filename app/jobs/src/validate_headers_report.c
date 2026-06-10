@@ -51,8 +51,16 @@ bool validate_headers_stage_window_report(
         " WHERE height BETWEEN ? AND ?",
         -1, &st, NULL);
     if (rc != SQLITE_OK) {
-        LOG_ERR("validate_headers",
-                "window report count prepare failed");
+        /* "no such table" is NORMAL before validate_headers_stage_init
+         * has ensured the schema (cold-import boots run this report
+         * while boot is still in flight) — report "no data", silently.
+         * The old per-call LOG_ERR emitted thousands of journal lines
+         * per boot. Anything else is a real error and stays loud. */
+        const char *em = sqlite3_errmsg(db);
+        if (!em || !strstr(em, "no such table"))
+            LOG_ERR("validate_headers",
+                    "window report count prepare failed: %s",
+                    em ? em : "(null)");
         progress_store_tx_unlock();
         return false;
     }
@@ -72,8 +80,11 @@ bool validate_headers_stage_window_report(
         " ORDER BY height ASC LIMIT 1",
         -1, &st, NULL);
     if (rc != SQLITE_OK) {
-        LOG_ERR("validate_headers",
-                "window report fail prepare failed");
+        const char *em2 = sqlite3_errmsg(db);
+        if (!em2 || !strstr(em2, "no such table"))
+            LOG_ERR("validate_headers",
+                    "window report fail prepare failed: %s",
+                    em2 ? em2 : "(null)");
         progress_store_tx_unlock();
         return false;
     }
