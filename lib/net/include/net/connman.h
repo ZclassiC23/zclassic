@@ -174,8 +174,9 @@ bool connman_pick_next_outbound_target(
  * addnode_last_attempt[i] with wall time so the dialer's cooldown can
  * pace retries.
  *
- * record_addnode_attempt(success=true) clears addnode_backoff_sec[i] to
- * 0; success=false forwards to record_addnode_failure with a TCP kind. */
+ * record_addnode_attempt(success=true) clears addnode_backoff_sec[i] and
+ * both failure counters to 0 (a live connection forgives past failures);
+ * success=false forwards to record_addnode_failure with a TCP kind. */
 void connman_record_addnode_attempt(struct connman *cm,
                                     size_t addnode_index,
                                     bool success);

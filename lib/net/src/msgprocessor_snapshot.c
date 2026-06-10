@@ -1873,14 +1873,18 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             uint32_t inflight = g_swarm.chunks_inflight;
             zcl_mutex_unlock(&g_swarm_mutex);
 
-            /* Count serving peers (no swarm lock needed) */
+            /* Count serving peers — under cs_nodes: the socket-thread
+             * disconnect sweep frees nodes at refcount 0. g_swarm_mutex
+             * was released above, so no lock-order hazard. */
             int serving_peers = 0;
             if (mp->net_mgr) {
+                zcl_mutex_lock(&mp->net_mgr->cs_nodes);
                 for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
                     struct p2p_node *n = mp->net_mgr->nodes[i];
                     if (n && n->swarm_manifest_received)
                         serving_peers++;
                 }
+                zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
             }
 
             printf("Sync: %d%% (%u/%u chunks, %u inflight, %d peers serving)\n",

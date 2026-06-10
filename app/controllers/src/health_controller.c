@@ -160,12 +160,16 @@ static bool rpc_getsyncdetail(const struct json_value *params, bool help,
         int peer_count = 0;
         int net_height = -1;
         if (ctx->connman) {
+            /* cs_nodes: the socket-thread disconnect sweep frees nodes
+             * at refcount 0 — never walk nodes[] lock-free. */
+            zcl_mutex_lock(&ctx->connman->manager.cs_nodes);
             peer_count = (int)ctx->connman->manager.num_nodes;
             for (size_t i = 0; i < ctx->connman->manager.num_nodes; i++) {
                 struct p2p_node *n = ctx->connman->manager.nodes[i];
                 if (n && n->starting_height > net_height)
                     net_height = n->starting_height;
             }
+            zcl_mutex_unlock(&ctx->connman->manager.cs_nodes);
         }
         json_push_kv_int(&chain, "peers", peer_count);
         json_push_kv_int(&chain, "network_height", net_height);

@@ -265,10 +265,7 @@ static void *thread_dns_seed(void *arg)
     /* Also try operator-curated + hardcoded onion seeds if Tor is
      * ready and few peers. Operator file at ~/.config/zclassic23/
      * onion-seeds (one .onion per line, # comments allowed) is loaded
-     * first; the hardcoded fallback is currently empty (this node's
-     * own .onion is published on boot once Tor is ready, so once any
-     * peer has us in their directory.json the fleet bootstraps via
-     * gossip without a static seed). */
+     * first, then the chainparams fallback seeds. */
     if (!g_stop && cm->manager.num_nodes < 3) {
         if (tor_integration_is_ready()) {
             char buf[32][96];
@@ -295,13 +292,10 @@ static void *thread_dns_seed(void *arg)
                     fclose(fp);
                 }
             }
-            /* Hardcoded fallback list (currently empty — populate as
-             * stable public seed onions are minted). */
-            static const char *onion_seeds[] = { NULL };
             for (int i = 0; i < n_seeds && !g_stop; i++)
                 try_onion_seed_fetch(cm, buf[i]);
-            for (int i = 0; onion_seeds[i] && !g_stop; i++)
-                try_onion_seed_fetch(cm, onion_seeds[i]);
+            for (size_t i = 0; i < cm->params->nOnionSeeds && !g_stop; i++)
+                try_onion_seed_fetch(cm, cm->params->onionSeeds[i]);
         }
     }
 
@@ -348,6 +342,15 @@ static void *thread_dns_seed(void *arg)
                    cur, PEER_FLOOR_MIN);
             seed_from_fixed(cm);
             dns_seed_resolve(cm);
+            /* Onion-directory fallback: Tor may not have been ready
+             * during the boot-time pass, so retry the chainparams
+             * seeds while below the floor. Blocking fetches are fine
+             * on this dedicated discovery thread. */
+            if (tor_integration_is_ready()) {
+                for (size_t si = 0;
+                     si < cm->params->nOnionSeeds && !g_stop; si++)
+                    try_onion_seed_fetch(cm, cm->params->onionSeeds[si]);
+            }
         } else {
             floor_below_since = 0;
         }
@@ -711,6 +714,12 @@ void connman_record_addnode_attempt(struct connman *cm,
     cm->addnode_last_attempt[addnode_index] = (int64_t)platform_time_wall_time_t();
     if (success) {
         cm->addnode_backoff_sec[addnode_index] = 0;
+        /* A live connection clears the failure history. Monotonic
+         * counters meant one transient handshake timeout charged a
+         * protocol failure forever, permanently disqualifying the
+         * addnode from the zero-peer emergency backoff reset. */
+        cm->addnode_tcp_failures[addnode_index] = 0;
+        cm->addnode_protocol_failures[addnode_index] = 0;
         return;
     }
 
@@ -1252,6 +1261,7 @@ static void *thread_socket_handler(void *arg)
         }
 
         /* Disconnect flagged nodes — defer free to next cycle */
+        static uint64_t s_hardcap_leaked = 0;
         for (size_t i = 0; i < cm->manager.num_nodes; ) {
             if (cm->manager.nodes[i]->disconnect) {
                 struct p2p_node *node = cm->manager.nodes[i];
@@ -1298,7 +1308,16 @@ static void *thread_socket_handler(void *arg)
                 cm->manager.nodes[i] =
                     cm->manager.nodes[cm->manager.num_nodes - 1];
                 cm->manager.num_nodes--;
-                if (cm->num_deferred_free < cm->deferred_free_cap) {
+                /* Drop the manager's ownership ref (taken at creation in
+                 * connect_node/accept_connection) now that the node has
+                 * left nodes[]. Any remaining ref belongs to an in-flight
+                 * message-cycle snapshot. Without this release no node
+                 * ever reached refcount 0, so the deferred list pinned at
+                 * its hard cap and every churned peer leaked. */
+                p2p_node_release(node);
+                if (p2p_node_get_ref(node) <= 0) {
+                    p2p_node_free(node);
+                } else if (cm->num_deferred_free < cm->deferred_free_cap) {
                     cm->deferred_free[cm->num_deferred_free++] = node;
                 } else if (cm->deferred_free_cap <
                            CONNMAN_DEFERRED_FREE_HARD_CAP) {
@@ -1315,28 +1334,27 @@ static void *thread_socket_handler(void *arg)
                         cm->deferred_free = grown;
                         cm->deferred_free_cap = new_cap;
                         cm->deferred_free[cm->num_deferred_free++] = node;
-                    } else if (p2p_node_get_ref(node) > 0) {
+                    } else {
                         LOG_WARN("connman",
                                  "deferred_free realloc failed and ref "
                                  "on node %s — leaking to avoid UAF",
                                  node->addr_name);
-                    } else {
-                        p2p_node_free(node);
                     }
-                } else if (p2p_node_get_ref(node) > 0) {
-                    /* Hard ceiling reached with a live ref. This is a
-                     * genuine leak (likely refs never being released by
-                     * a stuck message-cycle snapshot). Log loudly — the
-                     * signal handler will be invoked if we ever abort
-                     * from this path. */
-                    LOG_WARN("connman",
-                             "deferred_free HARD CAP %d reached with ref "
-                             "on node %s — leaking to avoid UAF "
-                             "(investigate refs)",
-                             CONNMAN_DEFERRED_FREE_HARD_CAP,
-                             node->addr_name);
                 } else {
-                    p2p_node_free(node);
+                    /* Hard ceiling with a live ref: a message-cycle
+                     * snapshot has been stuck holding refs for a long
+                     * time. Transition + running count, not a per-node
+                     * log storm. */
+                    s_hardcap_leaked++;
+                    if (s_hardcap_leaked == 1 ||
+                        s_hardcap_leaked % 100 == 0)
+                        LOG_WARN("connman",
+                                 "deferred_free HARD CAP %d with ref on "
+                                 "node %s — leaked %llu total to avoid "
+                                 "UAF (investigate refs)",
+                                 CONNMAN_DEFERRED_FREE_HARD_CAP,
+                                 node->addr_name,
+                                 (unsigned long long)s_hardcap_leaked);
                 }
             } else {
                 i++;
@@ -1840,6 +1858,12 @@ void connman_open_connection(struct connman *cm,
         if (!dup)
             cm->addnodes[cm->num_addnodes++] = *addr;
     }
+
+    /* Already connected (e.g. repeated RPC addnode): connect_node would
+     * dedupe-return the existing node with an extra borrowed ref this
+     * caller has no way to release — skip the dial entirely. */
+    if (connman_addr_is_connected(cm, addr))
+        return;
 
     /* Pass addr_name as dest so connect_node skips is_local check.
      * This allows connecting to localhost (e.g. local zclassicd peer). */

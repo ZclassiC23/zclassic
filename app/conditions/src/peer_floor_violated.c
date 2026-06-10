@@ -109,9 +109,18 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 
+    /* With zero healthy outbound there is nothing left to protect: clear
+     * every addnode backoff regardless of failure mix so the dialer can
+     * retry immediately. (Counter-mix gating alone permanently excluded
+     * any addnode that ever logged one protocol failure — e.g. a single
+     * self-induced 90s handshake timeout.) Above zero, forgive only
+     * pure-TCP failure history; a protocol-failing addnode keeps its
+     * backoff. */
+    bool zero_outbound = connman_outbound_healthy_count(cm) == 0;
     for (int ai = 0; ai < cm->num_addnodes; ai++) {
-        if (cm->addnode_protocol_failures[ai] == 0 &&
-            cm->addnode_tcp_failures[ai] > 0) {
+        if (zero_outbound ||
+            (cm->addnode_protocol_failures[ai] == 0 &&
+             cm->addnode_tcp_failures[ai] > 0)) {
             cm->addnode_backoff_sec[ai] = 0;
             cm->addnode_last_attempt[ai] = 0;
         }
