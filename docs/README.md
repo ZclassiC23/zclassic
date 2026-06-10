@@ -32,7 +32,7 @@ One line per doc. Start with the entry points, in order.
 
 ## Specs & validation
 
-- [`SECURITY_AND_INTEGRITY.md`](./SECURITY_AND_INTEGRITY.md) — safety boundary, scanner context, integrity controls, and reviewer checklist.
+- [`SECURITY_AND_INTEGRITY.md`](./SECURITY_AND_INTEGRITY.md) — operator safety boundary, security model, integrity controls, and reviewer checklist.
 - [`spec/power-node-contract.md`](./spec/power-node-contract.md) — stable architecture/observability contract for a power node.
 - [`validation/VALIDATION_MATRIX.md`](./validation/VALIDATION_MATRIX.md) — validation coverage matrix.
 

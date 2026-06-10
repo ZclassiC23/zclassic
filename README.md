@@ -17,10 +17,12 @@ finalizing forward, and the v1 acceptance criteria in
 [`docs/MVP.md`](docs/MVP.md) are not yet met. Do not rely on this build as a
 mainnet node until they are.
 
-This is security-sensitive full-node software, not offensive-security tooling.
-Some components can look high-risk to generic scanners because the node embeds
-Tor, exposes local operator APIs, manages wallet keys, and contains fuzz/chaos
-harnesses. The safety boundary and concrete integrity checks are documented in
+ZClassic23 is operator-owned full-node infrastructure. Its security model
+emphasizes local control: embedded Tor publishes the operator's own onion
+service, wallet state stays in the operator datadir, MCP provides a typed local
+operator interface, and fuzz/chaos harnesses run against isolated fixtures to
+harden recovery. The safety boundary and concrete integrity checks are
+documented in
 [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
 
 ## What is this?
@@ -201,7 +203,7 @@ measurements from a healthy sync, not current guarantees).
 ## Security
 
 Start with [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md)
-for the project's safety boundary, scanner context, local gates, MCP controls,
+for the project's operator safety boundary, local gates, MCP controls,
 release-integrity checks, and reviewer checklist.
 
 A third-party security audit was received and triaged in June 2026; the
