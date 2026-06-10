@@ -65,6 +65,13 @@ static bool check_block_impl(const struct block *block,
                               bool check_merkle_root,
                               bool check_size_limits);
 
+static bool contextual_check_block_header_impl(
+        const struct block_header *header,
+        struct validation_state *state,
+        const struct chain_params *params,
+        const struct block_index *pindex_prev,
+        bool checkpoints_enabled);
+
 static void write_u32_le_buf(uint8_t **p, uint32_t v)
 {
     (*p)[0] = (uint8_t)(v & 0xffu);
@@ -264,6 +271,26 @@ bool contextual_check_block_header(const struct block_header *header,
                                    const struct block_index *pindex_prev,
                                    bool checkpoints_enabled)
 {
+    bool ok = contextual_check_block_header_impl(header, state, params,
+                                                 pindex_prev,
+                                                 checkpoints_enabled);
+    /* Emit on EVERY contextual failure path (bad-equihash-solution-size,
+     * bad-diffbits, time-too-old, bad-fork-at-checkpoint, bad-version) —
+     * the REJECT_* macros stamp state->reject_reason, which the emit
+     * helper forwards. The bad-diffbits path additionally emits a
+     * detail-rich row inline (header/expected/prev nBits). Mirrors the
+     * check_block_header()/check_block() sibling wrappers. */
+    if (!ok) consensus_reject_block_emit(header, state);
+    return ok;
+}
+
+static bool contextual_check_block_header_impl(
+        const struct block_header *header,
+        struct validation_state *state,
+        const struct chain_params *params,
+        const struct block_index *pindex_prev,
+        bool checkpoints_enabled)
+{
     struct uint256 hash;
     block_header_get_hash(header, &hash);
 
@@ -310,11 +337,17 @@ bool contextual_check_block_header(const struct block_header *header,
         unsigned int expected_bits = GetNextWorkRequired(pindex_prev, header,
                                                          &params->consensus);
         if (header->nBits != expected_bits) {
-            printf("bad-diffbits at height %d: header=0x%08x "
-                   "expected=0x%08x prev_height=%d prev_bits=0x%08x\n",
-                   nHeight, header->nBits, expected_bits,
-                   pindex_prev->nHeight, pindex_prev->nBits);
-            fflush(stdout);
+            /* Carry the full diffbits detail (header vs expected nBits,
+             * prev height/bits) on a structured event instead of stdout —
+             * the wrapper's consensus_reject_block_emit() also fires with
+             * hash/reason/dos, so both rows key the same rejection. */
+            char hex[65];
+            uint256_get_hex(&hash, hex);
+            event_emitf(EV_CONSENSUS_REJECT_BLOCK, 0,
+                        "hash=%s reason=bad-diffbits header_nbits=0x%08x "
+                        "expected_nbits=0x%08x prev_height=%d prev_bits=0x%08x",
+                        hex, header->nBits, expected_bits,
+                        pindex_prev->nHeight, pindex_prev->nBits);
             REJECT_IF(true, state, 100, "bad-diffbits");
         }
     }

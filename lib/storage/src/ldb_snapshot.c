@@ -100,8 +100,15 @@ static bool link_or_copy(const char *src, const char *dst,
     if (errno == EXDEV)
         return copy_file(src, dst, err, err_sz);
     if (errno == EEXIST) {
-        /* Stale entry from earlier failed run — remove + retry. */
-        (void)unlink(dst);
+        /* Stale entry from earlier failed run — remove + retry. If the
+         * unlink fails the file is still present, so a retried link()
+         * would just hit EEXIST again; fail loudly instead. */
+        if (unlink(dst) != 0) {
+            int e = errno; /* preserve across LOG_WARN's fprintf */
+            LOG_WARN("storage", "unlink(%s): %s", dst, strerror(e));
+            set_err(err, err_sz, "unlink(%s): %s", dst, strerror(e));
+            return false;
+        }
         if (link(src, dst) == 0) return true;
     }
     set_err(err, err_sz, "link(%s,%s): %s", src, dst, strerror(errno));

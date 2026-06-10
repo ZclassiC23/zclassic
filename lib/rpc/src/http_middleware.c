@@ -5,6 +5,7 @@
 
 #include "platform/time_compat.h"
 #include "rpc/http_middleware.h"
+#include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,7 +111,17 @@ static void refill(double *bucket, int64_t *last_us, int rps, int burst)
     }
     int64_t now = mono_us();
     int64_t dt  = now - *last_us;
-    if (dt <= 0) return;
+    if (dt < 0) {
+        /* Monotonic clock went backwards (NTP step / VM migration /
+         * suspend-resume). Without re-baselining, dt stays negative
+         * forever and the bucket never refills again — a silent
+         * rate-limit wedge. Snap the baseline to now and continue. */
+        LOG_WARN("rpc", "clock rewound %lld us; resetting refill baseline",
+                 (long long)(-dt));
+        *last_us = now;
+        return;
+    }
+    if (dt == 0) return;  /* same-microsecond reading; nothing to add */
     *bucket += ((double)rps * (double)dt) / 1000000.0;
     if (*bucket > (double)burst) *bucket = (double)burst;
     *last_us = now;

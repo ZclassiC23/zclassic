@@ -833,6 +833,11 @@ bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
                                      &plain, &plain_len) ||
                 plain_len < 32) {
                 if (plain) { memory_cleanse(plain, plain_len); free(plain); }
+                /* Encrypted seed present but undecryptable — almost always a
+                 * wrong/missing ZCL_WALLET_PASSPHRASE.  Surface it so the
+                 * operator doesn't see a silent empty-wallet. */
+                LOG_WARN("wallet_sqlite",
+                         "read_sapling_seed: decrypt failed (wrong passphrase?)");
                 return false;
             }
             memcpy(seed, plain, 32);

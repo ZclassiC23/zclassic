@@ -5,11 +5,16 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
  * ConnectBlock — full block validation against the UTXO set.
- * 14 checks matching zclassicd main.cpp:2489-2702 exactly.
+ * Consensus checks mirror zclassicd main.cpp:2489-2702. The C23 node
+ * layers a few additions on top of the zclassicd set (none relax a
+ * zclassicd reject — see CONSENSUS_PARITY_DOCTRINE.md):
+ *   - ZIP-209 turnstile checks (Sprout/Sapling pool can't go negative)
+ *   - Sapling-root sanity check on the block's final anchor
+ *   - BIP30 self-write tolerance for kill-9 recovery (re-apply of a
+ *     block's own coinbase is not a duplicate)
  *
  * NEW in this refactor:
  *   - REJECT_IF / REJECT_UNLESS macros (Rails-style DRY)
- *   - ZIP-209 turnstile checks (Sprout/Sapling pool can't go negative)
  *   - Per-input MoneyRange validation
  *   - Validation events via event_emitf()
  *   - Input value < output check (bad-txns-in-belowout) */
@@ -386,23 +391,15 @@ bool connect_block(const struct block *block,
 
             /* ── All inputs must exist and be unspent ── */
             if (!coins_view_cache_have_inputs(view, tx)) {
-                /* Find the specific missing input for self-healing recovery */
-                for (size_t vi = 0; vi < tx->num_vin; vi++) {
-                    const struct tx_out *out =
-                        coins_view_cache_get_output_for(view, &tx->vin[vi]);
-                    if (!out) {
-                        char prevhex[65];
-                        uint256_get_hex(&tx->vin[vi].prevout.hash, prevhex);
-                        printf("missing-input: h=%d tx[%zu] vin[%zu]=%s:%u "
-                               "cache=%zu\n", pindex->nHeight, i, vi,
-                               prevhex, tx->vin[vi].prevout.n,
-                               view->cache_coins.size);
-                        state->missing_txid = tx->vin[vi].prevout.hash;
-                        state->missing_vout = tx->vin[vi].prevout.n;
-                        state->has_missing_utxo = true;
-                        break;
-                    }
-                }
+                /* The missing input is identified + repaired by the reducer
+                 * prevout_unresolved path (app/jobs/script_validate_stage.c),
+                 * not here — connect_block just rejects. Emit a structured
+                 * reject so consensus_reject_index can answer "why?". */
+                char bhex[65];
+                uint256_get_hex(&block_hash, bhex);
+                event_emitf(EV_CONSENSUS_REJECT_BLOCK, 0,
+                            "hash=%s reason=bad-txns-inputs-missingorspent "
+                            "dos=100", bhex);
                 free(checks); free(check_ptrs); free(txdatas);
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false, REJECT_INVALID,

@@ -105,8 +105,11 @@ static void query_node_stats(int *out_height, int *out_peers)
     char db_path[1024];
     zcl_node_db_path(db_path, sizeof(db_path), ctx->datadir);
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        LOG_WARN("net", "node db open failed: %s", db_path);
         return;
+    }
     /* 5s timeout — allows reads even during heavy block sync */
     sqlite3_busy_timeout(db, 5000);
 
@@ -429,8 +432,7 @@ static void populate_directory_from_chain(sqlite3 *db)
         "(onion_address, height, last_seen, version) "
         "VALUES (?, ?, strftime('%s','now'), 'chain')",
         -1, &ins, NULL) != SQLITE_OK || !ins) {
-        fprintf(stderr, "onion_service: failed to prepare peer insert: %s\n",
-                sqlite3_errmsg(db));
+        LOG_WARN("net", "failed to prepare peer insert: %s", sqlite3_errmsg(db));
         return;
     }
 

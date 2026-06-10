@@ -533,8 +533,14 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                 (long long)max_height,
                 COINS_AUTO_REWIND_MAX_ROWS);
             if (coins_rewind_above_tip(
-                    db, tip_height, COINS_AUTO_REWIND_MAX_ROWS) > 0)
+                    db, tip_height, COINS_AUTO_REWIND_MAX_ROWS) > 0) {
+                event_emitf(EV_DB_ERROR, 0,
+                    "coins_tip_heal=bounded-auto-rewind "
+                    "max_h=%lld tip_h=%lld guard=%d",
+                    (long long)max_height, (long long)tip_height,
+                    COINS_AUTO_REWIND_MAX_ROWS);
                 return true;
+            }
             fprintf(stderr,
                 "[coins] DB_ERR_TIP_MISMATCH: auto-rewind refused or "
                 "failed — halt and investigate.\n");
@@ -545,6 +551,11 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                 "[coins] tip check WARN: utxos max_height=%lld > "
                 "tip_height=%lld by %lld historical blocks — deferring "
                 "to block-index/coins anchor reconciliation\n",
+                (long long)max_height, (long long)tip_height,
+                (long long)(max_height - tip_height));
+            event_emitf(EV_DB_ERROR, 0,
+                "coins_tip_heal=historical-coins-lag "
+                "max_h=%lld tip_h=%lld lag=%lld",
                 (long long)max_height, (long long)tip_height,
                 (long long)(max_height - tip_height));
             return true;

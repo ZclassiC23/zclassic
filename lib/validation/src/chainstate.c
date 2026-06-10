@@ -666,6 +666,8 @@ void chainstate_free(struct chainstate *cs)
 struct block_index *chainstate_insert_block_index(struct chainstate *cs,
                                                    const struct uint256 *hash)
 {
+    if (!hash)
+        return NULL; /* NULL-guard before uint256_is_null derefs it */
     if (uint256_is_null(hash))
         return NULL;
 

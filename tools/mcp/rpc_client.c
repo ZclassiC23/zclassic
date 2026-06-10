@@ -170,8 +170,15 @@ char *mcp_node_rpc(const char *method, const char *params_json)
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n", auth_b64, blen);
 
-    send(sock, header, (size_t)hlen, 0);
-    send(sock, body, (size_t)blen, 0);
+    /* MSG_NOSIGNAL: a peer reset mid-send must return EPIPE, not raise
+     * SIGPIPE and kill the MCP process. Treat any short/failed write as
+     * fatal for this request — a truncated POST yields a bogus reply. */
+    if (send(sock, header, (size_t)hlen, MSG_NOSIGNAL) != (ssize_t)hlen ||
+        send(sock, body,   (size_t)blen, MSG_NOSIGNAL) != (ssize_t)blen) {
+        close(sock);
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"failed to send request to node\"}}");
+    }
 
     size_t cap = 65536, len = 0;
     char *buf = zcl_malloc(cap, "mcp rpc response buf");

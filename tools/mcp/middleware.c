@@ -291,6 +291,12 @@ static char *dispatch_with_timeout(const char *tool_name,
     if (timeout_ms <= 0)
         return mcp_router_dispatch(tool_name, args);
 
+    /* Cap before the deadline calc below: a wild caller value would make
+     * `deadline.tv_sec += timeout_ms / 1000` overflow time_t. One hour is
+     * far longer than any legitimate MCP dispatch. */
+    if (timeout_ms > 3600000)
+        timeout_ms = 3600000;
+
     struct timeout_ctx *ctx = zcl_malloc(sizeof(*ctx), "mcp.timeout_ctx");
     if (!ctx) {
         /* zcl_malloc already logged the OOM with context. Degrade

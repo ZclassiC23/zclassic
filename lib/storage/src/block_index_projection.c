@@ -27,6 +27,7 @@
 #include "storage/block_index_projection.h"
 
 #include "storage/event_log_payloads.h"
+#include "event/event.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -140,6 +141,9 @@ static bool create_schema(sqlite3 *db)
     for (size_t i = 0; ddls[i]; i++) {
         char *err = NULL;
         if (sqlite3_exec(db, ddls[i], NULL, NULL, &err) != SQLITE_OK) {
+            event_emitf(EV_DB_ERROR, 0,
+                "block_index_projection_create_schema ddl_index=%zu errmsg=%s",
+                i, err ? err : "(no message)");
             fprintf(stderr,  // obs-ok:block-index-projection-open-failure
                     "[block_index_projection] schema ddl[%zu] failed: %s\n",
                     i, err ? err : "(no message)");

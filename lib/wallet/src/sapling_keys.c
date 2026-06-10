@@ -8,6 +8,7 @@
 #include "encoding/utilstrencodings.h"
 #include "sapling/sapling.h"
 #include "support/cleanse.h"
+#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -69,6 +70,10 @@ bool sapling_keystore_new_address(struct sapling_keystore *sks,
 
     if (sks->num_keys >= MAX_SAPLING_KEYS) {
         zcl_mutex_unlock(&sks->cs);
+        /* Keystore at capacity — tell the caller why new_address() failed. */
+        LOG_WARN("sapling_keys",
+                 "new_address: keystore full (%d/%d keys)",
+                 (int)sks->num_keys, MAX_SAPLING_KEYS);
         return false;
     }
 
@@ -204,6 +209,10 @@ bool sapling_keystore_import_xsk(struct sapling_keystore *sks,
 
     if (sks->num_keys >= MAX_SAPLING_KEYS) {
         zcl_mutex_unlock(&sks->cs);
+        /* Keystore at capacity — tell the caller why import_xsk() failed. */
+        LOG_WARN("sapling_keys",
+                 "import_xsk: keystore full (%d/%d keys)",
+                 (int)sks->num_keys, MAX_SAPLING_KEYS);
         return false;
     }
 
