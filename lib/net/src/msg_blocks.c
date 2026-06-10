@@ -9,6 +9,7 @@
 
 #include "platform/time_compat.h"
 #include "net/msg_internal.h"
+#include "net/dandelion.h"
 #include "net/peer_scoring.h"
 #include "net/compact_blocks.h"
 #include "storage/disk_block_io.h"
@@ -212,6 +213,12 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
             skip_block_serve:
             (void)0;
         } else if (inv.type == MSG_TX) {
+            /* BIP 156: never serve a tx that is under stem embargo via
+             * the public MSG_TX path — nobody can legitimately know
+             * its hash yet (it has not been announced with MSG_TX). */
+            if (g_dandelion_init &&
+                dandelion_stempool_contains(&g_dandelion, &inv.hash))
+                goto skip_tx_serve;
             struct transaction tx;
             transaction_init(&tx);
             if (tx_mempool_lookup(mp->mempool, &inv.hash, &tx)) {
@@ -227,6 +234,31 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                 sent = true;
             }
             transaction_free(&tx);
+            skip_tx_serve:
+            (void)0;
+        } else if (inv.type == MSG_DANDELION_TX) {
+            /* BIP 156 serve rule: a stem tx is served ONLY to the peer
+             * it was advertised to, and only from the stempool (never
+             * from the mempool — a mempool tx is public and announced
+             * with MSG_TX). Everyone else gets notfound. */
+            if (g_dandelion_init &&
+                dandelion_was_advertised_to(&g_dandelion, &inv.hash,
+                                            node->id)) {
+                size_t tx_size = 0;
+                uint8_t *tx_bytes = dandelion_stempool_copy(
+                    &g_dandelion, &inv.hash, &tx_size);
+                if (tx_bytes) {
+                    p2p_node_begin_message(node, "tx",
+                                           mp->params->pchMessageStart);
+                    p2p_node_write_message_data(node, tx_bytes, tx_size);
+                    p2p_node_end_message(node);
+                    free(tx_bytes);
+                    sent = true;
+                    g_dandelion.stat_served++;
+                }
+            }
+            if (!sent && g_dandelion_init)
+                g_dandelion.stat_refused++;
         }
 
         if (!sent && not_found_count < 64)

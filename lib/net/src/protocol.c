@@ -15,10 +15,18 @@ static const char *ppszTypeName[] = {
     "ERROR",
     "tx",
     "block",
-    "filtered block"
+    "filtered block",
+    "ERROR",          /* 4 reserved (Bitcoin MSG_CMPCT_BLOCK) */
+    "dandeliontx"     /* BIP 156 stem-phase tx */
 };
 
 #define TYPE_NAME_COUNT (sizeof(ppszTypeName) / sizeof(ppszTypeName[0]))
+
+/* Reserved slots in ppszTypeName that are not valid inv types. */
+static bool inv_type_is_reserved(int type)
+{
+    return type == 4;
+}
 
 void msg_header_init(struct msg_header *h,
                      const unsigned char msgstart[MESSAGE_START_SIZE])
@@ -93,6 +101,8 @@ int inv_item_init_by_name(struct inv_item *inv, const char *type_name,
                           const struct uint256 *hash)
 {
     for (unsigned int i = 1; i < TYPE_NAME_COUNT; i++) {
+        if (inv_type_is_reserved((int)i))
+            continue;
         if (strcmp(type_name, ppszTypeName[i]) == 0) {
             inv->type = (int)i;
             inv->hash = *hash;
@@ -104,7 +114,8 @@ int inv_item_init_by_name(struct inv_item *inv, const char *type_name,
 
 bool inv_item_is_known_type(const struct inv_item *inv)
 {
-    return inv->type >= 1 && (unsigned int)inv->type < TYPE_NAME_COUNT;
+    return inv->type >= 1 && (unsigned int)inv->type < TYPE_NAME_COUNT &&
+           !inv_type_is_reserved(inv->type);
 }
 
 const char *inv_item_get_command(const struct inv_item *inv)

@@ -19,12 +19,21 @@
 enum {
     NODE_NETWORK = (1 << 0),
     NODE_BLOOM = (1 << 2),
+    /* BIP 156: node relays Dandelion (stem-phase) transactions.
+     * NODE_ZCL23 is (1 << 10) — see net/fast_sync.h. */
+    NODE_DANDELION = (1 << 11),
 };
 
 enum {
     MSG_TX = 1,
     MSG_BLOCK,
     MSG_FILTERED_BLOCK,
+    /* 4 reserved (Bitcoin MSG_CMPCT_BLOCK) */
+    /* BIP 156: stem-phase transaction announcement. The payload served
+     * for a getdata of this type is a normal "tx" message, but it comes
+     * from the stempool and is only served to the peer it was advertised
+     * to. */
+    MSG_DANDELION_TX = 5,
 };
 
 enum {

@@ -10,6 +10,7 @@
 #include "platform/time_compat.h"
 #include "net/msg_internal.h"
 #include "net/addrman.h"
+#include "net/dandelion.h"
 #include "net/version.h"
 #include "net/p2p_message.h"
 #include "net/file_service.h"
@@ -120,6 +121,8 @@ void msg_version_build(struct version_message *ver,
     ver->services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
         ver->services |= NODE_BLOOM;
+    if (dandelion_enabled())
+        ver->services |= NODE_DANDELION;
     ver->timestamp = (int64_t)platform_time_wall_time_t();
     ver->addr_recv = node->addr;
     if (g_has_external_ip) {

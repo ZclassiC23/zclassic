@@ -81,4 +81,18 @@ enum mempool_accept_result accept_to_mempool(
     const struct chain_params *params,
     struct transaction *tx);
 
+/* Same gate with an explicit insert switch. dry_run=true runs every
+ * check (structural, shielded proofs, inputs, fees, scripts) but does
+ * NOT add the tx to the mempool — used by Dandelion (BIP 156) to vet a
+ * stem tx that must stay out of the mempool until it fluffs. A
+ * dry_run=true OK result therefore means "would be accepted right
+ * now"; callers re-run with dry_run=false at fluff time. */
+enum mempool_accept_result accept_to_mempool_ex(
+    struct tx_mempool *pool,
+    struct coins_view_cache *coins_tip,
+    struct main_state *main_state,
+    const struct chain_params *params,
+    struct transaction *tx,
+    bool dry_run);
+
 #endif /* ZCL_ACCEPT_TO_MEMPOOL_H */

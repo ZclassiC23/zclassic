@@ -10,6 +10,9 @@
 #include "platform/time_compat.h"
 #include "net/connman.h"
 #include "net/addrman.h"
+#include "net/dandelion.h"
+#include "net/msg_internal.h"
+#include "primitives/transaction.h"
 #include "event/event.h"
 #include "net/peer_bandwidth.h"
 #include "net/peer_lifecycle.h"
@@ -1503,6 +1506,8 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     cm->manager.local_services = NODE_NETWORK | NODE_ZCL23;
     if (bip37_enabled())
         cm->manager.local_services |= NODE_BLOOM;
+    if (dandelion_enabled())
+        cm->manager.local_services |= NODE_DANDELION;
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
     snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH,
              "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/");
@@ -1793,6 +1798,96 @@ void connman_relay_transaction(struct connman *cm,
     char hex[65];
     uint256_get_hex(txid, hex);
     printf("Relay tx %s to %d peers\n", hex, relayed);
+}
+
+bool connman_relay_transaction_private(struct connman *cm,
+                                       const struct uint256 *txid,
+                                       const uint8_t *tx_bytes,
+                                       size_t tx_size)
+{
+    if (!cm || !txid || !tx_bytes || tx_size == 0)
+        return false;
+    if (!dandelion_enabled() || !g_dandelion_init)
+        return false;
+
+    /* Re-broadcast while still under embargo: already stemming —
+     * report success rather than letting the caller fall back to the
+     * public path (which would break the embargo). */
+    if (dandelion_stempool_contains(&g_dandelion, txid))
+        return true;
+
+    dandelion_maybe_rotate_epoch(&g_dandelion, &cm->manager);
+
+    /* Local txs map to the wallet edge (DANDELION_NODE_ID_NONE) and
+     * always stem when a destination exists — the per-hop fluff coin
+     * applies to relay hops, not the originator (BIP 156). */
+    node_id_t dest = dandelion_get_stem_peer(&g_dandelion,
+                                             DANDELION_NODE_ID_NONE);
+    if (dest == DANDELION_NODE_ID_NONE)
+        return false;
+
+    if (!dandelion_stempool_add(&g_dandelion, txid,
+                                DANDELION_NODE_ID_NONE, dest,
+                                tx_bytes, tx_size))
+        return false;
+
+    /* Immediate inv{MSG_DANDELION_TX} to the destination (stem-hop
+     * latency matters; bypass the trickle). If the peer races away the
+     * embargo / destination-gone check fluffs the tx — never lost. */
+    struct inv_item inv;
+    inv_item_init_typed(&inv, MSG_DANDELION_TX, txid);
+
+    struct byte_stream msg;
+    stream_init(&msg, 40);
+    stream_write_compact_size(&msg, 1);
+    inv_item_serialize(&inv, &msg);
+
+    bool sent = false;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *node = cm->manager.nodes[i];
+        if (node->id == dest &&
+            node->state >= PEER_HANDSHAKE_COMPLETE && !node->disconnect) {
+            p2p_node_begin_message(node, "inv", cm->manager.message_start);
+            p2p_node_write_message_data(node, msg.data, msg.size);
+            p2p_node_end_message(node);
+            sent = true;
+            break;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    stream_free(&msg);
+
+    if (sent) {
+        dandelion_mark_advertised(&g_dandelion, txid, dest);
+        g_dandelion.stat_stem_sent++;
+        char hex[65];
+        uint256_get_hex(txid, hex);
+        LOG_INFO("net", "dandelion: stemmed local tx %s", hex);
+    }
+    /* Even if the send failed, the tx is safely under embargo. */
+    return true;
+}
+
+void connman_relay_transaction_local(struct connman *cm,
+                                     const struct transaction *tx)
+{
+    if (!cm || !tx)
+        return;
+
+    bool stemmed = false;
+    if (dandelion_enabled() && g_dandelion_init) {
+        struct byte_stream bs;
+        stream_init(&bs, 512);
+        if (transaction_serialize(tx, &bs) &&
+            connman_relay_transaction_private(cm, &tx->hash,
+                                              bs.data, bs.size))
+            stemmed = true;
+        stream_free(&bs);
+    }
+
+    if (!stemmed)
+        connman_relay_transaction(cm, &tx->hash);
 }
 
 void connman_add_seed_node(struct connman *cm, const char *host,

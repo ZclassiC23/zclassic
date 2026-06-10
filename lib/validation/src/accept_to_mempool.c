@@ -81,6 +81,18 @@ enum mempool_accept_result accept_to_mempool(
     const struct chain_params *params,
     struct transaction *tx)
 {
+    return accept_to_mempool_ex(pool, coins_tip, main_state, params, tx,
+                                false);
+}
+
+enum mempool_accept_result accept_to_mempool_ex(
+    struct tx_mempool *pool,
+    struct coins_view_cache *coins_tip,
+    struct main_state *main_state,
+    const struct chain_params *params,
+    struct transaction *tx,
+    bool dry_run)
+{
     if (!pool || !tx)
         return MEMPOOL_ACCEPT_INTERNAL_ERROR;
 
@@ -160,6 +172,11 @@ enum mempool_accept_result accept_to_mempool(
                                   : MEMPOOL_ACCEPT_INVALID;
         }
     }
+
+    /* Dandelion dry-run: every check passed; report OK without
+     * touching the mempool. */
+    if (dry_run)
+        return MEMPOOL_ACCEPT_OK;
 
     struct mempool_entry entry;
     mempool_entry_init(&entry, tx, fee,

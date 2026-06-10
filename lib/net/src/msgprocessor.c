@@ -1724,24 +1724,22 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     /* Snapshot serving + swarm + block-swarm coordinators. */
     mp_snapshot_send_tick(mp, node);
 
-    /* Dandelion++ embargo check: fluff any stemmed txs whose embargo expired.
-     * Done once per trickle cycle (not per-peer) via a static timer guard. */
+    /* Dandelion (BIP 156) embargo check: any stem tx whose random
+     * embargo expired before it was seen back in the mempool — or
+     * whose stem destination disconnected — is fluffed here: accepted
+     * to the mempool (the deferred insert) and diffused by normal inv
+     * relay. Done once per trickle cycle (not per-peer). */
     if (send_trickle && g_dandelion_init && g_dandelion.stempool_count > 0) {
-        struct uint256 expired[32];
-        int nexp = dandelion_stempool_check_embargo(&g_dandelion, expired, 32);
-        if (nexp > 0 && mp->net_mgr) {
-            zcl_mutex_lock(&mp->net_mgr->cs_nodes);
-            for (int ei = 0; ei < nexp; ei++) {
-                struct inv_item einv;
-                inv_item_init_typed(&einv, MSG_TX, &expired[ei]);
-                for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
-                    struct p2p_node *peer = mp->net_mgr->nodes[pi];
-                    if (peer->state >= PEER_HANDSHAKE_COMPLETE &&
-                        !peer->disconnect && peer->relay_txes)
-                        p2p_node_push_inventory(peer, &einv);
-                }
-            }
-            zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+        struct dandelion_fluff_item expired[32];
+        int nexp = dandelion_stempool_take_expired(&g_dandelion,
+                                                   mp->net_mgr,
+                                                   expired, 32);
+        for (int ei = 0; ei < nexp; ei++) {
+            msg_tx_fluff_from_bytes(mp, &expired[ei].txhash,
+                                    expired[ei].tx_bytes,
+                                    expired[ei].tx_size,
+                                    DANDELION_NODE_ID_NONE, 0);
+            free(expired[ei].tx_bytes);
         }
     }
 

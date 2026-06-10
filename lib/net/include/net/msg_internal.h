@@ -185,4 +185,14 @@ struct dandelion_state;
 extern struct dandelion_state g_dandelion;
 extern bool g_dandelion_init;
 
+/* Fluff a stem tx from its stored serialized bytes: accept to mempool
+ * (the deferred BIP 156 insert) and diffuse via normal inv relay.
+ * `exclude` is a peer id not to relay back to ((node_id_t)-1 for
+ * none); `from_peer` is the peer id attributed in events (0 for
+ * none). Returns true if the tx is in the mempool afterwards. */
+bool msg_tx_fluff_from_bytes(struct msg_processor *mp,
+                             const struct uint256 *hash,
+                             const uint8_t *bytes, size_t size,
+                             node_id_t exclude, uint32_t from_peer);
+
 #endif /* ZCL_NET_MSG_INTERNAL_H */

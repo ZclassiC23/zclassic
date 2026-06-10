@@ -145,6 +145,28 @@ int connman_force_outbound_rotation(struct connman *cm, const char *reason);
 void connman_relay_transaction(struct connman *cm,
                                 const struct uint256 *txid);
 
+/* BIP 156 private relay for a locally originated tx. Holds the
+ * serialized tx in the Dandelion stempool and announces it (inv type
+ * MSG_DANDELION_TX) to this node's wallet-edge stem destination; the
+ * tx enters the mempool when it fluffs (peer fluff, embargo expiry,
+ * or destination loss — it cannot be lost). Returns false when
+ * Dandelion is disabled, uninitialized, or no Dandelion-capable
+ * outbound peer exists — caller falls back to mempool insert +
+ * connman_relay_transaction. */
+bool connman_relay_transaction_private(struct connman *cm,
+                                       const struct uint256 *txid,
+                                       const uint8_t *tx_bytes,
+                                       size_t tx_size);
+
+/* Stem-first relay for a locally originated tx that is ALREADY in the
+ * wallet/mempool (wallet send paths commit to the mempool for
+ * bookkeeping). Tries the private stem announcement; falls back to
+ * normal inv diffusion. While under stem embargo the tx is hidden
+ * from the P2P `mempool` reply and from MSG_TX getdata. */
+struct transaction;
+void connman_relay_transaction_local(struct connman *cm,
+                                     const struct transaction *tx);
+
 /* one pass of the message-handler loop body.
  *
  * Snapshots cm->manager.nodes[] under cs_nodes + bumps ref_count on each
