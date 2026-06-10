@@ -16,6 +16,12 @@
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 
+/* The SHA-NI runtime detection (this variable + detect_sha_ni) is referenced
+ * ONLY from the (x86 && __SHA__)-guarded call sites below, so its definition
+ * must carry the same guard — otherwise an x86 -march that does not enable
+ * __SHA__ leaves both defined-but-unused and -Werror=unused-{variable,function}
+ * fails the build. Reported by @jmprcx (ZclassiC23/zclassic PR #5). */
+#ifdef __SHA__
 static int sha_ni_available = -1; /* -1 = not checked, 0 = no, 1 = yes */
 
 /* Forward declarations for self-test in detect_sha_ni */
@@ -64,6 +70,7 @@ static void detect_sha_ni(void)
     sha_ni_available = 0;
 #endif
 }
+#endif /* __SHA__ — detection defs match the (x86 && __SHA__) call sites */
 
 #ifdef __SHA__
 #include <immintrin.h>
