@@ -27,6 +27,7 @@
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_db.h"
 #include "storage/progress_store.h"
+#include "storage/coins_kv.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
@@ -306,6 +307,13 @@ struct utxo_import_result utxo_recovery_import_ldb(
 
         coins_view_db_close(&migrate_db);
         node_db_wal_checkpoint(ctx->ndb);
+
+        /* Seed coins_kv from the import — the projection-based boot
+         * rebuild ran pre-import (empty, no-op); without this the
+         * prevout resolver has no pre-anchor coins. */
+        if (!coins_kv_seed_from_node_db(progress_store_db(),
+                sqlite3_db_filename(ctx->ndb->db, "main")))
+            LOG_WARN("utxo_recovery", "coins_kv import seed failed");
 
         /* Force a fresh read snapshot so ctx->ndb sees the UTXOs
          * written by import_db (the private connection).  Without
