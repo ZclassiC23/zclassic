@@ -58,9 +58,12 @@ bool validate_headers_stage_window_report(
          * per boot. Anything else is a real error and stays loud. */
         const char *em = sqlite3_errmsg(db);
         if (!em || !strstr(em, "no such table"))
-            LOG_ERR("validate_headers",
-                    "window report count prepare failed: %s",
-                    em ? em : "(null)");
+            /* LOG_WARN, not LOG_ERR: LOG_ERR embeds `return -1`, which
+             * in this bool function returned TRUE and skipped the
+             * tx unlock below — a lock leak on every real DB error. */
+            LOG_WARN("validate_headers",
+                     "window report count prepare failed: %s",
+                     em ? em : "(null)");
         progress_store_tx_unlock();
         return false;
     }
@@ -82,9 +85,10 @@ bool validate_headers_stage_window_report(
     if (rc != SQLITE_OK) {
         const char *em2 = sqlite3_errmsg(db);
         if (!em2 || !strstr(em2, "no such table"))
-            LOG_ERR("validate_headers",
-                    "window report fail prepare failed: %s",
-                    em2 ? em2 : "(null)");
+            /* LOG_WARN, not LOG_ERR — see the count-prepare branch. */
+            LOG_WARN("validate_headers",
+                     "window report fail prepare failed: %s",
+                     em2 ? em2 : "(null)");
         progress_store_tx_unlock();
         return false;
     }
