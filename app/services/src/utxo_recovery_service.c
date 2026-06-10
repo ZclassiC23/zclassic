@@ -363,6 +363,11 @@ struct zcl_result utxo_recovery_wipe(struct node_db *ndb, const char *reason)
         return ZCL_ERR(-42,
             "utxo_recovery_wipe: node_db_wipe_utxos failed at \"%s\" "
             "(rows=%lld)", reason, (long long)proposed);
+    /* The coins are gone — the cold-import seed anchor (a height/hash/count
+     * triple that asserts coins are present through H) must not survive them,
+     * or a later partial reimport could read a stale key and trust-stamp a
+     * finalized frontier above the real coin frontier. */
+    utxo_recovery_clear_cold_import_seed(ndb);
     return ZCL_OK;
 }
 
@@ -382,6 +387,10 @@ struct zcl_result utxo_recovery_prepare_reimport(struct node_db *ndb)
             "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'"))
         return ZCL_ERR(-50, "prepare_reimport: failed to clear "
                        "leveldb_utxo_migrated flag");
+    /* A reimport is about to replace the coins — drop the durable seed anchor
+     * for the OLD import so an interrupted reimport (migrated cleared, coins
+     * partially wiped) cannot leave the consumer reading a stale key. */
+    utxo_recovery_clear_cold_import_seed(ndb);
     return ZCL_OK;
 }
 

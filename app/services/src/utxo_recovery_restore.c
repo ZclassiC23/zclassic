@@ -51,6 +51,44 @@ static struct zcl_result recovery_status_ok(void)
     return ZCL_OK;
 }
 
+/* DURABLE cold-import seed anchor. Writes three keys the consumer
+ * (block_index_loader_seed_stages_from_cold_import) reads every boot to heal
+ * the staged-sync wedge: cold_import_seed_anchor_{height(int64 H),hash(32B
+ * coins_best),utxo_count(int64 live rows)}. The count is the PROVENANCE TOKEN:
+ * H* is cursor/log-derived (coins are C4 diagnostic-only in
+ * reducer_frontier_compute_hstar) so the post-seed H*==H self-check cannot
+ * detect a coin tear — the consumer instead requires node_db_utxo_count() ==
+ * this recorded count (the boot.c:840 precedent). Cleared by every wipe /
+ * reimport-prepare so the key never outlives the coins it attests to. */
+static void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
+                                                 int height,
+                                                 const struct uint256 *hash,
+                                                 int64_t utxo_count)
+{
+    if (!ndb || height <= 0 || !hash || utxo_count <= 0)
+        return;
+    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_height",
+                                (int64_t)height);
+    (void)node_db_state_set(ndb, "cold_import_seed_anchor_hash",
+                            hash->data, 32);
+    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_utxo_count",
+                                utxo_count);
+}
+
+/* Clear all three durable cold-import seed keys. Called from every UTXO wipe /
+ * reimport-prepare so a stale key cannot outlive the coins it attests to.
+ * Best-effort; the consumer's live coin-count cross-check is the backstop. */
+void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
+{
+    if (!ndb)
+        return;
+    (void)node_db_exec(ndb,
+        "DELETE FROM node_state WHERE key IN ("
+        "'cold_import_seed_anchor_height',"
+        "'cold_import_seed_anchor_hash',"
+        "'cold_import_seed_anchor_utxo_count')");
+}
+
 /* MAX(height) over the utxos table; defined below, forward-declared here
  * so the LDB-import path above can share the single SELECT. */
 static int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx);
@@ -277,21 +315,12 @@ struct utxo_import_result utxo_recovery_import_ldb(
                     res.skip_activate = true;
                     snprintf(res.anchor_reason, sizeof(res.anchor_reason),
                              "ldb_import_found");
-                    /* DURABLE cold-import seed anchor: the public tip is now
-                     * CSR-committed to exactly (found->nHeight, ldb_best). The
-                     * post-stage-init consumer
-                     * (block_index_loader_seed_stages_from_cold_import) reads
-                     * these keys, re-derives the staged-sync wedge every boot,
-                     * and fires the trusted seed. Written ONLY in this branch
-                     * (the tip is truly at H here); the anchor-only / unknown
-                     * branches below never write them, so the trusted seed
-                     * cannot fire above the real coin frontier. Durable so a
-                     * kill-9 before the consumer self-heals on the next boot. */
-                    (void)node_db_state_set_int(ctx->ndb,
-                        "cold_import_seed_anchor_height",
-                        (int64_t)found->nHeight);
-                    (void)node_db_state_set(ctx->ndb,
-                        "cold_import_seed_anchor_hash", ldb_best.data, 32);
+                    /* Tip is CSR-committed to (found->nHeight, ldb_best);
+                     * record the durable seed. Count = live utxos rows; height
+                     * = coins_best block height (the block whose hash we seed). */
+                    utxo_recovery_write_cold_import_seed(ctx->ndb,
+                        found->nHeight, &ldb_best,
+                        node_db_utxo_count(ctx->ndb));
                 }
             } else if (ldb_height > 0) {
                 /* LDB best block NOT in our index — record an activation
@@ -383,6 +412,19 @@ struct utxo_import_result utxo_recovery_import_ldb(
             if (!coins_kv_seed_from_node_db(progress_store_db(),
                     sqlite3_db_filename(ctx->ndb->db, "main")))
                 LOG_WARN("utxo_recovery", "coins_kv import seed failed");
+
+            /* DURABLE cold-import seed anchor for the path the ldb_import_found
+             * branch does NOT take (normal --importblockindex + boot
+             * auto-import). This gate (`imported_count > 100000`) is a
+             * ROW-COUNT heuristic, NOT a crypto token at non-checkpoint
+             * heights — the consumer establishes trust at consume time
+             * (hash-in-index at H, recorded count == live count, migrated-flag
+             * set) and the key is cleared on every wipe/reimport-prepare.
+             * ldb_height = MAX(utxo height); count = live rows. */
+            if (ldb_height > 0 && !uint256_is_null(&ldb_best))
+                utxo_recovery_write_cold_import_seed(ctx->ndb, ldb_height,
+                                                     &ldb_best,
+                                                     node_db_utxo_count(ctx->ndb));
         }
 
         /* Marker consumed by process_block.c's hot-loop exit

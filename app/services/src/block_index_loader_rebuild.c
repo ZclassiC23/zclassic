@@ -426,9 +426,16 @@ bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
 }
 
 /* Durable cold-import anchor keys, written by the producer
- * (utxo_recovery_import_ldb, ldb_import_found branch). */
+ * (utxo_recovery_import_ldb: both the ldb_import_found branch and the bulk
+ * UTXO-migration accepted gate, via utxo_recovery_write_cold_import_seed) and
+ * cleared by every UTXO wipe / reimport-prepare
+ * (utxo_recovery_clear_cold_import_seed). The utxo_count key is the live row
+ * count at write time — the provenance token this consumer cross-checks
+ * against node_db_utxo_count() to detect a coin tear below H (H* alone cannot:
+ * it is cursor/log-derived, coins are C4 diagnostic-only). */
 #define COLD_IMPORT_SEED_HEIGHT_KEY "cold_import_seed_anchor_height"
 #define COLD_IMPORT_SEED_HASH_KEY   "cold_import_seed_anchor_hash"
+#define COLD_IMPORT_SEED_COUNT_KEY  "cold_import_seed_anchor_utxo_count"
 
 /* How far H* must trail the imported coins tip H before the wedge-heal seed
  * fires. A genuine cold import leaves H* at the compiled checkpoint, millions
@@ -494,30 +501,92 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;
     int32_t H = (int32_t)anchor_h;
 
-    /* (2) HARD precondition: the live active tip must BE the imported anchor.
-     *     One tip read (no TOCTOU): height + hash from the SAME node. Excludes
-     *     the ldb_import_anchor / rewound-placeholder branches where the tip is
-     *     below H — never trust-stamp above the real coin frontier. */
-    struct block_index *tip = active_chain_tip(&ms->chain_active);
-    if (!tip || !tip->phashBlock) {
+    /* (2) INTEGRITY: the durable anchor block must EXIST in the loaded block
+     *     index at exactly height H — the same block_map_find check
+     *     boot_resolve_cold_import_pending_anchor (config/src/boot.c) uses to
+     *     trust a pending coins-best anchor. This binds the trusted height H to
+     *     a real header we hold; a wrong/forged key whose hash we don't carry
+     *     (or carry at a different height) is rejected. We do NOT require the
+     *     active tip to BE the anchor: at this boot point the active tip is the
+     *     body-availability floor and only reaches H later at runtime, so a
+     *     tip==anchor gate would no-op the wedge it exists to heal. */
+    struct uint256 ah;
+    memcpy(ah.data, anchor_hash, 32);
+    struct block_index *anchor = block_map_find(&ms->map_block_index, &ah);
+    if (!anchor || anchor->nHeight != H) {
         LOG_WARN("block_index",
-                 "cold-import seed: no active tip; skip (anchor H=%d)", H);
+                 "cold-import seed: durable anchor not in index at H=%d "
+                 "(found=%d); skip — not trusting an anchor we don't hold",
+                 H, anchor ? anchor->nHeight : -1);
         return 0;
     }
-    if (tip->nHeight != H ||
-        memcmp(tip->phashBlock->data, anchor_hash, 32) != 0) {
-        LOG_WARN("block_index",
-                 "cold-import seed: live tip h=%d != import anchor H=%d "
-                 "(or hash mismatch); skip — not seeding above coin frontier",
-                 tip->nHeight, H);
-        return 0;
-    }
+
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     int32_t checkpoint = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
     if (H < checkpoint) {
         LOG_WARN("block_index",
                  "cold-import seed: import H=%d below checkpoint=%d; skip",
                  H, checkpoint);
+        return 0;
+    }
+
+    /* (2b) FORWARD-ONLY: never seed below where the active chain already is.
+     *     The seed publishes a finalized frontier at H; if the live tip is
+     *     already at or beyond H there is nothing to advance and lowering the
+     *     finalized authority is never correct. A torn datadir that genuinely
+     *     reached past H is left untouched. */
+    int cur_h = active_chain_height(&ms->chain_active);
+    if (cur_h > H) {
+        LOG_WARN("block_index",
+                 "cold-import seed: active tip h=%d already >= import H=%d; "
+                 "skip (forward-only)", cur_h, H);
+        return 0;
+    }
+
+    /* (2c) LIVE IMPORT PROVENANCE: leveldb_utxo_migrated must STILL be set.
+     *     The producer writes the durable anchor inside the same accepted gate
+     *     that sets this flag; utxo_recovery_prepare_reimport clears the flag
+     *     (and the anchor) when a reimport starts. An interrupted reimport that
+     *     left a STALE height/hash key but cleared the flag is rejected here —
+     *     the durable key alone is not a coin-presence proof. */
+    {
+        uint8_t mig = 0;
+        size_t mig_len = 0;
+        if (!node_db_state_get(ndb, "leveldb_utxo_migrated",
+                               &mig, sizeof(mig), &mig_len) ||
+            mig_len != 1 || mig != 1) {
+            LOG_WARN("block_index",
+                     "cold-import seed: leveldb_utxo_migrated not set; skip — "
+                     "import not live (H=%d)", H);
+            return 0;
+        }
+    }
+
+    /* (2d) COIN-PRESENCE CROSS-CHECK: the live utxos row count must EQUAL the
+     *     count recorded with the anchor. This is the load-bearing torn-datadir
+     *     guard and mirrors boot_resolve_cold_import_pending_anchor
+     *     (config/src/boot.c:840). H*==H (step 6) CANNOT detect a coin tear:
+     *     reducer_frontier_compute_hstar derives H* from progress-store
+     *     cursors/logs and treats the coins frontier as C4 diagnostic-only, so
+     *     the post-seed self-check verifies the state the seed manufactured,
+     *     not the on-disk coins. If the coin set was torn below H after the key
+     *     was written (kill-9 mid-write, partial reimport keeping >100k rows),
+     *     the live count differs and the seed is refused. */
+    int64_t recorded_count = 0;
+    if (!node_db_state_get_int(ndb, COLD_IMPORT_SEED_COUNT_KEY,
+                               &recorded_count) || recorded_count <= 0) {
+        LOG_WARN("block_index",
+                 "cold-import seed: durable utxo_count missing/invalid "
+                 "(recorded=%lld); skip — incomplete anchor", (long long)recorded_count);
+        return 0;
+    }
+    int64_t live_count = node_db_utxo_count(ndb);
+    if (live_count != recorded_count) {
+        LOG_WARN("block_index",
+                 "cold-import seed: live utxo count %lld != recorded %lld at "
+                 "H=%d; skip — coins torn since import, not seeding above the "
+                 "real coin frontier", (long long)live_count,
+                 (long long)recorded_count, H);
         return 0;
     }
 
@@ -537,6 +606,24 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
     }
     if ((int64_t)H - (int64_t)hstar <= COLD_IMPORT_SEED_TRIGGER_GAP)
         return 0;  /* not wedged (or already healed) — no-op */
+
+    /* (3b) NO tip_finalize REGRESSION: tip_finalize_stage_seed_anchor stamps
+     *      the tip_finalize cursor to H+1 via an UNCONDITIONAL stage_set_cursor
+     *      (with trusted_seed=true the frontier cap is exempted), so if the
+     *      cursor is ALREADY at or beyond H+1 the seed would LOWER it. The
+     *      forward-only gate (2b) only guards the active chain height, not this
+     *      cursor; a torn progress.kv with a high tip_finalize cursor over a low
+     *      upstream prefix would otherwise pass the H* gap gate and regress the
+     *      finalized cursor. Refuse rather than rewind a finalized authority. */
+    uint64_t tf_cursor =
+        stage_cursor_persisted(progress_db, "tip_finalize", "tip_finalize");
+    if (tf_cursor >= (uint64_t)(H + 1)) {
+        LOG_WARN("block_index",
+                 "cold-import seed: tip_finalize cursor=%llu already >= H+1=%d; "
+                 "skip — never regress the finalized cursor",
+                 (unsigned long long)tf_cursor, H + 1);
+        return 0;
+    }
 
     /* (4) Set the SECOND authority FIRST: coins_applied_height = H+1 (the
      *     utxo_apply cursor convention; H would cap utxo_apply at H and make

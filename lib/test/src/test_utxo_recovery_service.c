@@ -154,14 +154,35 @@ int test_utxo_recovery_service(void)
 
             int64_t before = node_db_utxo_count(&ndb);
 
+            /* A prior import's durable seed anchor — the wipe destroys the
+             * coins, so it MUST also clear the anchor that attests to them. */
+            uint8_t seed_hash[32];
+            memset(seed_hash, 0xCD, sizeof(seed_hash));
+            node_db_state_set_int(&ndb, "cold_import_seed_anchor_height",
+                                  3100000);
+            node_db_state_set(&ndb, "cold_import_seed_anchor_hash",
+                              seed_hash, sizeof(seed_hash));
+            node_db_state_set_int(&ndb, "cold_import_seed_anchor_utxo_count",
+                                  before);
+
             /* Set env to allow wipe of 10 rows */
             setenv("ZCL_MAX_UTXO_WIPE_ROWS", "10", 1);
             bool ok = utxo_recovery_wipe(&ndb, "test.small_wipe").ok;
             int64_t after = node_db_utxo_count(&ndb);
             unsetenv("ZCL_MAX_UTXO_WIPE_ROWS");
 
+            int64_t seed_h = -1;
+            bool have_h = node_db_state_get_int(
+                &ndb, "cold_import_seed_anchor_height", &seed_h);
+            int64_t seed_c = -1;
+            bool have_c = node_db_state_get_int(
+                &ndb, "cold_import_seed_anchor_utxo_count", &seed_c);
+
             URS_CHECK("urs: policy allows small wipe",
                       ok && before == 5 && after == 0);
+            URS_CHECK("urs: utxo wipe clears cold-import seed anchor "
+                      "(key cannot outlive the coins it attests to)",
+                      !have_h && !have_c);
 
             node_db_close(&ndb);
         } else {
@@ -259,6 +280,19 @@ int test_utxo_recovery_service(void)
             uint8_t one = 1;
             node_db_state_set(&ndb, "leveldb_utxo_migrated", &one, 1);
 
+            /* Set the durable cold-import seed anchor (height/hash/count) as a
+             * prior accepted import would. prepare_reimport MUST clear all
+             * three so a later partial reimport cannot read a stale key and
+             * trust-stamp a finalized frontier above the real coin frontier. */
+            uint8_t seed_hash[32];
+            memset(seed_hash, 0xAB, sizeof(seed_hash));
+            node_db_state_set_int(&ndb, "cold_import_seed_anchor_height",
+                                  3100000);
+            node_db_state_set(&ndb, "cold_import_seed_anchor_hash",
+                              seed_hash, sizeof(seed_hash));
+            node_db_state_set_int(&ndb, "cold_import_seed_anchor_utxo_count",
+                                  1300000);
+
             /* Insert 3 UTXOs */
             for (int i = 0; i < 3; i++) {
                 char sql[256];
@@ -280,8 +314,24 @@ int test_utxo_recovery_service(void)
             bool flag = node_db_state_get(&ndb, "leveldb_utxo_migrated",
                                            buf, sizeof(buf), &len);
 
+            /* The three durable seed keys must ALL be gone. */
+            int64_t seed_h = -1;
+            bool have_h = node_db_state_get_int(
+                &ndb, "cold_import_seed_anchor_height", &seed_h);
+            uint8_t hbuf[32];
+            size_t hlen = 0;
+            bool have_hash = node_db_state_get(
+                &ndb, "cold_import_seed_anchor_hash",
+                hbuf, sizeof(hbuf), &hlen);
+            int64_t seed_c = -1;
+            bool have_c = node_db_state_get_int(
+                &ndb, "cold_import_seed_anchor_utxo_count", &seed_c);
+
             URS_CHECK("urs: prepare reimport: clear flag, keep UTXOs",
                       ok && utxos == 3 && !flag);
+            URS_CHECK("urs: prepare reimport clears cold-import seed anchor "
+                      "(no stale key strands across a reimport)",
+                      !have_h && !have_hash && !have_c);
 
             node_db_close(&ndb);
         } else {
