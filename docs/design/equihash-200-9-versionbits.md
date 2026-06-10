@@ -6,7 +6,7 @@ ZClassic has used Equihash 192,7 (400-byte solutions) since the Bubbles fork at 
 
 This is a **sidegrade**, not an upgrade: a lateral parameter change with different trade-offs rather than a technical improvement. Identifiers containing "upgrade" (`ehUpgrade`, `eh_upgrade`, `-signal-eh-upgrade`) reuse the deployment vocabulary of the network-upgrade tables.
 
-The approach fits the existing codebase: `nVersion` is stored in every `block_index` entry, so header-only ancestor tallies are cheap; all `nVersion` checks here and in legacy zclassicd/MagicBean are `>= 4`, so a signal bit relays through the existing network; PoW verification already dispatches on solution size (a 1344-byte solution verifies as 200,9 today); and the single consensus gate pinning the allowed solution size per height is the expected-size check in `contextual_check_block_header`. No versionbits machinery existed in the tree before this change. The feature ships in the first release, so every C23 node carries it from day one.
+The approach fits the existing codebase: `nVersion` is stored in every `block_index` entry, so header-only ancestor tallies are cheap; all `nVersion` checks here and in the elder zclassicd/MagicBean nodes are `>= 4`, so a signal bit relays through the existing network; PoW verification already dispatches on solution size (a 1344-byte solution verifies as 200,9 today); and the single consensus gate pinning the allowed solution size per height is the expected-size check in `contextual_check_block_header`. No versionbits machinery existed in the tree before this change. The feature ships in the first release, so every C23 node carries it from day one.
 
 **Decisions:** sustained-majority tally (consecutive passing windows, BIP8-style with no expiry); ~1-month grace between LOCKED_IN and ACTIVE; graduated difficulty relief at the switch (reusing `scaleDifficultyAtUpgradeFork`); the built-in miner signals by default and solves post-activation work with the generic reference solver.
 
@@ -62,11 +62,11 @@ The grace between LOCKED_IN and ACTIVE is the coordination window, and it is det
 
 - **Pools:** switch stratum/solver backends from 192,7 to 200,9 work at exactly `H_a`. Templates from an upgraded node carry the correct version bits and, from `H_a`, the new parameters, so template-driven pools only schedule the solver-side switch. The 0-fee pool is available as a ready 200,9 target from the start.
 - **Exchanges:** run an upgraded node before `H_a`; raise deposit confirmation requirements through the transition window and consider pausing deposits/withdrawals around `H_a` itself.
-- **Legacy nodes:** zclassicd/MagicBean accept both eras' blocks (parameter dispatch derives from solution size; the version rule is `>= 4`) and follow the most-work chain across `H_a`. Every C23 node carries this feature from the first release, so there is no older C23 population to fork off.
+- **Elder nodes:** zclassicd/MagicBean calculate the Equihash parameters of each block from its solution size — a 400-byte solution verifies as 192,7 and a 1344-byte solution as 200,9 — so they accept both eras' blocks without any code change, relay them (their version rule is `>= 4`), and follow the most-work chain across `H_a`. Every C23 node carries this feature from the first release, so there is no older C23 population to fork off.
 - **Communication milestones,** each a block height with a date estimate: deployment ships (signaling open); streak building in `getdeploymentinfo` (ecosystem heads-up); LOCKED_IN (one-month countdown with exact height); `H_a` (switch).
 
 ## Risks
 
 - **Fast-sync tails:** a node snapshot-synced past a future `H_a` cannot walk the windows until headers backfill; it falls back to the static table until then. Once mainnet locks in, ship a checkpoint row at `H_a` as belt-and-braces.
-- **Legacy network assumption:** "MagicBean relays 0x10004 blocks and zclassicd accepts 1344-byte solutions via size dispatch" matches both codebases' sources but should be verified against a live zclassicd before any mainnet signaling campaign.
+- **Elder network assumption:** "MagicBean relays 0x10004 blocks and zclassicd accepts 1344-byte solutions by calculating parameters from solution size" matches both codebases' sources but should be verified against a live zclassicd before any mainnet signaling campaign.
 - `mine_block_pow` signature change ripples into 3 test files (mechanical, same commit).
