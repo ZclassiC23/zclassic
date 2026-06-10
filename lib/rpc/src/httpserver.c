@@ -515,12 +515,15 @@ static void handle_client(struct rpc_conn conn)
          (path[7] == '\0' || path[7] == '?'))) {
         /* Read headers looking for WebSocket upgrade fields */
         char ws_key[128] = {0};
+        char ws_auth[512] = {0};
         bool is_upgrade = false;
         while (read_line(&conn, line, sizeof(line))) {
             if (line[0] == '\0') break;
             if (strncasecmp(line, "Upgrade:", 8) == 0 &&
                 strstr(line + 8, "websocket"))
                 is_upgrade = true;
+            if (strncasecmp(line, "Authorization:", 14) == 0)
+                snprintf(ws_auth, sizeof(ws_auth), "%s", line + 14);
             if (strncasecmp(line, "Sec-WebSocket-Key:", 18) == 0) {
                 const char *p = line + 18;
                 while (*p == ' ') p++;
@@ -533,6 +536,35 @@ static void handle_client(struct rpc_conn conn)
             }
         }
         if (is_upgrade && ws_key[0]) {
+            /* Same Basic-auth gate as the JSON-RPC path: the event
+             * stream exposes chain/peer/wallet activity, so an
+             * unauthenticated upgrade is an information leak. */
+            if (!check_auth(ws_auth[0] ? ws_auth : NULL)) {
+                if (g_middleware_active)
+                    rpc_http_middleware_record_auth_fail(&g_middleware,
+                                                         client_ip_be);
+                char errbuf[256];
+                size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                    HTTP_UNAUTHORIZED, "Unauthorized", NULL, NULL);
+                send_response(&conn, 401, "Unauthorized", errbuf, elen);
+                goto done;
+            }
+            if (g_middleware_active)
+                rpc_http_middleware_record_success(&g_middleware,
+                                                   client_ip_be);
+            /* ws_events owns a raw fd only — handing it a TLS socket
+             * would write the 101 handshake plaintext beneath the TLS
+             * stream and orphan the SSL object on the early return.
+             * Refuse over SSL instead; done: SSL_frees via conn_close. */
+            if (conn.ssl) {
+                char errbuf[256];
+                size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
+                    RPC_INVALID_REQUEST,
+                    "WebSocket /events not supported on the TLS listener",
+                    NULL, NULL);
+                send_response(&conn, 501, "Not Implemented", errbuf, elen);
+                goto done;
+            }
             const char *query = strchr(path, '?');
             if (ws_events_upgrade(client_fd, path, ws_key, query)) {
                 /* fd is now owned by ws_events — do NOT close it */
@@ -741,6 +773,15 @@ static void *tls_listen_thread_fn(void *arg)
                 perror("tls accept");
             continue;
         }
+
+        /* Bound the inline handshake: SSL_accept runs on the accept
+         * loop, so a slowloris client that never finishes the handshake
+         * would stall ALL new TLS RPC connections. Blocking-socket
+         * timeouts make its internal reads/writes fail after 5 s and
+         * fall into the existing drop path below. */
+        struct timeval hs_tv = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &hs_tv, sizeof(hs_tv));
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &hs_tv, sizeof(hs_tv));
 
         /* Perform TLS handshake */
         SSL *ssl = SSL_new(g_tls_ctx);
