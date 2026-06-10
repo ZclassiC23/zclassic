@@ -6,6 +6,66 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
+## 2026-06-10 — mainnet sync wedge cleared END TO END (branch `feature/sync-fixes`)
+
+**VERIFIED LIVE:** trackb (cold import) went from a wiped datadir to the
+LIVE TIP in ONE boot — h=3142304 vs zclassicd 3142305, hash-identical at
+3142118/3142200/3142300, straight through the old prevout_unresolved
+wedge. tracka (trustless genesis sync) unwedged from its h=6756 freeze
+and advances steadily with all eight stages ticking. Six root causes,
+each diagnosed empirically (supervisor dumpstate ages, /proc per-thread
+CPU+wchan, gdb-as-parent repro, raw leveldb probes, SQL over the
+imported set):
+
+1. **Download queue O(n²) under dm->cs** — per-item linear dedup +
+   sorted-insert memmove against a queue pinned at its 65536 cap;
+   bulk enqueues held the lock for minutes, the supervisor thread
+   starved, and the staged pipeline stopped ticking. Now an O(1)
+   membership set + one sort-merge per bulk call, evict-highest at
+   cap. Also: stall recovery collapsed from 12 full block_map scans
+   per invocation to one.
+2. **Header sync crawled its own known span** — periodic getheaders
+   re-anchored at the ACTIVE TIP and the continuation never skipped
+   known headers (tracka: +640 headers/30min at 100% CPU). An
+   all-known batch now continues from pindex_best_header; tip-class
+   anchors prefer best_header (both gated on heights_repaired).
+3. **UTXO import silently dropped the txid-keyspace TAIL** — the
+   reader's end-of-range check jumped past the publish of the chunk
+   being filled: every txid above FF3779C7... (~1,561 records,
+   ~4,400 coins) missing on every import with identical
+   plausible-looking row counts. THE original prevout_unresolved
+   cause. Proven with a raw leveldb probe (501,273 'c' records on
+   disk vs 499,712 imported distinct txids).
+4. **gap_fill windowed from the active tip, not the reducer
+   frontier** — post-hard-kill boots restore the tip above the staged
+   cursors and nothing re-downloads below tip+1: the classic
+   tip_finalize>utxo_apply inversion wedge. The window bottom now
+   clamps to body_fetch's cursor.
+5. **coins_kv empty on the FIRST boot after a cold import** — the
+   projection-based boot rebuild runs pre-import against an empty
+   projection, so the script_validate prevout resolver had no
+   pre-anchor coins: first post-anchor spend fails ok=0, the seeded
+   anchor is refused, H* falls back to the compiled checkpoint, tip
+   pins at the anchor. The import now seeds coins_kv directly from
+   node.db utxos (1,344,557 rows, one ATTACH-copy).
+6. **Live-chainstate copy hardened** — cp -a of a live LevelDB can
+   tear; the copy is now signature-verified point-in-time (retry
+   until no source file changed mid-copy, refuse instead of tear).
+
+Plus: validate_headers window report treats a missing log table as
+"no data" instead of LOG_ERR spam. (A seventh fix — full block_map
+scans per successor hop in msg_headers — was independently fixed on
+this main by 416fddb85 and is not re-applied here.)
+
+Ops notes: track units are transient systemd-run (no auto-restart —
+the tip watchdog's self-shutdown leaves them dead; use real units with
+Restart=on-failure for soaks). zcl-rpc needs ZCL_DATADIR+ZCL_RPCPORT;
+state via `zcl-rpc dumpstate '"supervisor"'`, SQL via
+`zcl-rpc dbquery '"SELECT ..."'`. ptrace is yama-blocked: run the node
+as a gdb CHILD on a copy datadir, or read /proc/PID/task/*/stat+wchan.
+
+---
+
 ## ★★★ 2026-06-09 SESSION CHECKPOINT — security-audit remediation landed (read FIRST)
 
 The Round-1 security audit's chain-fatal findings are FIXED on main, gated by
