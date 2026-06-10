@@ -165,6 +165,8 @@ int main(void)
         failures += test_db_migration_idempotent();
         failures += test_coins_view_atomicity();
         failures += test_coins_anchor_reconcile_all();
+        { extern int test_boot_coins_anchor_dual_store_recovery(void);
+          failures += test_boot_coins_anchor_dual_store_recovery(); }
         failures += test_make_lint_gates();
         failures += test_wallet_sqlite_enc();
         failures += test_wallet_keystore();
@@ -920,6 +922,8 @@ int main(void)
     failures += test_db_migration_idempotent();
     failures += test_coins_view_atomicity();
     failures += test_coins_anchor_reconcile_all();
+    { extern int test_boot_coins_anchor_dual_store_recovery(void);
+      failures += test_boot_coins_anchor_dual_store_recovery(); }
     failures += test_chain_stall_repro();
     failures += test_failed_child_cap();
     failures += test_power_node_contract_spec();

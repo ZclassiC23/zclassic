@@ -139,7 +139,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
     X(block_pruning) X(schema_migration) X(db_migration_idempotent) \
-    X(coins_view_atomicity) X(coins_anchor_reconcile_all) X(make_lint_gates) X(multisig) \
+    X(coins_view_atomicity) X(coins_anchor_reconcile_all) \
+    X(boot_coins_anchor_dual_store_recovery) X(make_lint_gates) X(multisig) \
     X(mcp_fuzz) X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
     X(chain_advance_coordinator) \

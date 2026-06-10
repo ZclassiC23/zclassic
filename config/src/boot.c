@@ -47,6 +47,7 @@
 #include "chain/checkpoints.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_view_kv.h"
+#include "storage/coins_kv.h"
 #include "storage/utxo_projection.h"
 #include "storage/coins_db.h"
 #include "storage/ldb_snapshot.h"
@@ -1698,13 +1699,14 @@ bool app_init(struct app_context *ctx)
                 "integrity gate; UTXO set will be rebuilt from block data\n");
         (void)utxo_recovery_repair_stale_cursor_from_sync_projection(
             &g_node_db);
-        if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
-            /* the old "Warning" + keep-going path is how the
-             * live node was still serving RPC against a corrupted
-             * chain-state.  A boot-time tip mismatch that the check
-             * didn't auto-rewind is an operator-intervention event:
-             * emit a structured crash event so systemd/node.log
-             * preserves the reason, and refuse to start. */
+        /* On open failure, try L1 torn-legacy-coins recovery (§3 dual-store
+         * tear, utxo_recovery_torn_anchor.c — reset-safe, refuses unless
+         * coins_kv is the proven authority, so the FATAL never weakens), then
+         * retry. If neither path recovers, refuse to start with a crash event. */
+        if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db) &&
+            !(utxo_recovery_heal_torn_legacy_coins_anchor(
+                  &g_node_db, progress_store_db(), ctx->datadir) &&
+              coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db))) {
             fprintf(stderr,
                 "FATAL: coins view integrity check failed — the "
                 "UTXO set is inconsistent with the stored tip "

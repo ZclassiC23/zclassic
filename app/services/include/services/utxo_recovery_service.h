@@ -22,6 +22,7 @@
 #include "util/result.h"
 
 /* Forward declarations */
+struct sqlite3;
 struct main_state;
 struct coins_view_sqlite;
 struct coins_view_cache;
@@ -141,6 +142,37 @@ struct recovery_exec_result utxo_recovery_execute(
  * normal UTXO rewind path. Returns true only when a repair was made. */
 bool utxo_recovery_repair_stale_cursor_from_sync_projection(
     struct node_db *ndb);
+
+/* L1 torn-legacy-coins boot recovery (the §3 dual-store tear).
+ *
+ * Fires ONLY from the boot gate AFTER coins_view_sqlite_open() returned false
+ * with the torn-legacy shape: node.db `utxos` has rows but `coins_best_block`
+ * is UNSET (the crash lost the legacy mirror's lazy batch + tip anchor, while
+ * the tear-PROOF reducer authority coins_kv committed every block atomically).
+ *
+ * Recovery is gated on coins_kv being the PROVEN-healthy authority:
+ *   (1) coins_kv_migration_complete == 1  (read-flip done; coins_kv is sole),
+ *   (2) coins_kv_count(progress_db) > 0   (it actually holds the live set),
+ *   (3) coins_kv_get_applied_height found  (it has a durable applied frontier).
+ * If ANY predicate fails, the function returns false and the caller's FATAL is
+ * preserved unchanged (no safety gate is weakened).
+ *
+ * On the proven-healthy path it re-seeds `coins_best_block` to the block hash
+ * at `MAX(height) FROM utxos` — the height the LEGACY mirror actually reaches,
+ * NEVER the (further-ahead) coins_kv frontier — so the SHA3 snapshot served to
+ * peers stays self-consistent with its committed anchor. The chosen height's
+ * block must be consensus-backed on disk (a node.db `blocks` row with
+ * status>=3); otherwise the function refuses (returns false → FATAL preserved).
+ *
+ * Reset-safe: it only WRITES the anchor (never deletes a *_log row, never
+ * lowers coins_kv, never resets the tip). progress_db is the live
+ * progress_store_db() handle (already open at the gate). Returns true ONLY
+ * when the anchor was durably written and a retry of coins_view_sqlite_open
+ * is warranted; false otherwise (caller must FATAL). */
+bool utxo_recovery_heal_torn_legacy_coins_anchor(
+    struct node_db *ndb,
+    struct sqlite3 *progress_db,
+    const char *datadir);
 
 /* ── UTXO cleanup ────────────────────────────────────────── */
 

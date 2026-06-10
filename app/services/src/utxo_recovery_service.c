@@ -442,6 +442,10 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
     return true;
 }
 
+/* L1 torn-legacy-coins boot recovery
+ * (utxo_recovery_heal_torn_legacy_coins_anchor) lives in its own seam file
+ * utxo_recovery_torn_anchor.c to keep this file under the size ceiling. */
+
 /* Helper: wipe UTXOs and reset to genesis for clean re-sync */
 static bool reset_to_genesis(struct utxo_recovery_ctx *ctx)
 {
