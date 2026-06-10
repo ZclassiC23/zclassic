@@ -322,6 +322,20 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
                    "top=%d frontier=%d hole=%d",
                    floor_height, top_height, frontier_at_start, hole_height);
 
+    /* TG-F1 guard: the terminal window [frontier..H] must complete in ONE
+     * chunk — a mid-window checkpoint clamps persist_next back to the
+     * frontier (the record format has no pre-CLEAN top_hash slot), so a
+     * window larger than max_blocks would pin next at the frontier forever:
+     * SCANNING on every tick, claiming the dispatcher, never paging. Refuse
+     * loudly instead of livelocking. */
+    if (max_blocks > 0 && hole_height - frontier_at_start + 1 > max_blocks)
+        LOG_RETURN(COIN_SCAN_WINDOW_OVER_BUDGET, "stage_repair",
+                   "[coin_backfill] scan terminal window [%d..%d] (%d blocks)"
+                   " exceeds chunk budget max_blocks=%d — refusing (would "
+                   "livelock at the frontier clamp)",
+                   frontier_at_start, hole_height,
+                   hole_height - frontier_at_start + 1, max_blocks);
+
     if (!progress_meta_table_ensure(db))
         LOG_RETURN(COIN_SCAN_GAP, "stage_repair",
                    "[coin_backfill] scan: progress_meta ensure failed");

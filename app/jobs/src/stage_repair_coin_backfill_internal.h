@@ -15,6 +15,10 @@ enum coin_backfill_scan_verdict {
     COIN_SCAN_SPENT_FOUND,
     COIN_SCAN_GAP,
     COIN_SCAN_CHAIN_REBOUND, /* prev-link mismatch on resume/start: restarted from floor */
+    COIN_SCAN_WINDOW_OVER_BUDGET, /* terminal window [frontier..H] > max_blocks:
+                                   * can never complete in one chunk (mid-window
+                                   * checkpoints clamp back to the frontier), so
+                                   * refuse instead of livelocking at SCANNING */
 };
 
 /* Chunked, resumable, chain-bound no-spend scan (guard G9).

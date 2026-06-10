@@ -72,8 +72,16 @@ bool nullifier_kv_get(sqlite3 *db, const uint8_t nf[32], int pool,
                  sqlite3_errmsg(db));
         return false;
     }
-    sqlite3_bind_blob(s, 1, nf, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_int (s, 2, pool);
+    /* Fail CLOSED on bind failure: an unbound param is NULL, the WHERE
+     * matches nothing, *found stays false — returning true here would let
+     * a double-spend through on a mere allocation failure. */
+    if (sqlite3_bind_blob(s, 1, nf, 32, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_int (s, 2, pool)                     != SQLITE_OK) {
+        LOG_WARN("nullifier_kv", "[nullifier_kv] get bind failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(s);
+        return false;
+    }
     bool ok = true;
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
@@ -103,9 +111,14 @@ bool nullifier_kv_add(sqlite3 *db, const uint8_t nf[32], int pool,
                  sqlite3_errmsg(db));
         return false;
     }
-    sqlite3_bind_blob (s, 1, nf, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_int  (s, 2, pool);
-    sqlite3_bind_int64(s, 3, (sqlite3_int64)height);
+    if (sqlite3_bind_blob (s, 1, nf, 32, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_int  (s, 2, pool)                     != SQLITE_OK ||
+        sqlite3_bind_int64(s, 3, (sqlite3_int64)height)    != SQLITE_OK) {
+        LOG_WARN("nullifier_kv", "[nullifier_kv] add bind failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(s);
+        return false;
+    }
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE) {
@@ -130,8 +143,13 @@ bool nullifier_kv_delete_range(sqlite3 *db, int64_t first_h, int64_t last_h)
                  sqlite3_errmsg(db));
         return false;
     }
-    sqlite3_bind_int64(s, 1, (sqlite3_int64)first_h);
-    sqlite3_bind_int64(s, 2, (sqlite3_int64)last_h);
+    if (sqlite3_bind_int64(s, 1, (sqlite3_int64)first_h) != SQLITE_OK ||
+        sqlite3_bind_int64(s, 2, (sqlite3_int64)last_h)  != SQLITE_OK) {
+        LOG_WARN("nullifier_kv", "[nullifier_kv] delete_range bind failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(s);
+        return false;
+    }
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE) {

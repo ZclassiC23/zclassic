@@ -42,6 +42,7 @@ enum coin_backfill_scan_verdict {
     COIN_SCAN_SPENT_FOUND,
     COIN_SCAN_GAP,
     COIN_SCAN_CHAIN_REBOUND,
+    COIN_SCAN_WINDOW_OVER_BUDGET,
 };
 enum coin_backfill_scan_verdict coin_backfill_scan_step(
     struct sqlite3 *db, struct main_state *ms, const struct coin_backfill_io *io,
@@ -86,6 +87,11 @@ enum cb_variant {
     CBV_CB5,         /* spends (coinbase@5, 0) — immature            */
     CBV_TA0_TO_9,    /* spends (T_A,0..9) — round-cap fixture        */
     CBV_BOGUS,       /* spends an outpoint whose txindex row lies    */
+    CBV_TA0_CREATOR_SPEND, /* like CBV_TA0 but the CREATOR block's vtx[2]
+                            * already spends (T_A,0) — first-iteration
+                            * h == floor == creator boundary (TG-F2) */
+    CBV_TA0_EMPTY_SCRIPT,  /* like CBV_TA0 but T_A vout0 has a zero-length
+                            * scriptPubKey (TG-F4) */
 };
 
 /* ── EV_OPERATOR_NEEDED observer ───────────────────────────────────── */
@@ -199,9 +205,10 @@ static bool cb_build_body(struct cb_chain *ch, int h)
     if (h > 0)
         b->header.hashPrevBlock = ch->hashes[h - 1];
 
-    struct transaction extra;
-    bool have_extra = false;
+    struct transaction extra, extra2;
+    bool have_extra = false, have_extra2 = false;
     transaction_init(&extra);
+    transaction_init(&extra2);
 
     if (h == CB_CREATOR) {
         struct outpoint in;
@@ -212,6 +219,23 @@ static bool cb_build_body(struct cb_chain *ch, int h)
             vals[i] = 2000 + i;
         have_extra = cb_make_spend_tx(&extra, &in, 1, vals, 12, 0xA0);
         if (!have_extra) return false;
+        if (ch->variant == CBV_TA0_EMPTY_SCRIPT) {
+            /* Zero-length scriptPubKey on the lost coin; the txid must be
+             * recomputed over the emptied script (TG-F4). */
+            extra.vout[0].script_pub_key.size = 0;
+            transaction_compute_hash(&extra);
+        }
+        if (ch->variant == CBV_TA0_CREATOR_SPEND) {
+            /* vtx[2] spends (T_A,0) INSIDE the creator block: the scan's
+             * very first iteration (h == floor == creator) must see it. */
+            struct outpoint in2 = { .hash = extra.hash, .n = 0 };
+            int64_t v2[1] = { 700 };
+            have_extra2 = cb_make_spend_tx(&extra2, &in2, 1, v2, 1, 0xDA);
+            if (!have_extra2) {
+                transaction_free(&extra);
+                return false;
+            }
+        }
     } else if (h == CB_CREATOR_B) {
         struct outpoint in;
         cb_fake_outpoint(&in, 0xBB);
@@ -243,6 +267,8 @@ static bool cb_build_body(struct cb_chain *ch, int h)
         size_t nin = 0;
         switch (ch->variant) {
         case CBV_TA0:
+        case CBV_TA0_CREATOR_SPEND:
+        case CBV_TA0_EMPTY_SCRIPT:
             ins[0].hash = ta->hash; ins[0].n = 0; nin = 1;
             break;
         case CBV_TA0_TB0:
@@ -279,21 +305,25 @@ static bool cb_build_body(struct cb_chain *ch, int h)
         if (!have_extra) return false;
     }
 
-    size_t ntx = have_extra ? 2 : 1;
+    size_t ntx = 1 + (have_extra ? 1u : 0u) + (have_extra2 ? 1u : 0u);
     b->vtx = zcl_calloc(ntx, sizeof(struct transaction), "cb_test_vtx");
     if (!b->vtx) {
         if (have_extra) transaction_free(&extra);
+        if (have_extra2) transaction_free(&extra2);
         return false;
     }
     b->num_vtx = ntx;
     if (!cb_make_coinbase(&b->vtx[0], h)) {
         if (have_extra) transaction_free(&extra);
+        if (have_extra2) transaction_free(&extra2);
         return false;
     }
     if (have_extra)
         b->vtx[1] = extra;   /* ownership moves into the block */
+    if (have_extra2)
+        b->vtx[2] = extra2;  /* only ever set together with have_extra */
 
-    struct uint256 txids[2];
+    struct uint256 txids[3];
     for (size_t i = 0; i < ntx; i++)
         txids[i] = b->vtx[i].hash;
     b->header.hashMerkleRoot = compute_merkle_root(txids, ntx);
@@ -1245,16 +1275,51 @@ static int cb_case_resume_integrity(void)
         v3 != COIN_SCAN_CLEAN && v3 != COIN_SCAN_SPENT_FOUND &&
         next3 < next2);
 
+    /* TG-F3: malformed persisted records are treated as ABSENT — restart
+     * from floor, never decoded, never CLEAN on that call. With
+     * max_blocks=3 a from-floor restart checkpoints at exactly floor+3,
+     * the observable proof the resume cursor was discarded. */
+    char scan_key[192];
+    char hole_hex[65];
+    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hole_hex);
+    snprintf(scan_key, sizeof(scan_key), "coin_backfill.scan.%d.%s",
+             CB_HOLE, hole_hex);
+    uint8_t junk[105];   /* 105 == the record's CLEAN length */
+    memset(junk, 0xC3, sizeof(junk));
+    int next4 = -1;
+    CBT("resume: plant 50-byte garbage record",
+        progress_meta_set(fx->db, scan_key, junk, 50));
+    enum coin_backfill_scan_verdict v4 =
+        cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR, CB_TOP,
+                CB_FRONTIER, 3, &next4, &spent, spender);
+    CBT("resume: garbage record treated as absent, restart from floor",
+        v4 == COIN_SCAN_IN_PROGRESS && next4 == CB_CREATOR + 3);
+
+    /* CLEAN-length blob whose clean flag byte is 0: neither base form nor
+     * clean form — malformed-as-absent, must never read as CLEAN. */
+    junk[104] = 0;
+    int next5 = -1;
+    CBT("resume: plant 105-byte record with clean flag 0",
+        progress_meta_set(fx->db, scan_key, junk, sizeof(junk)));
+    enum coin_backfill_scan_verdict v5 =
+        cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR, CB_TOP,
+                CB_FRONTIER, 3, &next5, &spent, spender);
+    CBT("resume: zeroed clean flag never yields CLEAN, restart from floor",
+        v5 == COIN_SCAN_IN_PROGRESS && next5 == CB_CREATOR + 3);
+
     /* Drive to CLEAN, then a changed frontier must invalidate the record. */
-    enum coin_backfill_scan_verdict v = v3;
-    int next = next3;
+    enum coin_backfill_scan_verdict v = v5;
+    int next = next5;
     for (int i = 0; i < 20 && v == COIN_SCAN_IN_PROGRESS; i++)
         v = cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR,
                     CB_TOP, CB_FRONTIER, 64, &next, &spent, spender);
     CBT("resume: scan completes after restart", v == COIN_SCAN_CLEAN);
+    /* max_blocks=4: the moved frontier widens the terminal window to 4
+     * blocks, and 3 would trip the over-budget guard before the record's
+     * frontier mismatch (the path this case pins) is even consulted. */
     enum coin_backfill_scan_verdict vf =
         cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR,
-                CB_TOP - 1, CB_FRONTIER - 1, 3, &next, &spent, spender);
+                CB_TOP - 1, CB_FRONTIER - 1, 4, &next, &spent, spender);
     CBT("resume: changed frontier does not reuse the CLEAN record",
         vf != COIN_SCAN_CLEAN && vf != COIN_SCAN_SPENT_FOUND);
 
@@ -1740,6 +1805,139 @@ static int cb_case_terminal_linkage(void)
     return failures;
 }
 
+/* Case 14 (TG-F1): terminal-window budget — the [frontier..H] walk must fit
+ * in ONE chunk (a mid-window checkpoint clamps persist_next back to the
+ * frontier), so a window (3 blocks here) larger than max_blocks must refuse
+ * loudly instead of pinning next at the frontier forever (SCANNING every
+ * tick, never paging). max_blocks=4 must still reach CLEAN, resuming
+ * through a checkpoint landing exactly at top_height (frontier-1). */
+static int cb_case_scan_window_budget(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("budget: setup", cb_setup(fx, "budget", 20, CBV_TA0, CB_TA0_VALUE,
+                                  false, true));
+
+    struct coin_backfill_outpoint *set =
+        zcl_malloc(sizeof(*set), "cb_test_set");
+    CBT("budget: set alloc", set != NULL);
+    if (!set) { cb_teardown(fx); free(fx); return failures + 1; }
+    cb_fill_outpoint(set, fx, CB_CREATOR, 1, 0, false);
+
+    /* window = CB_HOLE - CB_FRONTIER + 1 = 3 blocks */
+    static const int small[2] = { 1, 2 };
+    for (int p = 0; p < 2; p++) {
+        int next = -1, spent = -1, calls = 0;
+        uint8_t spender[32];
+        enum coin_backfill_scan_verdict v = COIN_SCAN_IN_PROGRESS;
+        while (calls < CB_TRY_CAP && v == COIN_SCAN_IN_PROGRESS) {
+            v = cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR,
+                        CB_TOP, CB_FRONTIER, small[p], &next, &spent,
+                        spender);
+            calls++;
+        }
+        char desc[80];
+        snprintf(desc, sizeof(desc),
+                 "budget: max_blocks=%d over-budget verdict, bounded calls",
+                 small[p]);
+        CBT(desc, v == COIN_SCAN_WINDOW_OVER_BUDGET && calls < CB_TRY_CAP);
+    }
+    CBT("budget: over-budget guard leaves no scan record",
+        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+
+    /* max_blocks=4: chunks [5..8], [9..12], then a checkpoint EXACTLY at
+     * top_height=13; the final chunk walks 13 plus the whole 3-block
+     * terminal window in one go. */
+    int next = -1, spent = -1, calls = 0;
+    bool saw_top_checkpoint = false;
+    uint8_t spender[32];
+    enum coin_backfill_scan_verdict v = COIN_SCAN_IN_PROGRESS;
+    while (calls < CB_TRY_CAP && v == COIN_SCAN_IN_PROGRESS) {
+        v = cb_scan(fx, &fx->chain.hashes[CB_HOLE], set, 1, CB_CREATOR,
+                    CB_TOP, CB_FRONTIER, 4, &next, &spent, spender);
+        calls++;
+        if (v == COIN_SCAN_IN_PROGRESS && next == CB_TOP)
+            saw_top_checkpoint = true;
+    }
+    CBT("budget: max_blocks=4 reaches CLEAN in bounded calls",
+        v == COIN_SCAN_CLEAN && calls < CB_TRY_CAP);
+    CBT("budget: resume geometry hit a checkpoint exactly at top_height",
+        saw_top_checkpoint);
+
+    free(set);
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* Case 15 (TG-F2): spend INSIDE the creator block — the scan's first
+ * iteration is h == floor == creator; a walk starting at floor+1 would mint
+ * a provably-spent coin. The fixture's creator block carries vtx[2] spending
+ * (T_A,0), so the refusal must bind the spend to CB_CREATOR itself. */
+static int cb_case_spend_in_creator_block(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("creator_spend: setup",
+        cb_setup(fx, "creator_spend", 21, CBV_TA0_CREATOR_SPEND,
+                 CB_TA0_VALUE, false, true));
+
+    int64_t coins_before = coins_kv_count(fx->db);
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("creator_spend: refused as REFUSED_SPENT",
+        st == COIN_BACKFILL_REFUSED_SPENT && res.inserted_count == 0);
+    char want[32];
+    snprintf(want, sizeof(want), "spent h=%d tx=", CB_CREATOR);
+    CBT("creator_spend: spend pinned to the CREATOR height",
+        strstr(res.refuse_reason, want) != NULL);
+    CBT("creator_spend: zero coin writes",
+        coins_kv_count(fx->db) == coins_before &&
+        !cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
+    CBT("creator_spend: refusal marker written",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* Case 16 (TG-F4): zero-length scriptPubKey — T_A vout0 carries an empty
+ * script; the repair must round-trip slen==0 through resolve→insert→readback
+ * (pins the slen==0 skip in resolve_creator). */
+static int cb_case_empty_script(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("empty_script: setup",
+        cb_setup(fx, "empty_script", 22, CBV_TA0_EMPTY_SCRIPT, CB_TA0_VALUE,
+                 false, true));
+
+    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
+    CBT("empty_script: fixture vout0 script really is empty",
+        ta && ta->vout[0].script_pub_key.size == 0);
+
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("empty_script: repaired", st == COIN_BACKFILL_REPAIRED &&
+        res.inserted_count == 1);
+
+    int64_t value = 0;
+    uint8_t script[64];
+    size_t slen = 99;
+    bool got = coins_kv_get(fx->db, ta->hash.data, 0, &value, script,
+                            sizeof(script), &slen);
+    CBT("empty_script: readback is live with slen == 0 and exact value",
+        got && slen == 0 && value == CB_TA0_VALUE);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int test_stage_repair_coin_backfill(void);
@@ -1778,6 +1976,9 @@ int test_stage_repair_coin_backfill(void)
     failures += cb_case_dispatch_order();
     failures += cb_case_chain_rebind();
     failures += cb_case_terminal_linkage();
+    failures += cb_case_scan_window_budget();
+    failures += cb_case_spend_in_creator_block();
+    failures += cb_case_empty_script();
 
     event_clear_observers(EV_OPERATOR_NEEDED);
     blocker_reset_for_testing();

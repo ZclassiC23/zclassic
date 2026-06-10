@@ -152,7 +152,13 @@ bool find_lowest_prevout_unresolved_hole_unlocked(
         LOG_FAIL("coin_backfill",
                  "[coin_backfill] hole prepare failed: %s",
                  sqlite3_errmsg(db));
-    sqlite3_bind_int(st, 1, cursor);
+    if (sqlite3_bind_int(st, 1, cursor) != SQLITE_OK) {
+        /* A NULL-bound param silently matches no rows and masks the hole. */
+        sqlite3_finalize(st);
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] hole bind failed cursor=%d: %s",
+                 cursor, sqlite3_errmsg(db));
+    }
 
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
@@ -209,8 +215,11 @@ bool utxo_apply_log_contiguous_floor(struct sqlite3 *db, int cursor,
             floor = -1; /* unbounded walk: refuse rather than guess */
             break;
         }
-        sqlite3_reset(log_st);
-        sqlite3_bind_int(log_st, 1, h);
+        if (sqlite3_reset(log_st) != SQLITE_OK ||
+            sqlite3_bind_int(log_st, 1, h) != SQLITE_OK) {
+            sql_ok = false; /* a NULL-bound param would fake a gap at h */
+            break;
+        }
         int rc = sqlite3_step(log_st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
             sql_ok = false;
@@ -218,8 +227,11 @@ bool utxo_apply_log_contiguous_floor(struct sqlite3 *db, int cursor,
         }
         bool have = rc == SQLITE_ROW;
         if (have) {
-            sqlite3_reset(delta_st);
-            sqlite3_bind_int(delta_st, 1, h);
+            if (sqlite3_reset(delta_st) != SQLITE_OK ||
+                sqlite3_bind_int(delta_st, 1, h) != SQLITE_OK) {
+                sql_ok = false;
+                break;
+            }
             rc = sqlite3_step(delta_st);  // raw-sql-ok:progress-kv-kernel-store
             if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
                 sql_ok = false;
@@ -235,7 +247,7 @@ bool utxo_apply_log_contiguous_floor(struct sqlite3 *db, int cursor,
     sqlite3_finalize(delta_st);
     if (!sql_ok)
         LOG_FAIL("coin_backfill",
-                 "[coin_backfill] horizon walk step failed: %s",
+                 "[coin_backfill] horizon walk reset/bind/step failed: %s",
                  sqlite3_errmsg(db));
     *out_floor = floor;
     return true;
@@ -254,7 +266,12 @@ bool coin_backfill_hole_row_matches_unlocked(struct sqlite3 *db, int height,
         LOG_FAIL("coin_backfill",
                  "[coin_backfill] hole recheck prepare failed: %s",
                  sqlite3_errmsg(db));
-    sqlite3_bind_int(st, 1, height);
+    if (sqlite3_bind_int(st, 1, height) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] hole recheck bind failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+    }
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         const unsigned char *s = sqlite3_column_text(st, 0);
@@ -274,8 +291,12 @@ bool coin_backfill_hole_row_matches_unlocked(struct sqlite3 *db, int height,
 
 /* Once-latched per (H,holehash,status); blocker_set's token bucket
  * additionally dedups the blocker itself. Direct-emit precedent:
- * app/services/src/chain_tip_watchdog.c wd_decide_restart. */
-void coin_backfill_page_refusal(enum coin_backfill_status st, int h,
+ * app/services/src/chain_tip_watchdog.c wd_decide_restart. The latch slot
+ * is claimed only AFTER the blocker registered (CB#4): claiming it first
+ * would mute the tuple until restart if blocker_init/blocker_set failed.
+ * The window between the dup check and the claim is benign — writes come
+ * only from the self_heal supervisor thread (see g_state_lock note). */
+bool coin_backfill_page_refusal(enum coin_backfill_status st, int h,
                                 const struct uint256 *hole_hash,
                                 const char *reason)
 {
@@ -290,14 +311,9 @@ void coin_backfill_page_refusal(enum coin_backfill_status st, int h,
             memcmp(g_latch[i].hash, hash, 32) == 0) {
             pthread_mutex_unlock(&g_state_lock);
             atomic_fetch_add(&g_pages_suppressed_total, 1u);
-            return;
+            return false;
         }
     }
-    struct page_latch *slot = &g_latch[g_latch_next++ % PAGE_LATCH_SLOTS];
-    slot->used = true;
-    slot->height = h;
-    slot->status = (int)st;
-    memcpy(slot->hash, hash, 32);
     pthread_mutex_unlock(&g_state_lock);
 
     char id[BLOCKER_ID_MAX];
@@ -325,8 +341,17 @@ void coin_backfill_page_refusal(enum coin_backfill_status st, int h,
              "coin_backfill h=%d status=%s reason=%s; escape: %s",
              h, coin_backfill_status_name(st), reason, escape);
     struct blocker_record rec;
-    if (blocker_init(&rec, id, "coin_backfill", cls, btext))
-        blocker_set(&rec); /* dup/cap outcomes logged by blocker_set */
+    if (!blocker_init(&rec, id, "coin_backfill", cls, btext) ||
+        blocker_set(&rec) < 0) { /* 1 = rate-limited dup: still a page */
+        /* Emission failed (bad input / registry cap — details logged by
+         * blocker_*): leave the latch UNCLAIMED so this tuple re-pages on
+         * the next tick. One breadcrumb so the failure is never silent. */
+        LOG_WARN("coin_backfill",
+                 "[coin_backfill] page emission failed h=%d status=%s "
+                 "reason=%s; latch not claimed, re-paging next tick",
+                 h, coin_backfill_status_name(st), reason);
+        return false;
+    }
     event_emitf(EV_OPERATOR_NEEDED, 0,
                 "coin_backfill h=%d status=%s reason=%s",
                 h, coin_backfill_status_name(st), reason);
@@ -334,6 +359,16 @@ void coin_backfill_page_refusal(enum coin_backfill_status st, int h,
     LOG_WARN("coin_backfill",
              "[coin_backfill] OPERATOR NEEDED h=%d status=%s reason=%s "
              "escape=%s", h, coin_backfill_status_name(st), reason, escape);
+
+    /* Latch ONLY now that the blocker + event went out (CB#4). */
+    pthread_mutex_lock(&g_state_lock);
+    struct page_latch *slot = &g_latch[g_latch_next++ % PAGE_LATCH_SLOTS];
+    slot->used = true;
+    slot->height = h;
+    slot->status = (int)st;
+    memcpy(slot->hash, hash, 32);
+    pthread_mutex_unlock(&g_state_lock);
+    return true;
 }
 
 void coin_backfill_stats_note_call(void)

@@ -214,8 +214,18 @@ bool utxo_apply_delete_rows_above(sqlite3 *db, int fork_plus1, int last_h)
             LOG_WARN("utxo_apply", "[utxo_apply] unwind delete prepare failed: %s", sqlite3_errmsg(db));
             return false;
         }
-        sqlite3_bind_int(st, 1, fork_plus1);
-        sqlite3_bind_int(st, 2, last_h);
+        /* Fail CLOSED on bind failure: an unbound param is NULL, the WHERE
+         * matches nothing, and the DELETE silently no-ops — leaving stale
+         * nullifier rows that false-reject the re-apply as a shielded
+         * double-spend. Returning false rolls the txn back so the repair
+         * retries. */
+        if (sqlite3_bind_int(st, 1, fork_plus1) != SQLITE_OK ||
+            sqlite3_bind_int(st, 2, last_h)     != SQLITE_OK) {
+            LOG_WARN("utxo_apply", "[utxo_apply] unwind delete bind failed: %s",
+                     sqlite3_errmsg(db));
+            sqlite3_finalize(st);
+            return false;
+        }
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         sqlite3_finalize(st);
         st = NULL;

@@ -109,23 +109,37 @@ bool stage_repair_header_solution_poison_present(sqlite3 *db, int height)
            STAGE_REPAIR_POISON_NONE;
 }
 
+/* Returns rows deleted, or -1 on failure (callers `goto rollback` on n < 0).
+ * Every failure must be -1, not a row count: a bind failure leaves the param
+ * NULL, the WHERE matches nothing, and the DELETE silently no-ops — returning
+ * a count would commit a rewind that left stale rows behind. */
 static int delete_from_table(sqlite3 *db, const char *table, int height)
 {
     char sql[160];
     snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE height >= ?", table);
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         LOG_ERR("stage_repair",
                 "[stage_repair] delete prepare failed table=%s: %s",
                 table, sqlite3_errmsg(db));
-    sqlite3_bind_int(st, 1, height);
+        return -1;  // raw-return-ok:logged-above
+    }
+    if (sqlite3_bind_int(st, 1, height) != SQLITE_OK) {
+        LOG_ERR("stage_repair",
+                "[stage_repair] delete bind failed table=%s: %s",
+                table, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return -1;  // raw-return-ok:logged-above
+    }
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     int changed = sqlite3_changes(db);
     sqlite3_finalize(st);
-    if (rc != SQLITE_DONE)
+    if (rc != SQLITE_DONE) {
         LOG_ERR("stage_repair",
                 "[stage_repair] delete step failed table=%s rc=%d: %s",
                 table, rc, sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:logged-above
+    }
     return changed;
 }
 

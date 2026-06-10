@@ -51,11 +51,15 @@ static bool refuse(struct coin_backfill_result *r,
     vsnprintf(r->refuse_reason, sizeof(r->refuse_reason), fmt, ap);
     va_end(ap);
     r->status = st;
-    LOG_WARN("coin_backfill",
-             "[coin_backfill] refused h=%d status=%s reason=%s",
-             r->hole_height, coin_backfill_status_name(st), r->refuse_reason);
-    coin_backfill_page_refusal(st, r->hole_height, hole_hash,
-                               r->refuse_reason);
+    /* The reconcile dry-run re-refuses every ~5 s tick forever on the live
+     * default (owner ack unset) — this WARN rides the page latch so it
+     * prints once per (H,holehash,status), not per tick. */
+    if (coin_backfill_page_refusal(st, r->hole_height, hole_hash,
+                                   r->refuse_reason))
+        LOG_WARN("coin_backfill",
+                 "[coin_backfill] refused h=%d status=%s reason=%s",
+                 r->hole_height, coin_backfill_status_name(st),
+                 r->refuse_reason);
     return true; /* refusals are a handled outcome, not an infra error */
 }
 
@@ -502,9 +506,9 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                  "[coin_backfill] marker key build failed h=%d", hole_h);
     }
 
-    /* G5: enumeration + outpoint markers + refusal marker + round cap +
-     * delta horizon, one consistent locked section */
-    int n = 0, horizon = -1;
+    /* G5: enumeration + outpoint markers + refusal marker + round cap,
+     * one consistent locked section */
+    int n = 0;
     int32_t rounds = 0;
     char ereason[64];
     char marker_hit[96];
@@ -533,8 +537,6 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
             ok = coin_backfill_meta_present(db, refused_key, &refused_marker);
         if (ok)
             ok = coin_backfill_rounds_read(db, rounds_key, &rounds);
-        if (ok)
-            ok = utxo_apply_log_contiguous_floor(db, utxo_cursor, &horizon);
     }
     progress_store_tx_unlock();
     block_free(&blk);
@@ -559,16 +561,24 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "round_cap rounds=%d", (int)rounds);
 
-    /* G6 owner gate */
-    if (!coin_backfill_owner_ack()) {
-        LOG_WARN("coin_backfill",
-                 "[coin_backfill] owner-gated h=%d: set %s=1 only on an "
-                 "operator-approved datadir", hole_h, COIN_BACKFILL_ACK_ENV);
+    /* G6 owner gate — the refusal already carries owner_ack_missing and the
+     * page's escape text names the ack env var; no extra per-tick WARN */
+    if (!coin_backfill_owner_ack())
         return refuse(r, COIN_BACKFILL_OWNER_REFUSED, &hole_hash,
                       "owner_ack_missing");
-    }
 
-    /* G7 + G8 */
+    /* G7 + G8 — the delta-horizon walk (up to 262144 lock-held steps) runs
+     * only once the owner gate has passed: its result is consumed nowhere
+     * before G7, and on the live default (ack unset) G6 refuses every ~5 s
+     * tick. Ladder order G6→G7 is preserved; the insert tx re-validates the
+     * frontier and hole row anyway. */
+    int horizon = -1;
+    progress_store_tx_lock();
+    ok = utxo_apply_log_contiguous_floor(db, utxo_cursor, &horizon);
+    progress_store_tx_unlock();
+    if (!ok)
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] delta horizon walk failed h=%d", hole_h);
     if (horizon < 0)
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "delta_horizon_walk_capped");
@@ -621,6 +631,13 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     case COIN_SCAN_GAP:
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "scan_gap h=%d", next);
+    case COIN_SCAN_WINDOW_OVER_BUDGET:
+        /* TG-F1: the terminal window [frontier..H] must complete in ONE
+         * chunk (mid-window checkpoints clamp back to the frontier); a
+         * window larger than the budget would pin SCANNING forever. */
+        return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
+                      "terminal_window_exceeds_budget w=%d cap=%d",
+                      hole_h - frontier + 1, COIN_BACKFILL_SCAN_CHUNK_BLOCKS);
     case COIN_SCAN_SPENT_FOUND: {
         char shex[65];
         coin_backfill_txid_hex(spender, shex);

@@ -87,8 +87,15 @@ bool coin_backfill_hole_row_matches_unlocked(struct sqlite3 *db, int height,
 
 /* Direct operator paging (design B4): typed blocker + EV_OPERATOR_NEEDED
  * from this Job — paging never depends on condition-engine attempt
- * exhaustion. Once-latched per (H,holehash,status). */
-void coin_backfill_page_refusal(enum coin_backfill_status st, int h,
+ * exhaustion. Once-latched per (H,holehash,status); the slot is claimed
+ * only AFTER the blocker actually registered, so a failed emission
+ * re-pages on the next tick instead of going silent until restart.
+ * Returns true iff THIS call emitted (claimed the latch slot); false when
+ * latch-suppressed or emission failed. Callers gate their own per-refusal
+ * logging on it — the reconcile dry-run re-refuses every ~5 s tick
+ * forever on the live default (owner ack unset), so any unlatched WARN
+ * on the refusal path is a permanent log drip. */
+bool coin_backfill_page_refusal(enum coin_backfill_status st, int h,
                                 const struct uint256 *hole_hash,
                                 const char *reason);
 
