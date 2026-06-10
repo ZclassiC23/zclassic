@@ -35,6 +35,7 @@
 
 #include "test/test_helpers.h"
 
+#include "chain/chain.h"
 #include "core/uint256.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/utxo_apply_delta.h"
@@ -47,6 +48,7 @@
 #include "storage/utxo_projection.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
+#include "validation/main_state.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -264,6 +266,15 @@ static void uavb_repair_fixture_close(char dir[256])
     test_cleanup_tmpdir(dir);
 }
 
+/* No-op step for a throwaway stage_t handle: utxo_apply_reorg_unwind_if_needed
+ * uses its stage argument only as a non-NULL guard (the cursor comes from the
+ * DB), so the handle is never stepped. */
+static job_result_t uavb_noop_step(struct stage_step_ctx *c)
+{
+    (void)c;
+    return JOB_IDLE;
+}
+
 int test_utxo_apply_value_balance(void);
 int test_utxo_apply_value_balance(void)
 {
@@ -427,7 +438,17 @@ int test_utxo_apply_value_balance(void)
         if (built) {
             struct uint256 block_hash;
             block_get_hash(&b, &block_hash);
+            /* h=2 gets a consistent verified-row + delta pair so the
+             * genuinely-invalid sub-case below reaches the dry-run instead
+             * of the torn-walk refusal. */
+            struct uint256 e_txid, e_hash;
+            uint256_set_null(&e_txid);
+            e_txid.data[0] = 0xF4;
+            uint256_set_null(&e_hash);
+            e_hash.data[0] = 0xA4;
             bool seeded = uavb_put_utxo_log(db, 1, "value_overflow", 0) &&
+                          uavb_put_utxo_log(db, 2, "verified", 1) &&
+                          uavb_seed_future_delta(db, 2, &e_txid, &e_hash) &&
                           uavb_set_cursor_and_frontier(db, 3);
             UAVB_CHECK("(e) author guard rows seeded", seeded);
 
@@ -470,6 +491,191 @@ int test_utxo_apply_value_balance(void)
         }
         block_free(&bad);
         utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        uavb_repair_fixture_close(dir);
+    }
+
+    /* (m) TOCTOU CURSOR GUARD.
+     * The caller snapshots the cursor under the progress lock, releases it
+     * for the disk block read, then calls the repair. If utxo_apply advanced
+     * in that gap, an inverse walk keyed to the stale cursor would rewind
+     * past coins it never unwound. Persisted cursor = 4 while the call still
+     * says 3: refuse without mutation and without burning the one-shot
+     * marker; the same call with the fresh cursor then repairs. */
+    {
+        char dir[256];
+        UAVB_CHECK("(m) stale-cursor fixture opens",
+                   uavb_repair_fixture_open(dir, "stale", &coin) == 0);
+        sqlite3 *db = progress_store_db();
+        struct block b;
+        bool built = uavb_build_block(&b, 0x91, &coin, coin.value);
+        UAVB_CHECK("(m) stale-cursor block builds", built);
+        if (built) {
+            struct uint256 block_hash;
+            block_get_hash(&b, &block_hash);
+            struct uint256 t2, h2, t3, h3;
+            uint256_set_null(&t2); t2.data[0] = 0xF2;
+            uint256_set_null(&h2); h2.data[0] = 0xA2;
+            uint256_set_null(&t3); t3.data[0] = 0xF3;
+            uint256_set_null(&h3); h3.data[0] = 0xA3;
+            bool seeded =
+                uavb_put_utxo_log(db, 1, "value_overflow", 0) &&
+                uavb_put_utxo_log(db, 2, "verified", 1) &&
+                uavb_seed_future_delta(db, 2, &t2, &h2) &&
+                uavb_put_utxo_log(db, 3, "verified", 1) &&
+                uavb_seed_future_delta(db, 3, &t3, &h3) &&
+                uavb_set_cursor_and_frontier(db, 4);
+            UAVB_CHECK("(m) stale-cursor rows seeded", seeded);
+
+            setenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK", "1", 1);
+            struct utxo_apply_value_overflow_repair_result rr;
+            bool ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3 /* stale: persisted cursor is 4 */, &block_hash,
+                &b, &rr);
+            UAVB_CHECK("(m) stale cursor refused without mutation",
+                       ok && rr.attempted && rr.cursor_stale_refused &&
+                       !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 4 &&
+                       uavb_row_exists(db, "utxo_apply_log", 1));
+
+            memset(&rr, 0, sizeof(rr));
+            ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 4, &block_hash, &b, &rr);
+            UAVB_CHECK("(m) fresh cursor then repairs",
+                       ok && rr.repaired && !rr.cursor_stale_refused &&
+                       rr.cursor_after == 1 &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 1 &&
+                       !coins_kv_exists(db, t3.data, 0));
+            unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
+        }
+        block_free(&b);
+        uavb_repair_fixture_close(dir);
+    }
+
+    /* (n) TORN INVERSE-WALK RANGE.
+     * h=2 logged ok=1 but its delta row is MISSING (torn datadir): the
+     * inverse walk would silently skip it and rewind past coins it never
+     * unwound. The repair must refuse loudly instead of partially rewinding;
+     * same refusal when a height in the range has no log row at all. */
+    {
+        char dir[256];
+        UAVB_CHECK("(n) torn fixture opens",
+                   uavb_repair_fixture_open(dir, "torn", &coin) == 0);
+        sqlite3 *db = progress_store_db();
+        struct block b;
+        bool built = uavb_build_block(&b, 0x92, &coin, coin.value);
+        UAVB_CHECK("(n) torn block builds", built);
+        if (built) {
+            struct uint256 block_hash;
+            block_get_hash(&b, &block_hash);
+            bool seeded =
+                uavb_put_utxo_log(db, 1, "value_overflow", 0) &&
+                uavb_put_utxo_log(db, 2, "verified", 1) && /* no delta row */
+                uavb_set_cursor_and_frontier(db, 3);
+            UAVB_CHECK("(n) torn rows seeded", seeded);
+
+            setenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK", "1", 1);
+            struct utxo_apply_value_overflow_repair_result rr;
+            bool ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &block_hash, &b, &rr);
+            UAVB_CHECK("(n) ok-without-delta refused without mutation",
+                       ok && rr.walk_torn_refused && !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
+                       uavb_row_exists(db, "utxo_apply_log", 2));
+
+            UAVB_CHECK("(n) drop h=2 log row",
+                       uavb_exec(db,
+                           "DELETE FROM utxo_apply_log WHERE height=2"));
+            memset(&rr, 0, sizeof(rr));
+            ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &block_hash, &b, &rr);
+            UAVB_CHECK("(n) missing-log-row refused without mutation",
+                       ok && rr.walk_torn_refused && !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3);
+            unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
+        }
+        block_free(&b);
+        uavb_repair_fixture_close(dir);
+    }
+
+    /* (o) REORG FORK-WALK FINALITY CLAMP.
+     * cursor = 13 (tip C-1 = 12; ZCL_FINALITY_DEPTH = 10 → floor = 2). With
+     * every delta branch_hash divergent from the active chain there is no
+     * fork at or above the floor: the unwind must refuse immediately
+     * (identical outcome to the old to-genesis scan + reorg_is_allowed
+     * refusal) without mutating. Re-stamping h=2 — exactly the floor — as
+     * the fork point must then unwind (2, 12], the deepest ALLOWED reorg. */
+    {
+        char dir[256];
+        UAVB_CHECK("(o) reorg fixture opens",
+                   uavb_repair_fixture_open(dir, "reorgclamp", &coin) == 0);
+        sqlite3 *db = progress_store_db();
+
+        enum { UAVB_ON = 13 };
+        struct block_index nodes[UAVB_ON];
+        struct uint256 divergent[UAVB_ON];
+        struct uint256 coins_txid[UAVB_ON];
+        memset(nodes, 0, sizeof(nodes));
+        for (int i = 0; i < UAVB_ON; i++) {
+            uint256_set_null(&nodes[i].hashBlock);
+            nodes[i].hashBlock.data[0] = 0x40;
+            nodes[i].hashBlock.data[1] = (uint8_t)i;
+            nodes[i].phashBlock = &nodes[i].hashBlock;
+            nodes[i].nHeight = i;
+            nodes[i].pprev = i ? &nodes[i - 1] : NULL;
+            uint256_set_null(&divergent[i]);
+            divergent[i].data[0] = 0xDD;
+            divergent[i].data[1] = (uint8_t)i;
+            uint256_set_null(&coins_txid[i]);
+            coins_txid[i].data[0] = 0xF5;
+            coins_txid[i].data[1] = (uint8_t)i;
+        }
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        bool chain_up = active_chain_move_window_tip(&ms.chain_active,
+                                                     &nodes[UAVB_ON - 1]);
+        UAVB_CHECK("(o) active chain builds", chain_up);
+
+        bool seeded = true;
+        for (int h = 0; h < UAVB_ON && seeded; h++)
+            seeded = uavb_seed_future_delta(db, h, &coins_txid[h],
+                                            &divergent[h]);
+        seeded = seeded && uavb_set_cursor_and_frontier(db, UAVB_ON);
+        UAVB_CHECK("(o) divergent deltas seeded", seeded);
+
+        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        stage_t *st = stage_create("uavb_noop", uavb_noop_step, NULL);
+        UAVB_CHECK("(o) throwaway stage", st != NULL);
+        if (st && chain_up && seeded) {
+            _Atomic uint64_t unwound = 0;
+            _Atomic int64_t blocked = 0;
+            bool ok = utxo_apply_reorg_unwind_if_needed(db, st, &ms,
+                                                        &unwound, &blocked);
+            UAVB_CHECK("(o) no fork at/above floor refuses without mutation",
+                       !ok && unwound == 0 &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb")
+                           == UAVB_ON &&
+                       uavb_row_exists(db, "utxo_apply_delta", 3));
+
+            struct uint256 t2b;
+            uint256_set_null(&t2b);
+            t2b.data[0] = 0xF6;
+            UAVB_CHECK("(o) fork stamped at floor",
+                       uavb_seed_future_delta(db, 2, &t2b,
+                                              &nodes[2].hashBlock));
+            ok = utxo_apply_reorg_unwind_if_needed(db, st, &ms,
+                                                   &unwound, &blocked);
+            UAVB_CHECK("(o) fork at floor unwinds to fork+1",
+                       ok && unwound == 1 &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
+                       !uavb_row_exists(db, "utxo_apply_delta", 3) &&
+                       uavb_row_exists(db, "utxo_apply_delta", 2) &&
+                       !coins_kv_exists(db, coins_txid[UAVB_ON - 1].data, 0));
+        }
+        if (st)
+            stage_destroy(st);
+        active_chain_free(&ms.chain_active);
         uavb_repair_fixture_close(dir);
     }
 

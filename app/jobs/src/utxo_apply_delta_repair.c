@@ -10,6 +10,7 @@
 #include "jobs/utxo_apply_delta.h"
 #include "utxo_apply_delta_internal.h"
 
+#include "jobs/stage_helpers.h"
 #include "coins/coins.h"
 #include "primitives/block.h"
 #include "storage/coins_kv.h"
@@ -60,6 +61,60 @@ static int repair_row_still_present(sqlite3 *db, int height,
     }
     sqlite3_finalize(st);
     return ok ? 1 : 0;
+}
+
+/* Inverse-walk precondition over [first_h, last_h]: every height has a
+ * utxo_apply_log row, and a delta row exists iff that row has ok=1 (forward
+ * apply persists a delta only on a successful apply, atomically with its log
+ * row). utxo_apply_emit_inverse_delta silently no-ops on a missing delta row,
+ * so any violation means the rewind would be PARTIAL on a torn datadir —
+ * coins keeping heights the cursor no longer covers. Returns 1 consistent,
+ * 0 on a violation (counts logged), -1 on error (logged). Caller holds the
+ * progress_store tx lock. */
+static int inverse_walk_consistent(sqlite3 *db, int first_h, int last_h)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT (?2 - ?1 + 1) - "
+            "       (SELECT COUNT(*) FROM utxo_apply_log "
+            "         WHERE height BETWEEN ?1 AND ?2), "
+            "       (SELECT COUNT(*) FROM utxo_apply_log l "
+            "         WHERE l.height BETWEEN ?1 AND ?2 AND l.ok = 1 "
+            "           AND NOT EXISTS (SELECT 1 FROM utxo_apply_delta d "
+            "                            WHERE d.height = l.height)), "
+            "       (SELECT COUNT(*) FROM utxo_apply_delta d "
+            "         WHERE d.height BETWEEN ?1 AND ?2 "
+            "           AND NOT EXISTS (SELECT 1 FROM utxo_apply_log l "
+            "                            WHERE l.height = d.height "
+            "                              AND l.ok = 1))",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] inverse walk guard prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:tri-state-error-logged
+    }
+    sqlite3_bind_int(st, 1, first_h);
+    sqlite3_bind_int(st, 2, last_h);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc != SQLITE_ROW) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] inverse walk guard step failed rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return -1;  // raw-return-ok:tri-state-error-logged
+    }
+    sqlite3_int64 missing_log = sqlite3_column_int64(st, 0);
+    sqlite3_int64 ok_no_delta = sqlite3_column_int64(st, 1);
+    sqlite3_int64 delta_no_ok = sqlite3_column_int64(st, 2);
+    sqlite3_finalize(st);
+    if (missing_log == 0 && ok_no_delta == 0 && delta_no_ok == 0)
+        return 1;
+    LOG_WARN("utxo_apply",
+             "[utxo_apply] inverse walk range [%d..%d] torn: missing_log=%lld "
+             "ok_without_delta=%lld delta_without_ok=%lld",
+             first_h, last_h, (long long)missing_log,
+             (long long)ok_no_delta, (long long)delta_no_ok);
+    return 0;
 }
 
 static bool repair_marker_key(char key[160], const char *kind, int height,
@@ -217,6 +272,37 @@ bool utxo_apply_repair_value_overflow_hole(
 
     progress_store_tx_lock();
 
+    /* TOCTOU guard (same family as the Wave-1 stale-script fix): the caller
+     * snapshotted `cursor` under the progress lock, released it to read the
+     * block body off disk, and re-entered here. If utxo_apply advanced in
+     * that gap, an inverse walk keyed to the stale C-1 would rewind the
+     * cursor past coins it never unwound. Every cursor writer holds this
+     * (recursive) lock through COMMIT, so one re-read covers both walks. */
+    uint64_t cursor_now = stage_cursor_persisted(db, "utxo_apply",
+                                                 "utxo_apply");
+    if (cursor_now != cursor) {
+        local.cursor_stale_refused = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair refused h=%d: cursor "
+                 "moved %llu -> %llu since snapshot (retry next tick)",
+                 height, (unsigned long long)cursor,
+                 (unsigned long long)cursor_now);
+        progress_store_tx_unlock();
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    int C = (int)cursor;
+    if ((uint64_t)C != cursor || C <= height) {
+        progress_store_tx_unlock();
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair cursor invalid h=%d "
+                 "cursor=%llu",
+                 height, (unsigned long long)cursor);
+        return false;
+    }
+
     int row_present = repair_row_still_present(db, height, "value_overflow");
     if (row_present < 0) {
         progress_store_tx_unlock();
@@ -228,27 +314,6 @@ bool utxo_apply_repair_value_overflow_hole(
             *out = local;
         return true;
     }
-
-    struct delta_summary dry;
-    if (!dry_run_after_inverse(db, height, (int)cursor, blk, &dry)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-    local.dry_run_ok = dry.ok;
-    if (!dry.ok) {
-        local.genuinely_invalid = true;
-        LOG_WARN("utxo_apply",
-                 "[utxo_apply] value_overflow repair: H genuinely invalid "
-                 "height=%d status=%s kind=%s",
-                 height, dry.status ? dry.status : "(null)",
-                 dry.failure_kind ? dry.failure_kind : "(null)");
-        free_delta(&dry);
-        progress_store_tx_unlock();
-        if (out)
-            *out = local;
-        return true;
-    }
-    free_delta(&dry);
 
     char marker[160];
     if (!repair_marker_key(marker, "value_overflow", height, block_hash)) {
@@ -276,15 +341,46 @@ bool utxo_apply_repair_value_overflow_hole(
         return true;
     }
 
-    int C = (int)cursor;
-    if ((uint64_t)C != cursor || C <= height) {
+    /* Both inverse walks below (the dry-run, then the committing one) span
+     * [height .. C-1]; the lock held through COMMIT keeps this verdict valid
+     * for both. */
+    int walk_ok = inverse_walk_consistent(db, height, C - 1);
+    if (walk_ok < 0) {
         progress_store_tx_unlock();
-        LOG_WARN("utxo_apply",
-                 "[utxo_apply] value_overflow repair cursor invalid h=%d "
-                 "cursor=%llu",
-                 height, (unsigned long long)cursor);
         return false;
     }
+    if (walk_ok == 0) {
+        local.walk_torn_refused = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair refused h=%d: torn "
+                 "log/delta range below cursor %d",
+                 height, C);
+        progress_store_tx_unlock();
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    struct delta_summary dry;
+    if (!dry_run_after_inverse(db, height, C, blk, &dry)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    local.dry_run_ok = dry.ok;
+    if (!dry.ok) {
+        local.genuinely_invalid = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair: H genuinely invalid "
+                 "height=%d status=%s kind=%s",
+                 height, dry.status ? dry.status : "(null)",
+                 dry.failure_kind ? dry.failure_kind : "(null)");
+        free_delta(&dry);
+        progress_store_tx_unlock();
+        if (out)
+            *out = local;
+        return true;
+    }
+    free_delta(&dry);
 
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {

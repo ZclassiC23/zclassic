@@ -76,27 +76,47 @@ static bool blob_get_i64(const uint8_t **p, const uint8_t *end, int64_t *out)
  * stage cursor to the fork boundary so step_apply re-applies the winning
  * branch forward. Bounded by ZCL_FINALITY_DEPTH (legacy's floor). */
 
-/* Load the persisted branch_hash for a delta row. Returns 1 if found
+/* Load the persisted branch_hash for a delta row via a caller-prepared
+ * statement (bind/step/reset — the fork walk below reuses one statement for
+ * every height instead of re-preparing per iteration). Returns 1 if found
  * (out filled), 0 if absent, -1 on error. */
-static int delta_branch_hash_at(sqlite3 *db, int height, struct uint256 *out)
+static int delta_branch_hash_step(sqlite3_stmt *st, sqlite3 *db, int height,
+                                  struct uint256 *out)
 {
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT branch_hash FROM utxo_apply_delta WHERE height = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("utxo_apply", "[utxo_apply] delta branch_hash prepare failed: %s", sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
-    }
     sqlite3_bind_int(st, 1, height);
     int found = 0;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
         const void *blob = sqlite3_column_blob(st, 0);
         int n = sqlite3_column_bytes(st, 0);
         if (blob && n == 32) {
             memcpy(out->data, blob, 32);
             found = 1;
         }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] delta branch_hash step failed h=%d rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        found = -1;  // raw-return-ok:logged-above
     }
+    sqlite3_reset(st);
+    return found;
+}
+
+static const char *const DELTA_BRANCH_HASH_SQL =
+    "SELECT branch_hash FROM utxo_apply_delta WHERE height = ?";
+
+/* One-shot delta_branch_hash_step (prepare + step + finalize). Same
+ * tri-state contract. */
+static int delta_branch_hash_at(sqlite3 *db, int height, struct uint256 *out)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, DELTA_BRANCH_HASH_SQL, -1, &st, NULL)
+            != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] delta branch_hash prepare failed: %s", sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:logged-above
+    }
+    int found = delta_branch_hash_step(st, db, height, out);
     sqlite3_finalize(st);
     return found;
 }
@@ -315,18 +335,55 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         return true;  /* no divergence */
 
     /* Walk DOWN to the fork point F: the highest height where our recorded
-     * branch_hash still matches the active chain. Disconnect (F, C-1]. */
+     * branch_hash still matches the active chain. Disconnect (F, C-1].
+     *
+     * The walk is CLAMPED to the finality floor (C-1) - ZCL_FINALITY_DEPTH:
+     * any fork below it would be refused by the reorg_is_allowed gate below,
+     * so scanning further (to genesis, per-height, under the progress lock —
+     * this whole function runs with it held) buys nothing. Heights below the
+     * lowest retained delta row can never match either (no branch_hash to
+     * compare), so the clamp subsumes that floor too. Behavior-identical for
+     * every input: a fork at/above the floor is found exactly as before; no
+     * fork at/above it means the unclamped walk could only have produced the
+     * finality refusal, which we emit directly. */
+    int floor_h = C - 1 - ZCL_FINALITY_DEPTH;
+    if (floor_h < 0)
+        floor_h = 0;
     int fork = -1;
-    for (int h = C - 2; h >= 0; h--) {
-        struct uint256 rec_h;
-        int hv = delta_branch_hash_at(db, h, &rec_h);
-        if (hv < 0) return false;
-        struct block_index *act_h = active_chain_at(&ms->chain_active, h);
-        if (hv == 1 && act_h && act_h->phashBlock &&
-            uint256_eq(&rec_h, act_h->phashBlock)) {
-            fork = h;
-            break;
+    {
+        sqlite3_stmt *walk_st = NULL;
+        if (sqlite3_prepare_v2(db, DELTA_BRANCH_HASH_SQL, -1, &walk_st, NULL)
+                != SQLITE_OK) {
+            LOG_WARN("utxo_apply",
+                     "[utxo_apply] fork walk prepare failed: %s",
+                     sqlite3_errmsg(db));
+            return false;
         }
+        for (int h = C - 2; h >= floor_h; h--) {
+            struct uint256 rec_h;
+            int hv = delta_branch_hash_step(walk_st, db, h, &rec_h);
+            if (hv < 0) {
+                sqlite3_finalize(walk_st);
+                return false;
+            }
+            struct block_index *act_h = active_chain_at(&ms->chain_active, h);
+            if (hv == 1 && act_h && act_h->phashBlock &&
+                uint256_eq(&rec_h, act_h->phashBlock)) {
+                fork = h;
+                break;
+            }
+        }
+        sqlite3_finalize(walk_st);
+    }
+    if (fork < 0 && floor_h > 0) {
+        LOG_WARN("utxo_apply",
+            "[utxo_apply] reorg unwind refused below finality floor "
+            "tip=%d fork<%d depth>%d (ZCL_FINALITY_DEPTH=%d)",
+            C - 1, floor_h, ZCL_FINALITY_DEPTH, ZCL_FINALITY_DEPTH);
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "utxo_apply unwind_below_finality tip=%d fork=%d depth=%d",
+                    C - 1, floor_h - 1, C - floor_h);
+        return false;
     }
     int fork_plus1 = fork + 1;  /* first height to disconnect (== 0 if F<0) */
 

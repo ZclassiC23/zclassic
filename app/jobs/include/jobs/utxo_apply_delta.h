@@ -117,6 +117,14 @@ struct utxo_apply_value_overflow_repair_result {
     bool marker_seen;
     bool genuinely_invalid;
     bool dry_run_ok;
+    /* The persisted utxo_apply cursor no longer matches the caller's
+     * snapshot (it advanced in the caller's unlock gap) — refused without
+     * mutation; retry next tick re-evaluates fresh state. */
+    bool cursor_stale_refused;
+    /* The [height .. cursor-1] log/delta pairing is torn (missing log row,
+     * or ok==1 without a delta row, or a delta row without ok==1): the
+     * inverse walk would rewind PARTIALLY — refused without mutation. */
+    bool walk_torn_refused;
     int height;
     uint64_t cursor_before;
     uint64_t cursor_after;
@@ -125,13 +133,17 @@ struct utxo_apply_value_overflow_repair_result {
 /* One-shot repair for a stale value_overflow utxo_apply_log hole below the
  * current utxo_apply cursor. The caller supplies the exact hole height, the
  * currently observed cursor, and the canonical block body/hash for that height.
- * This function reasserts every consensus guard itself: STAGE author, row still
- * ok=0/status=value_overflow below cursor, current-binary dry-run succeeds, and
- * (height,block_hash) marker has not been attempted. On success it uses the
- * same inverse-delta machinery as reorg unwind in one BEGIN IMMEDIATE. The
- * stage cursor is "next height to apply", so rewinding cursor/frontier to
- * `height` leaves coins applied through height-1 and makes forward apply
- * re-run the stale hole. Records the marker in the same transaction. */
+ * This function reasserts every consensus guard itself: STAGE author, the
+ * persisted cursor still equals the caller's snapshot (re-read under the
+ * progress lock — the caller released it for the disk block read), row still
+ * ok=0/status=value_overflow below cursor, (height,block_hash) marker has not
+ * been attempted, the [height..cursor-1] log/delta pairing is consistent (a
+ * missing delta row would make the inverse walk a PARTIAL rewind), and a
+ * current-binary dry-run succeeds. On success it uses the same inverse-delta
+ * machinery as reorg unwind in one BEGIN IMMEDIATE. The stage cursor is "next
+ * height to apply", so rewinding cursor/frontier to `height` leaves coins
+ * applied through height-1 and makes forward apply re-run the stale hole.
+ * Records the marker in the same transaction. */
 bool utxo_apply_repair_value_overflow_hole(
     sqlite3 *db,
     int height,
