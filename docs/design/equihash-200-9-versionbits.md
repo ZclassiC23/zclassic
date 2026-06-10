@@ -6,7 +6,7 @@ ZClassic has used Equihash 192,7 (400-byte solutions) since the Bubbles fork at 
 
 This is a **sidegrade**, not an upgrade: a lateral parameter change with different trade-offs rather than a technical improvement. Identifiers containing "upgrade" (`ehUpgrade`, `eh_upgrade`, `-signal-eh-upgrade`) reuse the deployment vocabulary of the network-upgrade tables.
 
-The approach fits the existing codebase: `nVersion` is stored in every `block_index` entry, so header-only ancestor tallies are cheap; all `nVersion` checks here and in the elder zclassicd/MagicBean nodes are `>= 4`, so a signal bit relays through the existing network; PoW verification already dispatches on solution size (a 1344-byte solution verifies as 200,9 today); and the single consensus gate pinning the allowed solution size per height is the expected-size check in `contextual_check_block_header`. No versionbits machinery existed in the tree before this change. The feature ships in the first release, so every C23 node carries it from day one.
+The approach fits the existing codebase: `nVersion` is stored in every `block_index` entry, so header-only ancestor tallies are cheap; all `nVersion` checks here and in the elder zclassicd/MagicBean nodes are `>= 4`, so a signal bit relays through the existing network; PoW verification already dispatches on solution size (a 1344-byte solution verifies as 200,9 today); and the single consensus gate pinning the allowed solution size per height is the expected-size check in `contextual_check_block_header`. No versionbits machinery existed in the tree before this change. The feature ships in the first release, so every C23 node carries it from day one. Elder zclassicd carries the same height-pinned size gate but reads it from a static table with no versionbits awareness, so elders need an update before activation — see "Elder nodes" below.
 
 **Decisions:** sustained-majority tally (consecutive passing windows, BIP8-style with no expiry); ~1-month grace between LOCKED_IN and ACTIVE; graduated difficulty relief at the switch (reusing `scaleDifficultyAtUpgradeFork`); the built-in miner signals by default and solves post-activation work with the generic reference solver.
 
@@ -62,11 +62,30 @@ The grace between LOCKED_IN and ACTIVE is the coordination window, and it is det
 
 - **Pools:** switch stratum/solver backends from 192,7 to 200,9 work at exactly `H_a`. Templates from an upgraded node carry the correct version bits and, from `H_a`, the new parameters, so template-driven pools only schedule the solver-side switch. The 0-fee pool is available as a ready 200,9 target from the start.
 - **Exchanges:** run an upgraded node before `H_a`; raise deposit confirmation requirements through the transition window and consider pausing deposits/withdrawals around `H_a` itself.
-- **Elder nodes:** zclassicd/MagicBean calculate the Equihash parameters of each block from its solution size — a 400-byte solution verifies as 192,7 and a 1344-byte solution as 200,9 — so they accept both eras' blocks without any code change, relay them (their version rule is `>= 4`), and follow the most-work chain across `H_a`. Every C23 node carries this feature from the first release, so there is no older C23 population to fork off.
+- **Elder nodes — fork off at `H_a` without an update (verified against the zclassicd source):** the elder's *intrinsic* PoW check (`CheckEquihashSolution`, `src/pow.cpp`) does derive (N,K) from solution size, so a 1344-byte solution verifies as 200,9 there. But `ContextualCheckBlockHeader` (`src/main.cpp`) — present since commit `d57bf7a5e` ("Deep Reorg Protection #25", 2019-08-30) — pins the expected solution size per height from the static `EquihashUpgradeInfo` table, which is 192,7 (400 bytes) for every epoch from Bubbles onward and has no versionbits awareness. A 1344-byte solution at a post-Bubbles height is rejected with `bad-equihash-solution-size` at DoS 100, which refuses the header *and bans the peer that sent it*. Any elder able to follow the chain past Buttercup (height 707,000, shipped after that commit) necessarily runs a build with this gate, so every live elder rejects post-`H_a` 200,9 blocks, bans upgraded peers, and stays on (or stalls at) the remaining 192,7 chain. Signaling itself relays fine (their version rule is `>= 4`); only post-activation blocks are affected. Elder operators must move to a C23 node — or a zclassicd patched to resolve the expected size through this deployment — before `H_a`, and the grace period is the campaign window for that. Every C23 node carries this feature from the first release, so there is no older C23 population to fork off.
 - **Communication milestones,** each a block height with a date estimate: deployment ships (signaling open); streak building in `getdeploymentinfo` (ecosystem heads-up); LOCKED_IN (one-month countdown with exact height); `H_a` (switch).
+
+## Cross-node behavior matrix (C23 vs elder zclassicd)
+
+Both nodes verify a solution intrinsically by demuxing (N,K) from its byte length — identical 4-entry maps (`lib/crypto/src/equihash.c::equihash_solution_params` here; `src/pow.cpp::CheckEquihashSolution` in the elder): 1344 → 200,9; 400 → 192,7; 68 → 96,5; 36 → 48,5; anything else rejected. The fork is enforced one layer up, and that layer is where the two nodes diverge:
+
+| | C23 (this tree) | Elder zclassicd |
+|---|---|---|
+| Expected-size source | static epoch table **+** `ehUpgrade` versionbits, via `chain_params_equihash_n_at/k_at` | static epoch table only (192,7 from Bubbles onward) |
+| Gate location | `contextual_check_block_header` (`lib/validation/src/check_block.c`) | `ContextualCheckBlockHeader` (`src/main.cpp`, since `d57bf7a5e`, 2019-08-30) |
+| On mismatch | DoS 100 in `validation_state`; header admission is lenient (log + reject event), hard enforcement at the `validate_headers` reducer gate and bg-validation — the block never connects | DoS 100 at header accept: header refused outright, sending peer banned |
+
+What happens when a valid **200,9 (1344-byte)** block arrives, by height regime (mainnet):
+
+| Height regime | C23 | Elder zclassicd |
+|---|---|---|
+| h < 585,318 (pre-Bubbles) | accepted (historical chain) | accepted |
+| h ≥ 585,318, deployment not ACTIVE | rejected (`bad-equihash-solution-size`) | rejected + peer banned |
+| LOCKED_IN → grace | rejected until `H_a` | rejected + peer banned (signal bit itself relays fine) |
+| h ≥ `H_a` (ACTIVE) | **accepted and required**; 400-byte 192,7 blocks now rejected | **still rejected + peer banned** → forks off |
 
 ## Risks
 
 - **Fast-sync tails:** a node snapshot-synced past a future `H_a` cannot walk the windows until headers backfill; it falls back to the static table until then. Once mainnet locks in, ship a checkpoint row at `H_a` as belt-and-braces.
-- **Elder network assumption:** "MagicBean relays 0x10004 blocks and zclassicd accepts 1344-byte solutions by calculating parameters from solution size" matches both codebases' sources but should be verified against a live zclassicd before any mainnet signaling campaign.
+- **Elder network assumption — resolved, negative:** the earlier claim that zclassicd "accepts 1344-byte solutions by calculating parameters from solution size" held only for its intrinsic check. Source cross-reference (zclassicd `git blame`: commit `d57bf7a5e`, 2019-08-30) shows its `ContextualCheckBlockHeader` pins solution size per height from a static table with DoS 100, so elders reject post-`H_a` 200,9 blocks and ban the peers serving them — see the elder-nodes bullet above. The sidegrade therefore requires an explicit elder-upgrade campaign during the grace period; without it, un-upgraded elders (and the exchanges/explorers running them) split onto a 192,7 remnant chain. Confirming against a live zclassicd remains worthwhile, but the source is unambiguous.
 - `mine_block_pow` signature change ripples into 3 test files (mechanical, same commit).
