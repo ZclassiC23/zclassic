@@ -6,9 +6,14 @@
 # The previous `make deploy` printed "Deployed." whenever systemd reported
 # the unit active for >2s. That includes binaries that segfault on first
 # RPC call. This script replaces that false-positive with a real probe:
-# poll RPC every 2s for up to 120s and only succeed when the node answers
-# with an integer height and the public-node hardening diagnostics are
-# registered by the running daemon.
+# poll RPC every 2s and only succeed when the node answers with an integer
+# height and the public-node hardening diagnostics are registered by the
+# running daemon.
+#
+# The default deadline must absorb a full cold boot of a ~22 GB datadir:
+# block-file scan + pprev repair + index reconcile routinely exceed two
+# minutes, and a slow boot is not a failed deploy (120s false-FAILed a
+# healthy deploy on 2026-06-10).
 #
 # Exit codes:
 #   0  — RPC live, block count observed, diagnostic contract present
@@ -18,7 +23,7 @@
 set -eu
 
 RPC_TOOL="${1:-./build/bin/zclassic-cli}"
-TIMEOUT="${2:-120}"
+TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
 INTERVAL=2
 
 if [ ! -x "$RPC_TOOL" ]; then
