@@ -61,31 +61,13 @@ static size_t collect_active_tip_successors(struct main_state *ms,
 
     parent = active_chain_tip(&ms->chain_active);
     while (parent && parent->phashBlock && count < max_collect) {
-        struct block_index *best_child = NULL;
-        size_t iter = 0;
-        struct block_index *candidate = NULL;
+        /* O(log) per hop via the shared successor (best-header path
+         * above the tip) — the old inline scan here visited the whole
+         * block map per collected successor. */
+        struct block_index *best_child =
+            main_state_best_known_successor(ms, parent);
 
-        while (block_map_next(&ms->map_block_index, &iter, NULL,
-                              &candidate)) {
-            if (!candidate || candidate == parent)
-                continue;
-            if (!candidate->phashBlock || !candidate->pprev ||
-                !candidate->pprev->phashBlock)
-                continue;
-            if (!uint256_eq(candidate->pprev->phashBlock,
-                            parent->phashBlock))
-                continue;
-            if (candidate->nStatus & BLOCK_FAILED_MASK)
-                continue;
-            if (candidate->nHeight != parent->nHeight + 1)
-                continue;
-            if (!best_child ||
-                arith_uint256_compare(&candidate->nChainWork,
-                                      &best_child->nChainWork) > 0)
-                best_child = candidate;
-        }
-
-        if (!best_child)
+        if (!best_child || !best_child->phashBlock)
             break;
 
         if (!(best_child->nStatus & BLOCK_HAVE_DATA)) {
@@ -100,39 +82,6 @@ static size_t collect_active_tip_successors(struct main_state *ms,
     }
 
     return count;
-}
-
-static struct block_index *best_known_successor(struct main_state *ms,
-                                                struct block_index *parent)
-{
-    struct block_index *best = NULL;
-    size_t iter = 0;
-    struct block_index *candidate = NULL;
-
-    if (!ms || !parent || !parent->phashBlock)
-        return NULL;
-
-    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
-        if (!candidate || !candidate->phashBlock || !candidate->pprev)
-            continue;
-        if (candidate->pprev != parent)
-            continue;
-        if (candidate->nHeight != parent->nHeight + 1)
-            continue;
-        if (candidate->nStatus & BLOCK_FAILED_MASK)
-            continue;
-        if (!best ||
-            arith_uint256_compare(&candidate->nChainWork,
-                                  &best->nChainWork) > 0 ||
-            (arith_uint256_compare(&candidate->nChainWork,
-                                   &best->nChainWork) == 0 &&
-             (candidate->nStatus & BLOCK_HAVE_DATA) &&
-             !(best->nStatus & BLOCK_HAVE_DATA))) {
-            best = candidate;
-        }
-    }
-
-    return best;
 }
 
 static struct block_index *headers_start_from_locator(
@@ -166,7 +115,7 @@ static struct block_index *headers_start_from_locator(
     }
 
     if (pindex)
-        return best_known_successor(ms, pindex);
+        return main_state_best_known_successor(ms, pindex);
 
     pindex = block_map_find(&ms->map_block_index,
                             &params->consensus.hashGenesisBlock);
@@ -237,7 +186,7 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
         if (!uint256_is_null(&hash_stop) && count_iter->phashBlock &&
             uint256_eq(count_iter->phashBlock, &hash_stop))
             break;
-        count_iter = best_known_successor(mp->main_state, count_iter);
+        count_iter = main_state_best_known_successor(mp->main_state, count_iter);
     }
 
     struct byte_stream headers;
@@ -274,7 +223,7 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
 
         block_header_serialize(&hdr, &headers);
         stream_write_compact_size(&headers, 0);
-        iter = best_known_successor(mp->main_state, iter);
+        iter = main_state_best_known_successor(mp->main_state, iter);
     }
 
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);

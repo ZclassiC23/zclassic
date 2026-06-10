@@ -307,6 +307,7 @@ int test_peer_lifecycle(void);
 int test_secrets_hygiene(void);
 int test_block_index_integrity(void);
 int test_block_map_grow_phashblock(void);
+int test_block_successor(void);
 /* Subsection 5/6 finish-drive: defensive + consensus unit-test gaps. */
 int test_block_locator_bounds(void);
 int test_block_map_grow_collision(void);

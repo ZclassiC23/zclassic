@@ -77,6 +77,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mcp_e2e) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
     X(secrets_hygiene) X(block_index_integrity) \
     X(block_map_grow_phashblock) \
+    X(block_successor) \
     X(block_locator_bounds) X(block_map_grow_collision) \
     X(connect_node_locked) X(stream_read_no_overflow) \
     X(fast_sync_serve_chunk_db_clamps) X(connman_node_count_locked) \

@@ -53,6 +53,15 @@ struct main_state {
     int64_t nTimeBestReceived;
 };
 
+/* Best successor of `parent` for serving getheaders/getblocks and
+ * tip-successor probes: O(1) on the active chain, O(log n) along the
+ * best-header path above the validated tip, full map scan ONLY for
+ * off-path branch points (lib/validation/src/block_successor.c — see
+ * the header comment there for why the scan must stay off served
+ * paths). Returns NULL when parent has no eligible child. */
+struct block_index *main_state_best_known_successor(struct main_state *ms,
+                                                    struct block_index *parent);
+
 static inline void main_state_init(struct main_state *ms)
 {
     zcl_mutex_init(&ms->cs_main);

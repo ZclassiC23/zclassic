@@ -29,39 +29,6 @@
 /* Rebuild manifest when chain grows this many blocks beyond the cached one. */
 #define MANIFEST_REFRESH_BLOCKS 1000
 
-static struct block_index *best_known_successor(struct main_state *ms,
-                                                struct block_index *parent)
-{
-    struct block_index *best = NULL;
-    size_t iter = 0;
-    struct block_index *candidate = NULL;
-
-    if (!ms || !parent || !parent->phashBlock)
-        return NULL;
-
-    while (block_map_next(&ms->map_block_index, &iter, NULL, &candidate)) {
-        if (!candidate || !candidate->phashBlock || !candidate->pprev)
-            continue;
-        if (candidate->pprev != parent)
-            continue;
-        if (candidate->nHeight != parent->nHeight + 1)
-            continue;
-        if (candidate->nStatus & BLOCK_FAILED_MASK)
-            continue;
-        if (!best ||
-            arith_uint256_compare(&candidate->nChainWork,
-                                  &best->nChainWork) > 0 ||
-            (arith_uint256_compare(&candidate->nChainWork,
-                                   &best->nChainWork) == 0 &&
-             (candidate->nStatus & BLOCK_HAVE_DATA) &&
-             !(best->nStatus & BLOCK_HAVE_DATA))) {
-            best = candidate;
-        }
-    }
-
-    return best;
-}
-
 bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
 {
@@ -106,10 +73,10 @@ bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
     struct block_index *tip = active_chain_tip(chain);
 
     if (pindex)
-        pindex = best_known_successor(mp->main_state, pindex);
+        pindex = main_state_best_known_successor(mp->main_state, pindex);
 
     for (; pindex && limit > 0;
-         pindex = best_known_successor(mp->main_state, pindex)) {
+         pindex = main_state_best_known_successor(mp->main_state, pindex)) {
         if (!pindex || !pindex->phashBlock)
             break;
 

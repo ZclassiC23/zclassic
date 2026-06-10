@@ -784,6 +784,7 @@ int main(void)
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
     failures += test_block_map_grow_phashblock();
+    failures += test_block_successor();
     /* Subsection 5/6 finish-drive: defensive + consensus unit-test gaps. */
     failures += test_block_locator_bounds();
     failures += test_block_map_grow_collision();
