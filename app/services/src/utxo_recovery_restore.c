@@ -308,13 +308,6 @@ struct utxo_import_result utxo_recovery_import_ldb(
         coins_view_db_close(&migrate_db);
         node_db_wal_checkpoint(ctx->ndb);
 
-        /* Seed coins_kv from the import — the projection-based boot
-         * rebuild ran pre-import (empty, no-op); without this the
-         * prevout resolver has no pre-anchor coins. */
-        if (!coins_kv_seed_from_node_db(progress_store_db(),
-                sqlite3_db_filename(ctx->ndb->db, "main")))
-            LOG_WARN("utxo_recovery", "coins_kv import seed failed");
-
         /* Force a fresh read snapshot so ctx->ndb sees the UTXOs
          * written by import_db (the private connection).  Without
          * this, a stale SQLite snapshot can report 0 rows, causing
@@ -360,8 +353,22 @@ struct utxo_import_result utxo_recovery_import_ldb(
         }
 
         uint8_t one = 1;
-        if (imported_count > 100000)
+        if (imported_count > 100000) {
             node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
+
+            /* Seed coins_kv from the ACCEPTED import — the projection-based
+             * boot rebuild ran pre-import (empty, no-op); without this the
+             * prevout resolver has no pre-anchor coins. Must run only after
+             * the verification gate above: the seed stamps a one-way
+             * migration key on SQL success (including a 0-row copy), and
+             * both seed paths short-circuit forever on that stamp — seeding
+             * a partial import that the gate then wipes-for-retry would
+             * strand coins_kv permanently against the next boot's good
+             * reimport. */
+            if (!coins_kv_seed_from_node_db(progress_store_db(),
+                    sqlite3_db_filename(ctx->ndb->db, "main")))
+                LOG_WARN("utxo_recovery", "coins_kv import seed failed");
+        }
 
         /* Marker consumed by process_block.c's hot-loop exit
          * debounce. If the reimport happens but the UTXO set
