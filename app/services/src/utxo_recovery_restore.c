@@ -118,6 +118,7 @@ static bool utxo_recovery_scan_fallback_below_finalized_floor(
 
 /* ── LDB→SQLite UTXO import ─────────────────────────────────── */
 
+
 struct utxo_import_result utxo_recovery_import_ldb(
     struct utxo_recovery_ctx *ctx)
 {
@@ -205,18 +206,19 @@ struct utxo_import_result utxo_recovery_import_ldb(
     if (stat(cs_lock, &lock_st) == 0) {
         snprintf(import_path, sizeof(import_path),
                  "%s/chainstate_import_tmp", ctx->datadir);
-        char cmd[2300];
-        snprintf(cmd, sizeof(cmd),
-                 "rm -rf '%s' && cp -a '%s' '%s'",
-                 import_path, cs_path, import_path);
+        /* The owner is LIVE — take a provably point-in-time copy
+         * (utxo_recovery_ldb_copy.c); a torn copy imports a UTXO set
+         * with silent holes whose first spend wedges the reducer. */
         printf("Copying chainstate (zclassicd LOCK present)...\n");
         fflush(stdout);
-        if (system(cmd) != 0) {
-            res.status = ZCL_ERR(-3,
-                "utxo_recovery_import_ldb: failed to copy chainstate "
-                "from %s to %s", cs_path, import_path);
-            LOG_WARN("utxo_recovery", "%s", res.status.message);
-            goto cleanup;
+        {
+            struct zcl_result cpres = utxo_recovery_copy_chainstate_stable(
+                cs_path, import_path);
+            if (!cpres.ok) {
+                res.status = cpres;
+                LOG_WARN("utxo_recovery", "%s", res.status.message);
+                goto cleanup;
+            }
         }
         /* Remove the copied LOCK so we can open it */
         char tmp_lock[1200];
