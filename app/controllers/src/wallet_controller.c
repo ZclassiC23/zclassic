@@ -359,7 +359,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
 
     /* Relay to peers */
     if (ctx->connman)
-        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
+        connman_relay_transaction_local(ctx->connman, &wtx.tx);
 
     /* Persist wallet state after sending. The transaction is already
      * broadcast; flush failure is non-fatal but operationally important
@@ -419,7 +419,7 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     if (wallet_ctx_db_ready(ctx))
         node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
     if (ctx->connman)
-        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
+        connman_relay_transaction_local(ctx->connman, &wtx.tx);
     if (ctx->wallet_db) {
         struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
         if (!fr.ok) {

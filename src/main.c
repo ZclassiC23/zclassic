@@ -7,6 +7,7 @@
 
 #include "config/boot.h"
 #include "rpc/client.h"
+#include "net/dandelion.h"
 #include "net/file_service.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
@@ -716,6 +717,9 @@ static void print_usage(const char *prog)
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
+    printf("  -dandelion=<0|1>    BIP 156 Dandelion tx-origin privacy (default: 1).\n");
+    printf("                      Locally sent txs stay private (stem phase) for a\n");
+    printf("                      few seconds before public diffusion\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
@@ -1675,6 +1679,10 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-allow-degraded") == 0) ctx.allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
         else if (strcmp(argv[i], "-tor") == 0) ctx.tor = true;
+        else if (strncmp(argv[i], "-dandelion=", 11) == 0)
+            dandelion_set_enabled(atoi(argv[i] + 11) != 0);
+        else if (strcmp(argv[i], "-nodandelion") == 0)
+            dandelion_set_enabled(false);
         else if (strncmp(argv[i], "-profile=", 9) == 0) {
             if (!app_runtime_profile_parse(argv[i] + 9,
                                            &ctx.runtime_profile)) {

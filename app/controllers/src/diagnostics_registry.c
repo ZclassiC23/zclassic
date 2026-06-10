@@ -65,6 +65,7 @@
 #include "health/heartbeat.h"
 #include "models/database.h"
 #include "config/runtime.h"
+#include "net/dandelion.h"
 #include "net/peer_lifecycle.h"
 #include "util/log_macros.h"
 #include "util/long_op.h"
@@ -521,6 +522,10 @@ static const struct dump_entry g_dumpers[] = {
     { "block_index_projection", block_index_projection_dump_state_json,
                      "block_index_projection: cursor, entry count, "
                      "events consumed, replace collisions, last catch_up_ms" },
+    { "dandelion",   dandelion_dump_state_json,
+                     "BIP 156 Dandelion relay: epoch age/length, stem "
+                     "destinations, stempool size, advert/request tables, "
+                     "stem/fluff/embargo counters" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

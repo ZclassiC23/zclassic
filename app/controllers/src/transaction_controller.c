@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/transaction_controller_internal.h"
+#include "net/dandelion.h"
 
 struct rawtx_context g_rawtx_ctx = {0};
 
@@ -228,6 +229,36 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
         json_set_str(result, hex);
         transaction_free(&tx);
         return true;
+    }
+
+    /* BIP 156 (Dandelion): locally originated txs SHOULD enter the
+     * stem phase. Validate with the same full gate (dry-run: no
+     * insert), then hold the tx in the stempool and announce it to one
+     * Dandelion destination; it enters the mempool when it fluffs
+     * (peer fluff or embargo expiry, ≤ ~1 min). Falls through to the
+     * legacy insert+diffuse path when Dandelion is disabled or no
+     * capable peer exists. */
+    if (ctx->mempool && ctx->connman && dandelion_enabled()) {
+        enum mempool_accept_result r = accept_to_mempool_ex(
+            ctx->mempool, ctx->coins_tip, ctx->main_state,
+            chain_params_get(), &tx, true);
+        if (r == MEMPOOL_ACCEPT_OK) {
+            struct byte_stream bs;
+            stream_init(&bs, 512);
+            bool stemmed = transaction_serialize(&tx, &bs) &&
+                           connman_relay_transaction_private(
+                               ctx->connman, &hash, bs.data, bs.size);
+            stream_free(&bs);
+            if (stemmed) {
+                char hex[65];
+                uint256_get_hex(&hash, hex);
+                json_set_str(result, hex);
+                transaction_free(&tx);
+                return true;
+            }
+        }
+        /* Validation errors surface via the non-dry run below (same
+         * checks, same error strings). */
     }
 
     /* Full mempool-acceptance gate (structural + shielded-proof +
