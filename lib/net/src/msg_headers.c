@@ -670,6 +670,26 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 else
                     push_getheaders(mp, node);
             }
+        } else if (newly_added == 0 && pindex_last &&
+                   msg_processor_block_index_heights_repaired(mp) &&
+                   mp->main_state->pindex_best_header &&
+                   mp->main_state->pindex_best_header->phashBlock &&
+                   mp->main_state->pindex_best_header->nHeight >
+                       pindex_last->nHeight) {
+            /* The whole batch was already known and our best header sits
+             * far above it (boot restored a deep header chain, or a
+             * periodic re-anchor pulled the conversation back to the
+             * active tip). Continuing from pindex_last would crawl the
+             * known span 160 headers per round trip — with millions of
+             * known headers that is a multi-day stall that also burns a
+             * core re-accepting known headers (2026-06-09 tracka:
+             * header sync pinned ~640 headers/30min at h=170k while the
+             * supervisor starved). Skip the conversation straight to
+             * best_header; the exponential locator still lets the peer
+             * pick an earlier fork point if our best header is stale.
+             * Gated on repaired heights — with scrambled heights this
+             * skip used to loop forever, which is why it was removed. */
+            push_getheaders_from(mp, node, mp->main_state->pindex_best_header);
         } else {
             /* Advance from pindex_last — the actual last header the peer
              * sent.  Using pindex_best_header caused infinite loops after
@@ -834,7 +854,23 @@ void exec_getheaders_action(struct msg_processor *mp,
     case SYNC_HEADER_REQUEST_TIP:
     case SYNC_HEADER_REQUEST_EXPLICIT:
     default:
-        push_getheaders(mp, node);
+        /* When the validated header chain already extends above the
+         * active tip, anchor the request at best_header — re-anchoring
+         * at the tip makes the peer re-send known headers (160 per
+         * round trip through the whole known span). The periodic IBD
+         * re-kick fires every 10s, so a tip anchor here permanently
+         * resets the conversation below the known frontier. The
+         * locator includes lower heights, so a stale best_header still
+         * converges on the true fork point. */
+        if (msg_processor_block_index_heights_repaired(mp) &&
+            mp->main_state->pindex_best_header &&
+            mp->main_state->pindex_best_header->phashBlock &&
+            tip &&
+            mp->main_state->pindex_best_header->nHeight > tip->nHeight) {
+            push_getheaders_from(mp, node, mp->main_state->pindex_best_header);
+        } else {
+            push_getheaders(mp, node);
+        }
         break;
     }
 }

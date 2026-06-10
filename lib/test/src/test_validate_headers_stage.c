@@ -912,7 +912,9 @@ int test_validate_headers_stage(void)
         h.hashFinalSaplingRoot.data[0] = 0x32;
         h.nTime = 1700000300u;
         h.nBits = 0x200f0f0f; /* regtest powLimit compact */
-        h.nSolutionSize = 32;
+        /* 36 bytes = regtest Equihash(48,5) size: passes the epoch
+         * solution-size pin so the Equihash VERIFY renders the verdict */
+        h.nSolutionSize = 36;
         memset(h.nSolution, 0x42, h.nSolutionSize);
         struct uint256 hash;
         VH_CHECK("node-db-header: grind PoW-valid synthetic header",
@@ -924,7 +926,7 @@ int test_validate_headers_stage(void)
         sc.blocks[0].phashBlock = &sc.hashes[0];
         sc.blocks[0].nBits = 0x1f07ffff;
         sc.blocks[0].nNonce.data[0] ^= 0x7f;
-        sc.blocks[0].nSolutionSize = 32;
+        sc.blocks[0].nSolutionSize = 36;
         sc.blocks[0].nSolution = zcl_malloc(sc.blocks[0].nSolutionSize,
                                             "vh_stale_index_solution");
         VH_CHECK("node-db-header: alloc stale index solution",
@@ -965,7 +967,8 @@ int test_validate_headers_stage(void)
         h.hashFinalSaplingRoot.data[0] = 0x52;
         h.nTime = 1700000400u;
         h.nBits = 0x200f0f0f; /* regtest powLimit compact */
-        h.nSolutionSize = 32;
+        /* 36 bytes = regtest Equihash(48,5) size (see node-db-header) */
+        h.nSolutionSize = 36;
         memset(h.nSolution, 0x5A, h.nSolutionSize);
         struct uint256 hash;
         VH_CHECK("disk-block: grind PoW-valid synthetic header",

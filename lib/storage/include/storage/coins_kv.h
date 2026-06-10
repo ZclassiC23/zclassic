@@ -82,6 +82,13 @@ int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
 bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db,
                                      struct utxo_projection *proj);
 
+/* Seed coins_kv from node.db's `utxos` table right after a cold
+ * LevelDB import (the projection-based boot rebuild sees an empty
+ * projection on that boot and copies nothing). Idempotent via the
+ * same migration stamp; no-op when coins_kv already has rows. */
+bool coins_kv_seed_from_node_db(struct sqlite3 *progress_db,
+                                const char *node_db_path);
+
 /* ── coins_applied_height — the canonical contiguous applied-frontier ──
  *
  * A single progress_meta key recording the contiguous applied frontier of the

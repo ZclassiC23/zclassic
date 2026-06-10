@@ -27,6 +27,7 @@
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_db.h"
 #include "storage/progress_store.h"
+#include "storage/coins_kv.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
@@ -118,6 +119,7 @@ static bool utxo_recovery_scan_fallback_below_finalized_floor(
 
 /* ── LDB→SQLite UTXO import ─────────────────────────────────── */
 
+
 struct utxo_import_result utxo_recovery_import_ldb(
     struct utxo_recovery_ctx *ctx)
 {
@@ -205,18 +207,19 @@ struct utxo_import_result utxo_recovery_import_ldb(
     if (stat(cs_lock, &lock_st) == 0) {
         snprintf(import_path, sizeof(import_path),
                  "%s/chainstate_import_tmp", ctx->datadir);
-        char cmd[2300];
-        snprintf(cmd, sizeof(cmd),
-                 "rm -rf '%s' && cp -a '%s' '%s'",
-                 import_path, cs_path, import_path);
+        /* The owner is LIVE — take a provably point-in-time copy
+         * (utxo_recovery_ldb_copy.c); a torn copy imports a UTXO set
+         * with silent holes whose first spend wedges the reducer. */
         printf("Copying chainstate (zclassicd LOCK present)...\n");
         fflush(stdout);
-        if (system(cmd) != 0) {
-            res.status = ZCL_ERR(-3,
-                "utxo_recovery_import_ldb: failed to copy chainstate "
-                "from %s to %s", cs_path, import_path);
-            LOG_WARN("utxo_recovery", "%s", res.status.message);
-            goto cleanup;
+        {
+            struct zcl_result cpres = utxo_recovery_copy_chainstate_stable(
+                cs_path, import_path);
+            if (!cpres.ok) {
+                res.status = cpres;
+                LOG_WARN("utxo_recovery", "%s", res.status.message);
+                goto cleanup;
+            }
         }
         /* Remove the copied LOCK so we can open it */
         char tmp_lock[1200];
@@ -304,6 +307,13 @@ struct utxo_import_result utxo_recovery_import_ldb(
 
         coins_view_db_close(&migrate_db);
         node_db_wal_checkpoint(ctx->ndb);
+
+        /* Seed coins_kv from the import — the projection-based boot
+         * rebuild ran pre-import (empty, no-op); without this the
+         * prevout resolver has no pre-anchor coins. */
+        if (!coins_kv_seed_from_node_db(progress_store_db(),
+                sqlite3_db_filename(ctx->ndb->db, "main")))
+            LOG_WARN("utxo_recovery", "coins_kv import seed failed");
 
         /* Force a fresh read snapshot so ctx->ndb sees the UTXOs
          * written by import_db (the private connection).  Without

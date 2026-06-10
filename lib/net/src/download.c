@@ -50,6 +50,9 @@ static size_t hash_slot(const struct uint256 *h, size_t mask)
     return (size_t)(fnv & mask);
 }
 
+#define DL_QUEUE_MAX_CAP 65536
+#define INITIAL_QSET_SLOTS 8192
+
 void dl_init(struct download_manager *dm)
 {
     memset(dm, 0, sizeof(*dm));
@@ -59,10 +62,13 @@ void dl_init(struct download_manager *dm)
     dm->queue_cap = INITIAL_QUEUE;
     dm->queue = zcl_malloc(dm->queue_cap * sizeof(struct uint256), "dl_queue");
     dm->queue_heights = zcl_malloc(dm->queue_cap * sizeof(int32_t), "dl_queue_heights");
-    if (!dm->slots || !dm->queue || !dm->queue_heights) {
-        free(dm->slots); free(dm->queue); free(dm->queue_heights);
+    dm->qset_slots = INITIAL_QSET_SLOTS;
+    dm->qset = zcl_calloc(dm->qset_slots, sizeof(struct dl_queued_key), "dl_qset");
+    if (!dm->slots || !dm->queue || !dm->queue_heights || !dm->qset) {
+        free(dm->slots); free(dm->queue); free(dm->queue_heights); free(dm->qset);
         dm->slots = NULL; dm->queue = NULL; dm->queue_heights = NULL;
-        dm->num_slots = 0; dm->queue_cap = 0;
+        dm->qset = NULL;
+        dm->num_slots = 0; dm->queue_cap = 0; dm->qset_slots = 0;
     }
 }
 
@@ -71,15 +77,124 @@ void dl_free(struct download_manager *dm)
     free(dm->slots);
     free(dm->queue);
     free(dm->queue_heights);
+    free(dm->qset);
     dm->slots = NULL;
     dm->queue = NULL;
     dm->queue_heights = NULL;
+    dm->qset = NULL;
 }
 
-/* Expand queue capacity. Returns true on success. Caller holds mutex. */
+/* ── Queued-hash membership set ───────────────────────────────────
+ * Open addressing, linear probe, tombstoned deletes. The queue array
+ * is the source of truth; the set only answers "is this hash queued?"
+ * in O(1) so bulk enqueues stop scanning the whole queue per item.
+ * All helpers require the caller to hold dm->cs. */
+
+static bool qset_contains(const struct download_manager *dm,
+                          const struct uint256 *hash)
+{
+    if (!dm->qset || dm->qset_slots == 0) return false;
+    size_t mask = dm->qset_slots - 1;
+    size_t idx = hash_slot(hash, mask);
+    for (size_t i = 0; i < dm->qset_slots; i++) {
+        const struct dl_queued_key *e = &dm->qset[(idx + i) & mask];
+        if (e->state == 0) return false;            /* virgin: chain end */
+        if (e->state == 1 && uint256_eq(&e->hash, hash)) return true;
+    }
+    return false;
+}
+
+/* Insert without duplicate check (callers check qset_contains first).
+ * Reuses tombstones. Never fails once capacity is ensured. */
+static void qset_insert_raw(struct download_manager *dm,
+                            const struct uint256 *hash)
+{
+    size_t mask = dm->qset_slots - 1;
+    size_t idx = hash_slot(hash, mask);
+    for (size_t i = 0; i < dm->qset_slots; i++) {
+        struct dl_queued_key *e = &dm->qset[(idx + i) & mask];
+        if (e->state != 1) {
+            if (e->state == 2) dm->qset_tombs--;
+            e->hash = *hash;
+            e->state = 1;
+            dm->qset_live++;
+            return;
+        }
+    }
+}
+
+/* Rebuild the set from the queue array (drops tombstones), growing to
+ * `new_slots` (power of 2). Keeps the old table on alloc failure —
+ * correctness is unaffected, only probe lengths suffer. */
+static void qset_rebuild(struct download_manager *dm, size_t new_slots)
+{
+    struct dl_queued_key *ns =
+        zcl_calloc(new_slots, sizeof(struct dl_queued_key), "dl_qset");
+    if (!ns) return;
+    free(dm->qset);
+    dm->qset = ns;
+    dm->qset_slots = new_slots;
+    dm->qset_live = 0;
+    dm->qset_tombs = 0;
+    for (size_t i = 0; i < dm->queue_len; i++)
+        qset_insert_raw(dm, &dm->queue[i]);
+}
+
+/* Ensure room for one more live entry at < 50% combined load. */
+static void qset_reserve_one(struct download_manager *dm)
+{
+    if (!dm->qset || dm->qset_slots == 0) return;
+    if ((dm->qset_live + dm->qset_tombs + 1) * 2 < dm->qset_slots) return;
+    size_t want = dm->qset_slots;
+    if ((dm->qset_live + 1) * 2 >= want)
+        want *= 2;                  /* genuinely full: grow */
+    /* else: tombstone-heavy — rebuild at same size */
+    qset_rebuild(dm, want);
+}
+
+static void qset_insert(struct download_manager *dm,
+                        const struct uint256 *hash)
+{
+    if (!dm->qset || dm->qset_slots == 0) return;
+    qset_reserve_one(dm);
+    qset_insert_raw(dm, hash);
+}
+
+static void qset_remove(struct download_manager *dm,
+                        const struct uint256 *hash)
+{
+    if (!dm->qset || dm->qset_slots == 0) return;
+    size_t mask = dm->qset_slots - 1;
+    size_t idx = hash_slot(hash, mask);
+    for (size_t i = 0; i < dm->qset_slots; i++) {
+        struct dl_queued_key *e = &dm->qset[(idx + i) & mask];
+        if (e->state == 0) return;
+        if (e->state == 1 && uint256_eq(&e->hash, hash)) {
+            e->state = 2;
+            dm->qset_live--;
+            dm->qset_tombs++;
+            return;
+        }
+    }
+}
+
+static void qset_clear(struct download_manager *dm)
+{
+    if (!dm->qset || dm->qset_slots == 0) return;
+    memset(dm->qset, 0, dm->qset_slots * sizeof(struct dl_queued_key));
+    dm->qset_live = 0;
+    dm->qset_tombs = 0;
+}
+
+/* Expand queue capacity. Returns true on success. Caller holds mutex.
+ * Hitting the max cap is NORMAL during deep IBD (millions of bodies
+ * missing, queue bounded) — it is handled by evict/reject in
+ * dl_queue_push, not logged: the old LOG_FAIL here emitted tens of
+ * lines per second and drowned the journal. */
 static bool dl_queue_grow(struct download_manager *dm)
 {
-    if (dm->queue_cap >= 65536) LOG_FAIL("net", "dl_queue_grow: queue at max capacity (65536)");
+    if (dm->queue_cap >= DL_QUEUE_MAX_CAP)
+        return false; // raw-return-ok:normal-bounded-queue-backpressure
     size_t new_cap = dm->queue_cap * 2;
     struct uint256 *nq = zcl_realloc(dm->queue, new_cap * sizeof(struct uint256), "dl_queue");
     int32_t *nh = zcl_realloc(dm->queue_heights, new_cap * sizeof(int32_t), "dl_queue_heights");
@@ -116,8 +231,24 @@ static inline int64_t dl_sort_key(int32_t height)
 static bool dl_queue_push(struct download_manager *dm,
                            const struct uint256 *hash, int32_t height)
 {
-    if (dm->queue_len >= dm->queue_cap && !dl_queue_grow(dm))
-        LOG_FAIL("net", "dl_queue_push: queue full and grow failed (len=%zu, cap=%zu)", dm->queue_len, dm->queue_cap);
+    if (qset_contains(dm, hash))
+        return false; // raw-return-ok:duplicate-is-benign
+    if (dm->queue_len >= dm->queue_cap && !dl_queue_grow(dm)) {
+        /* Bounded queue at max capacity. The queue must always hold the
+         * LOWEST heights (the connectable bottom of the gap) — evict the
+         * highest-height tail entry when the incoming block sorts below
+         * it; refuse the push otherwise. Refused blocks are re-discovered
+         * by gap_fill / header sync once the bottom drains. */
+        if (dm->queue_len == 0 ||
+            dl_sort_key(height) >=
+                dl_sort_key(dm->queue_heights[dm->queue_len - 1])) {
+            dm->total_queue_rejected++;
+            return false; // raw-return-ok:normal-bounded-queue-backpressure
+        }
+        qset_remove(dm, &dm->queue[dm->queue_len - 1]);
+        dm->queue_len--;
+        dm->total_queue_evicted++;
+    }
 
     /* Binary search for the first entry whose key is strictly greater
      * than ours; insert there (stable for equal heights). */
@@ -141,6 +272,7 @@ static bool dl_queue_push(struct download_manager *dm,
     dm->queue[pos] = *hash;
     dm->queue_heights[pos] = height;
     dm->queue_len++;
+    qset_insert(dm, hash);
     return true;
 }
 
@@ -258,17 +390,22 @@ bool dl_mark_requested(struct download_manager *dm,
 
     maybe_grow(dm);
 
-    /* Remove from queue if present (block is moving to in-flight) */
-    for (size_t j = 0; j < dm->queue_len; j++) {
-        if (uint256_eq(&dm->queue[j], hash)) {
-            dm->queue_len--;
-            if (j < dm->queue_len) {
-                memmove(&dm->queue[j], &dm->queue[j + 1],
-                        (dm->queue_len - j) * sizeof(struct uint256));
-                memmove(&dm->queue_heights[j], &dm->queue_heights[j + 1],
-                        (dm->queue_len - j) * sizeof(int32_t));
+    /* Remove from queue if present (block is moving to in-flight).
+     * O(1) membership check first — the linear scan only runs when the
+     * hash is actually queued. */
+    if (qset_contains(dm, hash)) {
+        for (size_t j = 0; j < dm->queue_len; j++) {
+            if (uint256_eq(&dm->queue[j], hash)) {
+                dm->queue_len--;
+                if (j < dm->queue_len) {
+                    memmove(&dm->queue[j], &dm->queue[j + 1],
+                            (dm->queue_len - j) * sizeof(struct uint256));
+                    memmove(&dm->queue_heights[j], &dm->queue_heights[j + 1],
+                            (dm->queue_len - j) * sizeof(int32_t));
+                }
+                qset_remove(dm, hash);
+                break;
             }
-            break;
         }
     }
 
@@ -415,6 +552,21 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
     return requeued;
 }
 
+/* qsort comparator for the bulk-enqueue staging array. */
+struct dl_stage_item {
+    struct uint256 hash;
+    int32_t height;
+};
+
+static int dl_stage_cmp(const void *a, const void *b)
+{
+    const struct dl_stage_item *x = a, *y = b;
+    int64_t kx = dl_sort_key(x->height), ky = dl_sort_key(y->height);
+    if (kx < ky) return -1;
+    if (kx > ky) return 1;
+    return 0;
+}
+
 size_t dl_queue_blocks(struct download_manager *dm,
                        const struct uint256 *hashes,
                        const int32_t *heights,
@@ -422,25 +574,101 @@ size_t dl_queue_blocks(struct download_manager *dm,
 {
     zcl_mutex_lock(&dm->cs);
 
-    size_t added = 0;
+    /* Bulk enqueue is sort + single merge, NOT count repeated sorted
+     * inserts: callers legitimately hand over tens of thousands of
+     * blocks per call (gap_fill window, header batches), and a per-item
+     * insert is an O(queue_len) memmove — O(n^2) per call while holding
+     * cs, which starved the whole node (2026-06-09 tracka wedge). */
+
+    /* 1. Filter into a staging array: not in-flight, not queued, not a
+     *    duplicate within this batch (the qset insert handles that). */
+    struct dl_stage_item *stage = NULL;
+    size_t n_stage = 0;
+    if (count > 0)
+        stage = zcl_malloc(count * sizeof(*stage), "dl_stage");
+    if (!stage) {
+        zcl_mutex_unlock(&dm->cs);
+        return 0;
+    }
     for (size_t i = 0; i < count; i++) {
-        /* Skip if already in-flight */
         struct dl_in_flight *s = find_slot(dm, &hashes[i], false);
         if (s && s->active) continue;
-
-        /* Skip if already in queue (linear scan — acceptable for queue < 65K) */
-        bool dup = false;
-        for (size_t j = 0; j < dm->queue_len; j++) {
-            if (uint256_eq(&dm->queue[j], &hashes[i])) {
-                dup = true;
-                break;
-            }
-        }
-        if (dup) continue;
-
-        if (dl_queue_push(dm, &hashes[i], heights ? heights[i] : -1))
-            added++;
+        if (qset_contains(dm, &hashes[i])) continue;
+        qset_insert(dm, &hashes[i]);
+        stage[n_stage].hash = hashes[i];
+        stage[n_stage].height = heights ? heights[i] : -1;
+        n_stage++;
     }
+    if (n_stage == 0) {
+        free(stage);
+        zcl_mutex_unlock(&dm->cs);
+        return 0;
+    }
+
+    /* 2. Sort the newcomers by height (lowest first). */
+    qsort(stage, n_stage, sizeof(*stage), dl_stage_cmp);
+
+    /* 3. Grow toward the merged size (bounded by DL_QUEUE_MAX_CAP). */
+    while (dm->queue_len + n_stage > dm->queue_cap && dl_queue_grow(dm))
+        ;
+
+    /* 4. Single forward merge of (queue, stage) into fresh buffers,
+     *    keeping only the lowest queue_cap entries; everything past the
+     *    cap (the highest heights, from either source) is dropped and
+     *    its membership erased. */
+    size_t total = dm->queue_len + n_stage;
+    struct uint256 *mh = zcl_malloc(total * sizeof(*mh), "dl_merge_h");
+    int32_t *mg = zcl_malloc(total * sizeof(*mg), "dl_merge_g");
+    size_t added = 0;
+    if (mh && mg) {
+        size_t qi = 0, si = 0, mi = 0;
+        while (qi < dm->queue_len || si < n_stage) {
+            bool take_stage;
+            if (qi >= dm->queue_len)      take_stage = true;
+            else if (si >= n_stage)       take_stage = false;
+            else take_stage = dl_sort_key(stage[si].height) <
+                              dl_sort_key(dm->queue_heights[qi]);
+            if (take_stage) {
+                mh[mi] = stage[si].hash;
+                mg[mi] = stage[si].height;
+                si++;
+            } else {
+                mh[mi] = dm->queue[qi];
+                mg[mi] = dm->queue_heights[qi];
+                qi++;
+            }
+            mi++;
+        }
+        size_t keep = total > dm->queue_cap ? dm->queue_cap : total;
+        for (size_t i = keep; i < total; i++) {
+            qset_remove(dm, &mh[i]);
+            dm->total_queue_evicted++;
+        }
+        memcpy(dm->queue, mh, keep * sizeof(*mh));
+        memcpy(dm->queue_heights, mg, keep * sizeof(*mg));
+        dm->queue_len = keep;
+        /* Count the newcomers that survived the cap: a newcomer is in
+         * the queue iff its membership entry is still live. */
+        added = n_stage;
+        if (total > keep) {
+            added = 0;
+            for (size_t i = 0; i < n_stage; i++)
+                if (qset_contains(dm, &stage[i].hash))
+                    added++;
+        }
+    } else {
+        /* Alloc failure: fall back to per-item sorted inserts (rare;
+         * correctness over speed). qset entries for items the push
+         * rejects must be erased. */
+        for (size_t i = 0; i < n_stage; i++) {
+            qset_remove(dm, &stage[i].hash);
+            if (dl_queue_push(dm, &stage[i].hash, stage[i].height))
+                added++;
+        }
+    }
+    free(mh);
+    free(mg);
+    free(stage);
 
     zcl_mutex_unlock(&dm->cs);
     return added;
@@ -459,14 +687,17 @@ void dl_queue_priority(struct download_manager *dm,
     }
 
     /* Remove from queue if already present (we'll re-insert sorted) */
-    for (size_t j = 0; j < dm->queue_len; j++) {
-        if (uint256_eq(&dm->queue[j], hash)) {
-            memmove(&dm->queue[j], &dm->queue[j+1],
-                    (dm->queue_len - j - 1) * sizeof(dm->queue[0]));
-            memmove(&dm->queue_heights[j], &dm->queue_heights[j+1],
-                    (dm->queue_len - j - 1) * sizeof(dm->queue_heights[0]));
-            dm->queue_len--;
-            break;
+    if (qset_contains(dm, hash)) {
+        for (size_t j = 0; j < dm->queue_len; j++) {
+            if (uint256_eq(&dm->queue[j], hash)) {
+                memmove(&dm->queue[j], &dm->queue[j+1],
+                        (dm->queue_len - j - 1) * sizeof(dm->queue[0]));
+                memmove(&dm->queue_heights[j], &dm->queue_heights[j+1],
+                        (dm->queue_len - j - 1) * sizeof(dm->queue_heights[0]));
+                dm->queue_len--;
+                qset_remove(dm, hash);
+                break;
+            }
         }
     }
 
@@ -534,6 +765,7 @@ size_t dl_assign_to_peer(struct download_manager *dm,
         struct uint256 hash = dm->queue[pop_count];
         int32_t height = dm->queue_heights[pop_count];
         pop_count++;
+        qset_remove(dm, &hash);
 
         maybe_grow(dm);
         struct dl_in_flight *slot = find_slot(dm, &hash, true);
@@ -669,6 +901,7 @@ size_t dl_drain_for_backpressure(struct download_manager *dm)
     /* Drop pending hashes outright — peers won't be re-asked until
      * something else (header sync, reducer activation) re-queues. */
     dm->queue_len = 0;
+    qset_clear(dm);
 
     /* Mark every in-flight slot inactive WITHOUT zeroing its hash:
      * find_slot relies on the hash bits to distinguish a virgin slot
