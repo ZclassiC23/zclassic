@@ -235,52 +235,77 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     recovery->chain_height = our_h;
     recovery->next_height = our_h + 1;
 
-    /* Scan a window of heights (not just +1) to find the first gap.
-     * This handles cases where height+1 has an orphan block but
-     * the real chain continues at height+2..+10. */
-    for (int probe = 1; probe <= 10; probe++) {
-        int check_h = our_h + probe;
-        bool found_data = false;
+    /* ONE pass over block_map gathers everything the planning below
+     * needs: per-height data presence for the probe window (our_h+1..
+     * our_h+10), the +1 entry counters, and the alt-candidate pool.
+     * The map holds millions of entries at depth — the previous
+     * shape (a probe loop of up to 10 full scans plus two more full
+     * scans) pinned a core and starved every other map reader when
+     * this ran near a deep tip (2026-06-09 trackb 90%-CPU stall). */
+    #define STALL_PROBE_WINDOW 10
+    #define STALL_ALT_CANDIDATES 256
+    bool have_data_at[STALL_PROBE_WINDOW] = {false};
+    struct block_index **cand =
+        zcl_calloc(STALL_ALT_CANDIDATES, sizeof(*cand), "stall cand");
+    size_t cand_count = 0;
+    bool cand_overflow = false;
+    {
         size_t pi = 0;
         struct block_index *px;
         while (block_map_next(&ms->map_block_index, &pi, NULL, &px)) {
-            if (px && px->nHeight == check_h) {
-                if (probe == 1) {
+            if (!px) continue;
+            int dh = px->nHeight - our_h;
+            if (dh < 1) continue;
+            if (dh <= STALL_PROBE_WINDOW) {
+                if (dh == 1) {
                     recovery->entries_at_next++;
                     if (px->nStatus & BLOCK_FAILED_MASK) recovery->entries_failed++;
                     if (px->nStatus & BLOCK_HAVE_DATA) recovery->entries_with_data++;
                 }
                 if (px->nStatus & BLOCK_HAVE_DATA)
-                    found_data = true;
+                    have_data_at[dh - 1] = true;
+            }
+            if (cand && dh <= 512 &&
+                !(px->nStatus & BLOCK_FAILED_MASK) &&
+                !(px->nStatus & BLOCK_HAVE_DATA) &&
+                px->phashBlock) {
+                if (cand_count < STALL_ALT_CANDIDATES)
+                    cand[cand_count++] = px;
+                else
+                    cand_overflow = true;
             }
         }
-        if (!found_data) {
-            recovery->next_height = check_h;
+    }
+    if (cand_overflow)
+        LOG_INFO("block_sync",
+                 "stall recovery: candidate pool capped at %d "
+                 "(more dataless entries exist in (tip, tip+512])",
+                 STALL_ALT_CANDIDATES);
+    for (int probe = 1; probe <= STALL_PROBE_WINDOW; probe++) {
+        if (!have_data_at[probe - 1]) {
+            recovery->next_height = our_h + probe;
             break;
         }
     }
 
     struct block_index *tip = active_chain_tip(&ms->chain_active);
-    if (!tip) return true;
+    if (!tip) {
+        free(cand);
+        return true;
+    }
 
     struct uint256 *alt_hashes = zcl_calloc(64, sizeof(struct uint256), "stall recovery hashes");
     int32_t *alt_heights = zcl_calloc(64, sizeof(int32_t), "stall recovery heights");
     if (!alt_hashes || !alt_heights) {
         free(alt_hashes);
         free(alt_heights);
+        free(cand);
         return true;
     }
 
     size_t alt_count = 0;
-    size_t iter2 = 0;
-    struct block_index *alt;
-    while (block_map_next(&ms->map_block_index, &iter2, NULL, &alt)) {
-        if (!alt || alt_count >= 64) continue;
-        if (alt->nHeight <= our_h) continue;
-        if (alt->nHeight > our_h + 512) continue;
-        if (alt->nStatus & BLOCK_FAILED_MASK) continue;
-        if (alt->nStatus & BLOCK_HAVE_DATA) continue;
-        if (!alt->phashBlock) continue;
+    for (size_t ci = 0; cand && ci < cand_count && alt_count < 64; ci++) {
+        struct block_index *alt = cand[ci];
 
         /* Cycle-safe descent to height our_h. */
         struct block_index *walk = pprev_walk_until_height(
@@ -295,19 +320,19 @@ bool syncsvc_build_stall_recovery(struct sync_stall_recovery *recovery,
     }
 
     if (alt_count == 0) {
-        size_t iter3 = 0;
-        while (block_map_next(&ms->map_block_index, &iter3, NULL, &alt)) {
-            if (!alt || alt_count >= 64) continue;
+        /* Fallback: entries at the first gap height, descent not
+         * required (matches the old iter3 pass). */
+        for (size_t ci = 0; cand && ci < cand_count && alt_count < 64; ci++) {
+            struct block_index *alt = cand[ci];
             if (alt->nHeight != recovery->next_height) continue;
-            if (alt->nStatus & BLOCK_FAILED_MASK) continue;
-            if (alt->nStatus & BLOCK_HAVE_DATA) continue;
-            if (!alt->phashBlock) continue;
-
             alt_hashes[alt_count] = *alt->phashBlock;
             alt_heights[alt_count] = alt->nHeight;
             alt_count++;
         }
     }
+    free(cand);
+    #undef STALL_PROBE_WINDOW
+    #undef STALL_ALT_CANDIDATES
 
     recovery->alt_hashes = alt_hashes;
     recovery->alt_heights = alt_heights;
