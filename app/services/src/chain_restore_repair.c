@@ -680,9 +680,9 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
         return ZCL_ERR(-2,
                        "post-restore integrity FAILED: zero_nbits=%d "
                        "tip_window_holes=%d total_holes=%d mismatches=%d "
-                       "tip_h=%d",
+                       "tip_h=%d tip_slot_ok=%d tip_real=%d",
                        r.zero_nbits_count, r.tip_window_holes,
                        r.active_chain_holes, r.active_chain_mismatches,
-                       r.tip_height);
+                       r.tip_height, (int)r.tip_slot_ok, (int)r.tip_real);
     return ZCL_OK;
 }

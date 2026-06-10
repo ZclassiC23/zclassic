@@ -45,7 +45,14 @@ struct chain_integrity_result {
     int  first_hole_height;       /* -1 if none (overall) */
     int  first_mismatch_height;   /* -1 if none */
     int  first_tip_window_hole;   /* -1 if none (within window) */
-    bool ok;                      /* zero_nbits_count==0 && tip_window_holes==0 */
+    bool tip_slot_ok;             /* active_chain_at(tip_height) == tip */
+    bool tip_real;                /* tip has BLOCK_HAVE_DATA and nBits != 0 */
+    /* ok = zero_nbits_count==0 && tip_window_holes==0 &&
+     *      active_chain_mismatches==0 && tip_slot_ok && tip_real.
+     * The boolean terms MUST appear in any failure report: a run on
+     * 2026-06-10 failed with all four counters zero, which was
+     * undiagnosable until the booleans were surfaced. */
+    bool ok;
 };
 
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,

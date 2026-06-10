@@ -121,15 +121,15 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
      * A height mismatch anywhere is also unsafe: callers believe the
      * slot index is the canonical height. */
     struct block_index *tip = active_chain_tip(&ms->chain_active);
-    bool tip_slot_ok =
+    out->tip_slot_ok =
         (out->tip_height < 0) ||
         (active_chain_at(&ms->chain_active, out->tip_height) == tip);
-    bool tip_real =
+    out->tip_real =
         !tip || ((tip->nStatus & BLOCK_HAVE_DATA) && tip->nBits != 0);
     out->ok = (out->zero_nbits_count == 0 &&
                out->tip_window_holes == 0 &&
                out->active_chain_mismatches == 0 &&
-               tip_slot_ok && tip_real);
+               out->tip_slot_ok && out->tip_real);
 
     /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
     chain_restore_record_integrity_result(out);
