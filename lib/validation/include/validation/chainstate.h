@@ -85,10 +85,30 @@ bool block_map_next(const struct block_map *m, size_t *iter,
                     const struct uint256 **hash_out,
                     struct block_index **index_out);
 
+/* A chain[] array superseded by a window grow. Lock-free readers may still
+ * hold the old pointer, so it is RETIRED (kept allocated, value-stable —
+ * same discipline as block_index.hashBlock) and freed only by
+ * active_chain_free. */
+struct active_chain_retired {
+    struct active_chain_retired *next;
+    struct block_index **arr;
+};
+
+/* Concurrency contract: readers are lock-free. `chain`, `height` and
+ * `capacity` are _Atomic; writers publish a grow as fully-populated array,
+ * then capacity, then height LAST, so a reader that bounds-checks against
+ * height/capacity and loads `chain` afterwards always sees an array that
+ * spans its index, and a reader holding an older array only ever indexes
+ * within that array's (smaller) span. Slot stores stay plain aligned
+ * pointer writes (a racing reader sees the old or new block_index, both
+ * never-freed). Writers serialize on `write_lock` — a leaf lock; nothing
+ * else is acquired while it is held. */
 struct active_chain {
-    struct block_index **chain;
-    int height;
-    int capacity;
+    struct block_index **_Atomic chain;
+    _Atomic int height;
+    _Atomic int capacity;
+    struct active_chain_retired *retired; /* guarded by write_lock */
+    zcl_mutex_t write_lock;
 };
 
 void active_chain_init(struct active_chain *c);

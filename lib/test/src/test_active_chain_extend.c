@@ -166,5 +166,53 @@ int test_active_chain_extend(void)
         main_state_free(&ms);
     }
 
+    /* 7. Window grow RETIRES (never frees) the superseded chain[] array —
+     * regression for the cross-thread grow/realloc UAF: a lock-free reader
+     * that loaded the pre-grow array pointer must still be able to index it
+     * after the grow. Also pins geometric growth (capacity at least doubles),
+     * which bounds the retired set, and that active_chain_free reclaims the
+     * retired arrays (leak/double-free caught under sanitizers). */
+    {
+        static struct uint256 far_hashes[2];
+        struct main_state ms; main_state_init(&ms);
+        struct block_index *b[8];
+        bool ok = ace_build(&ms, b, N, 3); /* capacity = 3 + 1024 */
+        struct block_index **pre = ms.chain_active.chain;
+        int pre_cap = ms.chain_active.capacity;
+        ok = ok && pre != NULL && pre_cap > 0;
+
+        struct block_index *far = ace_insert(&ms, &far_hashes[0], pre_cap + 100,
+                                             b[7],
+                                             BLOCK_HAVE_DATA |
+                                             BLOCK_VALID_SCRIPTS);
+        ok = ok && far &&
+             active_chain_move_window_tip(&ms.chain_active, far);
+        ok = ok && ms.chain_active.chain != pre;          /* grew */
+        ok = ok && ms.chain_active.capacity >= 2 * pre_cap; /* geometric */
+        ok = ok && ms.chain_active.retired != NULL &&
+             ms.chain_active.retired->arr == pre;         /* retired, not freed */
+        ok = ok && pre[3] == b[3];      /* old array still live + intact */
+        ok = ok && active_chain_at(&ms.chain_active, far->nHeight) == far;
+        ok = ok && active_chain_at(&ms.chain_active, 3) == b[3];
+
+        /* Second grow chains a second retired array; the first stays live. */
+        struct block_index **mid = ms.chain_active.chain;
+        int mid_cap = ms.chain_active.capacity;
+        struct block_index *far2 = ace_insert(&ms, &far_hashes[1],
+                                              mid_cap + 100, far,
+                                              BLOCK_HAVE_DATA |
+                                              BLOCK_VALID_SCRIPTS);
+        ok = ok && far2 &&
+             active_chain_move_window_tip(&ms.chain_active, far2);
+        ok = ok && ms.chain_active.retired != NULL &&
+             ms.chain_active.retired->arr == mid &&
+             ms.chain_active.retired->next != NULL &&
+             ms.chain_active.retired->next->arr == pre;
+        ok = ok && pre[3] == b[3] && mid[far->nHeight] == far;
+        ACE_CHECK("grow retires superseded chain[] (value-stable for readers)",
+                  ok);
+        main_state_free(&ms); /* frees both retired arrays */
+    }
+
     return failures;
 }

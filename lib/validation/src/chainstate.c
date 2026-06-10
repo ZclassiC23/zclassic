@@ -7,6 +7,7 @@
 #include "validation/chainstate.h"
 #include "util/log_macros.h"
 #include "storage/progress_store.h"
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
@@ -216,21 +217,43 @@ void active_chain_init(struct active_chain *c)
     c->chain = NULL;
     c->height = -1;
     c->capacity = 0;
+    c->retired = NULL;
+    zcl_mutex_init(&c->write_lock);
 }
 
 void active_chain_free(struct active_chain *c)
 {
+    zcl_mutex_lock(&c->write_lock);
     free(c->chain);
     c->chain = NULL;
     c->height = -1;
     c->capacity = 0;
+    while (c->retired) {
+        struct active_chain_retired *r = c->retired;
+        c->retired = r->next;
+        free(r->arr);
+        free(r);
+    }
+    zcl_mutex_unlock(&c->write_lock);
+    zcl_mutex_destroy(&c->write_lock);
 }
 
+/* Lock-free reader discipline (all readers below): load the index bound
+ * (height) BEFORE the array pointer. Writers publish height LAST, so an
+ * array loaded after the bound always spans it; an older array seen with
+ * an older bound is retired-not-freed, so the deref is always in-bounds
+ * against live storage. */
 struct block_index *active_chain_cached_tip(const struct active_chain *c)
 {
-    if (!c || !c->chain || c->height < 0 || c->height >= c->capacity)
+    if (!c)
         return NULL;
-    return c->chain[c->height];
+    int h = c->height;
+    if (h < 0 || h >= c->capacity)
+        return NULL;
+    struct block_index **arr = c->chain;
+    if (!arr)
+        return NULL;
+    return arr[h];
 }
 
 struct block_index *active_chain_tip(const struct active_chain *c)
@@ -249,20 +272,26 @@ struct block_index *active_chain_tip(const struct active_chain *c)
     }
     int h = active_chain_height(c);
     if (h < 0 || h >= c->capacity) return NULL;
-    return c->chain[h];
+    struct block_index **arr = c->chain;
+    if (!arr) return NULL;
+    return arr[h];
 }
 
 struct block_index *active_chain_at(const struct active_chain *c, int height)
 {
-    if (!c || !c->chain || height < 0 || height > c->height) return NULL;
-    return c->chain[height];
+    if (!c || height < 0 || height > c->height) return NULL;
+    struct block_index **arr = c->chain;
+    if (!arr) return NULL;
+    return arr[height];
 }
 
 bool active_chain_contains(const struct active_chain *c,
                            const struct block_index *bi)
 {
     if (bi->nHeight < 0 || bi->nHeight > c->height) return false;
-    return c->chain[bi->nHeight] == bi;
+    struct block_index **arr = c->chain;
+    if (!arr) return false;
+    return arr[bi->nHeight] == bi;
 }
 
 /* Physically assemble chain[] so chain[bi->nHeight] == bi and every lower
@@ -271,27 +300,54 @@ bool active_chain_contains(const struct active_chain *c,
  * the part every reader (active_chain_at, the stages) depends on. It never
  * publishes the authoritative tip; reducer/repair callers must do that
  * through their explicit authority API after their durable write succeeds.
- * Returns false only on a realloc failure (which LOG_FAILs and never
- * returns). Slots ABOVE new_height are left untouched (a later wider window
- * can still re-expose them). */
+ * Returns false only on an array-grow allocation failure (which LOG_FAILs).
+ * Slots ABOVE new_height are left untouched (a later wider window can still
+ * re-expose them).
+ *
+ * Writers serialize on c->write_lock. A grow never frees the old array in
+ * place (lock-free readers — RPC, net locator builds, bg verification — may
+ * hold it): the new array is fully populated, published, and the old one
+ * retired until active_chain_free. Growth is geometric so the retired set
+ * stays O(log height) arrays, bounded by ~1x the live array. height is
+ * published LAST — see the reader-discipline comment above. */
 static bool active_chain_fill_window(struct active_chain *c,
                                      struct block_index *bi)
 {
     int new_height = bi->nHeight;
+    zcl_mutex_lock(&c->write_lock);
     if (new_height >= c->capacity) {
         int old_cap = c->capacity;
         int new_cap = new_height + 1024;
-        struct block_index **nc = zcl_realloc(c->chain,
+        if (old_cap > 0 && old_cap <= INT_MAX / 2 && old_cap * 2 > new_cap)
+            new_cap = old_cap * 2;
+        struct block_index **nc = zcl_malloc(
             (size_t)new_cap * sizeof(struct block_index *), "active_chain");
-        if (!nc)
-            LOG_FAIL("chainstate", "active_chain_fill_window: realloc failed for height %d", new_height);
-        c->chain = nc;
-        memset(&c->chain[old_cap], 0,
+        if (!nc) {
+            zcl_mutex_unlock(&c->write_lock);
+            LOG_FAIL("chainstate", "active_chain_fill_window: alloc failed for height %d", new_height);
+        }
+        struct block_index **old = c->chain;
+        if (old_cap > 0)
+            memcpy(nc, old, (size_t)old_cap * sizeof(struct block_index *));
+        memset(&nc[old_cap], 0,
                (size_t)(new_cap - old_cap) * sizeof(struct block_index *));
-        c->capacity = new_cap;
+        c->chain = nc;       /* publish fully-populated array first... */
+        c->capacity = new_cap; /* ...then the wider bound */
+        if (old) {
+            struct active_chain_retired *r =
+                zcl_malloc(sizeof(*r), "active_chain_retired");
+            if (r) {
+                r->arr = old;
+                r->next = c->retired;
+                c->retired = r;
+            }
+            /* On node-alloc failure: leak `old` — still reader-safe. */
+        }
     }
 
-    c->chain[new_height] = bi;
+    struct block_index **arr = c->chain; /* stable under write_lock */
+    int old_height = c->height;
+    arr[new_height] = bi;
     struct block_index *p = bi->pprev;
     int h = new_height - 1;
     int walk_budget = new_height + 1;
@@ -304,11 +360,11 @@ static bool active_chain_fill_window(struct active_chain *c,
             p = p->pprev;
         }
         struct block_index *slot = (p && p->nHeight == h) ? p : NULL;
-        if (!slot && h <= c->height)
+        if (!slot && h <= old_height)
             break; /* preserve the finalized lower window across pprev gaps */
-        if (h <= c->height && c->chain[h] == slot)
+        if (h <= old_height && arr[h] == slot)
             break;
-        c->chain[h] = slot;
+        arr[h] = slot;
         if (p && p->nHeight == h) {
             if (--walk_budget < 0)
                 p = NULL;
@@ -317,7 +373,8 @@ static bool active_chain_fill_window(struct active_chain *c,
         }
         h--;
     }
-    c->height = new_height;
+    c->height = new_height; /* publish last */
+    zcl_mutex_unlock(&c->write_lock);
     return true;
 }
 
