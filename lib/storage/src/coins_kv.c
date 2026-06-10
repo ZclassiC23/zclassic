@@ -7,6 +7,20 @@
  * sanctioned hatch for the kernel store (same convention as progress_store.c /
  * utxo_projection.c). The coins set sits BELOW the AR lifecycle — it is reducer
  * state, not an AR model.
+ *
+ * Statement lifetime: every helper prepares/finalizes per call ON PURPOSE —
+ * do NOT cache statements here. These run cross-thread on the ONE shared
+ * progress.kv handle (the same-txn atomicity design forbids per-thread
+ * connections): the staged-sync job thread (utxo_apply_stage.c apply_coins_kv
+ * + script_validate prevout reads), the self-heal/condition-engine thread
+ * (stage_repair_coin_backfill.c), the reorg unwind, and chain_state_validator
+ * reads via coins_view_kv. FULLMUTEX serializes individual sqlite3_* calls,
+ * NOT a reset/bind/step sequence, so a shared cached statement is the exact
+ * cross-thread race class fixed in db_tx_find (3b2033e15) and
+ * node_db_state_get (8b8d7c1b5). Per-block batching belongs at the hot-loop
+ * call sites (created_outputs_index_put_block's prepare-once idiom). Within a
+ * call, txid/script bind with SQLITE_STATIC: every caller's buffers outlive
+ * the statement, which never escapes the call.
  */
 #include "storage/coins_kv.h"
 
@@ -55,13 +69,13 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
         "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
         -1, &s, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_blob (s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob (s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int  (s, 2, (int)vout);
     sqlite3_bind_int64(s, 3, (sqlite3_int64)value);
     sqlite3_bind_int64(s, 4, (sqlite3_int64)height);
     sqlite3_bind_int  (s, 5, is_coinbase ? 1 : 0);
     if (script && script_len > 0)
-        sqlite3_bind_blob(s, 6, script, (int)script_len, SQLITE_TRANSIENT);
+        sqlite3_bind_blob(s, 6, script, (int)script_len, SQLITE_STATIC);
     else
         sqlite3_bind_blob(s, 6, "", 0, SQLITE_STATIC);
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
@@ -77,7 +91,7 @@ bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
         "DELETE FROM coins WHERE txid=? AND vout=?",
         -1, &s, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(s);
@@ -92,7 +106,7 @@ bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
         "SELECT 1 FROM coins WHERE txid=? AND vout=?",
         -1, &s, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
     bool found = sqlite3_step(s) == SQLITE_ROW;  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(s);
@@ -109,7 +123,7 @@ bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
         "SELECT value, script FROM coins WHERE txid=? AND vout=?",
         -1, &s, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
     bool found = false;
     if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
@@ -155,7 +169,7 @@ bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
         "FROM coins WHERE txid=?",
         -1, &s, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
 
     uint32_t max_vout = 0;
     int nrows = 0, height = 0, is_coinbase = 0;
@@ -182,7 +196,7 @@ bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
     out->is_coinbase = (is_coinbase != 0);
 
     sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     while (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         uint32_t vi = (uint32_t)sqlite3_column_int(s, 0);
         if (vi >= out->num_vout) continue;

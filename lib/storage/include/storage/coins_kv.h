@@ -16,6 +16,10 @@
  * participates in whatever transaction the caller already holds open. Schema +
  * serialisation mirror utxo_projection's `utxo` table column-for-column so the
  * SHA3 UTXO commitment is byte-identical.
+ *
+ * Callers may invoke from any thread: every function prepares and finalizes
+ * its statement within the call (no shared statement state). See coins_kv.c
+ * for why a cached statement is forbidden on this cross-thread shared handle.
  */
 #ifndef STORAGE_COINS_KV_H
 #define STORAGE_COINS_KV_H

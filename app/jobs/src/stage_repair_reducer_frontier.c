@@ -13,6 +13,7 @@
 
 #include "jobs/block_header_emit.h"
 #include "jobs/reducer_frontier.h"
+#include "platform/time_compat.h"
 #include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
@@ -24,7 +25,6 @@
 
 #include <sqlite3.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 struct rf_log_evidence {
@@ -35,25 +35,63 @@ struct rf_log_evidence {
     bool utxo_ok;
 };
 
-static bool log_ok_unlocked(sqlite3 *db, const char *table, int height,
+/* The five per-height evidence point reads, prepared ONCE per flag sweep and
+ * reset/rebound per height (created_outputs_index_put_block's prepare-once
+ * batch idiom): the sweep walks every height in (hstar, sweep_top] and a
+ * per-row sqlite3_prepare_v2 of constant SQL paid the SQL parser five times
+ * per height while holding the progress + cs_main locks. */
+struct rf_evidence_stmts {
+    sqlite3_stmt *validate_hash; /* ok, hash       FROM validate_headers_log */
+    sqlite3_stmt *script_hash;   /* ok, block_hash FROM script_validate_log  */
+    sqlite3_stmt *body_ok;       /* ok FROM body_persist_log  */
+    sqlite3_stmt *proof_ok;      /* ok FROM proof_validate_log */
+    sqlite3_stmt *utxo_ok;       /* ok FROM utxo_apply_log    */
+};
+
+static void rf_evidence_stmts_finalize(struct rf_evidence_stmts *es)
+{
+    sqlite3_finalize(es->validate_hash);
+    sqlite3_finalize(es->script_hash);
+    sqlite3_finalize(es->body_ok);
+    sqlite3_finalize(es->proof_ok);
+    sqlite3_finalize(es->utxo_ok);
+    memset(es, 0, sizeof(*es));
+}
+
+static bool rf_evidence_stmts_prepare(sqlite3 *db, struct rf_evidence_stmts *es)
+{
+    memset(es, 0, sizeof(*es));
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok, hash FROM validate_headers_log WHERE height = ?",
+            -1, &es->validate_hash, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
+            -1, &es->script_hash, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "SELECT ok FROM body_persist_log WHERE height = ?",
+            -1, &es->body_ok, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "SELECT ok FROM proof_validate_log WHERE height = ?",
+            -1, &es->proof_ok, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "SELECT ok FROM utxo_apply_log WHERE height = ?",
+            -1, &es->utxo_ok, NULL) == SQLITE_OK)
+        return true;
+
+    LOG_WARN("stage_repair",
+             "[stage_repair] evidence stmt prepare failed: %s",
+             sqlite3_errmsg(db));
+    rf_evidence_stmts_finalize(es);
+    return false;
+}
+
+static bool log_ok_unlocked(sqlite3_stmt *st, const char *table, int height,
                             bool *found, bool *ok)
 {
     *found = false;
     *ok = false;
 
-    char sql[128];
-    int n = snprintf(sql, sizeof(sql),
-                     "SELECT ok FROM %s WHERE height = ?", table);
-    if (n < 0 || n >= (int)sizeof(sql))
-        LOG_FAIL("stage_repair", "log_ok sql overflow table=%s", table);
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] log_ok prepare failed table=%s: %s",
-                 table, sqlite3_errmsg(db));
-        return false;
-    }
+    sqlite3_reset(st);
     sqlite3_bind_int(st, 1, height);
 
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
@@ -63,17 +101,15 @@ static bool log_ok_unlocked(sqlite3 *db, const char *table, int height,
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] log_ok step failed table=%s h=%d rc=%d: %s",
-                 table, height, rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
+                 table, height, rc, sqlite3_errmsg(sqlite3_db_handle(st)));
         return false;
     }
 
-    sqlite3_finalize(st);
     return true;
 }
 
-static bool hash_log_ok_matches_unlocked(sqlite3 *db, const char *table,
-                                         const char *hash_col, int height,
+static bool hash_log_ok_matches_unlocked(sqlite3_stmt *st, const char *table,
+                                         int height,
                                          const struct uint256 *want,
                                          bool *matches)
 {
@@ -81,21 +117,7 @@ static bool hash_log_ok_matches_unlocked(sqlite3 *db, const char *table,
     if (!want)
         return true;
 
-    char sql[160];
-    int n = snprintf(sql, sizeof(sql),
-                     "SELECT ok, %s FROM %s WHERE height = ?",
-                     hash_col, table);
-    if (n < 0 || n >= (int)sizeof(sql))
-        LOG_FAIL("stage_repair", "hash_log sql overflow table=%s col=%s",
-                 table, hash_col);
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] hash_log prepare failed table=%s: %s",
-                 table, sqlite3_errmsg(db));
-        return false;
-    }
+    sqlite3_reset(st);
     sqlite3_bind_int(st, 1, height);
 
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
@@ -109,16 +131,14 @@ static bool hash_log_ok_matches_unlocked(sqlite3 *db, const char *table,
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] hash_log step failed table=%s h=%d rc=%d: %s",
-                 table, height, rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
+                 table, height, rc, sqlite3_errmsg(sqlite3_db_handle(st)));
         return false;
     }
 
-    sqlite3_finalize(st);
     return true;
 }
 
-static bool evidence_for_block_unlocked(sqlite3 *db,
+static bool evidence_for_block_unlocked(struct rf_evidence_stmts *es,
                                         const struct block_index *bi,
                                         struct rf_log_evidence *ev)
 {
@@ -126,30 +146,31 @@ static bool evidence_for_block_unlocked(sqlite3 *db,
     if (!bi || !bi->phashBlock)
         return true;
 
-    if (!hash_log_ok_matches_unlocked(db, "validate_headers_log", "hash",
+    if (!hash_log_ok_matches_unlocked(es->validate_hash,
+                                      "validate_headers_log",
                                       bi->nHeight, bi->phashBlock,
                                       &ev->validate_ok_hash))
         return false;
-    if (!hash_log_ok_matches_unlocked(db, "script_validate_log",
-                                      "block_hash", bi->nHeight,
+    if (!hash_log_ok_matches_unlocked(es->script_hash,
+                                      "script_validate_log", bi->nHeight,
                                       bi->phashBlock, &ev->script_ok_hash))
         return false;
 
     bool found = false;
-    if (!log_ok_unlocked(db, "body_persist_log", bi->nHeight, &found,
-                         &ev->body_ok))
+    if (!log_ok_unlocked(es->body_ok, "body_persist_log", bi->nHeight,
+                         &found, &ev->body_ok))
         return false;
     ev->body_ok = found && ev->body_ok;
 
     found = false;
-    if (!log_ok_unlocked(db, "proof_validate_log", bi->nHeight, &found,
-                         &ev->proof_ok))
+    if (!log_ok_unlocked(es->proof_ok, "proof_validate_log", bi->nHeight,
+                         &found, &ev->proof_ok))
         return false;
     ev->proof_ok = found && ev->proof_ok;
 
     found = false;
-    if (!log_ok_unlocked(db, "utxo_apply_log", bi->nHeight, &found,
-                         &ev->utxo_ok))
+    if (!log_ok_unlocked(es->utxo_ok, "utxo_apply_log", bi->nHeight,
+                         &found, &ev->utxo_ok))
         return false;
     ev->utxo_ok = found && ev->utxo_ok;
     return true;
@@ -192,33 +213,6 @@ static bool read_frontier_snapshot(sqlite3 *db,
         return false;
     }
 
-    int tip_cursor = -1;
-    if (!stage_repair_cursor_at_unlocked(db, "tip_finalize", &tip_cursor)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    int validate_headers_cursor = -1;
-    if (!stage_repair_cursor_at_unlocked(db, "validate_headers",
-                                         &validate_headers_cursor)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    int body_fetch_cursor = -1;
-    if (!stage_repair_cursor_at_unlocked(db, "body_fetch",
-                                         &body_fetch_cursor)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    int body_persist_cursor = -1;
-    if (!stage_repair_cursor_at_unlocked(db, "body_persist",
-                                         &body_persist_cursor)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-
     int32_t coins_applied = 0;
     bool coins_found = false;
     if (!coins_kv_get_applied_height(db, &coins_applied, &coins_found)) {
@@ -228,38 +222,41 @@ static bool read_frontier_snapshot(sqlite3 *db,
         return false;
     }
 
+    /* One read per stage cursor: the named indices below feed the result
+     * fields, every cursor feeds sweep_top. */
     static const char *const stages[] = {
-        "validate_headers",
-        "body_fetch",
-        "body_persist",
+        "validate_headers", /* [0] */
+        "body_fetch",       /* [1] */
+        "body_persist",     /* [2] */
         "script_validate",
         "proof_validate",
         "utxo_apply",
-        "tip_finalize",
+        "tip_finalize",     /* [6] */
     };
+    int cursors[sizeof(stages) / sizeof(stages[0])];
     int sweep_top = served_floor;
     for (size_t i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
-        int cursor = -1;
-        if (!stage_repair_cursor_at_unlocked(db, stages[i], &cursor)) {
+        cursors[i] = -1;
+        if (!stage_repair_cursor_at_unlocked(db, stages[i], &cursors[i])) {
             progress_store_tx_unlock();
             return false;
         }
-        if (cursor > 0 && cursor - 1 > sweep_top)
-            sweep_top = cursor - 1;
+        if (cursors[i] > 0 && cursors[i] - 1 > sweep_top)
+            sweep_top = cursors[i] - 1;
     }
 
     progress_store_tx_unlock();
 
     out->hstar = hstar;
     out->served_floor = served_floor;
-    out->validate_headers_cursor_before = validate_headers_cursor;
-    out->validate_headers_cursor_after = validate_headers_cursor;
-    out->body_fetch_cursor_before = body_fetch_cursor;
-    out->body_fetch_cursor_after = body_fetch_cursor;
-    out->body_persist_cursor_before = body_persist_cursor;
-    out->body_persist_cursor_after = body_persist_cursor;
-    out->tip_finalize_cursor_before = tip_cursor;
-    out->tip_finalize_cursor_after = tip_cursor;
+    out->validate_headers_cursor_before = cursors[0];
+    out->validate_headers_cursor_after = cursors[0];
+    out->body_fetch_cursor_before = cursors[1];
+    out->body_fetch_cursor_after = cursors[1];
+    out->body_persist_cursor_before = cursors[2];
+    out->body_persist_cursor_after = cursors[2];
+    out->tip_finalize_cursor_before = cursors[6];
+    out->tip_finalize_cursor_after = cursors[6];
     out->sweep_top = sweep_top;
     out->lowest_have_data_cleared = -1;
     out->lowest_validate_headers_refill_hole = -1;
@@ -305,6 +302,13 @@ static bool reconcile_block_index_flags(
     progress_store_tx_lock();
     zcl_mutex_lock(&ms->cs_main);
 
+    struct rf_evidence_stmts es;
+    if (!rf_evidence_stmts_prepare(db, &es)) {
+        zcl_mutex_unlock(&ms->cs_main);
+        progress_store_tx_unlock();
+        return false;
+    }
+
     bool ok = true;
     size_t iter = 0;
     struct block_index *bi = NULL;
@@ -313,13 +317,22 @@ static bool reconcile_block_index_flags(
             continue;
 
         struct rf_log_evidence ev;
-        if (!evidence_for_block_unlocked(db, bi, &ev)) {
+        if (!evidence_for_block_unlocked(&es, bi, &ev)) {
             ok = false;
             break;
         }
 
         bool changed = false;
-        bool readable = block_pos_readable_hash(bi, datadir);
+        /* Full-block read + rehash ONLY when the verdict can depend on it:
+         * the HAVE_DATA-set check needs it only with validate+body evidence
+         * present, the HAVE_DATA-clear check only when the flag is set. The
+         * set-then-clear interleave cannot misread the gate: the set fires
+         * only when `readable` just proved true, making the clear's
+         * !readable false. Everything else below never reads `readable`. */
+        bool readable = false;
+        if ((bi->nStatus & BLOCK_HAVE_DATA) ||
+            (ev.validate_ok_hash && ev.body_ok))
+            readable = block_pos_readable_hash(bi, datadir);
 
         if (ev.script_ok_hash &&
             (bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_SCRIPTS) {
@@ -365,6 +378,7 @@ static bool reconcile_block_index_flags(
                               "reducer_frontier_reconcile_light", out);
     }
 
+    rf_evidence_stmts_finalize(&es);
     zcl_mutex_unlock(&ms->cs_main);
     progress_store_tx_unlock();
     return ok;
@@ -394,6 +408,48 @@ static bool reconcile_tip_finalize_cursor(
         db, "tip_finalize", "L1", floor);
 }
 
+/* ── detect-path memo ───────────────────────────────────────────────────
+ * The reconcile-light Condition polls the dry-run every 5 s; on a stalled
+ * node each poll paid the full pipeline sweep (compute_hstar log walks,
+ * per-height evidence reads, hash-verified block reads) under the global
+ * locks. A dry-run against an unchanged store is deterministic, so the last
+ * CLEAN full-pipeline dry-run is cached keyed on sqlite3_total_changes64
+ * (any row write through the handle invalidates) and re-swept at least
+ * every RF_DETECT_MEMO_TTL_SECS to bound staleness from the two inputs the
+ * change counter cannot see: in-memory block_index flags mutated with no
+ * progress.kv write, and block-file bytes on disk. Engages ONLY on the
+ * progress_store_db() singleton, whose handle and change counter are stable
+ * for the process lifetime (a closed-and-reopened private db could replay
+ * both the pointer and the counter). Actionable, refused, or early-returned
+ * results are never cached; every apply run invalidates. Plain statics:
+ * detect and remedy both run on the serial condition-engine tick thread
+ * (the g_cursor_gap_warn convention); test callers are serial. */
+#define RF_DETECT_MEMO_TTL_SECS 60
+static struct {
+    bool valid;
+    int64_t swept_unix;
+    int64_t total_changes;
+    struct stage_reducer_frontier_reconcile_result result;
+} g_detect_memo;
+
+/* Cache only a result the Condition treats as fully quiet: no repair, no
+ * refusal, and none of the repair-evidence side channels that
+ * repair_evidence_pending() (the Condition's gate-loudness probe) reads. */
+static bool rf_result_clean(
+    const struct stage_reducer_frontier_reconcile_result *r)
+{
+    return !r->repaired &&
+           !r->refused_coin_tear &&
+           !r->refused_coin_unknown &&
+           !r->value_overflow_repair_attempted &&
+           !r->value_overflow_repair_owner_refused &&
+           !r->stale_script_repair_attempted &&
+           !r->coin_backfill_attempted &&
+           !r->coin_backfill_owner_refused &&
+           r->tipfin_backfill_count == 0 &&
+           r->tipfin_backfill_refused_reason == 0;
+}
+
 static bool reducer_frontier_reconcile_light_impl(
     sqlite3 *db,
     struct main_state *ms,
@@ -406,6 +462,25 @@ static bool reducer_frontier_reconcile_light_impl(
         LOG_FAIL("stage_repair", "reducer_frontier_reconcile: NULL db");
     if (!ms)
         LOG_FAIL("stage_repair", "reducer_frontier_reconcile: NULL main_state");
+
+    bool memo_eligible = db == progress_store_db();
+    if (apply) {
+        /* The repair may mutate flags/cursors/logs; never serve a result
+         * captured before it (failed applies invalidate too — safe side). */
+        g_detect_memo.valid = false;
+    } else if (memo_eligible && g_detect_memo.valid &&
+               sqlite3_total_changes64(db) == g_detect_memo.total_changes &&
+               platform_time_wall_unix() - g_detect_memo.swept_unix <
+                   RF_DETECT_MEMO_TTL_SECS) {
+        if (out)
+            *out = g_detect_memo.result;
+        return true;
+    }
+    /* Sampled BEFORE the sweep: a write racing the sweep moves the counter
+     * past this sample, so the next dry-run misses the memo and re-sweeps. */
+    int64_t changes_at_entry =
+        memo_eligible ? sqlite3_total_changes64(db) : 0;
+    g_detect_memo.valid = false;
 
     struct stage_reducer_frontier_reconcile_result local;
     memset(&local, 0, sizeof(local));
@@ -578,6 +653,15 @@ static bool reducer_frontier_reconcile_light_impl(
                  (int)local.pre_refusal_unapplied_clamp,
                  local.tipfin_backfill_height,
                  local.tipfin_backfill_count);
+    }
+
+    /* Only this terminal exit caches: every early return above is an
+     * actionable/abnormal state the next tick must re-derive fresh. */
+    if (!apply && memo_eligible && rf_result_clean(&local)) {
+        g_detect_memo.valid = true;
+        g_detect_memo.swept_unix = platform_time_wall_unix();
+        g_detect_memo.total_changes = changes_at_entry;
+        g_detect_memo.result = local;
     }
 
     if (out)
