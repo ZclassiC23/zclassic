@@ -376,8 +376,8 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         } else {
             /* boot's later multi-pass nChainTx propagation still runs;
              * work/skip recompute is what we lose — log it. */
-            fprintf(stderr, "block_index_flat: forward-pass alloc failed "
-                    "(%u entries) — chain stats may be stale\n", count);
+            LOG_WARN("block_index_flat", "block_index_flat: forward-pass alloc failed "
+                     "(%u entries) — chain stats may be stale", count);
         }
     }
 
