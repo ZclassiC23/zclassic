@@ -12,8 +12,12 @@
  * keys, and BIP32 extended keys (xpub/xprv).
  *
  * Pure: no clock, no RNG, no I/O, no globals beyond `const` lookup
- * tables. Bounded VLAs sized from input length (caller controls
- * input size). The codec is deterministic and replayable.
+ * tables. Internal VLAs are sized from input length AND hard-capped:
+ * decode rejects strings over 1023 chars, encode rejects payloads
+ * over 1 KB, so neither direction lets an attacker-sized input
+ * exhaust the stack. Every Bitcoin/Zclassic address and key family
+ * is tens of bytes — far inside the cap. The codec is deterministic
+ * and replayable.
  *
  * Behavioral notes (preserved from the legacy lib/encoding code):
  *

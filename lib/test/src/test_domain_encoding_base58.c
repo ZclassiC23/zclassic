@@ -240,6 +240,23 @@ int test_domain_encoding_base58(void)
         }
     }
 
+    /* Stack-VLA caps: oversized payloads are rejected on both encode
+     * paths; the largest legitimate inputs stay far inside the cap. */
+    {
+        static unsigned char big[1025];
+        for (size_t i = 0; i < sizeof big; i++) big[i] = (unsigned char)(i | 1);
+        static char enc[2048];
+        size_t enc_len = 0;
+        B58_CHECK("encode rejects payload over 1 KB",
+                  !domain_encoding_base58_encode(big, 1025, enc, sizeof enc, &enc_len));
+        B58_CHECK("encode accepts payload at the 1 KB cap",
+                  domain_encoding_base58_encode(big, 1024, enc, sizeof enc, &enc_len));
+        B58_CHECK("base58check encode rejects payload over the cap",
+                  !domain_encoding_base58check_encode(big, 1021, enc, sizeof enc, &enc_len));
+        B58_CHECK("base58check encode accepts payload at the cap",
+                  domain_encoding_base58check_encode(big, 1020, enc, sizeof enc, &enc_len));
+    }
+
     /* (6) Whitespace handling preserved. */
     {
         unsigned char dec[16];

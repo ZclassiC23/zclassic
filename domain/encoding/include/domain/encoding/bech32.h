@@ -22,7 +22,11 @@
  * lib/encoding/ (still TODO if you need them).
  *
  * Pure: no clock, no RNG, no I/O, no globals beyond `const` tables.
- * Bounded VLAs sized from the (caller-controlled) input length.
+ * Internal VLAs are sized from input length AND hard-capped: decode
+ * rejects strings over 1023 chars, encode rejects anything that would
+ * produce a string over 1023 chars (symmetric — a string our own
+ * decoder rejects is not worth building), so neither direction lets
+ * an attacker-sized input exhaust the stack.
  *
  * Behavioral notes (preserved exactly from the legacy code):
  *

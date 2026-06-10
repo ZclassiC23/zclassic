@@ -21,6 +21,13 @@ static const char base58_chars[] =
 bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
                                    char *out, size_t out_size, size_t *out_len)
 {
+    /* Bound the stack VLA below: every legitimate encode input (addresses,
+     * WIF keys, BIP32 extended keys) is tens of bytes; mirror the decode
+     * side's 1023-char cap rather than let a caller-sized payload exhaust
+     * the stack. */
+    if (data_len > 1024)
+        return false;
+
     const unsigned char *pbegin = data;
     const unsigned char *pend = data + data_len;
 
@@ -140,6 +147,11 @@ bool domain_encoding_base58_decode(const char *psz,
 bool domain_encoding_base58check_encode(const unsigned char *data, size_t data_len,
                                         char *out, size_t out_size, size_t *out_len)
 {
+    /* Same 1 KB stack-VLA bound as base58_encode (which would reject
+     * data_len + 4 anyway); check here so the buf VLA is born bounded. */
+    if (data_len > 1020)
+        return false;
+
     unsigned char buf[data_len + 4];
     memcpy(buf, data, data_len);
     unsigned char hash[32];
