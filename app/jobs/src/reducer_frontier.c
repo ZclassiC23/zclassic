@@ -13,10 +13,12 @@
 #include "jobs/reducer_frontier.h"
 
 #include "chain/checkpoints.h"
+#include "platform/time_compat.h"
 #include "storage/coins_kv.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -360,14 +362,39 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
 
     /* C4 diagnostic — coins frontier vs H*. coins_applied_height > H* is a
      * possible coin tear (L2 domain); do NOT lower H* here. Absent key ==
-     * unknown frontier; that is not a defect for L0. */
+     * unknown frontier; that is not a defect for L0. The WARN is de-stormed
+     * (tip_finalize_stage idiom): a persistent tear fires identically every
+     * pass, so emit on first occurrence / pair change (reporting the prior
+     * pair's suppressed count) or as a 300 s keep-alive with the running
+     * count. The caller holds progress_store_tx_lock(); atomics keep the
+     * counters torn-read-safe regardless. */
     int32_t coins_applied = 0;
     bool coins_found = false;
     if (coins_kv_get_applied_height(progress_db, &coins_applied, &coins_found)
         && coins_found && coins_applied > hs + 1) {
-        LOG_WARN("reducer",
-                 "coins_applied=%d > hstar_cursor=%d (possible coin tear)",
-                 coins_applied, hs + 1);
+        static _Atomic uint64_t last_pair = UINT64_MAX;  /* none seen yet */
+        static _Atomic uint64_t repeat_count = 0;
+        static _Atomic int64_t  last_log_unix = 0;
+        uint64_t pair = ((uint64_t)(uint32_t)coins_applied << 32)
+                        | (uint32_t)hs;
+        int64_t now = platform_time_wall_unix();
+        uint64_t reps;
+        bool emit;
+        if (atomic_exchange(&last_pair, pair) != pair) {
+            reps = atomic_exchange(&repeat_count, 0);  /* prior pair's count */
+            atomic_store(&last_log_unix, now);
+            emit = true;
+        } else {
+            reps = atomic_fetch_add(&repeat_count, 1) + 1;
+            emit = now - atomic_load(&last_log_unix) >= 300;
+            if (emit)
+                atomic_store(&last_log_unix, now);
+        }
+        if (emit)
+            LOG_WARN("reducer",
+                     "coins_applied=%d > hstar_cursor=%d (possible coin tear)"
+                     " repeated=%llu",
+                     coins_applied, hs + 1, (unsigned long long)reps);
     }
 
     /* HARD GUARD — never rewind across finality. */

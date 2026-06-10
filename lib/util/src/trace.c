@@ -53,6 +53,26 @@ bool trace_is_enabled(void)
     return g_trace_enabled;
 }
 
+/* Fast successful spans are dropped at trace_end() unless verbose tracing
+ * is requested: status==OK spans under this duration are pure log volume
+ * (rpc.dispatch alone was ~40% of the live log at INFO). Non-OK and slow
+ * spans ALWAYS emit. */
+#define TRACE_FAST_OK_SPAN_US 10000
+
+static bool trace_verbose(void)
+{
+    /* Env-flag idiom (alerts.c ZCL_ALERTS_DISABLE); resolved once —
+     * trace_end() is hot-path so getenv() must not run per span. */
+    static _Atomic int cached = -1;
+    int v = cached;
+    if (v < 0) {
+        const char *env = getenv("ZCL_TRACE_VERBOSE");
+        v = (env && strcmp(env, "1") == 0) ? 1 : 0;
+        cached = v;
+    }
+    return v == 1;
+}
+
 /* ── Thread-local span stack ───────────────────────────────── */
 
 #define TRACE_STACK_MAX 8
@@ -170,6 +190,15 @@ void trace_end(struct trace_span *s)
                 break;
             }
         }
+    }
+
+    /* Drop fast successful spans (after the stack pop above so parentage
+     * stays correct). A slow child forces its same-thread parent to be slow
+     * too, so emitted children keep their emitted ancestors. */
+    if (s->status == TRACE_STATUS_OK &&
+        duration_us < TRACE_FAST_OK_SPAN_US && !trace_verbose()) {
+        free(s);
+        return;
     }
 
     /* Build attributes JSON fragment */

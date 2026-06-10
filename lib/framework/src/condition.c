@@ -59,8 +59,50 @@ static int condition_find_locked(const char *name)
     return -1;
 }
 
+/* Operator pages escalate per active episode (60s -> 120s -> ... -> 3600s
+ * cap) instead of repaging every 60s forever. Ladder state lives in a
+ * parallel array keyed by condition_state pointer (registrations are static
+ * module objects, never freed; the public struct stays frozen). Slots are
+ * claimed and advanced only on the engine tick thread; the reset path only
+ * rewinds an existing slot, so the lock-free scan is safe. */
+#define COND_PAGE_BASE_SECS 60
+#define COND_PAGE_CAP_SECS 3600
+
+struct page_ladder {
+    const struct condition_state *owner;
+    _Atomic int interval_secs;  /* required gap before the NEXT page */
+    _Atomic int pages;          /* pages emitted this active episode */
+};
+static struct page_ladder g_page_ladders[CONDITION_MAX_REGISTRY];
+
+static struct page_ladder *page_ladder_for(const struct condition_state *s,
+                                           bool create)
+{
+    for (int i = 0; i < CONDITION_MAX_REGISTRY; i++) {
+        if (g_page_ladders[i].owner == s)
+            return &g_page_ladders[i];
+    }
+    if (!create)
+        return NULL;
+    for (int i = 0; i < CONDITION_MAX_REGISTRY; i++) {
+        if (!g_page_ladders[i].owner) {
+            atomic_store(&g_page_ladders[i].interval_secs,
+                         COND_PAGE_BASE_SECS);
+            atomic_store(&g_page_ladders[i].pages, 0);
+            g_page_ladders[i].owner = s;
+            return &g_page_ladders[i];
+        }
+    }
+    return NULL;  /* full (mirrors CONDITION_MAX_REGISTRY); caller uses base */
+}
+
 static void condition_state_reset(struct condition_state *s)
 {
+    struct page_ladder *pl = page_ladder_for(s, false);
+    if (pl) {
+        atomic_store(&pl->interval_secs, COND_PAGE_BASE_SECS);
+        atomic_store(&pl->pages, 0);
+    }
     atomic_store(&s->first_detect_unix, 0);
     atomic_store(&s->last_poll_unix, 0);
     atomic_store(&s->last_remedy_unix, 0);
@@ -251,16 +293,38 @@ static void condition_tick_one(const struct condition *cond, int64_t now)
 
     int max_attempts = cond->max_attempts > 0 ? cond->max_attempts : 1;
     if (atomic_load(&s->attempts) >= max_attempts) {
+        struct page_ladder *pl = page_ladder_for(s, true);
+        int interval = pl ? atomic_load(&pl->interval_secs)
+                          : COND_PAGE_BASE_SECS;
         int64_t last_page = atomic_load(&s->last_operator_needed_unix);
-        if (last_page == 0 || now - last_page >= 60) {
+        if (last_page == 0 || now - last_page >= interval) {
             atomic_store(&s->last_operator_needed_unix, now);
             atomic_store(&s->operator_needed_emitted, true);
+            /* Escalate the repage gap: next = min(last*2, cap). The first
+             * page of an episode emits immediately and keeps the base gap. */
+            int next = interval;
+            if (last_page != 0) {
+                next = interval * 2;
+                if (next > COND_PAGE_CAP_SECS)
+                    next = COND_PAGE_CAP_SECS;
+            }
+            int page_n = 1;
+            if (pl) {
+                atomic_store(&pl->interval_secs, next);
+                page_n = atomic_fetch_add(&pl->pages, 1) + 1;
+            }
+            long long active_for =
+                (long long)(now - atomic_load(&s->first_detect_unix));
             fprintf(stderr,  // obs-ok:condition-operator-paired
-                    "[condition_engine] operator_needed name=%s attempts=%d\n",
-                    cond->name, atomic_load(&s->attempts));
+                    "[condition_engine] operator_needed name=%s attempts=%d"
+                    " active_for=%llds page=%d next_page_in=%ds\n",
+                    cond->name, atomic_load(&s->attempts),
+                    active_for, page_n, next);
             event_emitf(EV_OPERATOR_NEEDED, 0,
-                        "condition=%s attempts=%d",
-                        cond->name, atomic_load(&s->attempts));
+                        "condition=%s attempts=%d active_for=%llds page=%d"
+                        " next_page_in=%ds",
+                        cond->name, atomic_load(&s->attempts),
+                        active_for, page_n, next);
         }
     }
 }
@@ -368,6 +432,11 @@ void condition_reset_state(struct condition *c)
     if (!c)
         return;
     struct condition_state *s = &c->state;
+    struct page_ladder *pl = page_ladder_for(s, false);
+    if (pl) {
+        atomic_store(&pl->interval_secs, COND_PAGE_BASE_SECS);
+        atomic_store(&pl->pages, 0);
+    }
     atomic_store(&s->attempts, 0);
     atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
     atomic_store(&s->currently_active, false);
@@ -380,6 +449,9 @@ void condition_engine_reset_for_testing(void)
     for (int i = 0; i < g_condition_count; i++)
         condition_state_reset((struct condition_state *)&g_conditions[i]->state);
     memset(g_conditions, 0, sizeof(g_conditions));
+    /* Drop ladder slots too: test fixtures re-register conditions and the
+     * 64-slot map must not fill with stale owners across resets. */
+    memset(g_page_ladders, 0, sizeof(g_page_ladders));
     g_condition_count = 0;
     g_main_state = NULL;
     pthread_mutex_unlock(&g_condition_mu);
