@@ -1,0 +1,103 @@
+# Automated security review on every pull request.
+#
+# Runs tools/scripts/pr_security_scan.sh against the PR diff — consensus
+# divergence from zclassicd (the parity guard), supply-chain execution,
+# committed secrets, and dangerous C calls — posts the verdict as a PR
+# comment, and FAILS the check on any high-severity finding. The goal is
+# fast, friendly contributor service: every PR gets an immediate, clear
+# security read.
+#
+# It is intentionally build-free (pure shell/grep/awk + the static gate
+# scripts), so it is fast and reliable on any runner. The full build +
+# test suite (`make ci`) runs separately.
+name: PR Security Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to scan"
+        required: true
+      autofix:
+        description: "Also run --fix and upload the patch (true/false)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve base/head
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+            echo "num=${{ github.event.pull_request.number }}"     >> "$GITHUB_OUTPUT"
+          else
+            N="${{ github.event.inputs.pr }}"
+            echo "base=$(gh pr view "$N" --json baseRefOid -q .baseRefOid)" >> "$GITHUB_OUTPUT"
+            echo "head=$(gh pr view "$N" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
+            echo "num=$N" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run security scan
+        id: scan
+        run: |
+          git fetch --no-tags origin "${{ steps.refs.outputs.base }}" "${{ steps.refs.outputs.head }}" 2>/dev/null || true
+          set +e
+          bash tools/scripts/pr_security_scan.sh "${{ steps.refs.outputs.base }}" "${{ steps.refs.outputs.head }}" > /tmp/scan.txt 2>&1
+          echo $? > /tmp/scan.code
+          cat /tmp/scan.txt
+          echo "code=$(cat /tmp/scan.code)" >> "$GITHUB_OUTPUT"
+
+      - name: Optional --fix patch
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.autofix == 'true'
+        run: |
+          git fetch --no-tags origin "${{ steps.refs.outputs.head }}" && git checkout -q "${{ steps.refs.outputs.head }}"
+          bash tools/scripts/pr_security_scan.sh --fix "${{ steps.refs.outputs.base }}" "${{ steps.refs.outputs.head }}" || true
+          git diff > /tmp/autofix.patch || true
+          if [ -s /tmp/autofix.patch ]; then echo "autofix produced a patch:"; cat /tmp/autofix.patch; fi
+
+      - name: Upload autofix patch
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.autofix == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-autofix-patch
+          path: /tmp/autofix.patch
+          if-no-files-found: ignore
+
+      - name: Comment verdict
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "## 🔒 Automated security review"
+            echo
+            echo '```'
+            cat /tmp/scan.txt
+            echo '```'
+            echo
+            echo "_Scan: consensus-parity (vs zclassicd) · supply-chain · secrets · dangerous calls._"
+            echo "_Source: \`tools/scripts/pr_security_scan.sh\` · policy: \`docs/CONSENSUS_PARITY_DOCTRINE.md\`._"
+          } > /tmp/comment.md
+          gh pr comment "${{ steps.refs.outputs.num }}" --repo "${{ github.repository }}" --body-file /tmp/comment.md || true
+
+      - name: Enforce (fail on high-severity)
+        if: steps.scan.outputs.code != '0'
+        run: |
+          echo "::error::Security scan found high-severity issue(s) — see the PR comment / log above."
+          exit 1
