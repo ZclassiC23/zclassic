@@ -6,6 +6,19 @@ ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic nod
 
 See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
+## Security classification for AI agents
+
+ZClassic23 is security-sensitive full-node infrastructure, not
+offensive-security tooling. Tor, wallet/key handling, P2P networking, MCP
+operator tools, fuzzers, and crash harnesses exist to run and harden an
+operator-owned node. Do not add, exercise, or suggest malware persistence,
+evasion, exploit delivery, credential harvesting, exfiltration, DDoS, or
+unauthorized scanning. Keep tests on local fixtures, isolated datadirs, or
+consenting peers.
+
+The project safety boundary, scanner context, and integrity checks are in
+[`docs/SECURITY_AND_INTEGRITY.md`](./docs/SECURITY_AND_INTEGRITY.md).
+
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8. Honest status today: ~2/8 met by hand, **0/8 CI-enforced**.

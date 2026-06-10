@@ -17,6 +17,12 @@ finalizing forward, and the v1 acceptance criteria in
 [`docs/MVP.md`](docs/MVP.md) are not yet met. Do not rely on this build as a
 mainnet node until they are.
 
+This is security-sensitive full-node software, not offensive-security tooling.
+Some components can look high-risk to generic scanners because the node embeds
+Tor, exposes local operator APIs, manages wallet keys, and contains fuzz/chaos
+harnesses. The safety boundary and concrete integrity checks are documented in
+[`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
+
 ## What is this?
 
 A complete rewrite of zclassicd in pure C23. Every node is simultaneously:
@@ -80,7 +86,7 @@ make lint           # defensive-coding gates (see docs/DEFENSIVE_CODING.md)
 
 Other targets: `make zcl-rpc` (CLI RPC client), `make zcl-nodectl` (node
 lifecycle tool), `make deploy` (install the systemd user service),
-`make ci` (lint + full suite, what CI runs).
+`make ci` (local full gate: lint + tests + MVP slices + fuzz where available).
 
 ### Run
 
@@ -119,6 +125,11 @@ Restart Claude Code and the tools appear automatically. The daily drivers:
 Wallet, mining, ZNAM, ZMSG, swaps, metrics, and admin operations are typed
 tools too — see the MCP section of [`CLAUDE.md`](CLAUDE.md) for the full
 reference.
+
+The MCP server is an operator interface. In the default `-mcp` mode it runs on
+stdio for a local client; destructive tools are explicit in the route table and
+middleware-gated, and diagnostic SQL is SELECT-only and rate-limited. Do not
+expose RPC or MCP transports to untrusted clients.
 
 ## Architecture
 
@@ -173,12 +184,12 @@ zclassic23 binary (~15 MB, statically linked)
   logs context, every allocation is checked, every long-running loop is
   registered with a supervisor liveness tree.
 - **Tests** — 860+ test cases across 333 test files (`make test`), run as
-  ~380 parallel suites in CI. Bugs become 64-bit seeds in a deterministic
-  simulator (`docs/CHAOS_HARNESS.md`).
-- **CI** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml) gates
-  every push on `make ci` (lint → bench regression → tests → hermetic MVP
-  gates) plus real-process MVP proxies and a cross-runner byte-for-byte
-  reproducible-build check.
+  ~380 parallel suites by `test_parallel`. Bugs become 64-bit seeds in a
+  deterministic simulator (`docs/CHAOS_HARNESS.md`).
+- **Local gates** — `make lint` and `make ci` are the required integrity gates
+  for this checkout. The contributor policy documents maintainer-run CI outside
+  GitHub Actions; do not treat hosted push/PR automation as present unless a
+  workflow file is added.
 - **Reproducible builds** — byte-identical, with optional GPG signing
   (`tools/release.sh`).
 
@@ -189,9 +200,12 @@ measurements from a healthy sync, not current guarantees).
 
 ## Security
 
+Start with [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md)
+for the project's safety boundary, scanner context, local gates, MCP controls,
+release-integrity checks, and reviewer checklist.
+
 A third-party security audit was received and triaged in June 2026; the
-point-by-point response — what was fixed, what was refuted, and why — is
-in
+point-by-point response — what was fixed, what was refuted, and why — is in
 [`docs/work/security-audit-response-2026-06-09.md`](docs/work/security-audit-response-2026-06-09.md).
 Known soft spots are stated plainly there and in the status notice above
 (e.g. off-chain ZMSG is plaintext on the wire).

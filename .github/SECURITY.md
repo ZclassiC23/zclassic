@@ -12,6 +12,17 @@ Known soft spots are stated plainly in the README status section and in
 the audit disposition below (for example: off-chain ZMSG P2P messages
 are currently plaintext on the wire).
 
+## Safety and integrity model
+
+ZClassic23 is security-sensitive full-node software, not offensive-security
+tooling. The repository contains Tor, wallet/key handling, P2P networking,
+MCP operator tools, fuzzers, and crash harnesses because those are required to
+run, inspect, and harden an operator-owned node.
+
+The safety boundary, scanner context, local gates, MCP controls, release
+integrity checks, and reviewer checklist are documented in
+[`docs/SECURITY_AND_INTEGRITY.md`](../docs/SECURITY_AND_INTEGRITY.md).
+
 ## Reporting a vulnerability
 
 Please report vulnerabilities **privately** via GitHub security

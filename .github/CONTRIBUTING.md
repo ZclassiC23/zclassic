@@ -16,7 +16,7 @@ make                     # test_zcl + zclassic23 + zclassic-cli
 make test                # full test suite
 make lint                # defensive-coding gates (must be clean)
 make t ONLY=<group>      # one parallel test group, e.g. make t ONLY=service_state_driver
-make ci                  # lint + full suite — what CI runs on every push
+make ci                  # local full gate: lint + tests + MVP slices + fuzz where available
 ```
 
 `make t ONLY=<group>` is the inner loop: it rebuilds the harness and runs
@@ -27,7 +27,7 @@ only the matching group(s) of the parallel suite. Never run the full
 
 [`docs/DEFENSIVE_CODING.md`](../docs/DEFENSIVE_CODING.md) is mandatory
 reading before writing any code. The rules are enforced by the compiler
-and by the `make lint` gates (CI runs lint before tests), not by review
+and by the `make lint` gates (`make ci` runs lint before tests), not by review
 goodwill. The core of the contract:
 
 - **Every `node.db` write goes through the ActiveRecord lifecycle** —
