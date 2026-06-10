@@ -186,8 +186,12 @@ FILE *open_disk_file(const char *datadir,
 
     /* Cache read-only handles for sequential access */
     if (read_only) {
-        /* Close previous cached handle if different file */
-        if (g_cached_file && g_cached_nfile != pos->nFile)
+        /* Close any previous cached handle. Reaching here means the
+         * cache-hit test above missed, so the cached handle (if any) is
+         * for a different (nFile, prefix) pair — note blk and rev files
+         * share numbers, so comparing nFile alone would leak the old
+         * handle when only the prefix differs. */
+        if (g_cached_file)
             fclose(g_cached_file);
         g_cached_file = file;
         g_cached_nfile = pos->nFile;

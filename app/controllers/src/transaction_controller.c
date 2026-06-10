@@ -70,34 +70,41 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
         ctx->main_state->fTxIndex) {
         struct disk_tx_pos pos;
         if (block_tree_db_read_tx_index(g_active_block_tree, &hash, &pos)) {
-            disk_block_io_lock();
-            FILE *f = open_block_file(ctx->datadir, &pos.block_pos, true);
-            if (f) {
-                unsigned char hdr_buf[256];
-                size_t hdr_read = fread(hdr_buf, 1, sizeof(hdr_buf), f); // disk-io-lock: held
-                if (hdr_read > 0) {
-                    struct byte_stream hs;
-                    stream_init_from_data(&hs, hdr_buf, hdr_read);
-                    struct block_header bh;
-                    block_header_deserialize(&bh, &hs);
-                    block_header_get_hash(&bh, &hash_block);
-                }
-                fseek(f, (long)pos.block_pos.nPos + (long)pos.nTxOffset,
-                      SEEK_SET);
-                unsigned char tx_buf[2 * 1024 * 1024];
-                size_t tx_read = fread(tx_buf, 1, sizeof(tx_buf), f); // disk-io-lock: held
-                disk_block_io_release_handle(f);
-                disk_block_io_unlock();
-                if (tx_read > 0) {
-                    struct byte_stream ts;
-                    stream_init_from_data(&ts, tx_buf, tx_read);
-                    transaction_free(&tx);
-                    transaction_init(&tx);
-                    if (transaction_deserialize(&tx, &ts))
-                        found = true;
+            /* pread-based reads: no shared FILE* cache, no lock, and no
+             * silently-unchecked fseek — each read names its absolute
+             * position. */
+            unsigned char hdr_buf[256];
+            ssize_t hdr_read = disk_block_pread(ctx->datadir, &pos.block_pos,
+                                                "blk", hdr_buf,
+                                                sizeof(hdr_buf));
+            if (hdr_read > 0) {
+                struct byte_stream hs;
+                stream_init_from_data(&hs, hdr_buf, (size_t)hdr_read);
+                struct block_header bh;
+                block_header_deserialize(&bh, &hs);
+                block_header_get_hash(&bh, &hash_block);
+            }
+            struct disk_block_pos tx_pos = pos.block_pos;
+            if (pos.nTxOffset <= UINT32_MAX - tx_pos.nPos) {
+                tx_pos.nPos += pos.nTxOffset;
+                const size_t tx_cap = 2 * 1024 * 1024;
+                unsigned char *tx_buf = zcl_malloc(tx_cap, "rawtx disk read");
+                if (tx_buf) {
+                    ssize_t tx_read = disk_block_pread(ctx->datadir, &tx_pos,
+                                                       "blk", tx_buf, tx_cap);
+                    if (tx_read > 0) {
+                        struct byte_stream ts;
+                        stream_init_from_data(&ts, tx_buf, (size_t)tx_read);
+                        transaction_free(&tx);
+                        transaction_init(&tx);
+                        if (transaction_deserialize(&tx, &ts))
+                            found = true;
+                    }
+                    free(tx_buf);
                 }
             } else {
-                disk_block_io_unlock();
+                LOG_WARN("rawtx", "txindex offset overflow (nPos=%u nTxOffset=%u)",
+                         pos.block_pos.nPos, pos.nTxOffset);
             }
         }
     }
