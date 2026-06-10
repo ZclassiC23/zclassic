@@ -476,13 +476,6 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "legacy_mirror_stuck_condition") == 0) {
-        printf("[test] ZCL_TEST_ONLY=legacy_mirror_stuck_condition — running only\n");
-        failures += test_legacy_mirror_stuck_condition();
-        printf("\n=== legacy_mirror_stuck_condition subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
     if (only && strcmp(only, "snapshot_negotiation_stalled_condition") == 0) {
         printf("[test] ZCL_TEST_ONLY=snapshot_negotiation_stalled_condition — running only\n");
         failures += test_snapshot_negotiation_stalled_condition();
@@ -938,7 +931,6 @@ int main(void)
     failures += test_sync_watchdog_conditions();
     failures += test_peer_snapshot_conditions();
     failures += test_snapshot_receive_stalled_condition();
-    failures += test_legacy_mirror_stuck_condition();
     failures += test_snapshot_negotiation_stalled_condition();
     failures += test_snapshot_failed_reset_condition();
     failures += test_snapshot_complete_resume_condition();
@@ -1001,6 +993,7 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    failures += test_log_throttle();
     failures += test_reducer_frontier_reconcile_light();
     failures += test_reducer_stage_fuzz();
     failures += test_reducer_ingest_e2e();

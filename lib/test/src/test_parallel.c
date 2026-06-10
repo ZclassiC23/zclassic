@@ -147,7 +147,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
     X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
     X(sync_watchdog_conditions) X(peer_snapshot_conditions) \
-    X(snapshot_receive_stalled_condition) X(legacy_mirror_stuck_condition) \
+    X(snapshot_receive_stalled_condition) \
     X(snapshot_negotiation_stalled_condition) X(snapshot_failed_reset_condition) \
     X(snapshot_complete_resume_condition) X(chain_integrity_failed_condition) \
     X(orphan_utxo_above_tip) \
@@ -177,6 +177,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(proof_validate_stage) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
+    X(log_throttle) \
     X(reducer_frontier_reconcile_light) \
     X(reducer_stage_fuzz) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \

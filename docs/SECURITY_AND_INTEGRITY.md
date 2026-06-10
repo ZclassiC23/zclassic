@@ -1,11 +1,12 @@
 # Security and Integrity Model
 
-ZClassic23 is security-sensitive infrastructure: a cryptocurrency full node,
-wallet, P2P server, onion-hosted explorer, and local MCP operator surface.
-Those pieces can look suspicious to generic scanners because they include
-network listeners, Tor, wallet/key code, fuzzers, crash harnesses, and agent
-tooling. This document states the actual boundary and the checks that make it
-auditable.
+ZClassic23's security model is built around operator ownership: one local
+full-node binary, explicit network listeners, private wallet state, an
+onion-hosted explorer, and a typed local MCP operator surface. Tor support
+publishes the operator's own service, wallet/key code stays inside the
+operator's datadir, and fuzz/chaos harnesses exercise isolated recovery paths.
+This document states the boundary, safeguards, and evidence that make those
+properties auditable.
 
 ## Current status
 
@@ -21,10 +22,10 @@ auditable.
   it records fixed findings, refuted findings with citations, deferred items,
   and deployment gates.
 
-## Authorized scope
+## Operator-owned scope
 
-This repository is for authorized operation and development of a ZClassic node
-and its local operator surfaces:
+This repository supports authorized operation and development of a ZClassic
+node and its local operator surfaces:
 
 - validating and serving the ZClassic P2P protocol;
 - running an operator-owned wallet, block explorer, onion service, and RPC/MCP
@@ -32,25 +33,17 @@ and its local operator surfaces:
 - testing this implementation with local unit tests, fuzzers, simulators,
   isolated regtest nodes, and consenting peers.
 
-This repository is not offensive-security tooling. Project code and workflows
-must not be used or extended for:
+All network, wallet, MCP, fuzz, and chaos workflows are scoped to resources the
+operator controls or has explicit permission to use. If a test needs a live
+process, peer, datadir, network, or wallet, use operator-owned resources,
+isolated fixtures, or consenting peers.
 
-- unauthorized access to systems or accounts;
-- credential harvesting, secret exfiltration, or covert collection;
-- malware persistence, evasion, exploit delivery, botnet control, or DDoS;
-- scanning, attacking, or stressing third-party services without explicit
-  authorization;
-- mining or running network services on systems without the owner's consent.
+## Security properties by component
 
-If a test needs a live process, peer, datadir, network, or wallet, the operator
-must control it or have explicit permission to use it.
-
-## Why high-signal components exist
-
-| Component | Legitimate purpose | Safety boundary |
-|-----------|--------------------|-----------------|
+| Component | Purpose | Safety boundary |
+|-----------|---------|-----------------|
 | Embedded Tor | Publish the operator's own explorer/API as a hidden service | `-tor` is explicit; test harnesses disable Tor |
-| P2P networking and peer scoring | Implement the public ZClassic node protocol | Peer policy is consensus/network defense, not attack tooling |
+| P2P networking and peer scoring | Implement the public ZClassic node protocol | Peer policy protects consensus and network health |
 | Wallet and key code | Local transparent/Sapling wallet operation | Diagnostics must not return private key material |
 | MCP tools | Local typed operator API for AI-assisted node operation | Destructive tools are explicit and middleware-gated |
 | `zcl_sql` | Incident-response inspection of local `node.db` | SELECT-only, semicolon-rejected, limited, and rate-gated |

@@ -9,6 +9,7 @@
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -37,11 +38,14 @@ static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_tear_bypass_warn_total = 0;
 
 /* FIX-5 peer-gate visibility memos. detect runs only on the serial
- * condition-engine tick thread, so these plain statics need no lock (the
- * g_cursor_gap_warn convention). */
+ * condition-engine tick thread, so these plain statics need no lock. The
+ * gate-suppress WARN is the shared log_throttle de-storm primitive, keyed on a
+ * single "active" token: log_throttle_reset() re-arms it when the suppression
+ * ends (so the next engagement emits immediately, reps=0), and a same-key
+ * keep-alive fires every 300 s carrying the suppressed-tick count. */
 static bool g_tear_bypass_active;
-static struct { bool active; uint64_t reps; int64_t last_log; }
-    g_gate_suppress;
+#define GATE_SUPPRESS_ACTIVE_KEY ((uint64_t)1)
+static struct log_throttle g_gate_suppress = LOG_THROTTLE_INIT;
 
 #ifdef ZCL_TESTING
 /* Test-only post-remedy hook: simulates the TIPFIN backfill bumping its
@@ -388,21 +392,14 @@ static void note_gate_suppressed(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {
     if (!repair_evidence_pending(db, rr)) {
-        g_gate_suppress.active = false;
-        g_gate_suppress.reps = 0;
+        log_throttle_reset(&g_gate_suppress);
         return;
     }
     int64_t now = platform_time_wall_unix();
-    if (!g_gate_suppress.active) {
-        g_gate_suppress.active = true;
-        g_gate_suppress.reps = 0;
-        g_gate_suppress.last_log = now;
-    } else {
-        g_gate_suppress.reps++;
-        if (now - g_gate_suppress.last_log < 300)
-            return;
-        g_gate_suppress.last_log = now;
-    }
+    uint64_t reps = 0;
+    if (!log_throttle_should_emit(&g_gate_suppress, GATE_SUPPRESS_ACTIVE_KEY,
+                                  now, 300, &reps))
+        return;
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] peer gate "
              "suppressed an actionable detect (repaired=%d "
@@ -414,7 +411,7 @@ static void note_gate_suppressed(
              rr->value_overflow_repair_attempted,
              rr->coin_backfill_owner_refused, rr->coin_backfill_attempted,
              rr->stale_script_repair_attempted,
-             (unsigned long long)g_gate_suppress.reps);
+             (unsigned long long)reps);
 }
 
 static bool detect_reducer_frontier_reconcile_light(void)
@@ -442,8 +439,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
          * noncanonical_found counts relabel/reorg-residue rows the
          * dry-run judged stale — the apply purge is the remedy. */
         g_tear_bypass_active = false;
-        g_gate_suppress.active = false;
-        g_gate_suppress.reps = 0;
+        log_throttle_reset(&g_gate_suppress);
         return false;
     }
 
@@ -461,8 +457,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
     } else {
         g_tear_bypass_active = false;
     }
-    g_gate_suppress.active = false;
-    g_gate_suppress.reps = 0;
+    log_throttle_reset(&g_gate_suppress);
 
     atomic_store(&g_local_height_at_detect,
                  active_chain_height(&ms->chain_active));
@@ -606,9 +601,7 @@ void reducer_frontier_reconcile_light_test_reset(void)
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_tear_bypass_warn_total, 0);
     g_tear_bypass_active = false;
-    g_gate_suppress.active = false;
-    g_gate_suppress.reps = 0;
-    g_gate_suppress.last_log = 0;
+    log_throttle_reset(&g_gate_suppress);
     g_test_post_remedy_hook = NULL;
     condition_reset_state(&c_reducer_frontier_reconcile_light);
     atomic_store(&s->last_remedy_unix, (int64_t)0);
