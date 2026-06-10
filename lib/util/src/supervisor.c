@@ -23,6 +23,7 @@
 #include "json/json.h"
 #include "util/thread_registry.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -258,6 +259,12 @@ static void sweep_once(void)
     pthread_mutex_unlock(&g_lock);
 
     for (int i = 0; i < n; i++) {
+        /* Shutdown gate: once process shutdown is requested, dispatch no
+         * further callbacks. A staged-sync on_tick drains validation work
+         * that can run for seconds and must not outlive the chainstate
+         * app_shutdown frees; the loop predicate alone cannot stop a
+         * sweep already in flight. */
+        if (thread_registry_shutdown_requested()) return;
         struct liveness_contract *c = snap[i];
         if (!c) continue;
 
@@ -359,19 +366,33 @@ void supervisor_stop(void)
     if (!atomic_load(&g_running)) return;
     atomic_store(&g_running, false);
 
-    /* Wait up to ~2 s for the loop to exit. Loop polls g_running and
-     * the global shutdown flag, so this is bounded by tick_ms. */
+    /* Join the loop. It polls g_running and the global shutdown flag
+     * between sweeps, and sweep_once dispatches no callbacks once
+     * shutdown is requested, so the wait is bounded by the one in-flight
+     * on_tick. On the shutdown path that tick can be a multi-second
+     * staged-sync drain reading the chainstate app_shutdown frees next —
+     * abandoning the thread there is a use-after-free, so keep re-arming
+     * the 2 s join with progress logs (the alarm() watchdog in
+     * app_shutdown_svc is the hard backstop for a truly hung tick).
+     * Non-shutdown callers (test teardown) keep the single ≤2 s attempt. */
     if (atomic_load(&g_thread_handle_set)) {
-        struct timespec deadline;
-        platform_time_realtime_timespec(&deadline);
-        deadline.tv_sec += 2;
-        int rc = pthread_timedjoin_np(g_thread_id, NULL, &deadline);
-        if (rc != 0) {
-            fprintf(stderr,  // obs-ok:pre-existing-diagnostic
-                "[supervisor] WARN supervisor_stop join rc=%d (thread still alive)\n",
-                rc);
-        } else {
-            atomic_store(&g_thread_handle_set, false);
+        for (;;) {
+            struct timespec deadline;
+            platform_time_realtime_timespec(&deadline);
+            deadline.tv_sec += 2;
+            int rc = pthread_timedjoin_np(g_thread_id, NULL, &deadline);
+            if (rc == 0) {
+                atomic_store(&g_thread_handle_set, false);
+                break;
+            }
+            if (rc != ETIMEDOUT || !thread_registry_shutdown_requested()) {
+                fprintf(stderr,  // obs-ok:pre-existing-diagnostic
+                    "[supervisor] WARN supervisor_stop join rc=%d (thread still alive)\n",
+                    rc);
+                break;
+            }
+            fprintf(stderr,  // obs-ok:shutdown-join-progress
+                "[supervisor] shutdown join: in-flight tick still draining; waiting\n");
         }
     }
 }

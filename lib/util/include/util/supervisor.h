@@ -174,8 +174,11 @@ void supervisor_set_progress_max_quiet(supervisor_child_id id,
  * spawning. Returns false if the thread could not be created. */
 bool supervisor_start(void);
 
-/* Request stop and join the supervisor thread (≤ 2 s timeout). Safe to
- * call without a prior start; safe to call multiple times. */
+/* Request stop and join the supervisor thread. Outside process shutdown
+ * the join gives up after ≤ 2 s; once shutdown is requested it keeps
+ * waiting (progress-logged) for the in-flight tick so a draining stage
+ * never outlives the chainstate app_shutdown frees. Safe to call without
+ * a prior start; safe to call multiple times. */
 void supervisor_stop(void);
 
 /* Test hook: configure the loop period (default 1000 ms). Tests that

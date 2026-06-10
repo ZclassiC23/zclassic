@@ -1670,14 +1670,9 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     zcl_service_kernel_reset(&svc->runtime_kernel);
     zcl_service_kernel_reset(&svc->network_kernel);
     zcl_service_kernel_reset(&svc->service_kernel);
-    wallet_free(svc->wallet);
-    tx_mempool_free(svc->mempool);
-    main_state_free(svc->state);
-    sapling_free_params();
-
-    /* Staged-sync shutdown order: bottom-up through the reducer pipeline so
-     * each stage's upstream is still alive while it drains in-flight work.
-     * tip_finalize reads from utxo_apply_log; tear it down first. */
+    /* Staged-sync shutdown order: bottom-up (a stage's upstream stays alive while it drains), and
+     * BEFORE the frees below — a straggler drain ticked after the join sweep must see cleared
+     * bindings, not freed chainstate. tip_finalize reads utxo_apply_log; tear it down first. */
     tip_finalize_stage_shutdown();
 
     /* utxo_apply reads from proof_validate_log; tear it down before
@@ -1707,6 +1702,11 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
      * finishes. */
     header_admit_stage_shutdown();
 
+    /* Stages quiesced; the state they read can go. proof_validate uses the Sapling params. */
+    wallet_free(svc->wallet);
+    tx_mempool_free(svc->mempool);
+    main_state_free(svc->state);
+    sapling_free_params();
     /* Graceful checkpoint and close of progress.kv. No-op if never opened. */
     progress_store_close();
 
