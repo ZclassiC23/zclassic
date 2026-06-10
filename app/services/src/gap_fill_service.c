@@ -10,6 +10,7 @@
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "net/download.h"
+#include "jobs/body_fetch_stage.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
@@ -161,6 +162,22 @@ static int gap_fill_pass(void)
     int tip_h = active_chain_height(&ms->chain_active);
     struct block_index *best = ms->pindex_best_header;
     int best_h = best ? best->nHeight : 0;
+
+    /* The refill window must start at the REDUCER FRONTIER, not the
+     * active tip. After a boot that restores the tip above the staged
+     * cursors (e.g. a hard kill cleared HAVE_DATA on the bodies the
+     * reducer still has to apply), body_fetch waits on heights BELOW
+     * the tip — and nothing else re-downloads below tip+1, so the
+     * pipeline wedges with the tip_finalize>utxo_apply cursor
+     * inversion (tracka 2026-06-10: tip=7253, frontier=6763, bodies
+     * 6764..7253 needed but only [7254..] ever queued). The download
+     * queue is height-sorted, so these lower heights also preempt the
+     * far-ahead tail automatically. */
+    {
+        uint64_t bf_cursor = body_fetch_stage_cursor();
+        if (bf_cursor > 0 && (int64_t)bf_cursor - 1 < (int64_t)tip_h)
+            tip_h = (int)bf_cursor - 1;
+    }
 
     if (!best || best_h <= tip_h) {
         zcl_mutex_unlock(&ms->cs_main);
