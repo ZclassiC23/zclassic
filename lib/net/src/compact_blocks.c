@@ -215,6 +215,91 @@ bool compact_block_from_block(struct compact_block_msg *cb,
 
 /* ── Reconstruction ────────────────────────────────────────────── */
 
+/* Short-id lookup table: open addressing, linear probe (same idiom as
+ * download.c's qset). Built once per cmpctblock so reconstruction costs
+ * O(sources + slots) SipHash instead of O(slots * sources) — a hostile
+ * peer must not be able to pin a core by pairing 50k short ids with a
+ * large mempool. src < num_mempool indexes mempool_txs; otherwise
+ * extra_txs[src - num_mempool]. */
+struct cb_sid_entry {
+    uint64_t sid;    /* 48-bit BIP152 short id */
+    size_t src;
+    uint8_t state;   /* 0=empty, 1=live, 2=ambiguous (short-id collision) */
+};
+
+/* Short ids are compared as the same 6 wire bytes compact_block_short_txid
+ * emits, packed LE, so table keys and wire targets agree by construction. */
+static uint64_t cb_sid_from_bytes(const uint8_t b[SHORT_TXID_LEN])
+{
+    uint64_t v = 0;
+    for (size_t i = 0; i < SHORT_TXID_LEN; i++)
+        v |= (uint64_t)b[i] << (8 * i);
+    return v;
+}
+
+static const struct transaction *cb_src_tx(size_t src,
+                                           const struct transaction *mempool_txs,
+                                           size_t num_mempool,
+                                           const struct transaction *extra_txs)
+{
+    return src < num_mempool ? &mempool_txs[src]
+                             : &extra_txs[src - num_mempool];
+}
+
+/* Table is sized to load factor <= 1/2, so probing always reaches an
+ * empty slot. BIP152: two distinct txs sharing a short id make the id
+ * ambiguous — mark it so lookup misses and the slot is fetched via
+ * getblocktxn instead of guessing (a first-match guess can reconstruct
+ * a wrong block that then fails validation). */
+static void cb_sid_insert(struct cb_sid_entry *tab, size_t slots,
+                          uint64_t sid, size_t src,
+                          const struct transaction *mempool_txs,
+                          size_t num_mempool,
+                          const struct transaction *extra_txs)
+{
+    size_t mask = slots - 1;
+    for (size_t i = 0; i < slots; i++) {
+        struct cb_sid_entry *e = &tab[(sid + i) & mask];
+        if (e->state == 0) {
+            e->sid = sid;
+            e->src = src;
+            e->state = 1;
+            return;
+        }
+        if (e->sid == sid) {
+            if (e->state == 1) {
+                const struct transaction *a =
+                    cb_src_tx(e->src, mempool_txs, num_mempool, extra_txs);
+                const struct transaction *b =
+                    cb_src_tx(src, mempool_txs, num_mempool, extra_txs);
+                if (memcmp(a->hash.data, b->hash.data, 32) != 0)
+                    e->state = 2;
+            }
+            return;
+        }
+    }
+}
+
+static bool cb_sid_lookup(const struct cb_sid_entry *tab, size_t slots,
+                          uint64_t sid, size_t *src_out)
+{
+    if (!tab || slots == 0)
+        return false;
+    size_t mask = slots - 1;
+    for (size_t i = 0; i < slots; i++) {
+        const struct cb_sid_entry *e = &tab[(sid + i) & mask];
+        if (e->state == 0)
+            return false;
+        if (e->sid == sid) {
+            if (e->state != 1)
+                return false;   /* ambiguous: resolve via getblocktxn */
+            *src_out = e->src;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool compact_block_reconstruct(const struct compact_block_msg *cb,
                                const struct transaction *mempool_txs,
                                size_t num_mempool_txs,
@@ -269,54 +354,60 @@ bool compact_block_reconstruct(const struct compact_block_msg *cb,
         filled[abs_idx] = true;
     }
 
-    /* Build a lookup table: short_txid → mempool tx index.
-     * Simple O(n*m) for now; sufficient for typical mempools. */
+    /* Hash mempool + extra short ids ONCE (table bounded by source
+     * count), then resolve each slot with an O(1) lookup. */
+    size_t num_sources = num_mempool_txs + num_extra_txs;
+    struct cb_sid_entry *sid_tab = NULL;
+    size_t sid_slots = 0;
+    if (num_sources > 0) {
+        sid_slots = 16;
+        while (sid_slots < num_sources * 2)
+            sid_slots <<= 1;
+        sid_tab = zcl_calloc(sid_slots, sizeof(*sid_tab), "compact_sid_table");
+        if (!sid_tab) {
+            free(filled);
+            block_free(out_block);
+            LOG_FAIL("compact", "alloc failed for %zu short-id slots", sid_slots);
+        }
+        for (size_t i = 0; i < num_sources; i++) {
+            const struct transaction *tx =
+                cb_src_tx(i, mempool_txs, num_mempool_txs, extra_txs);
+            uint8_t sidb[SHORT_TXID_LEN];
+            compact_block_short_txid(cb->siphash_key, &tx->hash, sidb);
+            cb_sid_insert(sid_tab, sid_slots, cb_sid_from_bytes(sidb), i,
+                          mempool_txs, num_mempool_txs, extra_txs);
+        }
+    }
+
     size_t short_idx = 0;
     for (size_t slot = 0; slot < total; slot++) {
         if (filled[slot])
             continue;
 
         if (short_idx >= cb->num_short_txids) {
+            free(sid_tab);
             free(filled);
             block_free(out_block);
             LOG_FAIL("compact", "ran out of short txids at slot %zu", slot);
         }
 
         const uint8_t *target = &cb->short_txids[short_idx * SHORT_TXID_LEN];
-        bool found = false;
-
-        /* Search mempool */
-        for (size_t mi = 0; mi < num_mempool_txs && !found; mi++) {
-            uint8_t sid[SHORT_TXID_LEN];
-            compact_block_short_txid(cb->siphash_key, &mempool_txs[mi].hash, sid);
-            if (memcmp(sid, target, SHORT_TXID_LEN) == 0) {
-                if (!transaction_copy(&out_block->vtx[slot], &mempool_txs[mi])) {
-                    free(filled);
-                    block_free(out_block);
-                    LOG_FAIL("compact", "failed to copy mempool tx %zu", mi);
-                }
-                filled[slot] = true;
-                found = true;
+        size_t src;
+        if (cb_sid_lookup(sid_tab, sid_slots, cb_sid_from_bytes(target), &src)) {
+            const struct transaction *tx =
+                cb_src_tx(src, mempool_txs, num_mempool_txs, extra_txs);
+            if (!transaction_copy(&out_block->vtx[slot], tx)) {
+                free(sid_tab);
+                free(filled);
+                block_free(out_block);
+                LOG_FAIL("compact", "failed to copy source tx %zu", src);
             }
-        }
-
-        /* Search extra txs */
-        for (size_t ei = 0; ei < num_extra_txs && !found; ei++) {
-            uint8_t sid[SHORT_TXID_LEN];
-            compact_block_short_txid(cb->siphash_key, &extra_txs[ei].hash, sid);
-            if (memcmp(sid, target, SHORT_TXID_LEN) == 0) {
-                if (!transaction_copy(&out_block->vtx[slot], &extra_txs[ei])) {
-                    free(filled);
-                    block_free(out_block);
-                    LOG_FAIL("compact", "failed to copy extra tx %zu", ei);
-                }
-                filled[slot] = true;
-                found = true;
-            }
+            filled[slot] = true;
         }
 
         short_idx++;
     }
+    free(sid_tab);
 
     /* Collect missing indices */
     size_t miss_count = 0;
