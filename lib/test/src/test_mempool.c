@@ -772,7 +772,7 @@ int test_mempool(void)
         bool ok = (ar == TX_ACCEPT_INVALID);
         ok = ok && (tx_mempool_size(&pool) == 0);
         ok = ok && (atomic_load(&node.misbehavior) ==
-                    (int)PEER_OFFENCE_INVALID_MESSAGE);
+                    peer_offence_weight(PEER_OFFENCE_INVALID_MESSAGE));
 
         transaction_free(&tx);
         coins_view_cache_free(&coins);
@@ -840,7 +840,7 @@ int test_mempool(void)
         ok = ok && (ar_b == TX_ACCEPT_CONFLICT);
         ok = ok && (tx_mempool_size(&pool) == 1);
         ok = ok && (atomic_load(&peer_b.misbehavior) ==
-                    (int)PEER_OFFENCE_INVALID_MESSAGE);
+                    peer_offence_weight(PEER_OFFENCE_INVALID_MESSAGE));
 
         transaction_free(&tx_a);
         transaction_free(&tx_b);

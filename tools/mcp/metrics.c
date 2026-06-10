@@ -62,7 +62,7 @@ static uint64_t             g_total_errors;
  * "other".  Bans are a single counter — splitting them by kind would
  * be misleading because peer_misbehaving() bans on cumulative score,
  * not on the offence that crossed the threshold. */
-#define MCP_METRICS_PEER_KINDS 7
+#define MCP_METRICS_PEER_KINDS 12
 static const char *const k_peer_kind_names[MCP_METRICS_PEER_KINDS] = {
     "timeout",
     "invalid_message",
@@ -70,6 +70,11 @@ static const char *const k_peer_kind_names[MCP_METRICS_PEER_KINDS] = {
     "invalid_header",
     "invalid_block",
     "unrequested",
+    "offer_rejected",
+    "invalid_payload",
+    "invalid_chunk",
+    "invalid_proof",
+    "protocol_violation",
     "other",
 };
 static uint64_t             g_peer_offences[MCP_METRICS_PEER_KINDS];

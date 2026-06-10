@@ -52,17 +52,31 @@
 struct net_manager;
 struct p2p_node;
 
-/* Canonical offence weights. The integer values ARE the score increment
- * — don't reorder without checking every call-site. */
+/* Canonical offence categories. Identities are sequential — the score
+ * increment lives in peer_offence_weight(), NOT in the enum value, so
+ * several distinctly-named offences can share a weight without the name
+ * lookup lying about the category. The weights are a DoS-policy surface:
+ * changing one changes ban behaviour — don't touch them casually. */
 enum peer_offence {
-    PEER_OFFENCE_NONE            = 0,
-    PEER_OFFENCE_TIMEOUT         = 5,   /* request timed out waiting for reply */
-    PEER_OFFENCE_INVALID_MESSAGE = 10,  /* malformed / undeserialisable */
-    PEER_OFFENCE_UNREQUESTED     = 10,  /* sent data we never asked for */
-    PEER_OFFENCE_FLOOD           = 20,  /* spamming inv / headers / tx */
-    PEER_OFFENCE_INVALID_HEADER  = 50,  /* bad header (PoW / merkle / timestamp) */
-    PEER_OFFENCE_INVALID_BLOCK   = 100, /* full block failed consensus */
+    PEER_OFFENCE_NONE = 0,
+    PEER_OFFENCE_TIMEOUT,            /*   5 — request timed out waiting for reply */
+    PEER_OFFENCE_INVALID_MESSAGE,    /*  10 — malformed / undeserialisable / out-of-range request */
+    PEER_OFFENCE_UNREQUESTED,        /*  10 — sent data we never asked for */
+    PEER_OFFENCE_OFFER_REJECTED,     /*  10 — offer doesn't meet local requirements (not provably malicious) */
+    PEER_OFFENCE_FLOOD,              /*  20 — spamming inv / headers / tx / proof requests */
+    PEER_OFFENCE_INVALID_PAYLOAD,    /*  20 — envelope ok, payload truncated / out-of-spec (snapshot offers, manifests, chunk transport, compact blocks) */
+    PEER_OFFENCE_INVALID_HEADER,     /*  50 — bad header (PoW / merkle / timestamp) */
+    PEER_OFFENCE_INVALID_CHUNK,      /*  50 — swarm chunk/piece hash mismatch vs manifest */
+    PEER_OFFENCE_INVALID_BLOCK,      /* 100 — full block failed consensus */
+    PEER_OFFENCE_INVALID_PROOF,      /* 100 — cryptographic verification failed (SHA3 snapshot, FlyClient, merkle root) */
+    PEER_OFFENCE_PROTOCOL_VIOLATION, /* 100 — deliberate protocol abuse (disabled feature, impossible request) */
+    PEER_OFFENCE_COUNT_              /* sentinel — keep last */
 };
+
+/* Score increment for an offence. This is the SAME weight table the raw
+ * peer_misbehaving() sites used before typed adoption — byte-identical
+ * ban behaviour. Returns 0 for NONE/unknown. */
+int peer_offence_weight(enum peer_offence offence);
 
 /* Read configuration from environment. Safe to call multiple times (later
  * calls update the cached values). Called once from init.c at boot but
@@ -80,7 +94,7 @@ int peer_scoring_ban_hours(void);
 int peer_scoring_decay_rate(void);
 
 /* Record a typed offence. Equivalent to
- *   peer_misbehaving(nm, node, (int)offence, context)
+ *   peer_misbehaving(nm, node, peer_offence_weight(offence), context)
  * but rejects PEER_OFFENCE_NONE (no-op) and emits a richer log line.
  *
  * The underlying peer_misbehaving() call:
@@ -113,10 +127,9 @@ void peer_scoring_on_good_interaction(struct p2p_node *node, int64_t now_ms);
  * (e.g. verack, a block that connected). */
 void peer_scoring_reset(struct p2p_node *node);
 
-/* Human-readable name for an offence — for logs and events.
- * Caveat: UNREQUESTED and INVALID_MESSAGE share weight 10, so the name
- * lookup (keyed on the integer value) cannot tell them apart and returns
- * "invalid_message" for both. Pass the distinction in the context string. */
+/* Human-readable name for an offence — for logs and events. Identities
+ * are unique (weights live in peer_offence_weight()), so every offence
+ * gets its own honest name. */
 const char *peer_offence_name(enum peer_offence offence);
 
 /* Convenience: milliseconds since the UNIX epoch for decay math.

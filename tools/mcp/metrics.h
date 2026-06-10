@@ -84,9 +84,11 @@ uint64_t mcp_metrics_total_errors(void);
 
 /* Manual record helpers — used by tests and by the in-process event
  * observer.  `kind` should be one of the names returned by
- * peer_offence_name() (timeout, invalid_message, flood,
- * invalid_header, invalid_block) — anything else is folded into
- * "other" rather than expanding the cardinality. */
+ * peer_offence_name() (timeout, invalid_message, unrequested,
+ * offer_rejected, flood, invalid_payload, invalid_header,
+ * invalid_chunk, invalid_block, invalid_proof, protocol_violation) —
+ * anything else is folded into "other" rather than expanding the
+ * cardinality. */
 void mcp_metrics_record_peer_offence(const char *kind);
 void mcp_metrics_record_peer_ban(void);
 

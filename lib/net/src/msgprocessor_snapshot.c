@@ -839,23 +839,23 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             break;
                         }
                         case SNAPSYNC_OFFER_REJECTED_RANGE:
-                            peer_misbehaving(mp->net_mgr, node, 20,
+                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
                                 "snapshot offer out of range");
                             break;
                         case SNAPSYNC_OFFER_REJECTED_NO_MMR:
-                            peer_misbehaving(mp->net_mgr, node, 10,
+                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_OFFER_REJECTED,
                                 "snapshot without MMR proof");
                             break;
                         case SNAPSYNC_OFFER_REJECTED_STALE_SCHEMA:
-                            peer_misbehaving(mp->net_mgr, node, 20,
+                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
                                 "snapshot offer missing v2 schema");
                             break;
                         case SNAPSYNC_OFFER_REJECTED_UNFINAL:
-                            peer_misbehaving(mp->net_mgr, node, 10,
+                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_OFFER_REJECTED,
                                 "snapshot offer non-final anchor");
                             break;
                         case SNAPSYNC_OFFER_REJECTED_WEAK_WORK:
-                            peer_misbehaving(mp->net_mgr, node, 20,
+                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
                                 "snapshot offer weak chainwork");
                             break;
                         case SNAPSYNC_OFFER_REJECTED_BLACKLISTED:
@@ -872,15 +872,15 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     }
                 }
             } else {
-                peer_misbehaving(mp->net_mgr, node, 20,
-                                 "truncated snapshot v2 offer");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                    "truncated snapshot v2 offer");
             }
 
         } else if (strcmp(cmd, MSG_SNAPSHOT_REQ) == 0) {
             /* ── Route: zsnapreq → snapsync_validate_serve_request ─ */
             int32_t from_h = 0;
             if (!stream_read_i32_le(s, &from_h)) {
-                peer_misbehaving(mp->net_mgr, node, 10, "truncated zsnapreq");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE, "truncated zsnapreq");
                 return true; /* skip — caller frees msg */
             }
 
@@ -953,7 +953,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 }
                 break;
             case SNAPSYNC_SERVE_BAD_POW:
-                peer_misbehaving(mp->net_mgr, node, 20,
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
                     "zsnapreq without valid PoW");
                 break;
             case SNAPSYNC_SERVE_RATE_LIMITED:
@@ -969,7 +969,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
             int applied = svc ? snapsync_apply_chunk(svc,
                 s->data + s->read_pos, s->size - s->read_pos) : -1;
             if (applied < 0)
-                peer_misbehaving(mp->net_mgr, node, 10, "bad snapshot chunk");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE, "bad snapshot chunk");
             else
                 node->zsync_offset += (uint64_t)applied;
 
@@ -1021,7 +1021,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         "snapshot verified, sync remaining headers");
                 }
                 } else {
-                peer_misbehaving(mp->net_mgr, node, 100,
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
                     "snapshot SHA3 verification failed");
                 }
             }
@@ -1082,7 +1082,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
             /* ── Route: zfcproofs → snapsync_verify_flyclient ──── */
             struct fc_response resp;
             if (!snapsync_parse_fc_response(&resp, s).ok) {
-                peer_misbehaving(mp->net_mgr, node, 20,
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
                     "truncated FlyClient proofs");
             } else {
                 struct snapsync_verify_result verify_result = {0};
@@ -1108,7 +1108,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     }
                     stream_free(&rq);
                 } else {
-                    peer_misbehaving(mp->net_mgr, node, 100,
+                    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
                         "FlyClient chain verification failed");
                 }
             }
@@ -1129,21 +1129,21 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                   stream_read_u32_le(s, &num_chunks) &&
                   stream_read_u32_le(s, &chunk_size) &&
                   stream_read_bytes(s, merkle_root, 32))) {
-                peer_misbehaving(mp->net_mgr, node, 20,
-                                 "truncated zmanifest header");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                    "truncated zmanifest header");
             } else if (num_chunks == 0 || num_chunks > MANIFEST_MAX_CHUNKS
                        || chunk_size == 0) {
                 fprintf(stderr, "Peer %s: manifest out of bounds "  // obs-ok:helper-context-logged
                         "(num_chunks=%u cap=%u chunk_size=%u)\n",
                         node->addr_name, num_chunks, MANIFEST_MAX_CHUNKS,
                         chunk_size);
-                peer_misbehaving(mp->net_mgr, node, 20,
-                                 "manifest bounds");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                    "manifest bounds");
             } else {
                 if (stream_remaining(s) >= ((size_t)num_chunks * 32 + 32)) {
                     if (!stream_read_bytes(s, utxo_sha3, 32)) {
-                        peer_misbehaving(mp->net_mgr, node, 20,
-                                         "truncated zmanifest utxo root");
+                        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                            "truncated zmanifest utxo root");
                         return true;
                     }
                 }
@@ -1162,8 +1162,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 }
                 if (!hashes_ok) {
                     free(hashes);
-                    peer_misbehaving(mp->net_mgr, node, 20,
-                                     "truncated zmanifest hashes");
+                    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                        "truncated zmanifest hashes");
                 } else {
                     uint8_t computed_root[32];
                     fast_sync_merkle_root(
@@ -1171,8 +1171,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         computed_root);
                     if (memcmp(computed_root, merkle_root, 32) != 0) {
                         free(hashes);
-                        peer_misbehaving(mp->net_mgr, node, 100,
-                                         "manifest merkle root mismatch");
+                        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PROOF,
+                                            "manifest merkle root mismatch");
                     } else {
                         node->swarm_manifest_received = true;
                         int our_h = active_chain_height(
@@ -1267,8 +1267,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     printf("Peer %s: zchunkreq index %u out of range (%u)\n",
                            node->addr_name, chunk_index,
                            num_chunks);
-                    peer_misbehaving(mp->net_mgr, node, 10,
-                                     "zchunkreq out of range");
+                    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
+                                        "zchunkreq out of range");
                 } else if (!fast_sync_rate_check(&g_rate_limiter,
                                                   node->addr.svc.addr.ip)) {
                     printf("Peer %s: rate limited on chunk request\n",
@@ -1325,7 +1325,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 !stream_read_u32_le(s, &num_entries) ||
                 num_entries > 1000) {
                 printf("Peer %s: bad zchunkdata header\n", node->addr_name);
-                peer_misbehaving(mp->net_mgr, node, 20, "bad zchunkdata");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD, "bad zchunkdata");
             } else if (!g_swarm_active) {
                 printf("Peer %s: zchunkdata but no swarm active\n",
                        node->addr_name);
@@ -1375,8 +1375,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             zcl_mutex_unlock(&g_swarm_mutex);
                             fprintf(stderr, "Peer %s: chunk %u failed verification\n",  // obs-ok:helper-context-logged
                                    node->addr_name, chunk_index);
-                            peer_misbehaving(mp->net_mgr, node, 50,
-                                             "bad chunk hash");
+                            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_CHUNK,
+                                                "bad chunk hash");
                         } else if (swarm_sync_is_complete(&g_swarm)) {
                             printf("Swarm sync complete: %u/%u chunks\n",
                                    g_swarm.chunks_complete,
@@ -1423,8 +1423,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     } else {
                         printf("Peer %s: truncated zchunkdata\n",
                                node->addr_name);
-                        peer_misbehaving(mp->net_mgr, node, 20,
-                                         "truncated zchunkdata");
+                        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                            "truncated zchunkdata");
                     }
                     free(chunk);
                 }
@@ -1451,8 +1451,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     printf("Peer %s: invalid block manifest "
                            "(start=%d end=%d pieces=%u)\n",
                            node->addr_name, start_h, end_h, num_pieces);
-                    peer_misbehaving(mp->net_mgr, node, 20,
-                                     "invalid block manifest params");
+                    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                        "invalid block manifest params");
                 } else {
                     /* Verify piece count is consistent with height range */
                     uint32_t expected = (uint32_t)((end_h - start_h +
@@ -1462,8 +1462,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                "(got %u, expected %u for h=%d..%d)\n",
                                node->addr_name, num_pieces, expected,
                                start_h, end_h);
-                        peer_misbehaving(mp->net_mgr, node, 10,
-                                         "block manifest piece count wrong");
+                        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
+                                            "block manifest piece count wrong");
                     } else {
                         node->blk_manifest_received = true;
                         node->blk_peer_height = end_h;
@@ -1514,8 +1514,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 printf("Peer %s: zblkreq %u out of range (%u)\n",
                        node->addr_name, piece_index,
                        bm.num_pieces);
-                peer_misbehaving(mp->net_mgr, node, 10,
-                                 "zblkreq out of range");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
+                                    "zblkreq out of range");
             } else if (!fast_sync_rate_check(&g_rate_limiter,
                                               node->addr.svc.addr.ip)) {
                 printf("Peer %s: rate limited on block piece\n",
@@ -1559,8 +1559,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 block_count == 0 || block_count > BLOCKS_PER_PIECE) {
                 printf("Peer %s: bad zblkdata (piece=%u count=%u)\n",
                        node->addr_name, piece_index, block_count);
-                peer_misbehaving(mp->net_mgr, node, 20,
-                                 "bad zblkdata header");
+                peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                    "bad zblkdata header");
             } else if (!g_block_swarm_active) {
                 printf("Peer %s: zblkdata piece=%u but no block swarm\n",
                        node->addr_name, piece_index);
@@ -1583,8 +1583,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         printf("Peer %s: zblkdata piece %u out of range "
                                "(max %u)\n", node->addr_name, piece_index,
                                g_block_swarm.manifest.num_pieces);
-                        peer_misbehaving(mp->net_mgr, node, 20,
-                                         "zblkdata piece out of range");
+                        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                            "zblkdata piece out of range");
                         free(blk_hashes);
                         goto _blkdata_done;
                     }
@@ -1628,14 +1628,14 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         block_swarm_fail_piece(&g_block_swarm, piece_index);
                         fprintf(stderr, "Peer %s: block piece %u failed verification\n",  // obs-ok:helper-context-logged
                                node->addr_name, piece_index);
-                        peer_misbehaving(mp->net_mgr, node, 50,
-                                         "bad block piece hash");
+                        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_CHUNK,
+                                            "bad block piece hash");
                     }
                     pthread_mutex_unlock(&g_block_swarm_mutex);
                 } else {
                     printf("Peer %s: truncated zblkdata\n", node->addr_name);
-                    peer_misbehaving(mp->net_mgr, node, 20,
-                                     "truncated zblkdata");
+                    peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                        "truncated zblkdata");
                 }
                 free(blk_hashes);
             }
