@@ -152,12 +152,29 @@ static void qset_reserve_one(struct download_manager *dm)
     qset_rebuild(dm, want);
 }
 
-static void qset_insert(struct download_manager *dm,
-                        const struct uint256 *hash)
+/* Ensure room for `n_more` additional live entries at < 50% combined
+ * load, in at most ONE rebuild up-front. Bulk callers MUST reserve
+ * before staging inserts: qset_rebuild repopulates from dm->queue
+ * only, so a rebuild fired mid-batch (by a per-insert reserve) wipes
+ * every staged-but-not-yet-merged hash from the set — dedup breaks,
+ * blocks download twice, and the duplicate in-flight slots leak
+ * num_active. Same reason dl_queue_push reserves BEFORE its queue
+ * insertion. */
+static void qset_reserve_n(struct download_manager *dm, size_t n_more)
 {
     if (!dm->qset || dm->qset_slots == 0) return;
-    qset_reserve_one(dm);
-    qset_insert_raw(dm, hash);
+    /* Live entries are bounded by queue cap + one staged batch; clamp a
+     * pathological request so the doubling below cannot overflow. Past
+     * the clamp the set degrades to silent dedup misses, never UB. */
+    if (n_more > (size_t)DL_QUEUE_MAX_CAP * 2)
+        n_more = (size_t)DL_QUEUE_MAX_CAP * 2;
+    size_t want = dm->qset_slots;
+    while ((dm->qset_live + n_more + 1) * 2 >= want)
+        want *= 2;
+    if (want == dm->qset_slots &&
+        (dm->qset_live + dm->qset_tombs + n_more + 1) * 2 < dm->qset_slots)
+        return;             /* enough live+tombstone headroom already */
+    qset_rebuild(dm, want);
 }
 
 static void qset_remove(struct download_manager *dm,
@@ -195,6 +212,8 @@ static bool dl_queue_grow(struct download_manager *dm)
 {
     if (dm->queue_cap >= DL_QUEUE_MAX_CAP)
         return false; // raw-return-ok:normal-bounded-queue-backpressure
+    if (dm->queue_cap == 0)
+        return false; // raw-return-ok:dl_init-oom-doubling-0-spins-forever
     size_t new_cap = dm->queue_cap * 2;
     struct uint256 *nq = zcl_realloc(dm->queue, new_cap * sizeof(struct uint256), "dl_queue");
     int32_t *nh = zcl_realloc(dm->queue_heights, new_cap * sizeof(int32_t), "dl_queue_heights");
@@ -250,6 +269,14 @@ static bool dl_queue_push(struct download_manager *dm,
         dm->total_queue_evicted++;
     }
 
+    /* Reserve set capacity BEFORE the queue insertion: a rebuild here
+     * repopulates from dm->queue, so reserving after the queue already
+     * holds `hash` would re-add it and the insert below would create a
+     * SECOND live entry — a phantom that survives one qset_remove and
+     * then refuses every future re-push of this hash (timeout/disconnect
+     * re-queues bounce off the duplicate check forever). */
+    qset_reserve_one(dm);
+
     /* Binary search for the first entry whose key is strictly greater
      * than ours; insert there (stable for equal heights). */
     int64_t key = dl_sort_key(height);
@@ -272,7 +299,7 @@ static bool dl_queue_push(struct download_manager *dm,
     dm->queue[pos] = *hash;
     dm->queue_heights[pos] = height;
     dm->queue_len++;
-    qset_insert(dm, hash);
+    qset_insert_raw(dm, hash);
     return true;
 }
 
@@ -581,7 +608,11 @@ size_t dl_queue_blocks(struct download_manager *dm,
      * cs, which starved the whole node (2026-06-09 tracka wedge). */
 
     /* 1. Filter into a staging array: not in-flight, not queued, not a
-     *    duplicate within this batch (the qset insert handles that). */
+     *    duplicate within this batch (the qset insert handles that).
+     *    Capacity is reserved ONCE up-front so no rebuild can fire
+     *    mid-loop — a mid-batch rebuild repopulates from dm->queue only
+     *    and would wipe the staged hashes' membership (see
+     *    qset_reserve_n). */
     struct dl_stage_item *stage = NULL;
     size_t n_stage = 0;
     if (count > 0)
@@ -590,11 +621,12 @@ size_t dl_queue_blocks(struct download_manager *dm,
         zcl_mutex_unlock(&dm->cs);
         return 0;
     }
+    qset_reserve_n(dm, count);
     for (size_t i = 0; i < count; i++) {
         struct dl_in_flight *s = find_slot(dm, &hashes[i], false);
         if (s && s->active) continue;
         if (qset_contains(dm, &hashes[i])) continue;
-        qset_insert(dm, &hashes[i]);
+        qset_insert_raw(dm, &hashes[i]);
         stage[n_stage].hash = hashes[i];
         stage[n_stage].height = heights ? heights[i] : -1;
         n_stage++;
@@ -748,9 +780,15 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     if (available > max_assign) available = max_assign;
     if (available > dm->queue_len) available = dm->queue_len;
 
-    /* Also respect global limit (dynamic: aggressive during IBD) */
+    /* Also respect global limit (dynamic: aggressive during IBD).
+     * num_active can legitimately EXCEED the limit (it shrinks when IBD
+     * ends) — the unguarded subtraction underflowed size_t and handed
+     * the pop loop a near-infinite `available`, overflowing the
+     * caller's out_hashes[max_assign] buffer. */
     size_t global_limit = dl_get_max_in_flight_total();
-    if (dm->num_active + available > global_limit)
+    if (dm->num_active >= global_limit)
+        available = 0;
+    else if (dm->num_active + available > global_limit)
         available = global_limit - dm->num_active;
 
     /* Pop from front — the queue is kept height-sorted ascending by
