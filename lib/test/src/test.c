@@ -666,6 +666,7 @@ int main(void)
     failures += test_sqlite();
     failures += test_activerecord();
     failures += test_validation();
+    { extern int test_consensus_parity(void); failures += test_consensus_parity(); }
     { extern int test_sapling_lazy_init(void);
       failures += test_sapling_lazy_init(); }
     failures += test_sapling();

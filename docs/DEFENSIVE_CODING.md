@@ -754,6 +754,7 @@ edit it whenever you add/remove a gate.
 <!-- LINT-GATES-BEGIN -->
 - `check-before-save-hooks`
 - `check-coins-lookup-nullcheck`
+- `check-consensus-parity`
 - `check-doc-accuracy`
 - `check-file-size-ceiling`
 - `check-framework-filename-suffix`

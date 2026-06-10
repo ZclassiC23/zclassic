@@ -17,6 +17,16 @@ datadirs, and consenting peers.
 The project safety boundary, security model, and integrity checks are in
 [`docs/SECURITY_AND_INTEGRITY.md`](./docs/SECURITY_AND_INTEGRITY.md).
 
+**Consensus parity is inviolable.** zclassic23 must stay bit-for-bit
+consensus-compatible with `zclassicd` — see
+[`docs/CONSENSUS_PARITY_DOCTRINE.md`](./docs/CONSENSUS_PARITY_DOCTRINE.md).
+A consensus change (Equihash params, activation heights, block/tx validity)
+never ships to zclassic23 first — even if framed as opt-in / miner-signaled /
+"sidegrade". Enforced by lint gate `check-consensus-parity` (E13, the
+mechanism) + the `test_consensus_parity` test group (the golden values).
+This is also the bar for reviewing outside PRs (thank + attribute + decline
+consensus-breakers, mine the idea, build it better ourselves).
+
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8. Honest status today: ~2/8 met by hand, **0/8 CI-enforced**.
