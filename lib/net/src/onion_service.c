@@ -41,12 +41,39 @@ void onion_service_set_app_handlers(onion_blog_serve_fn blog_serve,
     ctx->peer_discover = peer_discover;
 }
 
+/* On-chain hostnames are attacker-controlled. Only the exact Tor v3
+ * shape (56 base32 [a-z2-7] chars + ".onion" = 62) may reach HTML,
+ * JSON, or the peer_directory table. */
+static bool onion_hostname_valid(const char *h)
+{
+    if (!h) return false;
+    if (strlen(h) != 62 || strcmp(h + 56, ".onion") != 0) return false;
+    for (size_t i = 0; i < 56; i++) {
+        char c = h[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7')))
+            return false;
+    }
+    return true;
+}
+
 static int onion_discover_peers(struct onion_peer *out, size_t max)
 {
     struct onion_context *ctx = onion_ctx();
     if (!ctx->datadir || !ctx->peer_discover)
         return 0;
-    return ctx->peer_discover(ctx->datadir, out, max);
+    int found = ctx->peer_discover(ctx->datadir, out, max);
+    /* Drop malformed hostnames before they reach any sink. */
+    int kept = 0;
+    for (int i = 0; i < found; i++) {
+        if (!onion_hostname_valid(out[i].hostname))
+            continue;
+        if (kept != i) out[kept] = out[i];
+        kept++;
+    }
+    if (kept < found)
+        log_jsonf(LOG_JSON_WARN, "onion_hostname_rejected",
+                  "\"dropped\":%d", found - kept);
+    return kept;
 }
 
 /* Simple global rate limiter: max 100 requests/second */
@@ -246,11 +273,13 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     }
 
     for (int i = 0; i < num_peers && off + 512 < sizeof(body); i++) {
+        char esc_host[384]; /* hostname[64] worst-case html-escaped */
+        html_escape(esc_host, sizeof(esc_host), peers[i].hostname);
         n = snprintf(body + off, sizeof(body) - off,
             "<div class='site'>"
             "<a href='http://%s/'>%s</a>"
             "<div class='desc'>Discovered at height %d</div></div>",
-            peers[i].hostname, peers[i].hostname, peers[i].height);
+            esc_host, esc_host, peers[i].height);
         if (n > 0) off += (size_t)n;
     }
 
@@ -324,9 +353,11 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         if (query && query[0] &&
             !strstr(peers[i].hostname, query))
             continue;
+        char esc_host[384]; /* hostname[64] worst-case html-escaped */
+        html_escape(esc_host, sizeof(esc_host), peers[i].hostname);
         n = snprintf(body + off, sizeof(body) - off,
             "<div class='site'><a href='http://%s/'>%s</a></div>",
-            peers[i].hostname, peers[i].hostname);
+            esc_host, esc_host);
         if (n > 0) off += (size_t)n;
         found++;
     }
@@ -497,16 +528,23 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         const char *cip = (const char *)sqlite3_column_text(s, 7);
         int cport = sqlite3_column_int(s, 8);
 
+        /* Rows stored by pre-validation binaries may be hostile. */
+        if (!onion_hostname_valid(addr)) continue;
+        char addr_esc[160], ver_esc[96], cip_esc[96];
+        log_json_escape(addr_esc, sizeof(addr_esc), addr);
+        log_json_escape(ver_esc, sizeof(ver_esc), ver);
+        log_json_escape(cip_esc, sizeof(cip_esc), cip);
+
         if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
         off += (size_t)snprintf(body + off, sizeof(body) - off,
             "{\"onion\":\"%s\",\"port\":%d,\"services\":%d,"
             "\"height\":%d,\"last_seen\":%lld,"
             "\"version\":\"%s\",\"self\":%s,"
             "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d}",
-            addr ? addr : "", port, svc, h,
-            (long long)ls, ver ? ver : "",
+            addr_esc, port, svc, h,
+            (long long)ls, ver_esc,
             self ? "true" : "false",
-            cip ? cip : "", cport);
+            cip_esc, cport);
         count++;
     }
     sqlite3_finalize(s);
@@ -593,6 +631,12 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         const char *ver = (const char *)sqlite3_column_text(s, 4);
         int self = sqlite3_column_int(s, 5);
 
+        /* Rows stored by pre-validation binaries may be hostile. */
+        if (!onion_hostname_valid(addr)) continue;
+        char addr_esc[160], ver_esc[96];
+        html_escape(addr_esc, sizeof(addr_esc), addr);
+        html_escape(ver_esc, sizeof(ver_esc), ver);
+
         /* Format last_seen as relative time */
         int64_t age = (int64_t)platform_time_wall_time_t() - ls;
         char age_str[32];
@@ -605,9 +649,9 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
             "<tr%s><td><a href='http://%s/'>%s</a>%s</td>"
             "<td>%d</td><td>%d</td><td>%s</td><td>%s</td></tr>",
             self ? " class='self'" : "",
-            addr ? addr : "", addr ? addr : "",
+            addr_esc, addr_esc,
             self ? " (this node)" : "",
-            port, h, age_str, ver ? ver : "");
+            port, h, age_str, ver_esc);
         count++;
     }
     sqlite3_finalize(s);
