@@ -7,11 +7,17 @@
 #include "stage_repair_reducer_frontier_internal.h"
 
 #include "jobs/stage_repair.h"
+#include "tip_finalize_log_store.h"
+
+#include "core/arith_uint256.h"
+#include "core/uint256.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
 #include <sqlite3.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -140,4 +146,192 @@ bool stage_reducer_frontier_purge_noncanonical(
                  out->lowest_noncanonical, lo, hi,
                  apply ? "" : "; dry-run");
     return true;
+}
+
+/* ── FIX-A: stale reorg-residue tip_finalize verdict replacement ──────
+ * Tri-state read of a tip_finalize_log row's ok column at `height`:
+ * RF_TIPFIN_ABSENT (no row), RF_TIPFIN_OK (ok=1), RF_TIPFIN_FAIL (ok=0).
+ * Only an ok=0 row is eligible for replacement (an absent row is the
+ * tipfin-backfill domain; an ok=1 row needs no repair). */
+enum rf_tipfin_state {
+    RF_TIPFIN_ABSENT = 0,
+    RF_TIPFIN_OK,
+    RF_TIPFIN_FAIL,
+};
+
+static bool rf_tipfin_state_at(sqlite3 *db, int height,
+                               enum rf_tipfin_state *out_state,
+                               char status_out[64])
+{
+    *out_state = RF_TIPFIN_ABSENT;
+    if (status_out)
+        status_out[0] = '\0';
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok, status FROM tip_finalize_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("stage_repair",
+                 "reorg-residue tipfin state prepare failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, height);
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out_state = sqlite3_column_int(st, 0) != 0 ? RF_TIPFIN_OK
+                                                    : RF_TIPFIN_FAIL;
+        if (status_out) {
+            const unsigned char *s = sqlite3_column_text(st, 1);
+            snprintf(status_out, 64, "%s", s ? (const char *)s : "");
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reorg-residue tipfin state step failed h=%d "
+                 "rc=%d: %s", height, rc, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* Read the header_admit_log hash at `height` (the canonical admitted block's
+ * hash). *found is true only when a row exists with a 32-byte hash blob — a
+ * row missing or with a malformed hash is success with *found=false (no
+ * eligible lookahead binder, so the residue row is left alone). */
+static bool rf_header_admit_hash_at(sqlite3 *db, int height,
+                                    struct uint256 *out, bool *found)
+{
+    *found = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT hash FROM header_admit_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("stage_repair",
+                 "reorg-residue header_admit hash prepare failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, height);
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(st, 0);
+        int blen = sqlite3_column_bytes(st, 0);
+        if (blob && blen == 32) {
+            memcpy(out->data, blob, 32);
+            *found = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reorg-residue header_admit hash step failed "
+                 "h=%d rc=%d: %s", height, rc, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* RF_REORG_RESIDUE_MAX_PER_PASS bounds the scan window like the noncanonical
+ * purge above; a contiguous reorg-residue run heals one window per tick. */
+#define RF_REORG_RESIDUE_MAX_PER_PASS 8192
+
+bool stage_reducer_frontier_purge_stale_reorg_tipfin(
+    sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    if (!db || !out)
+        LOG_FAIL("stage_repair", "purge_stale_reorg_tipfin: invalid args");
+
+    /* Eligibility ceiling: only heights ALREADY covered by coins
+     * (h <= coins_applied_height - 1) qualify — there the coins are applied
+     * and replacing the verdict cannot tear a coin. Unknown coins frontier =>
+     * nothing to do here (the unknown path refuses upstream). */
+    if (!out->coins_applied_found || out->coins_applied_height <= 0)
+        return true;
+
+    int lo = out->hstar + 1;
+    int hi = out->coins_applied_height - 1;
+    if (out->sweep_top < hi)
+        hi = out->sweep_top;
+    if (hi - lo + 1 > RF_REORG_RESIDUE_MAX_PER_PASS)
+        hi = lo + RF_REORG_RESIDUE_MAX_PER_PASS - 1;
+    if (lo < 0 || hi < lo)
+        return true;
+
+    progress_store_tx_lock();
+    if (!ensure_log_schema(db)) {
+        progress_store_tx_unlock();
+        LOG_FAIL("stage_repair",
+                 "purge_stale_reorg_tipfin: schema ensure failed");
+    }
+
+    struct arith_uint256 zero_work;
+    arith_uint256_set_u64(&zero_work, 0);
+
+    bool rc_ok = true;
+    for (int h = lo; h <= hi; h++) {
+        char status[64];
+        enum rf_tipfin_state state = RF_TIPFIN_ABSENT;
+        if (!rf_tipfin_state_at(db, h, &state, status)) {
+            rc_ok = false;
+            break;
+        }
+        /* Gate 1: the row must be PRESENT with ok=0 (a stale skip verdict).
+         * Absent (tipfin-backfill domain) and ok=1 (healthy) are skipped. */
+        if (state != RF_TIPFIN_FAIL)
+            continue;
+
+        /* Gate 2: re-evidenced upstream — header_admit_log present at h with
+         * a 32-byte hash, AND the lookahead binder hash(h+1) is available so
+         * the replacement carries the row-H -> hash-H+1 finalized convention
+         * (finalized_row_active_match compares row.tip_hash to
+         * active_chain_at(h+1) — reorg-correct). The residue verdict pins H*
+         * one below h, so the column at h+1 is precisely the rowless gap the
+         * existing header_admit-keyed refill re-derives. A missing binder
+         * leaves the row alone (no fabricated hash). */
+        struct uint256 lookahead;
+        bool admit_here = false;
+        bool admit_next = false;
+        struct uint256 admit_dummy;
+        if (!rf_header_admit_hash_at(db, h, &admit_dummy, &admit_here) ||
+            !rf_header_admit_hash_at(db, h + 1, &lookahead, &admit_next)) {
+            rc_ok = false;
+            break;
+        }
+        if (!admit_here || !admit_next)
+            continue;
+
+        out->reorg_residue_tipfin_found++;
+        if (out->lowest_reorg_residue_tipfin < 0 ||
+            h < out->lowest_reorg_residue_tipfin)
+            out->lowest_reorg_residue_tipfin = h;
+        if (!apply)
+            continue;
+
+        /* Replace IN PLACE (INSERT OR REPLACE, same PRIMARY KEY h — the row
+         * persists, never deleted; served_floor cannot regress). The fresh
+         * verdict is ok=1 status='finalize_backfill' (NOT 'anchor', so it is
+         * not an is_anchor seed) with the lookahead binder hash. */
+        if (!log_insert(db, h, "finalize_backfill", true, &zero_work, -1, 0,
+                        &lookahead)) {
+            rc_ok = false;
+            break;
+        }
+        out->reorg_residue_tipfin_replaced++;
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reorg-residue tip_finalize verdict replaced "
+                 "h=%d stale_status=%s -> finalize_backfill ok=1 "
+                 "(hstar=%d coins_applied=%d) — false coin-tear cleared",
+                 h, status, out->hstar, out->coins_applied_height);
+    }
+
+    progress_store_tx_unlock();
+
+    if (out->reorg_residue_tipfin_found > 0 &&
+        out->reorg_residue_tipfin_replaced == 0)
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reorg-residue tip_finalize rows: found=%d "
+                 "lowest=%d window=[%d,%d]%s",
+                 out->reorg_residue_tipfin_found,
+                 out->lowest_reorg_residue_tipfin, lo, hi,
+                 apply ? "" : "; dry-run");
+    return rc_ok;
 }

@@ -1007,6 +1007,8 @@ int main(void)
       failures += test_stage_repair_script_refill(); }
     { extern int test_stage_repair_tipfin_backfill(void);
       failures += test_stage_repair_tipfin_backfill(); }
+    { extern int test_reorg_residue_tipfin_replace(void);
+      failures += test_reorg_residue_tipfin_replace(); }
     { extern int test_utxo_apply_upstream_hole(void);
       failures += test_utxo_apply_upstream_hole(); }
     { extern int test_reducer_reconcile_witness(void);

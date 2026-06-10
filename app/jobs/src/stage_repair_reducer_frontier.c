@@ -448,7 +448,8 @@ static bool rf_result_clean(
            !r->coin_backfill_owner_refused &&
            r->tipfin_backfill_count == 0 &&
            r->tipfin_backfill_refused_reason == 0 &&
-           r->noncanonical_found == 0;
+           r->noncanonical_found == 0 &&
+           r->reorg_residue_tipfin_found == 0;
 }
 
 static bool reducer_frontier_reconcile_light_impl(
@@ -507,6 +508,7 @@ static bool reducer_frontier_reconcile_light_impl(
     local.tipfin_backfill_height = -1;
     local.coins_applied_height = -1;
     local.lowest_noncanonical = -1;
+    local.lowest_reorg_residue_tipfin = -1;
 
     if (!stage_table_ensure(db))
         return false;
@@ -520,6 +522,36 @@ static bool reducer_frontier_reconcile_light_impl(
         return false;
     if (local.noncanonical_purged > 0)
         local.repaired = true;
+
+    /* FIX-A — stale reorg-residue tip_finalize verdict replacement. A depth-N
+     * reorg can leave an ok=0 'reorg_detected' tip_finalize row at a height
+     * already covered by coins (h <= coins_applied-1) while the column above
+     * it is a contiguous rowless gap that header_admit still evidences. That
+     * ok=0 row caps H* one below h (the success-checked contiguity walk
+     * terminates on it), which makes coins_applied > H*+1 read as a FALSE
+     * coin tear, and the existing header_admit-keyed refill that WOULD heal
+     * the column lives after the coin-tear refusal early-return (unreachable).
+     * Replacing the residue verdict with a fresh ok=1 row (gated on coins
+     * coverage + upstream re-evidence; never deletes, never touches coins)
+     * lifts the H* cap so the snapshot re-reads with no tear and the existing
+     * refill + tip_finalize clamp re-derive the column. Runs in the SAME
+     * dry-run/apply spirit as the noncanonical purge above. */
+    if (!stage_reducer_frontier_purge_stale_reorg_tipfin(db, apply, &local))
+        return false;
+    if (local.reorg_residue_tipfin_replaced > 0) {
+        local.repaired = true;
+        /* The replacement moved H* (and may have cleared the tear); re-read
+         * the snapshot so every gate below sees the lifted frontier. The
+         * accumulated *_found / *_purged / *_replaced counters and `repaired`
+         * are preserved (read_frontier_snapshot rewrites only the frontier /
+         * cursor fields, never these). The refusal flags are LATCHED (the
+         * snapshot only ever SETS them true), so clear them first — the
+         * re-read re-derives them from the lifted H*. */
+        local.refused_coin_tear = false;
+        local.refused_coin_unknown = false;
+        if (!read_frontier_snapshot(db, &local))
+            return false;
+    }
 
     if (local.refused_coin_unknown) {
         LOG_WARN("stage_repair",

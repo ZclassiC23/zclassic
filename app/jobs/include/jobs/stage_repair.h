@@ -169,6 +169,21 @@ struct stage_reducer_frontier_reconcile_result {
     int noncanonical_found;
     int noncanonical_purged;
     int lowest_noncanonical;
+    /* Stale reorg-residue tip_finalize verdict REPLACEMENT (FIX-A,
+     * stage_repair_reducer_frontier_purge.c): an ok=0 skip-status
+     * tip_finalize_log row (reorg_detected / utxo_count_diverged residue)
+     * left at a height already covered by coins (h <= coins_applied-1) and
+     * re-evidenced upstream (header_admit_log present at h) caps H* below the
+     * coins frontier, manufacturing a FALSE coin-tear refusal even though a
+     * contiguous column above it is fully refillable. The replacement writes
+     * a fresh ok=1 'finalize_backfill' verdict (row REPLACED in place — never
+     * deleted, served_floor preserved) so the row stops capping H*; the
+     * existing header_admit-keyed refill + tip_finalize clamp then re-derive
+     * the column. found counts rows judged stale (dry-run too); replaced
+     * counts in-place rewrites (apply only). */
+    int reorg_residue_tipfin_found;
+    int reorg_residue_tipfin_replaced;
+    int lowest_reorg_residue_tipfin;
 };
 
 /* Reconcile a reducer cursor/coins desync that wedges the chain.

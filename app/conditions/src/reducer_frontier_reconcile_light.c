@@ -370,7 +370,8 @@ static bool repair_evidence_pending(
         rr->coin_backfill_attempted ||
         rr->stale_script_repair_attempted ||
         rr->tipfin_backfill_count > 0 ||
-        rr->tipfin_backfill_refused_reason)
+        rr->tipfin_backfill_refused_reason ||
+        rr->reorg_residue_tipfin_found > 0)
         return true;
 
     bool present = false;
@@ -434,10 +435,13 @@ static bool detect_reducer_frontier_reconcile_light(void)
     if (rr.refused_coin_unknown)
         return false;
     if (!rr.refused_coin_tear && !rr.repaired &&
-        rr.noncanonical_found == 0) {
+        rr.noncanonical_found == 0 &&
+        rr.reorg_residue_tipfin_found == 0) {
         /* Nothing actionable: both transition memos re-arm.
          * noncanonical_found counts relabel/reorg-residue rows the
-         * dry-run judged stale — the apply purge is the remedy. */
+         * dry-run judged stale — the apply purge is the remedy.
+         * reorg_residue_tipfin_found counts stale ok=0 reorg_detected
+         * tip_finalize verdicts the apply path replaces in place (FIX-A). */
         g_tear_bypass_active = false;
         log_throttle_reset(&g_gate_suppress);
         return false;
