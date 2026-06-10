@@ -99,7 +99,7 @@ static size_t store_wrap_response(const char *body, size_t body_len,
 
 /* Wrap arbitrary bytes (which may contain embedded NULs) as a 200 OK
  * response with the given content-type and Content-Length. The body is
- * memcpy'd verbatim after the header terminator — never routed through a
+ * memcpy'd unmodified after the header terminator — never routed through a
  * printf %s, which would truncate at the first NUL. When
  * download_filename is non-NULL a Content-Disposition: attachment header
  * is added so browsers save (rather than render) the payload.

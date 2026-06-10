@@ -67,22 +67,38 @@ static const char *repo_root(void)
     }
     exe[n] = '\0';
 
-    char *slash = strrchr(exe, '/');
-    if (!slash) {
-        cached = 1;
-        root[0] = '\0';
-        return NULL;
-    }
-    *slash = '\0';
+    /* The binary lives at <root>/build/bin/<name>; walk UP from the exe
+     * until a directory holding both the Makefile and the raw-sqlite
+     * fixture appears. A single dirname() here once left root at
+     * build/bin, the entry stat failed, and the WHOLE suite silently
+     * no-op-SKIPped (PASS in 1s) — every source-text gate in this file
+     * was dead. Bounded walk so a stray Makefile high in the tree can't
+     * send the shell-outs somewhere surprising. */
+    for (int depth = 0; depth < 6; depth++) {
+        char *slash = strrchr(exe, '/');
+        if (!slash || slash == exe) break;
+        *slash = '\0';
 
-    if (snprintf(root, sizeof(root), "%s", exe) >= (int)sizeof(root)) {
+        char probe[PATH_MAX];
+        struct stat st;
+        if (snprintf(probe, sizeof(probe), "%s/Makefile", exe)
+                >= (int)sizeof(probe))
+            break;
+        if (stat(probe, &st) != 0) continue;
+        if (snprintf(probe, sizeof(probe), "%s/%s", exe, FIXTURE_SRC_REL)
+                >= (int)sizeof(probe))
+            break;
+        if (stat(probe, &st) != 0) continue;
+
+        if (snprintf(root, sizeof(root), "%s", exe) >= (int)sizeof(root))
+            break;
         cached = 1;
-        root[0] = '\0';
-        return NULL;
+        return root;
     }
 
     cached = 1;
-    return root;
+    root[0] = '\0';
+    return NULL;
 }
 
 static int repo_path(char *out, size_t outsz, const char *rel)
@@ -198,6 +214,17 @@ static int read_entire_file(const char *path, char **out_buf)
     fclose(fp);
     *out_buf = buf;
     return 0;
+}
+
+static size_t count_occurrences(const char *haystack, const char *needle)
+{
+    size_t step = strlen(needle);
+    if (step == 0) return 0;
+    size_t n = 0;
+    for (const char *p = strstr(haystack, needle); p;
+         p = strstr(p + step, needle))
+        n++;
+    return n;
 }
 
 static int check_coins_guard_file(const char *path)
@@ -2877,6 +2904,34 @@ static int t_projection_deferral_is_not_block_rejected_contract(void)
     return failures;
 }
 
+static int t_trusted_peer_stall_guard_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("trusted-peer stall guards stay wired on msgprocessor rules A+B") {
+        /* The trusted-peer stall exemption and the P2 frontier-parity
+         * term exist only as condition terms on stall rules A and B —
+         * deleting either guard is invisible to every unit test (the
+         * rules still fire, just for the wrong peers). Pin the exact
+         * source text so removal breaks this gate and forces a
+         * conscious update here. Brittle by design. */
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msgprocessor.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        /* Trusted-peer predicate: loopback/whitelist exemption (P3). */
+        ASSERT(strstr(buf, "stall_peer_trusted = net_addr_is_local") != NULL);
+        /* Both consumers: rule A (stale-header disconnect) and rule B
+         * (worst-outbound eviction) must each carry the exemption. */
+        ASSERT(count_occurrences(buf, "!stall_peer_trusted &&") >= 2);
+        /* Rule B's P2 frontier-parity term: no eviction when our header
+         * frontier already reached the peer's claimed tip. */
+        ASSERT(strstr(buf, "!header_frontier_at_peer_tip &&") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 int test_make_lint_gates(void)
 {
     printf("\n=== make_lint_gates tests ===\n");
@@ -2933,6 +2988,7 @@ int test_make_lint_gates(void)
     failures += t_sha3_window_tool_check_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
+    failures += t_trusted_peer_stall_guard_contract();
     failures += t_e1_file_size_ceiling();
     failures += t_e9_operator_needed_sink();
     failures += t_e10_framework_shape_ratchet();

@@ -472,6 +472,8 @@ static const struct dump_entry g_dumpers[] = {
                      "utxo_apply stage: cursor, UTXO delta counters, log rows" },
     { "tip_finalize", tip_finalize_dump_state_json,
                      "tip_finalize stage: cursor, finalize counters, log rows" },
+    { "coin_backfill", coin_backfill_dump_state_json,
+                     "frontier coin backfill: last result, scan cursor, refusal latches" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,

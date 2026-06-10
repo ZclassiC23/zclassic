@@ -1,6 +1,5 @@
 # ZClassic23
 
-[![ci](https://github.com/ZclassiC23/zclassic/actions/workflows/ci.yml/badge.svg)](https://github.com/ZclassiC23/zclassic/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash
