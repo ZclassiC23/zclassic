@@ -177,6 +177,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(proof_validate_stage) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
+    X(log_throttle) \
     X(reducer_frontier_reconcile_light) \
     X(reducer_stage_fuzz) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \

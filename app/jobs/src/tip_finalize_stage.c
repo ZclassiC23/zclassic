@@ -15,6 +15,7 @@
 #include "json/json.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
 
@@ -67,28 +68,14 @@ static zcl_mutex_t      g_block_reason_mu;
  * rounds per activation kick, so a per-tick WARN on a held frontier repeats
  * the SAME line millions of times in minutes. Emit only on a pair TRANSITION
  * (reporting the prior pair's suppressed count) or as a 300 s keep-alive with
- * the running count; suppressed calls still count. The F1 atomics are written
- * under g_block_reason_mu and read lock-free by the dump; the F3 struct is
- * touched only by the single-threaded step path, so it needs no lock. */
-static _Atomic uint64_t g_precondition_repeat_count = 0;
-static _Atomic int64_t  g_precondition_last_log_unix = 0;
-static struct { int64_t h; uint64_t uv; uint64_t reps; int64_t last_log; }
-    g_cursor_gap_warn = { .h = -1 };
-
-static bool tipfin_warn_throttled(bool changed, int64_t now, uint64_t *reps,
-                                  int64_t *last_log, uint64_t *out_shown)
-{
-    if (changed) {
-        *out_shown = *reps;  /* repeats of the PRIOR pair */
-        *reps = 0;
-        *last_log = now;
-        return true;
-    }
-    *out_shown = ++*reps;
-    if (now - *last_log < 300) return false;
-    *last_log = now;
-    return true;
-}
+ * the running count; suppressed calls still count. Both throttles are the
+ * shared log_throttle de-storm primitive: F1 (precondition) keys on a
+ * (height, reason-string) tuple so it uses the boolean-change entry point and
+ * is updated under g_block_reason_mu while its repeat counter is read
+ * lock-free by the dump; F3 (cursor-gap) keys on the (cursor_in, utxo_apply)
+ * height pair and is touched only by the single-threaded step path. */
+static struct log_throttle g_precondition_throttle = LOG_THROTTLE_INIT;
+static struct log_throttle g_cursor_gap_throttle = LOG_THROTTLE_INIT;
 
 static void update_last_advance(int height, const uint8_t hash[32])
 {
@@ -212,11 +199,8 @@ static void record_precondition_block(int height, const char *reason)
                    || strcmp(r, g_last_precondition_reason) != 0;
     atomic_store(&g_last_precondition_height, (int64_t)height);
     snprintf(g_last_precondition_reason, sizeof g_last_precondition_reason, "%s", r);
-    uint64_t reps = atomic_load(&g_precondition_repeat_count);
-    int64_t last = atomic_load(&g_precondition_last_log_unix);
-    bool emit = tipfin_warn_throttled(changed, now, &reps, &last, &shown);
-    atomic_store(&g_precondition_repeat_count, reps);
-    atomic_store(&g_precondition_last_log_unix, last);
+    bool emit = log_throttle_should_emit_changed(&g_precondition_throttle,
+                                                 changed, now, 300, &shown);
     zcl_mutex_unlock(&g_block_reason_mu);
     if (emit)
         LOG_WARN("tip_finalize", "[tip_finalize] precondition_failed height=%d reason=%s repeats=%llu",
@@ -321,12 +305,15 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply", STAGE_NAME);
     if ((uint64_t)next_h > uv_cursor) {
         int64_t now = platform_time_wall_unix();
-        bool changed = next_h != g_cursor_gap_warn.h || uv_cursor != g_cursor_gap_warn.uv;
-        g_cursor_gap_warn.h = next_h;
-        g_cursor_gap_warn.uv = uv_cursor;
+        /* Key the de-storm on the (cursor_in, utxo_apply) height pair: a
+         * change in either height re-emits immediately, otherwise a 300 s
+         * keep-alive. Both fit 32 bits (block heights), so the pack is
+         * lossless and key-equality is identical to the old field compare. */
+        uint64_t key = ((uint64_t)(uint32_t)next_h << 32)
+                       | (uint32_t)uv_cursor;
         uint64_t shown = 0;
-        if (tipfin_warn_throttled(changed, now, &g_cursor_gap_warn.reps,
-                                  &g_cursor_gap_warn.last_log, &shown))
+        if (log_throttle_should_emit(&g_cursor_gap_throttle, key, now, 300,
+                                     &shown))
             LOG_WARN("tip_finalize",
                 "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu repeats=%llu",
                 next_h, (unsigned long long)uv_cursor, (unsigned long long)shown);
@@ -614,9 +601,8 @@ void tip_finalize_stage_shutdown(void)
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
     atomic_store(&g_last_precondition_height, (int64_t)-1);
-    atomic_store(&g_precondition_repeat_count, (uint64_t)0);
-    atomic_store(&g_precondition_last_log_unix, (int64_t)0);
-    g_cursor_gap_warn = (typeof(g_cursor_gap_warn)){ .h = -1 };
+    log_throttle_reset(&g_precondition_throttle);
+    log_throttle_reset(&g_cursor_gap_throttle);
     zcl_mutex_lock(&g_block_reason_mu);
     g_last_precondition_reason[0] = '\0';
     zcl_mutex_unlock(&g_block_reason_mu);
@@ -685,7 +671,7 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "precondition_failed_total", (int64_t)atomic_load(&g_precondition_failed_total));
     json_push_kv_int (out, "successor_pending_total", (int64_t)atomic_load(&g_successor_pending_total));
     json_push_kv_int (out, "last_precondition_height", atomic_load(&g_last_precondition_height));
-    json_push_kv_int (out, "precondition_repeat_count", (int64_t)atomic_load(&g_precondition_repeat_count));
+    json_push_kv_int (out, "precondition_repeat_count", (int64_t)log_throttle_reps(&g_precondition_throttle));
     {
         /* g_block_reason_mu is only live while the stage is (init..shutdown);
          * guard the read so a dump before init / after shutdown is safe. */

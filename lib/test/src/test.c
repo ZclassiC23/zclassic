@@ -993,6 +993,7 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    failures += test_log_throttle();
     failures += test_reducer_frontier_reconcile_light();
     failures += test_reducer_stage_fuzz();
     failures += test_reducer_ingest_e2e();
