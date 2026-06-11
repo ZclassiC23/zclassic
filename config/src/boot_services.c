@@ -26,6 +26,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "services/chain_tip_watchdog.h"
+#include "services/invariant_sentinel.h"
 #include "conditions/condition_registry.h"
 #include "supervisors/domains.h"
 #include "supervisors/self_heal.h"
@@ -1446,6 +1447,7 @@ bool app_init_services(struct app_context *ctx,
      * condition loop handle recovery. */
     chain_tip_watchdog_register(svc->state);
     condition_registry_register_all();
+    invariant_sentinel_register(); /* fail-loud validation pack sweeps */
     /* Close the alert loop: install the event→sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches a human/MCP and the health

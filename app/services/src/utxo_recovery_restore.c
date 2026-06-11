@@ -13,6 +13,7 @@
  * Both share the CSR-gated commit primitives in utxo_recovery_internal.h. */
 
 #include "services/utxo_recovery_service.h"
+#include "services/seed_integrity_gate.h"
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_repair.h"
 #include "services/chain_tip.h"
@@ -297,6 +298,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
         /* SHA3 verification */
         uint8_t imported_root[32];
         uint64_t imported_count = 0;
+        bool sha3_root_valid = true;
         utxo_commitment_sha3_compute(ctx->ndb->db,
             imported_root, &imported_count);
         printf("SHA3 UTXO verification: %llu UTXOs\n",
@@ -330,6 +332,8 @@ struct utxo_import_result utxo_recovery_import_ldb(
                        (long long)actual);
                 imported_count = (uint64_t)actual;
                 res.utxo_count = imported_count;
+                /* Digest came from the stale snapshot — never stamp it. */
+                sha3_root_valid = false;
             } else {
                 LOG_WARN("chain", "only %llu UTXOs imported " "— will retry on next boot", (unsigned long long)imported_count);
                 struct zcl_result wipe = utxo_recovery_wipe(ctx->ndb,
@@ -368,18 +372,19 @@ struct utxo_import_result utxo_recovery_import_ldb(
                 utxo_recovery_write_cold_import_seed(ctx->ndb, ldb_height,
                                                      &ldb_best,
                                                      node_db_utxo_count(ctx->ndb));
+
+            /* Check 5, cold-import half: arm the seed gate's commitment
+             * check (trust model: seed_integrity_gate.h). */
+            if (ldb_height > 0 && sha3_root_valid)
+                (void)seed_integrity_stamp_utxo_sha3(
+                    ctx->ndb, ldb_height, imported_root, imported_count);
         }
 
-        /* Marker consumed by process_block.c's hot-loop exit
-         * debounce. If the reimport happens but the UTXO set
-         * is still incomplete (e.g. zclassicd's on-disk LDB
-         * is memtable-stale and doesn't carry the missing
-         * UTXO either), the hot-loop exit SHOULD NOT trigger
-         * a restart — that would bootloop. Writing this
-         * marker lets process_block.c detect "we just tried
-         * reimport and are STILL stuck" and stop requesting
-         * shutdown. The 10-min staleness window there gives
-         * operator time to intervene. */
+        /* Marker for process_block.c's hot-loop exit debounce: if the
+         * reimport ran but the set is STILL incomplete (memtable-stale
+         * zclassicd LDB), the hot-loop exit must not restart-loop. The
+         * marker says "just tried reimport, still stuck" — stop
+         * requesting shutdown (10-min staleness window for operator). */
         if (ctx->datadir) {
             char marker_path[512];
             snprintf(marker_path, sizeof(marker_path),

@@ -15,6 +15,7 @@
 #include "legacy_mirror_sync_internal.h"
 
 #include "services/header_probe.h"
+#include "services/mirror_divergence_locator.h"
 #include "services/oracle_policy.h"
 #include "services/sync_monitor.h"
 
@@ -225,6 +226,16 @@ static bool lms_fetch_hash(int height, char out_hex[65],
     return ok;
 }
 
+bool lms_remote_hash_at(int height, char out_hex[65])
+{
+    char err[160] = {0};
+    if (!lms_fetch_hash(height, out_hex, err, sizeof(err))) {
+        atomic_fetch_add(&g_lms.rpc_errors, 1);
+        return false;
+    }
+    return true;
+}
+
 bool lms_local_hash_at(int height, char out_hex[65])
 {
     out_hex[0] = '\0';
@@ -262,8 +273,17 @@ static bool lms_verify_anchor(int height)
     if (strcasecmp(local, remote) != 0) {
         oracle_policy_record_disagreement(height, local, remote);
         lms_record_blocker("hash-disagreement", "legacy hash disagreement");
+        /* Validation pack check 6: locate the FIRST diverging height and
+         * page once with it — never 279 identical quiet warnings again.
+         * Rate-limited inside; aborts silently on RPC errors; a tip-window
+         * divergence (healthy transient fork) is NOT escalated until it
+         * confirms at depth or persists. */
+        (void)mirror_divergence_locate(height);
         return false;
     }
+    /* Agreement self-clears any pending/located divergence at or below
+     * this height (the fork resolved / the mirror reorged to us). */
+    mirror_divergence_note_agreement(height);
     return true;
 }
 
@@ -282,8 +302,11 @@ static bool lms_verify_after_tip(int height)
     if (strcasecmp(local, remote) != 0) {
         oracle_policy_record_disagreement(height, local, remote);
         lms_record_blocker("hash-disagreement", "post-catchup tip disagreement");
+        /* Validation pack check 6 — see lms_verify_anchor. */
+        (void)mirror_divergence_locate(height);
         return false;
     }
+    mirror_divergence_note_agreement(height);
     return true;
 }
 

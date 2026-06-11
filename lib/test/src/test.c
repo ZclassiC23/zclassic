@@ -1000,6 +1000,10 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    failures += test_chain_linkage_check();
+    failures += test_invariant_sentinel();
+    failures += test_seed_integrity_gate();
+    failures += test_mirror_divergence_locator();
     failures += test_log_throttle();
     failures += test_reducer_frontier_reconcile_light();
     failures += test_reducer_stage_fuzz();

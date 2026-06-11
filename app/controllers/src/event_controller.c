@@ -246,6 +246,13 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     if (health.operator_needed && health.operator_needed_detail[0])
         json_push_kv_str(&checks, "operator_needed_detail",
                          health.operator_needed_detail);
+    /* Fail-loud validation pack rollup (informational; the pack pages
+     * + HOLDs on its own — see zcl_state subsystem=validation_pack). */
+    json_push_kv_bool(&checks, "validation_pack_ok",
+                      health.validation_pack_ok);
+    if (!health.validation_pack_ok && health.validation_pack_detail[0])
+        json_push_kv_str(&checks, "validation_pack_detail",
+                         health.validation_pack_detail);
     struct bii_recovery_status bii;
     bii_get_recovery_status(&bii);
     if (bii.degraded)

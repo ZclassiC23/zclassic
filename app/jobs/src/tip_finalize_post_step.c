@@ -35,6 +35,8 @@
 #include "primitives/transaction.h"
 #include "services/block_source_policy.h" /* projection-deferred diagnostic */
 #include "util/util.h"                  /* GetDataDir */
+#include "validation/check_block.h"     /* coinbase-height label check */
+#include "validation/chain_linkage_check.h" /* fail-loud HOLD latch */
 #include "validation/process_block.h"   /* g_body_pull_active */
 #include "validation/txmempool.h"
 #include "wallet/wallet.h"
@@ -42,6 +44,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 void tip_finalize_run_post_finalize(struct block_index *pindex_new)
 {
@@ -67,6 +70,39 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                  pindex_new->nHeight,
                  (pindex_new->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
         return;
+    }
+
+    /* Fail-loud validation pack, check 2: the BIP34-style height embedded
+     * in the coinbase scriptSig must equal OUR label for the block just
+     * finalized. The body was already read back from disk above, so this
+     * costs one header hash + a few byte compares — no extra I/O. A
+     * mismatch is the 28-blocks-late splice signature caught at block 1:
+     * HOLD the pipeline (refuse h+1 onward) + PAGE. E13-neutral: the
+     * block stays valid; only OUR pipeline holds. Crash-only: no FATAL,
+     * side effects still run so the published tip stays coherent.
+     *
+     * HASH-BOUND: the check fires only when the read body IS the indexed
+     * block (header hash == phashBlock). A body that hashes differently
+     * is a mis-positioned/corrupt body — a different defect class, owned
+     * by the have_data_unreadable machinery, and comparing ITS coinbase
+     * against OUR label would be a false splice signal. */
+    if (pindex_new->nHeight >= 1 && pindex_new->phashBlock &&
+        blk.num_vtx > 0) {
+        struct uint256 body_hash;
+        block_get_hash(&blk, &body_hash);
+        if (uint256_eq(&body_hash, pindex_new->phashBlock) &&
+            !check_block_coinbase_height_matches(&blk.vtx[0],
+                                                 pindex_new->nHeight)) {
+            char reason[160];
+            snprintf(reason, sizeof(reason),
+                     "coinbase-embedded height != our label h=%d (label "
+                     "shift detected at finalize; held before h=%d)",
+                     pindex_new->nHeight, pindex_new->nHeight + 1);
+            LOG_WARN("tip_finalize", "[validation_pack] %s", reason);
+            chain_linkage_hold_raise("coinbase_label",
+                                     "chain.coinbase_label_mismatch",
+                                     pindex_new->nHeight + 1, reason);
+        }
     }
 
     /* Notify wallet of transactions in the connected block.

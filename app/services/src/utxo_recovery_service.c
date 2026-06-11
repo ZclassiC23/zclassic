@@ -202,9 +202,15 @@ struct utxo_count_check_result utxo_recovery_classify_count_check(
     return res;
 }
 
-/* (wave-2 deletion) utxo_recovery_xor_mismatch_is_corruption_candidate
- * removed: a hardcoded-false predicate guarding a dead-by-construction
- * "corruption" branch in the XOR commitment check. */
+/* See header doc. Shrink/equal-count = corruption candidate; growth =
+ * stale (frozen-tracking import advanced the set). Wave 2 deleted the
+ * old unconditional-false stub; the fail-loud pack made it REAL — the
+ * hourly commitment audit (invariant_sentinel) is its live consumer. */
+bool utxo_recovery_xor_mismatch_is_corruption_candidate(
+    uint64_t saved_count, uint64_t computed_count)
+{
+    return computed_count <= saved_count;
+}
 
 /* ── Policy-gated UTXO wipe ──────────────────────────────────────
  *

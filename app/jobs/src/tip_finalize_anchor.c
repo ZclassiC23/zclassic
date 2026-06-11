@@ -18,7 +18,10 @@
 #include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_log_store.h"
 
+#include "config/runtime.h"
 #include "core/uint256.h"
+#include "services/invariant_sentinel.h"
+#include "services/seed_integrity_gate.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
@@ -53,6 +56,19 @@ bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
     stage_t *stage = tip_finalize_stage_handle();
     if (!db || !stage || height < 0 || !hash)
         return true;
+
+    /* Fail-loud validation pack, check 3(c): the (height, hash) authority
+     * pair must self-resolve in the blocks projection before it is
+     * persisted as the finalize anchor. An unknown hash passes; a hash the
+     * projection resolves to a DIFFERENT height is exactly the published-
+     * pair poison the splice class rode in on — refuse the write. */
+    if (!invariant_sentinel_check_pair(app_runtime_node_db(), hash, height,
+                                       "tip_finalize_anchor")) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] authority anchor REFUSED h=%d reason=%s "
+                 "(pair self-check)", height, reason ? reason : "");
+        return false;
+    }
 
     uint64_t target = (uint64_t)height + 1u;
     uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
@@ -108,6 +124,16 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
                                     bool trusted_seed)
 {
     if (height < 0 || !hash)
+        return false;
+
+    /* Fail-loud validation pack, check 7 (+ check 5 post-import): verify
+     * the seed pair + prev_hash linkage labels (and, for trusted seeds, the
+     * stored utxo_sha3 commitment) BEFORE any cursor is stamped — a
+     * poisoned import fails at birth, loudly, instead of becoming "our"
+     * chain. Crash-only: refusal returns false (all seed callers handle
+     * it); never FATAL. Runs before the progress lock — the gate reads
+     * node.db only. */
+    if (!seed_integrity_gate_check(height, hash, trusted_seed))
         return false;
 
     sqlite3 *db = progress_store_db();

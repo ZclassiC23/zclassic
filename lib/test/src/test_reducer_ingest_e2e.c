@@ -138,6 +138,21 @@ static void make_coinbase(struct transaction *tx, uint8_t branch_tag, int h)
     transaction_init(tx);
     (void)transaction_alloc(tx, 1, 1);
     outpoint_set_null(&tx->vin[0].prevout);
+    /* BIP34-style embedded height: every real ZClassic coinbase at h>0
+     * carries it, and the validation-pack coinbase-label check reads it
+     * back at finalize (tip_finalize_run_post_finalize). Minimal
+     * CScriptNum push, same encoding the consensus parser expects. */
+    {
+        uint8_t sig[6];
+        uint8_t num[4];
+        size_t nl = 0;
+        int hh = h;
+        while (hh > 0) { num[nl++] = (uint8_t)(hh & 0xff); hh >>= 8; }
+        if (nl > 0 && (num[nl - 1] & 0x80)) num[nl++] = 0x00;
+        sig[0] = (uint8_t)nl;
+        memcpy(sig + 1, num, nl);
+        script_set(&tx->vin[0].script_sig, sig, nl + 1);
+    }
     tx->vout[0].value = 1000000000LL + h;
     uint8_t pk[3] = { 0x76, 0xa9, (uint8_t)(0x10 + h) };
     script_set(&tx->vout[0].script_pub_key, pk, 3);
