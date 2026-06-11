@@ -51,6 +51,41 @@ struct boot_validation_result validate_coins_chain_agreement(
 
     /* Case 1: Chain at genesis or empty */
     if (!chain_tip || chain_tip->nHeight <= 0) {
+        /* Wave 2: the restore target is the DERIVED coins-best when the
+         * canonical store is proven — the legacy coins.db view below is a
+         * lagging rebuildable projection. Without this, a boot whose
+         * in-memory chain reads as genesis at validation time restored to
+         * the stale legacy height and bulldozed the CSR's correct derived
+         * tip (defect #9, live 2026-06-11: "Chain at genesis but coins at
+         * h=3137373 — restoring chain tip" while CSR held 3143804,
+         * committed from=3143804 to=3137373 every boot). Requires the
+         * durable hash witness + the block present in the index at the
+         * derived height; otherwise falls through to the legacy paths. */
+        {
+            int32_t d_h = -1;
+            uint8_t d_hash[32];
+            bool d_have = false;
+            if (reducer_frontier_derive_coins_best_now(&d_h, d_hash,
+                                                       &d_have) &&
+                d_h > 0 && d_have) {
+                struct uint256 dh;
+                memcpy(dh.data, d_hash, sizeof(dh.data));
+                struct block_index *db = block_map_find(
+                    &ms->map_block_index, &dh);
+                if (db && db->nHeight == d_h) {
+                    printf("Chain at genesis but DERIVED coins-best at "
+                           "h=%d (coins_kv authority, hash-verified) — "
+                           "restoring chain tip to the derivation\n", d_h);
+                    event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=reset_chain reason=derived_coins_best "
+                        "coins_h=%d", d_h);
+                    r.action = BOOT_RECOVER_RESET_CHAIN;
+                    r.coins_height = d_h;
+                    memcpy(&r.coins_hash, &dh, sizeof(r.coins_hash));
+                    return r;
+                }
+            }
+        }
         if (!uint256_is_null(&coins_best)) {
             /* coins_best_block is set but chain tip is at genesis.
              * Two scenarios:
