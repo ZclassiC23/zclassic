@@ -241,9 +241,12 @@ static bool check_block_impl(const struct block *block,
         }
 
         /* (2) Per-tx structural checks. Order preserved from legacy:
-         * runs AFTER the block-shape gates, BEFORE the sigops total. */
+         * runs AFTER the block-shape gates, BEFORE the sigops total.
+         * In-block variant: the empirical oversize grandfather applies
+         * (413 canonical post-Sapling txs above 102000 — zclassicd
+         * live-behavior parity; everything else stays strict). */
         for (size_t i = 0; i < block->num_vtx; i++) {
-            if (!check_transaction(&block->vtx[i], state))
+            if (!check_transaction_in_block(&block->vtx[i], state))
                 LOG_FAIL("check_block", "check_transaction failed for tx[%zu]", i);
         }
 

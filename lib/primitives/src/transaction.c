@@ -388,13 +388,35 @@ bool js_description_deserialize(struct js_description *jsd, bool use_groth,
     return true;
 }
 
-void transaction_compute_hash(struct transaction *tx)
+bool transaction_hash_serialized(const struct transaction *tx,
+                                 struct uint256 *out)
 {
+    if (!tx || !out) {
+        LOG_FAIL("transaction", "hash_serialized: NULL %s",
+                 tx ? "out" : "tx");
+        return false;
+    }
     struct byte_stream s;
     stream_init(&s, 4096);
-    transaction_serialize(tx, &s);
-    hash256(s.data, s.size, tx->hash.data);
+    if (!transaction_serialize(tx, &s)) {
+        LOG_FAIL("transaction",
+                 "hash_serialized: serialize failed (alloc or stream)");
+        stream_free(&s);
+        return false;
+    }
+    hash256(s.data, s.size, out->data);
     stream_free(&s);
+    return true;
+}
+
+void transaction_compute_hash(struct transaction *tx)
+{
+    /* Thin mutating wrapper over the const sibling. On serialize
+     * failure (only reachable via OOM on the growable scratch stream)
+     * tx->hash is left untouched; the historical code hashed the
+     * partial scratch buffer in that same corner — neither produces a
+     * usable hash, but leaving it untouched is at least deterministic. */
+    (void)transaction_hash_serialized(tx, &tx->hash);
 }
 
 bool transaction_serialize(const struct transaction *tx, struct byte_stream *s)

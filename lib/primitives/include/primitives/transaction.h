@@ -196,6 +196,14 @@ bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s);
  * transaction_deserialize; call manually after mutating a tx in place. */
 void transaction_compute_hash(struct transaction *tx);
 
+/* Const sibling of transaction_compute_hash: double-SHA256 of
+ * transaction_serialize(tx) into *out WITHOUT mutating tx (so const
+ * validation paths can derive the txid from the actual bytes instead of
+ * trusting a possibly-stale tx->hash). Returns false on a serialize or
+ * allocation failure (logged); *out is untouched on false. */
+bool transaction_hash_serialized(const struct transaction *tx,
+                                 struct uint256 *out);
+
 /* Sapling spend description: cv(32) || anchor(32) || nullifier(32) ||
  * rk(32) || zkproof(GROTH_PROOF_SIZE) || spendAuthSig(64). Fixed length,
  * no embedded counts. */

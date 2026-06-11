@@ -17,10 +17,18 @@
 
 #include "domain/consensus/tx_structural.h"
 
+#include <string.h>
+
 #include "core/amount.h"
 #include "core/uint256.h"
 #include "consensus/consensus.h"
 #include "primitives/transaction.h"
+
+/* Empirical oversize grandfather table: the 413 canonical post-Sapling txs
+ * above MAX_TX_SIZE_AFTER_SAPLING (heights 478544..1968856). Generated +
+ * zclassicd-verified; see the header comment inside the .inc and
+ * docs/CONSENSUS_PARITY_DOCTRINE.md "Empirical oversize grandfather". */
+#include "oversize_grandfather_table.inc"
 
 /* Local helper: stamp the failure-out + return a non-ok zcl_result.
  * Captures __FILE__/__LINE__ via ZCL_ERR, so failures still leave a
@@ -36,6 +44,7 @@
 
 struct zcl_result domain_consensus_check_transaction_structural(
         const struct transaction *tx,
+        enum domain_tx_check_context ctx,
         struct domain_consensus_tx_structural_failure *out_failure)
 {
     if (out_failure) {
@@ -97,12 +106,31 @@ struct zcl_result domain_consensus_check_transaction_structural(
 
     /* ── Size limit ─────────────────────────────────────────── */
     size_t tx_size = transaction_serialize_size(tx);
-    if (tx_size > MAX_TX_SIZE_AFTER_SAPLING)
-        DOMAIN_TX_FAIL(out_failure,
-                       DOMAIN_CONSENSUS_TX_STRUCTURAL_ERR_OVERSIZE,
-                       "bad-txns-oversize", 100,
-                       "serialize_size %zu > %u",
-                       tx_size, (unsigned)MAX_TX_SIZE_AFTER_SAPLING);
+    if (tx_size > MAX_TX_SIZE_AFTER_SAPLING) {
+        /* Empirical grandfather (zclassicd LIVE-behavior parity): the
+         * canonical chain carries 413 post-Sapling txs above 102000
+         * (mined when the effective cap was MAX_BLOCK_SIZE; zclassicd
+         * tightened the constant later without grandfathering, so its
+         * own text false-rejects them on resync — proven at block
+         * 478544). Excuse exactly those txs, in-block only, under a
+         * hard MAX_BLOCK_SIZE structural ceiling. The txid is
+         * recomputed from the serialized bytes — never trust a
+         * possibly-stale tx->hash on an accept path. Cold path: fires
+         * at most 413 times in a full reindex. */
+        bool excused = false;
+        if (ctx == DOMAIN_TX_CTX_BLOCK && tx_size <= MAX_BLOCK_SIZE) {
+            struct uint256 txid;
+            if (transaction_hash_serialized(tx, &txid))
+                excused = domain_consensus_tx_oversize_grandfathered(
+                                  &txid, tx_size);
+        }
+        if (!excused)
+            DOMAIN_TX_FAIL(out_failure,
+                           DOMAIN_CONSENSUS_TX_STRUCTURAL_ERR_OVERSIZE,
+                           "bad-txns-oversize", 100,
+                           "serialize_size %zu > %u",
+                           tx_size, (unsigned)MAX_TX_SIZE_AFTER_SAPLING);
+    }
 
     /* ── Output value validation ────────────────────────────── */
     int64_t value_out = 0;
@@ -312,4 +340,21 @@ struct zcl_result domain_consensus_check_transaction_structural(
     }
 
     return ZCL_OK;
+}
+
+bool domain_consensus_tx_oversize_grandfathered(const struct uint256 *txid,
+                                                size_t tx_size)
+{
+    if (!txid)
+        return false;
+    size_t lo = 0, hi = OVERSIZE_GRANDFATHER_COUNT;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = memcmp(txid->data, g_oversize_grandfather[mid].txid, 32);
+        if (c == 0)
+            return tx_size == (size_t)g_oversize_grandfather[mid].size;
+        if (c < 0) hi = mid;
+        else       lo = mid + 1;
+    }
+    return false;
 }

@@ -23,15 +23,16 @@
 #include "metrics/metrics.h"
 #include "event/event.h"
 
-bool check_transaction(const struct transaction *tx,
-                       struct validation_state *state)
+static bool check_transaction_ctx(const struct transaction *tx,
+                                  struct validation_state *state,
+                                  enum domain_tx_check_context ctx)
 {
     if (!transaction_is_coinbase(tx))
         metrics_increment_tx_validated();
 
     struct domain_consensus_tx_structural_failure failure = {0};
     struct zcl_result r =
-        domain_consensus_check_transaction_structural(tx, &failure);
+        domain_consensus_check_transaction_structural(tx, ctx, &failure);
 
     bool ok = r.ok;
     if (!ok) {
@@ -57,4 +58,16 @@ bool check_transaction(const struct transaction *tx,
                     hex, state->reject_reason, state->dos);
     }
     return ok;
+}
+
+bool check_transaction(const struct transaction *tx,
+                       struct validation_state *state)
+{
+    return check_transaction_ctx(tx, state, DOMAIN_TX_CTX_STANDALONE);
+}
+
+bool check_transaction_in_block(const struct transaction *tx,
+                                struct validation_state *state)
+{
+    return check_transaction_ctx(tx, state, DOMAIN_TX_CTX_BLOCK);
 }
