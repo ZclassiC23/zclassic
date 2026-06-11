@@ -1139,10 +1139,66 @@ static int test_refused_rewind_still_lifts_freeze_without_downgrade(void)
     return failures;
 }
 
+/* Runtime re-arm: a freeze caused by unlinkable tip ancestry must lift
+ * once a runtime structural repair (the header band closure) relinks the
+ * tip and calls chain_evidence_request_startup_reconcile — without
+ * waiting for a process restart. The once-per-process guard alone would
+ * park the stale freeze forever. */
+static int test_request_startup_reconcile_lifts_freeze_after_relink(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_state_commit commit = {
+        .new_tip = &f.blocks[1],
+        .new_coins_best = *f.blocks[1].phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = true,
+        .persist_coins_best = true,
+        .rollback_auth = NULL,
+        .wallet_scan_height = -1,
+        .reason = "unit.band_relink_seed",
+    };
+    if (csr_commit_tip(&f.csr, &commit) != CSR_OK)
+        failures++;
+
+    /* Break ancestry → the first reconcile freezes with a named reason. */
+    f.blocks[1].pprev = NULL;
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+
+    /* Relink (the band closure), but WITHOUT the re-arm: the once-guard
+     * holds, so a re-construction must stay frozen. */
+    f.blocks[1].pprev = &f.blocks[0];
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+
+    /* Re-arm → the next construction re-derives evidence on the relinked
+     * tip, lifts the stale freeze, and clears the reason. */
+    chain_evidence_request_startup_reconcile("unit.header_band_closed");
+    chain_evidence_controller_init(&f.authority, &f.ndb, &f.csr);
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state == CEC_CONTRADICTION_FROZEN)
+        failures++;
+    if (view.contradiction_reason[0] != '\0')
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
 int test_chain_evidence_controller(void)
 {
     int failures = 0;
     failures += test_reconcile_lifts_stale_freeze_with_arbitrary_reason();
+    failures += test_request_startup_reconcile_lifts_freeze_after_relink();
     failures += test_manifest_missing_proofs_freezes();
     failures += test_old_metadata_is_ignored();
     failures += test_csr_commit_does_not_write_evidence_metadata();

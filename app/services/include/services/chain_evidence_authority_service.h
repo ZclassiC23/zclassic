@@ -186,6 +186,14 @@ bool chain_evidence_record_has_block_index_required(
 bool chain_evidence_record_has_snapshot_required(
     const struct chain_evidence_record *evidence);
 
+/* Re-arm the once-per-process startup reconcile so the NEXT controller
+ * construction (every health probe constructs one) re-derives active-tip
+ * evidence. For runtime structural repairs — e.g. the header band closure
+ * relinking the tip's ancestry — so a stale contradiction_frozen freeze
+ * does not outlive the condition that caused it. `why` is a grep-able
+ * tag for the log line. */
+void chain_evidence_request_startup_reconcile(const char *why);
+
 #ifdef ZCL_TESTING
 void chain_evidence_controller_test_fail_commit_after_csr(bool fail);
 /* Clears the process-lifetime startup-reconcile once-guard so each test

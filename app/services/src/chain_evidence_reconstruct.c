@@ -305,10 +305,18 @@ bool cec_reconstruct_active_tip_evidence(
  * before chain restore) cannot consume the only run. */
 static _Atomic bool g_cec_startup_reconciled;
 
+void chain_evidence_request_startup_reconcile(const char *why)
+{
+    LOG_INFO("cec", "[cec] startup reconcile re-armed (%s) — next "
+             "controller construction re-derives active-tip evidence",
+             why ? why : "unspecified");
+    atomic_store(&g_cec_startup_reconciled, false);
+}
+
 #ifdef ZCL_TESTING
 void chain_evidence_controller_test_reset_startup_reconcile(void)
 {
-    atomic_store(&g_cec_startup_reconciled, false);
+    chain_evidence_request_startup_reconcile("test_reset");
 }
 #endif
 

@@ -175,10 +175,49 @@ void syncsvc_plan_header_processing(struct sync_header_processing_plan *plan,
                                     struct uint256 *hashes,
                                     int32_t *heights,
                                     size_t max_collect);
+/* `band_fill_in_progress` (from syncsvc_header_band_continue) vetoes the
+ * restart unconditionally: a below-tip batch that extends the trust-rooted
+ * frontier toward an installed-above-frontier island is PROGRESS — the
+ * restart-from-tip policy was what kept the 2026-06-11 band hole
+ * (3,140,573..3,143,301) permanently unrequested. */
 bool syncsvc_should_restart_headers_from_tip(size_t accepted,
                                              const struct block_index *last_header,
                                              int our_height,
-                                             int peer_height);
+                                             int peer_height,
+                                             bool band_fill_in_progress);
+
+/* ── Header band backfill (installed-above-frontier hole) ───────────
+ * Implemented app-side by header_band_service.c (same ownership split
+ * as every other syncsvc_* planner in this contract). All facts are
+ * derived from pprev contiguity to the compiled SHA3 anchor / genesis;
+ * the band typed blocker is a loud cache, not an authority. */
+
+/* True iff the active tip is a detached island AND `last_header` extends
+ * the trust-rooted frontier below the island root — i.e. the batch is
+ * band-fill progress that must suppress restart-from-tip and the
+ * best-header skip. Records the band fact if absent. */
+bool syncsvc_header_band_continue(const struct active_chain *chain,
+                                  const struct block_index *last_header);
+
+/* While the band fact is recorded: the contiguous-frontier block to
+ * anchor periodic getheaders at (the peer forks there and serves the
+ * band). NULL when no band fact exists (O(1)), the band has closed, or
+ * no servable frontier resolves. */
+struct block_index *syncsvc_header_band_backfill_anchor(
+    const struct active_chain *chain);
+
+/* Closure probe — call after every accepted header batch (outside the
+ * full-batch gate: the final band batch can be <160). No-op without the
+ * band fact. On closure: non-destructive in-memory chain[] slot-fill +
+ * pskip + chainwork repropagation, then re-derive the band fact and only
+ * then blocker clear + chain-evidence reconcile re-arm. Runs on the net
+ * message thread, so it NEVER touches disk and never mutates shared
+ * block_index ancestry (no chain_restore_finalize here — the boot disk
+ * ladder rewrites pprev across millions of nodes that reducer/RPC read
+ * lock-free, and band headers are bodyless so its disk walk always
+ * degrades to a full blk*.dat scan). */
+void syncsvc_header_band_after_batch(struct main_state *ms,
+                                     const struct block_index *last_header);
 void syncsvc_build_block_file_scan_activation(
     struct sync_chain_activation *result,
     int scanned_blocks);

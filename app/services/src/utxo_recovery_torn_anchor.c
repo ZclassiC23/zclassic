@@ -50,6 +50,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "utxo_recovery_internal.h"
+
 /* Predicate: is coins_kv the PROVEN-healthy authority on this datadir?
  * All three must hold (see header). Any failure → caller's FATAL stands. */
 static bool urs_coins_kv_is_proven_authority(struct sqlite3 *progress_db)
@@ -215,3 +217,7 @@ bool utxo_recovery_heal_torn_legacy_coins_anchor(
                 (long long)max_h, (long long)utxo_count);
     return true;
 }
+
+/* The cold-import seed-key writer/clearer pair lives in
+ * utxo_recovery_seed_provenance.c (wave 2 — also attests the canonical
+ * coins_kv store via cold_import_seed_coins_kv_count). */

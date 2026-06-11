@@ -6,6 +6,10 @@
 #include "sync/sync_planner.h"
 #include "validation/main_state.h"
 #include "net/download.h"
+#include "services/utxo_recovery_service.h"
+#include "jobs/reducer_frontier.h"
+#include "chain/checkpoints.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include <string.h>
 #include <time.h>
@@ -636,11 +640,246 @@ static int test_sync_service_restarts_low_header_batches_from_tip(void)
         low.nHeight = 2757;
 
         ASSERT(syncsvc_should_restart_headers_from_tip(
-            160, &low, 3087298, 3107754));
+            160, &low, 3087298, 3107754, false));
         ASSERT(!syncsvc_should_restart_headers_from_tip(
-            160, &low, 3087298, 3087300));
+            160, &low, 3087298, 3087300, false));
         ASSERT(!syncsvc_should_restart_headers_from_tip(
-            0, &low, 3087298, 3107754));
+            0, &low, 3087298, 3107754, false));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* ── Header band backfill fixtures ──────────────────────────────────
+ * Segments MUST root at get_sha3_utxo_checkpoint()->height + 1 (or the
+ * compiled REDUCER_FRONTIER_TRUSTED_ANCHOR fallback): the trust-rooted
+ * walker treats lower-height roots as trusted, so low fixtures would
+ * false-pass. blocker_reset_for_testing() wraps each case (the blocker
+ * registry is process-global). */
+
+static int32_t band_anchor_height(void)
+{
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    return cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+}
+
+static void band_make_block(struct block_index *bi, int32_t height,
+                            struct block_index *prev, uint64_t work,
+                            uint8_t tag)
+{
+    block_index_init(bi);
+    bi->hashBlock.data[0] = tag;
+    bi->hashBlock.data[1] = (uint8_t)(height & 0xff);
+    bi->hashBlock.data[2] = (uint8_t)((height >> 8) & 0xff);
+    bi->phashBlock = &bi->hashBlock;
+    bi->nHeight = height;
+    bi->pprev = prev;
+    arith_uint256_set_u64(&bi->nChainWork, work);
+}
+
+static int test_sync_service_band_continue_is_progress_not_restart(void)
+{
+    int failures = 0;
+
+    TEST("sync_service treats frontier-extending band batches as progress") {
+        struct active_chain chain;
+        struct block_index f0, f1, f2, low_fork;
+        struct block_index is[6];
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+        active_chain_init(&chain);
+
+        /* Trust-rooted frontier segment rooted at anchor+1. */
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x10);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x11);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x12);
+        ASSERT(active_chain_move_window_tip(&chain, &f2));
+
+        /* Detached island above the band: contiguous internally, root
+         * pprev-less at anchor+100, chainwork understated at 0. */
+        for (int k = 0; k < 6; k++)
+            band_make_block(&is[k], anchor + 100 + k,
+                            k ? &is[k - 1] : NULL, 0, (uint8_t)(0x20 + k));
+        ASSERT(active_chain_install_tip_slot(&chain, &is[5]));
+
+        /* A low batch that extends the frontier is PROGRESS — and the
+         * derivation records the band fact loudly. */
+        ASSERT(syncsvc_header_band_continue(&chain, &f2));
+        ASSERT(blocker_exists(HEADER_BAND_BLOCKER_ID));
+
+        /* An island-side header is not band fill. */
+        ASSERT(!syncsvc_header_band_continue(&chain, &is[1]));
+
+        /* A detached low fork buys no restart-suppression. */
+        band_make_block(&low_fork, anchor + 50, NULL, 0, 0x30);
+        ASSERT(!syncsvc_header_band_continue(&chain, &low_fork));
+
+        /* Band fill vetoes restart-from-tip; the existing truth table
+         * holds when no band fill is in progress. */
+        ASSERT(!syncsvc_should_restart_headers_from_tip(
+            160, &f2, anchor + 105, anchor + 305, true));
+        ASSERT(syncsvc_should_restart_headers_from_tip(
+            160, &f2, anchor + 105, anchor + 305, false));
+
+        blocker_reset_for_testing();
+        active_chain_free(&chain);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_band_backfill_anchor_selects_frontier(void)
+{
+    int failures = 0;
+
+    TEST("sync_service anchors band backfill at the contiguous frontier") {
+        struct active_chain chain, rooted;
+        struct block_index f0, f1, f2;
+        struct block_index is[6];
+        struct blocker_record br;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+        active_chain_init(&chain);
+        active_chain_init(&rooted);
+
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x10);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x11);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x12);
+        ASSERT(active_chain_move_window_tip(&chain, &f2));
+        for (int k = 0; k < 6; k++)
+            band_make_block(&is[k], anchor + 100 + k,
+                            k ? &is[k - 1] : NULL, 0, (uint8_t)(0x20 + k));
+        ASSERT(active_chain_install_tip_slot(&chain, &is[5]));
+
+        /* No band fact recorded → NULL (the O(1) healthy-node path). */
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == NULL);
+
+        ASSERT(blocker_init(&br, HEADER_BAND_BLOCKER_ID, "unit",
+                            BLOCKER_DEPENDENCY, "unit fixture"));
+        ASSERT(blocker_set(&br) >= 0);
+
+        /* Band fact + detached tip → the highest populated slot below
+         * the island root (band slots are NULL by construction). */
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f2);
+
+        /* Fully trust-rooted chain → NULL even with the fact recorded
+         * (closure is after_batch's job, not the anchor selector's). */
+        ASSERT(active_chain_move_window_tip(&rooted, &f2));
+        ASSERT(syncsvc_header_band_backfill_anchor(&rooted) == NULL);
+
+        blocker_reset_for_testing();
+        active_chain_free(&chain);
+        active_chain_free(&rooted);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_band_closed_after_relink(void)
+{
+    int failures = 0;
+
+    TEST("sync_service closes the band once the island root relinks") {
+        struct main_state ms;
+        struct block_index f0, f1, f2, b3, i0, i1;
+        struct blocker_record br;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+        main_state_init(&ms);
+
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x40);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x41);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x42);
+        /* The band block the peer back-filled. */
+        band_make_block(&b3, anchor + 4, &f2, 4, 0x43);
+        /* Island: root pprev-less, chainwork understated at 0. */
+        band_make_block(&i0, anchor + 5, NULL, 0, 0x44);
+        band_make_block(&i1, anchor + 6, &i0, 0, 0x45);
+
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &b3));
+        ASSERT(active_chain_install_tip_slot(&ms.chain_active, &i1));
+
+        ASSERT(blocker_init(&br, HEADER_BAND_BLOCKER_ID, "unit",
+                            BLOCKER_DEPENDENCY, "unit fixture"));
+        ASSERT(blocker_set(&br) >= 0);
+
+        /* Island root still pprev-less → band open → NO clear. */
+        syncsvc_header_band_after_batch(&ms, &b3);
+        ASSERT(blocker_exists(HEADER_BAND_BLOCKER_ID));
+
+        /* The peer re-served the island root: hash-bound relink (heights
+         * contiguous) — exactly what accept_block_header does live. */
+        i0.pprev = &b3;
+        ASSERT(arith_uint256_is_zero(&i1.nChainWork));
+        /* The island root was never slotted (install_tip_slot published
+         * the tip only) — the closure slot-fill must heal it. */
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 5) == NULL);
+
+        syncsvc_header_band_after_batch(&ms, &i1);
+
+        /* Closed: fact cleared + island chainwork repropagated upward
+         * from the trust-rooted segment (strictly greater than the
+         * understated 0 it was seeded with). */
+        ASSERT(!blocker_exists(HEADER_BAND_BLOCKER_ID));
+        ASSERT(!arith_uint256_is_zero(&i1.nChainWork));
+        ASSERT(!arith_uint256_is_zero(&i0.nChainWork));
+
+        /* The in-memory slot-fill healed active_chain_at across the
+         * island WITHOUT disturbing the slots below it — the closure is
+         * non-destructive by construction (no disk rebuild, no pprev
+         * mutation, no slot ever set to NULL). */
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 5) == &i0);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 6) == &i1);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 4) == &b3);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 3) == &f2);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 1) == &f0);
+        ASSERT(i0.pprev == &b3 && b3.pprev == &f2);
+
+        blocker_reset_for_testing();
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_band_producer_derives_from_ancestry(void)
+{
+    int failures = 0;
+
+    TEST("band producers derive the fact from ancestry, not the log frontier") {
+        struct block_index f0, f1, f2, island;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+
+        /* Trust-rooted chain — the clean two-step cold-import shape:
+         * imported headers are pprev-contiguous down to the trust root.
+         * The retired log-frontier derivation false-recorded a band here
+         * on a fresh progress db (an empty validate_headers log collapses
+         * the frontier to the compiled SHA3 anchor — it does NOT abstain)
+         * and the first accepted batch then fired a false closure. The
+         * ancestry derivation must abstain. */
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x50);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x51);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x52);
+        utxo_recovery_note_band_unrooted_tip(&f2, "unit_contiguous");
+        ASSERT(!blocker_exists(HEADER_BAND_BLOCKER_ID));
+
+        /* A pprev-less anchor installed above the trust root IS the
+         * island root — the fact must be recorded. */
+        band_make_block(&island, anchor + 100, NULL, 0, 0x53);
+        utxo_recovery_note_band_unrooted_tip(&island, "unit_island");
+        ASSERT(blocker_exists(HEADER_BAND_BLOCKER_ID));
+
+        blocker_reset_for_testing();
         PASS();
     } _test_next:;
 
@@ -1320,6 +1559,10 @@ int test_sync_service(void)
     failures += test_sync_service_plans_header_processing();
     failures += test_sync_service_plans_header_processing_activation_from_disk();
     failures += test_sync_service_restarts_low_header_batches_from_tip();
+    failures += test_sync_service_band_continue_is_progress_not_restart();
+    failures += test_sync_service_band_backfill_anchor_selects_frontier();
+    failures += test_sync_service_band_closed_after_relink();
+    failures += test_sync_service_band_producer_derives_from_ancestry();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
     failures += test_sync_service_builds_getheaders_locator_empty_chain();
     failures += test_sync_service_header_log_policy();

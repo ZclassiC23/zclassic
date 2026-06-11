@@ -6,19 +6,21 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-11 — live node RECOVERED to tip; 4 defects root-caused; 5 landings on main; header-splice fix IN FLIGHT
+## 2026-06-11 — live node AT TIP on the all-fixes binary; 5th defect (header band hole) fix IN FLIGHT; wave-2 derived-coins_best MERGED
 
-**Outcome:** the 6h outage is over — the live node was rebuilt via the
-proven two-step recipe and reached the zclassicd tip (hash-identity at
-every probed height, 3 consecutive gap≤1 readings, seed binding
-oracle-verified at birth). Four defects root-caused this session:
-systemd's start-limit giving up mid-crash-loop, the boot
-FATAL-instead-of-recover path, the FR-3 oversize consensus regression,
-and the header-splice authority bug. Five landings on main — 8 commits
-incl. two branch merges (build + lint + test_parallel 0/409 green at
-each step, all pushed).
-The splice fix is IN FLIGHT and gates durable tip-tracking — the live
-tip is currently re-poisoned +3 above ~3143600.
+**Outcome:** the 6h outage is over and the live node tracks the
+zclassicd tip on binary `600efd53b` (hash-identity at every probed
+height incl. shift probes, gap ≤1, 5h+ uptime, NRestarts=0). FIVE
+defects root-caused this session: systemd's start-limit giving up
+mid-crash-loop, the boot FATAL-instead-of-recover path, the FR-3
+oversize consensus regression, the header-splice authority bug
+(MERGED `600efd53b` and deployed), and — found by the fail-loud stack
+on the final deploy — the **cold-import header band hole** (fix IN
+FLIGHT, branch `fix/header-band-backfill`). Wave 2 of the canonical
+refactor also MERGED (`5fc5d22cc`): coins_best_block is DERIVED from
+the reducer's durable logs, the utxos mirror demoted to a rebuildable
+cache (fixture proof: restores 5,798 blocks higher than the installed
+anchor; poisoned cache ignored with zero FATALs).
 
 **LANDED on main:**
 - `706a7c00a` — boot crash-only auto-recovery: integrity FATAL

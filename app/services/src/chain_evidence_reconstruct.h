@@ -23,6 +23,10 @@
  * persist-update. */
 void cec_reconcile_startup(struct chain_evidence_controller *authority);
 
+/* chain_evidence_request_startup_reconcile (the runtime re-arm of the
+ * once-guard) is declared in services/chain_evidence_authority_service.h
+ * — it is a public surface (band closure + tests), not an init seam. */
+
 /* Reconstruct publishable LOCAL_IMPORT evidence for a hash-consistent
  * active tip recovered from disk. Recomputes ancestry/chainwork when
  * recoverable; returns true and persists the evidence (idempotently — a

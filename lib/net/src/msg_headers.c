@@ -653,9 +653,22 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             atomic_store(&g_last_header_tip_height, cur_tip);
         }
 
+        /* Band fill: a below-tip batch that extends the trust-rooted
+         * frontier toward an installed-above-frontier island is progress
+         * — it must suppress BOTH the restart-from-tip and the
+         * best-header skip below, or the band hole never closes. The
+         * low-batch gate keeps the ancestry walk off the IBD hot path. */
+        bool band_fill = (pindex_last &&
+            pindex_last->nHeight <
+                active_chain_height(&mp->main_state->chain_active))
+            ? syncsvc_header_band_continue(&mp->main_state->chain_active,
+                                           pindex_last)
+            : false;
+
         if (syncsvc_should_restart_headers_from_tip(
                 accepted, pindex_last, active_chain_height(
-                    &mp->main_state->chain_active), node->starting_height)) {
+                    &mp->main_state->chain_active), node->starting_height,
+                band_fill)) {
             LOG_WARN("headers",
                     "low batch from %s ended at h=%d below "
                     "chain tip h=%d; restarting getheaders from tip",
@@ -670,7 +683,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 else
                     push_getheaders(mp, node);
             }
-        } else if (newly_added == 0 && pindex_last &&
+        } else if (!band_fill && newly_added == 0 && pindex_last &&
                    msg_processor_block_index_heights_repaired(mp) &&
                    mp->main_state->pindex_best_header &&
                    mp->main_state->pindex_best_header->phashBlock &&
@@ -707,6 +720,12 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
     }
 
+    /* Band closure probe — deliberately OUTSIDE should_request_more_headers
+     * (the final band batch can be shorter than 160). No-op without the
+     * band blocker. */
+    if (accepted > 0)
+        syncsvc_header_band_after_batch(mp->main_state, pindex_last);
+
     return true;
 }
 
@@ -741,9 +760,15 @@ void push_getheaders_from(struct msg_processor *mp,
             if (walk->phashBlock)
                 tmp[nh++] = *walk->phashBlock;
             /* Walk back 'step' blocks via pprev */
+            struct block_index *prev_walk = walk;
             for (int s = 0; s < step && walk->pprev; s++)
                 walk = walk->pprev;
-            if (walk == from) break;  /* safety: avoid infinite loop */
+            /* Stop when the walk made no progress (pprev exhausted — an
+             * island root, not just the first hop): the old `walk == from`
+             * test only caught the first iteration, so a detached-island
+             * anchor degenerated the locator to [island hashes ×31,
+             * genesis]. */
+            if (walk == prev_walk) break;
             if (nh >= 10)
                 step *= 2;  /* exponential after first 10 entries */
         }
@@ -847,6 +872,21 @@ void exec_getheaders_action(struct msg_processor *mp,
         return;
 
     tip = active_chain_tip(&mp->main_state->chain_active);
+
+    /* While a header band hole is recorded, every periodic kick drives
+     * the band: anchor at the contiguous frontier so the peer forks
+     * there and serves the band. Tip-side progress continues via batch
+     * continuations and unsolicited header/inv pushes. O(1) when no
+     * band fact exists. */
+    {
+        struct block_index *band_anchor =
+            syncsvc_header_band_backfill_anchor(&mp->main_state->chain_active);
+        if (band_anchor) {
+            push_getheaders_from(mp, node, band_anchor);
+            return;
+        }
+    }
+
     switch (action->anchor) {
     case SYNC_HEADER_REQUEST_TIP_PARENT:
         if (mp->main_state->pindex_best_header &&

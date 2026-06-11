@@ -272,8 +272,14 @@ void syncsvc_plan_header_processing(struct sync_header_processing_plan *plan,
 bool syncsvc_should_restart_headers_from_tip(size_t accepted,
                                              const struct block_index *last_header,
                                              int our_height,
-                                             int peer_height)
+                                             int peer_height,
+                                             bool band_fill_in_progress)
 {
+    /* A frontier-extending batch below an installed-above-frontier island
+     * is the band fill in progress — restarting from tip here is the
+     * self-defeating loop that kept the band hole open (2026-06-11). */
+    if (band_fill_in_progress)
+        return false;
     if (accepted == 0 || !last_header)
         return false;
     if (last_header->nHeight >= our_height)

@@ -14,6 +14,7 @@
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
 #include "services/chain_tip.h"
+#include "services/utxo_recovery_service.h"
 #include "chain/chain.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -652,6 +653,14 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
      *     reducer_anchor_candidate_ok reject the anchor). Raise-only. */
     if (!cold_import_set_applied_if_behind(progress_db, H + 1))
         return -1;  // raw-return-ok:cold_import_set_applied_if_behind logs on failure
+
+    /* Record-only: a seed anchor NOT pprev-contiguous to a trust root is
+     * the band-hole class (2026-06-11) — note it loudly so the header
+     * planner backfills the band; the seed itself proceeds untouched.
+     * Covers re-boots that re-seed without re-running the LDB branch.
+     * Ancestry-derived: on the proven two-step cold-import recipe the
+     * imported header chain is contiguous and this abstains. */
+    utxo_recovery_note_band_unrooted_tip(anchor, "cold_import_seed");
 
     /* (5) Seed the tip_finalize anchor + all 7 upstream cursors to H+1.
      *     trusted_seed=true is the SHA3-verified fast-sync trust model the

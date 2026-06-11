@@ -264,6 +264,12 @@ struct utxo_import_result utxo_recovery_import_ldb(
                     printf("LDB import: metadata anchor at h=%d hash=%s "
                            "— waiting for real block data.\n",
                            ldb_height, dbg_hex);
+                    /* Record-only: a pprev-less anchor installed above
+                     * the trust-rooted extent is the band-hole class
+                     * (2026-06-11). Ancestry-derived — abstains on a
+                     * contiguous imported header chain. */
+                    utxo_recovery_note_band_unrooted_tip(
+                        anchor, "ldb_import_anchor");
                 }
                 res.skip_activate = true;
                 snprintf(res.anchor_reason, sizeof(res.anchor_reason),
@@ -760,6 +766,10 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
 
             printf("Chain restore: metadata anchor at h=%d hash=%s "
                    "— waiting for real block data.\n", utxo_max_height, hex);
+            /* Record-only: same band-hole producer class as the LDB
+             * import anchor above (ancestry-derived). */
+            utxo_recovery_note_band_unrooted_tip(
+                anchor, "chain_restore_anchor");
             /* see the same call above; fire here too
              * so the fresh-anchor path gets rebuild + nBits backfill. */
             (void)chain_restore_finalize(ctx->state, ctx->datadir);
