@@ -64,11 +64,16 @@ struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
 int utxo_recovery_finalized_served_floor(struct uint256 *hash_out,
                                          bool *have_hash_out);
 
-/* Validated header frontier (the Invariant A authority): the contiguous
+/* Validated header frontier (the Invariant A LOG authority): the contiguous
  * ok=1 prefix of validate_headers_log above the trusted anchor. Returns
  * false when there is NO log evidence (fresh datadir / missing tables) —
  * the caller must FAIL OPEN and behave as if ungated. */
 bool utxo_recovery_header_frontier(int32_t *out_h);
+
+/* utxo_recovery_block_trust_rooted (the Invariant A INDEX authority) is
+ * declared in the PUBLIC services/utxo_recovery_service.h — boot.c gates
+ * its CSR tip promotions on it too. Implemented in
+ * utxo_recovery_frontier_gate.c. */
 
 /* INVARIANT A GATE — never INSTALL a tip above what the validated header
  * log can DERIVE. Returns the candidate itself (no clamp needed, or
@@ -80,14 +85,28 @@ struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
     struct utxo_recovery_ctx *ctx, struct block_index *candidate,
     const char *reason, int32_t *frontier_out, bool *clamped_out);
 
-/* EVIDENCE-BASED FLOOR REWIND — only a finalized floor ABOVE the
- * contiguous validated prefix is provably unbackable; flip its ok=1 rows
- * to ok=0 with status='floor_rewind' (history preserved, status marks
- * provenance). NEVER fires when floor <= frontier (ordinary boots are
- * untouched — the anti-rewind guard holds). Returns false only on a DB
- * write failure. */
+/* EVIDENCE-BASED FLOOR REWIND — only a finalized floor neither authority
+ * can back is provably unbackable; flip its ok=1 rows above `frontier`
+ * (the rewind bound) to ok=0 with status='floor_rewind' (history
+ * preserved, status marks provenance). NEVER fires when floor <= the
+ * bound (ordinary boots are untouched — the anti-rewind guard holds).
+ * Returns false only on a DB write failure. */
 bool utxo_recovery_rewind_finalized_floor(int32_t frontier, int floor,
                                           const char *reason);
+
+/* THE SETTLE LOOP — re-derive a servable finalized floor. While the floor
+ * outranks scan_fallback_h AND fails either Invariant A authority (LOG
+ * half: within the validated frontier or below the log's rolling window;
+ * INDEX half: row hash resolves at the recorded height on a trust-rooted
+ * chain), flip it via utxo_recovery_rewind_finalized_floor and re-read.
+ * Returns the settled floor; served_hash/have_served_hash track the
+ * surviving row. A floor that settles above scan_fallback_h is VERIFIED
+ * backable by both authorities (modulo a defensive no-progress hold). */
+int utxo_recovery_settle_finalized_floor(struct utxo_recovery_ctx *ctx,
+                                         int scan_fallback_h,
+                                         int served_floor,
+                                         struct uint256 *served_hash,
+                                         bool *have_served_hash);
 
 /* Reset the coins-best cursor + active tip to the genesis block and
  * flush the coins cache. Returns ZCL_OK on success; a non-ok zcl_result

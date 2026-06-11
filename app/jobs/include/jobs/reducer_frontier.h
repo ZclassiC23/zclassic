@@ -103,4 +103,22 @@ bool reducer_frontier_log_hash_at(
     bool *found                     /* OUT: row + non-NULL 32B hash present */
 );
 
+/* MIN(height) over a stage log — the oldest height the log still covers.
+ * The stage logs are rolling WINDOWS (rows below the window get pruned /
+ * were never written under an anchor seed), so a height BELOW this floor
+ * is "log-unknown": the log cannot refute it, only fail to vouch for it.
+ * The Invariant A clamp uses this to fail OPEN (index authority only) for
+ * candidates beneath the window instead of clamping an 86K-block rollback
+ * to the compiled anchor (the 2026-06-11 copy-prove regression).
+ *
+ * *found=false when the table is empty — success, not an error. Returns
+ * false only on a real DB read error. Acquires progress_store_tx_lock()
+ * itself (recursive). SELECT-only. */
+bool reducer_frontier_log_coverage_floor(
+    sqlite3 *progress_db,           /* progress.kv handle */
+    const char *log_table,          /* e.g. "validate_headers_log" */
+    int32_t *out_lo,                /* OUT: MIN(height) when *found */
+    bool *found                     /* OUT: table has at least one row */
+);
+
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_H */

@@ -220,9 +220,8 @@ struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
             (void *)ctx, ctx ? (void *)ctx->state : NULL, (void *)tip,
             tip ? (void *)tip->phashBlock : NULL, reason ? reason : "");
 
-    /* INVARIANT A GATE — never INSTALL a tip above what the validated
-     * header log can DERIVE (the 2026-06-11 wedge: tip 3,143,175 vs
-     * frontier 3,141,533). Single choke point for all restore installs;
+    /* INVARIANT A GATE — never INSTALL a tip above what can be DERIVED
+     * (log + trust-rooted index). Single choke point for restore installs;
      * a clamp lowers *tip_inout, an over-clamp floor rewinds on evidence. */
     if (!frontier_exempt) {
         int32_t frontier = -1;
@@ -235,10 +234,11 @@ struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
                 "the validated header frontier h=%d (reason=%s); install "
                 "refused", tip->nHeight, frontier, reason ? reason : "");
         if (clamped) {
+            /* Rewind bound = the COMMITTED height, not the raw frontier. */
             int floor = utxo_recovery_finalized_served_floor(NULL, NULL);
             if (floor > gated->nHeight)
-                (void)utxo_recovery_rewind_finalized_floor(frontier, floor,
-                                                           reason);
+                (void)utxo_recovery_rewind_finalized_floor(gated->nHeight,
+                                                           floor, reason);
             tip = gated;
             *tip_inout = gated;
         }

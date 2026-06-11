@@ -546,19 +546,19 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             if (utxo_recovery_scan_fallback_below_finalized_floor(
                     scan_fallback, &served_floor, &served_hash,
                     &have_served_hash)) {
-                /* The floor outranks scan_fallback — but only a floor the
-                 * validated header log can BACK is real authority. A floor
-                 * above the frontier is provably unbackable (the 2026-06-11
-                 * wedge fabricated restored_height=floor from exactly this
-                 * shape): rewind it on evidence, then re-read. */
-                int32_t fh = -1;
-                if (utxo_recovery_header_frontier(&fh) && served_floor > fh) {
-                    (void)utxo_recovery_rewind_finalized_floor(
-                        fh, served_floor, "scan_fallback_guard");
-                    served_floor = utxo_recovery_finalized_served_floor(
-                        &served_hash, &have_served_hash);
-                }
+                /* The floor outranks scan_fallback — but only a floor BOTH
+                 * Invariant A authorities can back is real authority. The
+                 * settle loop (utxo_recovery_frontier_gate.c) flips
+                 * unbackable rows, loudest-first, until the floor is
+                 * evidence again or stops outranking scan_fallback. */
+                served_floor = utxo_recovery_settle_finalized_floor(
+                    ctx, scan_fallback->nHeight, served_floor,
+                    &served_hash, &have_served_hash);
                 if (served_floor > scan_fallback->nHeight) {
+                    /* The held floor is VERIFIED above: hash resolves at
+                     * the recorded height on a trust-rooted chain. The
+                     * boot consumer re-checks that agreement before any
+                     * active-chain install. */
                     LOG_WARN("utxo_recovery",
                              "scan_fallback h=%d below durable finalized floor "
                              "h=%d; refusing active-tip rollback",
@@ -572,8 +572,8 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                              "finalized_floor_guard");
                     return res;
                 }
-                /* fall through: the floor was unbackable and is now rewound
-                 * at or below scan_fallback — the commit is permitted. */
+                /* fall through: every row outranking scan_fallback was
+                 * unbackable and is now rewound — the commit is permitted. */
             }
             struct block_index *committed = scan_fallback;
             if (utxo_recovery_commit_tip(

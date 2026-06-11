@@ -60,6 +60,21 @@ bool reindex_chainstate(struct main_state *ms,
  * by the pre-integrity-gate path in app_init (a torn anchor would otherwise
  * FATAL boot before -reindex-chainstate can run). Idempotent. */
 bool boot_index_clear_coins_state(struct node_db *ndb);
+
+/* CSR-gated boot tip promotion (defined in boot.c; shared with
+ * boot_index.c). Commits `tip` as the active tip + coins-best through the
+ * chain_state_repository under a boot-repair rollback authorization. */
+bool boot_promote_tip_via_csr(struct block_index *tip,
+                              const char *reason,
+                              bool persist_coins_best);
+
+/* The legacy coins/tip consistency safety check (post-restore): promote a
+ * durable UTXO anchor when the coins cursor proves a higher snapshot, and
+ * reconcile coins_best vs the active tip — every real-block promotion
+ * gated by utxo_recovery_block_trust_rooted (Invariant A index half). */
+void boot_index_verify_coins_tip_consistency(struct main_state *ms,
+                                             struct coins_view_sqlite *cvs,
+                                             struct node_db *ndb);
 void *backfill_addresses_thread(void *arg);
 
 /* Scan block files (blk*.dat), parse ZClassic block headers,

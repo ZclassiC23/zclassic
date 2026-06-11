@@ -98,6 +98,17 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     struct utxo_recovery_ctx *ctx,
     struct block_index *scan_fallback);
 
+/* The Invariant A INDEX authority: true iff `bi` is hash-linked
+ * (contiguous pprev, height decrementing by exactly 1) down to a trust
+ * root — genesis, the compiled SHA3 UTXO anchor extent, or a root at
+ * anchor/anchor+1 (snapshot-anchored nodes). A detached island rooted
+ * above the anchor is NOT derivable state no matter what the progress
+ * logs or the coins cursor claim (the 2026-06-11 wedge: a 375-block
+ * island rooted at 3,142,801 vouched for by fabricated anchor rows).
+ * Every boot-time tip PROMOTION of a real block must pass this before
+ * reaching CSR. O(height - anchor) pointer hops; boot/recovery only. */
+bool utxo_recovery_block_trust_rooted(const struct block_index *bi);
+
 /* ── Validation recovery execution ───────────────────────── */
 
 struct recovery_exec_result {

@@ -1190,6 +1190,148 @@ int test_utxo_recovery_service(void)
             urs_frontier_fixture_teardown(&fx);
     }
 
+    /* ── 12h. The 2026-06-11 copy-prove shape: a detached index island
+     *         vouched for by fabricated log evidence. The log frontier
+     *         sits ABOVE the floor (fabricated anchor rows + cursors), so
+     *         the log-only test passes — but the floor rows fail the INDEX
+     *         half: the top row's hash resolves at the WRONG height (the
+     *         3,143,171→3,143,175 shape) and the rows beneath resolve onto
+     *         a detached island rooted above the trust anchor. The guard
+     *         must flip ALL of them and commit the trust-rooted
+     *         scan_fallback ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_island_floor", A, 21);
+        /* Detached island [A+30 .. A+40]: root pprev=NULL ABOVE the
+         * anchor — the live fixture's 375-block island rooted at
+         * 3,142,801. (Also moves the active tip onto the island, like
+         * the wedged datadir.) */
+        if (up)
+            urs_build_segment(&fx.ms, A + 30, 11);
+        /* Fabricated log evidence up to the island top: frontier=A+40. */
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 40);
+
+        /* Floor debris, loudest shape on top: A+38 records the hash of
+         * the A+39 island block (height disagreement), A+35/A+33 record
+         * correct island hashes (resolvable but not trust-rooted). */
+        struct uint256 h39, h35, h33;
+        urs_hash_for_height(A + 39, &h39);
+        urs_hash_for_height(A + 35, &h35);
+        urs_hash_for_height(A + 33, &h33);
+        seeded = seeded
+              && urs_seed_finalized_floor(A + 33, &h33, "anchor")
+              && urs_seed_finalized_floor(A + 35, &h35, "anchor")
+              && urs_seed_finalized_floor(A + 38, &h39, "anchor");
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 5, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        int ok38 = -1, ok35 = -1, ok33 = -1;
+        char st38[32] = "", st35[32] = "", st33[32] = "";
+        bool rows_found = up
+            && urs_tipfin_row(A + 38, &ok38, st38, sizeof(st38))
+            && urs_tipfin_row(A + 35, &ok35, st35, sizeof(st35))
+            && urs_tipfin_row(A + 33, &ok33, st33, sizeof(st33));
+
+        URS_CHECK("urs: island-backed floor rows (wrong-height + unrooted) "
+                  "are all rewound and the trust-rooted fallback commits",
+                  up && seeded && scan_fallback &&
+                  rr.status.ok && rr.restored && !rr.skip_activate &&
+                  rr.restored_height == A + 5 &&
+                  uint256_eq(&rr.restored_hash, &cand_hash) &&
+                  rows_found &&
+                  ok38 == 0 && strcmp(st38, "floor_rewind") == 0 &&
+                  ok35 == 0 && strcmp(st35, "floor_rewind") == 0 &&
+                  ok33 == 0 && strcmp(st33, "floor_rewind") == 0 &&
+                  urs_tipfin_max_ok() == -1 &&
+                  active_chain_height(&fx.ms.chain_active) == A + 5);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
+    /* ── 12i. A detached-island candidate WITHIN the (fabricated) log
+     *         frontier is refused by the INDEX half of the gate: the
+     *         height test alone would have installed it ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_island_cand", A, 21);
+        if (up)
+            urs_build_segment(&fx.ms, A + 30, 11);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 40);
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 40, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        URS_CHECK("urs: detached-island candidate within the log frontier "
+                  "is refused (not trust-rooted)",
+                  up && seeded && scan_fallback &&
+                  !rr.status.ok && rr.status.code == -21 && !rr.restored);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
+    /* ── 12j. Rolling-window abstention: the candidate sits BELOW the
+     *         oldest validate_headers_log row (the log is a pruned
+     *         window), so the log cannot refute it — the index half
+     *         (trust-rooted ancestry) decides alone and the candidate
+     *         commits UNCLAMPED. Without this the second copy-prove
+     *         clamped the trust-rooted candidate 3,137,373 down to the
+     *         compiled anchor 3,056,758 ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_log_window", A, 21);
+        /* Log rows only at [A+30 .. A+40] — detached from the anchor, so
+         * the contiguous prefix (and thus the frontier) collapses to A,
+         * while the window floor is A+30. */
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 30, A + 40);
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        URS_CHECK("urs: candidate below the log coverage window commits "
+                  "unclamped on trust-rooted index ancestry",
+                  up && seeded && scan_fallback &&
+                  rr.status.ok && rr.restored &&
+                  rr.restored_height == A + 20 &&
+                  uint256_eq(&rr.restored_hash, &cand_hash) &&
+                  active_chain_height(&fx.ms.chain_active) == A + 20);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
     /* ── 12c. Recovery entry points return rich status on invalid context ── */
 
     {

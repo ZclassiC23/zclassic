@@ -449,3 +449,46 @@ bool reducer_frontier_log_hash_at(sqlite3 *progress_db,
     progress_store_tx_unlock();
     return ok;
 }
+
+bool reducer_frontier_log_coverage_floor(sqlite3 *progress_db,
+                                         const char *log_table,
+                                         int32_t *out_lo, bool *found)
+{
+    if (!progress_db || !log_table || !out_lo || !found)
+        LOG_FAIL("reducer", "log_coverage_floor: NULL arg");
+    *found = false;
+    *out_lo = 0;
+
+    /* log_table is a fixed caller constant (never network/user input), same
+     * concat discipline as log_ok_at. */
+    char sql[128];
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT MIN(height) FROM %s", log_table);
+    if (n < 0 || n >= (int)sizeof(sql))
+        LOG_FAIL("reducer", "log_coverage_floor sql overflow for %s",
+                 log_table);
+
+    /* Recursive lock: safe whether or not the caller already holds it. */
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    bool rc_ok = true;
+    if (sqlite3_prepare_v2(progress_db, sql, -1, &st, NULL) != SQLITE_OK) {
+        progress_store_tx_unlock();
+        LOG_FAIL("reducer", "prepare coverage floor %s failed: %s",
+                 log_table, sqlite3_errmsg(progress_db));
+    }
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(st, 0) != SQLITE_NULL) {
+            *out_lo = (int32_t)sqlite3_column_int64(st, 0);
+            *found = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "step coverage floor %s failed: %s",
+                 log_table, sqlite3_errmsg(progress_db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+    return rc_ok;
+}
