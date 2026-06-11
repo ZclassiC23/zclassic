@@ -53,6 +53,18 @@
 #include "util/blocker.h"
 #include "util/log_macros.h"
 
+/* Conversation frontier: the highest trust-rooted below-island header
+ * seen this process. Chain SLOTS only fill at closure, so an anchor
+ * re-derived from slots alone sits one batch below the index frontier
+ * forever — the peer re-serves the same already-known range and the
+ * band walk livelocks (defect #7, live 2026-06-11: pinned at the same
+ * 160-header batch across 8+ cycles, +160 per restart). block_index
+ * nodes are never freed, so the raw pointer stays valid for the
+ * process lifetime; consumers re-validate height + trust-rooting
+ * against the CURRENT island before use, so a stale value can only
+ * fall back to the slot walk, never mis-anchor. */
+static struct block_index *_Atomic g_band_walk_frontier;
+
 bool syncsvc_header_band_continue(const struct active_chain *chain,
                                   const struct block_index *last_header)
 {
@@ -80,6 +92,15 @@ bool syncsvc_header_band_continue(const struct active_chain *chain,
     if (!blocker_exists(HEADER_BAND_BLOCKER_ID))
         utxo_recovery_note_band_unrooted_tip(tip, "band_continue");
 
+    /* Advance the conversation frontier even when the batch was 100%
+     * already-known headers (newly_added==0): last_header is verified
+     * trust-rooted + below the island, so the NEXT request must anchor
+     * at or above it — never re-derive from the lagging slots. */
+    struct block_index *prev = atomic_load(&g_band_walk_frontier);
+    if (!prev || last_header->nHeight > prev->nHeight)
+        atomic_store(&g_band_walk_frontier,
+                     (struct block_index *)last_header);
+
     LOG_INFO("headers",
              "header band backfill: continuing from h=%d (island_root=%d)",
              last_header->nHeight, island_root->nHeight);
@@ -103,6 +124,16 @@ struct block_index *syncsvc_header_band_backfill_anchor(
         utxo_recovery_block_ancestry_break(tip);
     if (!island_root)
         return NULL;           /* band closed; after_batch clears the fact */
+
+    /* Prefer the conversation frontier (highest trust-rooted below-island
+     * header SEEN, advanced by band_continue) — the slot walk below lags
+     * it by a whole batch until closure fills slots, which is the anchor
+     * livelock (defect #7). Re-validate against the CURRENT island so a
+     * frontier recorded for an earlier band can never mis-anchor. */
+    struct block_index *walk = atomic_load(&g_band_walk_frontier);
+    if (walk && walk->nHeight < island_root->nHeight &&
+        utxo_recovery_block_trust_rooted(walk))
+        return walk;
 
     /* The highest populated slot below the island root is the contiguous
      * frontier — anchor the conversation there so the peer forks at the
@@ -236,6 +267,7 @@ void syncsvc_header_band_after_batch(struct main_state *ms,
     }
 
     blocker_clear(HEADER_BAND_BLOCKER_ID);
+    atomic_store(&g_band_walk_frontier, NULL);
     event_emitf(EV_RECOVERY_ACTION, 0,
                 "action=header_band_closed tip=%d slots_filled=%d "
                 "chainwork_blocks=%d",

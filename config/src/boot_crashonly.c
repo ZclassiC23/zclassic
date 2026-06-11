@@ -29,10 +29,31 @@ void boot_crashonly_clear(const char *datadir)
     boot_auto_reindex_clear(datadir);
 }
 
-void boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
+bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                                          int zero_nbits, int mismatches,
-                                         int first_mismatch_h)
+                                         int first_mismatch_h,
+                                         bool reindex_executable)
 {
+    /* Verb check FIRST (defect #6, live 2026-06-11): on a cold-import
+     * datadir there is no block data below the import window, so
+     * replay-from-blocks/ can never succeed — requesting it burns a
+     * full boot cycle per attempt and (pre-fix) wiped the mirror before
+     * discovering the dead end. Name the right verb loudly and tell the
+     * caller to keep serving instead of exiting into an impossible
+     * rebuild. */
+    if (zero_nbits == 0 && !reindex_executable) {
+        fprintf(stderr,
+            "[boot] crash-only recovery: tip-above-extent at tip_h=%d is the "
+            "reindex-recoverable shape, but blocks/ cannot serve the replay "
+            "(cold-import window, no genesis-side block data) — NOT requesting "
+            "-reindex-chainstate. Remedy: cold-import re-seed. Serving "
+            "degraded; the reducer reconciles forward.\n", tip_h);
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+            "condition=cold_import_reseed_required tip=%d "
+            "reason=reindex_unexecutable", tip_h);
+        return false;
+    }
+
     /* zero_nbits==0 => the "corruption" is only holes ABOVE the validated
      * on-disk index extent (a derived tip installed too high), NOT structural
      * nBits damage — exactly what -reindex-chainstate rebuilds. Request a
@@ -49,7 +70,7 @@ void boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                 tip_h, n, BOOT_AUTO_REINDEX_MAX);
             event_emitf(EV_BOOT_ACTIVATE, 0,
                 "crashonly_auto_reindex_requested tip=%d attempt=%d", tip_h, n);
-            return;
+            return true;
         }
         boot_auto_reindex_clear(datadir);
         fprintf(stderr,
@@ -68,4 +89,5 @@ void boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
     event_emitf(EV_BOOT_ACTIVATE, 0,
         "FATAL post_restore_integrity_corrupt tip=%d zero_nbits=%d mismatches=%d",
         tip_h, zero_nbits, mismatches);
+    return true;
 }

@@ -215,6 +215,30 @@ bool reindex_chainstate(struct main_state *ms,
 
     mallopt(M_MMAP_THRESHOLD, 32768);
 
+    /* The replay reads every block from h=0 and cannot skip. Verify the
+     * verb is executable BEFORE wiping the derived set: a cold-import
+     * datadir has no block data below its import window, and the old
+     * wipe-then-discover order destroyed a healthy mirror for nothing
+     * (defect #6, live 2026-06-11: "wiped SQLite UTXO set" followed by
+     * "failed to read block at height 1"). */
+    for (int h = 0; h <= (tip_height < 1 ? tip_height : 1); h++) {
+        struct block_index *probe = active_chain_at(&ms->chain_active, h);
+        struct block pblk;
+        if (!probe || !read_block_from_disk_index(&pblk, probe, datadir)) {
+            fprintf(stderr,
+                    "reindex-chainstate: block at height %d is unreadable — "
+                    "replay-from-blocks/ is not executable on this datadir "
+                    "(cold-import window has no genesis-side block data); "
+                    "REFUSING before wiping the UTXO set. The right verb "
+                    "here is a cold-import re-seed.\n", h);
+            event_emitf(EV_BOOT_ACTIVATE, 0,
+                        "reindex_refused_unexecutable probe_h=%d tip=%d",
+                        h, tip_height);
+            return false;
+        }
+        block_free(&pblk);
+    }
+
     if (!boot_index_flush_reindex_coins(cvs, cvtip))
         return false;
     coins_view_cache_free(cvtip);

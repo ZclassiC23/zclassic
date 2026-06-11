@@ -3314,13 +3314,33 @@ sapling_tree_boot_check_done:
             if (cls == CHAIN_INTEGRITY_UNRECOVERABLE && !ctx->allow_degraded) {
                 /* Crash-only: the reindex-recoverable shape (zero_nbits==0, a
                  * derived tip above the validated index extent) auto-requests a
-                 * self-rebuild; structural corruption / exhausted budget pages. */
-                boot_crashonly_handle_unrecoverable(ctx->datadir, tip_h,
-                    integ.zero_nbits_count, integ.active_chain_mismatches,
-                    integ.first_mismatch_height);
-                return false;
-            }
-            if (cls == CHAIN_INTEGRITY_UNRECOVERABLE) {
+                 * self-rebuild; structural corruption / exhausted budget pages.
+                 * Verb check first: replay-from-blocks/ needs genesis-side
+                 * block data, which a cold-import datadir does not have —
+                 * probe h=1 readability so the classifier never exits into an
+                 * impossible rebuild (defect #6). */
+                bool reindex_ok = false;
+                {
+                    struct block_index *probe =
+                        active_chain_at(&g_state.chain_active, 1);
+                    struct block pblk;
+                    if (probe && read_block_from_disk_index(&pblk, probe,
+                                                            ctx->datadir)) {
+                        block_free(&pblk);
+                        reindex_ok = true;
+                    }
+                }
+                if (boot_crashonly_handle_unrecoverable(ctx->datadir, tip_h,
+                        integ.zero_nbits_count, integ.active_chain_mismatches,
+                        integ.first_mismatch_height, reindex_ok))
+                    return false;
+                /* Reindex unexecutable (cold-import window): the page fired,
+                 * no sentinel was written — serve degraded; the reducer
+                 * reconciles forward exactly like the RECONCILABLE shape. */
+                service_state_transition_and_persist(
+                    SERVICE_STATE_DEGRADED_SERVING,
+                    "reindex unexecutable on cold-import window");
+            } else if (cls == CHAIN_INTEGRITY_UNRECOVERABLE) {
                 fprintf(stderr,
                     "[boot] WARNING: post-restore structural corruption at "
                     "tip_h=%d; serving DEGRADED because -allow-degraded was "

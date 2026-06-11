@@ -22,12 +22,19 @@ void boot_crashonly_clear(const char *datadir);
 
 /* Handle a post-restore CHAIN_INTEGRITY_UNRECOVERABLE verdict. If it is the
  * reindex-recoverable shape (zero_nbits==0: holes only ABOVE the validated
- * index extent) and the bounded budget allows, request a self-rebuild and log
- * it (the caller then exits so the restart re-enters with -reindex-chainstate).
- * Otherwise (structural nBits corruption, or budget exhausted) it logs the FATAL
- * and pages the operator. The caller always exits boot afterwards. */
-void boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
+ * index extent), the verb is executable (reindex_executable: the caller
+ * verified blocks/ can serve the replay start), and the bounded budget
+ * allows, request a self-rebuild and log it.
+ * Returns true  => the caller must exit boot (reindex requested, budget
+ *                  exhausted page, or structural-corruption FATAL).
+ * Returns false => replay-from-blocks/ is not executable on this datadir
+ *                  (cold-import window): no sentinel was written, the
+ *                  cold_import_reseed_required page fired, and the caller
+ *                  must KEEP SERVING degraded instead of crash-looping
+ *                  into an impossible rebuild (defect #6). */
+bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                                          int zero_nbits, int mismatches,
-                                         int first_mismatch_h);
+                                         int first_mismatch_h,
+                                         bool reindex_executable);
 
 #endif /* ZCL_CONFIG_BOOT_CRASHONLY_H */
