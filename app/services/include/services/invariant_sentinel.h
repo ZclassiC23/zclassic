@@ -5,25 +5,42 @@
  *   check 3: authority-pair self-check — every site that persists a
  *            (height, hash) authority pair asserts the hash resolves to
  *            the same height in the blocks projection BEFORE the write;
- *            a mismatch refuses the write + pages. (The restore-above-
- *            extent wedge would have been refused at creation.)
+ *            a mismatch refuses the write + pages. SCOPE: this catches
+ *            the WRONG-BINDING class (a hash the projection resolves to
+ *            a different height — the cold-import +1 height-binding
+ *            race). It deliberately PASSES unknown hashes (snapshot/
+ *            import tips legitimately publish before projection rows
+ *            land), so a restore-ABOVE-EXTENT pair (no blocks row at
+ *            all) passes here by design; that class is gated where it
+ *            belongs — at restore/boot time, by the Invariant A
+ *            restore-clamp (trust-rooted derivability at commit_tip,
+ *            merge a2da7e107) + the crash-only boot auto-reindex
+ *            (706a7c00a).
  *   check 4: window consistency sweep — a 60 s supervisor child
  *            (chain.invariant_sweep) re-derives the cheap durable-state
- *            invariants every minute: stage-cursor pipeline ordering,
- *            utxo_apply log contiguity below its cursor, coins_applied
- *            vs utxo_apply's OWN ok=1 prefix (Invariant B re-asserted),
- *            and tip_finalize reorg-oscillation (the live-wedge
- *            signature). Violation = typed blocker naming the EXACT
- *            invariant + heights, HOLD + PAGE; a later clean sweep
- *            self-clears (repair jobs may legitimately fix holes).
+ *            invariants every minute under ONE progress-lock hold
+ *            (transaction-atomic snapshot): stage-cursor pipeline
+ *            ordering, utxo_apply log contiguity below its cursor,
+ *            coins_applied vs utxo_apply's OWN ok=1 prefix (Invariant B
+ *            re-asserted), and tip_finalize reorg-oscillation (the
+ *            live-wedge signature). A violation must repeat on two
+ *            consecutive sweeps (the reorg-unwind window disagrees by
+ *            design for ms) before it raises the typed blocker naming
+ *            the EXACT invariant + heights, HOLD + PAGE; a later clean
+ *            sweep self-clears (repair jobs may legitimately fix holes).
  *   check 5: commitment audit — an hourly supervisor child
  *            (coins.commitment_audit) recomputes the XOR UTXO commitment
  *            over the utxos table and compares it to the persisted
- *            checkpoint, reusing the boot path's stale-vs-corruption
- *            classifier so legitimate staleness never fires. On a
- *            corruption candidate it logs 16 per-txid-prefix range
- *            counts to LOCALIZE the divergence (a keyspace-tail
- *            truncation names itself), then blocker + HOLD + PAGE.
+ *            checkpoint (co-committed with every coins flush). Discards
+ *            the pass when the set moved during the scan (tip cursor OR
+ *            the stored checkpoint itself changed) or while bulk-import
+ *            commitment tracking is frozen. A mismatch classifies via
+ *            utxo_recovery_xor_mismatch_is_corruption_candidate: shrink
+ *            or equal-count-different-hash = corruption candidate;
+ *            growth = stale checkpoint (never fires). On a candidate it
+ *            logs 16 per-txid-prefix range counts to LOCALIZE the
+ *            divergence (a keyspace-tail truncation names itself), then
+ *            blocker + HOLD + PAGE.
  *
  * All check states are exposed through ONE dumper registered as
  * zcl_state subsystem=validation_pack (covers this module + the HOLD
@@ -98,10 +115,24 @@ void invariant_sentinel_sweep_evaluate(
     const struct invariant_sweep_inputs *in,
     struct invariant_sweep_verdict *out);
 
-/* One sweep pass over the real durable state (reads progress.kv).
+/* Two-sweep confirmation gate (single-sweep-thread state machine, exposed
+ * for tests): returns true only when the SAME named violation (invariant
+ * id + first_bad_h) was also pending from the previous call. A clean
+ * verdict (or NULL) resets the pending state and returns false. Exists
+ * because one durably-committed window disagrees BY DESIGN: a reorg
+ * unwind rewinds {utxo_apply cursor, log, coins} in one txn while the
+ * tip_finalize cursor is rewound by a LATER separate txn — a sweep
+ * sampling between them sees a real I4.1 shape on a healthy node. */
+bool invariant_sentinel_confirm_violation(
+    const struct invariant_sweep_verdict *v);
+
+/* One sweep pass over the real durable state (reads progress.kv under ONE
+ * progress_store_tx_lock hold — the snapshot is transaction-atomic).
  * Exposed for tests + the post-boot one-shot; the supervisor child calls
- * this on its 60 s tick. Returns false only when the stores are not
- * available yet (not a violation). */
+ * this on its 60 s tick. A violation raises blocker/page/HOLD only when
+ * it repeats on two consecutive sweeps (invariant_sentinel_confirm_
+ * violation above). Returns false only when the stores are not available
+ * yet (not a violation). */
 bool invariant_sentinel_sweep_once(void);
 
 /* One commitment audit pass (reads node.db). Same exposure rationale. */

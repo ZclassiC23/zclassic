@@ -73,8 +73,11 @@ bool reducer_frontier_compute_hstar(
  * progress_store_tx_lock() itself (recursive; safe whether or not the caller
  * already holds it). SELECT-only — no writes, no transaction of its own.
  *
- * NOTE: O(cursor - anchor) row reads (one full log walk). Call off the hot
- * reducer-tick path — at boot, condition-check, reconcile, or commit-prepare.
+ * NOTE: O(cursor - anchor) rows streamed in ONE ranged scan (single
+ * prepare; ~0.04 us/height vs 2.3 us/height for the old per-height probe).
+ * Still call off the hot reducer-tick path — at boot, condition-check,
+ * reconcile, or commit-prepare; periodic callers should memoize via
+ * reducer_frontier_log_frontier_above below.
  *
  * Returns false on a DB read error (*out_h is then meaningless); true on
  * success with *out_h in [anchor, cursor-1]. */
@@ -82,6 +85,29 @@ bool reducer_frontier_log_frontier(
     sqlite3 *progress_db,           /* progress.kv handle */
     const char *log_table,          /* e.g. "validate_headers_log" */
     const char *cursor_name,        /* e.g. "validate_headers" */
+    int32_t *out_h                  /* OUT: contiguous ok=1 prefix height */
+);
+
+/* Delta variant of reducer_frontier_log_frontier for callers that already
+ * PROVED contiguity up to `verified_floor` on an earlier pass (e.g. the
+ * 60 s invariant sweep memoizing its last clean frontier): extends the
+ * contiguous ok=1 run from `verified_floor` upward in ONE ranged scan,
+ * skipping the trusted-anchor read/re-validation entirely. O(rows above
+ * the floor), not O(cursor - anchor) — the cost no longer grows with
+ * uptime.
+ *
+ * CALLER CONTRACT: `verified_floor` MUST be a height this same log was
+ * previously verified contiguous-ok=1 through (or the trusted anchor),
+ * under a cursor that has NOT rewound since (a cursor rewind means an
+ * unwind deleted rows — invalidate the memo and re-walk via
+ * reducer_frontier_log_frontier). Acquires progress_store_tx_lock()
+ * itself (recursive). SELECT-only. Returns false on a DB read error;
+ * true with *out_h >= verified_floor otherwise. */
+bool reducer_frontier_log_frontier_above(
+    sqlite3 *progress_db,           /* progress.kv handle */
+    const char *log_table,          /* e.g. "utxo_apply_log" */
+    const char *cursor_name,        /* e.g. "utxo_apply" */
+    int32_t verified_floor,         /* previously verified ok=1 height */
     int32_t *out_h                  /* OUT: contiguous ok=1 prefix height */
 );
 

@@ -292,9 +292,21 @@ static int test_integrity_xor_mismatch_policy(void)
 {
     int failures = 0;
 
-    TEST("integrity: XOR mismatch is refreshed as stale metadata") {
-        ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(42, 42));
+    TEST("integrity: XOR mismatch classifier splits stale vs corruption") {
+        /* Growth past the checkpoint = the set advanced while tracking
+         * was frozen (bulk import): stale, refresh — never a candidate. */
         ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(42, 43));
+        ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(
+            1000000, 1300000));
+        /* Equal counts with a differing accumulator (callers only invoke
+         * this on a mismatch) = same cardinality, different contents:
+         * the clearest corruption signature. */
+        ASSERT(utxo_recovery_xor_mismatch_is_corruption_candidate(42, 42));
+        /* Shrink below the checkpoint = rows vanished: the 2026-06-10
+         * silent keyspace-tail truncation class. */
+        ASSERT(utxo_recovery_xor_mismatch_is_corruption_candidate(43, 42));
+        ASSERT(utxo_recovery_xor_mismatch_is_corruption_candidate(
+            1300000, 900000));
         PASS();
     } _test_next:;
 

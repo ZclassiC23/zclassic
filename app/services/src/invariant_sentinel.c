@@ -70,6 +70,23 @@ static uint64_t g_prev_reorg_total = 0;
 static int64_t  g_prev_tip_finalize_cursor = -1;
 static bool     g_prev_sweep_valid = false;
 
+/* Two-sweep confirmation memory (single sweep thread): a violation must
+ * repeat on the NEXT sweep before it raises blocker/page/HOLD. */
+static char    g_pending_invariant[16];
+static int     g_pending_first_bad_h = -1;
+static bool    g_pending_valid = false;
+
+/* Frontier memo (single sweep thread): the utxo_apply_log contiguous
+ * ok=1 prefix verified by the last CLEAN sweep, and the cursor it was
+ * verified under. Lets the next sweep extend the proof in one O(delta)
+ * ranged scan instead of re-walking O(cursor - anchor) heights under the
+ * global progress lock (which grows with uptime — the trusted anchor only
+ * advances at boot/seed re-anchors). Invalidated on any violation or on a
+ * cursor rewind (an unwind deleted log rows in the same txn it rewound
+ * the cursor, so rows at/below the memo may be gone). */
+static int32_t g_memo_ua_frontier = -1;
+static int64_t g_memo_ua_cursor = -1;
+
 #ifdef ZCL_TESTING
 static struct node_db *g_test_ndb;
 #endif
@@ -268,6 +285,27 @@ void invariant_sentinel_sweep_evaluate(
     }
 }
 
+bool invariant_sentinel_confirm_violation(
+    const struct invariant_sweep_verdict *v)
+{
+    if (!v || !v->violated) {
+        g_pending_valid = false;
+        g_pending_first_bad_h = -1;
+        g_pending_invariant[0] = '\0';
+        return false;
+    }
+    bool confirmed =
+        g_pending_valid &&
+        strncmp(g_pending_invariant, v->invariant,
+                sizeof(g_pending_invariant)) == 0 &&
+        g_pending_first_bad_h == v->first_bad_h;
+    g_pending_valid = true;
+    snprintf(g_pending_invariant, sizeof(g_pending_invariant), "%s",
+             v->invariant);
+    g_pending_first_bad_h = v->first_bad_h;
+    return confirmed;
+}
+
 bool invariant_sentinel_sweep_once(void)
 {
     sqlite3 *db = progress_store_db();
@@ -276,6 +314,19 @@ bool invariant_sentinel_sweep_once(void)
 
     struct invariant_sweep_inputs in;
     memset(&in, 0, sizeof(in));
+
+    /* ATOMIC SNAPSHOT: every input is read under ONE hold of the
+     * (recursive) progress_store_tx_lock — the same lock every stage
+     * step's BEGIN IMMEDIATE..COMMIT runs under. Without it, a stage
+     * commit landing between two reads makes the sweep see state from
+     * TWO different transactions: I4.4 has zero slack (the stage
+     * co-commits cursor+log+coins, so coins == frontier+1 EXACTLY in
+     * steady state) and a single interleaved utxo_apply step false-fired
+     * it as a "coin tear" on a healthy catching-up node; an unwind
+     * committing between the cursor and frontier reads false-fired
+     * I4.3/I4.1 the same way. The in-repo precedent
+     * (reducer_frontier_compute_hstar) reads under one lock hold too. */
+    progress_store_tx_lock();
     in.cur_tip_finalize =
         (int64_t)stage_cursor_persisted(db, "tip_finalize", "sentinel");
     in.cur_utxo_apply =
@@ -287,11 +338,24 @@ bool invariant_sentinel_sweep_once(void)
     in.cur_validate_headers =
         (int64_t)stage_cursor_persisted(db, "validate_headers", "sentinel");
 
+    /* Frontier proof: extend the memoized clean frontier in one O(delta)
+     * ranged scan when valid; full anchor-rooted walk otherwise. A cursor
+     * REWIND invalidates the memo (the unwind deleted rows at/below it). */
     int32_t ua_frontier = 0;
-    in.ua_log_frontier_known =
-        in.cur_utxo_apply > 0 &&
-        reducer_frontier_log_frontier(db, "utxo_apply_log", "utxo_apply",
-                                      &ua_frontier);
+    if (in.cur_utxo_apply > 0) {
+        if (g_memo_ua_frontier >= 0 &&
+            in.cur_utxo_apply >= g_memo_ua_cursor) {
+            in.ua_log_frontier_known =
+                reducer_frontier_log_frontier_above(db, "utxo_apply_log",
+                                                    "utxo_apply",
+                                                    g_memo_ua_frontier,
+                                                    &ua_frontier);
+        } else {
+            in.ua_log_frontier_known =
+                reducer_frontier_log_frontier(db, "utxo_apply_log",
+                                              "utxo_apply", &ua_frontier);
+        }
+    }
     in.ua_log_frontier = ua_frontier;
 
     int32_t coins_applied = 0;
@@ -300,6 +364,7 @@ bool invariant_sentinel_sweep_once(void)
         in.coins_applied = coins_applied;
         in.coins_applied_found = coins_found;
     }
+    progress_store_tx_unlock();
 
     in.reorg_detected_total = tip_finalize_stage_reorg_detected_total();
     if (g_prev_sweep_valid) {
@@ -320,25 +385,54 @@ bool invariant_sentinel_sweep_once(void)
     atomic_store(&g_last_sweep_unix, platform_time_wall_unix());
 
     if (v.violated) {
+        /* Violations invalidate the frontier memo: re-prove from the
+         * anchor until the state is clean again. */
+        g_memo_ua_frontier = -1;
+        g_memo_ua_cursor = -1;
         atomic_fetch_add(&g_sweep_violations_total, 1);
         pthread_mutex_lock(&g_detail_lock);
         snprintf(g_last_sweep_detail, sizeof(g_last_sweep_detail),
                  "%s %s", v.invariant, v.detail);
         pthread_mutex_unlock(&g_detail_lock);
-        atomic_store(&g_sweep_blocker_active, true);
-        sentinel_raise_blocker("window.consistency", "%s %s",
-                               v.invariant, v.detail);
-        if (v.first_bad_h >= 0)
-            chain_linkage_hold_set("window_sweep", v.first_bad_h, v.detail);
-    } else if (atomic_load(&g_sweep_blocker_active)) {
-        /* Self-clearing: a clean sweep releases the hold — repair jobs
-         * may legitimately fix holes; crash-only and recovery-friendly. */
-        atomic_store(&g_sweep_blocker_active, false);
-        blocker_clear("window.consistency");
-        chain_linkage_hold_clear("window_sweep");
-        LOG_INFO("validation_pack",
-                 "[validation_pack] window.consistency cleared by a clean "
-                 "sweep");
+        /* TWO-SWEEP CONFIRMATION before blocker/page/HOLD: there is one
+         * durably-committed window where cursors disagree BY DESIGN — a
+         * reorg unwind commits {utxo_apply cursor + log deletes + coins
+         * rewind} in one txn while tip_finalize's cursor is rewound by a
+         * LATER separate txn at the top of its next step, so a sweep
+         * sampling between them reads a real I4.1-shaped state on a
+         * healthy node. That window is ms-scale; a REAL wedge persists
+         * across consecutive 60 s sweeps at the same named heights. */
+        if (invariant_sentinel_confirm_violation(&v)) {
+            atomic_store(&g_sweep_blocker_active, true);
+            sentinel_raise_blocker("window.consistency", "%s %s",
+                                   v.invariant, v.detail);
+            if (v.first_bad_h >= 0)
+                chain_linkage_hold_set("window_sweep", v.first_bad_h,
+                                       v.detail);
+        } else {
+            LOG_WARN("validation_pack",
+                     "[validation_pack] window sweep observed %s %s — "
+                     "awaiting confirmation on the next sweep (reorg "
+                     "unwind window / single-sweep transient)",
+                     v.invariant, v.detail);
+        }
+    } else {
+        (void)invariant_sentinel_confirm_violation(&v); /* reset pending */
+        if (in.ua_log_frontier_known) {
+            g_memo_ua_frontier = in.ua_log_frontier;
+            g_memo_ua_cursor = in.cur_utxo_apply;
+        }
+        if (atomic_load(&g_sweep_blocker_active)) {
+            /* Self-clearing: a clean sweep releases the hold — repair
+             * jobs may legitimately fix holes; crash-only and
+             * recovery-friendly. */
+            atomic_store(&g_sweep_blocker_active, false);
+            blocker_clear("window.consistency");
+            chain_linkage_hold_clear("window_sweep");
+            LOG_INFO("validation_pack",
+                     "[validation_pack] window.consistency cleared by a "
+                     "clean sweep");
+        }
     }
     return true;
 }
@@ -383,22 +477,37 @@ bool invariant_sentinel_commitment_audit_once(void)
     if (!ndb || !ndb->open || !ndb->db)
         return false;
 
+    /* Bulk-import freeze: while g_utxo_commitment_skip is set the
+     * incremental commitment (and therefore the co-committed checkpoint)
+     * is deliberately frozen-stale against an advancing set. Auditing
+     * against it would only ever classify staleness — skip the pass. */
+    if (atomic_load_explicit(&g_utxo_commitment_skip, memory_order_relaxed))
+        return true;
+
     struct utxo_commitment saved, computed;
     memset(&saved, 0, sizeof(saved));
     memset(&computed, 0, sizeof(computed));
     if (!utxo_commitment_load_checkpoint(ndb->db, &saved))
         return false; /* no checkpoint to audit against — skip */
 
-    /* Tip-moved discard: a pass concurrent with live applies would
-     * compare a moving set against a fixed checkpoint. */
+    /* Torn-scan discard, keyed to the table's ACTUAL writer: every utxos
+     * flush co-commits a fresh checkpoint in the same txn, so a stored
+     * checkpoint that CHANGED during the O(n) scan proves the set moved
+     * under us — the computed digest mixes two states. The tip cursor
+     * check is kept as a cheap second witness. */
     int64_t tip_before = tip_finalize_stage_last_height();
     utxo_commitment_compute_db(ndb->db, &computed);
     int64_t tip_after = tip_finalize_stage_last_height();
+    struct utxo_commitment saved_after;
+    memset(&saved_after, 0, sizeof(saved_after));
+    bool ckpt_after_ok =
+        utxo_commitment_load_checkpoint(ndb->db, &saved_after);
 
     atomic_fetch_add(&g_commitment_audits_total, 1);
     atomic_store(&g_last_audit_unix, platform_time_wall_unix());
 
-    if (tip_before != tip_after) {
+    if (tip_before != tip_after || !ckpt_after_ok ||
+        !utxo_commitment_equal(&saved, &saved_after)) {
         atomic_fetch_add(&g_commitment_skipped_tip_moved, 1);
         return true; /* discarded, no verdict */
     }
@@ -415,9 +524,11 @@ bool invariant_sentinel_commitment_audit_once(void)
         return true;
     }
 
-    /* Reuse the boot path's stale-vs-corruption classifier: a stale
-     * checkpoint (set advanced since it was saved) is legitimate and
-     * never fires. */
+    /* Shared stale-vs-corruption classifier (REAL since 2026-06-11; it
+     * was an unconditional-false stub, which made this entire fire path
+     * dead code): growth past the checkpoint = stale (legitimate, never
+     * fires); shrink or equal-count-different-hash = corruption
+     * candidate. */
     if (!utxo_recovery_xor_mismatch_is_corruption_candidate(
             saved.count, computed.count))
         return true;
@@ -655,6 +766,11 @@ void invariant_sentinel_reset_for_testing(void)
     g_prev_sweep_valid = false;
     g_prev_reorg_total = 0;
     g_prev_tip_finalize_cursor = -1;
+    g_pending_valid = false;
+    g_pending_first_bad_h = -1;
+    g_pending_invariant[0] = '\0';
+    g_memo_ua_frontier = -1;
+    g_memo_ua_cursor = -1;
     pthread_mutex_lock(&g_detail_lock);
     g_last_sweep_detail[0] = '\0';
     g_last_pair_detail[0] = '\0';

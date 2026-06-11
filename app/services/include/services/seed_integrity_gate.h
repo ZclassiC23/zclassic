@@ -48,6 +48,22 @@ struct node_db;
 bool seed_integrity_gate_check(int height, const uint8_t hash[32],
                                bool trusted_seed);
 
+/* ARM the commitment half: persist the 'utxo_sha3' stamp at the seed
+ * height so gate_commitment_check actually runs for this datadir's
+ * trusted seeds. The cold-import path MUST call this with the digest it
+ * verified/accepted (the 2026-06-10 silent keyspace-tail truncation
+ * shipped on the cold-import path, which previously never wrote a stamp
+ * — making the gate's commitment half vacuously skipped there). Trust
+ * model: at the compiled SHA3 checkpoint height the stamp is
+ * cryptographically grounded; at other heights it pins the ACCEPTED set
+ * so any LATER truncation/tear fails the next seed (the same model as
+ * the recorded cold_import_seed_anchor_utxo_count key). Callers must NOT
+ * stamp a digest computed from a stale SQLite snapshot — a wrong stamp
+ * would false-refuse a healthy seed. Returns false on save failure
+ * (logged loudly: the gate stays unarmed for this datadir). */
+bool seed_integrity_stamp_utxo_sha3(struct node_db *ndb, int height,
+                                    const uint8_t root[32], uint64_t count);
+
 #ifdef ZCL_TESTING
 void seed_integrity_gate_reset_for_testing(void);
 void seed_integrity_gate_set_node_db_for_testing(struct node_db *ndb);

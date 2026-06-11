@@ -209,6 +209,29 @@ static bool gate_commitment_check(sqlite3 *db, int height)
     return false;
 }
 
+bool seed_integrity_stamp_utxo_sha3(struct node_db *ndb, int height,
+                                    const uint8_t root[32], uint64_t count)
+{
+    if (!ndb || !ndb->open || !ndb->db || height < 0 || !root) {
+        LOG_WARN("validation_pack",
+                 "[validation_pack] utxo_sha3 stamp skipped: bad args "
+                 "(ndb=%p h=%d root=%p)", (void *)ndb, height,
+                 (const void *)root);
+        return false;
+    }
+    if (!utxo_commitment_sha3_save(ndb->db, root, height, count)) {
+        LOG_WARN("validation_pack",
+                 "[validation_pack] utxo_sha3 stamp save FAILED at h=%d — "
+                 "seed-gate commitment check stays unarmed", height);
+        return false;
+    }
+    LOG_INFO("validation_pack",
+             "[validation_pack] utxo_sha3 stamp saved at h=%d (count=%llu)"
+             " — seed-gate commitment check armed",
+             height, (unsigned long long)count);
+    return true;
+}
+
 bool seed_integrity_gate_check(int height, const uint8_t hash[32],
                                bool trusted_seed)
 {

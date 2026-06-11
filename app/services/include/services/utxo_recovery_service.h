@@ -136,6 +136,12 @@ struct utxo_count_check_result utxo_recovery_classify_count_check(
     uint64_t checkpoint_count,
     uint64_t actual_count);
 
+/* Stale-vs-corruption split for an XOR commitment mismatch (call only
+ * after utxo_commitment_equal() returned false). computed > saved = the
+ * set advanced past a frozen checkpoint (stale, legitimate); computed <=
+ * saved = rows vanished or same-count-different-hash (corruption
+ * candidate — the 2026-06-10 silent-truncation class). See the
+ * implementation comment for the full rationale. */
 bool utxo_recovery_xor_mismatch_is_corruption_candidate(
     uint64_t saved_count,
     uint64_t computed_count);

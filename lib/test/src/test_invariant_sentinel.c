@@ -25,6 +25,7 @@
 
 #include "models/database.h"
 #include "services/invariant_sentinel.h"
+#include "coins/utxo_commitment.h"
 #include "util/blocker.h"
 #include "validation/chain_linkage_check.h"
 
@@ -59,6 +60,30 @@ static bool isn_insert_block(struct node_db *ndb, const uint8_t hash[32],
     sqlite3_bind_blob(st, 6, zeros, 32, SQLITE_STATIC);
     sqlite3_bind_blob(st, 7, solution, sizeof(solution), SQLITE_STATIC);
     sqlite3_bind_blob(st, 8, zeros, 32, SQLITE_STATIC);
+    int rc = sqlite3_step(st);  // raw-sql-ok:test-fixture-seeding
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+static bool isn_insert_utxo(struct node_db *ndb, int salt)
+{
+    sqlite3_stmt *st = NULL;
+    const char *sql =
+        "INSERT OR REPLACE INTO utxos"
+        "(txid,vout,value,script,script_type,address_hash,height,is_coinbase)"
+        " VALUES(?,?,?,?,0,?,?,0)";
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    uint8_t txid[32];
+    memset(txid, (uint8_t)(0x10 + salt), 32);
+    static const uint8_t script[4] = { 0x76, 0xa9, 0x14, 0x00 };
+    static const uint8_t addr[20] = {0};
+    sqlite3_bind_blob(st, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, 0);
+    sqlite3_bind_int64(st, 3, 50000 + salt);
+    sqlite3_bind_blob(st, 4, script, sizeof(script), SQLITE_STATIC);
+    sqlite3_bind_blob(st, 5, addr, sizeof(addr), SQLITE_STATIC);
+    sqlite3_bind_int64(st, 6, 1000 + salt);
     int rc = sqlite3_step(st);  // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return rc == SQLITE_DONE;
@@ -220,6 +245,118 @@ int test_invariant_sentinel(void)
         invariant_sentinel_sweep_evaluate(&in, &v);
         ISN_CHECK("sweep: reorg burst at a MOVING cursor -> quiet",
                   !v.violated);
+    }
+
+    /* ── two-sweep confirmation gate ──────────────────────────────── */
+    {
+        invariant_sentinel_reset_for_testing();
+        struct invariant_sweep_verdict v;
+        memset(&v, 0, sizeof(v));
+        v.violated = true;
+        snprintf(v.invariant, sizeof(v.invariant), "I4.1");
+        v.first_bad_h = 100;
+        snprintf(v.detail, sizeof(v.detail), "t");
+
+        ISN_CHECK("confirm: first observation does NOT raise "
+                  "(reorg-unwind window cover)",
+                  !invariant_sentinel_confirm_violation(&v));
+        ISN_CHECK("confirm: same violation on the next sweep raises",
+                  invariant_sentinel_confirm_violation(&v));
+
+        /* a moved boundary is a different violation: restart the count */
+        v.first_bad_h = 200;
+        ISN_CHECK("confirm: changed first_bad_h restarts the count",
+                  !invariant_sentinel_confirm_violation(&v));
+
+        /* a clean sweep resets the pending state */
+        struct invariant_sweep_verdict clean;
+        memset(&clean, 0, sizeof(clean));
+        clean.first_bad_h = -1;
+        ISN_CHECK("confirm: clean verdict resets pending",
+                  !invariant_sentinel_confirm_violation(&clean));
+        v.first_bad_h = 200;
+        ISN_CHECK("confirm: post-clean re-observation starts at one",
+                  !invariant_sentinel_confirm_violation(&v));
+    }
+
+    /* ── check 5: commitment audit (fire + non-fire + self-clear) ──── */
+    {
+        invariant_sentinel_reset_for_testing();
+        struct node_db ndb;
+        bool dbok = node_db_open(&ndb, ":memory:");
+        ISN_CHECK("fixture: audit node_db opens", dbok);
+        if (dbok) {
+            invariant_sentinel_set_node_db_for_testing(&ndb);
+
+            for (int i = 0; i < 8; i++)
+                if (!isn_insert_utxo(&ndb, i))
+                    dbok = false;
+            ISN_CHECK("fixture: 8 utxos seeded", dbok);
+
+            struct utxo_commitment uc;
+            utxo_commitment_compute_db(ndb.db, &uc);
+            bool saved = utxo_commitment_save_checkpoint(ndb.db, &uc);
+            ISN_CHECK("fixture: checkpoint saved (count=8)",
+                      saved && uc.count == 8);
+
+            /* non-fire: live set matches the checkpoint exactly */
+            bool ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: matching set -> clean, no blocker",
+                      ran &&
+                      !blocker_exists("coins.commitment_spot_check"));
+
+            /* non-fire: the set GREW past the checkpoint (bulk-import
+             * staleness shape) — classifier says stale, never fires */
+            bool grew = isn_insert_utxo(&ndb, 100) &&
+                        isn_insert_utxo(&ndb, 101);
+            ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: grown set (stale checkpoint) -> no fire",
+                      grew && ran &&
+                      !blocker_exists("coins.commitment_spot_check"));
+
+            /* fire: silent truncation — rows vanish below the
+             * checkpoint count (the 2026-06-10 keyspace-tail class) */
+            utxo_commitment_compute_db(ndb.db, &uc);
+            saved = utxo_commitment_save_checkpoint(ndb.db, &uc);
+            char *err = NULL;
+            bool truncated = saved &&
+                sqlite3_exec(ndb.db,
+                             "DELETE FROM utxos WHERE rowid IN "
+                             "(SELECT rowid FROM utxos LIMIT 4)",
+                             NULL, NULL, &err) == SQLITE_OK;
+            if (err) sqlite3_free(err);
+            ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: TRUNCATED set FIRES "
+                      "coins.commitment_spot_check (PERMANENT)",
+                      truncated && ran &&
+                      blocker_exists("coins.commitment_spot_check") &&
+                      blocker_class_for("coins.commitment_spot_check") ==
+                          BLOCKER_PERMANENT);
+
+            /* self-clear: a repaired checkpoint (matching the live set
+             * again) clears the blocker on the next clean audit */
+            utxo_commitment_compute_db(ndb.db, &uc);
+            saved = utxo_commitment_save_checkpoint(ndb.db, &uc);
+            ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: clean audit self-clears the blocker",
+                      saved && ran &&
+                      !blocker_exists("coins.commitment_spot_check"));
+
+            /* fire: equal count, different contents (clearest corruption
+             * signature — count matches, accumulator does not) */
+            bool mutated = sqlite3_exec(ndb.db,
+                "UPDATE utxos SET value = value + 1 WHERE rowid = "
+                "(SELECT MIN(rowid) FROM utxos)",
+                NULL, NULL, NULL) == SQLITE_OK;
+            ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: equal-count different-hash FIRES",
+                      mutated && ran &&
+                      blocker_exists("coins.commitment_spot_check"));
+
+            blocker_clear("coins.commitment_spot_check");
+            chain_linkage_hold_clear("commitment_audit");
+            node_db_close(&ndb);
+        }
     }
 
     /* crash-only sanity: everything above ran in-process; reaching here

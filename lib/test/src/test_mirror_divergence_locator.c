@@ -133,6 +133,74 @@ int test_mirror_divergence_locator(void)
         mirror_divergence_reset_for_testing();
     }
 
+    /* 6. HEALTHY TRANSIENT FORK (the FP class): divergence exactly at
+     * the tip — located but NOT escalated (no blocker, no HOLD). A HOLD
+     * here would refuse the resolving reorg at h. */
+    {
+        mirror_divergence_reset_for_testing();
+        g_div_height = 3143355;
+        g_fail_at = -1;
+        int r = mirror_divergence_locate(3143355);
+        MDL_CHECK("tip fork: located, returned", r == 3143355);
+        MDL_CHECK("tip fork: NO blocker, NO HOLD (healthy-fork window)",
+                  !blocker_exists("mirror.divergence_located") &&
+                  !chain_linkage_hold_active());
+
+        /* 6b. Fork resolves (next verify agrees at the same tip):
+         * pending divergence clears; nothing ever latched. */
+        mirror_divergence_note_agreement(3143356);
+        int r2 = mirror_divergence_locate(3143355);
+        /* rate-limited (window not aged): skipped — and still no latch */
+        MDL_CHECK("tip fork resolved: still nothing latched",
+                  r2 == -1 &&
+                  !blocker_exists("mirror.divergence_located") &&
+                  !chain_linkage_hold_active());
+        mirror_divergence_reset_for_testing();
+    }
+
+    /* 7. WEDGED-AT-TIP persistence: the SAME tip-window first_div across
+     * repeated locates spanning >= MDL_CONFIRM_PERSIST_SECS escalates. */
+    {
+        mirror_divergence_reset_for_testing();
+        g_div_height = 3143355;
+        int r = mirror_divergence_locate(3143355);
+        MDL_CHECK("persist: first locate pends, no latch",
+                  r == 3143355 &&
+                  !blocker_exists("mirror.divergence_located"));
+        /* age past both the rate limit and the persistence threshold */
+        mirror_divergence_backdate_pending_for_testing(
+            MDL_CONFIRM_PERSIST_SECS + 1);
+        r = mirror_divergence_locate(3143355);
+        MDL_CHECK("persist: unmoving first_div escalates after persist "
+                  "window",
+                  r == 3143355 &&
+                  blocker_exists("mirror.divergence_located") &&
+                  chain_linkage_hold_active() &&
+                  chain_linkage_hold_refuse_from() == 3143355);
+
+        /* 7b. Mirror agreement at/above the located height self-clears
+         * the latched blocker + HOLD (e.g. zclassicd adopted our branch). */
+        mirror_divergence_note_agreement(3143356);
+        MDL_CHECK("persist: agreement self-clears blocker + HOLD",
+                  !blocker_exists("mirror.divergence_located") &&
+                  !chain_linkage_hold_active());
+        mirror_divergence_reset_for_testing();
+    }
+
+    /* 8. Agreement BELOW a latched deep divergence does NOT clear it. */
+    {
+        mirror_divergence_reset_for_testing();
+        g_div_height = 3137373;
+        int r = mirror_divergence_locate(3143355);
+        MDL_CHECK("below-agree: deep divergence latched", r == 3137373 &&
+                  blocker_exists("mirror.divergence_located"));
+        mirror_divergence_note_agreement(3137000); /* below first_div */
+        MDL_CHECK("below-agree: agreement below first_div keeps the latch",
+                  blocker_exists("mirror.divergence_located") &&
+                  chain_linkage_hold_active());
+        mirror_divergence_reset_for_testing();
+    }
+
     /* crash-only: all outcomes above were return codes; reaching here is
      * the alive proof. */
     mirror_divergence_set_probes_for_testing(NULL, NULL);

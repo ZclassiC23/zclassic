@@ -351,13 +351,13 @@ struct utxo_count_check_result utxo_recovery_classify_count_check(
     return res;
 }
 
+/* See header doc. Shrink/equal-count = corruption candidate; growth =
+ * stale (frozen-tracking import advanced the set). Was an unconditional
+ * -false stub — every consumer's corruption branch was dead code. */
 bool utxo_recovery_xor_mismatch_is_corruption_candidate(
-    uint64_t saved_count,
-    uint64_t computed_count)
+    uint64_t saved_count, uint64_t computed_count)
 {
-    (void)saved_count;
-    (void)computed_count;
-    return false;
+    return computed_count <= saved_count;
 }
 
 /* ── Policy-gated UTXO wipe ──────────────────────────────────────
