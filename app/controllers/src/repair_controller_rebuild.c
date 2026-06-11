@@ -37,8 +37,11 @@
 /* "Recent" by construction: at ~75 s/block this window is ~4 days of
  * blocks. Anything larger is a cold-import / reindex job, not a recent
  * fork repair — we refuse it so this lever can never be mistaken for a
- * full resync. */
-#define REBUILD_RECENT_MAX_RANGE   5000
+ * full resync. Sized to cover one full cold-import seed window (the
+ * stable-LevelDB-image lag behind the live zclassicd tip runs ~5.5-7k
+ * blocks, observed live 2026-06-11: a 6,910-block window that the old
+ * 5000 cap refused, leaving no validated-path recovery verb). */
+#define REBUILD_RECENT_MAX_RANGE   10000
 /* Default look-back below the active tip when from_height is omitted.
  * Small margin so a 1-block stale fork is always inside the window. */
 #define REBUILD_RECENT_DEFAULT_MARGIN 10
