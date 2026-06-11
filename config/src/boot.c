@@ -725,9 +725,9 @@ static void boot_step_finalize_chain_state(void)
     }
 }
 
-static bool boot_promote_tip_via_csr(struct block_index *tip,
-                                     const char *reason,
-                                     bool persist_coins_best)
+bool boot_promote_tip_via_csr(struct block_index *tip,
+                              const char *reason,
+                              bool persist_coins_best)
 {
     if (!tip || !tip->phashBlock)
         return false;
@@ -2572,13 +2572,30 @@ bool app_init(struct app_context *ctx)
                 !uint256_is_null(&boot_restored_authority_hash)) {
                 struct block_index *restored = block_map_find(
                     &g_state.map_block_index, &boot_restored_authority_hash);
-                if (restored) {
+                /* HEIGHT-AGREEMENT BELT (Invariant A consumer side): the
+                 * restore result's hash must map to an index block AT the
+                 * recorded height before it may become the live tip. The
+                 * 2026-06-11 wedge installed h=3,143,175 here from a floor
+                 * row recorded at 3,143,171 — a raw install of fabricated
+                 * state that ended in crash-only reindex. */
+                if (restored && restored->nHeight == cr.restored_height) {
                     int populated = chain_restore_rebuild_active_chain(
                         &g_state, restored, NULL);
                     fprintf(stderr,
                         "[boot] restored authority tip h=%d had no active "
                         "chain slot after restore; reinstalled populated=%d\n",
                         restored->nHeight, populated);
+                } else if (restored) {
+                    fprintf(stderr,
+                        "[boot] restored authority hash maps to h=%d but the "
+                        "recorded restore height is %d — refusing raw tip "
+                        "install (hash/height disagreement; waiting for "
+                        "P2P)\n",
+                        restored->nHeight, cr.restored_height);
+                    event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=restore_reinstall_refused mapped_h=%d "
+                        "recorded_h=%d", restored->nHeight,
+                        cr.restored_height);
                 }
             }
         }
@@ -3136,148 +3153,12 @@ sapling_tree_boot_check_done:
      * skips them and the node is permanently stuck. */
     chain_restore_clear_failed_above_tip(&g_state);
 
-    /* Safety: verify chain tip matches UTXO set height.
-     * After LDB import, the UTXO set is at ~3M but the chain tip may be
-     * lower (~2M) if previous boots failed to set the anchor.  If the
-     * coins tip is far above the chain tip, correct it now. */
-    {
-        struct uint256 coins_hash;
-        /* Legacy LDB-import safety check: needs the coins.db best-block, not
-         * the projection (no best-block). Read from g_coins_sqlite directly
-         * while that legacy recovery fallback remains. */
-        uint256_set_null(&coins_hash);
-        if (g_coins_sqlite.db)
-            coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_hash);
-        int chain_h = active_chain_height(&g_state.chain_active);
-        struct block_index *coins_bi = NULL;
-
-        if (!uint256_is_null(&coins_hash))
-            coins_bi = block_map_find(&g_state.map_block_index, &coins_hash);
-
-        int utxo_max_h = 0;
-        if (g_node_db.open) {
-            sqlite3_stmt *hst = NULL;
-            if (sqlite3_prepare_v2(g_node_db.db,
-                    "SELECT MAX(height) FROM utxos", -1,
-                    &hst, NULL) == SQLITE_OK && hst) {
-                if (sqlite3_step(hst) == SQLITE_ROW)
-                    utxo_max_h = sqlite3_column_int(hst, 0);
-                sqlite3_finalize(hst);
-            }
-        }
-
-        if (coins_bi && utxo_max_h > 100000 &&
-            utxo_max_h > coins_bi->nHeight + 100) {
-            /* The block index can carry stale height labels after recovery
-             * from flat-index damage.  When coins_best_block resolves to a
-             * hash and the durable UTXO table proves a much higher snapshot
-             * height, preserve that immutable high-water state.  The stale
-             * label can also be too high after a legacy import from a running
-             * node whose chainstate is behind its block tip; in both cases
-             * replay must start from the durable UTXO anchor height. */
-            struct block_index *best_anchor = NULL;
-            struct block_index *best_have = NULL;
-            size_t iter = 0;
-            struct block_index *bi;
-            while (block_map_next(&g_state.map_block_index, &iter,
-                                  NULL, &bi)) {
-                if (!bi) continue;
-                if (bi->nHeight > utxo_max_h) continue;
-                if (!best_anchor || bi->nHeight > best_anchor->nHeight)
-                    best_anchor = bi;
-                if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
-                if (!best_have || bi->nHeight > best_have->nHeight)
-                    best_have = bi;
-            }
-            struct block_index *promote_bi = best_anchor ? best_anchor : best_have;
-            if (promote_bi && promote_bi->phashBlock) {
-                printf("[boot] stale coins_best_block h=%d but UTXOs reach "
-                       "h=%d — promoting anchor to h=%d%s\n",
-                       coins_bi->nHeight, utxo_max_h, promote_bi->nHeight,
-                       (promote_bi->nStatus & BLOCK_HAVE_DATA) ? " HAVE_DATA" : "");
-                if (boot_promote_tip_via_csr(
-                        promote_bi, "promote_utxo_height_anchor", true)) {
-                    snapsync_set_anchor(promote_bi);
-                    chain_h = promote_bi->nHeight;
-                    coins_bi = promote_bi;
-                }
-            }
-        }
-
-        /* Only promote coins_bi to tip if it's a real block (has data on
-         * disk). A metadata-anchor placeholder (BLOCK_VALID_UNKNOWN, no
-         * BLOCK_HAVE_DATA) has no real pprev chain — making it the tip
-         * leaves the active_chain with 10k+ holes and trips Part L's
-         * post-restore integrity gate (which then fail-fasts the boot).
-         * If coins_bi is a placeholder, fall through to the HAVE_DATA
-         * search below — that's the highest hash we can actually walk
-         * back from. The chain will re-derive forward via gap-fill. */
-        bool coins_bi_real = coins_bi &&
-                             (coins_bi->nStatus & BLOCK_HAVE_DATA);
-        if (coins_bi_real && coins_bi->nHeight > chain_h) {
-            printf("[boot] UTXO/chain mismatch: coins at h=%d, "
-                   "chain tip at h=%d — correcting\n",
-                   coins_bi->nHeight, chain_h);
-            if (boot_promote_tip_via_csr(
-                    coins_bi, "utxo_chain_mismatch", false)) {
-                printf("[boot] Chain tip corrected to h=%d\n",
-                       coins_bi->nHeight);
-            }
-        } else if ((!coins_bi || !coins_bi_real) && !uint256_is_null(&coins_hash)) {
-            /* coins_best_block hash not in block index. Find the highest
-             * block with BLOCK_HAVE_DATA as our best anchor point. The
-             * UTXO set should be valid somewhere near that height. */
-            struct block_index *best_have_data = NULL;
-            size_t iter = 0;
-            struct block_index *bi;
-            while (block_map_next(&g_state.map_block_index, &iter,
-                                   NULL, &bi)) {
-                if (!bi) continue;
-                if (!(bi->nStatus & BLOCK_HAVE_DATA)) continue;
-                if (!best_have_data ||
-                    bi->nHeight > best_have_data->nHeight)
-                    best_have_data = bi;
-            }
-            if (best_have_data && best_have_data->nHeight > chain_h + 100) {
-                printf("[boot] coins_best_block not in index — "
-                       "using highest HAVE_DATA block at h=%d\n",
-                       best_have_data->nHeight);
-                /* Resync coins view + UTXO state to the new tip:
-                 *   1. coins_best_block must match the tip hash, or
-                 *      connect_block will FATAL on the next block
-                 *      with "view/prevblock mismatch".
-                 *   2. UTXO rows above the new tip height belong to
-                 *      the fork we're abandoning. Delete them so
-                 *      future blocks see a coherent set. */
-                if (boot_promote_tip_via_csr(
-                        best_have_data, "best_have_data", true)) {
-                    /* Chose best_have_data over the orphan-coins
-                     * anchor, so clear the anchor too — otherwise
-                     * activation stays in ANCHOR_ACTIVE waiting for
-                     * tip to climb above the anchor height, but we
-                     * intentionally chose a LOWER tip and want
-                     * gap-fill to drive us forward. */
-                    snapsync_set_anchor(NULL);
-                    if (g_node_db.open) {
-                        int pruned = coins_rewind_above_tip(
-                            g_node_db.db, best_have_data->nHeight, -1);
-                        if (pruned < 0)
-                            fprintf(stderr,
-                                "[boot] WARN: failed to prune fork-side "
-                                "utxos above h=%d (continuing)\n",
-                                best_have_data->nHeight);
-                        else
-                            printf("[boot] pruned fork-side utxos above "
-                                   "h=%d (rows=%d)\n",
-                                   best_have_data->nHeight, pruned);
-                    }
-                    printf("[boot] cleared orphan-coins restore anchor — "
-                           "gap-fill will resync above h=%d\n",
-                           best_have_data->nHeight);
-                }
-            }
-        }
-    }
+    /* Safety: verify chain tip matches UTXO set height (coins anchor
+     * promotion + coins_best/tip reconcile, every real-block promotion
+     * gated by the Invariant A trust-root check). Body lives in
+     * boot_index.c. */
+    boot_index_verify_coins_tip_consistency(&g_state, &g_coins_sqlite,
+                                            &g_node_db);
 
     /* Clean up UTXOs above chain tip only after the mismatch repair above
      * has had a chance to promote a durable snapshot/coins anchor. Running
