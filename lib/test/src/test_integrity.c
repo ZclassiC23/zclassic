@@ -600,6 +600,9 @@ int test_integrity(void)
     /* UTXO count sanity check */
     failures += test_integrity_utxo_count_check();
 
+    /* XOR mismatch stale-vs-corruption classifier */
+    failures += test_integrity_xor_mismatch_policy();
+
     /* bg_hash_verification_service */
     failures += test_integrity_bg_hash_verify_init();
     failures += test_integrity_bg_hash_verify_state_names();
