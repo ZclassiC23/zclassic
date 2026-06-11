@@ -6,6 +6,62 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
+## 2026-06-11 — 6h live outage root-caused; crash-only boot + FR-3 oversize discovery
+
+**The outage (root-cause chain, verified live):** boot restore INSTALLED
+tip 3143175 ABOVE the backable index extent (validated header frontier
+3141533; contiguous extent ends 3142801). The anti-rewind finalized floor
+(3143171) then REFUSED the only consistent rollback target (3137373) →
+post-restore integrity UNRECOVERABLE → FATAL crash-loop → systemd
+start-limit gave up → node sat FAILED 6+ hours. A repair safety converted
+a recoverable inconsistency into a dead node.
+
+**LANDED on main:**
+- `706a7c00a` — crash-only auto-recovery: integrity-unrecoverable boots
+  auto-trigger `-reindex-chainstate` instead of FATALing.
+- `0b45e93a5` — never-give-up unit: `StartLimitIntervalSec=0` + stepped
+  restart backoff (systemd can no longer give up).
+- Invariant B (`c8018a388`, prior session): coin-tear derived from
+  utxo_apply's OWN log. test_parallel 0/409 green throughout — note that
+  it was ALSO green during the entire outage: green is a regression
+  floor, not a liveness proof.
+
+**FR-3 oversize discovery (consensus, fix IN FLIGHT):** the auto-reindex
+genesis replay FATALed at h=478544 — the canonical chain contains a
+125,811-byte tx there (Sapling active at 476969; mine-time rule was 2MB;
+zclassicd later tightened to 102000 WITHOUT grandfathering — the
+reference cannot resync its own chain). FR-3 (`f8592c386`) copied the
+TEXT; the same false-reject also stalls the forward reducer. Fix branch
+`fix/consensus-oversize-grandfather`: scan the real chain, grandfather
+scanned violations, enforce 102000 above. Rule going forward: validate
+against the CHAIN, not the reference text.
+
+**Proven recipe + live redeploy (LANDED, corrects stale docs/memory):**
+`--importblockindex $HOME/.zclassic` FIRST (3.14M headers in 60-74s from
+the RUNNING zclassicd), THEN the `-cold-import=$HOME/.zclassic` boot →
+hash-identical tip in ~25 min, warm-reboot-proven. `-cold-import` alone
+leaves a 3.1M-header hole and pins forever. zclassicd ports: P2P=8033
+(not 8034 as older notes said), RPC=8232. Live node redeployed via this
+recipe.
+
+**IN FLIGHT:** `fix/invariant-a-restore-clamp` (wt2 — tip committable
+only ≤ the validated header frontier; evidence-based floor rewind; makes
+this outage class unwritable) and `fix/consensus-oversize-grandfather`
+(above).
+
+**PROPOSED (code-read confirmed, not yet built):** reindex epilogue is
+torn — after `-reindex-chainstate` replay, coins_kv is never reseeded,
+the SHA3 commitment is deleted-not-recomputed, and utxo_apply /
+coins_applied cursors keep stale pre-reindex values
+(`boot_index.c:165-297`, `boot.c:3321-3344`) — the recovery path itself
+manufactures the coins_applied>hstar wedge shape.
+
+⚠️ **TEMPORARY:** the live unit injects `-nobgvalidation` via environment
+(bg validation would hit the same h=478544 false-reject). REMOVE once the
+oversize grandfather fix lands.
+
+---
+
 ## 2026-06-10 — mainnet sync wedge cleared END TO END (branch `feature/sync-fixes`)
 
 **VERIFIED LIVE:** trackb (cold import) went from a wiped datadir to the

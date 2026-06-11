@@ -27,6 +27,37 @@ mechanism) + the `test_consensus_parity` test group (the golden values).
 This is also the bar for reviewing outside PRs (thank + attribute + decline
 consensus-breakers, mine the idea, build it better ourselves).
 
+## Tenacity & recovery (operator invariants)
+
+Full model: [`docs/TENACITY.md`](./docs/TENACITY.md) + the live-diagnosis
+fast path [`docs/work/fast-path.md`](./docs/work/fast-path.md).
+
+**The PROVEN cold-sync recipe is TWO steps, in this order** (verified
+2026-06-11: hash-identical tip vs zclassicd at multiple heights, ~25 min
+total, warm-reboot-proven). zclassicd stays RUNNING (P2P=8033, RPC=8232):
+
+```bash
+# 1. Headers FIRST — 3.14M headers in 60-74s from the live zclassicd datadir
+build/bin/zclassic23 --importblockindex $HOME/.zclassic
+# 2. Then the UTXO cold-import boot — tip in ~25 min
+build/bin/zclassic23 -cold-import=$HOME/.zclassic
+```
+
+`-cold-import` ALONE is a footgun: it leaves a 3.1M-header hole
+(headers=960) and the node pins forever.
+
+**Consensus rule: validate against the CHAIN, not the reference text.**
+zclassicd source is a lossy proxy — the real chain contains a 125,811-byte
+tx at h=478544 that the text-copied 102000 cap false-rejects (zclassicd
+cannot resync its own chain). Any parity tightening of a bounded predicate
+requires a full-history replay against the real chain first.
+
+**Recovery paths get copy-proven on a fixture before live.** Never live
+surgery: copy the datadir (frozen wedge fixture:
+`~/.zclassic-c23-postrestore-wedge-20260611`), repro there, prove the fix
+FIRES on the copy, then deploy. `test_parallel` green is a regression
+floor, not a liveness proof.
+
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8. Honest status today: ~2/8 met by hand, **0/8 CI-enforced**.
