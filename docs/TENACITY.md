@@ -6,8 +6,71 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).*
 
 **Honesty rule for this document:** every claim is marked **[LANDED commit]**,
-**[IN FLIGHT branch]**, or **[PROPOSED]**. Status lines must be updated when
-reality changes; a stale LANDED is a doctrine violation.
+**[IN FLIGHT branch]**, **[DESIGNED spec]** (written design, not yet code), or
+**[PROPOSED]**. Status lines must be updated when reality changes; a stale
+LANDED is a doctrine violation.
+
+---
+
+## The zclassic23 way
+
+Six principles, stated natively. Everything else in this document is an
+instance of one of them. The plain model first: **blocks are the input rows;
+everything else is a formula.** Every table, cursor, mirror, and commitment in
+the datadir is a formula over the chain. Bugs happen when someone types a
+number into a formula cell — the cell now disagrees with its own formula, and
+no amount of comparing cells tells you which one is right. You never fix it by
+editing the cell.
+
+**1. The chain is the only truth — everything else is derived.** The block
+chain is the one immutable input; cursors, coins, verdicts, and commitments
+are recomputable views of it. 2026-06-11's boot crash-loop was a tip
+*installed* (3143175) above what the validated evidence supported (frontier
+3141533) — a typed-in number, not a derived one. Both live wedge classes that
+day were the same defect: state installed instead of derived.
+
+**2. One writer per fact; everything else is a formula.** Each fact has
+exactly one authoritative writer inside one transaction; every other encoding
+is read-only derivation. node.db `utxos` has 4 independent writers today (§2)
+— that is why coin tears were representable at all. Invariant B made the tear
+check a formula over utxo_apply's OWN co-committed log instead of a second
+copy **[LANDED `c8018a388`]**; demoting the mirror itself is
+**[IN FLIGHT `refactor/derive-coins-best-demote-mirror` — local worktree,
+derivation function + tests built, repoints in progress]** (canonical plan
+steps 5–6).
+
+**3. The sealed domain and the working window.** Derived state splits at a
+finality boundary: at or below it, state pinned by checkpointed SHA3 UTXO
+commitments, recomputable from genesis and continuously re-proven; above it, a
+working window of cursors, stage logs, and coin deltas that is explicitly
+disposable. The compiled checkpoint h=3,056,758 (sha3 `00e95dbd…`) is the
+degenerate seal today; the rolling seal ring above it is **[DESIGNED —
+roadmap item 4 in `docs/work/tenacity-roadmap.md`]**.
+
+**4. One recovery verb: rebuild the window, never repair it.** Any window
+anomaly — coin tear, height splice, stale verdict, integrity mismatch — gets
+one remedy: discard the window, reset to the last seal, replay forward
+(a ≤~2,100-block span, seconds at measured replay throughput), recompute the
+commitment, resume. The 2026-06-11 record is the proof: every recovery that
+worked was a recompute (crash-only auto-reindex `706a7c00a`, cold-import);
+every one that failed was a repair (the anti-rewind floor refusing a
+consistent rollback target → 6 h crash-loop; depth-3 poison-rewinds
+oscillating 8×). `window_rebuild` is **[DESIGNED — roadmap item 4, upgrading
+the old ladder-deletion item: the verb is the mechanism that makes each
+deletion safe]**; auto-reindex-from-anchor is its landed degenerate form.
+
+**5. Recompute fixes bugs — fix the code, re-derive the state.** When a wrong
+formula has written wrong cells, the fix is the formula plus a recompute of
+the column, never hand-editing cells. The height-splice fix derives heights
+from parent links and hash-binds verdicts, so spliced rows are re-derived
+rather than patched **[LANDED `c572def48`, merged `600efd53b`]**.
+
+**6. Verify against the chain, not against text or mirrors.** Ground truth is
+the canonical chain's own bytes; reference source text and sibling copies are
+lossy proxies. Text said 102,000 bytes was the tx maximum; the chain holds a
+125,811-byte tx at h=478544, and trusting the text FATALed genesis replay
+(I4, F6). Trusting a lagging mirror manufactured the false coin-tear the same
+day — both cured by checking the derivation, not the copy.
 
 ---
 
@@ -44,11 +107,14 @@ ground truth for consensus; reference source code is a lossy proxy.
 Precedence: **chain > deployed zclassicd behavior > zclassicd source text**.
 Proof it matters: `lib/consensus/include/consensus/consensus.h:23-29` copied
 `MAX_TX_SIZE_AFTER_SAPLING=102000` from zclassicd text with the safety claim
-as a prose comment; the real chain has a 125,811-byte tx at h=478544 (mined
-under the 2 MB rule; zclassicd tightened without grandfathering and cannot
-resync its own chain). Result: genesis replay FATAL + forward reducer stall.
-Fix **[IN FLIGHT `fix/consensus-oversize-grandfather`]**. Doctrine amendment
-to CONSENSUS_PARITY_DOCTRINE.md **[PROPOSED]**.
+as a prose comment; the real chain has a 125,811-byte tx at h=478544 — the
+first of 413 oversize txs through h=1968856, max 1,922,197 B (mined under the
+2 MB rule; zclassicd tightened without grandfathering and cannot resync its
+own chain). Result: genesis replay FATAL + forward reducer stall. Fix:
+empirical {txid,size} allowlist, block context only, mempool stays strict
+**[LANDED `ccc7fbbfa`, merged `b0c0b4f9a`; proven by full genesis replay
+through the grandfather range, zero rejects]**. Doctrine amendment to
+CONSENSUS_PARITY_DOCTRINE.md **[PROPOSED]**.
 
 **I5 — Crash-only.** Every derived state is rebuildable from the source; every
 recovery is bounded, automatic, and terminates in SERVING. The process may die
@@ -79,7 +145,7 @@ file), no atomic cross-commit between stores. Verdicts are from
 | Encoding | Writer(s) | Authority verdict |
 |---|---|---|
 | `coins` table in progress.kv (coins_kv) | reducer, inside the stage txn (`lib/storage/src/coins_view_sqlite.c` via coins_kv) | **CANONICAL** |
-| node.db `utxos` | **4 independent modules**: `lib/storage/src/coins_view_sqlite.c:681`, `lib/net/src/fast_sync.c:723`, `app/services/src/snapshot_apply.c:117`, `app/models/src/database.c:143` | duplicate — demote to read-only derived view or delete [PROPOSED Phase 2] |
+| node.db `utxos` | **4 independent modules**: `lib/storage/src/coins_view_sqlite.c:681`, `lib/net/src/fast_sync.c:723`, `app/services/src/snapshot_apply.c:117`, `app/models/src/database.c:143` | duplicate — demote to read-only derived view or delete [IN FLIGHT `refactor/derive-coins-best-demote-mirror`] |
 | utxo_projection.db | event_log fold | reduce to one-shot boot seed, then delete [PROPOSED Phase 2] |
 | LevelDB `chainstate/` | legacy import/copy paths | demote to read-only import source [PROPOSED Phase 2] |
 | created_outputs index | reducer (co-committed) | derived, in-txn — OK |
@@ -90,7 +156,7 @@ file), no atomic cross-commit between stores. Verdicts are from
 |---|---|---|
 | utxo_apply stage cursor (progress.kv) | reducer txn | **CANONICAL** |
 | `coins_applied_height` (node_state) | co-commit path | derived; goes stale across reindex (§4 F3) |
-| `coins_best_block` (node_state) | coins view + recovery paths | duplicate anchor — retire with node.db utxos [PROPOSED] |
+| `coins_best_block` (node_state) | coins view + recovery paths | duplicate anchor — derive, then retire with node.db utxos [IN FLIGHT `refactor/derive-coins-best-demote-mirror`] |
 | LevelDB `'B'` best-block key | import/copy paths | read-only import source [PROPOSED] |
 | `tip_height`/`tip_hash` (node_state) | tip promote | derived view |
 | cached SHA3 utxo commitment | commitment service | derived; deleted-not-recomputed by reindex today (§4 F3) |
@@ -106,7 +172,7 @@ file), no atomic cross-commit between stores. Verdicts are from
 | event_log `EV_BLOCK_HEADER` | reducer log | log-of-record |
 
 **Carrying cost of letting these diverge:** ~16,254 LOC of production repair
-ladder + ~11,005 LOC of tests pinning repair behavior (~29,500 LOC total).
+ladder + ~11,005 LOC of tests pinning repair behavior (~27,300 LOC total).
 Step-7 of the canonical-frontier plan deletes ~4,533 production LOC; the
 verified-install invariant (§4 F5) makes another ~11,700 LOC dead. Ordering
 constraint: zero-callers is the state AFTER plan steps 1–6 —
@@ -134,8 +200,10 @@ heights, warm-reboot-proven):**
 header hole (headers=960) and pins forever. The footgun must be removed or
 auto-composed in code, not documented around **[PROPOSED]**.
 
-Ports (memory previously had these wrong): zclassic23 RPC **18232**; zclassicd
-RPC **8232**, P2P **8033**.
+Ports (memory previously had these wrong; live-verified 2026-06-11):
+zclassicd RPC **8232**, P2P **8033**; zclassic23 RPC **18232**, live P2P
+**8023** via the unit's `-port=8023` (the binary's compiled default is 8033,
+which the sibling zclassicd owns on this box — never run both on it).
 
 **Targets:** (a) one-command recipe, hole unrepresentable; (b) post-import
 completeness invariant (§5 G4) so a fast sync can never be a silently
@@ -154,11 +222,11 @@ EV_OPERATOR_NEEDED / Conditions / supervisor — never a silent halt.
 | # | Failure mode | Absorbing layer | Status | Residual risk |
 |---|---|---|---|---|
 | F1 | Coins/cursor tear (false-tear, L2 wedge) | Invariant B: tear derived from utxo_apply's own co-committed log | **[LANDED `c8018a388`]** | Low — class unrepresentable |
-| F2 | Boot restore installs tip above validated header frontier (this session: tip 3143175 > frontier 3141533 → FATAL crash-loop) | Invariant A: tip committable only ≤ frontier at the `csr_validate_locked` chokepoint; `pindex_best_header` a projection; evidence-based floor rewind | **[IN FLIGHT wt2 `fix/invariant-a-restore-clamp`]** | Until landed: the class remains writable; backstop is F4 |
+| F2 | Boot restore installs tip above validated header frontier (this session: tip 3143175 > frontier 3141533 → FATAL crash-loop) | Invariant A: trust-rooted installs at the single commit_tip chokepoint; `pindex_best_header` a projection; evidence-based floor rewind | **[LANDED `21d177bf9`+`447fa757b`, merged `a2da7e107` — the crash-loop fixture now boots post-restore-integrity CLEAN, zero reindex requests]** | Fixture residue: the coins_applied>hstar coin-tear class — that is F3's territory, tracked separately |
 | F3 | Reindex epilogue tear: `-reindex-chainstate` replay never reseeds coins_kv, deletes-not-recomputes the SHA3 commitment, keeps stale utxo_apply/coins_applied cursors (`config/src/boot_index.c:159-297`, `config/src/boot.c:3321-3346`) | Epilogue closure inside the replay's own txn discipline | **[PROPOSED Phase 2 item 6]** | **Medium — recovery currently manufactures the coins_applied>hstar wedge shape** |
 | F4 | Unrecoverable boot integrity (any class) | Crash-only auto-reindex instead of FATAL | **[LANDED `706a7c00a`]** | Backstop only; with F3 open this can become an infinite reindex loop — soak gate (§5 G3) must watch it |
 | F5 | Silent import hole (1,561-record precedent) | Verified-install: no imported state (LevelDB copy, snapshot, cold-import) becomes authoritative until SHA3-verified + completeness-checked (contiguity, per-keyspace counts vs source); point-in-time half exists in `utxo_recovery_ldb_copy.c` | **[PROPOSED Phase 2 item 5]** | Until built: every import path can ship a hole |
-| F6 | Consensus text-vs-chain false-reject (h=478544 oversize tx) | Grandfather scanned real-chain violations; enforce 102000 above | **[IN FLIGHT `fix/consensus-oversize-grandfather`]** | Any future predicate tightening re-opens the class — only the extremals gate (§5 G2) closes it permanently |
+| F6 | Consensus text-vs-chain false-reject (h=478544 oversize tx) | Grandfather scanned real-chain violations; enforce 102000 above | **[LANDED `ccc7fbbfa`, merged `b0c0b4f9a`; live binary predates it — deploy pending]** | Any future predicate tightening re-opens the class — only the extremals gate (§5 G2) closes it permanently |
 | F7 | Process death mid-write | progress.kv single `BEGIN IMMEDIATE` (cursor+log+coins+frontier) | **[LANDED]** (coins_kv design) | Low inside the boundary; nonzero across engine boundaries until §2 deletions land |
 | F8 | Service crash-loop exhausts systemd | `StartLimitIntervalSec=0` + stepped restart backoff | **[LANDED `0b45e93a5`]** | None for "stays down"; converts to retry-forever — needs F4/F3 to converge |
 | F9 | Stalled-not-crashed (silent halt) | supervisor liveness tree (deadlines, stall_fires) + Conditions + watchdog | **[LANDED]** (`lib/util/include/util/supervisor.h`) | Detection only — remediation is the Condition's job |
