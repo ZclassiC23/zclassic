@@ -62,57 +62,61 @@ anchor; poisoned cache ignored with zero FATALs).
 
 **LIVE NODE (datadir `~/.zclassic-c23`, service `zclassic23` under the
 new unit):**
-- RECOVERED from the 6h outage via the proven two-step recipe:
-  `--importblockindex` from the RUNNING zclassicd (3,138,616 headers
-  in 44–99s), then ONE `-cold-import` boot in-service via a temporary
-  firstboot drop-in (never leave `-cold-import` in the unit). Reached
-  the zclassicd tip with hash-identity at every probed height + 3
-  consecutive gap≤1 readings; seed binding oracle-verified at birth.
-- ⚠️ TEMPORARY: `-nobgvalidation` injected via
-  `~/.config/zclassic23/env` (`ZCL_ADDNODE_FLAGS`) — the live binary
-  PREDATES the oversize merge and bg_validation calls check_block.
-  Remove at the next restart; the rebuilt main binary has the fix.
+- AT TIP on binary `600efd53b` since 10:21 UTC (final deploy after the
+  splice merge): two-step recipe (`--importblockindex` 3,138,616
+  headers/66s, then ONE in-service `-cold-import` boot via the
+  firstboot drop-in), seed binding oracle-verified at birth, climbed
+  to gap≤1 and held; `-nobgvalidation` REMOVED from the env (oversize
+  fix is in the binary).
+- ⚠️ DEFECT #5 — header band hole (the reason "solid" is still NO):
+  the cold-import installed its anchor at h=3143301 while the
+  genesis-rooted header frontier was 3140573; msg_headers' old
+  "restarting getheaders from tip" policy discarded every
+  frontier-extending batch, so the band (3140574..3143300] was never
+  requested. Live symptoms: `getblockhash` "out of range" for the
+  whole band, chain_evidence `contradiction_frozen`
+  (`active_tip_ancestry_unlinkable h=3143301`), `operator_needed`
+  paging the entire boot. Forward progress unaffected — and the
+  fail-loud stack did exactly its job (froze the health claim, paged,
+  kept advancing on bounded advisory).
+- FIX MERGED to main (`0f9ffadae`, branch deleted): header band
+  backfill from the contiguous frontier + below-tip batches count as
+  progress + non-destructive in-memory closure + startup reconcile
+  lifts a stale freeze. COPY-PROVEN on a fresh copy of the live
+  datadir (fixture `~/.zclassic-c23-bandhole-fixture-20260611`,
+  preserved): boot rewound to the true frontier 3137373, freeze
+  lifted, band re-walked with ZERO restart-from-tip kills, 6,712
+  bodies backfilled in ~10 min, at-tip with best-block hash identical
+  to zclassicd — while the live node (control) still showed the hole.
 - ⚠️ TEMPORARY: the firstboot `-cold-import` drop-in
   (`~/.config/systemd/user/zclassic23.service.d/firstboot-coldimport.conf`)
-  is STILL INSTALLED — by its own comment it comes out (daemon-reload,
-  no restart needed) once the service holds tip; the final deploy
-  reuses it.
-- ⚠️ CURRENT DEGRADATION (honest): the header-splice bug re-poisoned
-  the top ~40 blocks — +3 height shift above ~3143600, verified by
-  oracle probe at ~11:30 UTC. Durable tip-tracking is gated on the
-  in-flight splice fix.
+  is STILL INSTALLED — it MUST be removed (+ daemon-reload) BEFORE the
+  remediation restart so the node boots normally on the existing
+  datadir (the copy-prove rehearsed exactly that boot).
 
-**HEADER-SPLICE root cause (forensically proven on preserved evidence
-`~/.zclassic-c23-offbyone-evidence-20260611` +
-`~/.zclassic-c23-splice-evidence-20260611`):**
-`tip_finalize_stage.c:473` publishes an INTERNALLY INCONSISTENT
-authority pair (height = cursor, hash = cursor+1's block);
-`accept_block_header.c:228-245`'s label-trust path then INSTALLS that
-off-by-one onto a peer-re-delivered duplicate tip header AND REWRITES
-THE PARENT's height → −1 cascade over all headers above → the reducer
-trusts the poisoned chain, replays, skips the true splice-height block
-(coin hole), detected only ~28 blocks later via bad-cb-height (script
-verdicts were height-keyed, not hash-bound). ~1-in-3 per catch-up
-under bursty peers. Retro-explains the 2026-06-09 trackb
-prevout_unresolved incident. **IN FLIGHT** (workflow, branch
-`fix/header-splice-derive-heights`): EDIT A — self-consistent
-authority pair; EDIT B — derive-from-parent only (delete label-trust);
-EDIT C — hash-bound script-verdict consumption in utxo_apply (typed
-`label_splice` blocker).
-
-**NEXT — single final deploy when the splice fix lands:**
-1. Merge `fix/header-splice-derive-heights` → rebuild.
-2. Remove `-nobgvalidation` from `~/.config/zclassic23/env`.
-3. Wipe + two-step recipe (`--importblockindex`, then the firstboot
-   `-cold-import` drop-in).
-4. Verify: seed-binding probe, tip-hold ×3, height-shift probe vs the
-   oracle.
+**NEXT — live remediation (owner approved "deploy when proven"):**
+1. Copy-prove the MERGED binary (wave-2 + band fix, `a1fc79c80`) on a
+   fresh live-datadir copy — IN FLIGHT (`~/.zclassic-c23-merged-proof-
+   20260611`, ports 18024/28233).
+2. When proven: remove the firstboot drop-in, `make deploy` (WAL
+   checkpoint + unit install + daemon-reload + restart).
+3. Expect the rehearsed recovery (~13 min): rewind to true frontier →
+   band backfill → body catch-up → at-tip.
+4. Verify: band probes (3140574/3142000/3143300) byte-equal to
+   zclassicd, healthcheck unfrozen + operator_needed clear, shift
+   probes clean at tip. Known cosmetic residual: persisted cec
+   evidence is not re-stamped after bulk catchup
+   (`active_tip_hash_mismatch` until the next restart) — follow-up
+   fix queued.
 
 **Ops notes:** the two-step recipe + unit guardrails are documented in
 CLAUDE.md (`b1a335638`). Evidence dirs preserved on disk:
 `~/.zclassic-c23-offbyone-evidence-20260611`,
-`~/.zclassic-c23-splice-evidence-20260611`, plus the old replay/canary
-fixtures. The wedge fixture's `blocks/` has pre-existing frame
+`~/.zclassic-c23-splice-evidence-20260611`,
+`~/.zclassic-c23-bandhole-fixture-20260611` (band-fix copy-prove,
+healed), `~/.zclassic-c23-wave2-proof` (wave-2 fixture proof),
+`~/.zclassic-c23-merged-proof-20260611` (merged-binary rehearsal),
+plus the old replay/canary fixtures. The wedge fixture's `blocks/` has pre-existing frame
 corruption at h=3115015 (replay stops gracefully there — by-design
 page-operator case). Branch hygiene done: origin has exactly ONE
 branch (`main`); all stale local/remote branches deleted; `pr` remote
