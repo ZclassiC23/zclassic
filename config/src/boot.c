@@ -24,6 +24,7 @@
 #include "storage/progress_store.h"
 #include "jobs/stage_repair.h"
 #include "storage/utxo_reimport_flag.h"
+#include "config/boot_crashonly.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"
@@ -1757,6 +1758,10 @@ bool app_init(struct app_context *ctx)
         if (utxo_reimport_flag_check_and_clear(ctx->datadir))
             ctx->reimport_utxos = true;
 
+        /* Crash-only: consume a prior boot's self-rebuild request (reindex). */
+        if (boot_crashonly_consume_reindex_request(ctx->datadir))
+            ctx->reindex_chainstate = true;
+
         /* -reimport-utxos: force re-import from LevelDB chainstate */
         if (ctx->reimport_utxos) {
             if (!utxo_recovery_prepare_reimport(&g_node_db).ok)
@@ -3458,19 +3463,12 @@ sapling_tree_boot_check_done:
 
         if (!finalize_ok && tip_h > 1000) {
             if (cls == CHAIN_INTEGRITY_UNRECOVERABLE && !ctx->allow_degraded) {
-                fprintf(stderr,
-                    "[boot] FATAL: post-restore integrity found structural "
-                    "corruption at tip_h=%d (zero_nbits=%d mismatches=%d "
-                    "first_mismatch_h=%d). Re-run with -allow-degraded to "
-                    "serve anyway, or -reindex-chainstate to rebuild.\n",
-                    tip_h, integ.zero_nbits_count,
-                    integ.active_chain_mismatches,
+                /* Crash-only: the reindex-recoverable shape (zero_nbits==0, a
+                 * derived tip above the validated index extent) auto-requests a
+                 * self-rebuild; structural corruption / exhausted budget pages. */
+                boot_crashonly_handle_unrecoverable(ctx->datadir, tip_h,
+                    integ.zero_nbits_count, integ.active_chain_mismatches,
                     integ.first_mismatch_height);
-                event_emitf(EV_BOOT_ACTIVATE, 0,
-                    "FATAL post_restore_integrity_corrupt tip=%d "
-                    "zero_nbits=%d mismatches=%d",
-                    tip_h, integ.zero_nbits_count,
-                    integ.active_chain_mismatches);
                 return false;
             }
             if (cls == CHAIN_INTEGRITY_UNRECOVERABLE) {
@@ -3502,6 +3500,8 @@ sapling_tree_boot_check_done:
             }
             (void)service_state_persist_to_progress_store();
         } else {
+            /* Clean integrity — the rebuild (if any) converged; clear the budget. */
+            boot_crashonly_clear(ctx->datadir);
             service_state_transition_and_persist(SERVICE_STATE_SYNCING,
                                   "post-restore integrity clean");
         }
