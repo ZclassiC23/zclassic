@@ -6,59 +6,115 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-11 — 6h live outage root-caused; crash-only boot + FR-3 oversize discovery
+## 2026-06-11 — live node RECOVERED to tip; 4 defects root-caused; 5 landings on main; header-splice fix IN FLIGHT
 
-**The outage (root-cause chain, verified live):** boot restore INSTALLED
-tip 3143175 ABOVE the backable index extent (validated header frontier
-3141533; contiguous extent ends 3142801). The anti-rewind finalized floor
-(3143171) then REFUSED the only consistent rollback target (3137373) →
-post-restore integrity UNRECOVERABLE → FATAL crash-loop → systemd
-start-limit gave up → node sat FAILED 6+ hours. A repair safety converted
-a recoverable inconsistency into a dead node.
+**Outcome:** the 6h outage is over — the live node was rebuilt via the
+proven two-step recipe and reached the zclassicd tip (hash-identity at
+every probed height, 3 consecutive gap≤1 readings, seed binding
+oracle-verified at birth). Four defects root-caused this session:
+systemd's start-limit giving up mid-crash-loop, the boot
+FATAL-instead-of-recover path, the FR-3 oversize consensus regression,
+and the header-splice authority bug. Five landings on main — 8 commits
+incl. two branch merges (build + lint + test_parallel 0/409 green at
+each step, all pushed).
+The splice fix is IN FLIGHT and gates durable tip-tracking — the live
+tip is currently re-poisoned +3 above ~3143600.
 
 **LANDED on main:**
-- `706a7c00a` — crash-only auto-recovery: integrity-unrecoverable boots
-  auto-trigger `-reindex-chainstate` instead of FATALing.
-- `0b45e93a5` — never-give-up unit: `StartLimitIntervalSec=0` + stepped
-  restart backoff (systemd can no longer give up).
-- Invariant B (`c8018a388`, prior session): coin-tear derived from
-  utxo_apply's OWN log. test_parallel 0/409 green throughout — note that
-  it was ALSO green during the entire outage: green is a regression
-  floor, not a liveness proof.
+- `706a7c00a` — boot crash-only auto-recovery: integrity FATAL
+  crash-loop → bounded auto-reindex sentinel (max 3/anchor, then
+  page). PROVEN on the real wedge fixture (boot1 writes sentinel +
+  exits clean; boot2 consumes + replays).
+- `0b45e93a5` — never-give-up unit: `StartLimitIntervalSec=0`,
+  `RestartSec=5` / `RestartSteps=8` / `RestartMaxDelaySec=600` (the 6h
+  outage was systemd's start-limit giving up mid-crash-loop).
+  INSTALLED live.
+- `b1a335638` — docs: TENACITY.md + CLAUDE.md guardrails +
+  `docs/work/tenacity-roadmap.md` (information-theory audit: ~3
+  progress-facts encoded ~16 ways across 6+ stores; ~16,254 LOC repair
+  ladder; install-vs-derive dominates the bug history; 0 gates sampled
+  the live failure distribution).
+- `b0c0b4f9a` (merge of `fix/consensus-oversize-grandfather`,
+  `ccc7fbbfa`) — THE FR-3 OVERSIZE CONSENSUS REGRESSION FIX.
+  `f8592c386` had copied zclassicd's TEXT
+  (MAX_TX_SIZE_AFTER_SAPLING=102000), but the canonical chain holds
+  **413 oversize txs** (heights 478544..1968856, max 1,922,197 B at
+  h=685036 — found by a COMPLETE empirical scan: every height
+  0..3143532 frame-walked + oracle-compared). The old binary FATALed
+  any full validation at 478544 and also stalled the forward reducer.
+  Fix: txid-keyed grandfather table (recomputed txid, block-context
+  only; mempool + fresh blocks stay strict 102000 = zclassicd live
+  behavior). VALIDATED by a full genesis replay through the whole
+  grandfather range, zero rejects.
+- `a2da7e107` (merge of `fix/invariant-a-restore-clamp`,
+  `21d177bf9`+`447fa757b`) — INVARIANT A: restored tips must be
+  DERIVED-backable. Trust-rooted pprev descent to genesis/SHA3-anchor
+  required at the single commit_tip choke point; evidence-based
+  finalized-floor settle (363 floor_rewind rows on the fixture);
+  detached-island promotions refused (3 boot.c bypasses closed). The
+  morning's crash-loop fixture now boots post-restore-integrity CLEAN
+  (was 1267 holes + 631 mismatches UNRECOVERABLE), zero reindex
+  requests, serving. Residual on that fixture: the known
+  L1-refuse/L2 coin-tear class (coins_applied=3143198 > hstar) —
+  tracked, separate.
 
-**FR-3 oversize discovery (consensus, fix IN FLIGHT):** the auto-reindex
-genesis replay FATALed at h=478544 — the canonical chain contains a
-125,811-byte tx there (Sapling active at 476969; mine-time rule was 2MB;
-zclassicd later tightened to 102000 WITHOUT grandfathering — the
-reference cannot resync its own chain). FR-3 (`f8592c386`) copied the
-TEXT; the same false-reject also stalls the forward reducer. Fix branch
-`fix/consensus-oversize-grandfather`: scan the real chain, grandfather
-scanned violations, enforce 102000 above. Rule going forward: validate
-against the CHAIN, not the reference text.
+**LIVE NODE (datadir `~/.zclassic-c23`, service `zclassic23` under the
+new unit):**
+- RECOVERED from the 6h outage via the proven two-step recipe:
+  `--importblockindex` from the RUNNING zclassicd (3,138,616 headers
+  in 44–99s), then ONE `-cold-import` boot in-service via a temporary
+  firstboot drop-in (never leave `-cold-import` in the unit). Reached
+  the zclassicd tip with hash-identity at every probed height + 3
+  consecutive gap≤1 readings; seed binding oracle-verified at birth.
+- ⚠️ TEMPORARY: `-nobgvalidation` injected via
+  `~/.config/zclassic23/env` (`ZCL_ADDNODE_FLAGS`) — the live binary
+  PREDATES the oversize merge and bg_validation calls check_block.
+  Remove at the next restart; the rebuilt main binary has the fix.
+- ⚠️ TEMPORARY: the firstboot `-cold-import` drop-in
+  (`~/.config/systemd/user/zclassic23.service.d/firstboot-coldimport.conf`)
+  is STILL INSTALLED — by its own comment it comes out (daemon-reload,
+  no restart needed) once the service holds tip; the final deploy
+  reuses it.
+- ⚠️ CURRENT DEGRADATION (honest): the header-splice bug re-poisoned
+  the top ~40 blocks — +3 height shift above ~3143600, verified by
+  oracle probe at ~11:30 UTC. Durable tip-tracking is gated on the
+  in-flight splice fix.
 
-**Proven recipe + live redeploy (LANDED, corrects stale docs/memory):**
-`--importblockindex $HOME/.zclassic` FIRST (3.14M headers in 60-74s from
-the RUNNING zclassicd), THEN the `-cold-import=$HOME/.zclassic` boot →
-hash-identical tip in ~25 min, warm-reboot-proven. `-cold-import` alone
-leaves a 3.1M-header hole and pins forever. zclassicd ports: P2P=8033
-(not 8034 as older notes said), RPC=8232. Live node redeployed via this
-recipe.
+**HEADER-SPLICE root cause (forensically proven on preserved evidence
+`~/.zclassic-c23-offbyone-evidence-20260611` +
+`~/.zclassic-c23-splice-evidence-20260611`):**
+`tip_finalize_stage.c:473` publishes an INTERNALLY INCONSISTENT
+authority pair (height = cursor, hash = cursor+1's block);
+`accept_block_header.c:228-245`'s label-trust path then INSTALLS that
+off-by-one onto a peer-re-delivered duplicate tip header AND REWRITES
+THE PARENT's height → −1 cascade over all headers above → the reducer
+trusts the poisoned chain, replays, skips the true splice-height block
+(coin hole), detected only ~28 blocks later via bad-cb-height (script
+verdicts were height-keyed, not hash-bound). ~1-in-3 per catch-up
+under bursty peers. Retro-explains the 2026-06-09 trackb
+prevout_unresolved incident. **IN FLIGHT** (workflow, branch
+`fix/header-splice-derive-heights`): EDIT A — self-consistent
+authority pair; EDIT B — derive-from-parent only (delete label-trust);
+EDIT C — hash-bound script-verdict consumption in utxo_apply (typed
+`label_splice` blocker).
 
-**IN FLIGHT:** `fix/invariant-a-restore-clamp` (wt2 — tip committable
-only ≤ the validated header frontier; evidence-based floor rewind; makes
-this outage class unwritable) and `fix/consensus-oversize-grandfather`
-(above).
+**NEXT — single final deploy when the splice fix lands:**
+1. Merge `fix/header-splice-derive-heights` → rebuild.
+2. Remove `-nobgvalidation` from `~/.config/zclassic23/env`.
+3. Wipe + two-step recipe (`--importblockindex`, then the firstboot
+   `-cold-import` drop-in).
+4. Verify: seed-binding probe, tip-hold ×3, height-shift probe vs the
+   oracle.
 
-**PROPOSED (code-read confirmed, not yet built):** reindex epilogue is
-torn — after `-reindex-chainstate` replay, coins_kv is never reseeded,
-the SHA3 commitment is deleted-not-recomputed, and utxo_apply /
-coins_applied cursors keep stale pre-reindex values
-(`boot_index.c:165-297`, `boot.c:3321-3344`) — the recovery path itself
-manufactures the coins_applied>hstar wedge shape.
-
-⚠️ **TEMPORARY:** the live unit injects `-nobgvalidation` via environment
-(bg validation would hit the same h=478544 false-reject). REMOVE once the
-oversize grandfather fix lands.
+**Ops notes:** the two-step recipe + unit guardrails are documented in
+CLAUDE.md (`b1a335638`). Evidence dirs preserved on disk:
+`~/.zclassic-c23-offbyone-evidence-20260611`,
+`~/.zclassic-c23-splice-evidence-20260611`, plus the old replay/canary
+fixtures. The wedge fixture's `blocks/` has pre-existing frame
+corruption at h=3115015 (replay stops gracefully there — by-design
+page-operator case). Branch hygiene done: origin has exactly ONE
+branch (`main`); all stale local/remote branches deleted; `pr` remote
+removed; mirror branch cleanup done.
 
 ---
 
