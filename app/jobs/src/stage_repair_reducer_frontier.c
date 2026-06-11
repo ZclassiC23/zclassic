@@ -222,6 +222,23 @@ static bool read_frontier_snapshot(sqlite3 *db,
         return false;
     }
 
+    /* utxo_apply's OWN contiguous applied frontier — the coin-tear test
+     * compares coins_applied against THIS, never the tip_finalize-pinned global
+     * MIN H*. coins_applied tracks the utxo_apply cursor by construction
+     * (co-committed in one BEGIN IMMEDIATE), so a real tear is coins applied
+     * above utxo_apply's own ok=1 prefix; coins legitimately leading the
+     * slower-to-finalize H* is pipeline depth, not a tear (the false positive
+     * that dead-ended at the never-built L2). Read under the lock already held;
+     * reducer_frontier_log_frontier re-takes the recursive lock safely. */
+    int32_t utxo_apply_contig = hstar;
+    if (!reducer_frontier_log_frontier(db, "utxo_apply_log", "utxo_apply",
+                                       &utxo_apply_contig)) {
+        progress_store_tx_unlock();
+        LOG_WARN("stage_repair",
+                 "[stage_repair] utxo_apply frontier read failed");
+        return false;
+    }
+
     /* One read per stage cursor: the named indices below feed the result
      * fields, every cursor feeds sweep_top. */
     static const char *const stages[] = {
@@ -274,7 +291,7 @@ static bool read_frontier_snapshot(sqlite3 *db,
     out->coins_applied_height = coins_found ? coins_applied : -1;
     if (!coins_found)
         out->refused_coin_unknown = true;
-    else if (coins_applied > hstar + 1)
+    else if (coins_applied > utxo_apply_contig + 1)
         out->refused_coin_tear = true;
     return true;
 }
@@ -431,6 +448,20 @@ static struct {
     int64_t total_changes;
     struct stage_reducer_frontier_reconcile_result result;
 } g_detect_memo;
+
+#ifdef ZCL_TESTING
+/* Test-only: drop the dry-run detect memo. The memo keys on (live db pointer,
+ * total_changes, 60 s TTL) — sound in production where the progress.kv
+ * connection is long-lived and total_changes is monotonic. But a test process
+ * that closes and reopens progress.kv per fixture can reuse the freed db
+ * pointer AND reset total_changes to a value that coincidentally matches a
+ * prior fixture's cached entry, so a stale "clean" result wrongly hits. Tests
+ * call this between fixtures to guarantee an uncontaminated sweep. */
+void stage_reducer_frontier_reset_detect_memo_for_testing(void)
+{
+    g_detect_memo.valid = false;
+}
+#endif
 
 /* Cache only a result the Condition treats as fully quiet: no repair, no
  * refusal, and none of the repair-evidence side channels that

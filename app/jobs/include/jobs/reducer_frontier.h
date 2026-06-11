@@ -59,4 +59,30 @@ bool reducer_frontier_compute_hstar(
     int32_t *served_floor           /* OUT: MAX(tip_finalize ok=1 height), or 0 */
 );
 
+/* The contiguous ok=1 prefix of ONE success-checked *_log above the trusted
+ * anchor — the same per-log frontier reducer_frontier_compute_hstar MIN-folds.
+ * The single DRY reader callers use to derive a per-stage frontier instead of
+ * duplicating the anchor/cursor/contiguity SQL:
+ *   - validate_headers_log -> the validated HEADER frontier (Invariant A: a tip
+ *     is committable only at or below this height).
+ *   - utxo_apply_log -> the APPLIED frontier (the coin-tear test compares
+ *     coins_applied against THIS, not the tip_finalize-pinned global MIN H*,
+ *     so legitimate pipeline depth is never misread as a tear).
+ *
+ * Reads the trusted anchor + the named stage cursor internally and acquires
+ * progress_store_tx_lock() itself (recursive; safe whether or not the caller
+ * already holds it). SELECT-only — no writes, no transaction of its own.
+ *
+ * NOTE: O(cursor - anchor) row reads (one full log walk). Call off the hot
+ * reducer-tick path — at boot, condition-check, reconcile, or commit-prepare.
+ *
+ * Returns false on a DB read error (*out_h is then meaningless); true on
+ * success with *out_h in [anchor, cursor-1]. */
+bool reducer_frontier_log_frontier(
+    sqlite3 *progress_db,           /* progress.kv handle */
+    const char *log_table,          /* e.g. "validate_headers_log" */
+    const char *cursor_name,        /* e.g. "validate_headers" */
+    int32_t *out_h                  /* OUT: contiguous ok=1 prefix height */
+);
+
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_H */

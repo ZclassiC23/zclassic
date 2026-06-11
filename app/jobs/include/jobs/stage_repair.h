@@ -236,4 +236,10 @@ bool stage_reducer_frontier_reconcile_light(
     struct main_state *ms,
     struct stage_reducer_frontier_reconcile_result *out);
 
+#ifdef ZCL_TESTING
+/* Test-only: drop the dry-run detect memo so the next reconcile re-sweeps. Call
+ * between fixtures that close+reopen progress.kv (see the definition comment). */
+void stage_reducer_frontier_reset_detect_memo_for_testing(void);
+#endif
+
 #endif /* ZCL_JOBS_STAGE_REPAIR_H */

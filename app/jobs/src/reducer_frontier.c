@@ -15,6 +15,7 @@
 #include "chain/checkpoints.h"
 #include "platform/time_compat.h"
 #include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
 
@@ -331,6 +332,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
      * the result up to the anchor (and covers the all-logs-empty case where
      * the sentinel survives). */
     int32_t hs = INT32_MAX;
+    int32_t ua_contig = anchor;  /* utxo_apply's OWN contiguous frontier (C4) */
     for (int i = 0; i < k_logs_n; i++) {
         int64_t cursor = 0;
         if (!cursor_at(progress_db, k_logs[i].cursor_name, &cursor))
@@ -351,6 +353,8 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
 
         if (h_contig < hs)
             hs = h_contig;  /* H* = MIN over all logs */
+        if (strcmp(k_logs[i].log_table, "utxo_apply_log") == 0)
+            ua_contig = h_contig;  /* captured free for the C4 tear check */
     }
     if (hs == INT32_MAX)
         hs = anchor;  /* no logs scanned (k_logs_n>0, but defensive) */
@@ -360,31 +364,34 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     if (!apply_hash_agreement(progress_db, anchor, &hs))
         LOG_FAIL("reducer", "hash-agreement walk failed");
 
-    /* C4 diagnostic — coins frontier vs H*. coins_applied_height > H* is a
-     * possible coin tear (L2 domain); do NOT lower H* here. Absent key ==
-     * unknown frontier; that is not a defect for L0. The WARN is de-stormed
-     * via the shared log_throttle primitive: a persistent tear fires
-     * identically every pass, so emit on first occurrence / pair change
-     * (reporting the prior pair's suppressed count) or as a 300 s keep-alive
-     * with the running count. The caller holds progress_store_tx_lock(); the
-     * throttle's atomics keep the counters torn-read-safe regardless. */
+    /* C4 diagnostic — coins frontier vs utxo_apply's OWN applied frontier.
+     * coins_applied_height tracks the utxo_apply cursor by construction (the
+     * stage co-commits both in one BEGIN IMMEDIATE), so a REAL tear is coins
+     * applied ABOVE utxo_apply's contiguous ok=1 log prefix (ua_contig) — a
+     * hole/ok=0 row below the cursor. It is NOT coins leading the global MIN
+     * H*: H* is pinned by the SLOWEST log (tip_finalize), which legitimately
+     * lags utxo_apply by the pipeline depth (every applied coin already passed
+     * headers->script->proof->utxo_apply), and reading that lag as a tear is
+     * the false positive that dead-ended at the never-built L2. Compare against
+     * ua_contig, never hs. Do NOT lower H* here; absent key == unknown frontier
+     * (not a defect for L0). De-stormed via the shared log_throttle: a
+     * persistent tear fires once per pair change / 300 s keep-alive with the
+     * suppressed count. Caller holds progress_store_tx_lock(); the throttle's
+     * atomics keep the counters torn-read-safe regardless. */
     int32_t coins_applied = 0;
     bool coins_found = false;
     if (coins_kv_get_applied_height(progress_db, &coins_applied, &coins_found)
-        && coins_found && coins_applied > hs + 1) {
-        /* Shared log_throttle de-storm: key on the (coins_applied, hs) pair so
-         * a persistent tear fires once per change / per 300 s keep-alive,
-         * reporting the suppressed-repeat count. */
+        && coins_found && coins_applied > ua_contig + 1) {
         static struct log_throttle tear_throttle = LOG_THROTTLE_INIT;
         uint64_t pair = ((uint64_t)(uint32_t)coins_applied << 32)
-                        | (uint32_t)hs;
+                        | (uint32_t)ua_contig;
         int64_t now = platform_time_wall_unix();
         uint64_t reps = 0;
         if (log_throttle_should_emit(&tear_throttle, pair, now, 300, &reps))
             LOG_WARN("reducer",
-                     "coins_applied=%d > hstar_cursor=%d (possible coin tear)"
-                     " repeated=%llu",
-                     coins_applied, hs + 1, (unsigned long long)reps);
+                     "coins_applied=%d > utxo_apply_frontier=%d "
+                     "(coin tear vs own applied log) repeated=%llu",
+                     coins_applied, ua_contig + 1, (unsigned long long)reps);
     }
 
     /* HARD GUARD — never rewind across finality. */
@@ -392,5 +399,36 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
         hs = anchor;
 
     *hstar = hs;
+    return true;
+}
+
+bool reducer_frontier_log_frontier(sqlite3 *progress_db,
+                                   const char *log_table,
+                                   const char *cursor_name,
+                                   int32_t *out_h)
+{
+    if (!progress_db || !log_table || !cursor_name || !out_h)
+        LOG_FAIL("reducer", "log_frontier: NULL arg");
+
+    /* Recursive lock: safe whether or not the caller already holds it. */
+    progress_store_tx_lock();
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    int32_t compiled_anchor = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t anchor = compiled_anchor;
+    int32_t h = anchor;
+    int64_t cursor = 0;
+
+    bool ok = reducer_trusted_anchor(progress_db, compiled_anchor, &anchor);
+    if (ok)
+        ok = cursor_at(progress_db, cursor_name, &cursor);
+    if (ok)
+        ok = log_contiguous_prefix(progress_db, log_table, anchor, cursor, &h);
+
+    progress_store_tx_unlock();
+
+    if (!ok)
+        return false;  /* the failing inner read already logged the cause */
+    *out_h = h;
     return true;
 }

@@ -211,6 +211,22 @@ static bool put_simple_log(sqlite3 *db, const char *table, int height,
     return ok;
 }
 
+/* Seed a REAL coin tear: poke an ok=0 row into utxo_apply_log at height K.
+ * The coin-tear test now compares coins_applied against utxo_apply's OWN
+ * contiguous ok=1 log prefix (reducer_frontier_log_frontier on
+ * "utxo_apply_log"/"utxo_apply"), so an ok=0 row at K (overwriting the ok=1
+ * row setup_fixture wrote) terminates that prefix at K-1. With coins_applied
+ * set above K, `coins_applied > utxo_apply_contig + 1` is TRUE — a genuine
+ * tear of coins above the solid applied log, NOT a tip_finalize-lag false
+ * positive. Status 'verified' (default) is intentional: it must NOT be
+ * 'value_overflow' (the maybe_repair_value_overflow trigger), so this remains
+ * a plain applied-log hole that no pre-refusal repair claims, and the L1 flow
+ * reaches the terminal coin-tear refusal that drives the witness machinery. */
+static bool poke_utxo_apply_hole(sqlite3 *db, int height)
+{
+    return put_simple_log(db, "utxo_apply_log", height, 0);
+}
+
 static bool put_tip_log(sqlite3 *db, int height, int ok_flag,
                         const struct uint256 *hash)
 {
@@ -388,9 +404,15 @@ int test_reducer_reconcile_witness(void)
         struct rrw_fixture fx;
         RRW_CHECK("T10a: setup tear fixture", setup_fixture(&fx, "t10_bump"));
         sqlite3 *db = progress_store_db();
-        /* Coin tear: remedy refuses (COND_REMEDY_FAILED) every round — the
-         * ONLY thing moving is the backfill record the hook bumps. */
-        RRW_CHECK("T10a: seed coins_applied above hstar (tear)",
+        /* REAL coin tear: the tear is now measured against utxo_apply's OWN
+         * contiguous ok=1 log prefix, so seed a real utxo_apply hole at K=A+2
+         * with coins_applied=A+3 > K — `coins_applied > utxo_apply_contig + 1`
+         * is TRUE so the tear (and the bypass/witness machinery) genuinely
+         * fires. Remedy refuses (COND_REMEDY_FAILED) every round — the ONLY
+         * thing moving is the backfill record the hook bumps. */
+        RRW_CHECK("T10a: poke real utxo_apply hole at K=A+2",
+                  poke_utxo_apply_hole(db, A + 2));
+        RRW_CHECK("T10a: seed coins_applied above the hole (tear)",
                   seed_coins_applied(db, A + 3));
         RRW_CHECK("T10a: backfill record present before first tick",
                   set_tipfin_progress(db, 100));
@@ -448,7 +470,14 @@ int test_reducer_reconcile_witness(void)
         RRW_CHECK("T10b: setup tear fixture",
                   setup_fixture(&fx, "t10_frozen"));
         sqlite3 *db = progress_store_db();
-        RRW_CHECK("T10b: seed coins_applied above hstar (tear)",
+        /* REAL coin tear: the tear is now measured against utxo_apply's OWN
+         * contiguous ok=1 log prefix, so seed a real utxo_apply hole at K=A+2
+         * with coins_applied=A+3 > K — `coins_applied > utxo_apply_contig + 1`
+         * is TRUE so the tear genuinely fires (and, the record being frozen,
+         * the budget exhausts and pages). */
+        RRW_CHECK("T10b: poke real utxo_apply hole at K=A+2",
+                  poke_utxo_apply_hole(db, A + 2));
+        RRW_CHECK("T10b: seed coins_applied above the hole (tear)",
                   seed_coins_applied(db, A + 3));
         /* Record present but FROZEN: presence alone must never witness —
          * only movement (or an absent<->present transition) does. */
@@ -496,7 +525,13 @@ int test_reducer_reconcile_witness(void)
         RRW_CHECK("T11a: setup tear fixture",
                   setup_fixture(&fx, "t11_bypass"));
         sqlite3 *db = progress_store_db();
-        RRW_CHECK("T11a: seed coins_applied above hstar (tear)",
+        /* REAL coin tear: the tear is now measured against utxo_apply's OWN
+         * contiguous ok=1 log prefix, so seed a real utxo_apply hole at K=A+2
+         * with coins_applied=A+3 > K — `coins_applied > utxo_apply_contig + 1`
+         * is TRUE so the tear (and the peer-gate bypass) genuinely fires. */
+        RRW_CHECK("T11a: poke real utxo_apply hole at K=A+2",
+                  poke_utxo_apply_hole(db, A + 2));
+        RRW_CHECK("T11a: seed coins_applied above the hole (tear)",
                   seed_coins_applied(db, A + 3));
 
         /* One peer, NOT ahead: starting_height == local finalized height

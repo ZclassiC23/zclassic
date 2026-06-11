@@ -5,28 +5,54 @@
  *  stage_reducer_frontier_purge_stale_reorg_tipfin), wired into the L1
  * reconcile (stage_repair_reducer_frontier.c).
  *
+ * SEMANTICS CHANGE (coin-tear is now measured vs utxo_apply's OWN log):
+ * read_frontier_snapshot used to read refused_coin_tear = (coins_applied >
+ * hstar + 1), where hstar is the global MIN over ALL stage logs INCLUDING the
+ * slowest (tip_finalize). That was a FALSE-POSITIVE generator: coins_applied
+ * tracks the utxo_apply cursor by construction (co-committed in one BEGIN
+ * IMMEDIATE), so coins leading the global MIN H* is just PIPELINE DEPTH
+ * (tip_finalize, the LAST stage, lagging) — not a tear. The fix measures the
+ * tear against utxo_apply's OWN contiguous ok=1 log prefix (utxo_apply_contig,
+ * read via reducer_frontier_log_frontier("utxo_apply_log","utxo_apply")):
+ * refused_coin_tear = (coins_applied > utxo_apply_contig + 1). A REAL tear is
+ * coins applied ABOVE utxo_apply's own solid log (a hole/ok=0 below the
+ * cursor); this reorg-residue scenario has utxo_apply SOLID ok=1 through R, so
+ * it is NO LONGER a coin tear at all.
+ *
  * THE LIVE #1 WEDGE (proven on ~/.zclassic-c23-wedgecopy progress.kv): a
  * depth-2 reorg at h=R left tip_finalize_log[R] = ok=0 reorg_detected, while
  * the contiguous heights R+1,R+2 are ABSENT from EVERY value-checked log
  * (a "column gap"). header_admit_log HAS R+1,R+2 (real parent-linked
  * blocks). Upper cursors sit far above; utxo_apply cursor == coins_applied
- * == R+1 (coins applied THROUGH R; R+1 unapplied => NO real coin tear).
+ * == R+1 (coins applied THROUGH R; R+1 unapplied). utxo_apply's OWN log is
+ * contiguous ok=1 through R, so utxo_apply_contig == R and
+ * coins_applied(R+1) > utxo_apply_contig(R)+1 is FALSE => NO coin tear.
  *
- * The ok=0 row at R caps H* at R-1, so coins_applied(R+1) > H*+1(R) reads as
- * a FALSE coin tear and the L1 refusal early-returns BEFORE the existing
- * header_admit-keyed validate_headers refill that would heal the column.
+ * The ok=0 row at R still caps the global H* at R-1 (it is the slowest log),
+ * which is the residue the chain must shed to make forward progress — but it
+ * is NOT a coin tear and no longer drives a refusal. The reconcile now
+ * proceeds straight to the downstream heal in BOTH controls.
  *
- * FIX-A REPLACES the residue verdict in place (never deletes — served_floor
- * preserved) with a fresh ok=1 'finalize_backfill' row carrying the lookahead
- * hash(R+1) from header_admit; H* lifts to R, the false tear clears, the
- * existing refill clamps validate_headers/body_fetch/body_persist (and
- * tip_finalize) back to the column hole R+1, and coins/utxo_apply are
- * untouched. This test reproduces that EXACT state and drives the real L1
- * entry point.
+ * GREEN — header_admit present at R+1: FIX-A's lookahead binder succeeds, so
+ * it REPLACES the residue verdict in place (never deletes — served_floor
+ * preserved) with a fresh ok=1 'finalize_backfill' row carrying hash(R+1); H*
+ * lifts to R and the existing header_admit-keyed refill clamps
+ * validate_headers/body_fetch/body_persist (and tip_finalize) to the column
+ * hole R+1; coins/utxo_apply are untouched.
  *
- * RED-before control: with header_admit ABSENT at R+1 (FIX-A gate-2 fails),
- * the residue row is NOT replaced, the tear is NOT cleared, and the L1
- * refusal stands — proving FIX-A is the load-bearing change.
+ * RED — header_admit ABSENT at R+1: FIX-A's gate-2 (lookahead binder) fails,
+ * so the residue row is NOT replaced (reorg_residue_tipfin_found==1,
+ * replaced==0) and H* stays pinned at R-1. With the false coin-tear gone the
+ * reconcile no longer early-returns; it falls through to the downstream
+ * refill, which SAFELY re-derives the still-unfinalized column WITHOUT
+ * touching coins: validate_headers clamps to the lowest header_admit-evidenced
+ * rowless hole (R+2), body_fetch/body_persist re-walk from R, and tip_finalize
+ * clamps to the H*+1 floor R (re-finalizing from R re-evaluates the residue).
+ * utxo_apply and coins_applied stay at R+1 (no coin rewind). The RED control
+ * therefore still asserts the REAL gate that distinguishes FIX-A: residue
+ * REPLACED iff header_admit is present at the gap (GREEN) and NOT replaced
+ * when absent (RED) — it just no longer asserts the (false) coin-tear refusal,
+ * which the semantics change correctly removed.
  */
 
 #include "test/test_helpers.h"
@@ -323,7 +349,11 @@ static long long tip_row_count(sqlite3 *db)
 }
 
 /* Read H-star, served_floor, coins, tear off the durable store the way the
- * L1 reconcile snapshot does — used to assert the pin BEFORE the reconcile. */
+ * L1 reconcile snapshot does — used to assert the pin BEFORE the reconcile.
+ * `tear` follows the PRODUCTION semantics: coins_applied vs utxo_apply's OWN
+ * contiguous ok=1 log prefix (reducer_frontier_log_frontier), NOT the global
+ * MIN H* — so legitimate pipeline depth (tip_finalize lagging) is never read
+ * as a tear. */
 static bool snapshot(sqlite3 *db, int *hstar, int *served_floor,
                      int *coins_applied, bool *tear)
 {
@@ -333,13 +363,17 @@ static bool snapshot(sqlite3 *db, int *hstar, int *served_floor,
     int32_t coins = 0;
     bool found = false;
     ok = ok && coins_kv_get_applied_height(db, &coins, &found);
+    int32_t ua_contig = hs;
+    ok = ok && reducer_frontier_log_frontier(db, "utxo_apply_log",
+                                             "utxo_apply", &ua_contig);
     progress_store_tx_unlock();
     if (!ok)
         return false;
     *hstar = hs;
     *served_floor = sf;
     *coins_applied = found ? coins : -1;
-    *tear = found && coins > hs + 1;
+    /* PRODUCTION tear basis: utxo_apply's own applied frontier, not H*. */
+    *tear = found && coins > ua_contig + 1;
     return true;
 }
 
@@ -397,9 +431,13 @@ int test_reorg_residue_tipfin_replace(void)
     const int top_cursor = A + 100; /* upper stages far ahead of the gap */
 
     /* ── RED control — header_admit ABSENT at the gap (R+1): FIX-A's
-     * gate-2 (lookahead binder) fails, the residue row is NOT replaced, and
-     * the L1 reconcile's coin-tear refusal STANDS. This is the pre-fix
-     * behavior: without FIX-A the column never heals. ── */
+     * gate-2 (lookahead binder) fails, so the residue row is NOT replaced
+     * (replaced==0) and the global H* stays pinned at R-1. This is still the
+     * load-bearing distinction FIX-A draws: residue replaced iff header_admit
+     * is present at the gap. With the semantics change the (false) coin-tear
+     * is gone, so the reconcile no longer early-returns on a refusal — it
+     * falls through to the downstream refill, which SAFELY re-derives the
+     * unfinalized column WITHOUT rewinding coins. ── */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir),
@@ -412,34 +450,67 @@ int test_reorg_residue_tipfin_replace(void)
 
         int hstar = 0, sf = 0, coins = 0;
         bool tear = false;
-        RR_CHECK("RED snapshot pins the false tear",
+        /* The residue still pins H* at R-1 (it is the slowest log), and coins
+         * lead it — but vs utxo_apply's OWN solid log (contiguous ok=1 through
+         * R) this is NOT a tear: coins_applied(R+1) > utxo_apply_contig(R)+1 is
+         * false. The pin is real; the tear is not. */
+        RR_CHECK("RED snapshot pins H* at R-1 with NO coin tear (vs utxo_apply)",
                  snapshot(db, &hstar, &sf, &coins, &tear) &&
-                 hstar == R - 1 && coins == R + 1 && tear);
+                 hstar == R - 1 && coins == R + 1 && !tear);
 
         struct main_state ms;
         main_state_init(&ms);
         struct stage_reducer_frontier_reconcile_result rr;
-        RR_CHECK("RED reconcile refuses (tear unresolved)",
+        /* No false coin-tear refusal; FIX-A's gate-2 (lookahead binder
+         * header_admit at R+1) fails BEFORE the row is even counted, so the
+         * residue is neither found-as-replaceable nor replaced — it stays ok=0
+         * and H* is not lifted. The reconcile heals the column downstream
+         * instead. (found/lowest both 0/-1: the binder gate runs ahead of the
+         * found++ counter; see stage_repair_reducer_frontier_purge.c.) */
+        RR_CHECK("RED reconcile: residue NOT replaced, no tear refusal",
                  stage_reducer_frontier_reconcile_light(db, &ms, &rr) &&
-                 rr.refused_coin_tear &&
-                 rr.reorg_residue_tipfin_replaced == 0);
+                 !rr.refused_coin_tear &&
+                 rr.reorg_residue_tipfin_found == 0 &&
+                 rr.reorg_residue_tipfin_replaced == 0 &&
+                 rr.lowest_reorg_residue_tipfin == -1);
         struct tip_view row;
         RR_CHECK("RED residue row untouched (still ok=0 reorg_detected)",
                  tip_at(db, R, &row) && row.found && row.ok == 0 &&
                  strcmp(row.status, "reorg_detected") == 0);
-        RR_CHECK("RED upstream cursors NOT clamped (refusal early-returned)",
-                 cursor_value(db, "validate_headers") == top_cursor &&
-                 cursor_value(db, "tip_finalize") == top_cursor);
+        /* H* unchanged at R-1 (residue still caps it). */
+        int hstar2 = 0, sf2 = 0, coins2 = 0;
+        bool tear2 = false;
+        RR_CHECK("RED H* still pinned at R-1 (residue not replaced)",
+                 snapshot(db, &hstar2, &sf2, &coins2, &tear2) &&
+                 hstar2 == R - 1 && !tear2);
+        /* Downstream heal (no refusal early-return): the upstream cursors
+         * clamp back to re-walk the still-unfinalized column. validate_headers
+         * clamps to the lowest header_admit-evidenced rowless hole (R+2 — R+1
+         * has no header_admit in RED); body_fetch/body_persist re-walk from R;
+         * tip_finalize clamps to the H*+1 floor R (re-finalizing from R
+         * re-evaluates the residue). All forward-only, INSERT-OR-REPLACE
+         * cursors — nothing deleted. */
+        RR_CHECK("RED downstream refill clamps the column (no refusal)",
+                 rr.repaired &&
+                 cursor_value(db, "validate_headers") == R + 2 &&
+                 cursor_value(db, "tip_finalize") == R);
+        /* COINS UNTOUCHED even without FIX-A: utxo_apply cursor and
+         * coins_applied are never rewound by the downstream refill. */
+        RR_CHECK("RED utxo_apply + coins UNCHANGED at R+1 (no coin rewind)",
+                 cursor_value(db, "utxo_apply") == R + 1 && coins2 == R + 1);
         main_state_free(&ms);
 
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── GREEN — THE wedge with header_admit present at the gap. FIX-A
-     * replaces the residue verdict, the false tear clears, the existing
-     * header_admit-keyed refill clamps the column, coins/utxo_apply are
-     * untouched. Driven through the REAL L1 entry point. ── */
+    /* ── GREEN — THE wedge with header_admit present at the gap. There is no
+     * coin tear (utxo_apply's own log is solid through R), but the ok=0
+     * residue at R still caps the global H* at R-1 and blocks forward
+     * finalization. FIX-A replaces the residue verdict, H* lifts to R, the
+     * existing header_admit-keyed refill clamps the column to R+1,
+     * coins/utxo_apply are untouched. Driven through the REAL L1 entry
+     * point. ── */
     {
         char dir[256];
         test_make_tmpdir(dir, sizeof(dir),
@@ -452,9 +523,12 @@ int test_reorg_residue_tipfin_replace(void)
 
         int hstar = 0, sf = 0, coins = 0;
         bool tear = false;
-        RR_CHECK("GREEN snapshot reproduces the live pin",
+        /* Reproduces the live pin: H* capped at R-1 by the ok=0 residue, coins
+         * one ahead at R+1 — but NO coin tear vs utxo_apply's own solid log
+         * (utxo_apply_contig == R). The residue is the H* cap, not a tear. */
+        RR_CHECK("GREEN snapshot reproduces the live pin (H*=R-1, no tear)",
                  snapshot(db, &hstar, &sf, &coins, &tear) &&
-                 hstar == R - 1 && coins == R + 1 && tear);
+                 hstar == R - 1 && coins == R + 1 && !tear);
         struct tip_view residue;
         RR_CHECK("GREEN residue row present ok=0 reorg_detected before fix",
                  tip_at(db, R, &residue) && residue.found &&

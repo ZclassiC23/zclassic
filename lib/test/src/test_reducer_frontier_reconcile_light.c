@@ -311,6 +311,10 @@ static bool setup_fixture(struct rfrl_fixture *fx, const char *tag)
                      "reducer_frontier_reconcile_light", tag);
     if (!progress_store_open(fx->dir))
         return false;
+    /* progress.kv is closed+reopened per fixture; drop the dry-run detect memo
+     * so a reused db pointer + reset total_changes cannot wrongly hit a prior
+     * fixture's cached result (production never reopens, so this is test-only). */
+    stage_reducer_frontier_reset_detect_memo_for_testing();
     if (!seed_schema(progress_store_db()))
         return false;
     if (!seed_all_cursors(progress_store_db(), A + 4))
@@ -505,18 +509,24 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("validate-hash-split: apply succeeds",
                    stage_reducer_frontier_reconcile_light(
                        db, &fx.ms, &rr));
-        RFRL_CHECK("validate-hash-split: clamps validate before coin refusal",
+        /* New coin-tear semantics: a stale validate hash with utxo_apply SOLID
+         * is NOT a coin tear (coins track utxo_apply's own log, not the
+         * hash-split-pinned H*). The split still caps H* and must be healed,
+         * but now via the downstream refill rather than the dead tear-gated
+         * pre-refusal clamp — it re-walks validate_headers AND its dependent
+         * cursors (body_fetch, tip_finalize) back to the split height A+2 to
+         * re-derive the column; body_persist already holds its rows so it is
+         * not clamped. No coin-tear refusal is involved. */
+        RFRL_CHECK("validate-hash-split: downstream refill heals the split",
                    rr.repaired &&
                    !rr.refused_coin_tear &&
                    rr.lowest_validate_headers_hash_split == A + 2 &&
                    rr.lowest_validate_headers_refill_hole == -1 &&
                    rr.clamped_validate_headers &&
-                   !rr.clamped_body_fetch &&
-                   !rr.clamped_body_persist &&
                    cursor_value(db, "validate_headers") == A + 2 &&
-                   cursor_value(db, "body_fetch") == A + 4 &&
+                   cursor_value(db, "body_fetch") == A + 2 &&
                    cursor_value(db, "body_persist") == A + 4 &&
-                   cursor_value(db, "tip_finalize") == A + 4);
+                   cursor_value(db, "tip_finalize") == A + 2);
 
         teardown_fixture(&fx);
     }
@@ -554,7 +564,19 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("setup coin-tear fixture",
                    setup_fixture(&fx, "cointear"));
         sqlite3 *db = progress_store_db();
-        RFRL_CHECK("seed coins_applied above hstar",
+        /* REAL coin tear: a HOLE in utxo_apply's OWN ok=1 log below the coins
+         * frontier. Mark utxo_apply ok=0 at A+2 (status='verified', so neither
+         * the value_overflow nor stale_script replays — which key on
+         * status='value_overflow'/'internal_error' in script_validate — engage)
+         * so utxo_apply's contiguous prefix stops at A+1, then seed coins above
+         * it at A+3. coins_applied(A+3) > utxo_apply_contig(A+1)+1 is a genuine
+         * tear: coins applied above utxo_apply's own solid log. (Pre-fix this
+         * test relied on tip_finalize lagging at A+1 to push coins past the
+         * global MIN H* — a FALSE positive the new ua_contig compare ignores.)
+         * tipfin_backfill's G3 refuses on the ok=0 utxo_apply row, so the tear
+         * survives every pre-refusal repair and the L1 refusal stands. */
+        RFRL_CHECK("seed real utxo_apply hole below coins frontier",
+                   put_simple_log(db, "utxo_apply_log", A + 2, 0) &&
                    seed_coins_applied(db, A + 3));
 
         struct stage_reducer_frontier_reconcile_result rr;
@@ -693,7 +715,16 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("setup coin-tear condition fixture",
                    setup_fixture(&fx, "cointear_condition"));
         sqlite3 *db = progress_store_db();
-        RFRL_CHECK("coin-tear condition: seed coins_applied above hstar",
+        /* REAL coin tear (same shape as the detect-path coin-tear case above):
+         * a utxo_apply ok=0 hole at A+2 caps utxo_apply's own contiguous prefix
+         * at A+1 while coins_applied sits at A+3, so
+         * coins_applied > utxo_apply_contig+1 holds. The earlier seed leaned on
+         * tip_finalize lagging at A+1 (a FALSE tear the new ua_contig compare
+         * no longer escalates); this is a genuine hole below the cursor that
+         * survives every pre-refusal repair, so the Condition still escalates
+         * to operator_needed without mutating any cursor or block flag. */
+        RFRL_CHECK("coin-tear condition: seed real utxo_apply hole",
+                   put_simple_log(db, "utxo_apply_log", A + 2, 0) &&
                    seed_coins_applied(db, A + 3));
 
         struct connman cm;
