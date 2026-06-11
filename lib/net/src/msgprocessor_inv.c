@@ -37,6 +37,15 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
         LOG_FAIL("net", "failed to read notfound count from %s",
                  node->addr_name);
 
+    /* notfound answers a getdata, so bound it by the same cap as inv/getdata
+     * (the 2 MB frame cap already limits this, but cap at the call site so the
+     * discipline is auditable and uniform across inv-bearing handlers). */
+    if (count > MAX_INV_SZ) {
+        node->disconnect = true;
+        LOG_FAIL("net", "notfound count %llu exceeds MAX_INV_SZ from %s",
+                 (unsigned long long)count, node->addr_name);
+    }
+
     struct download_manager *dm = get_download_mgr();
     for (uint64_t i = 0; i < count; i++) {
         struct inv_item inv;

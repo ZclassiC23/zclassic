@@ -10,6 +10,7 @@
 #include "crypto/random_secret.h"
 #include "core/hash.h"
 #include "core/random.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include <assert.h>
 #include <secp256k1.h>
@@ -139,6 +140,10 @@ bool privkey_derive(const struct privkey *k, struct privkey *child,
                                                child->vch, out);
     child->fCompressed = true;
     child->fValid = ret;
+    /* out[0..31] was tweaked into the child EC scalar — wipe the HMAC output so
+     * raw key material does not linger on the stack (the memset+barrier defeats
+     * dead-store elimination). Mirrors ext_key_set_master's cleanse. */
+    memory_cleanse(out, sizeof(out));
     return ret;
 }
 

@@ -89,6 +89,11 @@ static bool rate_limit_check(void)
         if (atomic_compare_exchange_strong(&g_rate_window_start, &window, now))
             atomic_store(&g_request_count, 1);
     }
+    /* A fresh window seeds the counter at 1 and the line below also fetch_adds,
+     * so the first request of a window counts as 2 — the limiter trips one
+     * request early (≈99 instead of 100). This conservative bias is INTENTIONAL:
+     * for a DoS guard, over-limiting (slightly stricter) is the fail-safe
+     * direction. Do not "fix" it toward 100 in a way that risks under-limiting. */
     int64_t count = atomic_fetch_add(&g_request_count, 1);
     return count < MAX_REQUESTS_PER_SECOND;
 }
