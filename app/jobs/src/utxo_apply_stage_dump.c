@@ -123,6 +123,12 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_ua_upstream_hole_first_unix));
     json_push_kv_int (out, "upstream_hole_consec",
                       (int64_t)atomic_load(&g_ua_upstream_hole_consec));
+    /* Hash-bound verdict refusals (header height-splice class): non-zero
+     * means a height-keyed script_validate_log row was provably bound to a
+     * different block than the one being applied and the apply was refused
+     * (typed blocker utxo_apply.label_splice carries the live evidence). */
+    json_push_kv_int (out, "label_splice_total",
+                      (int64_t)atomic_load(&g_ua_label_splice_total));
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);

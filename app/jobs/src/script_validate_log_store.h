@@ -23,12 +23,29 @@ struct body_persist_row {
     char source[64];
 };
 
+/* One script_validate_log verdict row at a given height: the ok flag plus
+ * the (possibly absent) block-hash binding. Rows predating the block_hash
+ * column report has_block_hash == false. */
+struct script_validate_verdict_row {
+    int ok;
+    bool has_block_hash;
+    struct uint256 block_hash;  /* valid only when has_block_hash */
+};
+
 bool script_validate_log_ensure_schema(struct sqlite3 *db);
 
 /* Read the upstream body_persist_log {source, ok} at `height`. Returns 1 if a
  * row was found, 0 if not, -1 on a query error. */
 int script_validate_body_persist_log_at(struct sqlite3 *db, int height,
                                         struct body_persist_row *out);
+
+/* Read the script_validate_log {ok, block_hash} at `height` — the hash-bound
+ * verdict consumers (tip_finalize's self-heal gate, utxo_apply's label-splice
+ * gate) use to prove a height-keyed row belongs to the block they are about
+ * to act on. Returns 1 if a row was found, 0 if not, -1 on a query error
+ * (logged). */
+int script_validate_log_verdict_at(struct sqlite3 *db, int height,
+                                   struct script_validate_verdict_row *out);
 
 bool script_validate_log_insert(struct sqlite3 *db, int height,
                                 const char *status, bool ok,

@@ -87,6 +87,39 @@ int script_validate_body_persist_log_at(sqlite3 *db, int height,
     return found;
 }
 
+int script_validate_log_verdict_at(sqlite3 *db, int height,
+                                   struct script_validate_verdict_row *out)
+{
+    memset(out, 0, sizeof(*out));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("script_validate",
+                 "[script_validate] verdict_at prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:logged-above
+    }
+    if (sqlite3_bind_int(st, 1, height) != SQLITE_OK) {
+        LOG_WARN("script_validate",
+                 "[script_validate] verdict_at bind failed height=%d", height);
+        sqlite3_finalize(st);
+        return -1;  // raw-return-ok:logged-above
+    }
+    int found = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        out->ok = sqlite3_column_int(st, 0);
+        const void *blob = sqlite3_column_blob(st, 1);
+        if (blob && sqlite3_column_bytes(st, 1) == 32) {
+            memcpy(out->block_hash.data, blob, 32);
+            out->has_block_hash = true;
+        }
+        found = 1;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 bool script_validate_log_insert(sqlite3 *db, int height,
                                 const char *status, bool ok,
                                 size_t tx_count, size_t input_count,
