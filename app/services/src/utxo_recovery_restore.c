@@ -51,43 +51,10 @@ static struct zcl_result recovery_status_ok(void)
     return ZCL_OK;
 }
 
-/* DURABLE cold-import seed anchor. Writes three keys the consumer
- * (block_index_loader_seed_stages_from_cold_import) reads every boot to heal
- * the staged-sync wedge: cold_import_seed_anchor_{height(int64 H),hash(32B
- * coins_best),utxo_count(int64 live rows)}. The count is the PROVENANCE TOKEN:
- * H* is cursor/log-derived (coins are C4 diagnostic-only in
- * reducer_frontier_compute_hstar) so the post-seed H*==H self-check cannot
- * detect a coin tear — the consumer instead requires node_db_utxo_count() ==
- * this recorded count (the boot.c:840 precedent). Cleared by every wipe /
- * reimport-prepare so the key never outlives the coins it attests to. */
-static void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
-                                                 int height,
-                                                 const struct uint256 *hash,
-                                                 int64_t utxo_count)
-{
-    if (!ndb || height <= 0 || !hash || utxo_count <= 0)
-        return;
-    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_height",
-                                (int64_t)height);
-    (void)node_db_state_set(ndb, "cold_import_seed_anchor_hash",
-                            hash->data, 32);
-    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_utxo_count",
-                                utxo_count);
-}
-
-/* Clear all three durable cold-import seed keys. Called from every UTXO wipe /
- * reimport-prepare so a stale key cannot outlive the coins it attests to.
- * Best-effort; the consumer's live coin-count cross-check is the backstop. */
-void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
-{
-    if (!ndb)
-        return;
-    (void)node_db_exec(ndb,
-        "DELETE FROM node_state WHERE key IN ("
-        "'cold_import_seed_anchor_height',"
-        "'cold_import_seed_anchor_hash',"
-        "'cold_import_seed_anchor_utxo_count')");
-}
+/* The durable cold-import seed-anchor key helpers
+ * (utxo_recovery_{write,clear}_cold_import_seed) live in
+ * utxo_recovery_torn_anchor.c — the durable-anchor seam owns every
+ * reader and writer of those keys. Declared in utxo_recovery_internal.h. */
 
 /* MAX(height) over the utxos table; defined below, forward-declared here
  * so the LDB-import path above can share the single SELECT. */
@@ -300,6 +267,10 @@ struct utxo_import_result utxo_recovery_import_ldb(
                     printf("LDB import: metadata anchor at h=%d hash=%s "
                            "— waiting for real block data.\n",
                            ldb_height, dbg_hex);
+                    /* Record-only: an anchor above the validated header
+                     * frontier is the band-hole class (2026-06-11). */
+                    utxo_recovery_note_band_above_frontier(
+                        anchor, "ldb_import_anchor");
                 }
                 res.skip_activate = true;
                 snprintf(res.anchor_reason, sizeof(res.anchor_reason),
@@ -761,6 +732,10 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
 
             printf("Chain restore: metadata anchor at h=%d hash=%s "
                    "— waiting for real block data.\n", utxo_max_height, hex);
+            /* Record-only: same band-hole producer class as the LDB
+             * import anchor above. */
+            utxo_recovery_note_band_above_frontier(
+                anchor, "chain_restore_anchor");
             /* see the same call above; fire here too
              * so the fresh-anchor path gets rebuild + nBits backfill. */
             (void)chain_restore_finalize(ctx->state, ctx->datadir);

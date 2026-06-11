@@ -123,13 +123,24 @@ struct zcl_result utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
 struct zcl_result utxo_recovery_copy_chainstate_stable(const char *cs_path,
                                                        const char *import_path);
 
+/* Write the three durable cold-import seed-anchor keys
+ * (cold_import_seed_anchor_{height,hash,utxo_count}) from the accepted
+ * LDB-import gate. The count is the provenance token the boot consumer
+ * (block_index_loader_seed_stages_from_cold_import) cross-checks against
+ * the live utxos rows. Implemented in utxo_recovery_torn_anchor.c (the
+ * durable-anchor seam). No-op on invalid args. */
+void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
+                                          int height,
+                                          const struct uint256 *hash,
+                                          int64_t utxo_count);
+
 /* Clear the three durable cold-import seed-anchor keys
  * (cold_import_seed_anchor_{height,hash,utxo_count}). MUST be called by every
  * path that wipes or prepares to re-import the UTXO set so the seed key can
  * never outlive the coins it attests to — closing the torn-then-stale-key
  * wrong-seed window in block_index_loader_seed_stages_from_cold_import.
- * Implemented in utxo_recovery_restore.c. Best-effort (non-fatal on failure;
- * the consumer's live coin-count cross-check is the backstop). */
+ * Implemented in utxo_recovery_torn_anchor.c. Best-effort (non-fatal on
+ * failure; the consumer's live coin-count cross-check is the backstop). */
 void utxo_recovery_clear_cold_import_seed(struct node_db *ndb);
 
 #endif /* ZCL_UTXO_RECOVERY_INTERNAL_H */

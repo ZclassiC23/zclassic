@@ -34,6 +34,7 @@
 #include "sim/postmortem.h"
 #include "sim/seed_tape.h"
 #include "controllers/wallet_scan.h"
+#include "util/blocker.h"
 #include "util/signal_handler.h"
 #include "util/sync.h"
 #include "util/safe_alloc.h"
@@ -549,6 +550,13 @@ static bool boot_step_init_observability(void)
 
     /* Observe validation failures as errors too */
     event_observe_async(EV_MODEL_VALIDATION_FAILED, error_ring_observer, er);
+
+    /* Typed blocker registry: init BEFORE the restore/import producers.
+     * blocker_module_init memsets the registry, and its previous first
+     * call sat in boot_services (AFTER restore), silently wiping any
+     * band/producer blockers recorded during restore. Idempotent — the
+     * boot_services call remains as a backstop. */
+    blocker_module_init();
 
     event_emitf(EV_NODE_STARTING, 0, "zclassic23 1.0.0");
     return true;

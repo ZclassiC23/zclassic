@@ -109,6 +109,41 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
  * reaching CSR. O(height - anchor) pointer hops; boot/recovery only. */
 bool utxo_recovery_block_trust_rooted(const struct block_index *bi);
 
+/* The walker behind utxo_recovery_block_trust_rooted, exposed so the
+ * header-band planner can name the island root: returns NULL when `bi`
+ * is trust-rooted, else the island root — the lowest contiguously
+ * pprev-linked ancestor of `bi` (descent breaks on pprev==NULL or a
+ * height tear above the anchor extent). NULL input returns NULL
+ * (callers gate on a real block first). */
+const struct block_index *utxo_recovery_block_ancestry_break(
+    const struct block_index *bi);
+
+/* ── Header band hole (installed-above-frontier) ─────────────── */
+
+/* Typed-blocker id recorded when state is installed ABOVE the
+ * trust-rooted header frontier, leaving a header hole ("the band")
+ * between the contiguous frontier and the installed island. The
+ * 2026-06-11 live defect: a cold-import anchor at h=3,143,301 over a
+ * frontier at 3,140,573 left band (3,140,573, 3,143,301) unrequested
+ * forever. The blocker is a loud CACHE of a fact derived from pprev
+ * contiguity — never an authority. Set by the producers below + the
+ * boot scan in chain_restore_finalize; cleared by
+ * syncsvc_header_band_after_batch when the band closes. */
+#define HEADER_BAND_BLOCKER_ID "header_band_hole"
+
+/* Record-only producer guard: if `anchor` sits more than one block
+ * above the validated header frontier, record the band fact (blocker +
+ * EV_RECOVERY_ACTION + WARN). NEVER blocks — the anchor/seed install
+ * proceeds exactly as before. */
+void utxo_recovery_note_band_above_frontier(const struct block_index *anchor,
+                                            const char *producer);
+
+/* Boot catch-all: if `tip` is not trust-rooted, derive the island root
+ * and record the same band fact. Covers producers we didn't enumerate
+ * and re-boots of an already-banded datadir. Record-only. */
+void utxo_recovery_note_band_unrooted_tip(const struct block_index *tip,
+                                          const char *producer);
+
 /* ── Validation recovery execution ───────────────────────── */
 
 struct recovery_exec_result {

@@ -50,6 +50,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "utxo_recovery_internal.h"
+
 /* Predicate: is coins_kv the PROVEN-healthy authority on this datadir?
  * All three must hold (see header). Any failure → caller's FATAL stands. */
 static bool urs_coins_kv_is_proven_authority(struct sqlite3 *progress_db)
@@ -210,4 +212,47 @@ bool utxo_recovery_heal_torn_legacy_coins_anchor(
                 "phase=torn-anchor-heal anchor_height=%lld utxos=%lld",
                 (long long)max_h, (long long)utxo_count);
     return true;
+}
+
+/* ── Durable cold-import seed-anchor keys ────────────────────────────
+ * This file is the durable-anchor seam, so the cold-import seed-key
+ * writer/clearer pair lives here next to the anchor heal that consumes
+ * the same key class. */
+
+/* DURABLE cold-import seed anchor. Writes three keys the consumer
+ * (block_index_loader_seed_stages_from_cold_import) reads every boot to heal
+ * the staged-sync wedge: cold_import_seed_anchor_{height(int64 H),hash(32B
+ * coins_best),utxo_count(int64 live rows)}. The count is the PROVENANCE TOKEN:
+ * H* is cursor/log-derived (coins are C4 diagnostic-only in
+ * reducer_frontier_compute_hstar) so the post-seed H*==H self-check cannot
+ * detect a coin tear — the consumer instead requires node_db_utxo_count() ==
+ * this recorded count (the boot.c:840 precedent). Cleared by every wipe /
+ * reimport-prepare so the key never outlives the coins it attests to. */
+void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
+                                          int height,
+                                          const struct uint256 *hash,
+                                          int64_t utxo_count)
+{
+    if (!ndb || height <= 0 || !hash || utxo_count <= 0)
+        return;
+    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_height",
+                                (int64_t)height);
+    (void)node_db_state_set(ndb, "cold_import_seed_anchor_hash",
+                            hash->data, 32);
+    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_utxo_count",
+                                utxo_count);
+}
+
+/* Clear all three durable cold-import seed keys. Called from every UTXO wipe /
+ * reimport-prepare so a stale key cannot outlive the coins it attests to.
+ * Best-effort; the consumer's live coin-count cross-check is the backstop. */
+void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
+{
+    if (!ndb)
+        return;
+    (void)node_db_exec(ndb,
+        "DELETE FROM node_state WHERE key IN ("
+        "'cold_import_seed_anchor_height',"
+        "'cold_import_seed_anchor_hash',"
+        "'cold_import_seed_anchor_utxo_count')");
 }

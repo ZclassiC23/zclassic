@@ -11,6 +11,7 @@
 #include "services/chain_restore_integrity.h"
 #include "services/chain_state_service.h"
 #include "services/block_index_integrity.h"
+#include "services/utxo_recovery_service.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -614,6 +615,15 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
 
     if (datadir && datadir[0])
         (void)chain_restore_backfill_nbits_from_disk(ms, datadir);
+
+    /* Catch-all band-hole scan: a tip not contiguously linked to its
+     * trust root means headers below it were installed above the
+     * frontier — record the fact loudly (record-only) so the header
+     * planner backfills the band. Covers every producer path that
+     * reaches finalize, including ones not enumerated above. No-op for
+     * trust-rooted chains and at band closure. */
+    if (tip)
+        utxo_recovery_note_band_unrooted_tip(tip, "chain_restore_finalize");
 
     struct chain_integrity_result r;
     chain_integrity_check_post_restore(&r, ms);

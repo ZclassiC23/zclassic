@@ -58,10 +58,12 @@
 #include "event/event.h"
 
 #include "util/ar_step_readonly.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "utxo_recovery_internal.h"
@@ -115,10 +117,11 @@ bool utxo_recovery_header_frontier(int32_t *out_h)
                                          "validate_headers", out_h);
 }
 
-bool utxo_recovery_block_trust_rooted(const struct block_index *bi)
+const struct block_index *utxo_recovery_block_ancestry_break(
+    const struct block_index *bi)
 {
-    if (!bi || bi->nHeight < 0)
-        return false;
+    if (!bi)
+        return NULL;
 
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     const int32_t anchor = cp ? cp->height
@@ -133,16 +136,82 @@ bool utxo_recovery_block_trust_rooted(const struct block_index *bi)
     const struct block_index *p = bi;
     while (p->pprev) {
         if (p->pprev->nHeight != p->nHeight - 1)
-            return false;
+            return p;          /* height tear — p is the island root */
         p = p->pprev;
         if (p->nHeight <= anchor)
-            return true;
+            return NULL;       /* crossed the attested anchor extent */
     }
     /* Root reached: genesis, or an extent rooted at/just above the
      * compiled anchor (snapshot-anchored nodes and the test segments
      * root exactly there). A root strictly above anchor+1 is a detached
      * island — not derivable state. */
-    return p->nHeight == 0 || p->nHeight <= anchor + 1;
+    if (p->nHeight == 0 || p->nHeight <= anchor + 1)
+        return NULL;
+    return p;
+}
+
+bool utxo_recovery_block_trust_rooted(const struct block_index *bi)
+{
+    if (!bi || bi->nHeight < 0)
+        return false;
+    return utxo_recovery_block_ancestry_break(bi) == NULL;
+}
+
+/* Shared band-fact recorder: blocker (the loud cache) + event + WARN.
+ * No escape action — the periodic getheaders planner is the driver
+ * (syncsvc_header_band_backfill_anchor keys off blocker existence). */
+static void utxo_recovery_record_band(const char *producer,
+                                      int32_t installed_h,
+                                      int32_t island_root_h,
+                                      int32_t frontier_h)
+{
+    if (!producer)
+        producer = "unknown";
+    struct blocker_record br;
+    if (!blocker_init(&br, HEADER_BAND_BLOCKER_ID, "utxo_recovery",
+                      BLOCKER_DEPENDENCY, NULL))
+        return;            /* blocker_init logged the reason */
+    snprintf(br.reason, sizeof(br.reason),
+             "producer=%s installed=%d island_root=%d frontier=%d",
+             producer, installed_h, island_root_h, frontier_h);
+    (void)blocker_set(&br);  /* rate-limited dup is fine — fact persists */
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "action=header_band_detected producer=%s installed=%d "
+                "island_root=%d frontier=%d",
+                producer, installed_h, island_root_h, frontier_h);
+    LOG_WARN("utxo_recovery",
+             "HEADER BAND HOLE recorded: %s installed h=%d above the "
+             "trust-rooted header frontier (island_root=%d frontier=%d) — "
+             "headers below the island will be backfilled from the "
+             "frontier (record-only; install proceeds)",
+             producer, installed_h, island_root_h, frontier_h);
+}
+
+void utxo_recovery_note_band_above_frontier(const struct block_index *anchor,
+                                            const char *producer)
+{
+    if (!anchor)
+        return;
+    int32_t fh = 0;
+    if (!utxo_recovery_header_frontier(&fh))
+        return;            /* no log evidence — boot scan still covers it */
+    if (anchor->nHeight <= fh + 1)
+        return;            /* contiguous with the frontier — no band */
+    utxo_recovery_record_band(producer, anchor->nHeight,
+                              anchor->nHeight, fh);
+}
+
+void utxo_recovery_note_band_unrooted_tip(const struct block_index *tip,
+                                          const char *producer)
+{
+    if (!tip)
+        return;
+    const struct block_index *root = utxo_recovery_block_ancestry_break(tip);
+    if (!root)
+        return;            /* trust-rooted — no band */
+    int32_t fh = -1;
+    (void)utxo_recovery_header_frontier(&fh);  /* -1 = log abstains */
+    utxo_recovery_record_band(producer, tip->nHeight, root->nHeight, fh);
 }
 
 struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
