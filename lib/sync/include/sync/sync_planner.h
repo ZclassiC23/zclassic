@@ -195,16 +195,29 @@ bool syncsvc_should_restart_headers_from_tip(size_t accepted,
 /* True iff the active tip is a detached island AND `last_header` extends
  * the trust-rooted frontier below the island root — i.e. the batch is
  * band-fill progress that must suppress restart-from-tip and the
- * best-header skip. Records the band fact if absent. */
+ * best-header skip. Records the band fact if absent, and advances the
+ * band index-frontier cursor — even for an all-known (newly_added==0)
+ * batch, whose tail still proves how far the index extends (defect #7:
+ * without that advance the next anchor re-derives from stale slots and
+ * the peer re-serves the same range forever). */
 bool syncsvc_header_band_continue(const struct active_chain *chain,
                                   const struct block_index *last_header);
 
 /* While the band fact is recorded: the contiguous-frontier block to
  * anchor periodic getheaders at (the peer forks there and serves the
- * band). NULL when no band fact exists (O(1)), the band has closed, or
- * no servable frontier resolves. */
+ * band). The anchor is the HIGHER of the highest populated active-chain
+ * slot and the index-frontier cursor, both re-verified trust-rooted +
+ * below the island root at use (defect #7: slots are not populated by
+ * header acceptance, so a slot-only anchor pins one batch behind the
+ * index and livelocks). NULL when no band fact exists (O(1)), the band
+ * has closed, or no servable frontier resolves. */
 struct block_index *syncsvc_header_band_backfill_anchor(
     const struct active_chain *chain);
+
+/* Test seam: clears the process-global band index-frontier cursor (unit
+ * fixtures build chains on the stack — a cursor surviving a test would
+ * dangle into a dead frame). Pairs with blocker_reset_for_testing(). */
+void syncsvc_header_band_reset_for_testing(void);
 
 /* Closure probe — call after every accepted header batch (outside the
  * full-batch gate: the final band batch can be <160). No-op without the

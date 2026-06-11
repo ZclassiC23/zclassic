@@ -689,6 +689,7 @@ static int test_sync_service_band_continue_is_progress_not_restart(void)
         const int32_t anchor = band_anchor_height();
 
         blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
         active_chain_init(&chain);
 
         /* Trust-rooted frontier segment rooted at anchor+1. */
@@ -724,6 +725,7 @@ static int test_sync_service_band_continue_is_progress_not_restart(void)
             160, &f2, anchor + 105, anchor + 305, false));
 
         blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();  /* cursor points at stack */
         active_chain_free(&chain);
         PASS();
     } _test_next:;
@@ -743,6 +745,7 @@ static int test_sync_service_band_backfill_anchor_selects_frontier(void)
         const int32_t anchor = band_anchor_height();
 
         blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
         active_chain_init(&chain);
         active_chain_init(&rooted);
 
@@ -772,8 +775,87 @@ static int test_sync_service_band_backfill_anchor_selects_frontier(void)
         ASSERT(syncsvc_header_band_backfill_anchor(&rooted) == NULL);
 
         blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
         active_chain_free(&chain);
         active_chain_free(&rooted);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* Defect #7 regression (live 2026-06-11 ~19:50): the band walk accepted
+ * batches into the BLOCK INDEX without populating active-chain slots, so
+ * the slot-derived kick anchor pinned one batch back (3,141,533) and the
+ * peer re-served the same already-known range (3,141,534..3,141,693,
+ * accepted=160 newly_added=0) forever — nothing in that path populates
+ * slots, so the anchor never advanced: livelock. The anchor must follow
+ * the INDEX trust-rooted frontier, and an all-known batch must still
+ * advance it. */
+static int test_sync_service_band_anchor_follows_index_frontier(void)
+{
+    int failures = 0;
+
+    TEST("band anchor follows the index frontier past stale slots (defect #7)") {
+        struct active_chain chain;
+        struct block_index f[8];
+        struct block_index is[4];
+        struct blocker_record br;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+        active_chain_init(&chain);
+
+        /* Trust-rooted index segment anchor+1..anchor+8; only the first
+         * THREE are slotted (the boot-restored extent) — f[3..7] are
+         * index-only, exactly the live shape: header acceptance inserts
+         * into the index, never into chain[] slots. */
+        for (int k = 0; k < 8; k++)
+            band_make_block(&f[k], anchor + 1 + k, k ? &f[k - 1] : NULL,
+                            (uint64_t)(k + 1), (uint8_t)(0x50 + k));
+        ASSERT(active_chain_move_window_tip(&chain, &f[2]));
+
+        /* Detached island above the band (pprev-less root). */
+        for (int k = 0; k < 4; k++)
+            band_make_block(&is[k], anchor + 100 + k,
+                            k ? &is[k - 1] : NULL, 0, (uint8_t)(0x60 + k));
+        ASSERT(active_chain_install_tip_slot(&chain, &is[3]));
+
+        ASSERT(blocker_init(&br, HEADER_BAND_BLOCKER_ID, "unit",
+                            BLOCKER_DEPENDENCY, "unit fixture"));
+        ASSERT(blocker_set(&br) >= 0);
+
+        /* Before any batch: the slot frontier (f[2]) is the only
+         * authority — the boot anchor. */
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f[2]);
+
+        /* The livelock batch: every header already known (newly_added==0),
+         * tail f[7] trust-rooted below the island. It is still PROGRESS
+         * and the anchor must advance to the INDEX frontier — re-deriving
+         * the stale slot anchor makes the peer re-serve f[3]..f[7]
+         * forever. */
+        ASSERT(syncsvc_header_band_continue(&chain, &f[7]));
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f[7]);
+
+        /* Monotone: a re-served LOWER batch (a late response to an old
+         * request) must not drag the anchor back below the frontier. */
+        ASSERT(syncsvc_header_band_continue(&chain, &f[5]));
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f[7]);
+
+        /* The cursor is a hint, never an authority: tear f[7] off the
+         * trust root (repair ladders can rewrite ancestry) and the
+         * selector must drop it and fall back to the slot frontier
+         * rather than serve a detached anchor. */
+        f[3].pprev = NULL;
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f[2]);
+        f[3].pprev = &f[2];    /* relink; cursor re-establishes below */
+        ASSERT(syncsvc_header_band_continue(&chain, &f[4]));
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f[4]);
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();  /* cursor points at stack */
+        active_chain_free(&chain);
         PASS();
     } _test_next:;
 
@@ -791,6 +873,7 @@ static int test_sync_service_band_closed_after_relink(void)
         const int32_t anchor = band_anchor_height();
 
         blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
         main_state_init(&ms);
 
         band_make_block(&f0, anchor + 1, NULL, 1, 0x40);
@@ -842,6 +925,7 @@ static int test_sync_service_band_closed_after_relink(void)
         ASSERT(i0.pprev == &b3 && b3.pprev == &f2);
 
         blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();  /* cursor points at stack */
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
         PASS();
@@ -1561,6 +1645,7 @@ int test_sync_service(void)
     failures += test_sync_service_restarts_low_header_batches_from_tip();
     failures += test_sync_service_band_continue_is_progress_not_restart();
     failures += test_sync_service_band_backfill_anchor_selects_frontier();
+    failures += test_sync_service_band_anchor_follows_index_frontier();
     failures += test_sync_service_band_closed_after_relink();
     failures += test_sync_service_band_producer_derives_from_ancestry();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
