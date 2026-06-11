@@ -458,6 +458,25 @@ int node_db_catchup_service_run(struct node_db *ndb,
             continue;
         }
 
+        /* Garbage at a wrong offset can still PARSE as a block; the lean
+         * index must never hold a row whose hash disagrees with the
+         * block index (the live h=6131 frame parsed, then poisoned
+         * db_block_save with nonsense). Hash-bind every frame to its
+         * index entry; a mismatch is a lean hole like any other
+         * unreadable frame. */
+        if (pindex->phashBlock) {
+            struct uint256 got;
+            block_get_hash(&blk, &got);
+            if (!uint256_eq(&got, pindex->phashBlock)) {
+                block_free(&blk);
+                if (++lean_holes == 1) first_hole_h = h;
+                if (lean_holes <= 3)
+                    LOG_INFO("catchup", "catchup: frame hash mismatch at "
+                             "height %d — recording lean hole", h);
+                continue;
+            }
+        }
+
         /* Lean index: block header + txid index */
         if (!sync_block_lean(ndb, &blk, pindex)) {
             LOG_WARN("catchup", "catchup: lean index failed at height %d (sqlite=%s)", h, sqlite3_errmsg(ndb->db));
