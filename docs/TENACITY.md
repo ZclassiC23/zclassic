@@ -35,9 +35,12 @@ is read-only derivation. node.db `utxos` has 4 independent writers today (§2)
 — that is why coin tears were representable at all. Invariant B made the tear
 check a formula over utxo_apply's OWN co-committed log instead of a second
 copy **[LANDED `c8018a388`]**; demoting the mirror itself is
-**[IN FLIGHT `refactor/derive-coins-best-demote-mirror` — local worktree,
-derivation function + tests built, repoints in progress]** (canonical plan
-steps 5–6).
+**[IN FLIGHT `refactor/derive-coins-best-demote-mirror` — implementation
+complete on the branch: `reducer_frontier_derive_coins_best` (gated on
+`coins_kv_is_proven_authority`) is the decision-path authority; the boot
+gate, restore anchor, CSR counts, Guard A clamp, and orphan-mirror detector
+all derive; node_state `coins_best_block` + the `utxos` mirror are labeled
+caches; serve-side stays plan step 5]** (canonical plan steps 5–6).
 
 **3. The sealed domain and the working window.** Derived state splits at a
 finality boundary: at or below it, state pinned by checkpointed SHA3 UTXO

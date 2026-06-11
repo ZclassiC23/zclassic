@@ -1,6 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * SQLite-backed coins view: the canonical UTXO set lives in node.db.
+ * SQLite-backed coins view over node.db `utxos`.
+ *
+ * AUTHORITY NOTE (wave 2, canonical-frontier plan step 6): node.db `utxos`
+ * and the node_state 'coins_best_block' key are a PROJECTION (rebuildable
+ * cache) of the canonical coins_kv store in progress.kv
+ * (storage/coins_kv.h). They serve explorer/RPC/wallet reads and the
+ * fast-sync SERVE path (until plan step 5 re-points it); consensus and
+ * recovery DECISIONS derive the coins-best fact via
+ * reducer_frontier_derive_coins_best, never from here. The writes below
+ * are projection maintenance.
+ *
  * Implements coins_view_vtable so coins_view_cache can flush here.
  * No LevelDB needed at runtime — LevelDB is import-only.
  *
@@ -16,6 +26,8 @@
 
 #include <time.h>
 #include "storage/coins_view_sqlite.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "coins/coins.h"
 #include "coins/utxo_commitment.h"
 #include "event/event.h"
@@ -255,7 +267,11 @@ rollback:
     return -1;
 }
 
-/* Boot-time commitment-validated reconciliation of a STALE coins_best_block
+/* wave-3 delete: unreachable on canonical datadirs since the derived gate in
+ * check_tip_consistency (coins_applied_height present => PASS, no reconcile).
+ * Kept callable as the legacy-datadir rung until canonical-plan step 5 lands.
+ *
+ * Boot-time commitment-validated reconciliation of a STALE coins_best_block
  * anchor — the "§3" boot-wedge where the anchor pointer was reset far below
  * the real applied UTXO frontier (e.g. anchor resolves to height 200 while
  * `utxos` holds millions of rows). The strict tip-consistency check below
@@ -449,6 +465,50 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
 {
     int64_t max_height = -1;
     bool have_utxos = false;
+
+    /* ── DERIVED-GATE (wave 2, canonical-frontier plan step 6) ──────────
+     * When coins_kv is the PROVEN authority (coins_kv_is_proven_authority:
+     * co-committed coins_applied_height present + migration stamp + a
+     * non-empty set — the same rungs the L1 heal demands), the coins-best
+     * fact is DERIVABLE from the canonical store and this gate's verdict
+     * is simply "derivation resolvable" — PASS. The mirror MAX/COUNT and
+     * the node_state 'coins_best_block' key below are CACHES of that fact:
+     * drift between them is a stale projection (rebuildable, never
+     * consulted by decisions), logged as a diagnostic, never a FATAL,
+     * never an auto-rewind, never a guess-reconcile. Legacy datadirs
+     * (predicate false / progress store not open) keep the strict legacy
+     * gate unchanged. */
+    {
+        sqlite3 *pdb = progress_store_db();
+        int32_t applied = -1;
+        if (pdb && coins_kv_is_proven_authority(pdb, &applied)) {
+            int64_t mirror_max = -1, mirror_count = 0;
+            sqlite3_stmt *ds = NULL;
+            if (sqlite3_prepare_v2(db,
+                    "SELECT MAX(height), COUNT(*) FROM utxos",
+                    -1, &ds, NULL) == SQLITE_OK) {
+                if (AR_STEP_ROW_READONLY(ds) == SQLITE_ROW) {
+                    if (sqlite3_column_type(ds, 0) == SQLITE_INTEGER)
+                        mirror_max = sqlite3_column_int64(ds, 0);
+                    mirror_count = sqlite3_column_int64(ds, 1);
+                }
+                sqlite3_finalize(ds);
+            }
+            int64_t derived_h = (int64_t)applied - 1;
+            if (mirror_max != derived_h)
+                printf("[coins] tip check: derived coins-best h=%lld "
+                       "(coins_kv authority); mirror max_height=%lld "
+                       "count=%lld — anchor cache stale / projection lag "
+                       "(rebuildable, not consulted)\n",
+                       (long long)derived_h, (long long)mirror_max,
+                       (long long)mirror_count);
+            else
+                printf("[coins] tip check OK: derived coins-best h=%lld "
+                       "(coins_kv authority, mirror agrees, count=%lld)\n",
+                       (long long)derived_h, (long long)mirror_count);
+            return true;
+        }
+    }
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
@@ -695,6 +755,9 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
         -1, &cvs->stmt_best_get, NULL);
     if (rc != SQLITE_OK) goto fail;
 
+    /* CACHE-REFRESH of the derived coins-best (display / legacy-boot
+     * fallback only; authority = reducer_frontier_derive_coins_best over
+     * coins_kv). Atomic with the mirror rows — correct for a projection. */
     rc = sqlite3_prepare_v2(cvs->db,
         "INSERT OR REPLACE INTO node_state(key,value)"
         " VALUES('coins_best_block',?)",
@@ -843,7 +906,10 @@ bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
     return found;
 }
 
-/* ── get_best_block ────────────────────────────────────────────── */
+/* ── get_best_block — CACHE ACCESSOR ───────────────────────────────
+ * Reads the node_state 'coins_best_block' projection key. Decision paths
+ * must prefer reducer_frontier_derive_coins_best (the coins_kv-derived
+ * authority) and use this only as the legacy/!found fallback. */
 
 bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
                                        struct uint256 *hash)

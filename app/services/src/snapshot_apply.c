@@ -125,14 +125,11 @@ struct zcl_result snapsync_stage_promote_active_internal(struct node_db *ndb,
      * snapshot into the authoritative log/projection engine + tip cursor
      * BEFORE the staging table is discarded below. Best-effort. */
     snapsync_seed_projection_boot(ndb, svc);
-    /* Record the verified snapshot anchor as pending recovery metadata.
-     * The publishable coins_best_block cursor is written only by
-     * chain_state_repository during evidenced tip activation. */
-    if (!node_db_state_set(ndb, "snapshot_pending_coins_best_block",
-                           svc->offered_block_hash, 32) ||
-        !node_db_state_set_int(ndb, "snapshot_pending_coins_best_height",
-                               svc->offered_height))
-        return ZCL_ERR(-6, "activate: failed to set pending coins anchor");
+    /* (wave-2 deletion) the 'snapshot_pending_coins_best_block/_height'
+     * writes removed: a WRITE-ONLY key family — no production reader ever
+     * existed. The publishable coins-best fact is derived
+     * (reducer_frontier_derive_coins_best); the evidenced tip activation
+     * still goes through chain_state_repository. */
 
     for (int i = 0; i < 32; i++) {
         if (svc->offered_mmb_root[i]) {

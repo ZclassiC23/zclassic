@@ -12,6 +12,8 @@
 
 #include "jobs/reducer_frontier.h"
 
+#include "jobs/tip_finalize_stage.h"
+
 #include "chain/checkpoints.h"
 #include "platform/time_compat.h"
 #include "storage/coins_kv.h"
@@ -448,6 +450,85 @@ bool reducer_frontier_log_hash_at(sqlite3 *progress_db,
                           out, found);
     progress_store_tx_unlock();
     return ok;
+}
+
+bool reducer_frontier_derive_coins_best(sqlite3 *progress_db,
+                                        int32_t *out_height,
+                                        uint8_t out_hash[32],
+                                        bool *hash_found,
+                                        bool *found)
+{
+    if (!progress_db || !out_height || !out_hash || !hash_found || !found)
+        LOG_FAIL("reducer", "derive_coins_best: NULL arg");
+    *found = false;
+    *hash_found = false;
+    *out_height = -1;
+    memset(out_hash, 0, 32);
+
+    /* Recursive lock: one consistent durable snapshot across all reads. */
+    progress_store_tx_lock();
+
+    /* THE proven-authority predicate (coins_kv.h): applied frontier present
+     * AND migration stamp set AND non-empty. A cursor-backfilled frontier on
+     * a pre-migration datadir is NOT canonical — *found stays false and the
+     * caller keeps its (stricter) legacy gates. Authority-proof read errors
+     * also degrade to !found, never to the permissive derived path. */
+    int32_t applied = -1;
+    bool ok = true;
+    if (coins_kv_is_proven_authority(progress_db, &applied)) {
+        int32_t h = applied - 1;
+        *out_height = h;
+        *found = true;
+        /* Hash rung 1: the hash-bound finalized-tip read production already
+         * trusts (tip_finalize_log ok=1 row co-committed by the reducer). */
+        if (tip_finalize_stage_finalized_tip_at(progress_db, h, out_hash)) {
+            *hash_found = true;
+        } else {
+            /* Hash rung 2: the <=1-block pipeline window where utxo_apply
+             * leads tip_finalize — validate_headers_log is the Invariant A
+             * trust root for the same height. */
+            uint8_t vh[32];
+            bool vh_found = false;
+            if (!log_hash_at(progress_db, "validate_headers_log", "hash",
+                             h, vh, &vh_found)) {
+                ok = false;  /* real DB read error; height outputs stand */
+            } else if (vh_found) {
+                memcpy(out_hash, vh, 32);
+                *hash_found = true;
+            }
+            /* Neither rung resolving is SUCCESS with *hash_found=false:
+             * the height stays authoritative; the caller resolves
+             * height->hash via its own index, never the reverse. */
+        }
+    }
+
+    progress_store_tx_unlock();
+    return ok;
+}
+
+bool reducer_frontier_derive_coins_best_now(int32_t *out_height,
+                                            uint8_t out_hash[32],
+                                            bool *out_hash_found)
+{
+    if (!out_height)
+        LOG_FAIL("reducer", "derive_coins_best_now: NULL out_height");
+    *out_height = -1;
+    if (out_hash) memset(out_hash, 0, 32);
+    if (out_hash_found) *out_hash_found = false;
+
+    sqlite3 *pdb = progress_store_db();
+    if (!pdb)
+        return false;  /* store closed => legacy fallback; not an error */
+    uint8_t hash[32];
+    bool hf = false, found = false;
+    if (!reducer_frontier_derive_coins_best(pdb, out_height, hash,
+                                            &hf, &found))
+        return false;  /* hard read error already logged */
+    if (!found)
+        return false;
+    if (out_hash && hf) memcpy(out_hash, hash, 32);
+    if (out_hash_found) *out_hash_found = hf;
+    return true;
 }
 
 bool reducer_frontier_log_coverage_floor(sqlite3 *progress_db,

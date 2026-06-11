@@ -24,6 +24,7 @@
 #include "util/log_macros.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "chain_evidence_reconstruct.h"
+#include "jobs/reducer_frontier.h"
 
 #include "models/database.h"
 #include "models/db_txn.h"
@@ -363,8 +364,28 @@ static void cec_restore_csr_view(struct chain_state_repository *csr,
 int chain_evidence_clamp_coins_height_to_frontier(
     struct chain_evidence_controller *authority, int requested_height)
 {
-    if (!authority || !authority->csr || !authority->csr->block_map ||
-        !authority->csr->coins_tip)
+    /* wave-3 delete (with the cec.coins_best_block_height int twin): the
+     * clamp + the twin exist only to keep a duplicate height honest. */
+    if (!authority || !authority->csr)
+        return requested_height;
+
+    /* Wave 2: clamp directly to the DERIVED coins-best height when
+     * coins_applied_height is present — drops the in-memory-cache ->
+     * block_map roundtrip. Legacy body unchanged on !found. */
+    {
+        int32_t d_h = -1;
+        if (reducer_frontier_derive_coins_best_now(&d_h, NULL, NULL)) {
+            if (d_h < 0 || d_h >= requested_height)
+                return requested_height;
+            LOG_WARN("cec",
+                     "[cec] Guard A: clamping cec.coins_best_block_height "
+                     "%d -> %d (derived coins-best, coins_kv authority)",
+                     requested_height, d_h);
+            return d_h;
+        }
+    }
+
+    if (!authority->csr->block_map || !authority->csr->coins_tip)
         return requested_height;
     struct uint256 coins_hash;
     memset(&coins_hash, 0, sizeof(coins_hash));

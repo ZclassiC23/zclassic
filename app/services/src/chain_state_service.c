@@ -7,6 +7,8 @@
 
 #include "config/db_service.h"
 #include "event/event.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,6 +101,16 @@ static int64_t csr_sqlite_utxo_count(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         LOG_RETURN(-1, "csr", "ndb not available");
+    /* Wave 2: the CANONICAL coin count is coins_kv (progress.kv, co-committed
+     * with the stage cursor) — but only once it is the PROVEN authority
+     * (migration stamp + frontier + non-empty, coins_kv.h); a partial
+     * mid-migration set must not steer the CSR validation thresholds. The
+     * node.db mirror count is the legacy fallback. */
+    {
+        sqlite3 *pdb = progress_store_db();
+        if (pdb && coins_kv_is_proven_authority(pdb, NULL))
+            return coins_kv_count(pdb);
+    }
     return node_db_utxo_count(ndb);
 }
 
@@ -148,6 +160,11 @@ static bool csr_sqlite_busy_or_locked(int rc)
     return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
 }
 
+/* CACHE-REFRESH of the derived coins-best (wave 2): writes the node_state
+ * 'coins_best_block' key, which is display / legacy-boot fallback only —
+ * the authority is reducer_frontier_derive_coins_best over coins_kv's own
+ * co-committed state. Reject-on-persist-failure semantics intentionally
+ * unchanged this wave (no behavior delta). */
 static enum csr_result csr_persist_coins_best_locked(
     struct chain_state_repository *csr,
     const struct chain_state_commit *commit)
@@ -622,33 +639,9 @@ enum csr_result csr_clear_active_tip(
     return CSR_OK;
 }
 
-enum csr_result csr_repair_set_coins_best(
-    struct chain_state_repository *csr,
-    const struct chain_state_coins_best_repair *repair)
-{
-    if (!csr || !repair || !repair->reason || !*repair->reason)
-        return CSR_REJECTED_NULL_INPUT;
-    if (!csr->initialized)
-        return CSR_REJECTED_NOT_INITIALIZED;
-    if (!csr->coins_tip)
-        return CSR_REJECTED_NULL_INPUT;
-    if (!csr_rollback_authorization_valid(repair->repair_auth))
-        return CSR_REJECTED_ROLLBACK_AUTH;
-
-    pthread_mutex_lock(&csr->lock);
-    int from_height = csr->chain_active
-        ? active_chain_height(csr->chain_active) : -1;
-    coins_view_cache_set_best_block(csr->coins_tip, &repair->new_coins_best);
-    csr->commits_ok++;
-    event_emitf(EV_CHAIN_TIP_COMMIT, 0,
-                "from=%d to=%d reason=%s coins_best_repair=1",
-                from_height, from_height, repair->reason);
-    pthread_mutex_unlock(&csr->lock);
-
-    printf("csr: coins best repaired active_height=%d reason=%s\n",
-           from_height, repair->reason);
-    return CSR_OK;
-}
+/* (wave-2 deletion) csr_repair_set_coins_best removed: a zero-production-
+ * caller repair entry point whose only purpose was installing the coins-best
+ * cache by hand — the fact is DERIVED now (reducer_frontier_derive_coins_best). */
 
 bool csr_restore_in_memory_view(struct chain_state_repository *csr,
                                 struct block_index *old_tip,

@@ -68,6 +68,10 @@ pipeline depth misread as corruption.
 4. **Collapse restore tip-selection** to derive-from-frontier (clamp candidate before commit).
 5. **Re-point SHA3 / fast-sync serve readers to coins_kv** (parity-gated, utxos still present).
 6. **Derive `coins_best_block` from `coins_applied_height`** (kills the two-name drift).
+   *Status: implemented on `refactor/derive-coins-best-demote-mirror` —
+   `reducer_frontier_derive_coins_best` + `coins_kv_is_proven_authority`; every
+   decision-path reader derives, every legacy repair rung is gated on !derived,
+   caches labeled. Serve-side (step 5) still pending.*
 7. **Delete the dead heal ladder** (grep-proven zero callers): chain_restore_integrity,
    chain_restore rebuild ladder, stage_repair_reducer_frontier_{tipfin,refill,purge} +
    tear branch, reducer_frontier_reconcile_light, utxo_recovery_torn_anchor (M2),

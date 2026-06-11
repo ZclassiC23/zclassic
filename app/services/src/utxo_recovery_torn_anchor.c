@@ -99,6 +99,10 @@ static bool urs_coins_kv_is_proven_authority(struct sqlite3 *progress_db)
     return true;
 }
 
+/* wave-3 delete (whole module): the boot call site is gated on !derived
+ * (boot.c) AND the derived gate in coins_view_sqlite_check_tip_consistency
+ * passes canonical datadirs without consulting the legacy anchor — this
+ * heal can only fire on legacy datadirs until canonical-plan step 5. */
 bool utxo_recovery_heal_torn_legacy_coins_anchor(
     struct node_db *ndb,
     struct sqlite3 *progress_db,

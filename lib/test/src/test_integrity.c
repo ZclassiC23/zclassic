@@ -288,18 +288,9 @@ static int test_integrity_utxo_count_check(void)
     return failures;
 }
 
-static int test_integrity_xor_mismatch_policy(void)
-{
-    int failures = 0;
-
-    TEST("integrity: XOR mismatch is refreshed as stale metadata") {
-        ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(42, 42));
-        ASSERT(!utxo_recovery_xor_mismatch_is_corruption_candidate(42, 43));
-        PASS();
-    } _test_next:;
-
-    return failures;
-}
+/* (wave-2 deletion) test_integrity_xor_mismatch_policy removed with the
+ * hardcoded-false predicate utxo_recovery_xor_mismatch_is_corruption_candidate
+ * — the XOR-mismatch path now unconditionally refreshes the stale checkpoint. */
 
 /* ── bg_hash_verification_service tests ──────────────────────────── */
 
@@ -587,7 +578,6 @@ int test_integrity(void)
 
     /* UTXO count sanity check */
     failures += test_integrity_utxo_count_check();
-    failures += test_integrity_xor_mismatch_policy();
 
     /* bg_hash_verification_service */
     failures += test_integrity_bg_hash_verify_init();

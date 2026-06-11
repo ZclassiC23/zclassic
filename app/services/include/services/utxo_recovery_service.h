@@ -136,9 +136,8 @@ struct utxo_count_check_result utxo_recovery_classify_count_check(
     uint64_t checkpoint_count,
     uint64_t actual_count);
 
-bool utxo_recovery_xor_mismatch_is_corruption_candidate(
-    uint64_t saved_count,
-    uint64_t computed_count);
+/* (wave-2 deletion) utxo_recovery_xor_mismatch_is_corruption_candidate
+ * removed — it was hardcoded false (a dead branch guard). */
 
 /* Execute recovery based on validate_coins_chain_agreement result.
  * Handles REIMPORT, WIPE_WAIT, RESET_CHAIN, and BOOT_OK integrity

@@ -51,7 +51,12 @@ static const char *SCHEMA[] = {
     "CREATE INDEX IF NOT EXISTS idx_tx_height"
     " ON transactions(block_height)",
 
-    /* UTXO set */
+    /* UTXO set — PROJECTION (rebuildable cache) of progress.kv `coins`
+     * (coins_kv, the canonical store co-committed with the stage cursor).
+     * Read by explorer/RPC/wallet and the fast-sync SERVE path (until
+     * canonical-plan step 5). NEVER consulted by consensus/recovery
+     * decisions — authority is coins_kv + reducer_frontier_derive_coins_best
+     * (wave 2, docs/work/canonical-frontier-derived-state-plan.md). */
     "CREATE TABLE IF NOT EXISTS utxos ("
     "txid BLOB NOT NULL,vout INTEGER NOT NULL,"
     "value INTEGER NOT NULL CHECK(value >= 0 AND value <= 2100000000000000),"

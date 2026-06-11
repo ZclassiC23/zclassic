@@ -22,6 +22,7 @@
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "storage/utxo_reimport_flag.h"
 #include "config/boot_crashonly.h"
@@ -796,116 +797,24 @@ static bool boot_promote_header_via_csr(struct block_index *header,
     return true;
 }
 
-static bool boot_resolve_cold_import_pending_anchor(void)
+/* DERIVED coins-best (wave 2): one cheap point-read of progress.kv's own
+ * co-committed state via reducer_frontier_derive_coins_best. Recomputed at
+ * every decision point (derive, don't cache). Returns true iff
+ * coins_applied_height is present — the canonical-datadir signal that the
+ * legacy node_state/mirror anchors are mere caches and every legacy
+ * anchor-repair rung below must be skipped. */
+struct boot_derived_coins_best {
+    int32_t height;      /* coins_applied_height - 1 */
+    uint8_t hash[32];    /* valid iff hash_found */
+    bool hash_found;
+};
+
+static bool boot_derive_coins_best(struct boot_derived_coins_best *out)
 {
-    if (!g_node_db.open)
-        return true;
-
-    uint8_t hash_raw[32];
-    size_t hash_len = 0;
-    if (!node_db_state_get(&g_node_db,
-                           "cold_import_pending_coins_best_block",
-                           hash_raw, sizeof(hash_raw), &hash_len)) {
-        return true;
-    }
-    if (hash_len != sizeof(hash_raw)) {
-        fprintf(stderr,
-                "[boot] cold-import pending anchor has invalid hash length "
-                "%zu\n", hash_len);
-        return false;
-    }
-
-    int pending_height = -1;
-    size_t height_len = 0;
-    if (!node_db_state_get(&g_node_db,
-                           "cold_import_pending_coins_best_height",
-                           &pending_height, sizeof(pending_height),
-                           &height_len) ||
-        height_len != sizeof(pending_height)) {
-        fprintf(stderr,
-                "[boot] cold-import pending anchor missing height\n");
-        return false;
-    }
-
-    int64_t pending_utxos = -1;
-    size_t utxo_len = 0;
-    if (!node_db_state_get(&g_node_db,
-                           "cold_import_pending_utxo_count",
-                           &pending_utxos, sizeof(pending_utxos),
-                           &utxo_len) ||
-        utxo_len != sizeof(pending_utxos)) {
-        fprintf(stderr,
-                "[boot] cold-import pending anchor missing UTXO count\n");
-        return false;
-    }
-
-    int64_t actual_utxos = node_db_utxo_count(&g_node_db);
-    if (pending_utxos < 0 || actual_utxos != pending_utxos) {
-        fprintf(stderr,
-                "[boot] cold-import pending anchor UTXO count mismatch "
-                "(pending=%lld actual=%lld)\n",
-                (long long)pending_utxos, (long long)actual_utxos);
-        return false;
-    }
-
-    struct uint256 hash;
-    memcpy(hash.data, hash_raw, sizeof(hash.data));
-    struct block_index *tip = block_map_find(&g_state.map_block_index, &hash);
-    if (!tip || !tip->phashBlock) {
-        char hex[65];
-        uint256_get_hex(&hash, hex);
-        fprintf(stderr,
-                "[boot] cold-import pending anchor %s not found in "
-                "loaded block index\n", hex);
-        return false;
-    }
-    if (tip->nHeight != pending_height) {
-        fprintf(stderr,
-                "[boot] cold-import pending anchor height label differs "
-                "(pending=%d block_index=%d); using block-index height\n",
-                pending_height, tip->nHeight);
-    }
-
-    struct chain_state_rollback_authorization rollback_auth = {
-        .source = CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
-        .decision = POLICY_ALLOW,
-        .from_height = active_chain_height(&g_state.chain_active),
-        .to_height = tip->nHeight,
-        .max_depth = INT64_MAX,
-        .evidence_class = "cold_import_pending_anchor_resolved",
-        .reason = "cold_import_pending_anchor",
-    };
-    struct chain_state_commit commit = {
-        .new_tip = tip,
-        .new_coins_best = *tip->phashBlock,
-        .expected_utxo_count = pending_utxos,
-        .update_header_tip = true,
-        .persist_coins_best = true,
-        .rollback_auth = &rollback_auth,
-        .wallet_scan_height = -1,
-        .reason = "cold_import_pending_anchor",
-    };
-    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
-    if (rc != CSR_OK) {
-        fprintf(stderr,
-                "[boot] csr rejected cold-import pending anchor (%s) h=%d\n",
-                csr_result_name(rc), tip->nHeight);
-        return false;
-    }
-
-    if (!node_db_exec(&g_node_db,
-            "DELETE FROM node_state WHERE key IN ("
-            "'cold_import_pending_coins_best_block',"
-            "'cold_import_pending_coins_best_height',"
-            "'cold_import_pending_utxo_count')")) {
-        fprintf(stderr,
-                "[boot] failed to clear cold-import pending anchor metadata\n");
-        return false;
-    }
-
-    printf("[boot] cold-import pending anchor published via CSR h=%d\n",
-           tip->nHeight);
-    return true;
+    memset(out, 0, sizeof(*out));
+    out->height = -1;
+    return reducer_frontier_derive_coins_best_now(&out->height, out->hash,
+                                                  &out->hash_found);
 }
 
 static bool boot_step_init_crypto_and_state(struct app_context *ctx,
@@ -1594,7 +1503,11 @@ bool app_init(struct app_context *ctx)
             struct stat sp_st;
             if (stat(snap_path, &sp_st) == 0 &&
                 sp_st.st_size > (off_t)(10 * 1024 * 1024)) {
-                int64_t existing = node_db_utxo_count(&g_node_db);
+                /* Wave 2: the canonical coin count lives in coins_kv;
+                 * the node.db mirror count is the legacy fallback. */
+                int64_t existing = coins_kv_count(progress_store_db());
+                if (existing <= 0)
+                    existing = node_db_utxo_count(&g_node_db);
                 if (existing > 1000) {
                     printf("[boot] consensus_snapshot.db present "
                            "(%.0f MB) — node.db already has %lld UTXOs, "
@@ -1698,14 +1611,28 @@ bool app_init(struct app_context *ctx)
             fprintf(stderr,
                 "[boot] -reindex-chainstate: cleared coins state before the "
                 "integrity gate; UTXO set will be rebuilt from block data\n");
-        (void)utxo_recovery_repair_stale_cursor_from_sync_projection(
-            &g_node_db);
+        /* Wave 2: on canonical datadirs (coins_applied_height present) the
+         * coins-best fact is DERIVED from coins_kv's own co-committed state —
+         * the legacy anchor caches cannot wedge boot, so the legacy repair
+         * rungs (stale-cursor repair W4, torn-anchor heal W5 — both
+         * node_state-key writers) are skipped entirely. Legacy datadirs keep
+         * both rungs unchanged. */
+        struct boot_derived_coins_best boot_dcb;
+        bool boot_dcb_found = boot_derive_coins_best(&boot_dcb);
+        if (boot_dcb_found)
+            printf("[boot] derived coins-best h=%d hash_found=%d (coins_kv "
+                   "authority) — skipping legacy anchor-repair rungs\n",
+                   boot_dcb.height, boot_dcb.hash_found ? 1 : 0);
+        else
+            (void)utxo_recovery_repair_stale_cursor_from_sync_projection(
+                &g_node_db);
         /* On open failure, try L1 torn-legacy-coins recovery (§3 dual-store
          * tear, utxo_recovery_torn_anchor.c — reset-safe, refuses unless
          * coins_kv is the proven authority, so the FATAL never weakens), then
          * retry. If neither path recovers, refuse to start with a crash event. */
         if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db) &&
-            !(utxo_recovery_heal_torn_legacy_coins_anchor(
+            !(!boot_dcb_found &&
+              utxo_recovery_heal_torn_legacy_coins_anchor(
                   &g_node_db, progress_store_db(), ctx->datadir) &&
               coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db))) {
             fprintf(stderr,
@@ -1730,26 +1657,36 @@ bool app_init(struct app_context *ctx)
          * If chainstate/ exists, the LDB import will set coins_best_block
          * correctly — seeding from a projection cursor would create a mismatch
          * (UTXO data from LDB height ~3M labeled as chain tip ~2M). */
-        struct uint256 coins_check;
-        memset(&coins_check, 0, sizeof(coins_check));
-        if (!coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_check)
-            || uint256_is_null(&coins_check)) {
-            /* Check if LDB chainstate exists — if so, skip the seed
-             * and let LDB import set coins_best_block properly. */
-            char cs_path[576];
-            snprintf(cs_path, sizeof(cs_path), "%s/chainstate", ctx->datadir);
-            struct stat cs_st;
-            bool has_chainstate = (stat(cs_path, &cs_st) == 0 &&
-                                    S_ISDIR(cs_st.st_mode));
-            if (has_chainstate) {
-                printf("[boot] chainstate/ exists — skipping "
-                       "coins_best_block seed (LDB import will set it)\n");
-            } else {
-                int64_t utxo_count = node_db_utxo_count(&g_node_db);
-                if (utxo_count > 0) {
-                    printf("[boot] coins_best_block is unset with %lld "
-                           "UTXOs; refusing to seed it from sync projection\n",
-                           (long long)utxo_count);
+        struct boot_derived_coins_best seed_dcb;
+        if (boot_derive_coins_best(&seed_dcb)) {
+            /* Canonical datadir: the unset/stale cache key is irrelevant —
+             * the coins-best fact is derived. Nothing to seed or refuse. */
+            printf("[boot] coins_best_block cache check skipped — derived "
+                   "coins-best h=%d (coins_kv authority)\n", seed_dcb.height);
+        } else {
+            struct uint256 coins_check;
+            memset(&coins_check, 0, sizeof(coins_check));
+            if (!coins_view_sqlite_get_best_block(&g_coins_sqlite,
+                                                  &coins_check)
+                || uint256_is_null(&coins_check)) {
+                /* Check if LDB chainstate exists — if so, skip the seed
+                 * and let LDB import set coins_best_block properly. */
+                char cs_path[576];
+                snprintf(cs_path, sizeof(cs_path), "%s/chainstate",
+                         ctx->datadir);
+                struct stat cs_st;
+                bool has_chainstate = (stat(cs_path, &cs_st) == 0 &&
+                                        S_ISDIR(cs_st.st_mode));
+                if (has_chainstate) {
+                    printf("[boot] chainstate/ exists — skipping "
+                           "coins_best_block seed (LDB import will set it)\n");
+                } else {
+                    int64_t utxo_count = node_db_utxo_count(&g_node_db);
+                    if (utxo_count > 0) {
+                        printf("[boot] coins_best_block is unset with %lld "
+                               "UTXOs; refusing to seed it from sync "
+                               "projection\n", (long long)utxo_count);
+                    }
                 }
             }
         }
@@ -2405,8 +2342,9 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    if (!boot_resolve_cold_import_pending_anchor())
-        return false;
+    /* (wave-2 deletion) boot_resolve_cold_import_pending_anchor removed:
+     * its 'cold_import_pending_*' node_state keys had NO writer anywhere in
+     * the tree — a dead consumer of a key family nothing produced. */
 
     /* ── LDB UTXO import (runs AFTER block index load) ──
      * Skipped on the log-rebuild path: the UTXO projection (bound as the
@@ -2821,6 +2759,19 @@ bool app_init(struct app_context *ctx)
                 if (g_state.map_block_index.size > 1000)
                     save_block_index_flat(ctx->datadir, &g_state);
 
+                /* Wave 2: on canonical datadirs the post-scan anchor ladder
+                 * below is GUESSWORK over caches (node_state anchor, mirror
+                 * MAX(height), "most work scanned") that manufactured wedges;
+                 * the coins-best fact is derived from coins_kv and the
+                 * regular restore path (now derivation-gated) installs the
+                 * tip. Skip the whole ladder. Legacy datadirs keep it.
+                 * (ladder body = wave-3 delete) */
+                struct boot_derived_coins_best scan_dcb;
+                if (boot_derive_coins_best(&scan_dcb)) {
+                    printf("[boot] post-scan anchor ladder skipped — derived "
+                           "coins-best h=%d (coins_kv authority)\n",
+                           scan_dcb.height);
+                } else {
                 /* After block file scan, try to resolve coins_best_block.
                  * The scan may have assigned wrong heights (blocks in random
                  * file order) or picked a wrong "most work" chain due to
@@ -3007,6 +2958,7 @@ bool app_init(struct app_context *ctx)
                         }
                     }
                 }
+                }  /* end legacy post-scan ladder (!derived) */
             }
         }
     }
@@ -3200,15 +3152,23 @@ sapling_tree_boot_check_done:
      * log rows, so the public tip can never drop below coins_best (proven in
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
     {
-        /* SINGLE SOURCE OF TRUTH (docs/work/tip-durability-collapse.md): floor
-         * on the GENUINE coins frontier = height(coins_best_block HASH), NOT the
-         * redundant cec int that recovery anchors poisoned above an ok=0 hole.
-         * Under-rewind is SAFE (more forward re-finalize, never ahead); no rows
-         * deleted. */
-        struct uint256 cbh; uint256_set_null(&cbh);
-        if (g_coins_sqlite.db) coins_view_sqlite_get_best_block(&g_coins_sqlite, &cbh);
-        struct block_index *cb = uint256_is_null(&cbh) ? NULL : block_map_find(&g_state.map_block_index, &cbh);
-        int64_t coins_best = cb ? (int64_t)cb->nHeight : -1;
+        /* SINGLE SOURCE OF TRUTH (docs/work/tip-durability-collapse.md):
+         * floor on the GENUINE coins frontier. Wave 2: that frontier is
+         * DERIVED — coins_applied_height-1 straight from progress.kv's own
+         * co-committed state (no hash->block_map->height roundtrip through
+         * the node_state cache). Legacy fallback: height(coins_best_block
+         * HASH). Under-rewind is SAFE (more forward re-finalize, never
+         * ahead); no rows deleted. */
+        int64_t coins_best = -1;
+        struct boot_derived_coins_best clamp_dcb;
+        if (boot_derive_coins_best(&clamp_dcb)) {
+            coins_best = clamp_dcb.height;
+        } else {
+            struct uint256 cbh; uint256_set_null(&cbh);
+            if (g_coins_sqlite.db) coins_view_sqlite_get_best_block(&g_coins_sqlite, &cbh);
+            struct block_index *cb = uint256_is_null(&cbh) ? NULL : block_map_find(&g_state.map_block_index, &cbh);
+            coins_best = cb ? (int64_t)cb->nHeight : -1;
+        }
         if (coins_best >= 0) {
             struct sqlite3 *pdb = progress_store_db();
             struct stage_reconcile_result rr;

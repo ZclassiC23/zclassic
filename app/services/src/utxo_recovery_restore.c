@@ -8,17 +8,15 @@
  *                                     migration (LOCK-safe copy, SHA3
  *                                     verify, tip/anchor creation).
  *   utxo_recovery_restore_chain_tip — restore the active tip from the
- *                                     coins DB best block (or a metadata
- *                                     anchor when ahead of the index).
- *
- * Both share the CSR-gated commit primitives in
- * utxo_recovery_internal.h.
- */
+ *                                     derived coins-best (legacy: coins DB
+ *                                     best block / metadata anchor).
+ * Both share the CSR-gated commit primitives in utxo_recovery_internal.h. */
 
 #include "services/utxo_recovery_service.h"
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_repair.h"
 #include "services/chain_tip.h"
+#include "jobs/reducer_frontier.h"
 #include "net/snapshot_sync_contract.h"
 #include "config/boot_internal.h"
 #include "validation/main_state.h"
@@ -51,43 +49,9 @@ static struct zcl_result recovery_status_ok(void)
     return ZCL_OK;
 }
 
-/* DURABLE cold-import seed anchor. Writes three keys the consumer
- * (block_index_loader_seed_stages_from_cold_import) reads every boot to heal
- * the staged-sync wedge: cold_import_seed_anchor_{height(int64 H),hash(32B
- * coins_best),utxo_count(int64 live rows)}. The count is the PROVENANCE TOKEN:
- * H* is cursor/log-derived (coins are C4 diagnostic-only in
- * reducer_frontier_compute_hstar) so the post-seed H*==H self-check cannot
- * detect a coin tear — the consumer instead requires node_db_utxo_count() ==
- * this recorded count (the boot.c:840 precedent). Cleared by every wipe /
- * reimport-prepare so the key never outlives the coins it attests to. */
-static void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
-                                                 int height,
-                                                 const struct uint256 *hash,
-                                                 int64_t utxo_count)
-{
-    if (!ndb || height <= 0 || !hash || utxo_count <= 0)
-        return;
-    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_height",
-                                (int64_t)height);
-    (void)node_db_state_set(ndb, "cold_import_seed_anchor_hash",
-                            hash->data, 32);
-    (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_utxo_count",
-                                utxo_count);
-}
-
-/* Clear all three durable cold-import seed keys. Called from every UTXO wipe /
- * reimport-prepare so a stale key cannot outlive the coins it attests to.
- * Best-effort; the consumer's live coin-count cross-check is the backstop. */
-void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
-{
-    if (!ndb)
-        return;
-    (void)node_db_exec(ndb,
-        "DELETE FROM node_state WHERE key IN ("
-        "'cold_import_seed_anchor_height',"
-        "'cold_import_seed_anchor_hash',"
-        "'cold_import_seed_anchor_utxo_count')");
-}
+/* Cold-import seed provenance (write/clear) lives in
+ * utxo_recovery_seed_provenance.c — declarations in
+ * utxo_recovery_internal.h. */
 
 /* MAX(height) over the utxos table; defined below, forward-declared here
  * so the LDB-import path above can share the single SELECT. */
@@ -342,10 +306,17 @@ struct utxo_import_result utxo_recovery_import_ldb(
                    "checkpoint, will verify later)\n",
                    (unsigned long long)imported_count);
         } else {
-            /* Double-check actual row count before wiping — the
-             * SHA3 function might have missed data due to a stale
-             * snapshot, but the UTXOs are actually in the table. */
+            /* Double-check actual row count before wiping — the SHA3
+             * function might have missed data due to a stale snapshot, but
+             * the UTXOs are actually in the table. Wave 2: consult the
+             * CANONICAL coins_kv count too (0 pre-seed in cold-import, so
+             * the mirror count stays the live signal; max keeps both honest). */
             int64_t actual = node_db_utxo_count(ctx->ndb);
+            {
+                int64_t ck = coins_kv_count(progress_store_db());
+                if (ck > actual)
+                    actual = ck;
+            }
             if (actual > 100000) {
                 printf("SHA3 saw %llu but utxo table has %lld rows "
                        "— keeping data (snapshot lag)\n",
@@ -477,6 +448,18 @@ static int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx)
     if (!ctx || !ctx->ndb || !ctx->ndb->open || !ctx->ndb->db)
         return 0;
 
+    /* Wave 2: the DERIVED coins-best height (coins_applied_height - 1,
+     * coins_kv's own co-committed state) outranks the mirror's MAX(height)
+     * — interior holes / flush lag in the rebuildable projection must not
+     * steer the restore. Legacy mirror read on !found (pre-seed datadirs:
+     * coins_kv_seed_from_node_db has not run yet, key absent — the gating
+     * is naturally correct). wave-3 delete: the mirror walk below. */
+    {
+        int32_t d_h = -1;
+        if (reducer_frontier_derive_coins_best_now(&d_h, NULL, NULL))
+            return d_h > 0 ? d_h : 0;
+    }
+
     sqlite3_stmt *stmt = NULL;
     int max_h = 0;
     if (sqlite3_prepare_v2(ctx->ndb->db,
@@ -535,7 +518,23 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     }
 
     struct uint256 best_hash;
-    coins_view_cache_get_best_block(ctx->coins_tip, &best_hash);
+    /* Wave 2: the restore anchor is the DERIVED coins-best when the durable
+     * logs resolve a hash for it; the in-RAM coins cache (seeded from the
+     * node_state projection key) is the legacy fallback. */
+    uint256_set_null(&best_hash);
+    {
+        int32_t d_h = -1;
+        uint8_t d_hash[32];
+        bool d_hf = false;
+        if (reducer_frontier_derive_coins_best_now(&d_h, d_hash, &d_hf) &&
+            d_hf) {
+            memcpy(best_hash.data, d_hash, 32);
+            printf("[boot] restore anchor: derived coins-best h=%d "
+                   "(coins_kv authority)\n", d_h);
+        }
+    }
+    if (uint256_is_null(&best_hash))
+        coins_view_cache_get_best_block(ctx->coins_tip, &best_hash);
 
     if (uint256_is_null(&best_hash)) {
         /* No best block — try fast rebuild if fallback available */

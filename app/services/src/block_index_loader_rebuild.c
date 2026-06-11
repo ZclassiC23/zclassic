@@ -502,9 +502,7 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
     int32_t H = (int32_t)anchor_h;
 
     /* (2) INTEGRITY: the durable anchor block must EXIST in the loaded block
-     *     index at exactly height H — the same block_map_find check
-     *     boot_resolve_cold_import_pending_anchor (config/src/boot.c) uses to
-     *     trust a pending coins-best anchor. This binds the trusted height H to
+     *     index at exactly height H. This binds the trusted height H to
      *     a real header we hold; a wrong/forged key whose hash we don't carry
      *     (or carry at a different height) is rejected. We do NOT require the
      *     active tip to BE the anchor: at this boot point the active tip is the
@@ -562,32 +560,56 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         }
     }
 
-    /* (2d) COIN-PRESENCE CROSS-CHECK: the live utxos row count must EQUAL the
-     *     count recorded with the anchor. This is the load-bearing torn-datadir
-     *     guard and mirrors boot_resolve_cold_import_pending_anchor
-     *     (config/src/boot.c:840). H*==H (step 6) CANNOT detect a coin tear:
+    /* (2d) COIN-PRESENCE CROSS-CHECK: the load-bearing torn-datadir guard.
+     *     H*==H (step 6) CANNOT detect a coin tear:
      *     reducer_frontier_compute_hstar derives H* from progress-store
      *     cursors/logs and treats the coins frontier as C4 diagnostic-only, so
      *     the post-seed self-check verifies the state the seed manufactured,
      *     not the on-disk coins. If the coin set was torn below H after the key
      *     was written (kill-9 mid-write, partial reimport keeping >100k rows),
-     *     the live count differs and the seed is refused. */
-    int64_t recorded_count = 0;
-    if (!node_db_state_get_int(ndb, COLD_IMPORT_SEED_COUNT_KEY,
-                               &recorded_count) || recorded_count <= 0) {
-        LOG_WARN("block_index",
-                 "cold-import seed: durable utxo_count missing/invalid "
-                 "(recorded=%lld); skip — incomplete anchor", (long long)recorded_count);
-        return 0;
-    }
-    int64_t live_count = node_db_utxo_count(ndb);
-    if (live_count != recorded_count) {
-        LOG_WARN("block_index",
-                 "cold-import seed: live utxo count %lld != recorded %lld at "
-                 "H=%d; skip — coins torn since import, not seeding above the "
-                 "real coin frontier", (long long)live_count,
-                 (long long)recorded_count, H);
-        return 0;
+     *     the live count differs and the seed is refused.
+     *
+     *     Wave 2: the CANONICAL token is checked FIRST —
+     *     'cold_import_seed_coins_kv_count' attests the coins_kv store
+     *     (progress.kv) the reducer actually spends from. The mirror-count
+     *     token remains the fallback for seeds written before the canonical
+     *     token existed. */
+    {
+        int64_t recorded_ck = 0;
+        if (node_db_state_get_int(ndb, "cold_import_seed_coins_kv_count",
+                                  &recorded_ck) && recorded_ck > 0) {
+            int64_t live_ck = coins_kv_count(progress_db);
+            if (live_ck != recorded_ck) {
+                LOG_WARN("block_index",
+                         "cold-import seed: live coins_kv count %lld != "
+                         "recorded %lld at H=%d; skip — canonical coins torn "
+                         "since import, not seeding above the real coin "
+                         "frontier", (long long)live_ck,
+                         (long long)recorded_ck, H);
+                return 0;
+            }
+        } else {
+            int64_t recorded_count = 0;
+            if (!node_db_state_get_int(ndb, COLD_IMPORT_SEED_COUNT_KEY,
+                                       &recorded_count) ||
+                recorded_count <= 0) {
+                LOG_WARN("block_index",
+                         "cold-import seed: durable utxo_count missing/invalid "
+                         "(recorded=%lld); skip — incomplete anchor",
+                         (long long)recorded_count);
+                return 0;
+            }
+            int64_t live_count = node_db_utxo_count(ndb);
+            if (live_count != recorded_count) {
+                LOG_WARN("block_index",
+                         "cold-import seed: live utxo count %lld != recorded "
+                         "%lld at H=%d; skip — coins torn since import, not "
+                         "seeding above the real coin frontier",
+                         (long long)live_count,
+                         (long long)recorded_count, H);
+                return 0;
+            }
+        }
     }
 
     /* (3) GATE on the genuinely-pinned signal — H*, NOT the tip_finalize

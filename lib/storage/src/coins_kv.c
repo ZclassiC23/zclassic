@@ -337,6 +337,39 @@ bool coins_kv_get_applied_height(sqlite3 *db, int32_t *out, bool *found)
     return true;
 }
 
+bool coins_kv_is_proven_authority(sqlite3 *db, int32_t *out_applied)
+{
+    if (out_applied) *out_applied = -1;
+    if (!db)
+        return false;
+
+    /* (1) durable applied frontier present. */
+    int32_t applied = 0;
+    bool found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &found) || !found)
+        return false;
+
+    /* (2) migration stamp: the store provably holds the live set. A
+     * cursor-backfilled frontier on a pre-migration datadir is NOT proof —
+     * without this rung the wave-2 derived gates would pass datadirs whose
+     * coins still live only in the node.db mirror. */
+    uint8_t mig = 0;
+    size_t mlen = 0;
+    bool mfound = false;
+    if (!progress_meta_get(db, COINS_KV_MIGRATION_COMPLETE_KEY,
+                           &mig, sizeof(mig), &mlen, &mfound))
+        return false;  /* read error → the stricter legacy gates */
+    if (!mfound || mlen != 1 || mig != 1)
+        return false;
+
+    /* (3) the set is non-empty. */
+    if (coins_kv_count(db) <= 0)
+        return false;
+
+    if (out_applied) *out_applied = applied;
+    return true;
+}
+
 /* Read the durably committed utxo_apply stage cursor straight off the
  * stage_cursor table on the progress.kv handle. Kept in the storage layer (a
  * raw kernel-store read, same hatch as coins_kv_count) so the backfill below
