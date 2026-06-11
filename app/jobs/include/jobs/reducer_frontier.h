@@ -85,4 +85,22 @@ bool reducer_frontier_log_frontier(
     int32_t *out_h                  /* OUT: contiguous ok=1 prefix height */
 );
 
+/* Hash recorded by ONE stage log at `height` (e.g. validate_headers_log.hash).
+ * The Invariant A restore clamp uses it to derive the frontier tip hash when
+ * the in-RAM pprev chain is torn between the frontier and a restore candidate
+ * (log-as-truth: the stage's own recorded hash names the frontier block).
+ *
+ * *found=false on an absent row or a NULL hash (cold-import prefix) — that is
+ * success, not an error. Returns false only on a real DB read error. Acquires
+ * progress_store_tx_lock() itself (recursive; safe whether or not the caller
+ * already holds it). SELECT-only. */
+bool reducer_frontier_log_hash_at(
+    sqlite3 *progress_db,           /* progress.kv handle */
+    const char *log_table,          /* e.g. "validate_headers_log" */
+    const char *hash_col,           /* e.g. "hash" */
+    int32_t height,
+    uint8_t out[32],                /* OUT: the 32-byte hash when *found */
+    bool *found                     /* OUT: row + non-NULL 32B hash present */
+);
+
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_H */

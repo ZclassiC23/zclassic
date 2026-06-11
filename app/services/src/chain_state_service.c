@@ -722,6 +722,14 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
     }
     if (csr->pindex_best_hdr && commit->update_header_tip) {
         struct block_index *cur_hdr = *csr->pindex_best_hdr;
+        /* The rollback-auth carve-out bypasses the >= ratchet on purpose:
+         * an authorized restore legitimately moves the header tip DOWN.
+         * The restore family is frontier-gated UPSTREAM (Invariant A in
+         * utxo_recovery_commit_tip), so this carve-out can no longer
+         * publish an underivable height from a restore. Ordinary commits
+         * keep the forward-only ratchet — pindex_best_header legitimately
+         * runs AHEAD of the validated frontier during header-first sync,
+         * so do NOT frontier-gate this publish. */
         if (!cur_hdr || commit->new_tip->nHeight >= cur_hdr->nHeight ||
             csr_commit_has_rollback_authorization(commit)) {
             *csr->pindex_best_hdr = commit->new_tip;

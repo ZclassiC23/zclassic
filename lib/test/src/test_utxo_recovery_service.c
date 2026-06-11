@@ -12,6 +12,7 @@
 #include "storage/progress_store.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
+#include "jobs/reducer_frontier.h"
 #include "models/database.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/ar_step_readonly.h"
@@ -100,7 +101,8 @@ static bool urs_exec_progress(sqlite3 *db, const char *sql)
     return true;
 }
 
-static bool urs_seed_finalized_floor(int height, const struct uint256 *hash)
+static bool urs_seed_finalized_floor(int height, const struct uint256 *hash,
+                                     const char *status)
 {
     sqlite3 *db = progress_store_db();
     if (!db || !hash)
@@ -115,14 +117,238 @@ static bool urs_seed_finalized_floor(int height, const struct uint256 *hash)
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO tip_finalize_log"
             "(height,status,ok,tip_hash) "
-            "VALUES(?,'finalized',1,?)",
+            "VALUES(?,?,1,?)",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, height);
-    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, status ? status : "finalized", -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 3, hash->data, 32, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
+}
+
+/* ── Invariant A fixtures (12d-12g) ──────────────────────────────────
+ * A hash-linked synthetic segment at the compiled trusted-anchor scale —
+ * the clamp only descends to the frontier, so chains need not root at
+ * genesis. progress.kv is seeded with the REAL production schema
+ * (mirrors test_reducer_frontier.c). */
+
+/* Build hash-linked blocks [start .. start+n-1]; tip = the last block. */
+static void urs_build_segment(struct main_state *ms, int start, int n)
+{
+    struct uint256 prev_hash;
+    memset(&prev_hash, 0, sizeof(prev_hash));
+    for (int i = 0; i < n; i++) {
+        int h = start + i;
+        struct uint256 hash;
+        urs_hash_for_height(h, &hash);
+        struct block_index *pi = chainstate_insert_block_index(
+            (struct chainstate *)ms, &hash);
+        if (!pi) continue;
+        pi->nHeight = h;
+        pi->nBits = 0x1f07ffff;
+        pi->nTime = 1000000 + (uint32_t)i * 150;
+        pi->nVersion = 4;
+        pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        pi->nTx = 1;
+        pi->nChainTx = (uint32_t)(i + 1);
+        arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(i + 1));
+        if (i > 0) {
+            struct block_index *prev = block_map_find(&ms->map_block_index,
+                                                      &prev_hash);
+            if (prev) pi->pprev = prev;
+        }
+        prev_hash = hash;
+    }
+    struct uint256 tip_hash;
+    urs_hash_for_height(start + n - 1, &tip_hash);
+    struct block_index *tip = block_map_find(&ms->map_block_index, &tip_hash);
+    if (tip) active_chain_move_window_tip(&ms->chain_active, tip);
+}
+
+/* Create the progress.kv tables the frontier reader walks, matching the
+ * production schema (test_reducer_frontier.c's build_schema subset). */
+static bool urs_seed_frontier_schema(void)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+    return urs_exec_progress(db,
+        "CREATE TABLE IF NOT EXISTS stage_cursor ("
+        "name TEXT PRIMARY KEY, cursor INTEGER NOT NULL,"
+        "updated_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "fail_reason TEXT, validated_at INTEGER);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "tip_hash BLOB)");
+}
+
+/* validate_headers_log ok=1 rows [from..to] (hash = the index hash at that
+ * height) + the stage cursor at to+1: the validated header frontier == to. */
+static bool urs_seed_validated_headers(int from, int to)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        printf("urs_seed_validated_headers: progress store not open\n");
+        return false;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO validate_headers_log(height,hash,ok) "
+            "VALUES(?,?,1)", -1, &st, NULL) != SQLITE_OK) {
+        printf("urs_seed_validated_headers: prepare failed: %s\n",
+               sqlite3_errmsg(db));
+        return false;
+    }
+    bool ok = true;
+    for (int h = from; h <= to && ok; h++) {
+        struct uint256 hash;
+        urs_hash_for_height(h, &hash);
+        sqlite3_reset(st);
+        sqlite3_bind_int(st, 1, h);
+        sqlite3_bind_blob(st, 2, hash.data, 32, SQLITE_TRANSIENT);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+        if (!ok)
+            printf("urs_seed_validated_headers: insert h=%d failed: %s\n",
+                   h, sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('validate_headers',?,0)", -1, &st, NULL) != SQLITE_OK) {
+        printf("urs_seed_validated_headers: cursor prepare failed: %s\n",
+               sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, to + 1);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    if (!ok)
+        printf("urs_seed_validated_headers: cursor write failed: %s\n",
+               sqlite3_errmsg(db));
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Read (ok,status) of the tip_finalize_log row at `height`. *ok_out = -1
+ * when the row is absent. */
+static bool urs_tipfin_row(int height, int *ok_out, char *status_out,
+                           size_t status_len)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db || !ok_out)
+        return false;
+    *ok_out = -1;
+    if (status_out && status_len)
+        status_out[0] = '\0';
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok, status FROM tip_finalize_log WHERE height=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    bool found = sqlite3_step(st) == SQLITE_ROW;
+    if (found) {
+        *ok_out = sqlite3_column_int(st, 0);
+        const unsigned char *s = sqlite3_column_text(st, 1);
+        if (s && status_out && status_len)
+            snprintf(status_out, status_len, "%s", (const char *)s);
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+/* MAX(height) over ok=1 tip_finalize rows, -1 when none, -2 on error. */
+static int urs_tipfin_max_ok(void)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return -2;
+    sqlite3_stmt *st = NULL;
+    int v = -2;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(MAX(height),-1) FROM tip_finalize_log "
+            "WHERE ok=1", -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW)
+            v = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+    }
+    return v;
+}
+
+struct urs_frontier_fixture {
+    char db_path[256];
+    char progress_dir[256];
+    bool pdb_open;
+    struct node_db ndb;
+    struct main_state ms;
+    struct coins_view nv;
+    struct coins_view_cache cache;
+    struct chain_state_repository *csr;
+    struct utxo_recovery_ctx uctx;
+};
+
+/* Segment [seg_start .. seg_start+seg_len-1] + empty coins cache + live CSR.
+ * Returns false (and self-cleans) if the OS-level pieces fail to open. */
+static bool urs_frontier_fixture_setup(struct urs_frontier_fixture *fx,
+                                       const char *tag,
+                                       int seg_start, int seg_len)
+{
+    memset(fx, 0, sizeof(*fx));
+    snprintf(fx->db_path, sizeof(fx->db_path),
+             "./test-tmp/%d_%s.db", getpid(), tag);
+    test_make_tmpdir(fx->progress_dir, sizeof(fx->progress_dir),
+                     tag, "progress");
+    fx->pdb_open = progress_store_open(fx->progress_dir);
+    if (!fx->pdb_open) {
+        test_cleanup_tmpdir(fx->progress_dir);
+        return false;
+    }
+    if (!node_db_open(&fx->ndb, fx->db_path)) {
+        progress_store_close();
+        test_cleanup_tmpdir(fx->progress_dir);
+        return false;
+    }
+    chain_params_select(CHAIN_MAIN);
+    block_map_init(&fx->ms.map_block_index);
+    active_chain_init(&fx->ms.chain_active);
+    urs_build_segment(&fx->ms, seg_start, seg_len);
+    coins_view_cache_init(&fx->cache, &fx->nv);
+    fx->csr = csr_instance();
+    csr_init(fx->csr, &fx->ms.map_block_index, &fx->ms.chain_active,
+             &fx->ms.pindex_best_header, &fx->cache, &fx->ndb, NULL);
+    fx->uctx = (struct utxo_recovery_ctx){
+        .state = &fx->ms,
+        .coins_sqlite = NULL,
+        .coins_tip = &fx->cache,
+        .ndb = &fx->ndb,
+        .datadir = "/nonexistent",
+        .params = chain_params_get(),
+        .activation_ctl = NULL,
+        .db_service = NULL,
+    };
+    return true;
+}
+
+static void urs_frontier_fixture_teardown(struct urs_frontier_fixture *fx)
+{
+    if (fx->csr)
+        csr_free(fx->csr);
+    coins_view_cache_free(&fx->cache);
+    active_chain_free(&fx->ms.chain_active);
+    block_map_free(&fx->ms.map_block_index);
+    if (fx->ndb.open)
+        node_db_close(&fx->ndb);
+    if (fx->pdb_open)
+        progress_store_close();
+    test_cleanup_tmpdir(fx->progress_dir);
+    unlink(fx->db_path);
 }
 
 int test_utxo_recovery_service(void)
@@ -724,7 +950,8 @@ int test_utxo_recovery_service(void)
 
             struct uint256 floor_hash;
             urs_hash_for_height(120, &floor_hash);
-            bool seeded = urs_seed_finalized_floor(120, &floor_hash);
+            bool seeded = urs_seed_finalized_floor(120, &floor_hash,
+                                                   "finalized");
             struct chain_restore_result rr =
                 utxo_recovery_restore_chain_tip(&uctx, scan_fallback);
 
@@ -753,6 +980,214 @@ int test_utxo_recovery_service(void)
             progress_store_close();
         test_cleanup_tmpdir(progress_dir);
         unlink(db_path);
+    }
+
+    /* ── 12d. Invariant A: restore candidate above the validated header
+     *         frontier is clamped to the hash-linked ancestor (via=pprev) ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_clamp_pprev", A, 21);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 10);
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        struct uint256 want_hash;
+        urs_hash_for_height(A + 10, &want_hash);
+        struct uint256 got_best;
+        memset(&got_best, 0, sizeof(got_best));
+        if (up)
+            coins_view_cache_get_best_block(&fx.cache, &got_best);
+
+        URS_CHECK("urs: invariant A clamps restore candidate to the "
+                  "hash-linked frontier ancestor (via=pprev)",
+                  up && seeded && scan_fallback &&
+                  rr.status.ok && rr.restored &&
+                  rr.restored_height == A + 10 &&
+                  uint256_eq(&rr.restored_hash, &want_hash) &&
+                  uint256_eq(&got_best, &want_hash) &&
+                  active_chain_height(&fx.ms.chain_active) == A + 10 &&
+                  fx.ms.pindex_best_header &&
+                  fx.ms.pindex_best_header->nHeight == A + 10);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
+    /* ── 12d2. Same clamp with the pprev chain TORN above the frontier
+     *          (the live-wedge shape): the clamp resolves the frontier tip
+     *          from validate_headers_log's OWN hash (via=log_hash) ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_clamp_loghash", A, 21);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 10);
+
+        /* Sever pprev ABOVE the frontier — candidate 3,143,175 / extent
+         * break 3,142,801 / frontier 3,141,533 in the live fixture. */
+        struct uint256 cut_hash;
+        urs_hash_for_height(A + 13, &cut_hash);
+        struct block_index *cut = up
+            ? block_map_find(&fx.ms.map_block_index, &cut_hash) : NULL;
+        if (cut)
+            cut->pprev = NULL;
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && cut && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        struct uint256 want_hash;
+        urs_hash_for_height(A + 10, &want_hash);
+
+        URS_CHECK("urs: invariant A clamp survives a torn pprev extent "
+                  "via the log's own hash (via=log_hash)",
+                  up && seeded && cut && scan_fallback &&
+                  rr.status.ok && rr.restored &&
+                  rr.restored_height == A + 10 &&
+                  uint256_eq(&rr.restored_hash, &want_hash) &&
+                  active_chain_height(&fx.ms.chain_active) == A + 10);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
+    /* ── 12e. Fresh datadir / no frontier evidence: FAIL OPEN (no clamp,
+     *         today's behavior preserved bit-for-bit) ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_failopen", A, 21);
+        /* Deliberately NO progress tables — no log evidence at all. */
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        URS_CHECK("urs: no frontier evidence fails open (candidate "
+                  "committed unclamped)",
+                  up && scan_fallback &&
+                  rr.status.ok && rr.restored &&
+                  rr.restored_height == A + 20 &&
+                  uint256_eq(&rr.restored_hash, &cand_hash) &&
+                  active_chain_height(&fx.ms.chain_active) == A + 20);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
+    /* ── 12f. A finalized floor ABOVE the frontier is provably unbackable:
+     *         the clamp commits the frontier and REWINDS the floor rows
+     *         (ok=0, status='floor_rewind' — history preserved) ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_floor_rewind", A, 21);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 10);
+        struct uint256 floor_hash;
+        urs_hash_for_height(A + 15, &floor_hash);
+        /* The bogus over-frontier anchor stamp from the live wedge. */
+        seeded = seeded
+              && urs_seed_finalized_floor(A + 15, &floor_hash, "anchor");
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        int row_ok = -1;
+        char row_status[32] = "";
+        bool row_found = up && urs_tipfin_row(A + 15, &row_ok, row_status,
+                                              sizeof(row_status));
+
+        URS_CHECK("urs: unbackable finalized floor is rewound with "
+                  "evidence (ok=0 status=floor_rewind)",
+                  up && seeded && scan_fallback &&
+                  rr.status.ok && rr.restored &&
+                  rr.restored_height == A + 10 &&
+                  row_found && row_ok == 0 &&
+                  strcmp(row_status, "floor_rewind") == 0 &&
+                  urs_tipfin_max_ok() == -1);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
+    /* ── 12g. scan_fallback floor-guard learns the rewind: an unbackable
+     *         floor no longer fabricates restored_height=floor — the guard
+     *         rewinds it and the consistent scan_fallback commits ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_guard_rewind", A, 21);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 10);
+        struct uint256 floor_hash;
+        urs_hash_for_height(A + 15, &floor_hash);
+        seeded = seeded
+              && urs_seed_finalized_floor(A + 15, &floor_hash, "anchor");
+
+        /* The consistent fallback sits BELOW the bogus floor — yesterday's
+         * guard refused it and fabricated restored_height=A+15. */
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 5, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        int row_ok = -1;
+        char row_status[32] = "";
+        bool row_found = up && urs_tipfin_row(A + 15, &row_ok, row_status,
+                                              sizeof(row_status));
+
+        URS_CHECK("urs: scan_fallback guard rewinds the unbackable floor "
+                  "and commits the consistent fallback",
+                  up && seeded && scan_fallback &&
+                  rr.status.ok && rr.restored && !rr.skip_activate &&
+                  rr.restored_height == A + 5 &&
+                  uint256_eq(&rr.restored_hash, &cand_hash) &&
+                  row_found && row_ok == 0 &&
+                  strcmp(row_status, "floor_rewind") == 0 &&
+                  active_chain_height(&fx.ms.chain_active) == A + 5);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
     }
 
     /* ── 12c. Recovery entry points return rich status on invalid context ── */

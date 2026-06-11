@@ -3,14 +3,17 @@
  * utxo_recovery_internal.h — shared declarations across the files that
  * make up the UTXO recovery service:
  *
- *   utxo_recovery_service.c   — public API: wipe, prepare_reimport,
- *                               count-check classify, execute (validation
- *                               recovery), clean_above_tip, backfill
- *   utxo_recovery_restore.c   — heavy boot recovery paths:
- *                               import_ldb (LevelDB→SQLite migration) and
- *                               restore_chain_tip (coins-best restoration)
+ *   utxo_recovery_service.c       — public API: wipe, prepare_reimport,
+ *                                   count-check classify, execute (validation
+ *                                   recovery), clean_above_tip, backfill
+ *   utxo_recovery_restore.c       — heavy boot recovery paths:
+ *                                   import_ldb (LevelDB→SQLite migration) and
+ *                                   restore_chain_tip (coins-best restoration)
+ *   utxo_recovery_frontier_gate.c — Invariant A primitives: validated header
+ *                                   frontier read, candidate clamp, and the
+ *                                   evidence-based finalized-floor rewind
  *
- * NOT a public header. Only included by the two files above. The
+ * NOT a public header. Only included by the files above. The
  * trailing "_internal" suffix marks these symbols as file-local to the
  * utxo_recovery translation units; they are the shared CSR-commit
  * primitives used by both the validation-recovery path and the boot
@@ -22,23 +25,69 @@
 #include "services/utxo_recovery_service.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct block_index;
 
-/* Commit `tip` as the active chain tip + coins-best cursor through the
- * chain_state_repository (CSR). `reason` is a grep-able tag. When
+/* Commit `*tip_inout` as the active chain tip + coins-best cursor through
+ * the chain_state_repository (CSR). `reason` is a grep-able tag. When
  * `persist_coins_best` is true the coins_best_block key is durably
- * written. Returns ZCL_OK on success; a non-ok zcl_result with a
- * self-describing message on failure (code -43 invalid args, -44 CSR
- * rejected the promotion).
+ * written.
+ *
+ * INVARIANT A GATE (unless `frontier_exempt`): the committed tip is
+ * min(candidate, validated header frontier) — `*tip_inout` may be LOWERED
+ * to the hash-linked frontier ancestor, so callers must read the pointer
+ * back after a successful commit. `frontier_exempt` is true ONLY for
+ * SHA3-verified snapshot imports (the typed snapshot carve-out: a re-import
+ * carries its own cryptographic evidence and must not be clamped by a stale
+ * pre-import log; the subsequent seed-anchor stamp re-raises the frontier).
+ *
+ * Returns ZCL_OK on success; a non-ok zcl_result with a self-describing
+ * message on failure (code -43 invalid args, -44 CSR rejected the
+ * promotion, -47 candidate not derivable from the frontier — install
+ * refused).
  *
  * This is the single CSR-gated promotion primitive shared by the
  * validation-recovery path (utxo_recovery_service.c) and the boot
  * import/restore path (utxo_recovery_restore.c). */
 struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
-                              struct block_index *tip,
+                              struct block_index **tip_inout,
                               const char *reason,
-                              bool persist_coins_best);
+                              bool persist_coins_best,
+                              bool frontier_exempt);
+
+/* ── Invariant A primitives (utxo_recovery_frontier_gate.c) ─────────── */
+
+/* Deepest durably-finalized height: MAX(tip_finalize_log.height WHERE ok=1),
+ * or -1 when none / progress store closed. Optionally returns that row's
+ * tip_hash. */
+int utxo_recovery_finalized_served_floor(struct uint256 *hash_out,
+                                         bool *have_hash_out);
+
+/* Validated header frontier (the Invariant A authority): the contiguous
+ * ok=1 prefix of validate_headers_log above the trusted anchor. Returns
+ * false when there is NO log evidence (fresh datadir / missing tables) —
+ * the caller must FAIL OPEN and behave as if ungated. */
+bool utxo_recovery_header_frontier(int32_t *out_h);
+
+/* INVARIANT A GATE — never INSTALL a tip above what the validated header
+ * log can DERIVE. Returns the candidate itself (no clamp needed, or
+ * fail-open with no frontier evidence), the hash-linked ancestor at the
+ * frontier height, or NULL when the candidate is provably not linked to
+ * the frontier and the frontier block is absent from the index (the
+ * caller refuses the install). Loud on every clamp/refusal. */
+struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
+    struct utxo_recovery_ctx *ctx, struct block_index *candidate,
+    const char *reason, int32_t *frontier_out, bool *clamped_out);
+
+/* EVIDENCE-BASED FLOOR REWIND — only a finalized floor ABOVE the
+ * contiguous validated prefix is provably unbackable; flip its ok=1 rows
+ * to ok=0 with status='floor_rewind' (history preserved, status marks
+ * provenance). NEVER fires when floor <= frontier (ordinary boots are
+ * untouched — the anti-rewind guard holds). Returns false only on a DB
+ * write failure. */
+bool utxo_recovery_rewind_finalized_floor(int32_t frontier, int floor,
+                                          const char *reason);
 
 /* Reset the coins-best cursor + active tip to the genesis block and
  * flush the coins cache. Returns ZCL_OK on success; a non-ok zcl_result

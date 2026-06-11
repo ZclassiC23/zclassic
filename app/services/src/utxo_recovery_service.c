@@ -207,16 +207,42 @@ bool utxo_recovery_repair_stale_cursor_from_sync_projection(
 }
 
 struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
-                              struct block_index *tip,
+                              struct block_index **tip_inout,
                               const char *reason,
-                              bool persist_coins_best)
+                              bool persist_coins_best,
+                              bool frontier_exempt)
 {
+    struct block_index *tip = tip_inout ? *tip_inout : NULL;
     if (!ctx || !ctx->state || !tip || !tip->phashBlock)
         return ZCL_ERR(-43,
             "utxo_recovery_commit_tip: invalid args ctx=%p state=%p tip=%p "
             "phashBlock=%p reason=%s",
             (void *)ctx, ctx ? (void *)ctx->state : NULL, (void *)tip,
             tip ? (void *)tip->phashBlock : NULL, reason ? reason : "");
+
+    /* INVARIANT A GATE — never INSTALL a tip above what the validated
+     * header log can DERIVE (the 2026-06-11 wedge: tip 3,143,175 vs
+     * frontier 3,141,533). Single choke point for all restore installs;
+     * a clamp lowers *tip_inout, an over-clamp floor rewinds on evidence. */
+    if (!frontier_exempt) {
+        int32_t frontier = -1;
+        bool clamped = false;
+        struct block_index *gated = utxo_recovery_clamp_tip_to_header_frontier(
+            ctx, tip, reason, &frontier, &clamped);
+        if (!gated)
+            return ZCL_ERR(-47,
+                "utxo_recovery_commit_tip: candidate h=%d not derivable from "
+                "the validated header frontier h=%d (reason=%s); install "
+                "refused", tip->nHeight, frontier, reason ? reason : "");
+        if (clamped) {
+            int floor = utxo_recovery_finalized_served_floor(NULL, NULL);
+            if (floor > gated->nHeight)
+                (void)utxo_recovery_rewind_finalized_floor(frontier, floor,
+                                                           reason);
+            tip = gated;
+            *tip_inout = gated;
+        }
+    }
 
     struct chain_state_rollback_authorization rollback_auth = {
         .source = CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
@@ -283,9 +309,11 @@ struct zcl_result utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
             "index (reason=%s)", reason ? reason : "");
     }
 
-    ZCL_CHECK(utxo_recovery_commit_tip(ctx, genesis,
+    /* Not frontier-exempt; genesis <= frontier always, min() never raises. */
+    struct block_index *commit_blk = genesis;
+    ZCL_CHECK(utxo_recovery_commit_tip(ctx, &commit_blk,
                                   reason ? reason : "utxo_recovery_genesis",
-                                  true));
+                                  true, false));
     return ZCL_OK;
 }
 
@@ -430,9 +458,9 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
             if (bi && chain_restore_block_is_consensus_backed_on_disk(
                     bi, ctx->datadir)) {
                 if (utxo_recovery_commit_tip(
-                        ctx, bi, "best_have_data", true).ok) {
+                        ctx, &bi, "best_have_data", true, false).ok) {
                     printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
-                           max_h);
+                           bi->nHeight);
                 }
             } else if (bi) {
                 LOG_INFO("chain", "RECOVERY: UTXO-derived tip h=%d is not disk-backed; " "not setting active tip", max_h);
@@ -460,7 +488,9 @@ static bool reset_to_genesis(struct utxo_recovery_ctx *ctx)
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (genesis) {
-        if (!utxo_recovery_commit_tip(ctx, genesis, "fresh_genesis", true).ok)
+        struct block_index *commit_blk = genesis;
+        if (!utxo_recovery_commit_tip(ctx, &commit_blk, "fresh_genesis",
+                                      true, false).ok)
             return false;
     } else {
         LOG_WARN("utxo_recovery",
@@ -661,8 +691,8 @@ struct recovery_exec_result utxo_recovery_execute(
                        vr->chain_height, vr->coins_height,
                        vr->chain_height - vr->coins_height);
                 if (!utxo_recovery_commit_tip(
-                        ctx, coins_block,
-                        "chain_coins_mismatch_reset", true).ok) {
+                        ctx, &coins_block,
+                        "chain_coins_mismatch_reset", true, false).ok) {
                     res.status = ZCL_ERR(-33,
                         "utxo_recovery_execute: failed to reset chain "
                         "to coins tip h=%d", vr->coins_height);
@@ -692,7 +722,8 @@ struct recovery_exec_result utxo_recovery_execute(
             active_chain_tip(&ctx->state->chain_active);
         if (chain_tip) {
             if (!utxo_recovery_commit_tip(
-                    ctx, chain_tip, "coins_cursor_to_chain_tip", true).ok) {
+                    ctx, &chain_tip, "coins_cursor_to_chain_tip",
+                    true, false).ok) {
                 res.status = ZCL_ERR(-36,
                     "utxo_recovery_execute: failed to reset coins cursor "
                     "to active chain tip h=%d", chain_tip->nHeight);

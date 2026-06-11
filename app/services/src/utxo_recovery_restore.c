@@ -93,46 +93,6 @@ void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
  * so the LDB-import path above can share the single SELECT. */
 static int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx);
 
-static int utxo_recovery_finalized_served_floor(struct uint256 *hash_out,
-                                                bool *have_hash_out)
-{
-    if (hash_out)
-        memset(hash_out, 0, sizeof(*hash_out));
-    if (have_hash_out)
-        *have_hash_out = false;
-
-    sqlite3 *pdb = progress_store_db();
-    if (!pdb)
-        LOG_RETURN(-1, "utxo_recovery",
-                   "served_floor read skipped: progress_store not open");
-
-    sqlite3_stmt *st = NULL;
-    int floor = -1;
-    progress_store_tx_lock();
-    if (sqlite3_prepare_v2(
-            pdb,
-            "SELECT height, tip_hash FROM tip_finalize_log "
-            "WHERE ok=1 ORDER BY height DESC LIMIT 1",
-            -1, &st, NULL) != SQLITE_OK) {
-        progress_store_tx_unlock();
-        LOG_RETURN(-1, "utxo_recovery",
-                   "served_floor read prepare failed: %s",
-                   sqlite3_errmsg(pdb));
-    }
-    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
-        floor = sqlite3_column_int(st, 0);
-        const void *blob = sqlite3_column_blob(st, 1);
-        int blob_len = sqlite3_column_bytes(st, 1);
-        if (hash_out && have_hash_out && blob && blob_len == 32) {
-            memcpy(hash_out->data, blob, 32);
-            *have_hash_out = true;
-        }
-    }
-    sqlite3_finalize(st);
-    progress_store_tx_unlock();
-    return floor;
-}
-
 static bool utxo_recovery_scan_fallback_below_finalized_floor(
     const struct block_index *scan_fallback,
     int *floor_out,
@@ -307,19 +267,25 @@ struct utxo_import_result utxo_recovery_import_ldb(
             uint256_get_hex(&ldb_best, dbg_hex);
 
             if (found && found->nHeight > 0) {
-                /* Block found in index — set as chain tip */
+                /* Block found in index — set as chain tip.
+                 * frontier_exempt: the import carries SHA3-verified snapshot
+                 * evidence and must not be clamped by a stale pre-import
+                 * log; the seed-anchor stamp re-raises the frontier to H. */
+                struct block_index *commit_blk = found;
                 if (utxo_recovery_commit_tip(
-                        ctx, found, "ldb_import_found", true).ok) {
+                        ctx, &commit_blk, "ldb_import_found",
+                        true, true).ok) {
                     printf("LDB import: chain tip at h=%d hash=%s\n",
-                           found->nHeight, dbg_hex);
+                           commit_blk->nHeight, dbg_hex);
                     res.skip_activate = true;
                     snprintf(res.anchor_reason, sizeof(res.anchor_reason),
                              "ldb_import_found");
-                    /* Tip is CSR-committed to (found->nHeight, ldb_best);
-                     * record the durable seed. Count = live utxos rows; height
-                     * = coins_best block height (the block whose hash we seed). */
+                    /* Record the durable seed from the COMMITTED tip (the
+                     * exempt path never clamps, but the seed must attest to
+                     * what was actually installed, not what was proposed).
+                     * Count = live utxos rows. */
                     utxo_recovery_write_cold_import_seed(ctx->ndb,
-                        found->nHeight, &ldb_best,
+                        commit_blk->nHeight, commit_blk->phashBlock,
                         node_db_utxo_count(ctx->ndb));
                 }
             } else if (ldb_height > 0) {
@@ -580,21 +546,38 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             if (utxo_recovery_scan_fallback_below_finalized_floor(
                     scan_fallback, &served_floor, &served_hash,
                     &have_served_hash)) {
-                LOG_WARN("utxo_recovery",
-                         "scan_fallback h=%d below durable finalized floor "
-                         "h=%d; refusing active-tip rollback",
-                         scan_fallback->nHeight, served_floor);
-                res.restored = true;
-                res.restored_height = served_floor;
-                if (have_served_hash)
-                    res.restored_hash = served_hash;
-                res.skip_activate = true;
-                snprintf(res.anchor_reason, sizeof(res.anchor_reason),
-                         "finalized_floor_guard");
-                return res;
+                /* The floor outranks scan_fallback — but only a floor the
+                 * validated header log can BACK is real authority. A floor
+                 * above the frontier is provably unbackable (the 2026-06-11
+                 * wedge fabricated restored_height=floor from exactly this
+                 * shape): rewind it on evidence, then re-read. */
+                int32_t fh = -1;
+                if (utxo_recovery_header_frontier(&fh) && served_floor > fh) {
+                    (void)utxo_recovery_rewind_finalized_floor(
+                        fh, served_floor, "scan_fallback_guard");
+                    served_floor = utxo_recovery_finalized_served_floor(
+                        &served_hash, &have_served_hash);
+                }
+                if (served_floor > scan_fallback->nHeight) {
+                    LOG_WARN("utxo_recovery",
+                             "scan_fallback h=%d below durable finalized floor "
+                             "h=%d; refusing active-tip rollback",
+                             scan_fallback->nHeight, served_floor);
+                    res.restored = true;
+                    res.restored_height = served_floor;
+                    if (have_served_hash)
+                        res.restored_hash = served_hash;
+                    res.skip_activate = true;
+                    snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                             "finalized_floor_guard");
+                    return res;
+                }
+                /* fall through: the floor was unbackable and is now rewound
+                 * at or below scan_fallback — the commit is permitted. */
             }
+            struct block_index *committed = scan_fallback;
             if (utxo_recovery_commit_tip(
-                    ctx, scan_fallback, "scan_fallback", false).ok) {
+                    ctx, &committed, "scan_fallback", false, false).ok) {
                 printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
                        scan_fallback->nHeight);
                 printf("Attempting fast chainstate rebuild from SQLite...\n");
@@ -604,9 +587,9 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                 else
                     printf("Fast rebuild unavailable — will activate from genesis.\n");
                 res.restored = true;
-                res.restored_height = scan_fallback->nHeight;
-                if (scan_fallback->phashBlock)
-                    res.restored_hash = *scan_fallback->phashBlock;
+                res.restored_height = committed->nHeight;
+                if (committed->phashBlock)
+                    res.restored_hash = *committed->phashBlock;
             } else {
                 res.status = ZCL_ERR(-21,
                     "utxo_recovery_restore_chain_tip: scan_fallback commit "
@@ -714,14 +697,30 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             return res;
         }
 
-        if (!utxo_recovery_commit_tip(
-                ctx, restore_tip, "coins_best_restore", true).ok) {
+        struct block_index *committed = restore_tip;
+        struct zcl_result crc = utxo_recovery_commit_tip(
+            ctx, &committed, "coins_best_restore", true, false);
+        if (!crc.ok) {
+            if (crc.code == -47) {
+                /* Invariant A refusal: the candidate is not derivable from
+                 * the validated header frontier and the frontier block is
+                 * absent from the index. Same exit shape as the "no
+                 * consensus-backed ancestor" path above: leave the tip
+                 * un-restored and wait for P2P; the crash-only auto-reindex
+                 * remains the deeper fallback. */
+                LOG_WARN("utxo_recovery", "%s", crc.message);
+                return res;
+            }
             res.status = ZCL_ERR(-22,
                 "utxo_recovery_restore_chain_tip: coins_best_restore commit "
-                "failed h=%d", restore_tip->nHeight);
+                "failed h=%d: %s", restore_tip->nHeight, crc.message);
             LOG_WARN("utxo_recovery", "%s", res.status.message);
             return res;
         }
+        /* The gate may have LOWERED the tip to the frontier ancestor —
+         * everything below (active-chain rebuild, event, result fields)
+         * must describe what was actually INSTALLED. */
+        restore_tip = committed;
         (void)chain_restore_rebuild_active_chain(ctx->state, restore_tip, NULL);
         printf("Restored chain tip from coins DB: height=%d\n",
                restore_tip->nHeight);

@@ -95,7 +95,10 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
 {
     (void)cvtip;
     (void)datadir;
-    if (!cvs->db) return false;
+    /* NULL cvs is a legitimate caller shape (the scan_fallback restore path
+     * can run before coins_view_sqlite is wired) — "rebuild unavailable",
+     * not a crash. */
+    if (!cvs || !cvs->db) return false;
 
     sqlite3_stmt *cnt = NULL;
     if (sqlite3_prepare_v2(cvs->db, "SELECT count(*) FROM utxos",

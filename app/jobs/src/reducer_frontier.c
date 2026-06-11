@@ -432,3 +432,20 @@ bool reducer_frontier_log_frontier(sqlite3 *progress_db,
     *out_h = h;
     return true;
 }
+
+bool reducer_frontier_log_hash_at(sqlite3 *progress_db,
+                                  const char *log_table,
+                                  const char *hash_col,
+                                  int32_t height,
+                                  uint8_t out[32], bool *found)
+{
+    if (!progress_db || !log_table || !hash_col || !out || !found)
+        LOG_FAIL("reducer", "log_hash_at: NULL arg");
+
+    /* Recursive lock: safe whether or not the caller already holds it. */
+    progress_store_tx_lock();
+    bool ok = log_hash_at(progress_db, log_table, hash_col, height,
+                          out, found);
+    progress_store_tx_unlock();
+    return ok;
+}
