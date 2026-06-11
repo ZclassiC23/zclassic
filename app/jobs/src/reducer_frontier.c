@@ -479,27 +479,56 @@ bool reducer_frontier_derive_coins_best(sqlite3 *progress_db,
         int32_t h = applied - 1;
         *out_height = h;
         *found = true;
-        /* Hash rung 1: the hash-bound finalized-tip read production already
-         * trusts (tip_finalize_log ok=1 row co-committed by the reducer). */
-        if (tip_finalize_stage_finalized_tip_at(progress_db, h, out_hash)) {
+        /* Hash witness 1: tip_finalize_log, read CONVENTION-AWARE via
+         * tip_finalize_stage_block_hash_at — the finalized ok=1 row at h-1
+         * carries hash(h) (step_finalize binds the LOOKAHEAD successor into
+         * the row), and an anchor seed row at h carries the block's own
+         * hash(h). Reading the raw row AT h would return hash(h+1) for
+         * finalized rows: the inconsistent (height, hash) authority-pair
+         * shape the 2026-06-11 splice forensic banned (tip_finalize_stage.c
+         * step_finalize publish comment). */
+        uint8_t tf[32];
+        bool tf_found = tip_finalize_stage_block_hash_at(progress_db, h, tf);
+        /* Hash witness 2: validate_headers_log.hash at h (own-hash by
+         * construction) — the Invariant A trust root; covers the <=1-block
+         * pipeline window where utxo_apply leads tip_finalize (Invariant B
+         * bound) and anchor-seeded datadirs whose tip_finalize window is
+         * empty at the frontier. */
+        uint8_t vh[32];
+        bool vh_found = false;
+        if (!log_hash_at(progress_db, "validate_headers_log", "hash",
+                         h, vh, &vh_found)) {
+            ok = false;  /* real DB read error; height outputs stand */
+        } else if (tf_found && vh_found && memcmp(tf, vh, 32) != 0) {
+            /* Hash-identity guard: two durable logs disagreeing about the
+             * SAME height is the don't-guess shape — withhold the hash
+             * LOUDLY rather than install either candidate. The height stays
+             * authoritative; the caller resolves height->hash via its own
+             * index, never the reverse. */
+            static struct log_throttle mismatch_throttle = LOG_THROTTLE_INIT;
+            uint64_t reps = 0;
+            if (log_throttle_should_emit(&mismatch_throttle,
+                                         (uint64_t)(uint32_t)h,
+                                         platform_time_wall_unix(), 300,
+                                         &reps))
+                LOG_WARN("reducer",
+                         "derive_coins_best: cross-log hash mismatch at h=%d "
+                         "(tip_finalize witness %02x%02x%02x%02x.. vs "
+                         "validate_headers %02x%02x%02x%02x..) — hash "
+                         "withheld, height stands repeated=%llu",
+                         h, tf[0], tf[1], tf[2], tf[3],
+                         vh[0], vh[1], vh[2], vh[3],
+                         (unsigned long long)reps);
+        } else if (tf_found) {
+            memcpy(out_hash, tf, 32);
             *hash_found = true;
-        } else {
-            /* Hash rung 2: the <=1-block pipeline window where utxo_apply
-             * leads tip_finalize — validate_headers_log is the Invariant A
-             * trust root for the same height. */
-            uint8_t vh[32];
-            bool vh_found = false;
-            if (!log_hash_at(progress_db, "validate_headers_log", "hash",
-                             h, vh, &vh_found)) {
-                ok = false;  /* real DB read error; height outputs stand */
-            } else if (vh_found) {
-                memcpy(out_hash, vh, 32);
-                *hash_found = true;
-            }
-            /* Neither rung resolving is SUCCESS with *hash_found=false:
-             * the height stays authoritative; the caller resolves
-             * height->hash via its own index, never the reverse. */
+        } else if (vh_found) {
+            memcpy(out_hash, vh, 32);
+            *hash_found = true;
         }
+        /* Neither witness resolving is SUCCESS with *hash_found=false:
+         * the height stays authoritative; the caller resolves
+         * height->hash via its own index, never the reverse. */
     }
 
     progress_store_tx_unlock();

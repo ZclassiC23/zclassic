@@ -624,6 +624,45 @@ bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
     return true;
 }
 
+bool tip_finalize_stage_block_hash_at(sqlite3 *db, int height,
+                                      uint8_t out_hash[32])
+{
+    if (!db || !out_hash || height < 0)
+        return false;
+    progress_store_tx_lock();
+
+    /* FINALIZED convention (step_finalize): the ok=1 row at height-1 binds
+     * the LOOKAHEAD new_tip = active_chain_at(height), so its tip_hash IS
+     * this height's own hash. An anchor row at height-1 carries hash(height-1)
+     * (the seed's own hash) and must be skipped here — exactly the
+     * finalized_row_active_match discrimination. */
+    if (height > 0) {
+        struct finalized_tip_row prev;
+        if (finalized_tip_row_at(db, height - 1, &prev) &&
+            prev.found && prev.ok && prev.has_tip_hash && !prev.is_anchor) {
+            memcpy(out_hash, prev.tip_hash.data, 32);
+            progress_store_tx_unlock();
+            return true;
+        }
+    }
+
+    /* ANCHOR convention (tip_finalize_stage_seed_anchor): a seed row at
+     * height carries the block's OWN hash. A finalized row at height carries
+     * hash(height+1) — the successor's hash — and must NOT be returned as
+     * this height's hash (the off-by-one authority-pair shape the 2026-06-11
+     * splice forensic banned). */
+    struct finalized_tip_row own;
+    if (finalized_tip_row_at(db, height, &own) &&
+        own.found && own.ok && own.has_tip_hash && own.is_anchor) {
+        memcpy(out_hash, own.tip_hash.data, 32);
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    progress_store_tx_unlock();
+    return false;
+}
+
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *user)
 {
     pthread_mutex_lock(&g_lock);

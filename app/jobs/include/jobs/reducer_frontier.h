@@ -130,15 +130,21 @@ bool reducer_frontier_log_coverage_floor(
  * consulted here.
  *
  * Height: *out_height = coins_applied_height - 1.
- * Hash, two rungs (durable-log readers only):
- *   1. tip_finalize_log finalized ok=1 tip_hash at that height (the read
- *      production already trusts in chain_state_validator Case 3b);
- *   2. validate_headers_log.hash at that height — covers the <=1-block
- *      pipeline window where utxo_apply leads tip_finalize (Invariant B
- *      bound); the Invariant A trust root.
- * Neither resolving => *hash_found=false; the HEIGHT stays authoritative
- * (callers may resolve height->hash via their own block index, never the
- * reverse).
+ * Hash, two durable-log witnesses (SELECT-only):
+ *   1. tip_finalize_log read CONVENTION-AWARE (tip_finalize_stage_block_hash_at,
+ *      jobs/tip_finalize_stage.h): a finalized ok=1 row at h-1 carries the
+ *      LOOKAHEAD hash(h); an anchor seed row at h carries the block's own
+ *      hash(h). (The raw row AT h carries hash(h+1) for finalized rows —
+ *      reading it as "hash at h" is the inconsistent authority-pair shape
+ *      the 2026-06-11 splice forensic banned.)
+ *   2. validate_headers_log.hash at that height (own-hash by construction) —
+ *      covers the <=1-block pipeline window where utxo_apply leads
+ *      tip_finalize (Invariant B bound); the Invariant A trust root.
+ * When BOTH witnesses resolve they must byte-agree; a cross-log mismatch is
+ * a throttled WARN with *hash_found=false (don't guess between durable logs).
+ * Neither resolving => *hash_found=false; either way the HEIGHT stays
+ * authoritative (callers may resolve height->hash via their own block index,
+ * never the reverse).
  *
  * *found requires the PROVEN-AUTHORITY predicate (coins_kv_is_proven_authority,
  * storage/coins_kv.h): coins_applied_height present AND the coins_kv migration

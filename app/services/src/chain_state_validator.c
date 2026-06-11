@@ -152,12 +152,17 @@ struct boot_validation_result validate_coins_chain_agreement(
      * the climb).
      *
      * STRICTLY guarded so it can never mask real corruption: AGREE only when the
-     * active tip's (height,hash) BYTE-MATCHES the durable finalized tip (read via
-     * the same accessor block_index_loader_rebuild uses to seed the tip, so the
-     * lookahead/anchor convention is handled), AND coins.db is found behind-or-
-     * equal. coins.db AHEAD of the finalized tip, or not in the index, falls
-     * through to the Case-4 reset/wipe path unchanged. Read is safe here:
-     * progress_store_open (boot.c:1581) precedes this validator (boot.c:2734). */
+     * active tip's (height,hash) BYTE-MATCHES the durable finalized tip. NOTE on
+     * the tip_finalize_log hash conventions (tip_finalize_log_store.h): the RAW
+     * row at fin_cursor-1 read here carries the block's OWN hash only for
+     * status='anchor' seed rows; a runtime 'finalized' row carries the LOOKAHEAD
+     * hash(fin_cursor), so for those this byte-match can never succeed and the
+     * branch harmlessly falls through to Case 4 — fail-safe (never a false
+     * AGREE), anchor-only by construction. A convention-aware read for "hash of
+     * the block AT h" exists as tip_finalize_stage_block_hash_at. coins.db AHEAD
+     * of the finalized tip, or not in the index, falls through to the Case-4
+     * reset/wipe path unchanged. Read is safe here: progress_store_open
+     * (boot.c:1581) precedes this validator (boot.c:2734). */
     if (chain_tip->phashBlock) {
         sqlite3 *pdb = progress_store_db();
         uint64_t fin_cursor = pdb

@@ -197,19 +197,109 @@ static int cbd_unit_unproven_authority(void)
     return failures;
 }
 
+/* PRODUCTION write convention (tip_finalize_stage.c step_finalize): the
+ * "finalized" ok=1 row at height X stores the LOOKAHEAD hash(X+1) — the
+ * step binds new_tip = active_chain_at(X+1) into the row at X. Only
+ * status='anchor' seed rows store the block's OWN hash (row X -> hash(X)).
+ * The derivation must therefore find hash(h) in the finalized row at h-1,
+ * NEVER in the raw row at h (whose blob is hash(h+1) — the off-by-one this
+ * suite regression-pins). */
 static int cbd_unit_finalized_rung(void)
 {
     int failures = 0;
     const int32_t H = CBD_H;
-    TEST("cbd: applied=H+1 + finalized ok=1 row at H -> height=H, tip_hash") {
+    TEST("cbd: production finalized rows (row X -> hash X+1) -> derived "
+         "hash is hash(H), not hash(H+1)") {
         sqlite3 *db = NULL;
         ASSERT(sqlite3_open(":memory:", &db) == SQLITE_OK);
         ASSERT(cbd_build_progress_schema(db));
         ASSERT(cbd_mark_canonical(db));
         ASSERT(cbd_set_applied(db, (int64_t)H + 1));
+        uint8_t want[32], succ[32];
+        cbd_hash(want, H, 0x11);       /* hash of block H   */
+        cbd_hash(succ, H + 1, 0x12);   /* hash of block H+1 */
+        /* Fully-caught-up production shape: finalized row at H-1 carries
+         * hash(H); finalized row at H carries hash(H+1). NO validate_headers
+         * row, so ONLY the tip_finalize witness can resolve. */
+        ASSERT(cbd_put_tip_finalize(db, H - 1, 1, want, "finalized"));
+        ASSERT(cbd_put_tip_finalize(db, H, 1, succ, "finalized"));
+        int32_t height = -2;
+        uint8_t hash[32];
+        bool hf = false, found = false;
+        ASSERT(reducer_frontier_derive_coins_best(db, &height, hash,
+                                                  &hf, &found));
+        ASSERT(found);
+        ASSERT(height == H);
+        ASSERT(hf);
+        ASSERT(memcmp(hash, want, 32) == 0);   /* hash(H)        */
+        ASSERT(memcmp(hash, succ, 32) != 0);   /* NEVER hash(H+1) */
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The ANCHOR convention: a status='anchor' seed row at H carries the block's
+ * OWN hash(H) and is the valid witness AT h. An anchor at h-1 carries
+ * hash(h-1) and must NOT be misread as hash(h). */
+static int cbd_unit_anchor_rung(void)
+{
+    int failures = 0;
+    const int32_t H = CBD_H;
+    TEST("cbd: anchor row at H witnesses hash(H); anchor at H-1 does NOT") {
+        sqlite3 *db = NULL;
+        ASSERT(sqlite3_open(":memory:", &db) == SQLITE_OK);
+        ASSERT(cbd_build_progress_schema(db));
+        ASSERT(cbd_mark_canonical(db));
+        ASSERT(cbd_set_applied(db, (int64_t)H + 1));
+
+        /* (a) only an anchor at H-1 (carries hash(H-1)): no witness for h=H,
+         * so hash_found=false while the height stays authoritative. */
+        uint8_t prev_own[32];
+        cbd_hash(prev_own, H - 1, 0x21);
+        ASSERT(cbd_put_tip_finalize(db, H - 1, 1, prev_own, "anchor"));
+        int32_t height = -2;
+        uint8_t hash[32];
+        bool hf = true, found = false;
+        ASSERT(reducer_frontier_derive_coins_best(db, &height, hash,
+                                                  &hf, &found));
+        ASSERT(found && height == H);
+        ASSERT(!hf);
+
+        /* (b) anchor at H (carries hash(H)): the witness. */
         uint8_t want[32];
-        cbd_hash(want, H, 0x11);
-        ASSERT(cbd_put_tip_finalize(db, H, 1, want, "ok"));
+        cbd_hash(want, H, 0x22);
+        ASSERT(cbd_put_tip_finalize(db, H, 1, want, "anchor"));
+        hf = false; found = false;
+        ASSERT(reducer_frontier_derive_coins_best(db, &height, hash,
+                                                  &hf, &found));
+        ASSERT(found && height == H);
+        ASSERT(hf);
+        ASSERT(memcmp(hash, want, 32) == 0);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int cbd_unit_pipeline_window(void)
+{
+    int failures = 0;
+    const int32_t H = CBD_H;
+    TEST("cbd: empty tip_finalize window at frontier -> validate_headers "
+         "hash (the 2026-06-11 wave2-proof fixture shape)") {
+        sqlite3 *db = NULL;
+        ASSERT(sqlite3_open(":memory:", &db) == SQLITE_OK);
+        ASSERT(cbd_build_progress_schema(db));
+        ASSERT(cbd_mark_canonical(db));
+        ASSERT(cbd_set_applied(db, (int64_t)H + 1));
+        /* tip_finalize has NOT reached the frontier: no ok=1 rows at H-1/H
+         * (only a non-witnessing ok=0 row, hash NULL, like a real
+         * reorg_detected entry). validate_headers_log supplies hash(H). */
+        ASSERT(cbd_put_tip_finalize(db, H - 1, 0, NULL, "reorg_detected"));
+        uint8_t want[32];
+        cbd_hash(want, H, 0x33);
+        ASSERT(cbd_put_validate_headers(db, H, 1, want));
         int32_t height = -2;
         uint8_t hash[32];
         bool hf = false, found = false;
@@ -225,32 +315,44 @@ static int cbd_unit_finalized_rung(void)
     return failures;
 }
 
-static int cbd_unit_pipeline_window(void)
+/* Cross-log identity guard: when BOTH witnesses resolve they must byte-agree;
+ * a mismatch withholds the hash (hash_found=false) instead of guessing —
+ * the height stays authoritative either way. */
+static int cbd_unit_cross_log_guard(void)
 {
     int failures = 0;
     const int32_t H = CBD_H;
-    TEST("cbd: pipeline window — no finalized row, validate_headers hash") {
+    TEST("cbd: cross-log agreement -> hash; mismatch -> hash withheld") {
         sqlite3 *db = NULL;
         ASSERT(sqlite3_open(":memory:", &db) == SQLITE_OK);
         ASSERT(cbd_build_progress_schema(db));
         ASSERT(cbd_mark_canonical(db));
         ASSERT(cbd_set_applied(db, (int64_t)H + 1));
-        /* tip_finalize lags (Invariant B <=1-block window): row only at H-1 */
-        uint8_t stale[32];
-        cbd_hash(stale, H - 1, 0x22);
-        ASSERT(cbd_put_tip_finalize(db, H - 1, 1, stale, "ok"));
         uint8_t want[32];
-        cbd_hash(want, H, 0x33);
+        cbd_hash(want, H, 0x41);
+        ASSERT(cbd_put_tip_finalize(db, H - 1, 1, want, "finalized"));
         ASSERT(cbd_put_validate_headers(db, H, 1, want));
+
+        /* (a) both witnesses agree -> hash resolved. */
         int32_t height = -2;
         uint8_t hash[32];
         bool hf = false, found = false;
         ASSERT(reducer_frontier_derive_coins_best(db, &height, hash,
                                                   &hf, &found));
-        ASSERT(found);
-        ASSERT(height == H);
-        ASSERT(hf);
+        ASSERT(found && height == H && hf);
         ASSERT(memcmp(hash, want, 32) == 0);
+
+        /* (b) validate_headers now claims a DIFFERENT block at H (stale
+         * finalized row across a reorg): don't guess — hash withheld,
+         * success, height stands. */
+        uint8_t other[32];
+        cbd_hash(other, H, 0x42);
+        ASSERT(cbd_put_validate_headers(db, H, 1, other));
+        hf = true; found = false;
+        ASSERT(reducer_frontier_derive_coins_best(db, &height, hash,
+                                                  &hf, &found));
+        ASSERT(found && height == H);
+        ASSERT(!hf);
         sqlite3_close(db);
         PASS();
     } _test_next:;
@@ -293,7 +395,8 @@ static int cbd_unit_recursive_lock(void)
         ASSERT(cbd_set_applied(db, (int64_t)H + 1));
         uint8_t want[32];
         cbd_hash(want, H, 0x44);
-        ASSERT(cbd_put_tip_finalize(db, H, 1, want, "ok"));
+        /* Production convention: the finalized row at H-1 carries hash(H). */
+        ASSERT(cbd_put_tip_finalize(db, H - 1, 1, want, "finalized"));
         progress_store_tx_lock();
         int32_t height = -2;
         uint8_t hash[32];
@@ -416,7 +519,13 @@ static int cbd_drift_test(void)
         ASSERT(cbd_set_applied(pdb, (int64_t)H + 1));
         uint8_t want[32];
         cbd_hash(want, H, 0x55);
-        ASSERT(cbd_put_tip_finalize(pdb, H, 1, want, "ok"));
+        /* Production conventions: finalized row at H-1 carries hash(H);
+         * finalized row at H carries hash(H+1); validate_headers carries
+         * the block's own hash at H. Both witnesses agree on hash(H). */
+        ASSERT(cbd_put_tip_finalize(pdb, H - 1, 1, want, "finalized"));
+        uint8_t succ[32];
+        cbd_hash(succ, H + 1, 0x56);
+        ASSERT(cbd_put_tip_finalize(pdb, H, 1, succ, "finalized"));
         uint8_t vh[32];
         cbd_hash(vh, H, 0x55);
         ASSERT(cbd_put_validate_headers(pdb, H, 1, vh));
@@ -498,7 +607,9 @@ int test_coins_best_derivation(void)
     failures += cbd_unit_absent_key();
     failures += cbd_unit_unproven_authority();
     failures += cbd_unit_finalized_rung();
+    failures += cbd_unit_anchor_rung();
     failures += cbd_unit_pipeline_window();
+    failures += cbd_unit_cross_log_guard();
     failures += cbd_unit_no_hash_rung();
     failures += cbd_unit_recursive_lock();
     failures += cbd_drift_test();
