@@ -301,7 +301,11 @@ int test_chain_state_validator(void)
         struct block_index *tip = chainstate_insert_block_index(
             (struct chainstate *)&ms, &hashes[1]);
         tip->nHeight = 2000;
-        tip->pprev = genesis;
+        /* pprev = NULL: a tip whose pprev label is non-adjacent (genesis
+         * at h=0) is the splice shape the validation-pack linkage check
+         * now (correctly) refuses; this subtest only needs SOME tip at
+         * h=2000 with an unknown coins_best hash. */
+        tip->pprev = NULL;
         tip->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
         tip->nTx = 1;
         tip->nChainTx = 2001;

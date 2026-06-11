@@ -9,6 +9,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "rpc/legacy_rpc_client.h"
+#include "services/mirror_divergence_locator.h"
 #include "services/sync_monitor.h"
 #include "supervisors/legacy_mirror_supervisor.h"
 #include "util/blocker.h"
@@ -471,6 +472,9 @@ void legacy_mirror_sync_reset_for_test(void)
     atomic_store(&g_lms_test_catchup_result, 0);
     atomic_store(&g_lms_test_catchup_clear_stuck, 0);
     atomic_store(&g_lms_test_catchup_calls, 0);
+    /* The divergence locator (check 6) fires from the lms verify path;
+     * its blocker/HOLD/rate-limit must not leak across test cases. */
+    mirror_divergence_reset_for_testing();
 #endif
     mirror_consensus_reset_for_test();
 }

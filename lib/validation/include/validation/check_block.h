@@ -160,4 +160,19 @@ bool contextual_check_block(const struct block *block,
                             const struct block_index *pindex_prev,
                             bool is_ibd);
 
+/* Fail-loud validation pack, check 2 helper: does the BIP34-style height
+ * embedded in `coinbase`'s scriptSig equal `nHeight`? ZClassic embeds the
+ * height unconditionally for every nHeight > 0 (no activation gating);
+ * heights 1-16 may use the OP_N encoding. nHeight <= 0 always matches
+ * (genesis has no embedded height).
+ *
+ * CONSENSUS-NEUTRAL BY CONSTRUCTION (E13): this is a read-only predicate
+ * over OUR label vs the block's own bytes. Callers use a mismatch to HOLD
+ * our pipeline (the label is wrong) — never to reject the block as
+ * invalid; it never touches validation_state / REJECT codes / status
+ * bits. The consensus-side BIP34 rule stays where it always was, inside
+ * contextual_check_block. */
+bool check_block_coinbase_height_matches(const struct transaction *coinbase,
+                                         int nHeight);
+
 #endif

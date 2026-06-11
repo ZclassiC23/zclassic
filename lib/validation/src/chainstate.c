@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "validation/chainstate.h"
+#include "validation/chain_linkage_check.h"
 #include "util/log_macros.h"
 #include "storage/progress_store.h"
 #include <limits.h>
@@ -395,6 +396,15 @@ bool active_chain_move_window_tip(struct active_chain *c, struct block_index *bi
         c->height = -1;
         return true;
     }
+
+    /* Fail-loud validation pack, check 1: O(1) parent-linkage check + the
+     * HOLD latch (refuses moves at/past a detected divergence; rewinds and
+     * repair installs below it always pass). Refusal is crash-only — the
+     * callers all handle false without killing the process. NOT applied to
+     * active_chain_install_tip_slot (the boot/restore repair primitive,
+     * intentionally ungated). */
+    if (!chain_linkage_check_advance(c, bi))
+        return false;
 
     if (!active_chain_fill_window(c, bi))
         return false;

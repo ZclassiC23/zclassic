@@ -18,6 +18,7 @@
 #include "services/block_source_policy.h"
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_state_service.h"
+#include "services/invariant_sentinel.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
 #include "config/runtime.h"
@@ -531,5 +532,26 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                      "operator_needed:%s", detail[0] ? detail : "unspecified");
             snapshot->healthy = false;
         }
+    }
+
+    /* Fail-loud validation pack rollup: false while ANY pack blocker
+     * (linkage/coinbase-label/pair/window/commitment/mirror-divergence/
+     * seed-gate) or the HOLD latch is active. Informational on the
+     * health surface — the HOLD already refuses forward progress and the
+     * pack pages via EV_OPERATOR_NEEDED; we deliberately do NOT flip
+     * snapshot->healthy here (a held node must KEEP serving + keep its
+     * sd_notify heartbeat, not get restart-cycled by systemd). */
+    {
+        char detail[sizeof(snapshot->validation_pack_detail)] = {0};
+        snapshot->validation_pack_ok =
+            invariant_sentinel_healthy(detail, (int)sizeof(detail));
+        snprintf(snapshot->validation_pack_detail,
+                 sizeof(snapshot->validation_pack_detail), "%s", detail);
+        if (!snapshot->validation_pack_ok &&
+            !snapshot->degraded_reason[0])
+            snprintf(snapshot->degraded_reason,
+                     sizeof(snapshot->degraded_reason),
+                     "validation_pack:%s",
+                     detail[0] ? detail : "hold_active");
     }
 }

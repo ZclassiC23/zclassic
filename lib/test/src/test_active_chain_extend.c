@@ -181,8 +181,13 @@ int test_active_chain_extend(void)
         int pre_cap = ms.chain_active.capacity;
         ok = ok && pre != NULL && pre_cap > 0;
 
+        /* pprev = NULL: this synthetic far-jump block exists only to force
+         * an array grow; a non-NULL pprev with a non-adjacent height label
+         * would (correctly) trip the validation-pack label-splice check in
+         * active_chain_move_window_tip. NULL pprev is scoped out and the
+         * fill loop preserves the lower window identically. */
         struct block_index *far = ace_insert(&ms, &far_hashes[0], pre_cap + 100,
-                                             b[7],
+                                             NULL,
                                              BLOCK_HAVE_DATA |
                                              BLOCK_VALID_SCRIPTS);
         ok = ok && far &&
@@ -199,7 +204,7 @@ int test_active_chain_extend(void)
         struct block_index **mid = ms.chain_active.chain;
         int mid_cap = ms.chain_active.capacity;
         struct block_index *far2 = ace_insert(&ms, &far_hashes[1],
-                                              mid_cap + 100, far,
+                                              mid_cap + 100, NULL /* see above */,
                                               BLOCK_HAVE_DATA |
                                               BLOCK_VALID_SCRIPTS);
         ok = ok && far2 &&

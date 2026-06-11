@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
+#include "services/invariant_sentinel.h"
 #include "services/recovery_policy.h"
 #include "models/db_txn.h"
 #include "models/wallet_key.h"
@@ -545,6 +546,15 @@ bool node_db_sync_set_tip(struct node_db *ndb,
 
     if (!hash)
         LOG_FAIL("sync", "sync_set_tip: hash is NULL");
+
+    /* Fail-loud validation pack, check 3(b): the served-tip authority pair
+     * must self-resolve in the blocks projection before it is persisted.
+     * Unknown hash passes (snapshot/import tips land before projection
+     * rows); a hash resolving to a DIFFERENT height refuses the write —
+     * the blocker + page already fired inside the check. Crash-only. */
+    if (!invariant_sentinel_check_pair(ndb, hash, height, "sync_set_tip"))
+        return false;
+
     memset(&ctx, 0, sizeof(ctx));
     memcpy(ctx.hash, hash, sizeof(ctx.hash));
     ctx.height = height;

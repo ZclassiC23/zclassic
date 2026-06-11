@@ -254,6 +254,10 @@ int test_utxo_activation_paused(void)
         struct block_index *b1 = insert_test_block(
             &ms, hashes, 1, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
         b1->nHeight = 1600;
+        /* keep the parent label consistent (1599): a child relabel with a
+         * stale parent label is the splice shape the validation-pack
+         * linkage check now (correctly) refuses at the tip move. */
+        if (b0) b0->nHeight = 1599;
         ok = ok && b0 && b1 &&
              active_chain_move_window_tip(&ms.chain_active, b1);
         condition_engine_set_main_state(&ms);
@@ -285,6 +289,7 @@ int test_utxo_activation_paused(void)
         struct block_index *b1 = insert_test_block(
             &ms, hashes, 1, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
         b1->nHeight = 1700;
+        if (b0) b0->nHeight = 1699; /* consistent parent label (see above) */
         ok = ok && b0 && b1 &&
              active_chain_move_window_tip(&ms.chain_active, b1);
         condition_engine_set_main_state(&ms);

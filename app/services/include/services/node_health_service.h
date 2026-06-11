@@ -125,6 +125,14 @@ struct node_health_snapshot {
      * automatically when the underlying condition clears. */
     bool     operator_needed;
     char     operator_needed_detail[128];
+
+    /* Fail-loud validation pack rollup (services/invariant_sentinel.h):
+     * false while any pack blocker or the chain HOLD latch is active.
+     * detail = the first active pack blocker id. Informational — does
+     * NOT flip `healthy` (a held node keeps serving; the pack already
+     * pages via EV_OPERATOR_NEEDED). */
+    bool     validation_pack_ok;
+    char     validation_pack_detail[64];
 };
 
 void node_health_collect(struct node_health_snapshot *snapshot,

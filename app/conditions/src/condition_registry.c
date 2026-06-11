@@ -26,6 +26,9 @@ void register_tip_fork_stale(void);
 void register_tip_stall_oracle_rebuild(void);
 void register_stale_validate_headers_repair(void);
 void register_reducer_frontier_reconcile_light(void);
+void register_tip_label_divergence(void);
+void register_state_window_inconsistent(void);
+void register_mirror_divergence_located(void);
 
 void condition_registry_register_all(void)
 {
@@ -53,4 +56,7 @@ void condition_registry_register_all(void)
     register_tip_stall_oracle_rebuild();
     register_stale_validate_headers_repair();
     register_reducer_frontier_reconcile_light();
+    register_tip_label_divergence();
+    register_state_window_inconsistent();
+    register_mirror_divergence_located();
 }

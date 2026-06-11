@@ -421,6 +421,16 @@ static bool bip34_check_coinbase_height(const struct transaction *coinbase,
     return memcmp(sig->data, expect, expect_len) == 0;
 }
 
+/* Validation-pack export (see check_block.h): the same parser, exposed as
+ * a consensus-neutral label predicate for the per-connect check. */
+bool check_block_coinbase_height_matches(const struct transaction *coinbase,
+                                         int nHeight)
+{
+    if (!coinbase)
+        return true; /* nothing to compare — caller skips, never holds */
+    return bip34_check_coinbase_height(coinbase, nHeight);
+}
+
 /* ── ContextualCheckBlock (3 checks) ──────────────────────────── */
 
 bool contextual_check_block(const struct block *block,

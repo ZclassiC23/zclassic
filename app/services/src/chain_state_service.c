@@ -7,6 +7,7 @@
 
 #include "config/db_service.h"
 #include "event/event.h"
+#include "services/invariant_sentinel.h"
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -452,6 +453,11 @@ static void csr_emit_rejected_event(struct chain_state_repository *csr,
     event_emitf(EV_CHAIN_TIP_REJECTED, 0,
                 "code=%s from=%d to=%d reason=%s",
                 csr_result_name(rc), from_height, to_h, reason);
+    /* Validation pack check 3(a): csr Step 4 already REFUSED the pair —
+     * surface it as the typed authority-pair blocker + one page so it
+     * can never stay a quiet reject counter (no second refusal here). */
+    if (rc == CSR_REJECTED_HASH_MISMATCH)
+        invariant_sentinel_pair_violation("csr_commit", to_h, -1);
 }
 
 /* ── Public API ─────────────────────────────────────────────── */

@@ -6,6 +6,7 @@
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
 #include "services/block_index_integrity.h"
+#include "services/invariant_sentinel.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "chain/chain.h"
@@ -353,6 +354,10 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
                 pindex->pprev = by_height[pindex->nHeight - 1]; /* fallback */
                 printf("WARNING: pprev for height %d resolved via height fallback "
                        "(prev_hash not found in block_map)\n", pindex->nHeight);
+                /* Validation pack: a by-height fallback is exactly the
+                 * ambiguity a label splice exploits — counted so it
+                 * surfaces in zcl_state subsystem=validation_pack. */
+                invariant_sentinel_note_loader_height_fallback();
             }
         }
     }

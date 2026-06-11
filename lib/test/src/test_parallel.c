@@ -178,6 +178,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(proof_validate_stage) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
+    X(chain_linkage_check) X(invariant_sentinel) \
+    X(seed_integrity_gate) X(mirror_divergence_locator) \
     X(log_throttle) \
     X(reducer_frontier_reconcile_light) \
     X(reducer_stage_fuzz) \

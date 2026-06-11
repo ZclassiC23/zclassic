@@ -316,6 +316,9 @@ int test_condition_engine(void)
             "tip_stall_oracle_rebuild",
             "stale_validate_headers_repair",
             "reducer_frontier_reconcile_light",
+            "tip_label_divergence",
+            "state_window_inconsistent",
+            "mirror_divergence_located",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

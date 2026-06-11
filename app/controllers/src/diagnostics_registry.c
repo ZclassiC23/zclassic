@@ -50,6 +50,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_repair_coin_backfill.h"
 #include "services/chain_tip_watchdog.h"
+#include "services/invariant_sentinel.h"
 #include "framework/condition.h"
 #include "storage/block_index_projection.h"
 #include "storage/mempool_projection.h"
@@ -523,6 +524,11 @@ static const struct dump_entry g_dumpers[] = {
     { "block_index_projection", block_index_projection_dump_state_json,
                      "block_index_projection: cursor, entry count, "
                      "events consumed, replace collisions, last catch_up_ms" },
+    { "validation_pack", invariant_sentinel_dump_state_json,
+                     "fail-loud validation pack: HOLD latch, per-connect "
+                     "linkage + coinbase-label checks, authority-pair "
+                     "self-check, window sweep, commitment audit, seed "
+                     "gate, mirror divergence locator" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

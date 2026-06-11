@@ -66,7 +66,11 @@ int test_snapshot_complete_resume_condition(void)
         h0.data[0] = 1;
         h1.data[0] = 2;
         genesis.phashBlock = &h0;
-        genesis.nHeight = 0;
+        /* The snap tip's parent must carry the ADJACENT height label: in a
+         * real snapshot activation the parent is the synced header at
+         * h-1, and the validation-pack linkage check now (correctly)
+         * refuses a tip whose pprev label is non-adjacent. */
+        genesis.nHeight = 1999;
         snap.phashBlock = &h1;
         snap.nHeight = 2000;
         snap.pprev = &genesis;
