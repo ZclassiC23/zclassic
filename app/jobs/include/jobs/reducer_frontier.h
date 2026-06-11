@@ -121,4 +121,56 @@ bool reducer_frontier_log_coverage_floor(
     bool *found                     /* OUT: table has at least one row */
 );
 
+/* Derive the coins-best fact from progress.kv's own co-committed state.
+ * THE derivation (wave 2 of docs/work/canonical-frontier-derived-state-plan.md
+ * step 6): the answer is computed from coins_applied_height — co-committed in
+ * the SAME BEGIN IMMEDIATE as every coin mutation + utxo_apply cursor move
+ * (storage/coins_kv.h) — never from the separately-written node_state
+ * 'coins_best_block' key, which is a CACHE that can drift and is never
+ * consulted here.
+ *
+ * Height: *out_height = coins_applied_height - 1.
+ * Hash, two durable-log witnesses (SELECT-only):
+ *   1. tip_finalize_log read CONVENTION-AWARE (tip_finalize_stage_block_hash_at,
+ *      jobs/tip_finalize_stage.h): a finalized ok=1 row at h-1 carries the
+ *      LOOKAHEAD hash(h); an anchor seed row at h carries the block's own
+ *      hash(h). (The raw row AT h carries hash(h+1) for finalized rows —
+ *      reading it as "hash at h" is the inconsistent authority-pair shape
+ *      the 2026-06-11 splice forensic banned.)
+ *   2. validate_headers_log.hash at that height (own-hash by construction) —
+ *      covers the <=1-block pipeline window where utxo_apply leads
+ *      tip_finalize (Invariant B bound); the Invariant A trust root.
+ * When BOTH witnesses resolve they must byte-agree; a cross-log mismatch is
+ * a throttled WARN with *hash_found=false (don't guess between durable logs).
+ * Neither resolving => *hash_found=false; either way the HEIGHT stays
+ * authoritative (callers may resolve height->hash via their own block index,
+ * never the reverse).
+ *
+ * *found requires the PROVEN-AUTHORITY predicate (coins_kv_is_proven_authority,
+ * storage/coins_kv.h): coins_applied_height present AND the coins_kv migration
+ * stamp set AND a non-empty set — the same three rungs the L1 torn-anchor heal
+ * demands. *found=false (success, not error) on pre-migration / virgin
+ * datadirs and on authority-proof read errors — callers then fall back to
+ * their stricter labeled legacy gates. Returns false only on a real DB read
+ * error in the hash rungs. SELECT-only; acquires progress_store_tx_lock()
+ * itself (recursive). */
+bool reducer_frontier_derive_coins_best(
+    sqlite3 *progress_db,     /* progress.kv handle */
+    int32_t *out_height,      /* OUT: coins_applied_height - 1 */
+    uint8_t  out_hash[32],    /* OUT: hash at that height when *hash_found */
+    bool    *hash_found,      /* OUT: hash resolved from a durable log */
+    bool    *found);          /* OUT: coins_applied_height present */
+
+/* Convenience form over the SINGLETON progress store (progress_store_db()):
+ * one cheap point-read at each decision point — derive, don't cache.
+ * Returns true iff the store is open AND coins_applied_height is present
+ * (the canonical-datadir signal: every legacy node_state/mirror anchor is
+ * a mere cache). false => legacy datadir / store closed / read error — the
+ * caller keeps its labeled legacy fallback. out_hash and out_hash_found
+ * may be NULL when only the height is needed. */
+bool reducer_frontier_derive_coins_best_now(
+    int32_t *out_height,      /* OUT: coins_applied_height - 1 */
+    uint8_t  out_hash[32],    /* OUT (nullable): hash when *out_hash_found */
+    bool    *out_hash_found); /* OUT (nullable): hash from a durable log */
+
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_H */

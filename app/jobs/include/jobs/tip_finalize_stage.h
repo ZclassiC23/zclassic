@@ -41,6 +41,23 @@ struct sqlite3;
 bool tip_finalize_stage_finalized_tip_at(struct sqlite3 *db, int height,
                                          uint8_t out_hash[32]);
 
+/* CONVENTION-AWARE read of the hash of the block AT `height` as witnessed by
+ * tip_finalize_log. The table stores TWO conventions (see
+ * finalized_row_active_match in tip_finalize_stage.c):
+ *   - a FINALIZED ok=1 row at height X carries the LOOKAHEAD hash(X+1)
+ *     (step_finalize binds new_tip = active_chain_at(X+1) into the row at X);
+ *   - an ANCHOR seed row at height X carries the block's OWN hash(X).
+ * So hash(height) is witnessed by EITHER the finalized row at height-1 OR an
+ * anchor row at height. tip_finalize_stage_finalized_tip_at (above) returns
+ * the RAW row blob at `height` — hash(height+1) for finalized rows — which is
+ * correct only for callers that want "the tip the cursor restored to", never
+ * for "the hash of block `height`". Use THIS accessor for the latter.
+ * Returns true and fills out_hash iff a witness row (ok=1 + 32-byte hash, in
+ * the right convention) exists. `db` is the progress store handle; acquires
+ * progress_store_tx_lock() itself (recursive). SELECT-only. */
+bool tip_finalize_stage_block_hash_at(struct sqlite3 *db, int height,
+                                      uint8_t out_hash[32]);
+
 /* Cold-start fast_sync seed: durably record the snapshot anchor at
  * `height` (hash) as a finalized tip in tip_finalize_log and advance the
  * stage cursor to height+1, so the next boot_rebuild_from_log restores

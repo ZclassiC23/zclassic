@@ -164,12 +164,10 @@ struct chain_state_clear_commit {
     const char         *reason;             /* logged; required */
 };
 
-struct chain_state_coins_best_repair {
-    struct uint256      new_coins_best;      /* required concrete coins cursor */
-    const struct chain_state_rollback_authorization
-                       *repair_auth;        /* required typed repair auth */
-    const char         *reason;             /* logged; required */
-};
+/* (wave-2 deletion) struct chain_state_coins_best_repair +
+ * csr_repair_set_coins_best removed — the coins-best fact is DERIVED
+ * (jobs/reducer_frontier.h reducer_frontier_derive_coins_best), never
+ * hand-installed. */
 
 /* ── Lifecycle ─────────────────────────────────────────────────
  * Pass NULL for any source you don't have wired up yet — the
@@ -213,9 +211,6 @@ enum csr_result csr_commit_header_tip(
 enum csr_result csr_clear_active_tip(
     struct chain_state_repository *csr,
     const struct chain_state_clear_commit *commit);
-enum csr_result csr_repair_set_coins_best(
-    struct chain_state_repository *csr,
-    const struct chain_state_coins_best_repair *repair);
 bool csr_restore_in_memory_view(struct chain_state_repository *csr,
                                 struct block_index *old_tip,
                                 struct block_index *old_header,

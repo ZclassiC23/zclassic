@@ -747,56 +747,8 @@ static int t_clear_active_tip_requires_typed_auth(void)
     return failures;
 }
 
-static int t_coins_best_repair_requires_typed_auth(void)
-{
-    int failures = 0;
-    struct chain_state_repository csr;
-    struct csr_fixture f; csr_fix_init(&f);
-    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
-    struct block_index *tip = csr_fix_add(&f, 0x2a);
-    struct uint256 before;
-    struct uint256 after;
-    struct uint256 repair_hash;
-
-    struct chain_state_commit c = csr_make_commit(tip, "unit.set_tip");
-    bool ok = csr_commit_tip(&csr, &c) == CSR_OK;
-    coins_view_cache_get_best_block(&f.coins_tip, &before);
-    memset(&repair_hash, 0x7a, sizeof(repair_hash));
-
-    struct chain_state_coins_best_repair no_auth = {
-        .new_coins_best = repair_hash,
-        .repair_auth = NULL,
-        .reason = "unit.repair_without_auth",
-    };
-    ok = ok && csr_repair_set_coins_best(&csr, &no_auth) ==
-         CSR_REJECTED_ROLLBACK_AUTH;
-    coins_view_cache_get_best_block(&f.coins_tip, &after);
-    ok = ok && memcmp(before.data, after.data, 32) == 0;
-
-    struct chain_state_rollback_authorization auth = {
-        .source = CSR_ROLLBACK_SOURCE_REINDEX,
-        .decision = POLICY_ALLOW,
-        .from_height = 0,
-        .to_height = 0,
-        .max_depth = 0,
-        .evidence_class = "unit_reindex_replay",
-        .reason = "authorized_coins_best_repair",
-    };
-    struct chain_state_coins_best_repair repair = {
-        .new_coins_best = repair_hash,
-        .repair_auth = &auth,
-        .reason = "unit.repair_authorized",
-    };
-    ok = ok && csr_repair_set_coins_best(&csr, &repair) == CSR_OK;
-    coins_view_cache_get_best_block(&f.coins_tip, &after);
-    ok = ok && memcmp(repair_hash.data, after.data, 32) == 0;
-    ok = ok && active_chain_height(&f.chain) == 0;
-
-    CSR_RUN("csr: coins-best repair requires typed auth", ok);
-    csr_free(&csr);
-    csr_fix_free(&f);
-    return failures;
-}
+/* (wave-2 deletion) t_coins_best_repair_requires_typed_auth removed with
+ * csr_repair_set_coins_best — the coins-best fact is derived, not repaired. */
 
 static int t_extend_chain(void)
 {
@@ -1476,7 +1428,6 @@ int test_chain_state_repo(void)
     failures += t_header_chainwork_ranked();
     failures += t_header_zero_work_falls_back_to_height();
     failures += t_clear_active_tip_requires_typed_auth();
-    failures += t_coins_best_repair_requires_typed_auth();
     failures += t_extend_chain();
     failures += t_sql_stale_index();
     failures += t_sql_stale_index_forward_step_bypass();

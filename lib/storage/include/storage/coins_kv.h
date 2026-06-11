@@ -136,8 +136,31 @@ bool coins_kv_set_applied_height_in_tx(struct sqlite3 *db, int32_t height);
 
 /* Read the applied frontier. *found is false (a clean "unknown") when the row
  * is absent — a fresh / un-synced datadir reports ABSENT, never 0-as-applied.
- * Returns false only on a hard read error (db NULL / malformed blob). */
+ * Returns false only on a hard read error (db NULL / malformed blob).
+ *
+ * THE coins-best derivation lives at
+ * app/jobs/include/jobs/reducer_frontier.h reducer_frontier_derive_coins_best
+ * (coins-best height = this value - 1; hash from the durable stage logs).
+ * The node_state 'coins_best_block' key is a CACHE of that derivation. */
 bool coins_kv_get_applied_height(struct sqlite3 *db, int32_t *out, bool *found);
+
+/* One-shot migration stamp: set when coins_kv provably holds the live coin
+ * set (fresh-sync forward population, projection bulk-copy, or
+ * coins_kv_seed_from_node_db). Written by coins_kv_boot_rebuild.c / the
+ * seed path; read by the proven-authority predicate below. */
+#define COINS_KV_MIGRATION_COMPLETE_KEY "coins_kv_migration_complete"
+
+/* THE proven-authority predicate — true iff coins_kv is the CANONICAL coin
+ * store on this datadir (the wave-2 "canonical datadir" signal; the same
+ * three rungs the L1 torn-anchor heal requires):
+ *   (1) coins_applied_height present (durable applied frontier);
+ *   (2) COINS_KV_MIGRATION_COMPLETE_KEY == 1 (the store provably holds the
+ *       live set — a cursor-backfilled frontier alone is NOT proof);
+ *   (3) coins_kv_count > 0.
+ * On true, *out_applied (nullable) receives the applied frontier. Read
+ * errors return false — degrading to the STRICTER legacy gates, never the
+ * permissive derived path. SELECT-only. */
+bool coins_kv_is_proven_authority(struct sqlite3 *db, int32_t *out_applied);
 
 /* One-time idempotent boot backfill for existing datadirs that predate this
  * key: if coins_applied_height is ABSENT, seed it (in its OWN BEGIN IMMEDIATE —

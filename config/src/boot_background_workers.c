@@ -30,6 +30,7 @@
 #include "services/chain_activation_service.h"
 #include "services/chain_state_service.h"
 #include "services/hodl_history_service.h"
+#include "jobs/reducer_frontier.h"
 #include "chain/chainparams.h"
 #include "core/uint256.h"
 #include "coins/coins_view.h"
@@ -609,12 +610,31 @@ static void *background_utxo_replay(void *arg)
      * the snapshot's UTXOs include block 1's unspent coinbase. */
     struct node_db *ndb_restore = boot_node_db(svc);
     if (ndb_restore && ndb_restore->open) {
-        uint8_t cb_buf[32] = {0};
-        size_t cb_len = 0;
-        if (node_db_state_get(ndb_restore, "coins_best_block",
-                              cb_buf, sizeof(cb_buf), &cb_len) && cb_len == 32) {
-            struct uint256 cb_hash;
-            memcpy(cb_hash.data, cb_buf, 32);
+        /* Wave 2: locate the snapshot block from the DERIVED coins-best
+         * (coins_kv's own co-committed state) first; the node_state
+         * 'coins_best_block' key is only the legacy (!found) fallback. */
+        struct uint256 cb_hash;
+        uint256_set_null(&cb_hash);
+        const char *cb_evidence = "snapshot_coins_best_block";
+        {
+            int32_t d_h = -1;
+            uint8_t d_hash[32];
+            bool d_hf = false;
+            if (reducer_frontier_derive_coins_best_now(&d_h, d_hash,
+                                                       &d_hf) && d_hf) {
+                memcpy(cb_hash.data, d_hash, 32);
+                cb_evidence = "derived_coins_best";
+            }
+        }
+        if (uint256_is_null(&cb_hash)) {
+            uint8_t cb_buf[32] = {0};
+            size_t cb_len = 0;
+            if (node_db_state_get(ndb_restore, "coins_best_block",
+                                  cb_buf, sizeof(cb_buf), &cb_len) &&
+                cb_len == 32)
+                memcpy(cb_hash.data, cb_buf, 32);
+        }
+        {
             if (!uint256_is_null(&cb_hash)) {
                 struct block_index *snap_block = block_map_find(
                     &svc->state->map_block_index, &cb_hash);
@@ -626,7 +646,7 @@ static void *background_utxo_replay(void *arg)
                             &svc->state->chain_active),
                         .to_height = snap_block->nHeight,
                         .max_depth = INT64_MAX,
-                        .evidence_class = "snapshot_coins_best_block",
+                        .evidence_class = cb_evidence,
                         .reason = "utxo_replay_snapshot_restore",
                     };
                     struct chain_state_commit commit = {

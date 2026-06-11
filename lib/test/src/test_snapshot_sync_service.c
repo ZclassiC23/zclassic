@@ -911,14 +911,12 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
                                   coins_best_block,
                                   sizeof(coins_best_block),
                                   &best_block_len));
-        ASSERT(node_db_state_get(&ndb, "snapshot_pending_coins_best_block",
-                                 coins_best_block,
-                                 sizeof(coins_best_block),
-                                 &best_block_len));
-        ASSERT(best_block_len == sizeof(coins_best_block));
-        ASSERT(memcmp(coins_best_block,
-                      svc.offered_block_hash,
-                      sizeof(coins_best_block)) == 0);
+        /* wave 2: the write-only 'snapshot_pending_coins_best_*' key family
+         * was deleted — finalize must no longer write it. */
+        ASSERT(!node_db_state_get(&ndb, "snapshot_pending_coins_best_block",
+                                  coins_best_block,
+                                  sizeof(coins_best_block),
+                                  &best_block_len));
         ASSERT(!node_db_state_get(&ndb, "cec.snapshot_evidence",
                                   cec_snapshot_evidence,
                                   sizeof(cec_snapshot_evidence),

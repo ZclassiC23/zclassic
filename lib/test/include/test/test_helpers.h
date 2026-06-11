@@ -439,6 +439,7 @@ int test_schema_migration(void);
 int test_db_migration_idempotent(void);
 int test_coins_view_atomicity(void);
 int test_coins_anchor_reconcile_all(void);
+int test_coins_best_derivation(void);
 int test_chain_stall_repro(void);
 int test_make_lint_gates(void);
 int test_multisig(void);

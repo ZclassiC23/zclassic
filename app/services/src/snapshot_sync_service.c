@@ -29,6 +29,8 @@
 #include "services/snapshot_manifest.h"
 #include "models/db_txn.h"
 #include "models/database.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "config/runtime.h"
 #include "event/event.h"
 #include "net/fast_sync.h"
@@ -318,6 +320,11 @@ bool snapsync_awaiting_utxos(void)
     snapsync_get_status_snapshot(svc, &st);
     if (st.state == SNAPSYNC_COMPLETE)
         return false;
+
+    /* Wave 2: the CANONICAL store decides "a real UTXO set exists" — the
+     * mirror count / node_state anchor below are legacy fallbacks only. */
+    if (coins_kv_count(progress_store_db()) > 100000)
+        return false;  /* real UTXO set exists (coins_kv authority) */
 
     /* Check coins_best_block — if set to a meaningful height, UTXOs exist */
     uint8_t cb_buf[32] = {0};

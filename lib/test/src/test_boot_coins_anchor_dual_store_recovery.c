@@ -1,31 +1,22 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Reset-safe red->green test for the L1 torn-legacy-coins boot self-recovery
- * (utxo_recovery_heal_torn_legacy_coins_anchor, wired at the boot gate in
- * config/src/boot.c right after coins_view_sqlite_open() returns false).
+ * The §3 dual-store tear shape (node.db `utxos` has rows but the legacy
+ * `coins_best_block` anchor is UNSET while coins_kv committed every block
+ * atomically), under the wave-2 derived coins-best gate:
  *
- * THE LIVE INCIDENT SHAPE (§3 dual-store tear): a crash lost the deprecated
- * node.db `utxos` mirror's lazy batch + the tip anchor — `utxos` has rows but
- * `coins_best_block` is UNSET — while the tear-PROOF reducer authority coins_kv
- * (in progress.kv) committed every block atomically. The boot integrity gate
- * (coins_view_sqlite.c:486, have_utxos && !tip_set) returns false and the boot
- * FATALs. This test reproduces that exact datadir state with a synthetic
- * node.db + progress.kv and drives the REAL recovery entry point, then re-opens
- * the coins view to prove the FATAL path is no longer taken.
+ * GREEN (canonical datadir, coins_applied_height present): the boot gate
+ * derives the coins-best fact from coins_kv's own co-committed state and
+ * PASSES the open directly — the legacy-anchor tear is unrepresentable as
+ * a boot failure, with ZERO mutations (no guess-repair of the cache). The
+ * L1 heal (utxo_recovery_heal_torn_legacy_coins_anchor) is unreachable by
+ * construction on this shape: boot gates it on !derived while its own
+ * proven-authority predicate requires coins_applied_height (= derived).
  *
- * RED controls prove the recovery is gated on coins_kv being the PROVEN-healthy
- * authority — no safety gate is weakened:
- *   (RED-1) NO progress.kv / empty coins_kv  -> recovery REFUSES -> FATAL stands.
- *   (RED-2) coins_kv seeded but migration_complete UNSET -> REFUSES -> FATAL.
+ * RED controls (legacy datadirs) prove no safety gate weakened:
+ *   (RED-1) empty coins_kv -> open FAILS, heal REFUSES -> FATAL stands.
+ *   (RED-2) coins_kv rows but migration_complete UNSET -> REFUSES -> FATAL.
  *
- * Anchor strategy (R1/R3): the healed anchor is the block at MAX(height) FROM
- * utxos — the height the LEGACY mirror actually reaches — NEVER the
- * further-ahead coins_kv frontier, so the SHA3 snapshot served to peers stays
- * self-consistent with its committed anchor.
- *
- * Reset-safe: the test seeds and asserts that coins_kv rows + applied_height
- * are UNTOUCHED by recovery (no log deletes, no coins_kv mutation, no tip
- * reset); only the legacy `coins_best_block` anchor is written.
+ * Reset-safe: coins_kv rows + applied_height asserted UNTOUCHED throughout.
  */
 
 #include "test/test_helpers.h"
@@ -142,16 +133,6 @@ static bool bdsr_seed_progress_kv(sqlite3 *pdb, int H1, bool mark_migration)
     return true;
 }
 
-/* True iff node.db coins_best_block is set to exactly `want` (32 bytes). */
-static bool bdsr_anchor_is(struct node_db *ndb, const uint8_t want[32])
-{
-    uint8_t got[32];
-    size_t len = 0;
-    if (!node_db_state_get(ndb, "coins_best_block", got, sizeof(got), &len))
-        return false;
-    return len == 32 && memcmp(got, want, 32) == 0;
-}
-
 /* True iff node.db coins_best_block is absent / empty. */
 static bool bdsr_anchor_absent(struct node_db *ndb)
 {
@@ -162,7 +143,17 @@ static bool bdsr_anchor_absent(struct node_db *ndb)
     return !found || len == 0;
 }
 
-/* CASE 1 — GREEN: torn-legacy shape + proven-healthy coins_kv -> recovers. */
+/* CASE 1 — GREEN: torn-legacy shape + proven-healthy coins_kv.
+ *
+ * Wave 2 (derived coins-best): with coins_applied_height present in
+ * progress.kv, the boot gate's verdict is "derivation resolvable" — the
+ * open PASSES DIRECTLY despite the torn legacy anchor, with ZERO mutations
+ * (the cache stays torn; it is a diagnostic now, not a decision input).
+ * The L1 torn-anchor heal is no longer needed here — and is in fact
+ * unreachable by construction on this shape: boot gates the heal on
+ * !derived, while the heal's own proven-authority predicate requires
+ * coins_applied_height present (= derived). It survives only as the
+ * legacy-datadir rung (RED cases below) until the wave-3 deletion. */
 static int bdsr_green(void)
 {
     int failures = 0;
@@ -173,7 +164,8 @@ static int bdsr_green(void)
     snprintf(node_path, sizeof(node_path), "%s/node.db", dir);
     const int H1 = 100;
 
-    TEST("bdsr GREEN: torn anchor + healthy coins_kv -> recovers + re-opens") {
+    TEST("bdsr GREEN: torn anchor + healthy coins_kv -> derived gate PASSES, "
+         "zero mutations, no heal needed") {
         uint8_t want_hash[32];
 
         struct node_db ndb;
@@ -185,26 +177,22 @@ static int bdsr_green(void)
         ASSERT(pdb != NULL);
         ASSERT(bdsr_seed_progress_kv(pdb, H1, /*mark_migration=*/true));
 
-        /* Precondition: first open FAILS (the torn-legacy integrity gate). */
+        /* The open PASSES directly: the coins-best fact is DERIVED from
+         * coins_kv's co-committed applied frontier; the torn legacy anchor
+         * cannot wedge boot. */
         struct coins_view_sqlite cvs;
-        ASSERT(!coins_view_sqlite_open(&cvs, ndb.db));
+        ASSERT(coins_view_sqlite_open(&cvs, ndb.db));
+        coins_view_sqlite_close(&cvs);
+
+        /* ZERO mutations: the anchor cache is still torn (no guess-repair
+         * wrote it) — caches are diagnostics, not decisions. */
         ASSERT(bdsr_anchor_absent(&ndb));
 
-        /* The REAL boot-gate recovery entry point. */
-        ASSERT(utxo_recovery_heal_torn_legacy_coins_anchor(&ndb, pdb, dir));
-
-        /* Anchor seeded to the utxos MAX(height) block hash (NOT a frontier). */
-        ASSERT(bdsr_anchor_is(&ndb, want_hash));
-
-        /* Retry the open: now PASSES (anchor resolves at its own height). */
+        /* Idempotent: a second open also passes. */
         ASSERT(coins_view_sqlite_open(&cvs, ndb.db));
         coins_view_sqlite_close(&cvs);
 
-        /* Idempotent: a second open also passes (no re-reconcile needed). */
-        ASSERT(coins_view_sqlite_open(&cvs, ndb.db));
-        coins_view_sqlite_close(&cvs);
-
-        /* Reset-safe: coins_kv rows + applied_height UNTOUCHED by recovery. */
+        /* Reset-safe: coins_kv rows + applied_height UNTOUCHED. */
         ASSERT(coins_kv_count(pdb) == 8);
         int32_t applied = 0; bool applied_found = false;
         ASSERT(coins_kv_get_applied_height(pdb, &applied, &applied_found));

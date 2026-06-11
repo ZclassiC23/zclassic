@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define COINS_KV_MIGRATION_KEY "coins_kv_migration_complete"
+#define COINS_KV_MIGRATION_KEY COINS_KV_MIGRATION_COMPLETE_KEY  /* single source: coins_kv.h */
 
 static bool migration_done(sqlite3 *db)
 {

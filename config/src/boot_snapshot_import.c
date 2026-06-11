@@ -221,6 +221,13 @@ bool boot_import_snapshot_db(struct node_db *ndb,
         LOG_FAIL("boot_snapshot_import",
                  "bulk copy failed; node.db rolled back");
 
+    /* CACHE-REFRESH (wave 2): 'coins_best_block' is a projection key —
+     * authority = reducer_frontier_derive_coins_best over coins_kv.
+     * FOLLOW-UP (plan step 5/F5, verified-install): this snapshot receive
+     * path must also seed coins_kv + coins_applied_height the way the LDB
+     * path does (utxo_recovery_restore.c coins_kv_seed_from_node_db), else
+     * the derivation returns found=false post-import and the node correctly
+     * runs the legacy fallbacks. */
     if (!node_db_state_set(ndb, "coins_best_block",
                            best_hash, sizeof(best_hash))) {
         /* utxos already committed; restore prior anchor so the next

@@ -1243,9 +1243,11 @@ int main(int argc, char **argv)
         if (ins) sqlite3_finalize(ins);
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
-        /* Reset coins_best_block to match our SQLite tip so the node
-         * doesn't roll back on restart. The --repair modified the utxos
-         * table directly, invalidating the cached coins state. */
+        /* OFFLINE CACHE RESET (wave 2 label): 'coins_best_block' is a
+         * projection key — authority = reducer_frontier_derive_coins_best
+         * over coins_kv. The --repair modified the utxos mirror directly,
+         * so refresh its cached anchor to match; the derivation is
+         * unaffected. */
         if (fixed > 0) {
             sqlite3_stmt *tip_s = NULL;
             sqlite3_prepare_v2(db,

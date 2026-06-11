@@ -26,6 +26,7 @@
 #include "storage/coins_view_sqlite.h"
 #include "models/database.h"
 #include "net/snapshot_sync_contract.h"
+#include "jobs/reducer_frontier.h"
 #include "services/utxo_recovery_service.h"
 #include "validation/main_state.h"
 #include "event/event.h"
@@ -121,6 +122,18 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
 
     printf("SQLite UTXO set: %lld UTXOs (canonical)\n", (long long)total);
 
+    /* Wave 2: the derived coins-best (coins_kv authority) outranks the
+     * node_state cache key — a missing/stale cache must not refuse the
+     * rebuild on a canonical datadir. Legacy fallback: the cache key. */
+    {
+        int32_t d_h = -1;
+        if (reducer_frontier_derive_coins_best_now(&d_h, NULL, NULL)) {
+            printf("fast_rebuild_chainstate: derived coins-best h=%d "
+                   "(coins_kv authority)\n", d_h);
+            return true;
+        }
+    }
+
     struct uint256 best;
     if (!coins_view_sqlite_get_best_block(cvs, &best) ||
         uint256_is_null(&best)) {
@@ -168,6 +181,9 @@ bool boot_index_clear_coins_state(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         return false;
+    /* Wiping a CACHE is always legal (the keys below are projections of
+     * coins_kv). Known gap: the reindex epilogue deletes-not-recomputes
+     * these — tenacity-roadmap item 3 (F3), out of scope for wave 2. */
     bool ok = node_db_exec(ndb, "DELETE FROM utxos");
     /* coins_best_block (the anchor the gate checks), utxo_commitment (the XOR
      * checkpoint) and utxo_sha3 (the self-heal commitment) are ALL stale once
@@ -409,29 +425,53 @@ void boot_index_verify_coins_tip_consistency(struct main_state *ms,
         return;
 
     struct uint256 coins_hash;
-    /* Legacy LDB-import safety check: needs the coins.db best-block, not
-     * the projection (no best-block). Read from the coins sqlite view
-     * directly while that legacy recovery fallback remains. */
     uint256_set_null(&coins_hash);
-    if (cvs && cvs->db)
-        coins_view_sqlite_get_best_block(cvs, &coins_hash);
+    int utxo_max_h = 0;
+    bool derived = false;
+
+    /* Wave 2: DERIVED inputs first. This function is the exact site that
+     * re-wedged the 2026-06-11 copy-prove — the stale-label promotion below
+     * guessed from the mirror's MAX(height) + the node_state anchor cache.
+     * On canonical datadirs both inputs are substituted from coins_kv's own
+     * co-committed state: coins_hash = the derived hash (when the durable
+     * logs resolve one), utxo_max_h = the derived height. The promotion
+     * heuristic then cannot fire above the derivation. Legacy datadirs keep
+     * the cache reads unchanged. */
+    {
+        int32_t d_h = -1;
+        uint8_t d_hash[32];
+        bool d_hf = false;
+        if (reducer_frontier_derive_coins_best_now(&d_h, d_hash, &d_hf)) {
+            derived = true;
+            utxo_max_h = d_h > 0 ? d_h : 0;
+            if (d_hf)
+                memcpy(coins_hash.data, d_hash, 32);
+        }
+    }
+
+    if (!derived) {
+        /* Legacy LDB-import safety check: needs the coins.db best-block, not
+         * the projection (no best-block). Read from the coins sqlite view
+         * directly while that legacy recovery fallback remains. */
+        if (cvs && cvs->db)
+            coins_view_sqlite_get_best_block(cvs, &coins_hash);
+        if (ndb && ndb->open) {
+            sqlite3_stmt *hst = NULL;
+            if (sqlite3_prepare_v2(ndb->db,
+                    "SELECT MAX(height) FROM utxos", -1,
+                    &hst, NULL) == SQLITE_OK && hst) {
+                if (sqlite3_step(hst) == SQLITE_ROW)  // obs-ok:boot-utxo-max-scan
+                    utxo_max_h = sqlite3_column_int(hst, 0);
+                sqlite3_finalize(hst);
+            }
+        }
+    }
+
     int chain_h = active_chain_height(&ms->chain_active);
     struct block_index *coins_bi = NULL;
 
     if (!uint256_is_null(&coins_hash))
         coins_bi = block_map_find(&ms->map_block_index, &coins_hash);
-
-    int utxo_max_h = 0;
-    if (ndb && ndb->open) {
-        sqlite3_stmt *hst = NULL;
-        if (sqlite3_prepare_v2(ndb->db,
-                "SELECT MAX(height) FROM utxos", -1,
-                &hst, NULL) == SQLITE_OK && hst) {
-            if (sqlite3_step(hst) == SQLITE_ROW)  // obs-ok:boot-utxo-max-scan
-                utxo_max_h = sqlite3_column_int(hst, 0);
-            sqlite3_finalize(hst);
-        }
-    }
 
     if (coins_bi && utxo_max_h > 100000 &&
         utxo_max_h > coins_bi->nHeight + 100) {
