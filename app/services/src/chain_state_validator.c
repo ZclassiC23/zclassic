@@ -17,6 +17,7 @@
 #include "coins/coins_view.h"
 #include "event/event.h"
 #include "storage/progress_store.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/tip_finalize_stage.h"
 
@@ -136,6 +137,37 @@ struct boot_validation_result validate_coins_chain_agreement(
         r.action = BOOT_OK;
         r.coins_height = r.chain_height;
         return r;
+    }
+
+    /* Case 3a (wave 2 — the DERIVED coins-best is the runtime coins
+     * authority): if the active tip equals the derivation (coins_kv
+     * proven authority + durable-log hash witness), the legacy coins.db
+     * view read above is just a LAGGING REBUILDABLE PROJECTION — AGREE
+     * and let it reconcile forward. Without this, a stale legacy view
+     * below a freshly restored derived tip drove Case-4 RESET_CHAIN
+     * every boot (defect #9, live 2026-06-11: restore to 3,143,804 then
+     * "chain_coins_mismatch_reset" back to the 3,137,373 floor —
+     * deterministic pull-down of the seeded tip). Hash-checked when the
+     * derivation has a durable witness; height-only otherwise (the
+     * derivation abstains entirely unless coins_kv is proven). */
+    if (chain_tip->phashBlock) {
+        int32_t d_h = -1;
+        uint8_t d_hash[32];
+        bool d_have = false;
+        if (reducer_frontier_derive_coins_best_now(&d_h, d_hash, &d_have) &&
+            chain_tip->nHeight == d_h &&
+            (!d_have ||
+             memcmp(d_hash, chain_tip->phashBlock->data, 32) == 0)) {
+            LOG_INFO("boot",
+                     "[boot] active tip h=%d matches the DERIVED coins-best "
+                     "(coins_kv authority%s); legacy coins.db view (h=%d) is "
+                     "a lagging projection — AGREE, no tip reset",
+                     d_h, d_have ? ", hash-verified" : "",
+                     r.coins_height);
+            r.action = BOOT_OK;
+            r.coins_height = r.chain_height;
+            return r;
+        }
     }
 
     /* Case 3b (reducer-finalized tip is the coins authority): coins_best
