@@ -2,15 +2,15 @@
 Description=ZClassic23 Full Node + Block Explorer
 After=network-online.target
 Wants=network-online.target
-# P7.6: widened restart-loop budget.  The old burst=3 / interval=300s
-# could permanently disable the service after three crashes in 5min —
-# worse than a visible restart-loop is a silently-down-after-3-crashes
-# node that the operator doesn't see until they notice the outage.
-# 10 attempts over 10min gives real triage time; the P7.2 boot halt
-# path makes sure a cold chain-state bug eventually drains the burst
-# and the unit stops cleanly for operator attention.
-StartLimitIntervalSec=600
-StartLimitBurst=10
+# Crash-only (2026-06-11): no start limit, ever. The 2026-06-11 outage
+# proved the P7.6 budget (burst=10/600s) still permanently disables the
+# unit: the boot integrity FATAL drained it in ~7 min and the node sat
+# systemd-FAILED for 6+ hours. The binary now owns crash-loop bounding —
+# boot_crashonly requests a bounded auto-reindex (max 3 per anchor) and
+# pages the operator through events/health when the budget is spent.
+# systemd's only job is to never stop trying; the stepped RestartSec
+# backoff below keeps a genuinely-broken binary from burning CPU.
+StartLimitIntervalSec=0
 
 [Service]
 # Type=simple — main node is operator-controlled, never auto-restarted
@@ -47,14 +47,18 @@ ExecStart=%h/zclassic23/build/bin/zclassic23 \
 # legacy zclassicd/zcashd can own the historical ZClassic/Zcash ports. The
 # node still dials external ZClassic peers on their advertised ports through
 # addrman/addnode; this setting controls only our local listener.
-# Restart=always (not on-failure) so the self-recovery escape hatch in
+# Restart=always (not on-failure) so the self-recovery escape hatches —
 # process_block.c (g_shutdown_requested=1 after 10 consecutive UTXO
-# failures at the same height) causes a systemd restart.  That restart
-# is what consumes the needs_reimport flag in boot.c and runs the LDB
-# UTXO reimport.  StartLimitBurst still bounds crash-loops for operator
-# attention, and `systemctl stop` is still honored as an intentional stop.
+# failures at the same height) and boot_crashonly's auto-reindex request
+# (boot exits, the restart consumes the sentinel and re-derives the UTXO
+# set from blocks/) — actually fire. `systemctl stop` is still honored
+# as an intentional stop. Stepped backoff (systemd 254+): fast restarts
+# for the auto-recovery handoff, ramping to 10 min if the binary is
+# genuinely broken, so a dead-on-arrival build loops visibly but cheaply.
 Restart=always
-RestartSec=10
+RestartSec=5
+RestartSteps=8
+RestartMaxDelaySec=600
 
 # systemd's implicit stop signal is normally enough, but this node is
 # too stateful to tolerate a lost or delayed stop transition. Send a
