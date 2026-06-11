@@ -810,15 +810,18 @@ static int test_sync_service_band_closed_after_relink(void)
         ASSERT(blocker_set(&br) >= 0);
 
         /* Island root still pprev-less → band open → NO clear. */
-        syncsvc_header_band_after_batch(&ms, NULL, &b3);
+        syncsvc_header_band_after_batch(&ms, &b3);
         ASSERT(blocker_exists(HEADER_BAND_BLOCKER_ID));
 
         /* The peer re-served the island root: hash-bound relink (heights
          * contiguous) — exactly what accept_block_header does live. */
         i0.pprev = &b3;
         ASSERT(arith_uint256_is_zero(&i1.nChainWork));
+        /* The island root was never slotted (install_tip_slot published
+         * the tip only) — the closure slot-fill must heal it. */
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 5) == NULL);
 
-        syncsvc_header_band_after_batch(&ms, NULL, &i1);
+        syncsvc_header_band_after_batch(&ms, &i1);
 
         /* Closed: fact cleared + island chainwork repropagated upward
          * from the trust-rooted segment (strictly greater than the
@@ -827,9 +830,56 @@ static int test_sync_service_band_closed_after_relink(void)
         ASSERT(!arith_uint256_is_zero(&i1.nChainWork));
         ASSERT(!arith_uint256_is_zero(&i0.nChainWork));
 
+        /* The in-memory slot-fill healed active_chain_at across the
+         * island WITHOUT disturbing the slots below it — the closure is
+         * non-destructive by construction (no disk rebuild, no pprev
+         * mutation, no slot ever set to NULL). */
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 5) == &i0);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 6) == &i1);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 4) == &b3);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 3) == &f2);
+        ASSERT(active_chain_at(&ms.chain_active, anchor + 1) == &f0);
+        ASSERT(i0.pprev == &b3 && b3.pprev == &f2);
+
         blocker_reset_for_testing();
         block_map_free(&ms.map_block_index);
         active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_band_producer_derives_from_ancestry(void)
+{
+    int failures = 0;
+
+    TEST("band producers derive the fact from ancestry, not the log frontier") {
+        struct block_index f0, f1, f2, island;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+
+        /* Trust-rooted chain — the clean two-step cold-import shape:
+         * imported headers are pprev-contiguous down to the trust root.
+         * The retired log-frontier derivation false-recorded a band here
+         * on a fresh progress db (an empty validate_headers log collapses
+         * the frontier to the compiled SHA3 anchor — it does NOT abstain)
+         * and the first accepted batch then fired a false closure. The
+         * ancestry derivation must abstain. */
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x50);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x51);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x52);
+        utxo_recovery_note_band_unrooted_tip(&f2, "unit_contiguous");
+        ASSERT(!blocker_exists(HEADER_BAND_BLOCKER_ID));
+
+        /* A pprev-less anchor installed above the trust root IS the
+         * island root — the fact must be recorded. */
+        band_make_block(&island, anchor + 100, NULL, 0, 0x53);
+        utxo_recovery_note_band_unrooted_tip(&island, "unit_island");
+        ASSERT(blocker_exists(HEADER_BAND_BLOCKER_ID));
+
+        blocker_reset_for_testing();
         PASS();
     } _test_next:;
 
@@ -1512,6 +1562,7 @@ int test_sync_service(void)
     failures += test_sync_service_band_continue_is_progress_not_restart();
     failures += test_sync_service_band_backfill_anchor_selects_frontier();
     failures += test_sync_service_band_closed_after_relink();
+    failures += test_sync_service_band_producer_derives_from_ancestry();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
     failures += test_sync_service_builds_getheaders_locator_empty_chain();
     failures += test_sync_service_header_log_policy();

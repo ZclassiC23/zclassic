@@ -724,8 +724,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
      * (the final band batch can be shorter than 160). No-op without the
      * band blocker. */
     if (accepted > 0)
-        syncsvc_header_band_after_batch(mp->main_state, mp->datadir,
-                                        pindex_last);
+        syncsvc_header_band_after_batch(mp->main_state, pindex_last);
 
     return true;
 }

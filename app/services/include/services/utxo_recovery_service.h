@@ -131,16 +131,14 @@ const struct block_index *utxo_recovery_block_ancestry_break(
  * syncsvc_header_band_after_batch when the band closes. */
 #define HEADER_BAND_BLOCKER_ID "header_band_hole"
 
-/* Record-only producer guard: if `anchor` sits more than one block
- * above the validated header frontier, record the band fact (blocker +
- * EV_RECOVERY_ACTION + WARN). NEVER blocks — the anchor/seed install
- * proceeds exactly as before. */
-void utxo_recovery_note_band_above_frontier(const struct block_index *anchor,
-                                            const char *producer);
-
-/* Boot catch-all: if `tip` is not trust-rooted, derive the island root
- * and record the same band fact. Covers producers we didn't enumerate
- * and re-boots of an already-banded datadir. Record-only. */
+/* THE band producer + boot catch-all: if `tip` (an installed anchor,
+ * seed, or active tip) is not trust-rooted, derive the island root from
+ * pprev contiguity and record the band fact (blocker +
+ * EV_RECOVERY_ACTION + WARN). NEVER blocks — the install proceeds
+ * exactly as before. Deliberately ancestry-derived, NOT log-frontier
+ * derived: the reducer log frontier collapses to the compiled SHA3
+ * anchor on a fresh progress db, which false-recorded a band on every
+ * clean two-step cold-import. Record-only. */
 void utxo_recovery_note_band_unrooted_tip(const struct block_index *tip,
                                           const char *producer);
 

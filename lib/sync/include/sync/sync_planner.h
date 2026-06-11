@@ -208,10 +208,15 @@ struct block_index *syncsvc_header_band_backfill_anchor(
 
 /* Closure probe — call after every accepted header batch (outside the
  * full-batch gate: the final band batch can be <160). No-op without the
- * band fact. On closure: chain_restore_finalize + chainwork
- * repropagation + blocker clear + chain-evidence reconcile re-arm. */
+ * band fact. On closure: non-destructive in-memory chain[] slot-fill +
+ * pskip + chainwork repropagation, then re-derive the band fact and only
+ * then blocker clear + chain-evidence reconcile re-arm. Runs on the net
+ * message thread, so it NEVER touches disk and never mutates shared
+ * block_index ancestry (no chain_restore_finalize here — the boot disk
+ * ladder rewrites pprev across millions of nodes that reducer/RPC read
+ * lock-free, and band headers are bodyless so its disk walk always
+ * degrades to a full blk*.dat scan). */
 void syncsvc_header_band_after_batch(struct main_state *ms,
-                                     const char *datadir,
                                      const struct block_index *last_header);
 void syncsvc_build_block_file_scan_activation(
     struct sync_chain_activation *result,

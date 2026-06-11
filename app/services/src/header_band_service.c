@@ -18,9 +18,17 @@
  *     recorded, periodic getheaders anchor at the contiguous frontier
  *     (the peer forks there and serves the band).
  *   - syncsvc_header_band_after_batch: on closure (tip descends
- *     contiguously to a trust root) run the ONE rebuild primitive,
- *     repropagate chainwork above the SHA3 anchor, clear the blocker,
- *     and unlatch the chain-evidence startup freeze.
+ *     contiguously to a trust root) run a NON-DESTRUCTIVE in-memory
+ *     slot-fill (the pprev chain IS contiguous at closure — that is the
+ *     closure condition), repropagate chainwork above the SHA3 anchor,
+ *     re-derive the band fact, and only then clear the blocker and
+ *     unlatch the chain-evidence startup freeze. The boot disk-rebuild
+ *     ladder (chain_restore_finalize) is deliberately NOT called here:
+ *     band headers are header-only (no BLOCK_HAVE_DATA), so the disk
+ *     walk is guaranteed to under-populate, fall into the full blk*.dat
+ *     scan, and rewrite pprev=NULL across millions of shared
+ *     block_index nodes on the live net thread — the exact
+ *     ancestry-tear class this service exists to close.
  *
  * All band facts are DERIVED from pprev contiguity on demand
  * (utxo_recovery_block_ancestry_break); the typed blocker is a loud
@@ -33,11 +41,11 @@
 #include "sync/sync_planner.h"
 
 #include "services/chain_evidence_authority_service.h"
-#include "services/chain_restore_repair.h"
 #include "services/utxo_recovery_service.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "jobs/reducer_frontier.h"
+#include "chain/chain.h"
 #include "chain/checkpoints.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
@@ -118,8 +126,43 @@ struct block_index *syncsvc_header_band_backfill_anchor(
     return NULL;
 }
 
+/* Closure slot-fill: non-destructive and in-memory only. At closure the
+ * tip's pprev chain is contiguous down to the trust root BY DERIVATION
+ * (utxo_recovery_block_ancestry_break(tip) == NULL is the closure
+ * condition), so slotting it into chain[] is a pure walk-and-store under
+ * the writer lock. It only ever stores the tip's own ancestors — never
+ * NULL, never a different fork — and never mutates pprev/pskip/nHeight
+ * of any shared block_index node, so lock-free readers (reducer stages,
+ * RPC, chain-evidence probes) see the old slot or the canonical ancestor,
+ * both valid. The walk stops at the compiled SHA3 anchor: a band can
+ * only exist above it (the ancestry derivation early-exits there), so
+ * slots at or below the anchor are not this hole's to touch. */
+static int syncsvc_header_band_fill_slots(struct active_chain *c,
+                                          struct block_index *tip,
+                                          int32_t stop_height)
+{
+    int filled = 0;
+    zcl_mutex_lock(&c->write_lock);
+    struct block_index **arr = c->chain;
+    if (arr) {
+        int budget = tip->nHeight + 1;   /* cycle defense */
+        for (struct block_index *p = tip;
+             p && p->nHeight > stop_height && budget-- > 0;
+             p = p->pprev) {
+            int h = p->nHeight;
+            if (h < 0 || h > tip->nHeight)
+                break;         /* defensive: never slot a tear shape */
+            if (arr[h] != p) {
+                arr[h] = p;
+                filled++;
+            }
+        }
+    }
+    zcl_mutex_unlock(&c->write_lock);
+    return filled;
+}
+
 void syncsvc_header_band_after_batch(struct main_state *ms,
-                                     const char *datadir,
                                      const struct block_index *last_header)
 {
     if (!ms)
@@ -144,28 +187,27 @@ void syncsvc_header_band_after_batch(struct main_state *ms,
         return;
     }
 
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    const int32_t anchor_h = cp ? cp->height
+                                : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+
     /* Band CLOSED: the tip now descends contiguously to a trust root.
-     * 1) The ONE rebuild primitive: slots the band headers into chain[]
-     *    (heals getblockhash/active_chain_at in-process) + wires pskip. */
-    struct zcl_result fin = chain_restore_finalize(ms, datadir);
-    if (!fin.ok)
-        LOG_WARN("headers",
-                 "header band close: chain_restore_finalize: %s",
-                 fin.message);
-    /* finalize may have re-selected the tip; describe what is installed. */
-    {
-        struct block_index *post = active_chain_tip(&ms->chain_active);
-        if (post)
-            tip = post;
+     * 1) Non-destructive in-memory slot-fill (heals getblockhash /
+     *    active_chain_at in-process), then pskip for relinked island
+     *    nodes (accepted pprev-less, so accept_block_header never built
+     *    theirs). Bottom-up so each build reuses the parent's pskip. */
+    int filled = syncsvc_header_band_fill_slots(&ms->chain_active, tip,
+                                                anchor_h);
+    for (int h = anchor_h + 1; h <= tip->nHeight; h++) {
+        struct block_index *b = active_chain_at(&ms->chain_active, h);
+        if (b && b->pprev && b->pskip == NULL)
+            block_index_build_skip(b);
     }
 
     /* 2) Chainwork repropagation above the attested anchor extent: the
      *    island's work was seeded from a pprev-less anchor (nChainWork=0),
      *    understating every island block. Idempotent for already-correct
      *    chains — same write pattern as the accept_block_header relink. */
-    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    const int32_t anchor_h = cp ? cp->height
-                                : REDUCER_FRONTIER_TRUSTED_ANCHOR;
     int repropagated = 0;
     for (int h = anchor_h + 1; h <= tip->nHeight; h++) {
         struct block_index *b = active_chain_at(&ms->chain_active, h);
@@ -176,17 +218,36 @@ void syncsvc_header_band_after_batch(struct main_state *ms,
         repropagated++;
     }
 
+    /* 3) The clear is bound to the DERIVED fact, never to control flow:
+     *    re-derive after the heal and keep the band fact recorded if the
+     *    ancestry is somehow torn again (the fill above is non-mutating,
+     *    so this holds by construction today — the guard pins the
+     *    invariant against any future closure step that touches pprev).
+     *    Losing the fact while the tear persists would strand the
+     *    backfill driver for the rest of the process lifetime. */
+    island_root = utxo_recovery_block_ancestry_break(tip);
+    if (island_root) {
+        LOG_WARN("headers",
+                 "header band close ABORTED: ancestry re-tore during "
+                 "closure (island_root=%d tip=%d) — band fact retained, "
+                 "backfill stays armed",
+                 island_root->nHeight, tip->nHeight);
+        return;
+    }
+
     blocker_clear(HEADER_BAND_BLOCKER_ID);
     event_emitf(EV_RECOVERY_ACTION, 0,
-                "action=header_band_closed tip=%d chainwork_blocks=%d",
-                tip->nHeight, repropagated);
+                "action=header_band_closed tip=%d slots_filled=%d "
+                "chainwork_blocks=%d",
+                tip->nHeight, filled, repropagated);
     LOG_WARN("headers",
              "HEADER BAND CLOSED: tip h=%d now descends contiguously to "
-             "its trust root (chainwork repropagated over %d blocks); "
-             "requesting chain-evidence startup re-reconcile",
-             tip->nHeight, repropagated);
+             "its trust root (%d chain slots filled, chainwork "
+             "repropagated over %d blocks); requesting chain-evidence "
+             "startup re-reconcile",
+             tip->nHeight, filled, repropagated);
 
-    /* 3) Unlatch the evidence freeze: the next controller construction
+    /* 4) Unlatch the evidence freeze: the next controller construction
      *    re-runs cec_reconcile_startup once; ancestry now links, so the
      *    stale contradiction_frozen lifts and health recovers. */
     chain_evidence_request_startup_reconcile("header_band_closed");

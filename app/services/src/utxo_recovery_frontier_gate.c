@@ -187,30 +187,27 @@ static void utxo_recovery_record_band(const char *producer,
              producer, installed_h, island_root_h, frontier_h);
 }
 
-void utxo_recovery_note_band_above_frontier(const struct block_index *anchor,
-                                            const char *producer)
-{
-    if (!anchor)
-        return;
-    int32_t fh = 0;
-    if (!utxo_recovery_header_frontier(&fh))
-        return;            /* no log evidence — boot scan still covers it */
-    if (anchor->nHeight <= fh + 1)
-        return;            /* contiguous with the frontier — no band */
-    utxo_recovery_record_band(producer, anchor->nHeight,
-                              anchor->nHeight, fh);
-}
-
 void utxo_recovery_note_band_unrooted_tip(const struct block_index *tip,
                                           const char *producer)
 {
+    /* The band fact is derived from INDEX ancestry (pprev contiguity to
+     * a trust root), never from the reducer log frontier. The log half
+     * does NOT abstain on an empty progress db — log_contiguous_prefix
+     * collapses to the compiled SHA3 anchor — so a log-frontier-derived
+     * producer cried wolf on every clean two-step cold-import
+     * (--importblockindex then -cold-import): a fully contiguous
+     * imported header chain was recorded as a band hole and the first
+     * accepted batch fired a false closure. Ancestry derivation is
+     * correct on both paths: a pprev-less installed anchor above the
+     * compiled anchor IS the island root; a contiguous chain walks to
+     * its trust root and abstains. */
     if (!tip)
         return;
     const struct block_index *root = utxo_recovery_block_ancestry_break(tip);
     if (!root)
         return;            /* trust-rooted — no band */
     int32_t fh = -1;
-    (void)utxo_recovery_header_frontier(&fh);  /* -1 = log abstains */
+    (void)utxo_recovery_header_frontier(&fh);  /* context only; -1 = log abstains */
     utxo_recovery_record_band(producer, tip->nHeight, root->nHeight, fh);
 }
 
