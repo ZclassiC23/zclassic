@@ -79,6 +79,77 @@ Together: the lint gate forbids the *shape* of a divergence; the test pins the
 `zcl_consensus_report`, comparing live block hashes against zclassicd) is the
 third, operational layer.
 
+## Empirical oversize grandfather (live-behavior parity over text parity)
+
+The doctrine target is **the behavior of the running network**, not the
+reference TEXT — and there is one proven place where the two diverge from
+each other.
+
+zclassicd's text enforces `serialized size > MAX_TX_SIZE_AFTER_SAPLING
+(102000)` unconditionally in `CheckTransaction`
+(`src/consensus/consensus.h:27`, `src/main.cpp:1196-1200`). But the canonical
+chain contains **413 post-Sapling transactions above 102000** (heights
+478,544..1,968,856; max 1,922,197 bytes, tx `1e112557…` at h=685,036). They
+were legal when mined — the original Zcash-Sapling rule capped a tx at
+`MAX_BLOCK_SIZE` (2 MB) — and zclassicd later tightened the constant
+("a little extra") **without grandfathering**. Running zclassicd nodes accept
+that history only because already-validated blocks are never re-checked; a
+from-genesis replay of zclassicd's own text false-rejects its own chain.
+**Proven live 2026-06-11**: our reindex-chainstate replay FATALed at block
+478,544 (`0000000008e4ec6a…`) on tx `e3eeb123…` (125,811 bytes,
+`bad-txns-oversize`) — breaking every full-validation path (reindex,
+background validation, trustless genesis sync).
+
+The rule that is bit-for-bit equal to running-zclassicd behavior on every
+block either node will ever **newly** validate:
+
+- **In a block**: excuse exactly those 413 canonical txs, via a static
+  `{txid, size}` allowlist (exact-match, txid recomputed from the serialized
+  bytes, hard `MAX_BLOCK_SIZE` structural ceiling). Everything else —
+  including a fresh oversize tx in a fork block at an old height, which a
+  running zclassicd's `CheckTransaction` rejects — gets the strict 102000.
+  A height window was rejected for exactly that reason: it would over-accept
+  deep-reorg fork blocks zclassicd rejects.
+- **Standalone (mempool/relay)**: strict 102000 always, matching
+  `AcceptToMemoryPool → CheckTransaction`.
+- The pre-Sapling contextual 100000 rule is untouched: the scan proved zero
+  pre-Sapling txs exceed it (the mine-time rule held; verified, not assumed).
+
+**Provenance (found EMPIRICALLY, never guessed).** Complete scan of the
+canonical chain, heights 0..3,143,532 (2026-06-11): sequential frame-walk of
+all raw `blk*.dat` files in the wedged datadir copy
+(`~/.zclassic-c23-postrestore-wedge-20260611`, 3,155,010 frames, framing
+verified by reproducing the genesis hash), per-height hash comparison of ALL
+3,143,172 heights against zclassicd `getblockhash`, stale/gap/tail heights
+RPC-walked block-by-block, and all 2,468 candidate blocks (>100,000 B)
+drilled per-tx via `getblock verbosity=2`. H_LAST = 1,968,856; blocks after
+the scan tip cannot add violations because running zclassicd enforces 102000
+on every new block. Scan artifacts: `/tmp/violations.tsv`, `/tmp/blkscan.out`,
+`/tmp/drill.out` (session-local); the durable copy is the committed list
+below.
+
+Mechanics:
+
+- `tools/data/oversize_grandfather_txids.txt` — committed provenance list
+  (`height txid size`, 413 lines).
+- `tools/scripts/gen_oversize_grandfather_table.sh` — regenerates the table,
+  re-verifying EVERY entry against a live zclassicd (canonical-at-height +
+  byte-exact size) before emitting; `--fixture` emits the 478,544 KAT input.
+- `domain/consensus/src/oversize_grandfather_table.inc` — the generated
+  static table (sorted, bsearch-able).
+- `domain_consensus_tx_oversize_grandfathered()` +
+  `enum domain_tx_check_context` in `domain/consensus/tx_structural.{c,h}`;
+  consumed via `check_transaction_in_block()` (block paths) vs
+  `check_transaction()` (mempool, strict).
+- Golden pins: `test_consensus_parity` (count 413, max 1,922,197, first/last
+  violations, size-exact semantics) + the 478,544 KATs in
+  `test_domain_consensus_tx_structural` (real canonical tx accepted in-block,
+  rejected as new, tamper-rejected).
+
+This is **not** a consensus change ahead of zclassicd — it *restores* parity
+with what every running zclassicd node actually does, and is exactly the
+static, non-signaled, non-dynamic mechanism class gate E13 permits.
+
 ## Handling outside contributions (PR protocol)
 
 Outside PRs land on the public mirror `ZclassiC23/zclassic`. Treat each as

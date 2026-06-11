@@ -123,7 +123,8 @@ static struct cte_domain cte_run_domain(const struct transaction *tx)
 {
     struct domain_consensus_tx_structural_failure f = {0};
     struct zcl_result r =
-        domain_consensus_check_transaction_structural(tx, &f);
+        domain_consensus_check_transaction_structural(
+                tx, DOMAIN_TX_CTX_STANDALONE, &f);
     struct cte_domain v;
     v.ok = r.ok;
     v.reason = f.reject_reason;

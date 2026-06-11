@@ -89,7 +89,11 @@ enum mempool_accept_result accept_to_mempool(
     if (transaction_is_coinbase(tx))
         return MEMPOOL_ACCEPT_INVALID;
 
-    /* 1. Structural / context-free checks. */
+    /* 1. Structural / context-free checks. STANDALONE context on
+     * purpose: a NEW tx always gets the strict post-Sapling 102000 size
+     * cap regardless of history — the empirical oversize grandfather is
+     * in-block only, matching zclassicd's AcceptToMemoryPool ->
+     * CheckTransaction, which is always strict. */
     struct validation_state state;
     validation_state_init(&state);
     if (!check_transaction(tx, &state))

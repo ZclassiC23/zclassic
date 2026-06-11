@@ -21,11 +21,22 @@
 #define MAX_BLOCK_SIGOPS           20000U
 #define MAX_TX_SIZE_BEFORE_SAPLING 100000U
 /* zclassicd src/consensus/consensus.h:27: MAX_TX_SIZE_AFTER_SAPLING = 102000
- * ("a little extra"). The prior 2000000U here was an accidental mirror of
+ * ("a little extra"), enforced unconditionally in its CheckTransaction
+ * (main.cpp:1196-1200). The prior 2000000U here was an accidental mirror of
  * MAX_BLOCK_SIZE and let c23 accept ~20x-oversize txs that zclassicd rejects
- * (bad-txns-oversize, DoS 100) — a forward consensus fork. No post-Sapling
- * tx on the mainnet chain exceeds 102000, so tightening this re-validates
- * all history byte-identically. */
+ * (bad-txns-oversize, DoS 100) — a forward consensus fork.
+ *
+ * HOWEVER (proven 2026-06-11): the canonical mainnet chain contains 413
+ * post-Sapling txs ABOVE 102000 (heights 478544..1968856, max 1922197 —
+ * legal at mine time when the effective cap was MAX_BLOCK_SIZE; zclassicd
+ * tightened the constant later without grandfathering, so its own text
+ * false-rejects block 478544 on a from-genesis replay). Running zclassicd
+ * nodes accept that history only because already-validated blocks are never
+ * re-checked, and enforce 102000 on every NEW block. zclassic23 matches the
+ * LIVE behavior: those exact txs are excused via the empirical {txid,size}
+ * allowlist in domain/consensus/src/tx_structural.c (BLOCK context only;
+ * mempool/relay stays strict). The constant stays 102000 — what the running
+ * network enforces on all new blocks. */
 #define MAX_TX_SIZE_AFTER_SAPLING  102000U
 #define COINBASE_MATURITY          100
 #define TX_EXPIRY_HEIGHT_THRESHOLD 500000000U
