@@ -469,6 +469,32 @@ int test_tip_finalize_stage(void)
     }
 
     {
+        /* AUTHORITY PAIR SELF-CONSISTENCY (2026-06-11 height-splice fix):
+         * after a finalize PUBLISH the served pair must be the tip block's
+         * OWN (height, hash) — active_chain_tip()->nHeight ==
+         * active_chain_height(). The pre-fix step path published
+         * (next_h, hash(next_h+1)), leaving the authority height one BELOW
+         * the block its own hash resolves to; accept_block_header's
+         * label-trust install then turned that pair into a -1 header-graph
+         * splice on a tip re-delivery. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("authority_pair: setup",
+                 tf_setup("authority_pair", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("authority_pair: drains 3",
+                 tip_finalize_stage_drain(100) == 3);
+        struct block_index *tip = active_chain_tip(&ms.chain_active);
+        TF_CHECK("authority_pair: tip resolves to the served block",
+                 tip == &sc.blocks[3]);
+        TF_CHECK("authority_pair: height label == tip block's own height",
+                 tip != NULL &&
+                 active_chain_height(&ms.chain_active) == tip->nHeight);
+        TF_CHECK("authority_pair: published authority did not regress",
+                 tip_finalize_stage_last_height() == 3);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
         TF_CHECK("reorg: setup",
                  tf_setup("reorg", 3, TF_FAIL_REORG, -1, dir, sizeof(dir),

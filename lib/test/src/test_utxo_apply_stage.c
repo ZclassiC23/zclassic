@@ -256,6 +256,26 @@ static bool seed_proof_validate(sqlite3 *db, int n, int upstream_fail_height)
     return ok;
 }
 
+/* Seed a script_validate_log verdict row hash-bound to `hash` (the table is
+ * ensured by utxo_apply_stage_init, so seeding after uv_setup is valid). */
+static bool seed_script_validate_row(sqlite3 *db, int height, int ok,
+                                     const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, validated_at, "
+        " block_hash) VALUES (?, 'verified', ?, 1, 1, 1, ?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_int(st, 2, ok);
+    sqlite3_bind_blob(st, 3, hash->data, 32, SQLITE_STATIC);
+    bool done = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return done;
+}
+
 static bool log_row_at(sqlite3 *db, int height, int *out_ok,
                        char *out_status, size_t status_size,
                        char *out_kind, size_t kind_size)
@@ -504,6 +524,53 @@ int test_utxo_apply_stage(void)
                  !utxo_apply_stage_succeeded_at(-1));
         UV_CHECK("happy: next step IDLE",
                  utxo_apply_stage_step_once() == JOB_IDLE);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* HASH-BOUND VERDICT GATE (2026-06-11 height-splice fix): a
+         * script_validate_log row at the apply height that is provably bound
+         * to a DIFFERENT block hash (a stale verdict surviving a header
+         * relabel/reorg) must REFUSE the apply with the typed transient
+         * blocker utxo_apply.label_splice — never re-use the height-keyed
+         * verdict for the wrong block (the coin-hole mechanism, detected 28
+         * labels later as bad-cb-height). Re-binding the row to the block
+         * actually applied clears the refusal. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.label_splice");
+        UV_CHECK("label_splice: setup",
+                 uv_setup("label_splice", 3, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        struct uint256 wrong;
+        uint256_set_null(&wrong);
+        wrong.data[0] = 0x5a;
+        UV_CHECK("label_splice: seed mismatched-hash verdict at h=1",
+                 seed_script_validate_row(progress_store_db(), 1, 1, &wrong));
+        UV_CHECK("label_splice: drains only h0, refuses h1",
+                 utxo_apply_stage_drain(100) == 1);
+        UV_CHECK("label_splice: cursor held at 1",
+                 utxo_apply_stage_cursor() == 1);
+        UV_CHECK("label_splice: typed blocker recorded",
+                 blocker_exists("utxo_apply.label_splice"));
+        UV_CHECK("label_splice: counter counts the height",
+                 uv_dump_has("\"label_splice_total\":1"));
+        int ok = -1; char status[32]; char kindbuf[32];
+        UV_CHECK("label_splice: no log row committed at h=1",
+                 !log_row_at(progress_store_db(), 1, &ok, status,
+                             sizeof(status), kindbuf, sizeof(kindbuf)));
+        UV_CHECK("label_splice: retry tick stays BLOCKED",
+                 utxo_apply_stage_step_once() == JOB_BLOCKED);
+        UV_CHECK("label_splice: retry tick does not inflate the counter",
+                 uv_dump_has("\"label_splice_total\":1"));
+        /* Heal: re-bind the verdict to the block actually being applied. */
+        UV_CHECK("label_splice: re-bind verdict to the true block",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          sc.blocks[1].phashBlock));
+        UV_CHECK("label_splice: healed drain applies the rest",
+                 utxo_apply_stage_drain(100) == 2);
+        UV_CHECK("label_splice: cursor at 3 after heal",
+                 utxo_apply_stage_cursor() == 3);
+        blocker_clear("utxo_apply.label_splice");
         uv_teardown(dir, &ms, &sc);
     }
 

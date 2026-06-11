@@ -8,6 +8,7 @@
 #include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_post_step.h"
 #include "tip_finalize_log_store.h"
+#include "script_validate_log_store.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -163,30 +164,11 @@ static int finalize_script_log_ok(sqlite3 *db, int height, const struct uint256 
 {
     if (!db || !want_hash)
         return 0;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT ok, block_hash FROM script_validate_log WHERE height = ?", -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] script_validate_log prepare failed: %s",
-                 sqlite3_errmsg(db));
-        return 0;  // raw-return-ok:logged-above
-    }
-    if (sqlite3_bind_int(st, 1, height) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] script_validate_log bind failed height=%d", height);
-        sqlite3_finalize(st);
-        return 0;  // raw-return-ok:logged-above
-    }
-    int verdict = 0;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
-        int ok = sqlite3_column_int(st, 0);
-        const void *blob = sqlite3_column_blob(st, 1);
-        int blen = sqlite3_column_bytes(st, 1);
-        if (ok == 1 && blob && blen == 32 &&
-            memcmp(blob, want_hash->data, 32) == 0)
-            verdict = 1;
-    }
-    sqlite3_finalize(st);
-    return verdict;
+    struct script_validate_verdict_row row;
+    if (script_validate_log_verdict_at(db, height, &row) != 1)
+        return 0;  /* absent row or store error (logged by the accessor) */
+    return (row.ok == 1 && row.has_block_hash &&
+            uint256_eq(&row.block_hash, want_hash)) ? 1 : 0;
 }
 
 static void record_precondition_block(int height, const char *reason)
@@ -470,7 +452,15 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                      ((uint64_t)work_delta.pn[3] << 32) | work_delta.pn[2]);
     if (publish) {
         tip_finalize_run_post_finalize(new_tip);
-        update_last_advance(next_h, new_tip->phashBlock->data);
+        /* Publish the SELF-CONSISTENT authority pair: the served tip block's
+         * OWN height with its OWN hash — derive the label from the block,
+         * never the cursor. Publishing (next_h, hash(next_h+1)) made
+         * active_chain_height() == active_chain_tip()->nHeight - 1 at the
+         * finalize frontier, and accept_block_header's label-trust install
+         * turned that inconsistent pair into a -1 height splice across the
+         * whole header graph when a peer re-delivered the tip header
+         * (forensic 2026-06-11, splice at h=3143355). */
+        update_last_advance(new_tip->nHeight, new_tip->phashBlock->data);
     }
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;

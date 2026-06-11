@@ -52,6 +52,13 @@ extern _Atomic int64_t  g_ua_upstream_hole_first_unix;
 extern _Atomic uint64_t g_ua_upstream_hole_consec;
 extern _Atomic uint64_t g_ua_upstream_hole_warn_total;
 
+/* Hash-bound verdict refusals: the script_validate_log row at the apply
+ * height was provably bound to a DIFFERENT block hash than the one being
+ * applied (the header height-splice class, forensic 2026-06-11). Counts
+ * refusal heights via the JOB_BLOCKED path (re-fires per tick are visible
+ * in the blocker registry, not here). */
+extern _Atomic uint64_t g_ua_label_splice_total;
+
 /* The live stage handle (NULL before init / after shutdown). The dump reads
  * it lock-free exactly as the pre-extraction in-TU dump did. */
 stage_t *utxo_apply_stage_handle(void);

@@ -225,26 +225,25 @@ bool accept_block_header(const struct block_header *header,
                 return validation_state_invalid(state, false, 0,
                                                 "bad-prevblk", NULL);
             }
+            /* Heights are DERIVED from the parent link, never installed from
+             * the active-chain label. The deleted label-trust path here
+             * (expected_height = active_chain_height() when pindex ==
+             * active_tip, plus a parent nHeight rewrite to active_h - 1) let
+             * an internally inconsistent authority pair re-height the live
+             * tip header and its parent one LOW when a peer re-delivered a
+             * headers batch containing the current tip — cascading a -1
+             * splice over every header above and unwinding the reducer onto
+             * the wrong blocks (forensic 2026-06-11, splice at h=3143355,
+             * detected 28 labels later as bad-cb-height). The hash-linked
+             * derive-walk below remains the only height repair. */
             int expected_height = header_prev->nHeight + 1;
-            int active_h = active_chain_height(&ms->chain_active);
-            struct block_index *active_tip =
-                active_chain_tip(&ms->chain_active);
-            if (active_h > 0 && pindex == active_tip) {
-                expected_height = active_h;
-                if (header_prev->nHeight != active_h - 1) {
-                    header_prev->nHeight = active_h - 1;
-                    struct arith_uint256 proof = GetBlockProof(header_prev);
-                    if (header_prev->pprev) {
-                        arith_uint256_add(&header_prev->nChainWork,
-                                          &header_prev->pprev->nChainWork,
-                                          &proof);
-                    }
-                }
-            } else if (active_tip && header_prev == active_tip) {
-                expected_height = active_h + 1;
-            }
             if (pindex->pprev != header_prev ||
                 pindex->nHeight != expected_height) {
+                if (pindex->nHeight != expected_height)
+                    LOG_WARN("validation",
+                             "accept_block_header: relink h=%d->%d "
+                             "derive-from-parent",
+                             pindex->nHeight, expected_height);
                 pindex->pprev = header_prev;
                 pindex->nHeight = expected_height;
                 block_index_build_skip(pindex);

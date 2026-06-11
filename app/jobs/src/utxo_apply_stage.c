@@ -12,6 +12,7 @@
 #include "jobs/stage_helpers.h"
 #include "utxo_apply_log_store.h"
 #include "utxo_apply_stage_internal.h"
+#include "script_validate_log_store.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -78,6 +79,7 @@ _Atomic int64_t  g_ua_upstream_hole_height = -1;
 _Atomic int64_t  g_ua_upstream_hole_first_unix = 0;
 _Atomic uint64_t g_ua_upstream_hole_consec = 0;
 _Atomic uint64_t g_ua_upstream_hole_warn_total = 0;
+_Atomic uint64_t g_ua_label_splice_total = 0;
 
 /* CS-F4 blocked-reject dedup. A consensus-rejected height returns
  * JOB_BLOCKED and recomputes every tick BY DESIGN (an upstream repair can
@@ -147,6 +149,10 @@ static void reject_memo_clear(void)
  * tip_finalize_stage.c — so it needs no lock. */
 static struct { int64_t h; uint64_t reps; int64_t last_log; }
     g_upstream_hole_warn = { .h = -1 };
+
+/* label_splice WARN memo — same shape/contract as g_upstream_hole_warn. */
+static struct { int64_t h; uint64_t reps; int64_t last_log; }
+    g_label_splice_warn = { .h = -1 };
 
 /* tipfin_warn_throttled shape (tip_finalize_stage.c:78): emit on a height
  * TRANSITION (first occurrence never suppressed) or as a 300 s keep-alive
@@ -327,6 +333,69 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
+    }
+
+    /* Hash-bound verdict gate — the structural stop for the header
+     * height-splice class (forensic 2026-06-11, splice at h=3143355). Stage
+     * logs are keyed BY HEIGHT, so after an in-memory header relabel the
+     * script_validate_log row at next_h can be the verdict for a DIFFERENT
+     * block than the one chain[] now exposes; applying with that stale
+     * verdict tears the coin set at the splice height (the TRUE block never
+     * applies; surfaces ~28 labels later as bad-cb-height). Same
+     * hash-identity guard as tip_finalize's finalize_script_log_ok: a row
+     * provably bound to another hash refuses the apply with a typed
+     * transient blocker until script_validate re-binds the height. A NULL
+     * (pre-column) hash or an absent row cannot prove a mismatch and passes
+     * through — the proof_validate cursor guard above covers ordering. */
+    struct script_validate_verdict_row sv_row;
+    int sv_found = script_validate_log_verdict_at(db, next_h, &sv_row);
+    if (sv_found < 0)
+        return JOB_FATAL;
+    if (sv_found == 1 && sv_row.has_block_hash &&
+        !uint256_eq(&sv_row.block_hash, bi->phashBlock)) {
+        char want_hex[65] = {0}, got_hex[65] = {0};
+        uint256_get_hex(bi->phashBlock, want_hex);
+        uint256_get_hex(&sv_row.block_hash, got_hex);
+        /* WARN on a height TRANSITION or as a 300 s keep-alive (memo touched
+         * only by this single-threaded step path — the g_upstream_hole_warn
+         * convention); the counter counts refusal HEIGHTS, not ticks. The
+         * blocker registry's rate limit dedups the JOB_BLOCKED re-fires. */
+        int64_t now_w = platform_time_wall_unix();
+        bool changed = g_label_splice_warn.h != (int64_t)next_h;
+        if (changed) {
+            g_label_splice_warn.h = (int64_t)next_h;
+            atomic_fetch_add(&g_ua_label_splice_total, 1);
+        }
+        uint64_t shown = 0;
+        if (upstream_hole_warn_throttled(changed, now_w,
+                                         &g_label_splice_warn.reps,
+                                         &g_label_splice_warn.last_log,
+                                         &shown))
+            LOG_WARN(STAGE_NAME,
+                     "[utxo_apply] label_splice height=%d: script_validate_log "
+                     "row is hash-bound to %s but the block being applied is "
+                     "%s; refusing apply until the verdict is re-bound "
+                     "(suppressed=%llu)",
+                     next_h, got_hex, want_hex, (unsigned long long)shown);
+        char reason[BLOCKER_REASON_MAX];
+        snprintf(reason, sizeof(reason),
+                 "height=%d script_validate_log block_hash %.16s.. != "
+                 "applying block %.16s..; height-keyed verdict belongs to a "
+                 "different block (label splice) — apply refused",
+                 next_h, got_hex, want_hex);
+        blocker_init(&c->blocker, "utxo_apply.label_splice", STAGE_NAME,
+                     BLOCKER_TRANSIENT, reason);
+        c->blocker.escape_deadline_secs = 60;
+        c->blocker.retry_budget = 5;
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
+        return JOB_BLOCKED;
+    }
+    if (g_label_splice_warn.h == (int64_t)next_h) {
+        /* The previously-refused verdict is re-bound (or no longer provably
+         * foreign): close the memo so a re-opened splice counts as new. */
+        g_label_splice_warn.h = -1;
+        g_label_splice_warn.reps = 0;
+        g_label_splice_warn.last_log = 0;
     }
 
     struct block blk;
@@ -538,6 +607,12 @@ bool utxo_apply_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
+    /* step_apply's hash-bound verdict gate reads script_validate_log; ensure
+     * it exists (idempotent) so init-ordering never breaks the read. */
+    if (!script_validate_log_ensure_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
     if (!utxo_apply_ensure_delta_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
@@ -680,9 +755,13 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_ua_upstream_hole_first_unix, (int64_t)0);
     atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
     atomic_store(&g_ua_upstream_hole_warn_total, (uint64_t)0);
+    atomic_store(&g_ua_label_splice_total, (uint64_t)0);
     g_upstream_hole_warn.h = -1;
     g_upstream_hole_warn.reps = 0;
     g_upstream_hole_warn.last_log = 0;
+    g_label_splice_warn.h = -1;
+    g_label_splice_warn.reps = 0;
+    g_label_splice_warn.last_log = 0;
     reject_memo_clear();
     pthread_mutex_unlock(&g_lock);
 }
@@ -715,79 +794,7 @@ stage_t *utxo_apply_stage_handle(void)
     return g_stage;
 }
 
-bool utxo_apply_stage_succeeded_at(int height)
-{
-    if (height < 0)
-        return false;
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return false;
-    progress_store_tx_lock();
-    sqlite3_stmt *st = NULL;
-    bool ok = false;
-    int rc = sqlite3_prepare_v2(db,
-            "SELECT ok FROM utxo_apply_log WHERE height = ?",
-            -1, &st, NULL);
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_int(st, 1, height);
-        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
-            ok = sqlite3_column_int(st, 0) == 1;
-        sqlite3_finalize(st);
-    } else {
-        /* This accessor gates reducer_pending_body_is_accepted: a silent
-         * false on a store error is indistinguishable from "not applied". */
-        LOG_WARN(STAGE_NAME,
-                 "[utxo_apply] succeeded_at(%d): prepare failed rc=%d (%s); "
-                 "reporting not-applied", height, rc, sqlite3_errmsg(db));
-    }
-    progress_store_tx_unlock();
-    return ok;
-}
-
-uint64_t utxo_apply_stage_verified_total(void)
-{
-    return atomic_load(&g_ua_verified_total);
-}
-
-uint64_t utxo_apply_stage_spend_unknown_total(void)
-{
-    return atomic_load(&g_ua_spend_unknown_total);
-}
-
-uint64_t utxo_apply_stage_utxo_collision_total(void)
-{
-    return atomic_load(&g_ua_utxo_collision_total);
-}
-
-uint64_t utxo_apply_stage_value_overflow_total(void)
-{
-    return atomic_load(&g_ua_value_overflow_total);
-}
-
-uint64_t utxo_apply_stage_upstream_failed_total(void)
-{
-    return atomic_load(&g_ua_upstream_failed_total);
-}
-
-uint64_t utxo_apply_stage_internal_error_total(void)
-{
-    return atomic_load(&g_ua_internal_error_total);
-}
-
-uint64_t utxo_apply_stage_reorg_unwound_total(void)
-{
-    return atomic_load(&g_ua_reorg_unwound_total);
-}
-
-uint64_t utxo_apply_stage_outputs_added_total(void)
-{
-    return atomic_load(&g_ua_total_outputs_added);
-}
-
-uint64_t utxo_apply_stage_outputs_spent_total(void)
-{
-    return atomic_load(&g_ua_total_outputs_spent);
-}
-
-/* utxo_apply_dump_state_json (+ its first-failure summary helper) lives in
- * utxo_apply_stage_dump.c — see utxo_apply_stage_internal.h. */
+/* utxo_apply_stage_succeeded_at + the per-status counter total accessors
+ * live in utxo_apply_stage_accessors.c; utxo_apply_dump_state_json (+ its
+ * first-failure summary helper) lives in utxo_apply_stage_dump.c — see
+ * utxo_apply_stage_internal.h. */

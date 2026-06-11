@@ -24,6 +24,8 @@
 #include "net/msg_internal.h"
 #include "net/msgprocessor.h"
 #include "net/peer_scoring.h"
+#include "validation/chainstate.h"
+#include "validation/process_block.h"  /* accept_block_header */
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -84,6 +86,19 @@ static bool ph_write_header(struct byte_stream *s,
 }
 
 static struct net_manager g_ph_nm;
+
+/* Case 5 authority shims: replay the EXACT inconsistent authority pair the
+ * 2026-06-11 forensic found at the finalize frontier — height = tip-1 while
+ * the hash resolves to the tip block itself. */
+static int64_t g_ph_auth_height = -1;
+static uint8_t g_ph_auth_hash[32];
+static bool ph_auth_is_authoritative(void) { return true; }
+static int64_t ph_auth_get_height(void) { return g_ph_auth_height; }
+static bool ph_auth_get_hash(uint8_t out[32])
+{
+    memcpy(out, g_ph_auth_hash, 32);
+    return true;
+}
 
 int test_process_headers_adversarial(void);
 int test_process_headers_adversarial(void)
@@ -248,6 +263,73 @@ int test_process_headers_adversarial(void)
             PH_CHECK("non-connecting: DoS 0 — orphan peer NOT penalized",
                      atomic_load(&node.misbehavior) == 0 && !node.disconnect);
             stream_free(&s);
+        }
+    }
+
+    /* ── 5. tip-header re-delivery must NOT relabel heights (the 2026-06-11
+     *       height-splice regression). Re-use h1/h2 from case 3 (accepted at
+     *       h=1,2). Serve h2 as the window tip and register an authority
+     *       publishing the INCONSISTENT pair the forensic captured at the
+     *       finalize frontier (height = tip-1, hash = tip). The deleted
+     *       label-trust install in accept_block_header would re-height the
+     *       tip 2->1 and rewrite its parent 1->0, cascading a -1 splice over
+     *       every header above; the derive-from-parent rule must leave the
+     *       graph untouched and a successor must still land at parent+1. */
+    if (mined) {
+        struct uint256 h2_hash;
+        block_header_get_hash(&h2, &h2_hash);
+        struct block_index *bi1 = block_map_find(&ms.map_block_index, &h1_hash);
+        struct block_index *bi2 = block_map_find(&ms.map_block_index, &h2_hash);
+        PH_CHECK("relabel: accepted tip + parent present", bi1 && bi2);
+        if (bi1 && bi2) {
+            PH_CHECK("relabel: window tip installed at h=2",
+                     active_chain_move_window_tip(&ms.chain_active, bi2));
+            g_ph_auth_height = bi2->nHeight - 1;       /* the poisoned label */
+            memcpy(g_ph_auth_hash, h2_hash.data, 32);  /* ...of the tip hash */
+            struct active_chain_authority poisoned = {
+                .get_height = ph_auth_get_height,
+                .get_hash = ph_auth_get_hash,
+                .is_authoritative = ph_auth_is_authoritative,
+            };
+            active_chain_register_authority(&poisoned);
+            active_chain_register_block_map(&ms.map_block_index);
+            PH_CHECK("relabel: simulated pair is the inconsistent one",
+                     active_chain_height(&ms.chain_active) == 1 &&
+                     active_chain_tip(&ms.chain_active) == bi2);
+
+            struct validation_state state;
+            validation_state_init(&state);
+            struct block_index *re = NULL;
+            bool ok = accept_block_header(&h2, &state, &ms, cp, &re);
+            PH_CHECK("relabel: re-delivered tip header accepted",
+                     ok && re == bi2);
+            PH_CHECK("relabel: tip nHeight NOT mutated", bi2->nHeight == 2);
+            PH_CHECK("relabel: parent nHeight NOT mutated", bi1->nHeight == 1);
+            PH_CHECK("relabel: links intact",
+                     bi2->pprev == bi1 && bi1->pprev == gen &&
+                     gen->nHeight == 0);
+
+            /* Overlapping successor batch: a child above the re-delivered
+             * tip still derives parent+1, never authority-label+1. */
+            struct block_header h3;
+            bool m3 = ph_mine_header(&h3, 3, &h2_hash, cp);
+            PH_CHECK("relabel: successor mined", m3);
+            if (m3) {
+                struct validation_state st3;
+                validation_state_init(&st3);
+                struct block_index *bi3 = NULL;
+                bool ok3 = accept_block_header(&h3, &st3, &ms, cp, &bi3);
+                PH_CHECK("relabel: successor derives parent+1",
+                         ok3 && bi3 && bi3->nHeight == 3 &&
+                         bi3->pprev == bi2);
+                PH_CHECK("relabel: graph heights unchanged after batch",
+                         bi1->nHeight == 1 && bi2->nHeight == 2);
+            }
+
+            /* Restore globals for the sequential in-process runner. */
+            struct active_chain_authority none = {0};
+            active_chain_register_authority(&none);
+            active_chain_register_block_map(NULL);
         }
     }
 
