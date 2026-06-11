@@ -201,10 +201,16 @@ bool syncsvc_header_band_continue(const struct active_chain *chain,
 
 /* While the band fact is recorded: the contiguous-frontier block to
  * anchor periodic getheaders at (the peer forks there and serves the
- * band). NULL when no band fact exists (O(1)), the band has closed, or
- * no servable frontier resolves. */
+ * band). Prefers the conversation frontier recorded by band_continue —
+ * chain slots only fill at closure, so a slots-only anchor livelocks one
+ * batch behind the index frontier (defect #7). NULL when no band fact
+ * exists (O(1)), the band has closed, or no servable frontier resolves. */
 struct block_index *syncsvc_header_band_backfill_anchor(
     const struct active_chain *chain);
+
+/* Tests only: clear the process-global conversation frontier so band
+ * cases cannot leak state into each other. */
+void syncsvc_header_band_reset_for_testing(void);
 
 /* Closure probe — call after every accepted header batch (outside the
  * full-batch gate: the final band batch can be <160). No-op without the

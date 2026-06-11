@@ -157,6 +157,11 @@ struct block_index *syncsvc_header_band_backfill_anchor(
     return NULL;
 }
 
+void syncsvc_header_band_reset_for_testing(void)
+{
+    atomic_store(&g_band_walk_frontier, NULL);
+}
+
 /* Closure slot-fill: non-destructive and in-memory only. At closure the
  * tip's pprev chain is contiguous down to the trust root BY DERIVATION
  * (utxo_recovery_block_ancestry_break(tip) == NULL is the closure

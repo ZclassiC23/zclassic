@@ -389,6 +389,19 @@ int node_db_catchup_service_run(struct node_db *ndb,
     }
     tx_open = true;
 
+    /* Unreadable blocks are LOUD HOLES, not abort triggers: on a
+     * cold-import datadir the imported index carries the source node's
+     * nFile/nDataPos layout, so low-height entries can claim
+     * BLOCK_HAVE_DATA yet deserialize as garbage from OUR files. The old
+     * abort-on-first-bad-frame turned one such frame into an infinite
+     * restart loop that never reached the readable rows the tip needs
+     * (defect #8, live 2026-06-11: 486 garbage reads at h~9.8k, catchup
+     * "aborting (failed=1)" forever, tip pinned). Consumers already
+     * handle missing lean rows (height_not_found). */
+    int lean_holes = 0;
+    int first_hole_h = -1;
+    int skip_file = -1;
+
     for (int h = start; h <= chain_tip; h++) {
         if (g_shutdown_requested) {
             interrupted = true;
@@ -401,6 +414,10 @@ int node_db_catchup_service_run(struct node_db *ndb,
         const struct block_index *pindex = active_chain_at(chain, h);
         if (!pindex) continue;
         if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
+        if (pindex->nFile == skip_file) {
+            if (++lean_holes == 1) first_hole_h = h;
+            continue;
+        }
 
         /* mmap new file if needed */
         if (pindex->nFile != cached_file) {
@@ -409,16 +426,20 @@ int node_db_catchup_service_run(struct node_db *ndb,
                 datadir, pindex->nFile, &cached_size);
             cached_file = cached_data ? pindex->nFile : -1;
             if (!cached_data) {
-                LOG_WARN("catchup", "catchup: failed to mmap file blk%05d.dat", pindex->nFile);
-                failed = true;
-                break;
+                LOG_WARN("catchup", "catchup: failed to mmap file blk%05d.dat"
+                         " — skipping its blocks (lean holes)", pindex->nFile);
+                skip_file = pindex->nFile;
+                if (++lean_holes == 1) first_hole_h = h;
+                continue;
             }
         }
 
         if (pindex->nDataPos >= cached_size) {
-            LOG_INFO("catchup", "catchup: malformed block data offset at height %d", h);
-            failed = true;
-            break;
+            if (++lean_holes == 1) first_hole_h = h;
+            if (lean_holes <= 3)
+                LOG_INFO("catchup", "catchup: malformed block data offset at "
+                         "height %d — recording lean hole", h);
+            continue;
         }
 
         struct block blk;
@@ -430,8 +451,11 @@ int node_db_catchup_service_run(struct node_db *ndb,
                               remaining);
         if (!block_deserialize(&blk, &s)) {
             block_free(&blk);
-            failed = true;
-            break;
+            if (++lean_holes == 1) first_hole_h = h;
+            if (lean_holes <= 3)
+                LOG_INFO("catchup", "catchup: undecodable block frame at "
+                         "height %d — recording lean hole", h);
+            continue;
         }
 
         /* Lean index: block header + txid index */
@@ -593,6 +617,16 @@ int node_db_catchup_service_run(struct node_db *ndb,
            elapsed > 0 ? indexed / (int)elapsed : indexed,
            last_committed_height);
     fflush(stdout);
+    if (lean_holes > 0) {
+        LOG_WARN("catchup",
+                 "catchup: %d lean-index hole(s) recorded (first at h=%d) — "
+                 "unreadable/garbage frames skipped, not aborted; those "
+                 "heights stay unindexed until their bodies are refetched",
+                 lean_holes, first_hole_h);
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=lean_catchup_holes count=%d first_h=%d",
+                    lean_holes, first_hole_h);
+    }
 
     /* Checkpoint WAL after bulk catchup to reclaim disk space */
     if (indexed > 10000)

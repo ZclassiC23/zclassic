@@ -850,6 +850,70 @@ static int test_sync_service_band_closed_after_relink(void)
     return failures;
 }
 
+static int test_sync_service_band_anchor_prefers_conversation_frontier(void)
+{
+    int failures = 0;
+
+    TEST("sync_service band anchor tracks the conversation frontier past "
+         "lagging slots (defect #7 livelock regression)") {
+        struct active_chain chain;
+        struct block_index f0, f1, f2, f3, f4;
+        struct block_index is[6];
+        struct blocker_record br;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+        active_chain_init(&chain);
+
+        /* Slots populated only to f2 (the boot slot-fill extent). */
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x10);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x11);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x12);
+        ASSERT(active_chain_move_window_tip(&chain, &f2));
+
+        /* Detached island above the band. */
+        for (int k = 0; k < 6; k++)
+            band_make_block(&is[k], anchor + 100 + k,
+                            k ? &is[k - 1] : NULL, 0, (uint8_t)(0x20 + k));
+        ASSERT(active_chain_install_tip_slot(&chain, &is[5]));
+
+        ASSERT(blocker_init(&br, HEADER_BAND_BLOCKER_ID, "unit",
+                            BLOCKER_DEPENDENCY, "unit fixture"));
+        ASSERT(blocker_set(&br) >= 0);
+
+        /* Index frontier extends past the slotted frontier: f3/f4 are
+         * accepted (pprev-linked, trust-rooted) but NOT slotted — the
+         * exact live shape that pinned the anchor at f2 forever. */
+        band_make_block(&f3, anchor + 4, &f2, 4, 0x13);
+        band_make_block(&f4, anchor + 5, &f3, 5, 0x14);
+
+        /* Without a recorded conversation, the anchor is the slot walk. */
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f2);
+
+        /* A batch ending at f4 — even one that was 100% already-known —
+         * advances the conversation frontier; the next anchor MUST be f4
+         * (old code: f2 again => the peer re-serves the same range). */
+        ASSERT(syncsvc_header_band_continue(&chain, &f4));
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f4);
+
+        /* A lower batch never rewinds the recorded frontier. */
+        ASSERT(syncsvc_header_band_continue(&chain, &f3));
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f4);
+
+        /* Reset restores the slot-walk fallback. */
+        syncsvc_header_band_reset_for_testing();
+        ASSERT(syncsvc_header_band_backfill_anchor(&chain) == &f2);
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+        active_chain_free(&chain);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_band_producer_derives_from_ancestry(void)
 {
     int failures = 0;
@@ -1561,6 +1625,7 @@ int test_sync_service(void)
     failures += test_sync_service_restarts_low_header_batches_from_tip();
     failures += test_sync_service_band_continue_is_progress_not_restart();
     failures += test_sync_service_band_backfill_anchor_selects_frontier();
+    failures += test_sync_service_band_anchor_prefers_conversation_frontier();
     failures += test_sync_service_band_closed_after_relink();
     failures += test_sync_service_band_producer_derives_from_ancestry();
     failures += test_sync_service_builds_getheaders_locator_from_chain();
