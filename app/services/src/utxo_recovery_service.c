@@ -564,6 +564,35 @@ struct recovery_exec_result utxo_recovery_execute(
     case BOOT_RECOVER_RESET_CHAIN: {
         struct block_index *coins_block = block_map_find(
             &ctx->state->map_block_index, &vr->coins_hash);
+
+        /* A genesis-phase RESET_CHAIN is a RESTORE (raise the chain to
+         * the coins), never a rollback: when the CSR already holds a
+         * HIGHER restored tip (the derived coins-best installed moments
+         * earlier), committing the stale legacy view's lower height
+         * bulldozes it — the deterministic boot pull-down of defect #9
+         * (live 2026-06-11: from=3143804 to=3137373 reason=
+         * chain_coins_mismatch_reset, every boot). Refuse the downward
+         * commit loudly and let the higher tip stand; the legacy
+         * projection reconciles forward. */
+        if (coins_block) {
+            struct chain_state_view csv;
+            csr_snapshot(csr_instance(), &csv);
+            if (csv.tip_height > coins_block->nHeight) {
+                LOG_WARN("utxo_recovery",
+                         "chain_coins_mismatch_reset REFUSED: csr already "
+                         "holds h=%d above the legacy coins view h=%d — a "
+                         "genesis-phase reset is raise-only; keeping the "
+                         "restored tip",
+                         csv.tip_height, coins_block->nHeight);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                            "action=mismatch_reset_refused csr_h=%d "
+                            "legacy_h=%d", csv.tip_height,
+                            coins_block->nHeight);
+                res.recovered = true;
+                break;
+            }
+        }
+
         if (coins_block) {
             if (chain_restore_block_is_consensus_backed_on_disk(
                     coins_block, ctx->datadir)) {
