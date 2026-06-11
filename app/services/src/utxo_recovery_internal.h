@@ -138,6 +138,15 @@ void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
                                           int64_t utxo_count);
 void utxo_recovery_clear_cold_import_seed(struct node_db *ndb);
 
+/* ── Mirror-walk helpers (utxo_recovery_mirror_walk.c) ────────────────
+ * Legacy fallbacks below the wave-2 derived coins-best: MAX(height) over
+ * the rebuildable utxos mirror, and the newest mirror tip that is
+ * consensus-backed on disk. Whole TU is a wave-3 deletion unit. */
+int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx);
+struct block_index *utxo_recovery_find_disk_backed_utxo_tip(
+    struct utxo_recovery_ctx *ctx,
+    int max_height);
+
 /* Shared boot-repair tuning shared by utxo_recovery_service.c and
  * utxo_recovery_stale_cursor.c. */
 #define UTXO_CHECKPOINT_NEAR_WINDOW 144
