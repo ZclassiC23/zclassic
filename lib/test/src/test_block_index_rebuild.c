@@ -141,12 +141,17 @@ static bool bir_emit_fork(event_log_t *log, int height)
     return event_log_append(log, EV_BLOCK_HEADER, buf, written) != UINT64_MAX;
 }
 
-/* Seed the tip_finalize cursor + a finalized tip row at `tip_height` in
- * the progress.kv store, exactly as the live tip_finalize stage would. */
+/* Seed the tip_finalize cursor + an ANCHOR row at `tip_height` in the
+ * progress.kv store, exactly as tip_finalize_stage_seed_anchor records a
+ * restored tip (anchor row at T carrying the block's OWN hash, cursor at
+ * T+1). The earlier version wrote a 'finalized' row at T carrying hash(T)
+ * — a convention that does not exist in the live store (finalized rows
+ * carry the LOOKAHEAD hash(T+1)); it only passed because the loader used
+ * the same convention-blind raw read this seeding mirrored. The loader now
+ * resolves via tip_finalize_stage_resolve_durable_tip. */
 static bool bir_seed_tip_cursor(sqlite3 *pk, int tip_height,
                                 const struct uint256 *tip_hash)
 {
-    /* stage_cursor row: cursor counts finalized heights; tip = cursor-1. */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(pk,
         "INSERT OR REPLACE INTO stage_cursor (name, cursor, updated_at) "
@@ -173,7 +178,7 @@ static bool bir_seed_tip_cursor(sqlite3 *pk, int tip_height,
         "INSERT OR REPLACE INTO tip_finalize_log "
         "(height,status,ok,work_delta_high,work_delta_low,utxo_size_after,"
         " reorg_depth,finalized_at,tip_hash) "
-        "VALUES (?, 'finalized', 1, 0, 0, 0, 0, 0, ?)", -1, &st, NULL)
+        "VALUES (?, 'anchor', 1, 0, 0, 0, 0, 0, ?)", -1, &st, NULL)
         != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, tip_height);

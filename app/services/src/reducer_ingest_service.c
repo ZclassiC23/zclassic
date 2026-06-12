@@ -135,9 +135,15 @@ static bool reducer_read_back_verdict(int height,
         return false;
     }
 
+    /* Convention-aware: "the hash of the block AT height" is witnessed by
+     * the finalized row at height-1 OR an anchor row at height
+     * (tip_finalize_stage.h). The raw finalized_tip_at(height) read only
+     * matched anchor rows here (a finalized row at height carries the
+     * LOOKAHEAD hash(height+1)), so a freshly-finalized block was invisible
+     * to read-back until the trusted-tip anchor landed seconds later. */
     uint8_t finalized[32];
     if (pdb &&
-        tip_finalize_stage_finalized_tip_at(pdb, height, finalized) &&
+        tip_finalize_stage_block_hash_at(pdb, height, finalized) &&
         memcmp(finalized, hash->data, 32) == 0) {
         return true; /* out left MODE_VALID by the caller's init */
     }

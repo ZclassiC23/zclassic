@@ -663,6 +663,29 @@ bool tip_finalize_stage_block_hash_at(sqlite3 *db, int height,
     return false;
 }
 
+bool tip_finalize_stage_resolve_durable_tip(sqlite3 *db, int *out_height,
+                                            uint8_t out_hash[32])
+{
+    if (!db || !out_height || !out_hash)
+        return false;
+    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    if (cursor == 0)
+        return false;
+    /* Try cursor (anchor-at-cursor steady state), then cursor-1 (legacy +1
+     * lattice / finalized-row convention). block_hash_at discriminates the
+     * row types, so whichever height resolves owns the returned hash. */
+    for (int back = 0; back <= 1; back++) {
+        int h = (int)cursor - back;
+        if (h < 0)
+            break;
+        if (tip_finalize_stage_block_hash_at(db, h, out_hash)) {
+            *out_height = h;
+            return true;
+        }
+    }
+    return false;
+}
+
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *user)
 {
     pthread_mutex_lock(&g_lock);

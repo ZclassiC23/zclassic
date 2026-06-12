@@ -41,6 +41,16 @@ static bool ensure_authority_anchor_row(sqlite3 *db, int height,
     if (row.found && row.ok && row.has_tip_hash &&
         memcmp(row.tip_hash.data, hash, 32) == 0)
         return true;
+    /* Never downgrade a finalized ok=1 row into an anchor row. The
+     * finalized row at `height` proves the height→height+1 transition and
+     * carries the SUCCESSOR's hash (the only durable source
+     * tip_finalize_stage_block_hash_at has for height+1's own hash); a
+     * stale authority re-commit of tip `height` adds no information — the
+     * pair (height, hash(height)) is already derivable from the finalized
+     * row at height-1. log_insert is INSERT OR REPLACE, so without this
+     * guard the richer row would be destroyed. */
+    if (row.found && row.ok && !row.is_anchor)
+        return true;
 
     struct uint256 tip_hash;
     memcpy(tip_hash.data, hash, 32);
@@ -70,7 +80,20 @@ bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
         return false;
     }
 
-    uint64_t target = (uint64_t)height + 1u;
+    /* The cursor floor is the authority tip's OWN height — never height+1.
+     * Cursor C means "transitions through C-1→C are finalized; C→C+1 is
+     * pending". An authority committing tip H proves exactly C=H; stamping
+     * H+1 claims the H→H+1 transition that nothing finalized, and SKIPS it
+     * forever (the cursor is monotonic). On the live path that skip is the
+     * served-tip-trails-by-one-block defect: every finalize advance is
+     * followed by a trusted_tip re-anchor of the just-published tip, so
+     * each new block could only be published when ITS successor arrived
+     * (the alternating finalized/anchor lattice in tip_finalize_log,
+     * forensic 2026-06-12 at h=3144857: block arrived 11:05, published
+     * 11:17 when the next block landed). Boot/restore readers resolve the
+     * durable tip via tip_finalize_stage_resolve_durable_tip, which
+     * handles both this convention and the legacy +1 lattice. */
+    uint64_t target = (uint64_t)height;
     uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
     /* PRE-INSERT row count: the FIX-3 seed-exemption discriminator for the
      * frontier cap below. Must be read BEFORE ensure_authority_anchor_row —
@@ -86,9 +109,9 @@ bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
         return false;
     /* FIX-3 jump site 2: never advance the finalize cursor past a rowless
      * height. A healthy restart is unchanged — the scan over
-     * [cursor, height+1) is covered by the just-ensured anchor row at
-     * `height`; a held/rowless span caps the jump so the stage
-     * re-finalizes forward (slower, never wrong). */
+     * [cursor, height) ends below the just-ensured anchor row at `height`;
+     * a held/rowless span caps the jump so the stage re-finalizes forward
+     * (slower, never wrong). */
     if (!stage_anchor_cap_target_at_log_frontier(db, "tip_finalize_log",
                                                  cursor, target,
                                                  rows <= 0, &target))

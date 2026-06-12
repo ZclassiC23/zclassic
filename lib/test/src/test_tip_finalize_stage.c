@@ -373,8 +373,11 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup && tip_finalize_stage_init(&ms);
         tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
         TF_CHECK("stale_cursor: setup", ok_setup);
-        TF_CHECK("stale_cursor: cursor anchored above restored tip",
-                 tip_finalize_stage_cursor() == 6);
+        /* The anchor floor is the restored tip's OWN height (5), never
+         * tip+1: stamping 6 would claim the unfinalized 5→6 transition and
+         * skip it forever (the served-tip-trails-by-one defect). */
+        TF_CHECK("stale_cursor: cursor anchored at restored tip",
+                 tip_finalize_stage_cursor() == 5);
         TF_CHECK("stale_cursor: header_admit not anchored from active tip",
                  cursor_at(progress_store_db(), "header_admit") == 0);
         TF_CHECK("stale_cursor: validate_headers not anchored from active tip",
@@ -465,6 +468,95 @@ int test_tip_finalize_stage(void)
         }
         TF_CHECK("happy: next step IDLE",
                  tip_finalize_stage_step_once() == JOB_IDLE);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    /* Live-frontier no-skip (task #30 root cause, forensic 2026-06-12 at
+     * h=3144857): every chain_set_active_tip re-anchors the JUST-PUBLISHED
+     * tip via set_authoritative_tip. The old height+1 anchor target bumped
+     * the cursor past the pending tip→tip+1 transition, so each new block
+     * could only be published when ITS successor arrived — the served tip
+     * trailed the network by one full inter-block interval (the alternating
+     * finalized/anchor lattice in tip_finalize_log). This block pins:
+     * (a) the self re-anchor is a cursor no-op, (b) the successor publishes
+     * on FIRST arrival, (c) the resolver returns a self-consistent pair in
+     * the advance→anchor crash window, (d) a stale re-commit never
+     * downgrades a finalized row to an anchor row. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "noskip");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 5);
+        /* Block 4 exists in the synth chain but has NOT "arrived" yet —
+         * keep it out of the map so the most-work candidate is the tip. */
+        for (int i = 0; ok_setup && i <= 3; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]);
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
+        ok_setup = ok_setup && tip_finalize_stage_init(&ms);
+        tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
+        TF_CHECK("noskip: setup", ok_setup);
+        TF_CHECK("noskip: drains to the tip", tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("noskip: cursor at tip", tip_finalize_stage_cursor() == 3);
+
+        /* (a) The live-path re-anchor of the self-published tip. */
+        tip_finalize_stage_set_authoritative_tip(3, sc.hashes[3].data);
+        TF_CHECK("noskip: self re-anchor does not bump the cursor",
+                 tip_finalize_stage_cursor() == 3);
+        int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        TF_CHECK("noskip: anchor row written at tip",
+                 log_row_at(progress_store_db(), 3, &row_ok, status,
+                            sizeof(status), &depth, &utxos));
+        TF_CHECK("noskip: anchor row ok",
+                 row_ok == 1 && strcmp(status, "anchor") == 0);
+        TF_CHECK("noskip: idle while successor absent",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+
+        /* (b) Successor arrives: map + utxo witness, ONE step publishes it. */
+        ok_setup = block_map_insert(&ms.map_block_index,
+                                    sc.blocks[4].phashBlock, &sc.blocks[4]);
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 4, -1);
+        TF_CHECK("noskip: successor arrival setup", ok_setup);
+        TF_CHECK("noskip: successor publishes on FIRST arrival",
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
+        TF_CHECK("noskip: cursor advanced", tip_finalize_stage_cursor() == 4);
+        TF_CHECK("noskip: successor is the published tip",
+                 tip_finalize_stage_last_height() == 4);
+        TF_CHECK("noskip: anchor row upgraded to finalized",
+                 log_row_at(progress_store_db(), 3, &row_ok, status,
+                            sizeof(status), &depth, &utxos) &&
+                 row_ok == 1 && strcmp(status, "finalized") == 0);
+
+        /* (c) Crash-window resolver: cursor=4, no row at 4 yet (the next
+         * trusted-tip anchor has not landed). The naive cursor-1 raw read
+         * would pair (3, hash(4)) — the splice-class poisoned pair; the
+         * resolver must return (4, hash(4)). */
+        int rh = -1; uint8_t rhash[32];
+        TF_CHECK("noskip: resolver finds a durable tip",
+                 tip_finalize_stage_resolve_durable_tip(progress_store_db(),
+                                                        &rh, rhash));
+        TF_CHECK("noskip: resolver pair is self-consistent",
+                 rh == 4 && memcmp(rhash, sc.hashes[4].data, 32) == 0);
+
+        /* (d) A stale authority re-commit of an already-finalized height
+         * must not downgrade the finalized row (it carries the successor
+         * hash block_hash_at reads) and must not move the cursor. */
+        tip_finalize_stage_set_authoritative_tip(3, sc.hashes[3].data);
+        TF_CHECK("noskip: stale re-commit keeps the finalized row",
+                 log_row_at(progress_store_db(), 3, &row_ok, status,
+                            sizeof(status), &depth, &utxos) &&
+                 row_ok == 1 && strcmp(status, "finalized") == 0);
+        TF_CHECK("noskip: stale re-commit keeps the cursor",
+                 tip_finalize_stage_cursor() == 4);
         tf_teardown(dir, &ms, &sc);
     }
 

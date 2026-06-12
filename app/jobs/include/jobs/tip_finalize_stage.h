@@ -58,6 +58,22 @@ bool tip_finalize_stage_finalized_tip_at(struct sqlite3 *db, int height,
 bool tip_finalize_stage_block_hash_at(struct sqlite3 *db, int height,
                                       uint8_t out_hash[32]);
 
+/* Resolve the durable served-tip (height, own-hash) pair from the persisted
+ * tip_finalize cursor, SELF-CONSISTENTLY across both log conventions. The
+ * naive `tip = cursor-1` + finalized_tip_at(tip) read pairs cursor-1 with a
+ * finalized row's LOOKAHEAD hash — i.e. (H-1, hash(H)), exactly the
+ * poisoned authority pair of the 2026-06-11 splice forensic, manufactured
+ * in the crash window between a finalize advance and the next trusted-tip
+ * anchor. This resolver tries the block's OWN hash at `cursor` first (the
+ * anchor-at-cursor steady state), then `cursor-1` (the legacy +1 lattice),
+ * via the convention-aware block_hash_at — the returned height ALWAYS owns
+ * the returned hash. Returns false when no witness row resolves (callers
+ * must treat that as "no durable tip", never guess). `db` is the progress
+ * store handle. */
+bool tip_finalize_stage_resolve_durable_tip(struct sqlite3 *db,
+                                            int *out_height,
+                                            uint8_t out_hash[32]);
+
 /* Cold-start fast_sync seed: durably record the snapshot anchor at
  * `height` (hash) as a finalized tip in tip_finalize_log and advance the
  * stage cursor to height+1, so the next boot_rebuild_from_log restores

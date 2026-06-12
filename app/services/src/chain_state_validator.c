@@ -218,27 +218,25 @@ struct boot_validation_result validate_coins_chain_agreement(
      * restart (observed: reset tip 3,135,248 -> stale coins 3,134,303, losing
      * the climb).
      *
-     * STRICTLY guarded so it can never mask real corruption: AGREE only when the
-     * active tip's (height,hash) BYTE-MATCHES the durable finalized tip. NOTE on
-     * the tip_finalize_log hash conventions (tip_finalize_log_store.h): the RAW
-     * row at fin_cursor-1 read here carries the block's OWN hash only for
-     * status='anchor' seed rows; a runtime 'finalized' row carries the LOOKAHEAD
-     * hash(fin_cursor), so for those this byte-match can never succeed and the
-     * branch harmlessly falls through to Case 4 — fail-safe (never a false
-     * AGREE), anchor-only by construction. A convention-aware read for "hash of
-     * the block AT h" exists as tip_finalize_stage_block_hash_at. coins.db AHEAD
-     * of the finalized tip, or not in the index, falls through to the Case-4
+     * STRICTLY guarded so it can never mask real corruption: AGREE only when
+     * the active tip's (height,hash) BYTE-MATCHES the durable finalized tip,
+     * resolved self-consistently by tip_finalize_stage_resolve_durable_tip
+     * (the returned height always owns the returned hash, across BOTH log
+     * conventions — anchor rows and finalized lookahead rows). The earlier
+     * raw fin_cursor-1 read matched anchor rows only, so a clean shutdown
+     * whose last row was a finalized row fell through to the Case-4 reset
+     * this branch exists to stop. No-resolve, coins.db AHEAD of the
+     * finalized tip, or not in the index, falls through to the Case-4
      * reset/wipe path unchanged. Read is safe here: progress_store_open
      * (boot.c:1581) precedes this validator (boot.c:2734). */
     if (chain_tip->phashBlock) {
         sqlite3 *pdb = progress_store_db();
-        uint64_t fin_cursor = pdb
-            ? stage_cursor_persisted(pdb, "tip_finalize", "chain_state_validator")
-            : 0;
-        if (fin_cursor > 0 && (int)fin_cursor - 1 == chain_tip->nHeight) {
-            uint8_t fin_hash[32];
-            if (tip_finalize_stage_finalized_tip_at(pdb, chain_tip->nHeight,
-                                                    fin_hash) &&
+        int fin_height = -1;
+        uint8_t fin_hash[32];
+        if (pdb &&
+            tip_finalize_stage_resolve_durable_tip(pdb, &fin_height,
+                                                   fin_hash)) {
+            if (fin_height == chain_tip->nHeight &&
                 memcmp(fin_hash, chain_tip->phashBlock->data, 32) == 0) {
                 struct block_index *cb = block_map_find(&ms->map_block_index,
                                                         &coins_best);

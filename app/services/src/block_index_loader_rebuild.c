@@ -129,27 +129,26 @@ static bool projection_link_pprev_cb(const uint8_t hash[32],
     return true;
 }
 
-/* Seed the active tip from the durable tip_finalize cursor. The cursor
- * counts finalized heights; the tip is at cursor-1. NULL `progress_db`
- * skips the seed (map rebuilt, no tip published). */
+/* Seed the active tip from the durable tip_finalize cursor. The (height,
+ * hash) pair is resolved SELF-CONSISTENTLY by
+ * tip_finalize_stage_resolve_durable_tip — the old `tip = cursor-1` +
+ * finalized_tip_at raw read paired cursor-1 with the row's LOOKAHEAD
+ * hash(cursor), publishing the splice-class poisoned pair when the last
+ * row was a finalized row (the crash window between a finalize advance
+ * and the next trusted-tip anchor). NULL `progress_db` skips the seed
+ * (map rebuilt, no tip published). */
 static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
 {
     if (!progress_db)
         return;
 
-    uint64_t cursor = stage_cursor_persisted(progress_db, "tip_finalize",
-                                              "block_index_loader");
-    if (cursor == 0)
-        return;
-
-    int tip_height = (int)cursor - 1;
+    int tip_height = -1;
     uint8_t tip_hash[32];
-    if (!tip_finalize_stage_finalized_tip_at(progress_db, tip_height,
-                                             tip_hash)) {
+    if (!tip_finalize_stage_resolve_durable_tip(progress_db, &tip_height,
+                                                tip_hash)) {
         LOG_WARN("block_index",
-                 "load_block_index_from_projection: no finalized tip hash at "
-                 "h=%d (cursor=%llu)",
-                 tip_height, (unsigned long long)cursor);
+                 "load_block_index_from_projection: no self-consistent "
+                 "durable tip resolves from the tip_finalize cursor");
         return;
     }
 
@@ -158,9 +157,9 @@ static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
     struct block_index *tip = block_map_find(&ms->map_block_index, &th);
     if (!tip) {
         LOG_WARN("block_index",
-                 "load_block_index_from_projection: tip hash at h=%d "
-                 "(cursor=%llu) not found in folded map",
-                 tip_height, (unsigned long long)cursor);
+                 "load_block_index_from_projection: durable tip hash at h=%d "
+                 "not found in folded map",
+                 tip_height);
         return;
     }
 
@@ -186,8 +185,9 @@ static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
  * -rebuildfromlog restore, where the in-memory map IS the full projection
  * and there is no prior tip to extend. This variant is for the normal boot
  * path, where an active tip has ALREADY been established from the coins
- * authority. It adopts the durable finalized frontier (tip_finalize
- * cursor-1) ONLY when it is a strictly-higher, CONTIGUOUS forward extension
+ * authority. It adopts the durable finalized frontier (resolved via
+ * tip_finalize_stage_resolve_durable_tip — the height always owns the
+ * hash) ONLY when it is a strictly-higher, CONTIGUOUS forward extension
  * of the current chain — every intermediate block HAVE_DATA + script-valid +
  * failure-free, with the pprev walk landing pointer-equal on the current
  * active tip. Otherwise it is a no-op.
@@ -208,12 +208,15 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     if (!progress_db)
         return 0;
 
-    uint64_t cursor = stage_cursor_persisted(progress_db, "tip_finalize",
-                                             "block_index_loader");
-    if (cursor == 0)
+    /* Self-consistent resolve: the returned height OWNS the returned hash
+     * (see rebuild_seed_tip above — the raw cursor-1 read manufactured the
+     * splice-class poisoned pair in the advance→anchor crash window). */
+    int tip_height = -1;
+    uint8_t tip_hash[32];
+    if (!tip_finalize_stage_resolve_durable_tip(progress_db, &tip_height,
+                                                tip_hash))
         return 0;
 
-    int tip_height = (int)cursor - 1;
     int cur_h = active_chain_height(&ms->chain_active);
 
     /* (a) Forward-only: never rewind or sidestep the current tip. */
@@ -232,10 +235,6 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     struct block_index *cur_tip = active_chain_tip(&ms->chain_active);
     if (!cur_tip)
         return 0;  /* no current tip to extend from — leave it to the loaders */
-
-    uint8_t tip_hash[32];
-    if (!tip_finalize_stage_finalized_tip_at(progress_db, tip_height, tip_hash))
-        return 0;
 
     struct uint256 th;
     memcpy(th.data, tip_hash, 32);
