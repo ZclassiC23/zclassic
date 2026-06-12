@@ -47,3 +47,18 @@ operator-specific peers. Copy and adapt before installing:
   run the same harness by hand. The hermetic verdict-logic gate
   (`test_replay_canary_verdict`) runs in `make ci` and red-fails on a
   seeded known-bad reducer before any green night can count.
+- **Never exit-0-as-proof / never stale-file-as-proof**: the harness removes
+  any prior sentinel at run start (`reset_verdict`), so a killed/OOM/timed-out
+  run leaves NO sentinel — a reader that requires a fresh PASS resolves FAIL.
+  The `make replay-canary-*` guard ALSO drops a marker before the run and
+  requires the sentinel to be strictly newer than it (`-nt`), so a STALE PASS
+  from a previous successful run can never be read as this run's proof. A
+  "7 consecutive green nights" reading must likewise require each PASS sentinel
+  to be FRESH for its night (compare `started_ts` / mtime to that night's run
+  window), not merely present.
+- **Elapsed-time band** (the named-defect guard): a from-anchor COMPLETE that
+  is implausibly fast (the seed never applied → a stub "completed") or that
+  silently degrades to a genesis-scale replay both FAIL with a typed reason
+  (`elapsed_too_fast` / `elapsed_too_slow`) — the anchor band is centred on
+  the ~45-min expectation (300 s floor, 5400 s ceiling), the genesis band on
+  the ~6 h replay (3600 s floor, 28800 s ceiling).

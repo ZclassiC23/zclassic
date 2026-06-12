@@ -43,9 +43,15 @@
 # Differences from the regtest sibling, and ONLY these:
 #   - ISO_KIND default = "replay".
 #   - iso_spawn_mainnet_node spawns with NO -regtest (real mainnet
-#     genesis + checkpoints), and with -nolegacyimport so boot never
-#     auto-links the operator's live ~/.zclassic — the canary does its
-#     OWN explicit header import (iso_import_blockindex) + snapshot seed.
+#     genesis + checkpoints). The legacy-import policy is CALLER-supplied
+#     in $1, not fixed here: the from-ANCHOR variant deliberately does NOT
+#     pass -nolegacyimport (it relies on boot's read-only legacy auto-import
+#     of ~/.zclassic to seed the anchor UTXO set — the proven cold recipe),
+#     while the from-GENESIS variant DOES pass -nolegacyimport so boot does
+#     not seed to the anchor and instead replays genesis->tip via P2P. Either
+#     way the only header path is the explicit iso_import_blockindex
+#     (--importblockindex, read-only). See iso_spawn_mainnet_node's seed
+#     policy block for the empirical justification.
 #   - bg-validation is caller-controlled (NOT forced off): the weekly
 #     from-genesis run needs it ON to replay every body.
 #   - iso_import_blockindex runs `--importblockindex` (the proven 60-74 s

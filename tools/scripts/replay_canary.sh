@@ -17,9 +17,16 @@
 # (tmp + fsync + rename) ONLY after every assertion passes. The shell
 # exit code is advisory (it drives systemd OnFailure=); proof requires a
 # *positive* fresh PASS record, never the absence of a non-zero exit.
-# This is the "never exit-0-as-proof" guarantee: a crashed/killed/OOM
-# harness leaves no fresh PASS sentinel, which a staleness check reads
-# as FAIL.
+# This is the "never exit-0-as-proof" guarantee, made REAL two ways:
+#   1. reset_verdict() removes ANY prior sentinel as the FIRST thing every
+#      run does (live AND self-test), so a crashed/killed/OOM/timed-out run
+#      leaves NO sentinel at all — not a stale PASS — and an absence-of-
+#      fresh-PASS reader resolves FAIL by construction.
+#   2. The sentinel carries "started_ts" and the run drops a
+#      $VERDICT_DIR/.run_started_<from> stamp, so an external freshness
+#      check (the `make replay-canary-*` guard's marker + `-nt` test; a
+#      live-node Condition) can REJECT a stale PASS that somehow survives.
+# Together: a stale PASS can never be read as the current run's proof.
 #
 # Variants (one --from flag, same harness):
 #   --from=anchor  : the PROVEN cold recipe — --importblockindex (headers,
@@ -72,6 +79,24 @@ done
 ANCHOR_HEIGHT=3056758
 EXPECTED_SHA3="00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0"
 
+# ── Elapsed-time band (the named-defect guard) ─────────────────────
+# A from-anchor run that silently DEGRADES to a from-genesis-scale replay
+# is the named I5 defect. The band makes that degrade a typed FAIL, not an
+# accidental green: a from-anchor full-history replay through the reducer
+# legitimately takes ~45 min, so a COMPLETE that arrives implausibly FAST
+# (the seed never applied / the node only replayed a stub) blows the FLOOR,
+# and a COMPLETE that takes ~genesis-scale time (~6 h, the silent degrade)
+# blows the CEILING. The anchor band is centred on ~45 min, NOT ~6 h; the
+# genesis band is the ~6 h replay. Bounds in seconds:
+#   anchor : floor 300 (5 min — a real anchor replay can never be near-
+#            instant), ceiling 5400 (90 min == the hard budget; a 6 h
+#            from-anchor degrade blows this long before genesis scale).
+#   genesis: floor 3600 (1 h), ceiling 28800 (8 h == the hard budget).
+ANCHOR_ELAPSED_MIN=300
+ANCHOR_ELAPSED_MAX=5400
+GENESIS_ELAPSED_MIN=3600
+GENESIS_ELAPSED_MAX=28800
+
 # REPO_ROOT: the harness knows where it lives (like soak_assert.sh).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -83,18 +108,45 @@ build_commit() {
     git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown"
 }
 
+# START_TS is fixed at the very top of the process so reset_verdict,
+# write_verdict, and the elapsed band all share one run-start epoch.
+START_TS="$(date +%s)"; STARTED_TS="$START_TS"; ELAPSED=0
+
+# ── Sentinel path (one place, used by reset + write) ───────────────
+sentinel_path() { printf '%s/replay_canary_%s.json' "$VERDICT_DIR" "$FROM"; }
+
+# ── Sentinel reset (FIRST thing every run does) ────────────────────
+# Remove ANY prior sentinel before the run does any work. This is the
+# load-bearing half of "never exit-0-as-proof": after this point a
+# killed/OOM/timed-out harness leaves NO sentinel at all (not a stale
+# PASS), so an absence-of-fresh-PASS reader resolves FAIL by construction.
+# A fresh PASS can therefore only appear if THIS run reaches write_verdict
+# PASS after every assertion. We also stamp $VERDICT_DIR/.run_started_<from>
+# with the run-start epoch so an external reader (the Makefile guard, a
+# live-node Condition) can band-check the sentinel's freshness against the
+# run it is judging — a stale sentinel that somehow survives is still read
+# as not-fresh => FAIL.
+reset_verdict() {
+    local f; f="$(sentinel_path)"
+    rm -f "$f" "$f".tmp.* 2>/dev/null || true
+    printf '%s\n' "$STARTED_TS" > "$VERDICT_DIR/.run_started_${FROM}" 2>/dev/null || true
+    sync 2>/dev/null || true
+}
+
 # ── Sentinel writer (atomic: tmp + fsync + rename) ─────────────────
-# The PASS sentinel exists ONLY after every assertion passed. write_verdict
-# is the single place a sentinel is produced; it is called exactly once per
-# run, at the very end, with the already-decided verdict.
+# The PASS sentinel exists ONLY after every assertion passed AND after
+# reset_verdict removed any prior one. write_verdict is the single place a
+# sentinel is produced; it is called exactly once per run, at the very end,
+# with the already-decided verdict. The "started_ts" field lets a reader
+# band-check freshness without a second stamp file.
 write_verdict() {
     local verdict="$1" reason="$2"
-    local f="$VERDICT_DIR/replay_canary_${FROM}.json"
+    local f; f="$(sentinel_path)"
     local tmp="$f.tmp.$$"
     local now; now="$(date +%s)"
     {
-        printf '{"verdict":"%s","from":"%s","ts":%s,"build_commit":"%s",' \
-            "$verdict" "$FROM" "$now" "$(build_commit)"
+        printf '{"verdict":"%s","from":"%s","ts":%s,"started_ts":%s,"build_commit":"%s",' \
+            "$verdict" "$FROM" "$now" "${STARTED_TS:-$now}" "$(build_commit)"
         printf '"tip":%s,"verified_height":%s,"bg_state":"%s",' \
             "${R_TIP:-0}" "${R_VERIFIED:-0}" "${R_BGSTATE:-unknown}"
         printf '"consensus_rejects":%s,"local_sha3":"%s","expected_sha3":"%s",' \
@@ -167,16 +219,21 @@ json_amount() {  # $1=json $2=key
 }
 
 # ── Result vars (populated as we probe; consumed by write_verdict) ─
+# START_TS / STARTED_TS / ELAPSED are fixed earlier (with the sentinel
+# helpers) so reset_verdict and the elapsed band share the same run-start.
 R_TIP=0; R_VERIFIED=0; R_BGSTATE="unknown"; R_REJECTS=0
 R_LOCAL_SHA3=""; R_TXOUTS=0; R_ZD_TXOUTS=0; R_SUPPLY=""; R_ZD_SUPPLY=""
-START_TS="$(date +%s)"; ELAPSED=0
 
 # ── Verdict logic: evaluate already-collected RPC blobs ────────────
 # Inputs (set by run_live or run_self_test): SD (getsyncdetail),
 # DIAG (getsyncdiag), UC (getutxocommitment), TX (node gettxoutsetinfo),
 # ZD (zclassicd gettxoutsetinfo). First failure wins.
 evaluate_verdict() {
-    ELAPSED=$(( $(date +%s) - START_TS ))
+    # ELAPSED is the wall-clock the run took. The self-test injects a
+    # synthetic value (SELFTEST_ELAPSED) so the band can be exercised
+    # hermetically without a 45-min wait; live mode measures the clock.
+    if [ -n "${SELFTEST_ELAPSED:-}" ]; then ELAPSED="$SELFTEST_ELAPSED"
+    else ELAPSED=$(( $(date +%s) - START_TS )); fi
 
     # rpc_unreachable: any required blob empty => FAIL (never a silent pass).
     [ -n "$SD" ]   || fail "rpc_unreachable_getsyncdetail"
@@ -206,6 +263,17 @@ evaluate_verdict() {
         failed|FAILED) fail "bg_validation_failed" ;;
         *) fail "bg_state_${R_BGSTATE:-empty}" ;;
     esac
+
+    # (a cont.) elapsed-time band — the named-defect guard for THIS track.
+    # A COMPLETE that is too FAST (the from-anchor seed never applied, so
+    # the node "completed" a stub) or too SLOW (the from-anchor run silently
+    # degraded to a genesis-scale replay) both FAIL with a typed reason,
+    # BEFORE the cross-node equality can mask a degraded-but-matching tip.
+    local emin emax
+    if [ "$FROM" = "genesis" ]; then emin="$GENESIS_ELAPSED_MIN"; emax="$GENESIS_ELAPSED_MAX"
+    else emin="$ANCHOR_ELAPSED_MIN"; emax="$ANCHOR_ELAPSED_MAX"; fi
+    [ "${ELAPSED:-0}" -ge "$emin" ] || fail "elapsed_too_fast"
+    [ "${ELAPSED:-0}" -le "$emax" ] || fail "elapsed_too_slow"
 
     # (a cont.) header-admit rejects must be zero.
     [ "${R_REJECTS:-0}" -eq 0 ] || fail "consensus_rejects"
@@ -253,12 +321,32 @@ evaluate_verdict() {
 run_self_test() {
     local dir="${ZCL_CANARY_SELFTEST_DIR:-}"
     [ -n "$dir" ] && [ -d "$dir" ] || { echo "replay-canary: self-test needs ZCL_CANARY_SELFTEST_DIR" >&2; exit 2; }
+    # Reset FIRST so even the self-test path proves the no-stale-sentinel
+    # contract: any prior sentinel for this --from is removed before we
+    # decide, and the run-start stamp is laid down.
+    reset_verdict
+    # Test-only mid-run pause: if ZCL_CANARY_SELFTEST_BLOCK_FIFO is set, block
+    # on a read of that FIFO AFTER reset_verdict (so the stale sentinel is
+    # already gone) but BEFORE evaluate_verdict (so no fresh sentinel is yet
+    # written). The hermetic kill-mid-run test SIGKILLs us here and asserts
+    # the post-kill read resolves FAIL (no fresh PASS) — proving the kill
+    # lands inside a real run, not before the harness ever started.
+    if [ -n "${ZCL_CANARY_SELFTEST_BLOCK_FIFO:-}" ]; then
+        read -r _ < "$ZCL_CANARY_SELFTEST_BLOCK_FIFO" || true
+    fi
     read_fixture() { [ -f "$dir/$1.json" ] && cat "$dir/$1.json" || printf ''; }
     SD="$(read_fixture getsyncdetail)"
     DIAG="$(read_fixture getsyncdiag)"
     UC="$(read_fixture getutxocommitment)"
     TX="$(read_fixture gettxoutsetinfo)"
     ZD="$(read_fixture zd_gettxoutsetinfo)"
+    # Optional elapsed.json (a bare integer) drives the elapsed band
+    # hermetically. Absent => default to an in-band value for the active
+    # --from so the baseline pass fixtures stay green without one.
+    local fx_elapsed; fx_elapsed="$(read_fixture elapsed | tr -dc '0-9')"
+    if [ -n "$fx_elapsed" ]; then SELFTEST_ELAPSED="$fx_elapsed"
+    elif [ "$FROM" = "genesis" ]; then SELFTEST_ELAPSED=$(( GENESIS_ELAPSED_MIN + 1 ))
+    else SELFTEST_ELAPSED=$(( ANCHOR_ELAPSED_MIN + 1 )); fi
     # The self-test mode name is informational; the verdict is decided
     # purely by the fixture content, so a mislabeled fixture cannot lie.
     evaluate_verdict
@@ -266,6 +354,12 @@ run_self_test() {
 
 # ── Live mode: spawn the isolated mainnet node, replay, probe ──────
 run_live() {
+    # Reset FIRST — before importing headers, spawning the node, or any
+    # other abortable step. From here on a killed/OOM/timed-out harness
+    # leaves NO sentinel (not a stale PASS), so absence-of-fresh-PASS is a
+    # construction-level FAIL.
+    reset_verdict
+
     cd "$REPO_ROOT"
 
     [ -x build/bin/zclassic23 ] || { echo "replay-canary: build/bin/zclassic23 missing — run make" >&2; exit 2; }

@@ -156,6 +156,17 @@ static void seed_fixtures(const char *fx, const char *mode)
             "{\"bg_validation\":{\"state\":\"timeout\","
             "\"verified_height\":100,\"chain_height\":3145329,"
             "\"script_verif_skipped_no_undo\":0}}\n");
+    } else if (strcmp(mode, "fail-elapsed-fast") == 0) {
+        /* a COMPLETE that arrives implausibly fast — the from-anchor seed
+         * never applied, so the node "completed" a stub. Drive the elapsed
+         * band BELOW the anchor floor (300 s) => "elapsed_too_fast". The
+         * harness reads elapsed.json (a bare integer) only in self-test. */
+        write_file(fx, "elapsed.json", "5\n");
+    } else if (strcmp(mode, "fail-elapsed-slow") == 0) {
+        /* a from-anchor COMPLETE that silently degraded to a genesis-scale
+         * replay — the NAMED I5 defect. Drive the elapsed band ABOVE the
+         * anchor ceiling (5400 s) => "elapsed_too_slow". */
+        write_file(fx, "elapsed.json", "99999\n");
     }
     /* mode == "pass": no mutation. */
 }
@@ -298,23 +309,92 @@ static int test_fail_timeout_fires(void)
     return failures;
 }
 
-/* The named top defect: exit-0-as-proof. A harness killed mid-run must
- * leave NO fresh PASS sentinel. We block the wrapper shell on a FIFO read
- * BEFORE the harness ever runs (so it cannot write a sentinel), SIGKILL
- * the whole process group, then assert no PASS sentinel exists — proving
- * that proof requires a *positive* fresh PASS record, never the absence
- * of a non-zero exit.
- *
- * Why block in the wrapper, not inside the harness: a killed run is
- * indistinguishable, from the verdict file's perspective, whether the
- * kill lands before arg-parse, during the node spawn, or mid-poll — in
- * every case the atomic sentinel write (the LAST step) never executes.
- * Blocking the wrapper on a never-fed FIFO models that deterministically
- * and portably (no race on how fast the harness reaches its first I/O). */
-static int test_sigkill_leaves_no_fresh_pass(void)
+/* The orchestrator-mandated elapsed-time band — the named-defect guard for
+ * THIS track. A from-anchor COMPLETE that arrives implausibly fast (the seed
+ * never applied) blows the floor; one that silently degrades to a genesis-
+ * scale replay blows the ceiling. Both must FAIL with a typed reason BEFORE
+ * the cross-node equality can mask a degraded-but-matching tip. */
+static int test_fail_elapsed_too_fast_fires(void)
 {
     int failures = 0;
-    TEST("replay-canary: SIGKILL mid-run leaves NO fresh PASS sentinel") {
+    TEST("replay-canary: COMPLETE too fast => FAIL reason=elapsed_too_fast") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-elapsed-fast", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT(ec != 0);
+        ASSERT_STR_EQ(verdict, "FAIL");
+        ASSERT_STR_EQ(reason, "elapsed_too_fast");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_fail_elapsed_too_slow_fires(void)
+{
+    int failures = 0;
+    TEST("replay-canary: anchor degraded to genesis-scale => FAIL reason=elapsed_too_slow") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-elapsed-slow", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT(ec != 0);
+        ASSERT_STR_EQ(verdict, "FAIL");
+        ASSERT_STR_EQ(reason, "elapsed_too_slow");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Seed a STALE PASS sentinel (a previous successful run's leftover) into a
+ * verdict dir, back-dated so it cannot be mistaken for fresh. Returns the
+ * stale ts written (0 on failure). */
+static long seed_stale_pass(const char *vd, const char *from)
+{
+    char sentinel[PATH_MAX];
+    snprintf(sentinel, sizeof(sentinel), "%s/replay_canary_%s.json", vd, from);
+    long stale_ts = 1000000000L;  /* a 2001 timestamp — unambiguously old */
+    FILE *f = fopen(sentinel, "w");
+    if (!f) return 0;
+    fprintf(f,
+        "{\"verdict\":\"PASS\",\"from\":\"%s\",\"ts\":%ld,\"started_ts\":%ld,"
+        "\"build_commit\":\"stale\",\"tip\":3145329,\"verified_height\":3145329,"
+        "\"bg_state\":\"complete\",\"consensus_rejects\":0,"
+        "\"local_sha3\":\"deadbeef\",\"expected_sha3\":\"\",\"txouts\":1,"
+        "\"zd_txouts\":1,\"supply\":\"0\",\"zd_supply\":\"0\","
+        "\"reason\":\"\",\"elapsed_sec\":2700}\n",
+        from, stale_ts, stale_ts);
+    fclose(f);
+    /* Back-date the file mtime so a freshness/mtime reader also sees it old. */
+    struct timespec times[2] = {
+        { .tv_sec = stale_ts, .tv_nsec = 0 },
+        { .tv_sec = stale_ts, .tv_nsec = 0 },
+    };
+    if (utimensat(AT_FDCWD, sentinel, times, 0) != 0) { /* best-effort */ }
+    return stale_ts;
+}
+
+/* THE named top defect, hardened two ways:
+ *
+ *   1. A STALE PASS from a previous successful run is pre-seeded in the
+ *      verdict dir. The harness MUST remove it at run start (reset_verdict)
+ *      so it can never leak as this run's proof.
+ *   2. The harness is then killed MID-RUN — after reset_verdict cleared the
+ *      stale sentinel, but BEFORE it could write a fresh one (it blocks on a
+ *      never-fed FIFO inside its own self-test path via
+ *      ZCL_CANARY_SELFTEST_BLOCK_FIFO). The post-kill read must therefore
+ *      find NO sentinel at all → absence-of-fresh-PASS resolves FAIL.
+ *
+ * This proves the staleness contract is REAL (the stale PASS is gone) and
+ * that a kill landing inside an actual run (past the harness exec, past
+ * reset, before the verdict write) leaves no fresh PASS — not merely that a
+ * kill before the harness ever started writes nothing. */
+static int test_sigkill_midrun_clears_stale_no_fresh_pass(void)
+{
+    int failures = 0;
+    TEST("replay-canary: SIGKILL mid-run clears stale PASS, leaves NO fresh PASS") {
         const char *root = repo_root();
         if (!root) { printf("SKIP (repo root not found)\n"); break; }
 
@@ -324,9 +404,14 @@ static int test_sigkill_leaves_no_fresh_pass(void)
         snprintf(fifo, sizeof(fifo), "/tmp/test_canary_kill_fifo_%d", (int)getpid());
         mkdir(fx, 0755);
         mkdir(vd, 0755);
-        /* Seed VALID fixtures: an uninterrupted run WOULD write a PASS.
-         * The whole point is that the kill prevents it. */
+        /* Valid fixtures: an UNINTERRUPTED run would write a fresh PASS. */
         seed_fixtures(fx, "pass");
+        /* A stale PASS leftover from a previous successful run. */
+        long stale_ts = seed_stale_pass(vd, "anchor");
+        if (stale_ts == 0) {
+            printf("FAIL (could not seed stale sentinel)\n");
+            failures++; goto _kill_cleanup;
+        }
 
         unlink(fifo);
         if (mkfifo(fifo, 0644) != 0) {
@@ -339,26 +424,34 @@ static int test_sigkill_leaves_no_fresh_pass(void)
 
         pid_t pid = fork();
         if (pid == 0) {
-            /* child: in its own group; the wrapper FIRST blocks on the FIFO
-             * read (no writer ever opens it), so the harness exec NEVER runs
-             * and no sentinel can be written. */
+            /* child in its own group: exec the REAL harness. Its self-test
+             * path runs reset_verdict (clearing the stale sentinel) and then
+             * blocks on the never-fed FIFO BEFORE evaluating/writing — so the
+             * kill lands inside a genuine run, mid-harness. */
             setsid();
             char cmd[PATH_MAX * 4];
             snprintf(cmd, sizeof(cmd),
-                "read _ < '%s'; "
                 "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
+                "ZCL_CANARY_SELFTEST_BLOCK_FIFO='%s' "
                 "exec bash '%s/%s' --from=anchor --self-test=pass",
-                fifo, fx, vd, root, CANARY_REL);
+                fx, vd, fifo, root, CANARY_REL);
             execlp("sh", "sh", "-c", cmd, (char *)NULL);
             _exit(127);
         }
 
-        /* Let it reach the blocking FIFO read, then SIGKILL the whole group. */
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 400 * 1000 * 1000 };
+        /* Give the harness time to exec, run reset_verdict, and reach the
+         * blocking FIFO read. */
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 600 * 1000 * 1000 };
         nanosleep(&ts, NULL);
 
+        /* MID-RUN: the stale PASS must already be GONE (reset_verdict ran).
+         * The run-start stamp confirms the harness actually got that far. */
         struct stat st_mid;
-        bool existed_mid = (stat(sentinel, &st_mid) == 0);
+        bool exists_mid = (stat(sentinel, &st_mid) == 0);
+        char stamp[PATH_MAX];
+        snprintf(stamp, sizeof(stamp), "%s/.run_started_anchor", vd);
+        struct stat st_stamp;
+        bool stamp_present = (stat(stamp, &st_stamp) == 0);
 
         kill(-pid, SIGKILL);
         kill(pid, SIGKILL);
@@ -368,10 +461,19 @@ static int test_sigkill_leaves_no_fresh_pass(void)
         struct stat st_after;
         bool exists_after = (stat(sentinel, &st_after) == 0);
 
-        /* The contract: a killed harness leaves no PASS sentinel. */
-        if (existed_mid || exists_after) {
-            printf("FAIL: sentinel %s exists after SIGKILL (mid=%d after=%d) "
-                   "— exit-0-as-proof leak\n", sentinel, existed_mid, exists_after);
+        if (exists_mid) {
+            printf("FAIL: stale sentinel %s survived reset_verdict mid-run "
+                   "— staleness contract is vaporware\n", sentinel);
+            failures++; goto _kill_cleanup;
+        }
+        if (!stamp_present) {
+            printf("FAIL: run-start stamp %s absent — harness never reached "
+                   "reset_verdict, the kill proves nothing\n", stamp);
+            failures++; goto _kill_cleanup;
+        }
+        if (exists_after) {
+            printf("FAIL: sentinel %s exists after SIGKILL — exit-0/stale-file "
+                   "-as-proof leak\n", sentinel);
             failures++; goto _kill_cleanup;
         }
         PASS();
@@ -382,6 +484,59 @@ static int test_sigkill_leaves_no_fresh_pass(void)
         snprintf(rm, sizeof(rm), "rm -rf '%s' '%s'", fx, vd);
         if (system(rm) != 0) { /* best-effort */ }
     }
+    return failures;
+}
+
+/* A completing run must REPLACE a stale PASS with a FRESH one: the sentinel's
+ * started_ts after the run must reflect THIS run (not the stale 2001 value),
+ * proving reset_verdict + write_verdict together overwrite the leftover so a
+ * reader band-checking freshness (Makefile guard, live Condition) sees the
+ * current verdict, never the previous run's. */
+static int test_pass_replaces_stale_sentinel(void)
+{
+    int failures = 0;
+    TEST("replay-canary: a fresh PASS overwrites a stale PASS sentinel") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        char fx[PATH_MAX], vd[PATH_MAX];
+        snprintf(fx, sizeof(fx), "/tmp/test_canary_stale_fx_%d", (int)getpid());
+        snprintf(vd, sizeof(vd), "/tmp/test_canary_stale_vd_%d", (int)getpid());
+        mkdir(fx, 0755);
+        mkdir(vd, 0755);
+        seed_fixtures(fx, "pass");
+        long stale_ts = seed_stale_pass(vd, "anchor");
+        ASSERT(stale_ts != 0);
+
+        char cmd[PATH_MAX * 3];
+        snprintf(cmd, sizeof(cmd),
+            "ZCL_CANARY_SELFTEST_DIR='%s' ZCL_CANARY_VERDICT_DIR='%s' "
+            "bash '%s/%s' --from=anchor --self-test=pass >/dev/null 2>&1",
+            fx, vd, root, CANARY_REL);
+        int rc = system(cmd);
+        ASSERT_EQ((rc == -1) ? -1 : WEXITSTATUS(rc), 0);
+
+        char sentinel[PATH_MAX];
+        snprintf(sentinel, sizeof(sentinel), "%s/replay_canary_anchor.json", vd);
+        char buf[2048] = {0};
+        ASSERT(read_file(sentinel, buf, sizeof(buf)));
+        /* Verdict still PASS, but started_ts is the CURRENT run, not stale. */
+        ASSERT(strstr(buf, "\"verdict\":\"PASS\"") != NULL);
+        const char *s = strstr(buf, "\"started_ts\":");
+        ASSERT(s != NULL);
+        long got = atol(s + strlen("\"started_ts\":"));
+        if (got <= stale_ts) {
+            printf("FAIL: started_ts %ld is not newer than stale %ld — "
+                   "the stale sentinel was not refreshed\n", got, stale_ts);
+            failures++;
+        } else {
+            PASS();
+        }
+
+        char rm[PATH_MAX + 32];
+        snprintf(rm, sizeof(rm), "rm -rf '%s' '%s'", fx, vd);
+        if (system(rm) != 0) { /* best-effort */ }
+    } _test_next:;
     return failures;
 }
 
@@ -414,7 +569,10 @@ int test_replay_canary_verdict(void)
     failures += test_fail_sha3_fires();
     failures += test_fail_crossnode_fires();
     failures += test_fail_timeout_fires();
-    failures += test_sigkill_leaves_no_fresh_pass();
+    failures += test_fail_elapsed_too_fast_fires();
+    failures += test_fail_elapsed_too_slow_fires();
+    failures += test_sigkill_midrun_clears_stale_no_fresh_pass();
+    failures += test_pass_replaces_stale_sentinel();
     failures += test_from_genesis_sentinel_name();
     return failures;
 }
