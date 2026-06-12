@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * soak_attestation_poll — supervised cadence Job for the soak attestation
- * service. Registers in the `feature` supervisor domain and calls
+ * service. Registers in the `op` supervisor domain (g_op_sup) and calls
  * soak_attestation_tick() on each 60 s tick; all gating lives in the
  * service, so this Job is a pure scheduling shim. */
 
@@ -10,7 +10,7 @@
 
 #include <stdbool.h>
 
-/* Register the poll Job with the feature supervisor domain. Idempotent. */
+/* Register the poll Job with the op supervisor domain. Idempotent. */
 void soak_attestation_poll_register(void);
 
 /* True once the poll Job is registered with the supervisor. */

@@ -195,7 +195,7 @@ void soak_attestation_tick(void)
 
     /* Format the JSON line.  Keep it compact (one line, no trailing space). */
     char line[512];
-    int line_len = snprintf(line, sizeof(line) - 1,
+    int line_len = snprintf(line, sizeof(line),
         "{\"ts\":%lld,\"height\":%d,\"healthy\":%s,"
         "\"degraded_reason\":\"%s\","
         "\"build_commit\":\"%s\",\"uptime_s\":%lld}\n",
@@ -217,10 +217,16 @@ void soak_attestation_tick(void)
     if (line_len > 0 && g_soak.fd >= 0) {
         ssize_t written = write(g_soak.fd, line, (size_t)line_len);
         if (written < 0 || written != line_len) {
-            /* Log once when the streak starts; suppress repeats. */
+            /* Log once when the streak starts; suppress repeats. errno is
+             * only meaningful when write() itself failed — a short write
+             * leaves it stale, so report the byte counts instead. */
             if (g_soak.failure_streak == 0) {
-                LOG_WARN("soak_attest", "write to soak_attestation.jsonl failed: %s",
-                         strerror(errno));
+                if (written < 0)
+                    LOG_WARN("soak_attest", "write to soak_attestation.jsonl failed: %s",
+                             strerror(errno));
+                else
+                    LOG_WARN("soak_attest", "short write to soak_attestation.jsonl: %zd of %d bytes",
+                             written, line_len);
             }
             g_soak.failure_streak++;
             atomic_fetch_add(&g_soak.write_failures, 1);

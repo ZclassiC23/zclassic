@@ -25,8 +25,12 @@
  *   COARSE BLOCK-HASH: fires at h_check = min(applied,frontier) -
  *   finality_depth — the reorg-safe stable ceiling. Gets our local block
  *   hash via the block index and the reference hash via getblockhash RPC on
- *   the co-located zclassicd. Match → checks_total++. Mismatch → sets
- *   utxo_drift_detected (the same Condition pages for free). Any reference
+ *   the co-located zclassicd. Match → checks_total++. Mismatch → LATCHES
+ *   parity_bh_drift_detected (its OWN key — the utxo_drift_detected Condition
+ *   pages on either key, but the UTXO SHA3 path's confirmations clear only
+ *   THEIR key, never this latch; with the advance-only cache a mismatched
+ *   height is never re-examined, so a shared key would let a later SHA3
+ *   confirmation silently un-page a real divergence). Any reference
  *   transport error or height-behind-h_check → skips_total++ (NEVER pages).
  *   Once a height is checked it is never re-checked (advance-only cache).
  *
@@ -369,19 +373,31 @@ static void parity_coarse_block_hash_tick(
 
     if (match) {
         atomic_fetch_add(&g_parity.matches, 1);
-        /* Clear any stale drift flag — a block-hash match confirms parity. */
-        if (ndb && ndb->open)
-            (void)node_db_state_set_int(ndb, "utxo_drift_detected", 0);
+        /* Counters only. A block-hash match must NOT clear utxo_drift_detected
+         * (that key is owned by the UTXO SHA3 path, and a hash match at
+         * h_check does not refute a UTXO-set divergence at another height),
+         * and nothing automatic ever clears the parity_bh latch below. */
         return;
     }
 
-    /* Hash mismatch: real consensus drift. Set the flag — the wired
-     * utxo_drift_detected Condition pages the operator through the existing
-     * mechanism (single paging source of truth, no new EV_OPERATOR_NEEDED). */
+    /* Hash mismatch at a reorg-safe height: a hard contradiction with the
+     * reference chain. LATCH it under the BH path's OWN key. Sharing
+     * utxo_drift_detected was a missed-page defect (wave-3 review): the SHA3
+     * path's confirmations write that key to 0, and the advance-only cursor
+     * means this height is never re-examined — a real divergence could be
+     * silently un-paged within the same tick. Nothing automatic clears the
+     * latch; the operator does, after diagnosing. The utxo_drift_detected
+     * Condition pages on either key. */
     atomic_fetch_add(&g_parity.mismatches, 1);
     atomic_store(&g_parity.last_mismatch_height, h_check);
-    if (ndb && ndb->open)
-        (void)node_db_state_set_int(ndb, "utxo_drift_detected", 1);
+    if (ndb && ndb->open) {
+        (void)node_db_state_set_int(ndb, "parity_bh_drift_detected", 1);
+        (void)node_db_state_set_int(ndb, "parity_bh_drift_height", h_check);
+        (void)node_db_state_set(ndb, "parity_bh_drift_local_hash",
+                                local_hex, strlen(local_hex));
+        (void)node_db_state_set(ndb, "parity_bh_drift_ref_hash",
+                                ref_hex, strlen(ref_hex));
+    }
 
     LOG_WARN("parity",
              "[parity] BLOCK-HASH MISMATCH h=%d local=%s ref=%s",

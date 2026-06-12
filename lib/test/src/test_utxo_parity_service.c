@@ -635,9 +635,16 @@ static int case_bh_mismatch_pages(void)
         ASSERT(parity_dump_int("mismatches") >= 1);
         ASSERT(parity_dump_int("matches") == 0);
 
-        int64_t drift = 0;
-        ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
-        ASSERT(drift == 1);  /* drift flag MUST be set on mismatch */
+        /* The BH path latches its OWN key — never the SHA3 path's
+         * utxo_drift_detected, whose confirmations would clear it. */
+        int64_t bh_drift = 0;
+        ASSERT(node_db_state_get_int(&ndb, "parity_bh_drift_detected",
+                                     &bh_drift));
+        ASSERT(bh_drift == 1);
+        int64_t bh_height = 0;
+        ASSERT(node_db_state_get_int(&ndb, "parity_bh_drift_height",
+                                     &bh_height));
+        ASSERT(bh_height == applied - 100);
 
         /* Condition picks it up and pages. */
         condition_engine_tick();
@@ -781,6 +788,89 @@ static int case_bh_no_recheck_same_height(void)
     return failures;
 }
 
+/* CASE BH-6 (the wave-3 review finding, PRODUCTION config): both the coarse
+ * SHA3 reference AND the block-hash check are armed — exactly how boot wires
+ * a co-located zclassicd. A BH MISMATCH must page even though the SHA3 path
+ * confirms parity at its own height in the SAME tick and writes
+ * utxo_drift_detected=0. Before the latch fix, that write erased the BH
+ * detection and the advance-only cursor guaranteed the divergent height was
+ * never re-examined — a permanently lost page. */
+static int case_bh_latch_survives_sha3_confirm(void)
+{
+    int failures = 0;
+    TEST("utxo_parity: BH mismatch latch survives same-tick SHA3 confirm") {
+        char path[] = "/tmp/zcl23-parity-bh-latch-XXXXXX";
+        struct node_db ndb;
+        char local_hex[65];
+        ASSERT(open_ndb_with_local(&ndb, path, local_hex));
+
+        int32_t applied = (int32_t)app_runtime_node_db_utxo_max_height(&ndb);
+        ASSERT(applied > 100);  /* h_check = applied-100 must be > 0 */
+
+        /* Exact SHA3 fixture AT the applied height with the MATCHING local
+         * hash: the SHA3 path will confirm parity and write
+         * utxo_drift_detected=0 — the interfering write. */
+        struct utxo_reference_source src;
+        struct utxo_reference_source_fixture fx;
+        utxo_reference_source_fixture_init(&src, &fx, "tick-fixture",
+                                           local_hex, applied, true);
+        wire_case(&ndb, &src);  /* finality_depth defaults to 100 */
+
+        /* BH mock with a MISMATCH at h_check = applied-100. */
+        char local_hash[65] =
+            "aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344";
+        char ref_hash[65] =
+            "11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd";
+        struct bh_mock m = {
+            .local_ok = true, .ref_ok = true,
+            .ref_height_offset = 0,
+        };
+        memcpy(m.local_hex, local_hash, 65);
+        memcpy(m.ref_hex,   ref_hash,   65);
+        wire_bh_seams(&m);
+
+        /* Frontier high enough that BOTH checks run in one tick:
+         * BH at applied-100, SHA3 at applied (<= ceiling = applied+100). */
+        utxo_parity_set_frontier_for_test(applied + 200);
+        utxo_parity_tick_once();
+
+        /* The SHA3 confirmation DID run and DID write its key to 0 ... */
+        int64_t drift = -1;
+        ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
+        ASSERT(drift == 0);
+        int64_t h = -1;
+        ASSERT(node_db_state_get_int(&ndb, "utxo_audit_last_height", &h));
+        ASSERT(h == applied);
+
+        /* ... and the BH latch SURVIVED it. */
+        int64_t bh_drift = 0;
+        ASSERT(node_db_state_get_int(&ndb, "parity_bh_drift_detected",
+                                     &bh_drift));
+        ASSERT(bh_drift == 1);
+        int64_t bh_height = 0;
+        ASSERT(node_db_state_get_int(&ndb, "parity_bh_drift_height",
+                                     &bh_height));
+        ASSERT(bh_height == applied - 100);
+
+        /* The Condition pages off the latch. */
+        condition_engine_tick();
+        ASSERT(atomic_load(&g_op_events) >= 1);
+        ASSERT(condition_engine_get_unresolved_count() == 1);
+
+        /* A later tick (advance-only: no re-check, SHA3 already current)
+         * must not clear the latch either. */
+        utxo_parity_tick_once();
+        bh_drift = 0;
+        ASSERT(node_db_state_get_int(&ndb, "parity_bh_drift_detected",
+                                     &bh_drift));
+        ASSERT(bh_drift == 1);
+
+        cleanup_case(&ndb, path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_utxo_parity_service(void)
 {
     int failures = 0;
@@ -801,5 +891,6 @@ int test_utxo_parity_service(void)
     failures += case_bh_ref_unreachable_skip();
     failures += case_bh_ref_height_behind_skip();
     failures += case_bh_no_recheck_same_height();
+    failures += case_bh_latch_survives_sha3_confirm();
     return failures;
 }

@@ -29,29 +29,45 @@ static struct node_db *runtime_ndb(void)
     return app_runtime_node_db();
 }
 
-static bool read_drift_flag(struct node_db *ndb, int64_t *out)
+/* Two independent drift detectors share this pager but own SEPARATE keys:
+ *   - utxo_drift_detected: the UTXO SHA3 path; its own confirmations clear it.
+ *   - parity_bh_drift_detected: the coarse block-hash parity LATCH; nothing
+ *     automatic clears it (operator-only) — a later SHA3 confirmation must
+ *     never un-page a block-hash contradiction (wave-3 review finding).
+ * Either key pages; the condition deactivates only when BOTH are clear. */
+static bool read_drift_flags(struct node_db *ndb, int64_t *utxo_out,
+                             int64_t *bh_out)
 {
-    int64_t drift = 0;
-    if (out)
-        *out = 0;
+    int64_t utxo = 0;
+    int64_t bh = 0;
+    if (utxo_out)
+        *utxo_out = 0;
+    if (bh_out)
+        *bh_out = 0;
     if (!ndb || !ndb->open)
         return false;
-    if (!node_db_state_get_int(ndb, "utxo_drift_detected", &drift))
-        return false;
-    if (out)
-        *out = drift;
-    return drift != 0;
+    (void)node_db_state_get_int(ndb, "utxo_drift_detected", &utxo);
+    (void)node_db_state_get_int(ndb, "parity_bh_drift_detected", &bh);
+    if (utxo_out)
+        *utxo_out = utxo;
+    if (bh_out)
+        *bh_out = bh;
+    return utxo != 0 || bh != 0;
 }
 
 static bool detect_utxo_drift_detected(void)
 {
     struct node_db *ndb = runtime_ndb();
-    int64_t drift = 0;
-    if (!read_drift_flag(ndb, &drift))
+    int64_t utxo = 0;
+    int64_t bh = 0;
+    if (!read_drift_flags(ndb, &utxo, &bh))
         return false;
 
     int64_t height = -1;
-    (void)node_db_state_get_int(ndb, "utxo_audit_last_height", &height);
+    if (utxo != 0)
+        (void)node_db_state_get_int(ndb, "utxo_audit_last_height", &height);
+    else
+        (void)node_db_state_get_int(ndb, "parity_bh_drift_height", &height);
     atomic_store(&g_height_at_detect, height);
     return true;
 }
@@ -86,6 +102,22 @@ static enum condition_remedy_result remedy_utxo_drift_detected(void)
 #endif
 
     LOG_WARN("condition", "[condition:utxo_drift_detected] height=%" PRId64 " " "local_sha3=%s remote_sha3=%s action=operator_escalation", atomic_load(&g_height_at_detect), local[0] ? local : "-", remote[0] ? remote : "-");
+
+    /* When the block-hash parity latch is what paged, name its evidence too
+     * (the SHA3 keys above may be empty or stale for a BH-only drift). */
+    int64_t bh = 0;
+    (void)node_db_state_get_int(ndb, "parity_bh_drift_detected", &bh);
+    if (bh != 0) {
+        int64_t bh_height = -1;
+        char bh_local[65];
+        char bh_ref[65];
+        (void)node_db_state_get_int(ndb, "parity_bh_drift_height", &bh_height);
+        read_state_text(ndb, "parity_bh_drift_local_hash",
+                        bh_local, sizeof(bh_local));
+        read_state_text(ndb, "parity_bh_drift_ref_hash",
+                        bh_ref, sizeof(bh_ref));
+        LOG_WARN("condition", "[condition:utxo_drift_detected] block-hash parity latch: height=%" PRId64 " local=%s ref=%s (operator-cleared only)", bh_height, bh_local[0] ? bh_local : "-", bh_ref[0] ? bh_ref : "-");
+    }
     event_emitf(EV_UTXO_DRIFT_DETECTED, 0,
                 "condition=utxo_drift_detected height=%lld local_sha3=%s "
                 "remote_sha3=%s",
@@ -103,12 +135,12 @@ static bool witness_utxo_drift_detected(int64_t target_at_detect)
 {
     (void)target_at_detect;
     // honest-witness-ok: remedy_utxo_drift_detected returns COND_REMEDY_FAILED
-    // and NEVER clears the drift flag — only an external repair (or operator)
+    // and NEVER clears the drift flags — only an external repair (or operator)
     // can. So this poison-absence read cannot be self-certified by the remedy
     // (the Law-7 trap). It exists solely for the engine's !detected
     // deactivation path: once drift genuinely resolves externally the
     // condition must clear, which needs a truthful flag read, never a constant.
-    return !read_drift_flag(runtime_ndb(), NULL);
+    return !read_drift_flags(runtime_ndb(), NULL, NULL);
 }
 
 static struct condition c_utxo_drift_detected = {

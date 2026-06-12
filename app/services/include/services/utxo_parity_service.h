@@ -7,16 +7,21 @@
  *   1. COARSE BLOCK-HASH (fires at tip): h_check = min(applied,frontier) -
  *      finality_depth. Gets our local block hash from the block index and the
  *      reference's via getblockhash RPC. Match → checks_total++. Mismatch →
- *      sets 'utxo_drift_detected' so the existing Condition pages. Any
- *      transport/availability error → skips_total++ (NEVER pages on
- *      unreachability). Advance-only: once a height is checked it is cached.
+ *      LATCHES 'parity_bh_drift_detected' (operator-cleared only) so the
+ *      existing Condition pages. Any transport/availability error →
+ *      skips_total++ (NEVER pages on unreachability). Advance-only: once a
+ *      height is checked it is cached.
  *
  *   2. EXACT UTXO SHA3 (fires only when applied is reorg-safe): recomputes
  *      the local SHA3 UTXO commitment at the live applied height and diffs it
- *      against the pluggable reference. Same drift/page mechanism as above.
+ *      against the pluggable reference, writing 'utxo_drift_detected'.
  *
- * Both checks write through the SAME 'utxo_drift_detected' flag — single
- * paging source of truth; no new EV_OPERATOR_NEEDED emits live here.
+ * Each check owns a SEPARATE flag; the utxo_drift_detected Condition pages on
+ * either — single pager, no new EV_OPERATOR_NEEDED emits live here. They must
+ * NOT share a key: the SHA3 path's confirmations clear ITS flag, and with the
+ * advance-only cache a BH-mismatched height is never re-examined, so a shared
+ * flag would let a later SHA3 confirmation silently un-page a real divergence
+ * (wave-3 review finding).
  *
  * Threading: this module creates no background work. The supervised
  * chain.utxo_parity_poll Job owns cadence and calls utxo_parity_tick_once().
