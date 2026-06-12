@@ -6,6 +6,58 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
+## 2026-06-12 (later) — task #30 ROOT-CAUSED + FIXED: the served tip no longer trails the network by one block
+
+**Outcome:** the "single-block header lag" (task #30) was never a
+header-fetch problem — headers, bodies, scripts, proofs and coins were
+all current within seconds of each block's arrival. The served tip
+trailed because **two +1 re-anchor paths skipped the pending tip→tip+1
+finalize transition after every publish**, so block N could only be
+published when N+1 arrived (one full inter-block interval late, every
+block; live forensic: 3144858 arrived 11:05:34, published 11:17:00).
+
+**THE INVARIANT (the whole fix):** the tip_finalize cursor floor equals
+the served tip's OWN height T — the T→T+1 transition is always the
+stage's to finalize. Nothing may stamp T+1.
+
+**LANDED on main:**
+- `67062bbf6` — authority anchor target = height (was height+1; fired
+  via `chain_set_active_tip` → `set_authoritative_tip` on EVERY tip
+  commit). Plus the latent splice-class kill: new
+  `tip_finalize_stage_resolve_durable_tip` (convention-aware, the
+  returned height always owns the returned hash) replaces the naive
+  `tip = cursor−1` + raw `finalized_tip_at` read in `rebuild_seed_tip`,
+  `seed_tip_from_finalized` AND the chain_state_validator Case-3b
+  AGREE (which previously matched anchor rows only and fell through to
+  the Case-4 reset on finalized-row shutdowns); ingest read-back via
+  `block_hash_at`; `ensure_authority_anchor_row` never downgrades a
+  finalized row. Regression block "noskip" (15 asserts) in
+  test_tip_finalize_stage.c.
+- `967437452` — the per-ingest runtime re-seed (reducer_ingest_service)
+  gated on `cursor < tip` (was `< tip+1`): it was dormant under the old
+  anchor and re-introduced the skip on every at-tip ingest once the
+  anchor was fixed (re-proven live: 3144895 arrived 11:50:30, published
+  11:53:40 with 3144896).
+- `aa91b0454` — tooling: Makefile BUILD_COMMIT appends `-dirty` on
+  uncommitted tracked changes; `build/bin/sqlq` (read-only
+  vendored-sqlite CLI — no python, no sqlite3 CLI on the host; it read
+  the live tip_finalize_log and exposed the alternating finalized/anchor
+  lattice that was the smoking gun).
+
+**Gates:** test_parallel 0/415 (twice), `make lint` all-pass. Binary
+`967437452` deployed 12:06:56 UTC, boot clean at the pre-restart parity
+height.
+
+**Open (task #31):** two cosmetic +1s remain, each costing one late
+block per EVENT (not per block): the boot clamp floors the cursor at
+coins_best+1 (one late block per restart), and
+`tip_finalize_stage_seed_anchor` stamps height+1 (one per cold-import —
+changing it must conform `reducer_anchor_candidate_ok`, the H*
+trusted-base scan, and be copy-proven on a cold-import fixture). The
+resolver tolerates both conventions, so #31 can land incrementally.
+
+---
+
 ## 2026-06-12 — defect #10 FIXED + LIVE-PROVEN: restarts keep the connected extent (projection top-up); cold-import drop-in REMOVED; sidecar crash window killed
 
 **Outcome:** task #29 (defect #10) closed. A restart no longer drops the
