@@ -585,11 +585,15 @@ job_result_t tip_finalize_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-    /* Re-widen chain[] to the most-work candidate so step_finalize's
-     * one-block lookahead finds next_h+1 — its own set_tip collapses the
-     * window each step. stage_helpers.h */
-    reducer_extend_window_to_candidate(g_ms, true);
     progress_store_tx_lock();
+    /* Re-widen chain[] INSIDE the lock so the extend, reorg-check, read
+     * (active_chain_at), and write (active_chain_move_window_tip) are
+     * atomic from this thread's perspective — closing the race where a
+     * concurrent active_chain write changed chain[next_h+1] between the
+     * extend and step_finalize's decision. stage_helpers.h
+     * Lock-order: progress_store_tx_lock -> active_chain.write_lock;
+     * reverse does not exist (active_chain_fill_window is array-only). */
+    reducer_extend_window_to_candidate(g_ms, true);
     bool rewind_ok = rewind_cursor_if_active_chain_reorged(db);
     if (!rewind_ok) {
         progress_store_tx_unlock();
@@ -740,6 +744,15 @@ uint64_t tip_finalize_stage_precondition_failed_total(void) { return atomic_load
 uint64_t tip_finalize_stage_successor_pending_total(void) { return atomic_load(&g_successor_pending_total); }
 uint64_t tip_finalize_stage_total_work_added_high(void) { return atomic_load(&g_total_work_added_high); }
 uint64_t tip_finalize_stage_total_work_added_low(void) { return atomic_load(&g_total_work_added_low); }
+
+/* Lock-free blocked-class snapshot for the supervisor stall log. Returns a
+ * process-lifetime string literal (safe for LOG_WARN); "" when none yet. */
+const char *tip_finalize_stage_last_blocked_reason(void)
+{
+    int cls = atomic_load(&g_last_blocked_class);
+    if (cls <= TF_BLOCKED_NONE || cls >= TF_BLOCKED_CLASS_N) return "";
+    return k_tf_blocked_name[cls];
+}
 
 bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
 {
