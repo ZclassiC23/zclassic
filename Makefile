@@ -124,7 +124,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-operator-needed-sink check-doc-accuracy \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
-        test-two-node-peer-tip chaos chaos-clean
+        test-two-node-peer-tip chaos chaos-clean \
+        replay-canary-anchor replay-canary-genesis
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
 all: test_zcl zclassic23 zclassic-cli
@@ -559,6 +560,45 @@ soak-ci: soak_runner zclassic23 zcl-rpc
 	     exit 1; \
 	 fi; \
 	 echo "soak-ci: PASS (SOAK_OK — tip advanced under load, RSS plateaued)"'
+
+# ── Standing replay canary (opt-in, spawns an isolated mainnet node) ──
+#
+# replay-canary-anchor / -genesis drive tools/scripts/replay_canary.sh,
+# which replays the REAL chain through the HEAD reducer in an ISOLATED
+# /tmp scratch datadir on 3905x ports and asserts zero consensus rejects,
+# the anchor checkpoint passed without an integrity FATAL, and coarse UTXO
+# stats == co-located zclassicd gettxoutsetinfo (RPC 8232, read-only). They
+# are DELIBERATELY excluded from `make ci` — like soak-ci/test-crash-bootstrap
+# they SPAWN a real node (and read tens of GB on /tmp). `make ci` runs only
+# the hermetic verdict-logic gate (test_replay_canary_verdict, inside
+# test_zcl). The AUTHORITATIVE verdict is the sentinel FILE; the false-green
+# guard below greps the sentinel for "verdict":"PASS" so a no-op harness
+# (crashed, killed, produced no sentinel) fails loud — never exit-0-as-proof.
+.PHONY: replay-canary-anchor
+replay-canary-anchor: zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 vd="$${ZCL_CANARY_VERDICT_DIR:-$$HOME/.local/state/zclassic23-canary}"; \
+	 set +e; bash tools/scripts/replay_canary.sh --from=anchor; rc=$$?; set -e; \
+	 f="$$vd/replay_canary_anchor.json"; \
+	 if [ ! -f "$$f" ] || ! grep -q "\"verdict\":\"PASS\"" "$$f"; then \
+	     echo "replay-canary-anchor: FAIL (no fresh PASS sentinel at $$f; harness rc=$$rc)"; \
+	     [ -f "$$f" ] && cat "$$f"; \
+	     exit 1; \
+	 fi; \
+	 echo "replay-canary-anchor: PASS (sentinel verdict=PASS)"'
+
+.PHONY: replay-canary-genesis
+replay-canary-genesis: zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 vd="$${ZCL_CANARY_VERDICT_DIR:-$$HOME/.local/state/zclassic23-canary}"; \
+	 set +e; bash tools/scripts/replay_canary.sh --from=genesis; rc=$$?; set -e; \
+	 f="$$vd/replay_canary_genesis.json"; \
+	 if [ ! -f "$$f" ] || ! grep -q "\"verdict\":\"PASS\"" "$$f"; then \
+	     echo "replay-canary-genesis: FAIL (no fresh PASS sentinel at $$f; harness rc=$$rc)"; \
+	     [ -f "$$f" ] && cat "$$f"; \
+	     exit 1; \
+	 fi; \
+	 echo "replay-canary-genesis: PASS (sentinel verdict=PASS)"'
 
 # Always-fresh end-to-end MCP test.
 #
