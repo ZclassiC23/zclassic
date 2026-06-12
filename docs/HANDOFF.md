@@ -6,6 +6,60 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
+## 2026-06-12 — defect #10 FIXED + LIVE-PROVEN: restarts keep the connected extent (projection top-up); cold-import drop-in REMOVED; sidecar crash window killed
+
+**Outcome:** task #29 (defect #10) closed. A restart no longer drops the
+active chain to the stale flat-file floor and re-chases the window —
+copy-proven on a live-datadir fixture (boot after kill-9 came back at
+the FULL connected extent h=3,144,836 in 58 s, 6/6 hash probes vs
+zclassicd MATCH) and live-proven twice by the deploy restarts (boot
+anchored at the pre-deploy tip, gap 0 within minutes, 8/8 probes
+MATCH). The `-cold-import` firstboot drop-in is REMOVED from the unit
+(standing rule satisfied); the unit is clean.
+
+**Root cause (defect #10):** connect-time block-index state (HAVE_DATA,
+nFile/nDataPos, nTx) was mutated in memory only; the durable record is
+the EV_BLOCK_HEADER event log → block_index_projection, and **no
+normal-boot path ever read the projection back**. Compounding it, no
+live path ever set `pindex->nTx`, so even the projection rows carried
+n_tx=0 and nChainTx propagation died at the window floor.
+
+**LANDED on main:**
+- `c8a99618e` — THE FIX: `block_index_projection_topup()` (new
+  `app/services/src/block_index_loader_topup.c`) — unconditional
+  raise-only fold of the projection over the loaded map before boot's
+  nChainTx propagation (applies HAVE_DATA/positions/nTx/valid-level,
+  inserts missing entries with pprev+chainwork, hash-bound disk nTx
+  recovery for legacy n_tx=0 rows, refuses height conflicts loudly).
+  Plus: nTx stamped at body persist (reducer ingest + body_persist
+  stage); auto_reindex_request sentinel cleared on both verb-refusal
+  paths AND on a verified integrity-clean boot (it lingered forever,
+  costing a consume→refuse cycle — or a full reindex — every boot).
+  New regression group `test_block_index_topup` (22 assertions).
+- `2962efc7c` — top-up re-emits recovered nTx so projection rows
+  self-correct (the ~7.4k disk preads are paid once, ever).
+- `48e96784b` — NEW DEFECT found by the first deploy restart, fixed:
+  `save_block_index_flat` renamed the fresh 541 MB body then died
+  inside the multi-second post-rename rehash → next boot quarantined a
+  GOOD file (self-healed, one boot cycle). Now the SHA3 streams over
+  the bytes as written and a new `ssio_write_sidecar_raw()` stamps the
+  sidecar ~1 ms after the rename. Lint-gate contract updated to pin
+  the stronger shape.
+- `test_rebuild_recent` updated to mirror the shipped cap (10000).
+
+**Operational state:** node healthy at tip (gap 0, hash-identical
+probes incl. the whole former band), binary `48e96784b` live, unit has
+only latency-guard + legacy-sync drop-ins. Guardian monitor armed.
+Copy-prove fixture preserved at `~/.zclassic-c23-defect10-copyprove`
+(13 GB — delete when comfortable). Casual restarts are now SAFE.
+
+**Open:** wave-3 repair-ladder deletion (window_rebuild + ~1,450-1,550
+LOC) and the legacy coins.db best-block view demotion remain future
+work (wave-2's list). Gates: build clean, lint all-pass, test_parallel
+0/415.
+
+---
+
 ## 2026-06-11 — live node AT TIP on the all-fixes binary; 5th defect (header band hole) fix IN FLIGHT; wave-2 derived-coins_best MERGED
 
 **Outcome:** the 6h outage is over and the live node tracks the
