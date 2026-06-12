@@ -113,7 +113,14 @@ static void utxo_apply_log_stall(void)
 
 static void tip_finalize_log_stall(void)
 {
-    LOG_WARN("supervisor", "[supervisor] staged.tip_finalize stalled " "(cursor=%llu finalized=%llu upstream_failed=%llu reorg=%llu) " "— tip finalize behind utxo_apply or live tip", (unsigned long long)tip_finalize_stage_cursor(), (unsigned long long)tip_finalize_stage_finalized_total(), (unsigned long long)tip_finalize_stage_upstream_failed_total(), (unsigned long long)tip_finalize_stage_reorg_detected_total());
+    LOG_WARN("supervisor", "[supervisor] staged.tip_finalize stalled "
+             "(cursor=%llu finalized=%llu upstream_failed=%llu reorg=%llu "
+             "last_blocked=%s) — tip finalize behind utxo_apply or live tip",
+             (unsigned long long)tip_finalize_stage_cursor(),
+             (unsigned long long)tip_finalize_stage_finalized_total(),
+             (unsigned long long)tip_finalize_stage_upstream_failed_total(),
+             (unsigned long long)tip_finalize_stage_reorg_detected_total(),
+             tip_finalize_stage_last_blocked_reason());
 }
 
 /* The eight stages in EXACT pipeline order (header_admit → … →

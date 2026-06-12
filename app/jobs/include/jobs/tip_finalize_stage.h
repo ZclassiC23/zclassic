@@ -115,6 +115,10 @@ uint64_t tip_finalize_stage_precondition_failed_total(void);
 uint64_t tip_finalize_stage_successor_pending_total(void);
 uint64_t tip_finalize_stage_total_work_added_high(void);
 uint64_t tip_finalize_stage_total_work_added_low(void);
+/* Lock-free snapshot of the last blocked-class token. Returns "" when no
+ * block has been observed yet; the pointer is a process-lifetime literal
+ * (safe to pass directly to LOG_WARN). For the supervisor stall log. */
+const char *tip_finalize_stage_last_blocked_reason(void);
 
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
                                          void *user);
