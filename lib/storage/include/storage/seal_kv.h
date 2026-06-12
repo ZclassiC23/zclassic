@@ -113,4 +113,28 @@ bool seal_kv_mark_ratified_in_tx(struct sqlite3 *db, int slot,
 /* zcl_state subsystem=seal — dump the whole ring (4 slots + head) as JSON. */
 bool seal_kv_dump_state_json(struct json_value *out, const char *key);
 
+/* ── prune on ratify — seal advance IS retention (M1 LANDS DARK) ──
+ *
+ * SEAL_PRUNE_ENABLED is 0 in M1: the ratifier does NOT call the prune, so M1
+ * is zero-behavior-change and proves itself purely by ACCUMULATING ratified
+ * seals. The function + the dark call site are wired so a follow-up flips the
+ * flag to 1 once seals demonstrably accumulate on a copy. Until then no rows
+ * are ever deleted. */
+#define SEAL_PRUNE_ENABLED 0
+/* Keep stage *_log tails generous: utxo_apply_log is the boot resolver's
+ * contiguity witness, so prune only far below the seal. */
+#define SEAL_LOG_RETENTION 10000
+
+/* Prune sealed history below grid point G, IN the caller's open txn:
+ *   - DELETE utxo_apply_delta WHERE height <= G (the inverse-delta is only
+ *     needed to unwind ABOVE the seal; below S it is sealed-domain, unwindable
+ *     only by recompute).
+ *   - DELETE stage *_log rows (validate_headers_log, body_persist_log,
+ *     script_validate_log, proof_validate_log, utxo_apply_log)
+ *     WHERE height <= G - SEAL_LOG_RETENTION.
+ * NEVER touches tip_finalize_log (the trusted-base/anchor row source) and
+ * NEVER touches nullifiers (permanent consensus state). Returns false on any
+ * delete error so the caller can ROLLBACK. */
+bool seal_prune_below_in_tx(struct sqlite3 *db, int32_t G);
+
 #endif /* ZCL_STORAGE_SEAL_KV_H */

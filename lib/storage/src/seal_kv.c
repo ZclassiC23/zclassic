@@ -284,6 +284,49 @@ bool seal_kv_mark_ratified_in_tx(struct sqlite3 *db, int slot,
     return true;
 }
 
+/* DELETE one table's rows at/below `limit` in the caller's open txn. A missing
+ * table is tolerated (a repair path can reach here before a stage's schema is
+ * created). Returns false only on a real step error. */
+static bool seal_prune_table(sqlite3 *db, const char *table, int32_t limit)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE height <= ?", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        /* No such table — tolerated (nothing to prune). */
+        return true;
+    }
+    sqlite3_bind_int(st, 1, limit);
+    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("seal", "[seal] prune %s <= %d step rc=%d", table, limit, rc);
+        return false;
+    }
+    return true;
+}
+
+bool seal_prune_below_in_tx(sqlite3 *db, int32_t G)
+{
+    if (!db) return false;
+    /* utxo_apply_delta below the seal is sealed-domain — drop it. */
+    if (!seal_prune_table(db, "utxo_apply_delta", G))
+        return false;
+    /* Stage *_log tails, kept generous below the seal. NEVER tip_finalize_log
+     * (the trusted-base/anchor source) and NEVER nullifiers (permanent). */
+    int32_t log_limit = G - SEAL_LOG_RETENTION;
+    if (log_limit < 0) return true; /* nothing old enough to prune */
+    static const char *const logs[] = {
+        "validate_headers_log", "body_persist_log", "script_validate_log",
+        "proof_validate_log", "utxo_apply_log",
+    };
+    for (size_t i = 0; i < sizeof(logs) / sizeof(logs[0]); i++) {
+        if (!seal_prune_table(db, logs[i], log_limit))
+            return false;
+    }
+    return true;
+}
+
 static void seal_push_hash(struct json_value *obj, const char *key,
                            const uint8_t h[32])
 {

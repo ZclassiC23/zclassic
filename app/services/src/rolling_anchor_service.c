@@ -12,6 +12,8 @@
 #include "services/rolling_anchor_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
+#include "services/seal_service.h"
+#include "storage/progress_store.h"
 
 #include "supervisors/domains.h"
 #include "chain/chain.h"
@@ -50,6 +52,11 @@
 #define RA_FILE_NAME       "sha3_windows_runtime.dat"
 #define RA_RECORD_SIZE     36u            /* i32 + 32 bytes hash */
 #define RA_TICK_SECS       60              /* periodic extend cadence */
+/* §4d row-8: after this many CONSECUTIVE read failures at/below the sealed
+ * input prefix, page a human (a corrupt block frame in the sealed domain is
+ * unrecoverable by re-fetch). Above the prefix, a read failure is normal
+ * window territory (re-fetch) and never pages. */
+#define RA_READ_FAIL_PAGE_THRESHOLD 5
 
 struct ra_record {
     int32_t start_height;
@@ -68,6 +75,16 @@ static struct {
     _Atomic int64_t total_skipped_policy;
     _Atomic int64_t total_skipped_depth;
     _Atomic int64_t total_read_failures;
+    /* CONSECUTIVE read failures: reset to 0 on any successful window commit.
+     * Distinct from the monotonic total — this counts a genuinely-stuck
+     * sealed-read, the §4d-row-8 page trigger. */
+    _Atomic int64_t consecutive_read_failures;
+    /* The height the most recent read failure stopped at (the unreadable
+     * block frame). Decides page-vs-warn against the sealed prefix. */
+    _Atomic int32_t last_read_fail_height;
+    /* Page-once latch: set when the row-8 page fires, cleared when the
+     * consecutive counter returns to 0 (a successful extend re-arms it). */
+    _Atomic bool    read_fail_paged;
     _Atomic int64_t last_extend_unix;
     char   file_path[1024];
     /* Periodic-tick context, populated by rolling_anchor_start. */
@@ -431,6 +448,8 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         int fail_h = -1;
         if (!ra_compute_window_hash(ms, datadir, next_start, hash, &fail_h)) {
             atomic_fetch_add(&g_ra.total_read_failures, 1);
+            atomic_fetch_add(&g_ra.consecutive_read_failures, 1);
+            atomic_store(&g_ra.last_read_fail_height, (int32_t)fail_h);
             LOG_WARN("rolling_anchor", "[rolling_anchor] extend: read failed at h=%d " "(window start=%d) — stopping", fail_h, next_start);
             break;
         }
@@ -469,6 +488,10 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         HexStr(hash, 32, false, hex, sizeof(hex));
         LOG_INFO("rolling_anchor", "[rolling_anchor] extended: start=%d end=%d sha3=%s", next_start, last_h_in_win, hex);
         atomic_fetch_add(&g_ra.total_extended, 1);
+        /* A successful commit proves the sealed read path is healthy: clear the
+         * consecutive-failure counter and re-arm the row-8 page latch. */
+        atomic_store(&g_ra.consecutive_read_failures, 0);
+        atomic_store(&g_ra.read_fail_paged, false);
         atomic_store(&g_ra.last_extend_unix, (int64_t)platform_time_wall_time_t());
 
         next_start += (int)SHA3_WINDOW_SIZE;
@@ -479,12 +502,47 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
 
 /* ── Periodic-tick wrapper ─────────────────────────────────────── */
 
-static int rolling_anchor_effective_prefix_end(void)
+int rolling_anchor_effective_prefix_end(void)
 {
     pthread_mutex_lock(&g_ra.lock);
     int runtime_end = ra_runtime_end_locked();
     pthread_mutex_unlock(&g_ra.lock);
     return runtime_end;
+}
+
+bool rolling_anchor_window_hash_ending_at(int32_t end_h, uint8_t out[32])
+{
+    if (!out) return false;
+    /* A window covers [start .. start+999] ending at start+999, so a window
+     * ending at end_h has end_h+1 a multiple of SHA3_WINDOW_SIZE. */
+    if (((int64_t)end_h + 1) % (int)SHA3_WINDOW_SIZE != 0) return false;
+    int32_t start_height = end_h - (int)SHA3_WINDOW_SIZE + 1;
+    if (start_height < 0) return false;
+
+    pthread_mutex_lock(&g_ra.lock);
+    /* Compile-time prefix windows first (g_sha3_windows is start-indexed). */
+    int compile_end = ra_compile_time_end();
+    if (compile_end >= 0 && end_h <= compile_end) {
+        size_t idx = (size_t)(start_height / (int)SHA3_WINDOW_SIZE);
+        if (idx < g_sha3_windows_count &&
+            g_sha3_windows[idx].start_height == start_height) {
+            memcpy(out, g_sha3_windows[idx].hash, 32);
+            pthread_mutex_unlock(&g_ra.lock);
+            return true;
+        }
+        pthread_mutex_unlock(&g_ra.lock);
+        return false;
+    }
+    /* Otherwise scan the runtime ring for a matching start_height. */
+    for (int i = 0; i < g_ra.count; i++) {
+        if (g_ra.windows[i].start_height == start_height) {
+            memcpy(out, g_ra.windows[i].hash, 32);
+            pthread_mutex_unlock(&g_ra.lock);
+            return true;
+        }
+    }
+    pthread_mutex_unlock(&g_ra.lock);
+    return false;
 }
 
 static void rolling_anchor_on_stall(struct liveness_contract *c)
@@ -499,6 +557,24 @@ static void rolling_anchor_on_stall(struct liveness_contract *c)
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "chain.rolling_anchor stalled reason=%s effective_prefix_end=%d read_failures=%lld",
                 reason_name, runtime_end, (long long)read_failures);
+
+    /* §4d row-8: a corrupt block frame AT OR BELOW the sealed input prefix is
+     * unrecoverable by re-fetch — it pages instead of retrying forever. Above
+     * the prefix is ordinary window territory (the re-fetch is normal), so we
+     * keep the warn-and-retry above and gate the page on BOTH a sustained
+     * consecutive-failure count AND a failing height inside the sealed prefix.
+     * Page exactly once per escalation (the latch re-arms on any success). */
+    int64_t consec = atomic_load(&g_ra.consecutive_read_failures);
+    int32_t fail_h = atomic_load(&g_ra.last_read_fail_height);
+    if (consec >= RA_READ_FAIL_PAGE_THRESHOLD &&
+        fail_h >= 0 && fail_h <= runtime_end + 1 &&
+        !atomic_load(&g_ra.read_fail_paged)) {
+        atomic_store(&g_ra.read_fail_paged, true);
+        LOG_WARN("rolling_anchor", "[rolling_anchor] OPERATOR NEEDED: sealed-domain read failure at h=%d (consecutive=%lld prefix_end=%d) — a corrupt block frame at/below the seal cannot be re-fetched; staying up, paging a human", fail_h, (long long)consec, runtime_end);
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=rolling_anchor_sealed_read_failure consecutive=%lld prefix_end=%d failing_height=%d",
+                    (long long)consec, runtime_end, fail_h);
+    }
 }
 
 static void rolling_anchor_on_tick(struct liveness_contract *c)
@@ -518,6 +594,10 @@ static void rolling_anchor_on_tick(struct liveness_contract *c)
 
     int64_t before_failures = atomic_load(&g_ra.total_read_failures);
     (void)rolling_anchor_extend_if_due(ms, datadir);
+    /* Ratify the newest state-seal candidate at depth — the OUTPUT companion
+     * to the INPUT window just (maybe) extended above. Best-effort, idempotent;
+     * it opens only its own progress.kv txn (no csr->lock / chain_evidence). */
+    (void)seal_ratify_tick(ms);
     supervisor_progress(id, (int64_t)rolling_anchor_effective_prefix_end());
     if (atomic_load(&g_ra.total_read_failures) > before_failures)
         supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
@@ -532,6 +612,11 @@ struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadi
 
     /* Idempotent — init() returns ZCL_OK if file absent. */
     (void)rolling_anchor_init(datadir, NULL);
+
+    /* Ensure the state-seal ring schema (progress_meta is already ensured by
+     * progress_store_open; this is idempotent belt-and-braces so the seal path
+     * never races a missing table). The ratifier runs from this service's tick. */
+    (void)seal_service_init(progress_store_db());
 
     pthread_mutex_lock(&g_ra.lock);
     g_ra.tick_ms = ms;
@@ -606,6 +691,12 @@ bool rolling_anchor_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_ra.total_skipped_depth));
     json_push_kv_int (out, "total_read_failures",
                       atomic_load(&g_ra.total_read_failures));
+    json_push_kv_int (out, "consecutive_read_failures",
+                      atomic_load(&g_ra.consecutive_read_failures));
+    json_push_kv_int (out, "last_read_fail_height",
+                      atomic_load(&g_ra.last_read_fail_height));
+    json_push_kv_bool(out, "read_fail_paged",
+                      atomic_load(&g_ra.read_fail_paged));
     json_push_kv_int (out, "last_extend_unix",
                       atomic_load(&g_ra.last_extend_unix));
     return true;
@@ -634,5 +725,29 @@ void rolling_anchor_reset_for_test(void)
     atomic_store(&g_ra.total_skipped_policy, 0);
     atomic_store(&g_ra.total_skipped_depth, 0);
     atomic_store(&g_ra.total_read_failures, 0);
+    atomic_store(&g_ra.consecutive_read_failures, 0);
+    atomic_store(&g_ra.last_read_fail_height, -1);
+    atomic_store(&g_ra.read_fail_paged, false);
     atomic_store(&g_ra.last_extend_unix, 0);
 }
+
+#ifdef ZCL_TESTING
+void rolling_anchor_test_inject_read_failure(int32_t failing_height)
+{
+    atomic_fetch_add(&g_ra.total_read_failures, 1);
+    atomic_fetch_add(&g_ra.consecutive_read_failures, 1);
+    atomic_store(&g_ra.last_read_fail_height, failing_height);
+}
+
+void rolling_anchor_test_reset_read_failures(void)
+{
+    atomic_store(&g_ra.consecutive_read_failures, 0);
+    atomic_store(&g_ra.last_read_fail_height, -1);
+    atomic_store(&g_ra.read_fail_paged, false);
+}
+
+void rolling_anchor_test_run_stall_escalation(void)
+{
+    rolling_anchor_on_stall(NULL);
+}
+#endif

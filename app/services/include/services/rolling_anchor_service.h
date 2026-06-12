@@ -70,11 +70,33 @@ struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadi
 /* Stop the periodic tick. Safe to call when not started. */
 void rolling_anchor_stop(void);
 
+/* Effective input-bytes prefix end height (compile-time prefix + committed
+ * runtime windows). The seal ratifier requires r.height <= this: the block
+ * bytes that produced a sealed state must themselves be sealed (the INPUT
+ * prefix must cover G before the OUTPUT seal at G can ratify). Pure read. */
+int rolling_anchor_effective_prefix_end(void);
+
+/* SHA3 of the committed window ENDING at end_h (end_h+1 a multiple of 1000),
+ * written to out[32]. Returns false if no such window is committed (compile
+ * prefix or runtime ring). Informational input for seal.anchor_window_sha3.
+ * Pure read under the rolling_anchor lock. */
+bool rolling_anchor_window_hash_ending_at(int32_t end_h, uint8_t out[32]);
+
 /* zcl_state subsystem=rolling_anchor entry. */
 bool rolling_anchor_dump_state_json(struct json_value *out,
                                      const char *key);
 
 /* Test hook — reset state between unit tests. */
 void rolling_anchor_reset_for_test(void);
+
+/* Test hooks for the row-8 page path: inject a consecutive read failure (as
+ * if a sealed-domain block frame were unreadable) at `failing_height`, then
+ * drive the supervisor stall escalation that decides whether to page. Only
+ * compiled under ZCL_TESTING. */
+#ifdef ZCL_TESTING
+void rolling_anchor_test_inject_read_failure(int32_t failing_height);
+void rolling_anchor_test_reset_read_failures(void);
+void rolling_anchor_test_run_stall_escalation(void);
+#endif
 
 #endif /* ZCL_SERVICES_ROLLING_ANCHOR_SERVICE_H */

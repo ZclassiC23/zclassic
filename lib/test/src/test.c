@@ -993,6 +993,7 @@ int main(void)
     failures += test_created_outputs_index();
     failures += test_coins_kv();
     failures += test_seal_kv();
+    failures += test_seal_ratify();
     failures += test_nullifier_kv();
     failures += test_stage_repair();
     failures += test_script_validate_stage();

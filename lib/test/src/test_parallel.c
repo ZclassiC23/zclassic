@@ -176,7 +176,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(created_outputs_index) X(coins_kv) \
-    X(seal_kv) \
+    X(seal_kv) X(seal_ratify) \
     X(nullifier_kv) \
     X(script_validate_stage) X(script_validate_contextual_gate) \
     X(proof_validate_stage) \

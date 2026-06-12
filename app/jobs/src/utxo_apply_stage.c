@@ -13,10 +13,10 @@
 #include "utxo_apply_log_store.h"
 #include "utxo_apply_stage_internal.h"
 #include "script_validate_log_store.h"
-
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "services/seal_service.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
@@ -31,7 +31,6 @@
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/main_state.h"
-
 #include <pthread.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
@@ -510,11 +509,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * the stage cursor (cursor_in + 1), so coins_applied_height ==
      * utxo_apply cursor by construction on every successful apply. Failed
      * verdicts return JOB_BLOCKED above and hold cursor/frontier at the
-     * unresolved height (scratch log row rolled back) — fail-closed, never
-     * a mixed coins window applied over an un-applied hole. */
+     * unresolved height (scratch log row rolled back) — fail-closed, never a
+     * mixed coins window over a hole. The seal hook rides THIS txn, never fails it. */
     uint64_t next_cursor = c->cursor_in + 1;
     if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
         return JOB_FATAL;
+    seal_candidate_hook_in_tx(db, g_ms, (int32_t)next_cursor);
 
     atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
     reject_memo_clear();
