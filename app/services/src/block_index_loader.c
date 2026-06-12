@@ -15,6 +15,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "storage/block_index_db.h"
+#include "storage/sha3_sidecar_io.h"
 #include "crypto/sha3.h"
 #include "models/database.h"
 #include "core/uint256.h"
@@ -111,14 +112,76 @@ void block_index_forward_pass(struct block_index **sorted,
 
 /* ── save_block_index_flat ───────────────────────────────── */
 
+/* Payload writer for the embedded single-file format. Streams the
+ * same "ZCLI"+count+entries payload the old whole file held, at the
+ * current file offset (48, right after the integrity header the shared
+ * helper owns) while hashing exactly those bytes.
+ * The shared helper back-patches the {magic, version, size, sha3}
+ * header and publishes the whole file with ONE atomic rename, so the
+ * integrity commitment and the bytes it certifies can never diverge
+ * across a crash. */
+struct bif_emit_ctx {
+    struct block_index **sorted;
+    size_t               count;
+};
+
+static bool bif_emit_payload(FILE *f, void *vctx,
+                             uint64_t *out_payload_size,
+                             uint8_t out_payload_sha3[32])
+{
+    struct bif_emit_ctx *c = (struct bif_emit_ctx *)vctx;
+
+    struct sha3_256_ctx hctx;
+    sha3_256_init(&hctx);
+    uint64_t bytes = 0;
+
+    uint32_t magic = 0x5A434C49; /* "ZCLI" payload magic (unchanged) */
+    uint32_t count32 = (uint32_t)c->count;
+    if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
+        fwrite(&count32, 4, 1, f) != 1) {
+        fprintf(stderr, "save_block_index_flat: payload header write failed\n");
+        return false;
+    }
+    sha3_256_write(&hctx, (const uint8_t *)&magic, 4);
+    sha3_256_write(&hctx, (const uint8_t *)&count32, 4);
+    bytes += 8;
+
+    for (size_t i = 0; i < c->count; i++) {
+        struct block_index_flat entry;
+        memset(&entry, 0, sizeof(entry));
+        if (c->sorted[i]->phashBlock)
+            memcpy(entry.hash, c->sorted[i]->phashBlock->data, 32);
+        if (c->sorted[i]->pprev && c->sorted[i]->pprev->phashBlock)
+            memcpy(entry.prev_hash, c->sorted[i]->pprev->phashBlock->data, 32);
+        entry.height = c->sorted[i]->nHeight;
+        entry.n_bits = c->sorted[i]->nBits;
+        entry.n_time = c->sorted[i]->nTime;
+        entry.n_version = c->sorted[i]->nVersion;
+        entry.n_status = c->sorted[i]->nStatus;
+        entry.n_file = c->sorted[i]->nFile;
+        entry.n_data_pos = c->sorted[i]->nDataPos;
+        entry.n_undo_pos = c->sorted[i]->nUndoPos;
+        entry.n_tx = c->sorted[i]->nTx;
+        entry.n_chain_tx = c->sorted[i]->nChainTx;
+        memcpy(entry.chain_work, c->sorted[i]->nChainWork.pn, 32);
+        entry.n_cached_branch_id = (uint32_t)c->sorted[i]->nCachedBranchId;
+        memcpy(entry.sapling_root, c->sorted[i]->hashFinalSaplingRoot.data, 32);
+        if (fwrite(&entry, sizeof(entry), 1, f) != 1) { // disk-io-lock: private-fd
+            fprintf(stderr, "save_block_index_flat: write failed at entry "
+                    "%zu/%zu: %s\n", i, c->count, strerror(errno));
+            return false;
+        }
+        sha3_256_write(&hctx, (const uint8_t *)&entry, sizeof(entry));
+        bytes += sizeof(entry);
+    }
+
+    sha3_256_finalize(&hctx, out_payload_sha3);
+    *out_payload_size = bytes;
+    return true;
+}
+
 void save_block_index_flat(const char *datadir, struct main_state *ms)
 {
-    char path[1024];
-    char tmp_path[1056];
-    snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    (void)unlink(tmp_path);
-
     size_t count = ms->map_block_index.size;
     struct block_index **sorted = zcl_malloc(count * sizeof(void *), "block_index sorted save");
     if (!sorted) {
@@ -137,98 +200,24 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     qsort(sorted, count, sizeof(struct block_index *), cmp_height);
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
-    FILE *f = fopen(tmp_path, "wb");
-    if (!f) {
-        fprintf(stderr, "save_block_index_flat: cannot create %s: %s\n",
-                tmp_path, strerror(errno));
-        free(sorted); return;
-    }
 
-    /* Stream the integrity hash over EXACTLY the bytes written, so the
-     * sidecar can be stamped right after the rename without re-reading
-     * the ~500 MB body. The old rename-then-rehash order left a multi-
-     * second window where a killed shutdown stranded the fresh body
-     * under a stale sidecar — the next boot quarantined a good file
-     * (live 2026-06-12 deploy restart). */
-    struct sha3_256_ctx body_sha3_ctx;
-    sha3_256_init(&body_sha3_ctx);
-    uint64_t body_bytes = 0;
-
-    uint32_t magic = 0x5A434C49; /* "ZCLI" */
-    uint32_t count32 = (uint32_t)count;
-    if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
-        fwrite(&count32, 4, 1, f) != 1) {
-        fprintf(stderr, "save_block_index_flat: header write failed\n");
-        fclose(f); unlink(tmp_path); free(sorted); return;
-    }
-    sha3_256_write(&body_sha3_ctx, (const uint8_t *)&magic, 4);
-    sha3_256_write(&body_sha3_ctx, (const uint8_t *)&count32, 4);
-    body_bytes += 8;
-
-    for (size_t i = 0; i < count; i++) {
-        struct block_index_flat entry;
-        memset(&entry, 0, sizeof(entry));
-        if (sorted[i]->phashBlock)
-            memcpy(entry.hash, sorted[i]->phashBlock->data, 32);
-        if (sorted[i]->pprev && sorted[i]->pprev->phashBlock)
-            memcpy(entry.prev_hash, sorted[i]->pprev->phashBlock->data, 32);
-        entry.height = sorted[i]->nHeight;
-        entry.n_bits = sorted[i]->nBits;
-        entry.n_time = sorted[i]->nTime;
-        entry.n_version = sorted[i]->nVersion;
-        entry.n_status = sorted[i]->nStatus;
-        entry.n_file = sorted[i]->nFile;
-        entry.n_data_pos = sorted[i]->nDataPos;
-        entry.n_undo_pos = sorted[i]->nUndoPos;
-        entry.n_tx = sorted[i]->nTx;
-        entry.n_chain_tx = sorted[i]->nChainTx;
-        memcpy(entry.chain_work, sorted[i]->nChainWork.pn, 32);
-        entry.n_cached_branch_id = (uint32_t)sorted[i]->nCachedBranchId;
-        memcpy(entry.sapling_root, sorted[i]->hashFinalSaplingRoot.data, 32);
-        if (fwrite(&entry, sizeof(entry), 1, f) != 1) { // disk-io-lock: private-fd
-            fprintf(stderr, "save_block_index_flat: write failed at entry "
-                    "%zu/%zu: %s\n", i, count, strerror(errno));
-            fclose(f); unlink(tmp_path); free(sorted); return;
-        }
-        sha3_256_write(&body_sha3_ctx, (const uint8_t *)&entry,
-                       sizeof(entry));
-        body_bytes += sizeof(entry);
-    }
-    fflush(f);
-    int fd = fileno(f);
-    if (fd >= 0)
-        (void)fsync(fd);
-    fclose(f);
+    /* ONE file, ONE rename. The 48-byte integrity header (magic
+     * "BIIE", version 2, payload size + SHA3-256) prefixes the body
+     * inside block_index.bin itself, so a kill anywhere before the
+     * single rename leaves only the old good file — there is no second
+     * sidecar file and therefore no inter-rename window that can strand
+     * a fresh body under a stale commitment (the live 2026-06-12
+     * incident that quarantined a good file). No lock is taken on this
+     * path (it only iterates the single-threaded block_map), so the
+     * shutdown/drive lock order is unaffected. */
+    struct bif_emit_ctx ectx = { .sorted = sorted, .count = count };
+    struct zcl_result wr = bii_write_embedded(datadir, bif_emit_payload, &ectx);
     free(sorted);
-
-    if (rename(tmp_path, path) != 0) {
-        fprintf(stderr, "save_block_index_flat: rename %s -> %s failed: %s\n",
-                tmp_path, path, strerror(errno));
-        unlink(tmp_path);
+    if (!wr.ok) {
+        LOG_WARN("save_block_index_flat",
+                 "save_block_index_flat: embedded write failed: %s",
+                 wr.message);
         return;
-    }
-
-    {
-        uint8_t body_sha3[32];
-        sha3_256_finalize(&body_sha3_ctx, body_sha3);
-        struct zcl_result br = bii_write_sidecar_raw(datadir, body_bytes,
-                                                     body_sha3);
-        if (!br.ok) {
-            LOG_WARN("save_block_index_flat", "save_block_index_flat: sidecar write failed for %s: %s", path, br.message);
-        }
-    }
-
-    /* fsync the datadir so BOTH renames (body, then sidecar) are durable
-     * as a pair across power loss — without it the two renames can reach
-     * disk independently and durably manifest the stale-sidecar mismatch
-     * even when no process was killed mid-write. Same dir-fsync pattern as
-     * boot_auto_reindex_request's sentinel. */
-    {
-        int dfd = open(datadir, O_RDONLY | O_DIRECTORY);
-        if (dfd >= 0) {
-            (void)fsync(dfd);
-            close(dfd);
-        }
     }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
@@ -270,11 +259,42 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         return false;
     }
 
+    /* Format detection: the embedded single-file format (task #32)
+     * prefixes the body with a 48-byte integrity header (magic "BIIE").
+     * The legacy two-file format starts directly with the "ZCLI"
+     * payload magic at offset 0 and carries its integrity in a separate
+     * .sha3 sidecar. We peek 4 bytes to choose the payload offset, then
+     * — for the embedded format — VERIFY the embedded SHA3 over the
+     * payload BEFORE trusting a single byte. */
+    uint64_t payload_off = 0;
+    {
+        uint32_t lead;
+        memcpy(&lead, data, 4);
+        uint32_t embedded_magic;
+        memcpy(&embedded_magic, BII_EMBEDDED_MAGIC, 4);
+        if (lead == embedded_magic) {
+            /* New format — re-hash the payload against the embedded
+             * header; refuse loudly on any mismatch so boot falls
+             * through to the loader's quarantine path rather than
+             * trusting unverified bytes. */
+            struct ssio_sidecar_header ehdr;
+            int ev = bii_verify_embedded(datadir, &ehdr, &payload_off);
+            if (ev != 0) {
+                fprintf(stderr,
+                        "block_index_flat: embedded integrity check FAILED "
+                        "(verdict=%d) — refusing the body\n", ev);
+                munmap(data, file_size); return false;
+            }
+        }
+        /* else: legacy "ZCLI"-magic body — payload_off stays 0; the
+         * sidecar bii_verify gate downstream owns its integrity. */
+    }
+
     uint32_t magic, count;
-    memcpy(&magic, data, 4);
-    memcpy(&count, data + 4, 4);
+    memcpy(&magic, data + payload_off, 4);
+    memcpy(&count, data + payload_off + 4, 4);
     if (magic != 0x5A434C49) {
-        fprintf(stderr, "block_index_flat: bad magic 0x%08x (expected 0x5A434C49)\n",
+        fprintf(stderr, "block_index_flat: bad payload magic 0x%08x (expected 0x5A434C49)\n",
                 magic);
         munmap(data, file_size); return false;
     }
@@ -283,7 +303,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         munmap(data, file_size); return false;
     }
 
-    size_t expected = 8 + (size_t)count * sizeof(struct block_index_flat);
+    size_t expected = payload_off + 8 + (size_t)count * sizeof(struct block_index_flat);
     if (file_size < expected) {
         fprintf(stderr, "block_index_flat: truncated — %zu bytes < %zu expected "
                 "(%u entries)\n", file_size, expected, count);
@@ -292,7 +312,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
     const struct block_index_flat *entries =
-        (const struct block_index_flat *)(data + 8);
+        (const struct block_index_flat *)(data + payload_off + 8);
 
     /* Pre-size hash map + arena. Pre-fault memory. */
     block_map_reserve(&ms->map_block_index, count);

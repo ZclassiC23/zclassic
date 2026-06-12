@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* The on-disk sidecar header. Both consumers share this exact 48-byte
  * layout; the _Static_assert pins it for every future field change. */
@@ -92,6 +93,55 @@ struct zcl_result ssio_write_sidecar_raw(const char *datadir,
 enum ssio_read_verdict ssio_read_sidecar(const char *datadir,
                                          const struct ssio_spec *spec,
                                          struct ssio_sidecar_header *out);
+
+/* ── Embedded single-file integrity ─────────────────────────────
+ *
+ * Two files (body + sidecar) can never be published as ONE atomic
+ * step: a crash between the two renames orphans or mismatches them
+ * (live 2026-06-12 — a killed shutdown left a fresh body under a
+ * stale sidecar and the next boot quarantined a perfectly good file).
+ *
+ * The embedded format closes that window: the 48-byte
+ * `ssio_sidecar_header` is the FIRST 48 bytes of the body file
+ * itself, and `body_sha3`/`body_size` commit to the PAYLOAD (every
+ * byte AFTER the header). One temp file, one fsync, one rename — the
+ * integrity metadata and the bytes it certifies can never diverge.
+ *
+ * The header uses the SAME 48-byte layout as the sidecar but carries
+ * the caller's `spec->magic` so a sidecar header and an embedded
+ * header are distinguished by the magic the caller assigns each. */
+#define SSIO_EMBEDDED_HEADER_BYTES 48u
+
+/* Write an embedded-integrity file atomically:
+ *   1. open <datadir>/<body_name>.tmp
+ *   2. write a 48-byte placeholder header
+ *   3. call emit_payload(f, ctx) — it streams the payload AND a SHA3
+ *      over exactly those payload bytes; it returns the byte count and
+ *      finalized digest (false on any write error)
+ *   4. fseek back to 0, stamp the real {magic, version, size, sha3}
+ *   5. fflush + fsync(fd) + fsync(datadir) + ONE rename to <body_name>
+ * On any error the .tmp is unlinked and a non-ok zcl_result returned.
+ * `emit_payload` must NOT write the 48-byte header (this helper owns
+ * it) — it writes only the payload, starting at file offset 48. */
+struct zcl_result ssio_write_embedded(
+    const char *datadir, const struct ssio_spec *spec,
+    bool (*emit_payload)(FILE *f, void *ctx,
+                         uint64_t *out_payload_size,
+                         uint8_t out_payload_sha3[32]),
+    void *ctx);
+
+/* Verify the embedded header that prefixes <datadir>/<body_name>:
+ * checks magic, version, that the on-disk file is exactly
+ * 48 + header.body_size bytes, and that a re-hash of the payload
+ * (bytes [48, EOF)) matches header.body_sha3. On SSIO_READ_OK,
+ * *out holds the parsed header and *out_payload_off is 48 (the
+ * loader reads the payload from there). A file whose first 4 bytes
+ * are NOT spec->magic returns SSIO_READ_BAD_MAGIC WITHOUT hashing —
+ * the caller treats that as "legacy format, try the sidecar path". */
+enum ssio_read_verdict ssio_verify_embedded(const char *datadir,
+                                            const struct ssio_spec *spec,
+                                            struct ssio_sidecar_header *out,
+                                            uint64_t *out_payload_off);
 
 /* Rename both the body and sidecar aside as <name>.corrupt.<ts> and
  * emit spec->corrupt_event with "verdict=<verdict_name> ts=<ts>".

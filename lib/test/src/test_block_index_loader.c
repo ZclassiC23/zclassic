@@ -7,10 +7,13 @@
 #include "test/test_helpers.h"
 #include "services/block_index_loader.h"
 #include "services/block_index_integrity.h"
+#include "storage/sha3_sidecar_io.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -99,11 +102,26 @@ int test_block_index_loader(void)
         snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
         struct stat st;
         bool file_ok = (stat(path, &st) == 0 && st.st_size > 8);
+
+        /* Embedded single-file format (task #32): the body itself starts
+         * with the 48-byte "BIIE" integrity header, and NO separate
+         * sidecar file is written. */
+        bool embedded_header_ok = false;
+        {
+            FILE *bf = fopen(path, "rb");
+            if (bf) {
+                struct ssio_sidecar_header hdr;
+                if (fread(&hdr, 1, sizeof(hdr), bf) == sizeof(hdr))
+                    embedded_header_ok =
+                        (memcmp(hdr.magic, BII_EMBEDDED_MAGIC, 4) == 0 &&
+                         hdr.version == BII_EMBEDDED_VERSION);
+                fclose(bf);
+            }
+        }
         char sidecar_path[512];
         snprintf(sidecar_path, sizeof(sidecar_path), "%s/block_index.bin.sha3",
                  tmpdir);
-        bool sidecar_ok = (stat(sidecar_path, &st) == 0 &&
-                           st.st_size == BII_SIDECAR_BYTES);
+        bool no_sidecar = (stat(sidecar_path, &st) != 0);
 
         struct main_state ms2;
         memset(&ms2, 0, sizeof(ms2));
@@ -120,8 +138,8 @@ int test_block_index_loader(void)
             if (!pi || pi->nHeight != h) heights_ok = false;
         }
 
-        BIL_CHECK("bil: flat file save writes SHA3 sidecar",
-                  file_ok && sidecar_ok);
+        BIL_CHECK("bil: flat save embeds integrity header, writes no sidecar",
+                  file_ok && embedded_header_ok && no_sidecar);
         BIL_CHECK("bil: flat file round-trip preserves 100 entries", heights_ok);
 
         unlink(sidecar_path);
@@ -404,6 +422,268 @@ int test_block_index_loader(void)
         BIL_CHECK("bil: load_block_index_flat returns false for missing file", ok);
 
         block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 9. Embedded format: corrupted payload byte rejected ── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 30);
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_corrupt", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        save_block_index_flat(tmpdir, &ms);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+
+        /* Flip a byte deep in the payload (well past the 48-byte header). */
+        FILE *bf = fopen(path, "r+b");
+        bool wrote = false;
+        if (bf) {
+            if (fseek(bf, BII_EMBEDDED_HEADER_BYTES + 64, SEEK_SET) == 0) {
+                int c = fgetc(bf);
+                if (c != EOF &&
+                    fseek(bf, BII_EMBEDDED_HEADER_BYTES + 64, SEEK_SET) == 0) {
+                    fputc(c ^ 0xFF, bf);
+                    wrote = true;
+                }
+            }
+            fclose(bf);
+        }
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        bool rejected = wrote && !load_block_index_flat(tmpdir, &ms2);
+
+        BIL_CHECK("bil: embedded format rejects corrupted payload", rejected);
+
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── 10. Embedded format: truncated file rejected ───────── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 30);
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_etrunc", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        save_block_index_flat(tmpdir, &ms);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+
+        /* Truncate the file to half its size — payload no longer matches
+         * the embedded body_size, so the hash/size check must reject it. */
+        struct stat st;
+        bool tok = (stat(path, &st) == 0 && st.st_size > 200);
+        if (tok) tok = (truncate(path, st.st_size / 2) == 0);
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        bool rejected = tok && !load_block_index_flat(tmpdir, &ms2);
+
+        BIL_CHECK("bil: embedded format rejects truncated file", rejected);
+
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── 11. Embedded format: header-only file rejected ─────── */
+
+    {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_hdronly", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+
+        /* A valid-magic embedded header that claims a non-zero payload,
+         * with NO payload bytes following — the size check must reject. */
+        struct ssio_sidecar_header hdr;
+        memset(&hdr, 0, sizeof(hdr));
+        memcpy(hdr.magic, BII_EMBEDDED_MAGIC, 4);
+        hdr.version = BII_EMBEDDED_VERSION;
+        hdr.body_size = 200;  /* claim payload we will not write */
+        FILE *f = fopen(path, "wb");
+        bool wrote = (f != NULL);
+        if (f) { wrote = (fwrite(&hdr, sizeof(hdr), 1, f) == 1); fclose(f); }
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        bool rejected = wrote && !load_block_index_flat(tmpdir, &ms);
+
+        BIL_CHECK("bil: embedded format rejects header-only file", rejected);
+
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 12. Legacy two-file format still loads ─────────────── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 40);
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_legacy", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+
+        /* Hand-write a LEGACY body: "ZCLI" magic + count + entries at
+         * offset 0, no embedded header. Then stamp a matching sidecar
+         * (the pre-task-#32 on-disk shape) so the first boot after deploy
+         * loads cleanly. */
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+
+        /* Build the legacy body by saving the embedded format then
+         * stripping the 48-byte header back off — gives a byte-identical
+         * legacy payload + lets us stamp the legacy sidecar over it. */
+        save_block_index_flat(tmpdir, &ms);
+        bool legacy_ok = false;
+        {
+            FILE *src = fopen(path, "rb");
+            if (src) {
+                struct stat st;
+                if (stat(path, &st) == 0 &&
+                    (size_t)st.st_size > BII_EMBEDDED_HEADER_BYTES) {
+                    size_t plen = (size_t)st.st_size - BII_EMBEDDED_HEADER_BYTES;
+                    uint8_t *payload = malloc(plen);  // raw-alloc-ok:test-fixture
+                    if (payload &&
+                        fseek(src, BII_EMBEDDED_HEADER_BYTES, SEEK_SET) == 0 &&
+                        fread(payload, 1, plen, src) == plen) {
+                        fclose(src); src = NULL;
+                        FILE *dst = fopen(path, "wb");
+                        if (dst) {
+                            legacy_ok = (fwrite(payload, 1, plen, dst) == plen);
+                            fclose(dst);
+                        }
+                    }
+                    free(payload);
+                }
+                if (src) fclose(src);
+            }
+        }
+        /* Stamp the legacy sidecar over the legacy body. */
+        if (legacy_ok)
+            legacy_ok = bii_write_sidecar(tmpdir).ok;
+
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        bool loaded = legacy_ok && load_block_index_flat(tmpdir, &ms2);
+        bool count_ok = loaded &&
+            (ms2.map_block_index.size == ms.map_block_index.size);
+
+        /* The legacy body verifies through the sidecar path. */
+        bool verify_ok = count_ok &&
+            (bii_verify(tmpdir, NULL, NULL, NULL, 0) == BII_OK);
+
+        BIL_CHECK("bil: legacy two-file format still loads + verifies",
+                  count_ok && verify_ok);
+
+        char sidecar_path[512];
+        snprintf(sidecar_path, sizeof(sidecar_path),
+                 "%s/block_index.bin.sha3", tmpdir);
+        unlink(sidecar_path);
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── 13. Legacy body, missing sidecar = SIDECAR_MISSING ── */
+
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        build_synthetic_chain(&ms, 40);
+
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_bil_nosc", getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/block_index.bin", tmpdir);
+
+        /* Legacy body (strip the embedded header) with NO sidecar. */
+        save_block_index_flat(tmpdir, &ms);
+        bool legacy_ok = false;
+        {
+            FILE *src = fopen(path, "rb");
+            if (src) {
+                struct stat st;
+                if (stat(path, &st) == 0 &&
+                    (size_t)st.st_size > BII_EMBEDDED_HEADER_BYTES) {
+                    size_t plen = (size_t)st.st_size - BII_EMBEDDED_HEADER_BYTES;
+                    uint8_t *payload = malloc(plen);  // raw-alloc-ok:test-fixture
+                    if (payload &&
+                        fseek(src, BII_EMBEDDED_HEADER_BYTES, SEEK_SET) == 0 &&
+                        fread(payload, 1, plen, src) == plen) {
+                        fclose(src); src = NULL;
+                        FILE *dst = fopen(path, "wb");
+                        if (dst) {
+                            legacy_ok = (fwrite(payload, 1, plen, dst) == plen);
+                            fclose(dst);
+                        }
+                    }
+                    free(payload);
+                }
+                if (src) fclose(src);
+            }
+        }
+
+        /* The body still loads (legacy magic), and bii_verify reports
+         * SIDECAR_MISSING — exactly today's first-run-after-upgrade
+         * behavior, which boot accepts. */
+        struct main_state ms2;
+        memset(&ms2, 0, sizeof(ms2));
+        block_map_init(&ms2.map_block_index);
+        active_chain_init(&ms2.chain_active);
+        bool loaded = legacy_ok && load_block_index_flat(tmpdir, &ms2);
+        bool missing_ok = loaded &&
+            (bii_verify(tmpdir, NULL, NULL, NULL, 0) == BII_SIDECAR_MISSING);
+
+        BIL_CHECK("bil: legacy body with no sidecar = SIDECAR_MISSING (accepted)",
+                  missing_ok);
+
+        unlink(path);
+        rmdir(tmpdir);
+        block_map_free(&ms.map_block_index);
+        block_map_free(&ms2.map_block_index);
     }
 
     printf("=== block index loader: %d failures ===\n", failures);

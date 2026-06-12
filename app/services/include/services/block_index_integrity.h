@@ -63,12 +63,23 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* ── Sidecar layout ─────────────────────────────────────────── */
 
 #define BII_MAGIC "BIIX"
 #define BII_SIDECAR_VERSION 1u
 #define BII_SIDECAR_BYTES 48u
+
+/* Embedded single-file format (task #32): the 48-byte integrity header
+ * is the FIRST 48 bytes of block_index.bin itself, so the body and its
+ * SHA3/size commitment publish as ONE atomic rename — no separate
+ * sidecar, no inter-rename crash window. Distinct magic "BIIE" so the
+ * verifier tells an embedded header from the "ZCLI" payload magic of a
+ * legacy two-file body. */
+#define BII_EMBEDDED_MAGIC "BIIE"
+#define BII_EMBEDDED_VERSION 2u
+#define BII_EMBEDDED_HEADER_BYTES 48u
 
 /* ── Verdict ─────────────────────────────────────────────────
  * The possible outcomes of a bii_verify() call. Anything other
@@ -150,10 +161,36 @@ struct zcl_result bii_write_sidecar(const char *datadir);
  * the sidecar lands milliseconds after the rename instead of after a
  * multi-second 500 MB rehash (a shutdown killed in that window left a
  * fresh body under a stale sidecar and the next boot quarantined a
- * good file — live 2026-06-12). */
+ * good file — live 2026-06-12).
+ *
+ * RETAINED for the legacy two-file format only — kept so the
+ * make-lint atomic-save contract and historical callers still link.
+ * The current writer uses the embedded single-file path below. */
 struct zcl_result bii_write_sidecar_raw(const char *datadir,
                                         uint64_t body_size,
                                         const uint8_t body_sha3[32]);
+
+/* ── Embedded single-file integrity (task #32) ────────────────────
+ * The writer streams the payload through `emit_payload` while the
+ * shared helper owns the 48-byte header + atomic tmp/fsync/rename, so
+ * the body and its integrity commitment are published as ONE file in
+ * ONE rename. Verify re-hashes the payload against the embedded header
+ * and reports the byte offset (48) at which the payload begins. */
+struct ssio_sidecar_header;
+struct zcl_result bii_write_embedded(
+    const char *datadir,
+    bool (*emit_payload)(FILE *f, void *ctx,
+                         uint64_t *out_payload_size,
+                         uint8_t out_payload_sha3[32]),
+    void *ctx);
+
+/* Returns an ssio_read_verdict (cast to int). SSIO_READ_OK (0) means
+ * the embedded header verified; SSIO_READ_BAD_MAGIC means the file is
+ * the legacy "ZCLI"-magic two-file format (caller falls back to the
+ * sidecar path); any other value is a hard integrity failure. */
+int bii_verify_embedded(const char *datadir,
+                        struct ssio_sidecar_header *out,
+                        uint64_t *out_payload_off);
 
 /* ── Quarantine ───────────────────────────────────────────────
  * Renames both block_index.bin and block_index.bin.sha3 to
