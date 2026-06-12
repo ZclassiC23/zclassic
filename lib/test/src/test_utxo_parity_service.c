@@ -28,6 +28,7 @@
 #include "models/database.h"
 #include "event/event.h"
 #include "framework/condition.h"
+#include "json/json.h"
 
 #include <sqlite3.h>
 #include <stdatomic.h>
@@ -330,6 +331,104 @@ static int case_dormant(void)
     return failures;
 }
 
+/* Read one int field out of the parity service state dump (zcl_state surface).
+ * Returns -1 if absent. */
+static int64_t parity_dump_int(const char *field)
+{
+    struct json_value dump;
+    json_init(&dump);
+    if (!utxo_parity_dump_state_json(&dump, NULL)) {
+        json_free(&dump);
+        return -1;
+    }
+    const struct json_value *v = json_get(&dump, field);
+    int64_t out = v ? json_get_int(v) : -1;
+    json_free(&dump);
+    return out;
+}
+
+/* Read one bool field out of the parity service state dump. */
+static bool parity_dump_bool(const char *field)
+{
+    struct json_value dump;
+    json_init(&dump);
+    if (!utxo_parity_dump_state_json(&dump, NULL)) {
+        json_free(&dump);
+        return false;
+    }
+    const struct json_value *v = json_get(&dump, field);
+    bool out = v ? json_get_bool(v) : false;
+    json_free(&dump);
+    return out;
+}
+
+/* Activation gating — the C8 default ("ON when an oracle is wired, quietly
+ * dormant otherwise") must hold WITHOUT the legacy ZCL_PARITY_ENABLE env var,
+ * which is now only a force-on override, not a run requirement. Two controls:
+ *   NO ORACLE  : enabled but NO reference wired → active=false, tick a no-op
+ *                (no check recorded, no page) even with a frontier present.
+ *   WITH ORACLE: enabled + reference wired → active=true, tick runs a check at
+ *                the reorg-safe applied height (checks_total advances).
+ * The env var is left UNSET throughout, proving the gate no longer depends on
+ * it (the dormant-default-removal regression guard). */
+static int case_activation_gating_no_env(void)
+{
+    int failures = 0;
+    /* Make sure no stray force-on leaks in from another case/process. */
+    unsetenv("ZCL_PARITY_ENABLE");
+
+    TEST("utxo_parity: activates on a wired oracle without ZCL_PARITY_ENABLE") {
+        char path[] = "/tmp/zcl23-parity-activate-XXXXXX";
+        struct node_db ndb;
+        char local_hex[65];
+        ASSERT(open_ndb_with_local(&ndb, path, local_hex));
+
+        int32_t applied = (int32_t)app_runtime_node_db_utxo_max_height(&ndb);
+        ASSERT(applied > 0);
+
+        /* (1) NO ORACLE: enabled, but no reference wired. The activation
+         * predicate (`active`) is false and the tick must do nothing — quiet
+         * dormancy — even though a frontier is present and reorg-safe. */
+        struct utxo_parity_config cfg = {
+            .enabled = true, .finality_depth = 100, .max_checks_per_tick = 1,
+        };
+        utxo_parity_reset_for_test();
+        utxo_parity_init(&cfg, &ndb);
+        utxo_parity_set_reference_source(NULL);   /* no oracle */
+        utxo_parity_set_frontier_for_test(applied + 200);
+
+        ASSERT(parity_dump_bool("enabled") == true);
+        ASSERT(parity_dump_bool("active") == false);  /* no reference → inert */
+        ASSERT(parity_dump_bool("env_force_on") == false); /* env unset */
+
+        atomic_store(&g_op_events, 0);
+        event_observe(EV_OPERATOR_NEEDED, op_obs, NULL);
+        utxo_parity_tick_once();
+        ASSERT(parity_dump_int("checks_total") == 0);  /* no check ran */
+        ASSERT(atomic_load(&g_op_events) == 0);
+
+        /* (2) WITH ORACLE: wire an exact fixture reference at the applied
+         * height. Now active=true and the tick runs a real same-height check
+         * (checks_total advances) — still with the env var UNSET. */
+        struct utxo_reference_source src;
+        struct utxo_reference_source_fixture fx;
+        utxo_reference_source_fixture_init(&src, &fx, "activate-fixture",
+                                           local_hex, applied, true);
+        utxo_parity_set_reference_source(&src);
+
+        ASSERT(parity_dump_bool("active") == true);    /* enabled + reference */
+        utxo_parity_tick_once();
+        ASSERT(parity_dump_int("checks_total") >= 1);  /* the tick ran a check */
+        ASSERT(parity_dump_int("matches") == 1);       /* and it MATCHED */
+        ASSERT(parity_dump_int("mismatches") == 0);
+        ASSERT(atomic_load(&g_op_events) == 0);        /* a match never pages */
+
+        cleanup_case(&ndb, path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Exercise the live supervised tick (not just the synchronous comparator):
  * it must WAIT while the live applied height is still reorg-unsafe, then run a
  * same-height check at the TRUE applied height once it is reorg-safe. This is
@@ -398,6 +497,7 @@ int test_utxo_parity_service(void)
     failures += case_coarse_never_pages();
     failures += case_height_skew_no_page();
     failures += case_dormant();
+    failures += case_activation_gating_no_env();
     failures += case_enabled_tick_checks_at_applied();
     return failures;
 }

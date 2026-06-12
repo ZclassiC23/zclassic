@@ -4,11 +4,20 @@
  * 800-line composition-root mega-files (boot_services.c) gain only a single
  * registration call — this carries the start/stop bodies and the spec.
  *
- * The service is DORMANT by default: cfg.enabled=false and no reference is
- * wired unless an operator opts in via ZCL_PARITY_ENABLE (and a co-located
- * zclassicd is reachable). The EV_CHAIN_TIP_COMMIT observer and MCP
- * introspection are always installed because they are cheap and never touch
- * the live node.
+ * Activation default — ON when a zclassicd oracle is configured (MVP C8):
+ * boot tries to resolve the co-located zclassicd reference (RPC creds from
+ * config or ~/.zclassic/zclassic.conf, exactly like legacy_mirror). If it
+ * resolves, the standing parity service runs continuously, diffing the
+ * UTXO/tip state at the supervised 60 s cadence. If no creds resolve (an
+ * operator with no zclassicd), the reference stays unwired and the service is
+ * a quiet no-op — no log spam, no health degradation. Operators can force the
+ * service off with ZCL_PARITY_ORACLE=0 even when a daemon is present.
+ *
+ * The service is a READ-ONLY OBSERVER by construction: it only recomputes the
+ * local SHA3 commitment and diffs it against the reference; it never writes the
+ * chain, moves the tip, or touches liveness. The EV_CHAIN_TIP_COMMIT observer
+ * and MCP introspection are always installed because they are cheap and never
+ * touch the live node.
  */
 
 #include "config/boot_internal.h"
@@ -28,14 +37,26 @@
 static struct utxo_reference_source           g_parity_ref;
 static struct utxo_reference_source_zclassicd g_parity_ref_zclassicd;
 
+/* Operator opt-out: ZCL_PARITY_ORACLE=0 keeps the service off even when a
+ * zclassicd reference would resolve. Any other value (or unset) means ON when
+ * the oracle is reachable — the C8 default. */
+static bool boot_utxo_parity_opt_out(void)
+{
+    const char *v = getenv("ZCL_PARITY_ORACLE");
+    return v && (v[0] == '0' || v[0] == 'n' || v[0] == 'N' ||
+                 v[0] == 'f' || v[0] == 'F');
+}
+
 static bool boot_utxo_parity_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
 
+    /* Init with the service dormant; flip cfg.enabled on only once a reference
+     * actually resolves below, so a creds-less box never even arms the gate. */
     struct utxo_parity_config cfg = {0};
-    cfg.enabled = false;            /* dormant default — opt-in only */
+    cfg.enabled = false;
     cfg.finality_depth = 100;       /* matches ORACLE_TIP_SAFETY_MARGIN */
     cfg.max_checks_per_tick = 1;    /* bound full-set SHA3 cost */
     snprintf(cfg.rpc.host, sizeof(cfg.rpc.host), "%s", "127.0.0.1");
@@ -54,23 +75,36 @@ static bool boot_utxo_parity_start(void *ctx)
      * leave the service introspectable via zcl_state. */
     utxo_parity_observe_finalization();
 
-    /* Only when an operator opts in: wire the coarse zclassicd reference and
-     * register the supervised poll Job. Even then the service stays inert
-     * unless cfg.enabled is later turned on (the env gate is the runtime
-     * switch). The reference is height-only, so it can never false-page. */
-    if (cfg.enabled || getenv("ZCL_PARITY_ENABLE")) {
-        struct zcl_result zr = utxo_reference_source_zclassicd_init(
-            &g_parity_ref, &g_parity_ref_zclassicd, &cfg.rpc);
-        if (zr.ok) {
-            utxo_parity_set_reference_source(&g_parity_ref);
-            utxo_parity_poll_register();
-            if (utxo_parity_poll_is_registered())
-                printf("[utxo-parity] poll Job registered (coarse reference)\n");
-        } else {
-            fprintf(stderr,  // obs-ok:utxo-parity-ref-dormant
-                    "[utxo-parity] reference unavailable; staying dormant: %s\n",
-                    zr.message);
-        }
+    if (boot_utxo_parity_opt_out()) {
+        printf("[utxo-parity] dormant (ZCL_PARITY_ORACLE=0 opt-out)\n");
+        return true;
+    }
+
+    /* Auto-detect the co-located zclassicd: resolve its RPC reference (creds
+     * from cfg or ~/.zclassic/zclassic.conf). When it resolves, ARM the
+     * service (enabled=true) and register the supervised poll Job so it runs
+     * continuously. When no creds resolve, leave the reference unwired and the
+     * service quietly dormant — no health impact, no recurring noise. The
+     * reference is height-only (coarse), so it can never false-page. */
+    struct zcl_result zr = utxo_reference_source_zclassicd_init(
+        &g_parity_ref, &g_parity_ref_zclassicd, &cfg.rpc);
+    if (zr.ok) {
+        /* Arm the run gate now that an oracle is present. */
+        cfg.enabled = true;
+        (void)utxo_parity_init(&cfg, app_runtime_node_db());
+        utxo_parity_set_reference_source(&g_parity_ref);
+        utxo_parity_poll_register();
+        if (utxo_parity_poll_is_registered())
+            printf("[utxo-parity] active: zclassicd oracle wired (%s:%d), "
+                   "60s supervised parity poll registered\n",
+                   g_parity_ref_zclassicd.rpc.host[0]
+                       ? g_parity_ref_zclassicd.rpc.host : "127.0.0.1",
+                   g_parity_ref_zclassicd.rpc.port);
+    } else {
+        /* One quiet line at boot; no zclassicd → the standing service is a
+         * no-op. Not an error: a node without a reference daemon is normal. */
+        printf("[utxo-parity] dormant (no zclassicd oracle: %s)\n",
+               zr.message[0] ? zr.message : "no reference");
     }
     return true;  /* non-fatal: the observer + introspection still work */
 }
