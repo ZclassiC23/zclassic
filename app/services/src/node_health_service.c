@@ -465,6 +465,13 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         struct chain_evidence_controller cec;
         struct chain_evidence_controller_view view;
         chain_evidence_controller_init(&cec, ndb, csr_instance());
+        /* Drain the reducer's pending published tip BEFORE snapshotting:
+         * the durable evidence follow (TASK #33) runs here — the health
+         * path owns the established csr->coins_kv lock order — never on
+         * the drive (ABBA deadlock, 2026-06-12). Doing it first means the
+         * snapshot below compares against evidence that already names the
+         * served tip, so a green node reads healthy. */
+        (void)chain_evidence_drain_pending_tip(&cec);
         chain_evidence_controller_snapshot(&cec, &view);
         if (view.state == CEC_CONTRADICTION_FROZEN) {
             if (snapshot->degraded_reason[0] == '\0') {

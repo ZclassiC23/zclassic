@@ -166,13 +166,32 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
  * with no CSR commit, plus aligns the in-memory coins-view best-block cursor so
  * csr_cursor_mismatch clears. It NEVER freezes and NEVER blocks the caller: a
  * persist miss logs loudly and returns false (health degrades honestly; the
- * next finalize retries). Returns true on success or when the persisted
- * evidence already names this exact tip. Call from the reducer's
- * post-finalize side-effect path, OUTSIDE any consensus lock. */
+ * next drain retries). Returns true on success or when the persisted
+ * evidence already names this exact tip.
+ *
+ * LOCK ORDER: takes csr->lock (and the controller init's csr_snapshot takes
+ * csr->lock then the coins_kv authority mutex). NEVER call from the reducer
+ * drive — it holds coins_kv, and the inversion deadlocked the live node on
+ * 2026-06-12. The drive calls chain_evidence_note_finalized_tip below; the
+ * health-collect path drains. */
 bool chain_evidence_controller_record_finalized_tip(
     struct chain_evidence_controller *authority,
     struct block_index *finalized_tip,
     const char *reason);
+
+/* Reducer-side half of the live evidence follow: stamp the just-published
+ * tip into a pending slot guarded by ONE leaf mutex (nothing else is ever
+ * acquired while it is held), safe under any lock the drive holds. */
+void chain_evidence_note_finalized_tip(const struct block_index *finalized_tip);
+
+/* Health-side half: if a published tip is pending, run record_finalized_tip
+ * for it under the caller's (health-collect) lock order — csr->lock before
+ * coins_kv. Call AFTER chain_evidence_controller_init and BEFORE the
+ * snapshot, so the mismatch the follow clears is never observed. Returns
+ * false only when a record attempt failed (slot stays pending; next drain
+ * retries); true when drained or nothing was pending. */
+bool chain_evidence_drain_pending_tip(
+    struct chain_evidence_controller *authority);
 
 /* Guard A (coins-durability): the genuine applied coins frontier is the height
  * of the block whose hash is coins_best_block (the connect_block authority).

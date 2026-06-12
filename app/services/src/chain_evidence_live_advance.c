@@ -6,7 +6,7 @@
 // tip the reducer ALREADY committed. It makes no service decision (the
 // reducer is the tip authority; this is a durable follow), so there is no
 // reason-bearing failure to switch on: any persist miss logs loudly via
-// LOG_WARN and returns false. The hot tip-commit path treats false as
+// LOG_WARN and returns false. The health-collect drain treats false as
 // "health degrades honestly, nothing more" — never a wedge, never a freeze.
 
 /*
@@ -29,10 +29,25 @@
  * with each block until the next reboot (TASK #33: a green at-tip node
  * reporting healthy=false, /api/health 503).
  *
+ * LOCK-ORDER LAW (live deadlock 2026-06-12, deploy 873ba9955): the reducer
+ * drive holds the coins_kv authority mutex for the whole ingest; the health
+ * path takes csr->lock THEN coins_kv (csr_snapshot ->
+ * coins_kv_is_proven_authority). Taking csr->lock from inside the drive is
+ * therefore the inverted ABBA edge — it deadlocked the live node within two
+ * blocks of deploy (net thread blocked in record_finalized_tip wanting
+ * csr->lock; an RPC healthcheck held csr->lock wanting coins_kv). So the
+ * drive NEVER calls the evidence machinery: tip_finalize only stamps the
+ * pending slot below (chain_evidence_note_finalized_tip — one leaf mutex,
+ * never nested), and chain_evidence_drain_pending_tip runs the actual
+ * record from the health-collect path, which already owns the established
+ * csr->coins_kv order. The drain happens BEFORE the health snapshot, so the
+ * mismatch the follow exists to clear is never observed by the reader that
+ * triggers it.
+ *
  * Invariants (DEFENSIVE_CODING.md):
  *   - NEVER freeze, NEVER block the caller. A persist miss is transient
  *     (sqlite contention); it logs loudly and returns false. The caller is
- *     the tip-commit hot path — its only reaction is honest health
+ *     the health-collect path — its only reaction is honest health
  *     degradation, exactly the no-silent-halt-but-no-wedge contract.
  *   - The persisted record is honest LOCAL evidence (ancestry + chainwork
  *     proven by the reducer's own selection; bytes/nakamoto/utxo flags left
@@ -52,8 +67,64 @@
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
+
+/* Pending-tip slot: the ONLY thing the reducer drive touches. A leaf mutex —
+ * nothing else is ever acquired while it is held, on either side — so it can
+ * participate in no lock cycle by construction. */
+static pthread_mutex_t g_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_pending_height = -1;
+static struct uint256 g_pending_hash;
+
+void chain_evidence_note_finalized_tip(const struct block_index *finalized_tip)
+{
+    if (!finalized_tip || !finalized_tip->phashBlock ||
+        finalized_tip->nHeight < 0)
+        return;
+    pthread_mutex_lock(&g_pending_lock);
+    /* Monotonic: a later publish supersedes an undrained earlier one (the
+     * evidence keys only need the newest tip; intermediate heights carry no
+     * extra information). */
+    if (finalized_tip->nHeight >= g_pending_height) {
+        g_pending_height = finalized_tip->nHeight;
+        g_pending_hash = *finalized_tip->phashBlock;
+    }
+    pthread_mutex_unlock(&g_pending_lock);
+}
+
+bool chain_evidence_drain_pending_tip(
+    struct chain_evidence_controller *authority)
+{
+    pthread_mutex_lock(&g_pending_lock);
+    int height = g_pending_height;
+    struct uint256 hash = g_pending_hash;
+    pthread_mutex_unlock(&g_pending_lock);
+    if (height < 0)
+        return true; /* nothing pending */
+
+    /* Local index node: record_finalized_tip reads only nHeight and
+     * *phashBlock. The slot lock is NOT held across the record call (it
+     * takes csr->lock + node.db; the leaf mutex must stay a leaf). */
+    struct block_index tip;
+    memset(&tip, 0, sizeof(tip));
+    tip.nHeight = height;
+    tip.hashBlock = hash;
+    tip.phashBlock = &tip.hashBlock;
+
+    if (!chain_evidence_controller_record_finalized_tip(
+            authority, &tip, "health.drain_pending"))
+        return false; /* slot stays pending; next drain retries */
+
+    pthread_mutex_lock(&g_pending_lock);
+    /* Clear only if no newer publish superseded what we just recorded. */
+    if (g_pending_height == height &&
+        memcmp(g_pending_hash.data, hash.data, 32) == 0)
+        g_pending_height = -1;
+    pthread_mutex_unlock(&g_pending_lock);
+    return true;
+}
 
 static bool cla_load_u256(struct node_db *ndb, const char *key,
                           struct uint256 *out)

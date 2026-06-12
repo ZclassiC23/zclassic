@@ -35,7 +35,6 @@
 #include "primitives/transaction.h"
 #include "services/block_source_policy.h" /* projection-deferred diagnostic */
 #include "services/chain_evidence_authority_service.h" /* live evidence follow */
-#include "services/chain_state_service.h" /* csr_instance */
 #include "util/util.h"                  /* GetDataDir */
 #include "validation/check_block.h"     /* coinbase-height label check */
 #include "validation/chain_linkage_check.h" /* fail-loud HOLD latch */
@@ -53,28 +52,15 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
     if (!pindex_new)
         return;
 
-    /* Advance the persisted chain-evidence active-tip to the tip the reducer
-     * just committed (TASK #33). The reducer is the served-tip authority on
-     * the live path (active_chain_move_window_tip) and never re-enters the
-     * boot/import promote_tip that writes the cec.active_tip_* keys — so
-     * without this follow the persisted evidence froze at the last boot
-     * reconcile and the health check's active_tip_hash_mismatch degraded a
-     * green at-tip node to healthy=false per block. This writes ONLY durable
-     * evidence (no CSR commit; the tip is already committed) and aligns the
-     * in-memory coins cursor (csr_cursor_mismatch). It NEVER freezes and
-     * NEVER blocks: a persist miss logs loudly and is retried next finalize.
-     * Runs first so even a body-unreadable skip below still advances the
-     * evidence (the tip published regardless of the derived side effects). */
-    {
-        struct node_db *evidence_ndb = app_runtime_node_db();
-        struct chain_state_repository *csr = csr_instance();
-        if (evidence_ndb && csr && csr->initialized) {
-            struct chain_evidence_controller authority;
-            chain_evidence_controller_init(&authority, evidence_ndb, csr);
-            (void)chain_evidence_controller_record_finalized_tip(
-                &authority, pindex_new, "tip_finalize.post_finalize");
-        }
-    }
+    /* Note the published tip for the chain-evidence follow (TASK #33). The
+     * drive MUST NOT run the evidence machinery itself: it holds the
+     * coins_kv authority mutex, and the evidence path takes csr->lock then
+     * coins_kv — calling it from here is the inverted ABBA edge that
+     * deadlocked the live node on 2026-06-12 (deploy 873ba9955). This stamps
+     * one leaf-mutex slot and returns; node_health_collect drains it with
+     * the correct lock order before every health snapshot, so the mismatch
+     * this follow exists to clear is never observed. */
+    chain_evidence_note_finalized_tip(pindex_new);
 
     char datadir[2048];
     GetDataDir(true, datadir, sizeof(datadir));
