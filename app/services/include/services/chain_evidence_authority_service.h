@@ -152,6 +152,28 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     struct chain_evidence_controller *authority,
     const struct chain_evidence_controller_tip_request *request);
 
+/* Live-path durable evidence follow for a tip the reducer ALREADY committed.
+ *
+ * promote_tip is the boot / import publication boundary and the only writer of
+ * the persisted cec.active_tip_* keys — but it also drives csr_commit_tip. The
+ * running node advances the served tip through the tip_finalize reducer
+ * (active_chain_move_window_tip), which never re-enters promote_tip, so the
+ * persisted active-tip evidence froze at the last boot reconcile while the
+ * served tip advanced every block. That stale evidence made the health check's
+ * active_tip_hash_mismatch (live tip vs persisted) degrade further per block
+ * (TASK #33). This advances ONLY the durable evidence keys (the exact set
+ * promote_tip / reconstruct write) for the already-committed `finalized_tip`,
+ * with no CSR commit, plus aligns the in-memory coins-view best-block cursor so
+ * csr_cursor_mismatch clears. It NEVER freezes and NEVER blocks the caller: a
+ * persist miss logs loudly and returns false (health degrades honestly; the
+ * next finalize retries). Returns true on success or when the persisted
+ * evidence already names this exact tip. Call from the reducer's
+ * post-finalize side-effect path, OUTSIDE any consensus lock. */
+bool chain_evidence_controller_record_finalized_tip(
+    struct chain_evidence_controller *authority,
+    struct block_index *finalized_tip,
+    const char *reason);
+
 /* Guard A (coins-durability): the genuine applied coins frontier is the height
  * of the block whose hash is coins_best_block (the connect_block authority).
  * cec.coins_best_block_height must NEVER be persisted above it, or recovery

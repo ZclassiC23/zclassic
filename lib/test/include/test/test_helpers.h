@@ -278,6 +278,7 @@ int test_block_scan(void);
 int test_node_health_service(void);
 int test_chain_state_repo(void);
 int test_chain_evidence_controller(void);
+int test_chain_evidence_live_advance(void);
 int test_long_op(void);
 int test_recovery_policy(void);
 int test_oracle_policy(void);

@@ -71,6 +71,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
     X(node_health_service) X(chain_state_repo) X(recovery_policy) \
     X(chain_evidence_controller) \
+    X(chain_evidence_live_advance) \
     X(long_op) \
     X(db_txn) X(sync_service) X(snapshot_sync_service) \
     X(file_controller) X(file_ops) X(integrity) X(rolling_anchor_service) \
