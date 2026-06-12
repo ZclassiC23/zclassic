@@ -17,6 +17,7 @@
 #include "chain/chain.h"
 #include "chain/pow.h"
 #include "primitives/block.h"
+#include "storage/boot_auto_reindex.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "net/snapshot_sync_contract.h"
@@ -688,6 +689,16 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
             BII_OK, BII_RECOVERY_ACCEPTED,
             "post-restore integrity clean; active chain reconciled",
             false, false);
+        /* Integrity is verifiably clean — any pending auto-reindex
+         * request is stale (already served, or written for a state that
+         * no longer exists). Without this, a sentinel left by a past
+         * unrecoverable verdict makes every subsequent healthy boot
+         * re-run a full -reindex-chainstate forever (task #29). */
+        if (datadir && datadir[0] && boot_auto_reindex_pending(datadir)) {
+            boot_auto_reindex_clear(datadir);
+            LOG_INFO("chain", "[chain-integrity] cleared stale auto-reindex "
+                     "request: post-restore integrity is clean");
+        }
     }
 
     if (!r.ok)

@@ -51,6 +51,10 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
         event_emitf(EV_OPERATOR_NEEDED, 0,
             "condition=cold_import_reseed_required tip=%d "
             "reason=reindex_unexecutable", tip_h);
+        /* A sentinel left by an earlier boot can never be served on this
+         * datadir; clearing it stops the per-boot consume→refuse cycle
+         * (task #29 follow-up). */
+        boot_auto_reindex_clear(datadir);
         return false;
     }
 

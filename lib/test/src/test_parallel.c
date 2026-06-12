@@ -170,6 +170,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_projection) X(utxo_apply_authorship) X(coins_view_projection) \
     X(coins_view_kv) \
     X(block_index_projection) X(block_index_rebuild) X(block_index_backfill) \
+    X(block_index_topup) \
     X(projection_replay_invariant) \
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \

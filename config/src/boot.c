@@ -2209,6 +2209,19 @@ bool app_init(struct app_context *ctx)
                 printf("Linked %d block files from zclassicd\n", linked);
         }
 
+        /* Projection top-up (defect #10, task #29): the loaders above only
+         * know what was persisted at the LAST boot-time save — every block
+         * connected since then (reducer ingest sets HAVE_DATA + positions +
+         * nTx in memory only) exists durably ONLY in the event log →
+         * block_index_projection. Fold it over the loaded map raise-only so
+         * a restart keeps the connected extent instead of dropping to the
+         * stale flat-file floor and re-chasing the window. Must run BEFORE
+         * the nChainTx propagation below, which turns the topped-up nTx
+         * into the connected chain the boot scan keys on. Skipped on the
+         * -rebuildfromlog path (the map IS the projection there). */
+        if (!rebuilt_from_log)
+            (void)block_index_projection_topup(&g_state, ctx->datadir);
+
         /* Propagate nChainTx for all blocks in the index.
          * The flat file and LevelDB don't always store correct nChainTx.
          * Without this, find_most_work_chain() skips blocks with

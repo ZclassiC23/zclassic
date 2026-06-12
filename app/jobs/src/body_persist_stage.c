@@ -272,8 +272,12 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     /* The body has landed on disk and round-tripped (hash + merkle verified),
      * so mark BLOCK_HAVE_DATA on the in-memory block_index entry. Then re-emit
      * EV_BLOCK_HEADER with updated nStatus so the projection persists the
-     * HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). */
+     * HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). nTx rides
+     * the same emit (defect #10): an n_tx=0 row breaks the next boot's
+     * nChainTx propagation exactly at this block. */
     bi->nStatus |= BLOCK_HAVE_DATA;
+    if (bi->nTx == 0 && blk.num_vtx > 0)
+        bi->nTx = (unsigned int)blk.num_vtx;
     block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
 
     block_free(&blk);

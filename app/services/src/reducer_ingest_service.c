@@ -201,6 +201,15 @@ static bool reducer_persist_ingested_body_locked(
     if (!bi)
         return true;
 
+    /* Stamp nTx from the body in hand (defect #10): without it the
+     * emitted EV_BLOCK_HEADER carries n_tx=0, the projection persists
+     * that, and the next boot's nChainTx propagation breaks right at
+     * this block — the restart-loses-the-connected-extent class. Set
+     * even on the HAVE_DATA early-return below so a later stage's emit
+     * carries it. */
+    if (bi->nTx == 0 && pblock->num_vtx > 0)
+        bi->nTx = (unsigned int)pblock->num_vtx;
+
     if (bi->nStatus & BLOCK_HAVE_DATA)
         return true;
 

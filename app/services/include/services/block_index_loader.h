@@ -191,4 +191,26 @@ bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
                                                   size_t min_entries,
                                                   bool publish_tip);
 
+/* Projection top-up for the NORMAL boot path (defect #10, task #29).
+ *
+ * The flat/LevelDB loaders only know the last boot-time save; every block
+ * connected since then exists durably ONLY in the event log → projection.
+ * This folds the projection over the loaded map RAISE-ONLY: applies
+ * HAVE_DATA + nFile/nDataPos an entry lacks, raises nTx and the
+ * BLOCK_VALID level, inserts entries the loaders never saw (with pprev
+ * link + bounded chainwork), and recovers nTx from the block file for
+ * legacy rows emitted with n_tx=0 (hash-bound read-back). It never
+ * lowers a field, never copies FAILED bits, and refuses rows whose
+ * height disagrees with the loaded entry (logged, counted).
+ *
+ * Call AFTER the legacy loaders and BEFORE boot's nChainTx propagation
+ * pass, which turns the topped-up nTx into the connected nChainTx chain
+ * the boot scan and active-chain rebuild key on. NULL projection → no-op
+ * true. Returns false only on a hard projection iterate/OOM error. */
+bool block_index_projection_topup_with(struct block_index_projection *bip,
+                                       struct main_state *ms,
+                                       const char *datadir);
+bool block_index_projection_topup(struct main_state *ms,
+                                  const char *datadir);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_LOADER_H */

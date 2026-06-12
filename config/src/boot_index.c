@@ -31,6 +31,7 @@
 #include "validation/main_state.h"
 #include "event/event.h"
 #include "primitives/block.h"
+#include "storage/boot_auto_reindex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include <stdio.h>
@@ -234,6 +235,10 @@ bool reindex_chainstate(struct main_state *ms,
             event_emitf(EV_BOOT_ACTIVATE, 0,
                         "reindex_refused_unexecutable probe_h=%d tip=%d",
                         h, tip_height);
+            /* The verb can NEVER execute on this datadir — a pending
+             * auto-reindex sentinel would replay this consume→refuse
+             * cycle on every boot (task #29 follow-up). Clear it. */
+            boot_auto_reindex_clear(datadir);
             return false;
         }
         block_free(&pblk);

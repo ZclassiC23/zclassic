@@ -27,7 +27,7 @@
  *
  * The range/bound/idempotence logic is the only net-new decision surface
  * and is fully covered below against the published bounds:
- *   REBUILD_RECENT_MAX_RANGE        = 5000
+ *   REBUILD_RECENT_MAX_RANGE        = 10000
  *   REBUILD_RECENT_DEFAULT_MARGIN   = 10
  */
 
@@ -40,8 +40,10 @@
 #include <string.h>
 
 /* Published bounds (mirror the #defines in repair_controller_rebuild.c).
- * Kept in sync deliberately; if those change, this test must be updated. */
-#define RR_MAX_RANGE      5000
+ * Kept in sync deliberately; if those change, this test must be updated.
+ * 10000 since 4d4e8c436 — must cover one full cold-import seed window
+ * (~5.5-7k blocks). */
+#define RR_MAX_RANGE      10000
 #define RR_DEFAULT_MARGIN 10
 
 /* Non-static helper under test (declared in the controller .c). */
