@@ -27,6 +27,7 @@
 #include "models/database.h"
 #include "net/snapshot_sync_contract.h"
 #include "jobs/reducer_frontier.h"
+#include "services/reindex_epilogue.h"
 #include "services/utxo_recovery_service.h"
 #include "validation/main_state.h"
 #include "event/event.h"
@@ -345,6 +346,28 @@ bool reindex_chainstate(struct main_state *ms,
            (long long)(elapsed / 60), (long long)(elapsed % 60), errors);
     event_emitf(EV_SYNC_STATE_CHANGE, 0, "reindex complete %dm%ds errors=%d",
                 (int)(elapsed / 60), (int)(elapsed % 60), errors);
+
+    /* Derive ALL durable post-reindex state from the just-replayed set in one
+     * ordered commit (tenacity-roadmap item 3): reseed coins_kv, recompute the
+     * SHA3 commitment that boot_index_clear_coins_state deleted, and clamp the
+     * reducer cursors + coins_applied_height + tip_finalize anchor to the
+     * replayed tip. Without this the recovery path itself manufactures the
+     * coins_applied > hstar coin-tear wedge; with the never-give-up unit that
+     * degrades into an infinite reindex loop. Runs only after a clean replay
+     * (errors==0); g_utxo_commitment_skip is already CLEARED above so the
+     * commitment recompute runs with tracking ON. On failure it PAGES
+     * (EV_OPERATOR_NEEDED, inside the epilogue) and returns false so the
+     * reindex sentinel stays pending for a bounded next-boot retry — never
+     * serving torn, never FATAL. */
+    if (errors == 0) {
+        if (!reindex_epilogue_derive(ms, ndb, datadir)) {
+            fprintf(stderr, // obs-ok:paired-with-return-false-below
+                    "reindex-chainstate: epilogue derivation FAILED — durable "
+                    "state not clamped to replayed tip; sentinel left pending "
+                    "for next-boot retry\n");
+            return false;   /* leave the sentinel for retry; never serve torn */
+        }
+    }
 
     return errors == 0;
 }
