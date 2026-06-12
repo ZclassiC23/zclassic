@@ -406,23 +406,52 @@ static bool reconcile_tip_finalize_cursor(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    int floor = out->hstar + 1;
-    if (out->coins_applied_found &&
-        out->coins_applied_height >= 0 &&
-        out->coins_applied_height < floor)
-        floor = out->coins_applied_height;
-    if (out->tip_finalize_cursor_before == floor) {
-        out->tip_finalize_cursor_after = floor;
+    /* OWN-frame (task #31): tip_finalize's cursor IS the served tip height.
+     * The anchored walk proves served = hstar when the tip_finalize_log row
+     * at hstar is an anchor/absent, and served = hstar+1 when it is a
+     * 'finalized' transition row (the row at H proves the H -> H+1 move).
+     * Rather than discriminate the row type here, accept BOTH as healthy —
+     * the band [hstar, hstar+1] — and repair only cursors outside it, which
+     * no convention can legitimately produce. coins_applied is NEXT-frame
+     * (== utxo_apply's cursor, utxo_apply_stage.c), so the served tip's
+     * coins-applied ceiling is coins_applied - 1.
+     *
+     * The old unconditional force to hstar+1 was the +1-convention ghost:
+     * on a fresh cold-import (seed anchor row at H, cursor honestly at H)
+     * it bumped the cursor to H+1, claiming a served tip one above the
+     * anchor. reducer_anchor_candidate_ok then demanded a tip_finalize_log
+     * ok=1 row at H+1 that cannot exist, REJECTED the seed anchor, the
+     * trusted anchor collapsed to the compiled checkpoint, and the I4.3
+     * sweep latched the chain-linkage HOLD over the legitimately log-less
+     * import region — tip pinned at the seed forever (copy-proven on the
+     * 2026-06-12 wave-3 fixture: HOLD refuse_from=3056759, step_finalize
+     * FATAL loop at h=3145076). */
+    int lo = out->hstar;
+    int hi = out->hstar + 1;
+    if (out->coins_applied_found && out->coins_applied_height >= 0) {
+        int applied_through = out->coins_applied_height - 1;
+        if (applied_through < 0)
+            applied_through = 0;
+        if (hi > applied_through)
+            hi = applied_through;
+        if (lo > hi)
+            lo = hi;
+    }
+
+    int cur = out->tip_finalize_cursor_before;
+    int target = cur < lo ? lo : (cur > hi ? hi : cur);
+    if (cur == target) {
+        out->tip_finalize_cursor_after = cur;
         return true;
     }
 
     out->clamped_tip_finalize = true;
-    out->tip_finalize_cursor_after = floor;
+    out->tip_finalize_cursor_after = target;
     if (!apply)
         return true;
 
     return stage_reducer_frontier_force_stage_cursor_in_tx(
-        db, "tip_finalize", "L1", floor);
+        db, "tip_finalize", "L1", target);
 }
 
 /* ── detect-path memo ───────────────────────────────────────────────────

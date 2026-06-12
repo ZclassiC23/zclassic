@@ -807,14 +807,24 @@ int test_stage_repair_tipfin_backfill(void)
                      snapshot(db, &rr) && rr.hstar == C - 1 &&
                      !rr.refused_coin_tear);
 
-        /* Step 6 — the existing reconcile clamps tip_finalize to C. */
+        /* Step 6 — the existing reconcile clamps tip_finalize to C-1.
+         * OWN-frame (task #31): the clamp band is [hstar, hstar+1] capped at
+         * coins applied-through; hstar = C-1, coins_applied = C (NEXT-frame
+         * => applied through C-1), so the served-tip claim is C-1 — NOT C.
+         * The old `== C` pin encoded the +1-convention overshoot: a cursor at
+         * C with no finalized row at C makes reducer_anchor_candidate_ok
+         * reject a fresh seed anchor, collapsing the trusted anchor to the
+         * compiled checkpoint and latching the I4.3 HOLD over the log-less
+         * import region (the 2026-06-12 cold-import wedge, copy-proven on
+         * the wave-3 fixture: HOLD refuse_from=3056759, step_finalize FATAL
+         * loop at h=3145076). */
         struct main_state ms;
         main_state_init(&ms);
         struct stage_reducer_frontier_reconcile_result fin;
-        TIPFIN_CHECK("T9 reconcile clamps tip_finalize to C",
+        TIPFIN_CHECK("T9 reconcile clamps tip_finalize to C-1 (served tip)",
                      stage_reducer_frontier_reconcile_light(db, &ms, &fin) &&
                      !fin.refused_coin_tear &&
-                     cursor_value(db, "tip_finalize") == C);
+                     cursor_value(db, "tip_finalize") == C - 1);
         main_state_free(&ms);
 
         progress_store_close();

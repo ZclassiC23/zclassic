@@ -415,7 +415,10 @@ int test_reducer_frontier_reconcile_light(void)
                    dry.body_fetch_cursor_after == A + 2 &&
                    dry.clamped_body_fetch &&
                    !dry.clamped_body_persist &&
-                   dry.tip_finalize_cursor_after == A + 2);
+                   /* OWN-frame (task #31): clamp band [hstar, hstar+1]
+                    * capped at coins_applied-1 = min(A+2, A+1) = A+1 —
+                    * the served tip, no longer the next transition. */
+                   dry.tip_finalize_cursor_after == A + 1);
         RFRL_CHECK("dry-run does not mutate",
                    fx.idx[2]->nStatus == before2 &&
                    fx.idx[3]->nStatus == before3 &&
@@ -429,7 +432,7 @@ int test_reducer_frontier_reconcile_light(void)
                    stage_reducer_frontier_reconcile_light(
                        db, &fx.ms, &applied));
         RFRL_CHECK("apply clamps body_fetch and tip_finalize",
-                   cursor_value(db, "tip_finalize") == A + 2 &&
+                   cursor_value(db, "tip_finalize") == A + 1 &&
                    cursor_value(db, "validate_headers") == A + 4 &&
                    cursor_value(db, "body_fetch") == A + 2 &&
                    cursor_value(db, "body_persist") == A + 4 &&
@@ -486,7 +489,9 @@ int test_reducer_frontier_reconcile_light(void)
                    cursor_value(db, "validate_headers") == A + 2 &&
                    cursor_value(db, "body_fetch") == A + 2 &&
                    cursor_value(db, "body_persist") == A + 2 &&
-                   cursor_value(db, "tip_finalize") == A + 2);
+                   /* tip_finalize is OWN-frame: served tip = A+1 (coins
+                    * applied through A+1), one below the refill cursors. */
+                   cursor_value(db, "tip_finalize") == A + 1);
 
         teardown_fixture(&fx);
     }
@@ -607,8 +612,10 @@ int test_reducer_frontier_reconcile_light(void)
                    rr.hstar == A + 1 &&
                    rr.served_floor == A + 3 &&
                    rr.coins_applied_height == A + 2 &&
-                   rr.tip_finalize_cursor_after == A + 2 &&
-                   cursor_value(db, "tip_finalize") == A + 2 &&
+                   /* OWN-frame: served tip capped at coins applied-through
+                    * (coins_applied A+2 is NEXT-frame => through A+1). */
+                   rr.tip_finalize_cursor_after == A + 1 &&
+                   cursor_value(db, "tip_finalize") == A + 1 &&
                    rr.clamped_tip_finalize);
 
         teardown_fixture(&fx);
@@ -628,11 +635,14 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("coin-lag apply succeeds",
                    stage_reducer_frontier_reconcile_light(
                        db, &fx.ms, &rr));
-        RFRL_CHECK("coin-lag caps tip_finalize at coins_applied + 1",
+        RFRL_CHECK("coin-lag caps tip_finalize at coins applied-through",
                    rr.hstar == A + 3 &&
                    rr.coins_applied_height == A + 3 &&
-                   rr.tip_finalize_cursor_after == A + 3 &&
-                   cursor_value(db, "tip_finalize") == A + 3 &&
+                   /* OWN-frame: hstar allows served A+3..A+4 but coins
+                    * (NEXT-frame A+3 => applied through A+2) cap the
+                    * served-tip claim at A+2. */
+                   rr.tip_finalize_cursor_after == A + 2 &&
+                   cursor_value(db, "tip_finalize") == A + 2 &&
                    rr.clamped_tip_finalize);
 
         teardown_fixture(&fx);
@@ -684,7 +694,7 @@ int test_reducer_frontier_reconcile_light(void)
         bool ok = got &&
                   reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
                   cursor_value(db, "body_fetch") == A + 2 &&
-                  cursor_value(db, "tip_finalize") == A + 2 &&
+                  cursor_value(db, "tip_finalize") == A + 1 &&
                   !snap.currently_active &&
                   snap.attempts == 0 &&
                   snap.last_outcome == COND_REMEDY_SKIP &&
