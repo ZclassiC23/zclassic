@@ -354,9 +354,18 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * ingested. Cleared before every return below (mutex unlock points). */
     reducer_drive_enter();
     (void)force; /* relay pre-filter gating lives in the admit producer */
+    /* Runtime re-seed ONLY when the finalize cursor is genuinely BEHIND the
+     * served tip's own transition (cursor < T, e.g. after a repair clamp).
+     * cursor == T is the healthy steady state — the T→T+1 transition is the
+     * stage's own pending work — and the old `< T+1` gate re-seeded it on
+     * EVERY at-tip ingest, stamping the cursor to T+1 and skipping the
+     * pending transition: each new block could only publish when ITS
+     * successor arrived (the served-tip-trails-by-one defect, task #30;
+     * live-reproduced 2026-06-12 post-anchor-fix: block 3144895 arrived
+     * 11:50, published 11:53 with 3144896). */
     struct block_index *anchor_tip = active_chain_tip(&ctl->ms->chain_active);
     if (anchor_tip && anchor_tip->phashBlock &&
-        tip_finalize_stage_cursor() < (uint64_t)anchor_tip->nHeight + 1u)
+        tip_finalize_stage_cursor() < (uint64_t)anchor_tip->nHeight)
         (void)tip_finalize_stage_seed_anchor(anchor_tip->nHeight,
                                              anchor_tip->phashBlock->data,
                                              false /* runtime re-seed */);
