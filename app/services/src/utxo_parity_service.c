@@ -192,11 +192,14 @@ void utxo_parity_tick_once(void)
     struct node_db *ndb = g_parity.ndb ? g_parity.ndb : app_runtime_node_db();
     pthread_mutex_unlock(&g_parity.lock);
 
-    /* Dormant until an operator turns it on AND a reference is wired. The
-     * env gate is the final shipped-dormant guard (prod sets neither). */
+    /* Activation authority is the `enabled` flag (set by utxo_parity_init from
+     * cfg.enabled) AND a wired reference. Boot turns `enabled` on only when a
+     * zclassicd reference resolves (auto-detected from RPC creds, opt-out via
+     * ZCL_PARITY_ORACLE=0) — so without a co-located zclassicd, neither is set
+     * and the tick is a quiet no-op. The reference vtable owns reachability: if
+     * the daemon is momentarily down, commitment_at returns a reference error
+     * (counted, never a DRIFT), never a stall. No env var is required to run. */
     if (!enabled || !ref)
-        return;
-    if (!getenv("ZCL_PARITY_ENABLE"))
         return;
 
     /* Cross-check the volatile EV_CHAIN_TIP_COMMIT marker against the durable
@@ -317,7 +320,11 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
     }
 
     json_push_kv_bool(out, "enabled", enabled);
-    json_push_kv_bool(out, "env_gate_on", getenv("ZCL_PARITY_ENABLE") != NULL);
+    /* `active` is the real run predicate the tick checks: enabled AND a wired
+     * reference. With no co-located zclassicd, boot leaves both off and this is
+     * false (the service is quietly dormant — no health impact, no log spam). */
+    json_push_kv_bool(out, "active", enabled && ref != NULL);
+    json_push_kv_bool(out, "env_force_on", getenv("ZCL_PARITY_ENABLE") != NULL);
     json_push_kv_str (out, "reference_source", ref_name);
     json_push_kv_bool(out, "reference_exact", ref_exact);
     json_push_kv_int (out, "finality_depth", finality_depth);
