@@ -301,21 +301,43 @@ slate.
 - **Size:** M1–M2 ≈ 1 worker session each; M3–M4 ≈ 2 sessions, mechanical after the
   fixtures exist.
 
-### 5. Standing full-history replay canary (the single highest-leverage gate)
+### 5. Standing full-history replay canary (the single highest-leverage gate) *(HARNESS + GATE LANDED — wave4/i5-replay-canary; 7-green-nights + live timer-install owner-gated)*
 
 - **Goal:** a recurring institution that samples the REAL distribution: would have caught
   3 of this session's 4 live failures. The gates ARE the product — this lands before/with
   the deletions in item 4 because it is the only honest verification of them.
-- **Mechanism:** nightly cron (systemd user timer; the binary's own tools, no python):
-  HEAD binary, scratch datadir, bootstrap to anchor 3,056,758, replay all bodies through
-  the reducer; assert zero consensus rejects, zero internal_errors, final commitment ==
-  zclassicd `gettxoutsetinfo`. Weekly variant replays from genesis (~6 h). Verdict
-  sentinel file + `EV_OPERATOR_NEEDED` on failure — never exit-0-as-proof. Also merge the
-  already-verified mvp-spawn workflow (`c086c5136`) so *something* gates push.
-- **Acceptance proof:** the canary itself failing red on a seeded known-bad binary (prove
-  the gate fires), then 7 consecutive green nights; wired into `docs/MVP.md` CI status.
-- **Size:** ~200 LOC shell/C harness + 2 timer units; 1 session. ~45 min/night + ~6 h/wk
-  on the 32-core box.
+- **Mechanism as landed:** the harness `tools/scripts/replay_canary.sh` (pure bash + the
+  binary's own tools, no python) + `tools/scripts/isolated_mainnet_env.sh` (mainnet sibling
+  of the regtest isolation chokepoint). It spawns an isolated /tmp mainnet node on 3905x
+  ports, headers via `--importblockindex` (read-only against `~/.zclassic`), seeds the UTXO
+  snapshot to anchor 3,056,758, replays anchor->tip through the reducer, and asserts:
+  (a) bg_validation reaches COMPLETE with zero header-admit rejects (`getsyncdiag`); (b) the
+  compiled anchor checkpoint passed without an integrity FATAL + the local commitment is a
+  real 64-hex recompute (`getutxocommitment`); (c) coarse UTXO stats == co-located zclassicd
+  `gettxoutsetinfo` (RPC 8232, read-only). Weekly variant replays genesis->tip (~6 h,
+  bg-validation ON, dials zclassicd P2P 8033 for bodies). **The AUTHORITATIVE verdict is a
+  sentinel FILE** (`~/.local/state/zclassic23-canary/replay_canary_<from>.json`) written
+  atomically (tmp + sync + rename) ONLY after every assertion passes; the shell exit code is
+  advisory and drives systemd `OnFailure=` (the page channel: `journalctl -t replay-canary`).
+  Never exit-0-as-proof — a killed/OOM run leaves no fresh PASS sentinel.
+- **Deviations from the spec (recorded honestly):** (1) there is NO `getconsensusreport`
+  RPC at HEAD — `consensus_reject_index_total` is MCP-only, unreachable from the zcl-rpc
+  harness; the zcl-rpc-reachable "zero rejects" signal is `bg_validation.state==COMPLETE`
+  (a consensus reject during replay → FAILED) + `getsyncdiag` `headers.total_rejected==0`.
+  (2) From-anchor the commitment is computed at the TIP (not the anchor), so the byte-equal
+  checkpoint assert is exercised by the boot integrity gate at h=3,056,758 (boot refuses
+  otherwise), and the harness additionally enforces a non-error 64-hex commitment; a
+  commitment taken exactly at the anchor height must equal the compiled checkpoint.
+  (3) The mvp-spawn workflow merge (`c086c5136`) is OUT of scope (tracked separately).
+- **Acceptance proof (landed):** the hermetic gate `lib/test/src/test_replay_canary_verdict.c`
+  drives `replay_canary.sh --self-test=<mode>` against fixture RPC outputs and red-fails on a
+  seeded known-bad reducer — `fail-rejects` (consensus_rejects), `fail-sha3` (sha3_mismatch),
+  `fail-crossnode`, `fail-timeout` (budget_exceeded), plus the SIGKILL-leaves-no-fresh-PASS
+  case — and green-passes the `pass` fixture. Runs in `make ci` via `test_zcl`/`test_parallel`.
+  **Still owner-gated:** install the systemd timers (`deploy/examples/zclassic23-replay-canary-*`),
+  accumulate 7 consecutive green nights, then flip the `docs/MVP.md` rows from ◐.
+- **Size:** ~200 LOC shell/C harness + 2 timer/service unit pairs; 1 session. ~45 min/night
+  + ~6 h/wk on the 32-core box.
 
 ### 6. Chain-derived golden extremals for every bounded consensus predicate
 

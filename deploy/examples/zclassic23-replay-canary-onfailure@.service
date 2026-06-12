@@ -1,0 +1,11 @@
+[Unit]
+Description=ZClassic23 Replay Canary failure notifier (%i)
+# Templated OnFailure= arm for the nightly/weekly canary services. This is
+# the systemd half of the "how the timer reports red" answer: a journal
+# page an operator greps with `journalctl -t replay-canary`. The
+# authoritative verdict remains the sentinel FILE under
+# ~/.local/state/zclassic23-canary/ — this unit just makes the failure loud.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'logger -t replay-canary "CANARY FAILED unit=%i — see $HOME/.local/state/zclassic23-canary/"'
