@@ -37,6 +37,7 @@
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
 #include "services/rolling_anchor_service.h"
+#include "services/seal_service.h"
 #include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_authority_service.h"
@@ -456,6 +457,10 @@ static const struct dump_entry g_dumpers[] = {
                      "oracle policy: disagreement state machine (NORMAL / HALTED / PANIC)" },
     { "rolling_anchor", rolling_anchor_dump_state_json,
                      "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
+    { "seal", seal_dump_state_json,
+                     "seal ring (last 4): candidate/ratified state seals — height, "
+                     "coins_sha3, utxo_count, supply, block_hash, ratified, sealed_at, "
+                     "self_sha3 valid" },
     { "progress",    progress_store_dump_state_json,
                      "progress.kv: open/path/stage_cursor row count" },
     { "header_admit", header_admit_stage_dump_state_json,

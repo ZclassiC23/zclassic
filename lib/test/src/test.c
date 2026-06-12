@@ -994,6 +994,8 @@ int main(void)
     failures += test_coins_kv();
     { extern int test_coins_kv_reset_for_reseed(void);
       failures += test_coins_kv_reset_for_reseed(); }
+    failures += test_seal_kv();
+    failures += test_seal_ratify();
     failures += test_nullifier_kv();
     failures += test_stage_repair();
     failures += test_script_validate_stage();
