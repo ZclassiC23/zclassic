@@ -56,6 +56,28 @@ static void status_push_raw_json(struct json_value *obj, const char *key,
     json_free(&child);
 }
 
+/* Pull a top-level quoted-string field out of a raw JSON response without
+ * parsing the whole document (matches the strstr style used for the numeric
+ * scrapes above). Returns false if the key is absent or not a string. */
+static bool status_extract_json_str(const char *json, const char *key,
+                                    char *out, size_t out_size)
+{
+    if (!json || !key || !out || out_size == 0) return false;
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '"') return false;
+    p++;
+    size_t i = 0;
+    while (p[i] && p[i] != '"' && i + 1 < out_size) { out[i] = p[i]; i++; }
+    if (p[i] != '"') return false;
+    out[i] = '\0';
+    return true;
+}
+
 static int blocker_status_priority(int cls)
 {
     switch ((enum blocker_class)cls) {
@@ -225,7 +247,19 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     json_init(&root);
     json_set_object(&root);
     json_push_kv_int(&root, "height", block_height);
-    json_push_kv_str(&root, "build_commit", zcl_build_commit());
+    /* build_commit must describe the NODE. This MCP server is a separate
+     * long-lived process and can be running an older binary than the node
+     * it queries — stamping our own hash here once mis-reported a deploy
+     * by three commits (2026-06-12). Scrape the node's value from its
+     * healthcheck; surface ours only when it differs. */
+    char node_commit[64];
+    bool have_node_commit =
+        status_extract_json_str(hc, "build_commit",
+                                node_commit, sizeof(node_commit));
+    json_push_kv_str(&root, "build_commit",
+                     have_node_commit ? node_commit : zcl_build_commit());
+    if (have_node_commit && strcmp(node_commit, zcl_build_commit()) != 0)
+        json_push_kv_str(&root, "mcp_build_commit", zcl_build_commit());
     json_push_kv_int(&root, "header_height", header_height);
     json_push_kv_int(&root, "max_peer_height", max_peer_height);
     json_push_kv_int(&root, "header_gap", header_gap);

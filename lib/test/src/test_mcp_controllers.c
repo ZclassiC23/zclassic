@@ -563,7 +563,8 @@ static char *mock_status_rpc(const char *method, const char *params_json)
     if (strcmp(method, "validationstatus") == 0)
         return strdup("{\"ok\":true}");
     if (strcmp(method, "healthcheck") == 0)
-        return strdup("{\"ok\":true,\"memory_rss_mb\":128,\"uptime_seconds\":9}");
+        return strdup("{\"ok\":true,\"build_commit\":\"nodecafe123\","
+                      "\"memory_rss_mb\":128,\"uptime_seconds\":9}");
     if (strcmp(method, "getblockchaininfo") == 0)
         return strdup("{\"best_header_height\":3117074}");
     if (strcmp(method, "dumpstate") == 0)
@@ -638,7 +639,12 @@ static int test_zcl_status_includes_chain_advance_dump(void)
 
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
+        /* build_commit reports the NODE's hash (scraped from healthcheck);
+         * the MCP process's own hash appears as mcp_build_commit only when
+         * the two differ — the MCP server can outlive a node redeploy. */
         ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit")),
+                      "nodecafe123");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_build_commit")),
                       ZCL_BUILD_COMMIT);
         const struct json_value *blockers = json_get(&root, "blockers");
         ASSERT(blockers != NULL);

@@ -171,9 +171,9 @@ tools/inspect_html: $(BIN_DIR)/inspect_html
 define BUILD_NODE_TOOL
 .PHONY: $(1)
 $(1): $$(BIN_DIR)/$(1)
-$$(BIN_DIR)/$(1): $$(TMPL_GEN) $(2) $$(ALL_SRCS)
+$$(BIN_DIR)/$(1): $$(TMPL_GEN) $$(BUILD_COMMIT_STAMP) $(2) $$(ALL_SRCS)
 	@mkdir -p $$(dir $$@)
-	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
+	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN) $$(BUILD_COMMIT_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
 endef
 
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
@@ -239,16 +239,16 @@ repro-on-copy:
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 
-$(BIN_DIR)/session: $(TMPL_GEN) tools/session.c $(ALL_SRCS)
+$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/session.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
 
 session: $(BIN_DIR)/session
 	$(BIN_DIR)/session
 
-$(BIN_DIR)/bot: $(TMPL_GEN) tools/bot.c $(ALL_SRCS)
+$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/bot.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
 
 bot: $(BIN_DIR)/bot
 	$(BIN_DIR)/bot
@@ -277,9 +277,9 @@ spec: spec_zcl
 
 .PHONY: zclassic23
 zclassic23: $(ZCLASSIC23_BIN)
-$(ZCLASSIC23_BIN): $(TMPL_GEN) src/main.c tools/mcp_server.c $(ALL_SRCS)
+$(ZCLASSIC23_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) src/main.c tools/mcp_server.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	strip -s $@
 
 .PHONY: zclassic-cli
