@@ -844,6 +844,77 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
+    /* TASK #31 — seed-anchor cursor unification: tip_finalize_stage_seed_anchor
+     * stamps the tip_finalize cursor to the seeded tip's OWN height H (the
+     * served-tip convention), NEVER H+1. A cursor of H+1 would claim the
+     * unfinalized H→H+1 transition and skip it forever (the cursor is
+     * monotonic) — one late block per cold-import/snapshot seed: block H+1
+     * could only publish when H+2 arrived. This pins that the seed cursor is H
+     * and the very next arriving block (H+1) publishes on its FIRST step. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "seed_no_late_block");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        /* Synth chain 0..4. The seeded tip is H=3; block 4 (H+1) has NOT
+         * arrived yet (kept out of the map until the second phase). */
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 5);
+        for (int i = 0; ok_setup && i <= 3; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]);
+        /* Upstream applied through H=3 (next-height cursor == 4). */
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 4, -1);
+        ok_setup = ok_setup && tip_finalize_stage_init(&ms);
+        tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
+        TF_CHECK("seed_no_late_block: setup", ok_setup);
+
+        /* The cold-import/snapshot seed of the durable served tip at H=3. */
+        TF_CHECK("seed_no_late_block: seed_anchor at H succeeds",
+                 tip_finalize_stage_seed_anchor(3, sc.hashes[3].data, true));
+        /* THE INVARIANT: the tip_finalize cursor floor is H (3), never H+1. */
+        TF_CHECK("seed_no_late_block: tip_finalize cursor == served-tip H",
+                 tip_finalize_stage_cursor() == 3);
+        int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        TF_CHECK("seed_no_late_block: anchor row written at H",
+                 log_row_at(progress_store_db(), 3, &row_ok, status,
+                            sizeof(status), &depth, &utxos) &&
+                 row_ok == 1 && strcmp(status, "anchor") == 0);
+        /* The boot resolver returns the seeded tip self-consistently from the
+         * served-tip cursor (no +1, no -1 splice). */
+        int rh = -1; uint8_t rhash[32];
+        TF_CHECK("seed_no_late_block: resolver returns the seeded tip",
+                 tip_finalize_stage_resolve_durable_tip(progress_store_db(),
+                                                        &rh, rhash) &&
+                 rh == 3 && memcmp(rhash, sc.hashes[3].data, 32) == 0);
+        /* No successor yet → the stage idles (it does NOT regress or spin). */
+        TF_CHECK("seed_no_late_block: idle while successor absent",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+
+        /* Block H+1 (=4) ARRIVES: map + utxo witness. Under the served-tip
+         * cursor it publishes on the FIRST step — no late block. Under the old
+         * H+1 stamp the cursor would already be 4 and this transition skipped,
+         * so block 4 would wait for block 5. */
+        ok_setup = block_map_insert(&ms.map_block_index,
+                                    sc.blocks[4].phashBlock, &sc.blocks[4]);
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 5, -1);
+        TF_CHECK("seed_no_late_block: successor arrival setup", ok_setup);
+        TF_CHECK("seed_no_late_block: H+1 publishes on FIRST arrival",
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
+        TF_CHECK("seed_no_late_block: cursor advanced to H+1",
+                 tip_finalize_stage_cursor() == 4);
+        TF_CHECK("seed_no_late_block: H+1 is the published tip",
+                 tip_finalize_stage_last_height() == 4);
+        tf_teardown(dir, &ms, &sc);
+    }
+
     printf("tip_finalize_stage tests: %s\n",
            failures ? "FAILED" : "PASSED");
     return failures;

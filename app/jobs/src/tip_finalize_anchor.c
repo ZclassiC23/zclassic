@@ -190,6 +190,12 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
         return false;
     }
 
+    /* The UPSTREAM reducer cursors keep the height+1 ("next height to
+     * process") convention — those stages co-commit coins_applied_height ==
+     * cursor, so a served tip at H means upstream has processed through H and
+     * the next height is H+1. reducer_anchor_candidate_ok(H) is calibrated to
+     * that: it requires every upstream cursor >= H+1. ONLY the tip_finalize
+     * cursor uses the served-tip convention (cursor C == served tip at C). */
     if (!stage_anchor_upstream_cursors_to(db, (uint64_t)height + 1u,
                                           STAGE_NAME, "seed_anchor",
                                           trusted_seed)) {
@@ -201,8 +207,18 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * frontier. The just-written anchor row covers `height`, so an at-tip
      * ingest re-seed stays a benign no-op-or-contiguous stamp; a stamp
      * across a rowless span is capped so the reducer re-finalizes forward
-     * instead of manufacturing a hole behind the cursor. */
-    uint64_t stamp = (uint64_t)height + 1u;
+     * instead of manufacturing a hole behind the cursor.
+     *
+     * The tip_finalize cursor floor is the seeded tip's OWN height — never
+     * height+1 (task #31, unifying the last two +1 conventions with the
+     * task-#30 authority-anchor fix). Cursor C means "served tip at C; the
+     * C→C+1 transition is pending"; stamping H+1 claims the H→H+1 transition
+     * that the seed never finalized and SKIPS it forever (the cursor is
+     * monotonic), which is one late block per cold-import/snapshot seed:
+     * block H+1 could only publish when H+2 arrived. The resolver's
+     * cursor-then-cursor-1 fold tolerates BOTH the legacy +1 lattice and
+     * this convention, so boot readers are unaffected. */
+    uint64_t stamp = (uint64_t)height;
     if (!stage_anchor_cap_target_at_log_frontier(db, "tip_finalize_log",
                                                  cursor, stamp, seed_exempt,
                                                  &stamp)) {
@@ -210,10 +226,11 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
         return false;
     }
 
-    /* Resume after the anchor; rebuild reads cursor-1 == anchor. A capped
-     * re-anchor lands BELOW height+1: boot paths that assume the anchor is
-     * at cursor-1 must tolerate it (the reducer re-finalizes forward from
-     * the frontier — slower, never wrong). */
+    /* Stamp the served-tip cursor == anchor height. The boot resolver
+     * (tip_finalize_stage_resolve_durable_tip) reads the anchor at cursor
+     * first, then cursor-1, so a capped re-anchor that lands BELOW height is
+     * still tolerated (the reducer re-finalizes forward from the frontier —
+     * slower, never wrong). */
     stage_t *stage = tip_finalize_stage_handle();
     if (stage && !stage_set_cursor(stage, db, stamp)) {
         LOG_WARN("tip_finalize",

@@ -36,21 +36,43 @@ enum log_row_state {
 /* The success-checked logs whose contiguous ok=1 prefix bounds H* (C2).
  * Each entry pairs the log table with its stage cursor name (used only for
  * the C1 below-anchor diagnostic). validate_headers and script_validate
- * additionally feed the C3 hash-agreement check below. */
+ * additionally feed the C3 hash-agreement check below.
+ *
+ * `served_tip` distinguishes the cursor convention. The upstream reducer
+ * stages count the NEXT height to process — cursor U means "rows expected
+ * up to U-1; U is the next height". tip_finalize uses the served-tip
+ * convention (task #30/#31): cursor C means "served tip at C; the C→C+1
+ * transition is pending", so its rows are expected up to C (the anchor row
+ * at C plus finalized rows below). frontier_next_cursor() below normalizes
+ * tip_finalize's cursor to the upstream "next height" frame (C+1) at every
+ * scan/candidate read site, so the contiguity and anchor-candidate algorithms
+ * stay byte-identical across the convention change. */
 struct frontier_log {
     const char *log_table;
     const char *cursor_name;
+    bool        served_tip;
 };
 
 static const struct frontier_log k_logs[] = {
-    { "validate_headers_log", "validate_headers" },
-    { "script_validate_log",  "script_validate"  },
-    { "body_persist_log",     "body_persist"     },
-    { "proof_validate_log",   "proof_validate"   },
-    { "utxo_apply_log",       "utxo_apply"       },
-    { "tip_finalize_log",     "tip_finalize"     },
+    { "validate_headers_log", "validate_headers", false },
+    { "script_validate_log",  "script_validate",  false },
+    { "body_persist_log",     "body_persist",     false },
+    { "proof_validate_log",   "proof_validate",   false },
+    { "utxo_apply_log",       "utxo_apply",       false },
+    { "tip_finalize_log",     "tip_finalize",     true  },
 };
 static const int k_logs_n = (int)(sizeof(k_logs) / sizeof(k_logs[0]));
+
+/* Normalize a stage cursor to the "next height to process" frame the
+ * contiguity / anchor-candidate scans expect. tip_finalize's served-tip
+ * cursor C (served tip at C) is equivalent to next-height C+1 (its rows run
+ * up to C, the anchor row included); every other stage already counts the
+ * next height, so it passes through unchanged. */
+static int64_t frontier_next_cursor(const struct frontier_log *fl,
+                                    int64_t cursor)
+{
+    return (fl && fl->served_tip && cursor > 0) ? cursor + 1 : cursor;
+}
 
 /* Read the ok column of a *_log row at `height`. *out is set to one of the
  * tri-states. Returns false ONLY on a real SQLite prepare/step error
@@ -191,9 +213,14 @@ static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height)
         return false;
 
     for (int i = 0; i < k_logs_n; i++) {
-        int64_t cursor = 0;
-        if (!cursor_at(db, k_logs[i].cursor_name, &cursor))
+        int64_t raw_cursor = 0;
+        if (!cursor_at(db, k_logs[i].cursor_name, &raw_cursor))
             return false;
+        /* Normalize tip_finalize's served-tip cursor to the next-height frame
+         * (task #31): a seed anchor at H now stamps tip_finalize cursor == H,
+         * whose next-height equivalent is H+1 == first — the same value the
+         * old +1-convention cursor held, so this candidate gate is unchanged. */
+        int64_t cursor = frontier_next_cursor(&k_logs[i], raw_cursor);
         if (cursor < first)
             return false;
         if (cursor == first)
@@ -371,20 +398,27 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     int32_t hs = INT32_MAX;
     int32_t ua_contig = anchor;  /* utxo_apply's OWN contiguous frontier (C4) */
     for (int i = 0; i < k_logs_n; i++) {
-        int64_t cursor = 0;
-        if (!cursor_at(progress_db, k_logs[i].cursor_name, &cursor))
+        int64_t raw_cursor = 0;
+        if (!cursor_at(progress_db, k_logs[i].cursor_name, &raw_cursor))
             LOG_FAIL("reducer", "cursor read failed: %s",
                      k_logs[i].cursor_name);
+        /* Normalize tip_finalize's served-tip cursor (C == served tip) to the
+         * next-height frame (C+1) the contiguity scan's exclusive upper bound
+         * expects — its rows run up to C (the anchor row included), the same
+         * span the old +1-convention cursor named (task #31). */
+        int64_t scan_cursor = frontier_next_cursor(&k_logs[i], raw_cursor);
 
         /* C1 diagnostic: a cursor behind the anchor is a defect state the
-         * heal will fix; flag it but do not abort H* computation. */
-        if (cursor < (int64_t)anchor + 1)
+         * heal will fix; flag it but do not abort H* computation. The
+         * normalized cursor is compared so tip_finalize is not flagged for
+         * sitting exactly one below the upstream frame by convention. */
+        if (scan_cursor < (int64_t)anchor + 1)
             LOG_WARN("reducer", "cursor below hstar: %s cursor=%lld anchor=%d",
-                     k_logs[i].cursor_name, (long long)cursor, anchor);
+                     k_logs[i].cursor_name, (long long)raw_cursor, anchor);
 
         int32_t h_contig = anchor;
         if (!log_contiguous_prefix(progress_db, k_logs[i].log_table, anchor,
-                                   cursor, &h_contig))
+                                   scan_cursor, &h_contig))
             LOG_FAIL("reducer", "contiguity walk failed: %s",
                      k_logs[i].log_table);
 

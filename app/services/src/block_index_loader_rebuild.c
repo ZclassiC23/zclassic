@@ -630,26 +630,29 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;  /* not wedged (or already healed) — no-op */
 
     /* (3b) NO tip_finalize REGRESSION: tip_finalize_stage_seed_anchor stamps
-     *      the tip_finalize cursor to H+1 via an UNCONDITIONAL stage_set_cursor
-     *      (with trusted_seed=true the frontier cap is exempted), so if the
-     *      cursor is ALREADY at or beyond H+1 the seed would LOWER it. The
-     *      forward-only gate (2b) only guards the active chain height, not this
-     *      cursor; a torn progress.kv with a high tip_finalize cursor over a low
-     *      upstream prefix would otherwise pass the H* gap gate and regress the
-     *      finalized cursor. Refuse rather than rewind a finalized authority. */
+     *      the tip_finalize cursor to H (the served-tip convention, task #31)
+     *      via an UNCONDITIONAL stage_set_cursor (with trusted_seed=true the
+     *      frontier cap is exempted), so if the cursor is ALREADY at or beyond
+     *      H the seed would LOWER it. The forward-only gate (2b) only guards
+     *      the active chain height, not this cursor; a torn progress.kv with a
+     *      high tip_finalize cursor over a low upstream prefix would otherwise
+     *      pass the H* gap gate and regress the finalized cursor. Refuse rather
+     *      than rewind a finalized authority. */
     uint64_t tf_cursor =
         stage_cursor_persisted(progress_db, "tip_finalize", "tip_finalize");
-    if (tf_cursor >= (uint64_t)(H + 1)) {
+    if (tf_cursor >= (uint64_t)H) {
         LOG_WARN("block_index",
-                 "cold-import seed: tip_finalize cursor=%llu already >= H+1=%d; "
+                 "cold-import seed: tip_finalize cursor=%llu already >= H=%d; "
                  "skip — never regress the finalized cursor",
-                 (unsigned long long)tf_cursor, H + 1);
+                 (unsigned long long)tf_cursor, H);
         return 0;
     }
 
     /* (4) Set the SECOND authority FIRST: coins_applied_height = H+1 (the
-     *     utxo_apply cursor convention; H would cap utxo_apply at H and make
-     *     reducer_anchor_candidate_ok reject the anchor). Raise-only. */
+     *     utxo_apply NEXT-height cursor convention — applied through H means
+     *     coins_applied_height == H+1). reducer_anchor_candidate_ok normalizes
+     *     tip_finalize's served-tip cursor H to the same H+1 frame, so the
+     *     anchor at H is accepted. Raise-only. */
     if (!cold_import_set_applied_if_behind(progress_db, H + 1))
         return -1;  // raw-return-ok:cold_import_set_applied_if_behind logs on failure
 
@@ -661,7 +664,8 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
      * imported header chain is contiguous and this abstains. */
     utxo_recovery_note_band_unrooted_tip(anchor, "cold_import_seed");
 
-    /* (5) Seed the tip_finalize anchor + all 7 upstream cursors to H+1.
+    /* (5) Seed the tip_finalize anchor (cursor -> H, served-tip convention)
+     *     + all 7 upstream cursors -> H+1 (next-height convention).
      *     trusted_seed=true is the SHA3-verified fast-sync trust model the
      *     import already established at H — same as snapshot_apply.c. */
     if (!tip_finalize_stage_seed_anchor(H, anchor_hash, true)) {
@@ -685,7 +689,8 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
     }
 
     printf("[boot] cold-import staged-sync seed: H*=%d coins_applied=%d "
-           "all 8 cursors -> %d (was wedged at the import floor)\n",
-           hstar, H + 1, H + 1);
+           "tip_finalize cursor -> %d, 7 upstream cursors -> %d "
+           "(was wedged at the import floor)\n",
+           hstar, H + 1, H, H + 1);
     return 1;
 }

@@ -75,12 +75,18 @@ bool tip_finalize_stage_resolve_durable_tip(struct sqlite3 *db,
                                             uint8_t out_hash[32]);
 
 /* Cold-start fast_sync seed: durably record the snapshot anchor at
- * `height` (hash) as a finalized tip in tip_finalize_log and advance the
- * stage cursor to height+1, so the next boot_rebuild_from_log restores
- * the tip purely from the log/cursor. Also seeds the runtime
- * authoritative tip. Best-effort, non-fatal: returns false (no mutation
- * beyond the log row) if the progress store / stage are not yet wired.
- * `hash` is the 32-byte snapshot anchor block hash.
+ * `height` (hash) as an anchor tip in tip_finalize_log and advance the
+ * tip_finalize stage cursor to `height` — the served-tip convention
+ * (cursor C == served tip at C; task #31), NOT height+1, so the seeded
+ * tip's H→H+1 transition is left pending and block H+1 publishes on first
+ * arrival. (The UPSTREAM reducer cursors are still seeded to height+1,
+ * their own "next height to process" convention.) The next
+ * boot_rebuild_from_log restores the tip purely from the log/cursor via
+ * tip_finalize_stage_resolve_durable_tip, which tries cursor then cursor-1
+ * and therefore tolerates both this convention and the legacy +1 lattice.
+ * Also seeds the runtime authoritative tip. Best-effort, non-fatal:
+ * returns false (no mutation beyond the log row) if the progress store /
+ * stage are not yet wired. `hash` is the 32-byte snapshot anchor block hash.
  *
  * `trusted_seed` is the FIX-3 cap exemption (stage_anchor.h): true ONLY
  * for an externally-verified trusted base (the SHA3-verified snapshot
