@@ -42,6 +42,7 @@
 #include "storage/disk_block_io.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "jobs/block_header_emit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -272,6 +273,11 @@ static void topup_recover_ntx_from_disk(struct main_state *ms,
             if (uint256_eq(&got, bi->phashBlock) && blk.num_vtx > 0) {
                 bi->nTx = (unsigned int)blk.num_vtx;
                 recovered++;
+                /* Re-emit so the projection row self-corrects: the next
+                 * boot's catch_up folds the real nTx and this disk read
+                 * is never paid again for this block. */
+                block_index_emit_header_event(bi, "topup_ntx_recovery",
+                                              NULL, NULL);
             } else {
                 unreadable++;  /* wrong block at the position — leave 0 */
             }
