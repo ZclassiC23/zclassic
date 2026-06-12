@@ -1071,6 +1071,7 @@ int main(void)
     failures += test_zclassicd_oracle();
     failures += test_header_probe();
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
+    { extern int test_soak_attestation(void); failures += test_soak_attestation(); }
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

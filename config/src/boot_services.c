@@ -358,7 +358,8 @@ static bool boot_register_runtime_services(struct boot_svc_ctx *svc)
         if (!zcl_service_kernel_register(&svc->runtime_kernel, &specs[i]))
             return false;
     }
-    return boot_utxo_parity_register(svc); /* standing UTXO parity (dormant) */
+    return boot_utxo_parity_register(svc) &&     /* standing UTXO parity (dormant) */
+           boot_soak_attestation_register(svc);   /* 7-day soak evidence log */
 }
 
 bool boot_running(const struct boot_svc_ctx *svc)
