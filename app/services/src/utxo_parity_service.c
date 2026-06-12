@@ -607,10 +607,17 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
     pthread_mutex_unlock(&g_parity.lock);
 
     bool drift_flag = false;
+    bool bh_drift_latched = false;
     if (ndb && ndb->open) {
         int64_t drift = 0;
         if (node_db_state_get_int(ndb, "utxo_drift_detected", &drift))
             drift_flag = (drift != 0);
+        int64_t bh = 0;
+        if (node_db_state_get_int(ndb, "parity_bh_drift_detected", &bh))
+            bh_drift_latched = (bh != 0);
+        /* drift_flag is the "is anything paging" summary — OR in the latch so
+         * this dump never reads false while the Condition is paging. */
+        drift_flag = drift_flag || bh_drift_latched;
     }
 
     json_push_kv_bool(out, "enabled", enabled);
@@ -645,5 +652,6 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
     if (skip_reason[0])
         json_push_kv_str(out, "last_skip_reason", skip_reason);
     json_push_kv_bool(out, "drift_flag", drift_flag);
+    json_push_kv_bool(out, "bh_drift_latched", bh_drift_latched);
     return true;
 }

@@ -1289,9 +1289,20 @@ int main(int argc, char **argv)
         const char *cs_path = argv[2];
         const char *home = getenv("HOME");
         char db_path[512];
-        if (argc > 3)
+        if (argc > 3) {
+            /* Positional target, NOT a flag: a '-datadir=...' here would be
+             * silently treated as a literal db filename (and fed to shell
+             * cp/rm commands). */
+            if (argv[3][0] == '-') {
+                fprintf(stderr,
+                        "usage: zclassic23 --importchainstate <chainstate-dir>"
+                        " [<target-node.db-path>]\n"
+                        "       (got flag-like target '%s'; pass the node.db"
+                        " PATH, e.g. ~/.zclassic-c23/node.db)\n", argv[3]);
+                return 1;
+            }
             snprintf(db_path, sizeof(db_path), "%s", argv[3]);
-        else
+        } else
             snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
                      home ? home : ".");
 
@@ -1437,9 +1448,20 @@ int main(int argc, char **argv)
         const char *snap_dir = argv[2];
         const char *home = getenv("HOME");
         char db_path[512];
-        if (argc > 3)
+        if (argc > 3) {
+            /* Positional target, NOT a flag: a '-datadir=...' here would be
+             * silently treated as a literal db filename (and fed to shell
+             * cp/rm commands). */
+            if (argv[3][0] == '-') {
+                fprintf(stderr,
+                        "usage: zclassic23 --importblockindex <source-datadir>"
+                        " [<target-node.db-path>]\n"
+                        "       (got flag-like target '%s'; pass the node.db"
+                        " PATH, e.g. ~/.zclassic-c23/node.db)\n", argv[3]);
+                return 1;
+            }
             snprintf(db_path, sizeof(db_path), "%s", argv[3]);
-        else
+        } else
             snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
                      home ? home : ".");
 
