@@ -69,6 +69,192 @@ These touch a **live or real-peer** environment — they are not hermetic:
 
 ---
 
+## Benign log patterns at tip
+
+These patterns look alarming during a healthy soak but are **expected** on a
+node that is holding tip and finalizing forward. Each entry cites the emitting
+source file so a future reader can re-verify. A pattern stops being benign only
+when it crosses the named **real-alarm** threshold — until then, do **not**
+restart or intervene.
+
+The shared mental model: the served tip and every derived projection (headers,
+bodies, scripts, proofs, coins) converge a few seconds *after* each block lands.
+Most "noise" below is one stage briefly observing a frontier that another stage
+has not caught up to yet. At tip this self-resolves on the next tick; sustained
+firing across many consecutive blocks is the actual signal.
+
+### header-resync WARN storms when at tip
+
+- **Pattern:**
+  `[supervisor] staged.header_admit stalled (cursor=… admitted=…) — stage log behind live chain`,
+  `[supervisor] staged.validate_headers stalled (cursor=… passed=… failed=…) — validator behind admit`,
+  `[condition:header_stall_at_height] header=… peer_max=… age=…s action=kick_headers`,
+  and `WARNING: Peer …: all N headers rejected — sync stalled!`
+- **Emitted by:** `app/supervisors/src/staged_sync_supervisor.c:76,83`,
+  `app/conditions/src/header_stall_at_height.c:74`, `lib/net/src/msg_headers.c:410`.
+- **Why it fires:** at tip the node already holds every header a peer can offer,
+  so a fresh `headers` message is 100% already-known and "all N rejected" is the
+  duplicate-rejection path — not an invalid-header path. The staged supervisor
+  WARNs whenever the header stage cursor momentarily trails the live chain (which
+  it does for a few seconds after each new block until the admit/validate stages
+  re-converge), and `header_stall_at_height` kicks a re-request as a precaution.
+- **Why it is benign:** these are duplicate/known-header rejections and a
+  precautionary re-request, not header-validation failures. The header chain is
+  complete; the WARN is the stage describing a transient lag it then closes.
+- **Real alarm if:** the same `staged.validate_headers stalled` line repeats with
+  `failed>0` climbing (genuine header-validation failures, not duplicates), or
+  `header_stall_at_height` keeps firing with `age` growing for many minutes while
+  `peer_max` stays well above your header height — meaning headers are genuinely
+  not advancing, not merely re-offered. Cross-check height against zclassicd.
+
+### have_data_missing races at tip (body announced, not yet persisted)
+
+- **Pattern:** `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing`
+  (also surfaces as the `tip_finalize` precondition reason `have_data_missing` /
+  `block_missing` in `zcl_state subsystem=…` precondition fields).
+- **Emitted by:** `app/jobs/src/tip_finalize_stage.c:173` (the
+  `precondition_block_reason` → `record_precondition_block` path; see the TRANSIENT
+  case comment at `tip_finalize_stage.c:390`).
+- **Why it fires:** a block (or the tip's one-block lookahead successor H+1) has a
+  header but its body has not finished the
+  `body_persist → script_validate → utxo_apply` pipeline yet. `BLOCK_HAVE_DATA` is
+  still clear for that index entry when the finalize stage looks.
+- **Why it is benign:** it is a TRANSIENT precondition, handled explicitly: the
+  finalize stage returns `JOB_IDLE` (cursor unchanged, the framework rolls back
+  the txn so no junk row is written) and retries on the next tick once the body
+  lands. H itself stays genuinely finalizable; only its lookahead witness is
+  momentarily missing.
+- **Real alarm if:** the SAME height stays `have_data_missing` for many
+  consecutive ticks (minutes), i.e. a body that never arrives — that is a stuck
+  body fetch, not a race. Confirm via `zcl_syncstate` (body frontier not
+  advancing) and the `tip_advance_age_seconds` health check climbing.
+
+### "database is locked" transients (SQLite WAL contention)
+
+- **Pattern:** SQLite `SQLITE_BUSY` / `SQLITE_LOCKED` retries; the `database is
+  locked` boot-table row notes a stale *second instance* (see "Boot Failure"
+  below — that case is a real conflict, not this transient one).
+- **Emitted by:** the bounded busy/locked retry loop in
+  `app/services/src/chain_state_service.c:159-219`
+  (`csr_sqlite_busy_or_locked` + `csr_set_last_persist_locked` only after the
+  retry budget is exhausted), plus `sqlite3_busy_timeout(...)` set on the
+  hot writers (e.g. `app/controllers/src/snapshot_controller_import.c:91`,
+  `app/views/src/explorer_stats_view.c:387`).
+- **Why it fires:** several stage writers (chain-state cursor, body persist, tx
+  index, explorer projections) share one WAL-mode node.db. Under a burst of
+  writes two of them briefly contend for the write lock; SQLite returns BUSY and
+  the writer retries within its busy_timeout.
+- **Why it is benign:** WAL contention is expected and the retry loop is bounded
+  and succeeds — the persist completes on a later attempt within the timeout.
+  Only after the retry budget is **exhausted** does the code call
+  `csr_set_last_persist_locked(... "bounded retry exhausted")` and surface it.
+- **Real alarm if:** you see the exhausted-retry surface (`last_persist_locked`
+  set / "bounded retry exhausted"), or a `database is locked` that coincides with
+  two live `zclassic23` PIDs on the same datadir (a real second-instance
+  conflict — see the Boot Failure table). A bloated WAL (>100 MB) can also cause
+  sustained contention; force a checkpoint (see "Disk > 99% Full").
+
+### bg-validation undo-data-missing warnings
+
+- **Pattern:** `[bg-valid] h=…: N non-coinbase tx(s) NOT script-verified (undo
+  missing) — block advances, not fully verified`.
+- **Emitted by:** `app/services/src/bg_validation_service.c:389-392`; the
+  health surface notes the same in `app/controllers/src/health_controller.c:196`
+  ("undo missing/mismatched — expected post-snapshot").
+- **Why it fires:** background validation re-verifies historical blocks and wants
+  each block's undo data to fully reconstruct inputs. Blocks brought in via a UTXO
+  snapshot / fast-sync (rather than connected from genesis with full undo) do not
+  carry undo data for the pre-snapshot range.
+- **Why it is benign:** this is **expected post-snapshot**. The block still
+  advances — its scripts were verified at connect time where data existed; only
+  the optional historical re-verification is skipped for the undo-less range. The
+  skip count is tallied (persisted across restarts) for honesty, not as an error.
+- **Real alarm if:** `[bg-valid] script verification FAILED h=…`
+  (`bg_validation_service.c:384`) appears — that is a genuine verification
+  failure, not a missing-undo skip — or the skip count keeps growing for blocks
+  that were connected normally (with undo data) rather than only the
+  pre-snapshot range.
+
+### crash-only auto-reindex ("auto-recovery" instead of a FATAL crash-loop)
+
+- **Pattern:**
+  `[boot] crash-only recovery: post-restore tip-above-extent at tip_h=… (zero_nbits=0, attempt M/3) — requesting -reindex-chainstate; restarting to rebuild from blocks/`
+  followed on the next boot by
+  `[boot] crash-only recovery: consuming auto-reindex request — rebuilding the UTXO set from block data (-reindex-chainstate)`.
+- **Emitted by:** `config/src/boot_crashonly.c:22,70` (the recovery decision),
+  written/consumed via `lib/storage/src/boot_auto_reindex.c`. Landed in commit
+  `706a7c00a`, which turned the old FATAL crash-loop into this auto-recovery.
+- **Why it fires:** a kill-9 mid-connect can leave the derived chain tip installed
+  ABOVE the validated on-disk index extent. The post-restore integrity gate used
+  to FATAL on this (crash-loop to systemd-FAILED, operator required). Now, since
+  blocks/ + wallet are the only durable truth and the UTXO set is derived, the
+  node RE-DERIVES it: it records a bounded reindex request and restarts to rebuild
+  the UTXO set from blocks/ (`-reindex-chainstate`).
+- **Why it is benign:** this is strictly safer than the old crash-loop in every
+  case — it never deletes blocks/ or wallet, only rebuilds the derived UTXO set,
+  and the request is bounded (max 3 attempts per anchor episode). A single
+  request → restart → consume cycle that ends with the node serving is a
+  successful self-heal, not an incident.
+- **Real alarm if:** you see
+  `[boot] crash-only recovery EXHAUSTED after N reindex attempts …`
+  (`boot_crashonly.c:81`) — the bounded budget ran out, which means blocks/ is
+  genuinely unable to back the tip and the node is paging the operator (a real
+  corrupt-block-data signal), OR the same anchor keeps requesting a reindex across
+  many restarts without ever converging.
+
+### rpc-unreachable alerts during a deploy restart window (~60s)
+
+- **Pattern:** external monitors / `mirror_status` showing `rpc-unreachable`,
+  connection-refused, or "RPC did not become ready" briefly around a
+  `make deploy` / `systemctl --user restart zclassic23`.
+- **Emitted by:** the mirror blocker `lms_record_blocker("rpc-unreachable", …)`
+  in `app/services/src/legacy_mirror_sync_service.c:270,299,516`
+  (and the `mirror.rpc-unreachable` note in
+  `app/services/src/mirror_divergence_locator.c:7`); the deploy/control path
+  tolerates a readiness poll via `rpc_ready(c23, 90)` in `tools/zcl-nodectl.c:562`.
+- **Why it fires:** during a restart the node process is down and then re-opening
+  its datadir, rebuilding the block-index map, and binding the RPC socket. For
+  that window the RPC port is not yet answering, so any poller sees connection
+  refused / unreachable. The control tooling explicitly budgets up to ~90s for the
+  RPC to come ready before treating it as a failure.
+- **Why it is benign:** it is the expected restart gap. Once the node finishes
+  boot and binds RPC, `rpc-unreachable` clears on its own and the mirror resumes.
+- **Real alarm if:** RPC stays unreachable well past the readiness budget (node
+  did not finish boot — check `journalctl --user -u zclassic23` for a boot
+  failure or the crash-only auto-reindex flow above), or `rpc-unreachable`
+  appears while the node process is **up and stable** (a bound/auth problem, not a
+  restart window).
+
+### val.block_rejected "block-not-finalized-by-reducer" single events at tip arrival
+
+- **Pattern:** a single `EV_BLOCK_REJECTED` carrying
+  `tip_finalize precondition_failed … reason=…` or the validation reason
+  `block-not-finalized-by-reducer`, fired right as a new tip arrives.
+- **Emitted by:** `app/jobs/src/tip_finalize_stage.c:294,380,439` (the finalize
+  stage's transient/precondition emits) and the reducer-ingest read-back path
+  `app/services/src/reducer_ingest_service.c:152` (returns
+  `block-not-finalized-by-reducer` when the just-arrived block has not yet been
+  finalized by the reducer at read-back time). The repair controller knows this
+  string is benign: `app/controllers/src/repair_controller_rebuild.c:255,272`
+  documents `not-finalized-by-reducer` as tip_finalize's one-block lookahead.
+- **Why it fires:** when a block first arrives, the reducer ingests it but the
+  finalize stage's one-block lookahead has not yet observed the successor, so a
+  read-back of "is this block finalized?" momentarily answers no. A reorg
+  cursor-rewind at the lookahead also emits `EV_BLOCK_REJECTED` describing the
+  rewind (not a rejection of a valid block).
+- **Why it is benign:** the event is the reducer/finalize machinery describing a
+  transient lookahead/rewind state for the freshly-arrived tip, not a consensus
+  rejection of a valid block. On the next tick the successor is observed and the
+  tip finalizes; the convention-aware read-back
+  (`reducer_ingest_service.c:138-149`) then answers yes.
+- **Real alarm if:** the SAME height keeps emitting `block-not-finalized-by-reducer`
+  across many ticks (the tip never finalizes — the live-wedge failure mode), or
+  an `EV_BLOCK_REJECTED` carries a hard consensus reason (e.g. a script/proof
+  failure from `script_validate_stage.c` / `proof_validate_stage.c`, or a
+  `bad-txns-*` reason) rather than a transient finalize/rewind reason.
+
+---
+
 ## BIP30 Stale Coinbase Wedge — fixed structurally (2026-05-26)
 
 **Symptoms:** `zcl_status` shows the tip frozen (`tip_advance_age_seconds`
