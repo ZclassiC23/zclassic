@@ -54,6 +54,14 @@ refusals → `chain_linkage_check` refuse_from → which check set the hold
 frame; if TF_BLOCKED_UV_ROW_MISSING, check the utxo_apply row at the
 cursor height.
 
+**Rescued WIP (review before landing):** local branch
+`fix/crashonly-verb-selection` (`2bf708100`) holds ~390 lines of
+uncommitted work found in a stale /tmp worktree during cleanup — the
+crash-only auto-reindex backstop learning cold-import seed provenance
+(reconcile, not -reindex-chainstate, for imported-authority coin sets)
++ a new test_boot_crashonly.c. Ungated and 44 commits behind main;
+review against the wave-3/#31 changes before any merge.
+
 **Perf note (backlog):** cold-import backfill routes 64-block getdata
 batches to slow REMOTE peers while the co-located zclassicd firehose
 idles (~2-4 blk/s observed); request routing should prefer localhost.
