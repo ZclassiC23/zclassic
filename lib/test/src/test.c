@@ -992,6 +992,8 @@ int main(void)
     failures += test_body_persist_stage();
     failures += test_created_outputs_index();
     failures += test_coins_kv();
+    { extern int test_coins_kv_reset_for_reseed(void);
+      failures += test_coins_kv_reset_for_reseed(); }
     failures += test_nullifier_kv();
     failures += test_stage_repair();
     failures += test_script_validate_stage();

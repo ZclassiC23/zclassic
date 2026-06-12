@@ -448,3 +448,39 @@ bool coins_kv_backfill_applied_height_if_absent(sqlite3 *db)
                  (long long)cursor);
     return ok;
 }
+
+bool coins_kv_reset_for_reseed(sqlite3 *db)
+{
+    if (!db) return false;
+    /* Ensure the targets exist before we DELETE/clear them: a reset on a
+     * brand-new store (no coins schema, no keys) must be a clean no-op, not a
+     * "no such table" error. */
+    if (!coins_kv_ensure_schema(db) || !progress_meta_table_ensure(db))
+        return false;
+
+    /* The single legal standalone txn for a reindex epilogue: the replayed
+     * `utxos` mirror is the authority and coins_kv is rebuilt from it in the
+     * same single-writer boot. Truncate the coins set, then clear the
+     * migration stamp + applied frontier so coins_kv_seed_from_node_db does a
+     * FRESH copy (it short-circuits when the stamp is already set). */
+    char *err = NULL;
+    bool ok = true;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && sqlite3_exec(db, "DELETE FROM coins", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && !progress_meta_delete_in_tx(db, COINS_KV_MIGRATION_COMPLETE_KEY))
+        ok = false;
+    if (ok && !progress_meta_delete_in_tx(db, COINS_APPLIED_HEIGHT_KEY))
+        ok = false;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        if (err) LOG_WARN("coins_kv",
+                          "[coins_kv] reset_for_reseed failed: %s", err);
+        else LOG_WARN("coins_kv", "[coins_kv] reset_for_reseed failed");
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (err) sqlite3_free(err);
+    return ok;
+}

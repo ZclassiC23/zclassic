@@ -170,4 +170,21 @@ bool coins_kv_is_proven_authority(struct sqlite3 *db, int32_t *out_applied);
  * key exists. Returns false on error (next boot retries). */
 bool coins_kv_backfill_applied_height_if_absent(struct sqlite3 *db);
 
+/* Truncate coins_kv + clear the migration stamp + drop coins_applied_height so
+ * a subsequent coins_kv_seed_from_node_db performs a FRESH copy. The reindex
+ * epilogue (app/services/src/reindex_epilogue.c) calls this right after a full
+ * from-genesis replay: the replayed node.db `utxos` mirror is the authority and
+ * coins_kv is being rebuilt from it in the SAME boot, so the pre-reindex set
+ * (which may carry rows the replay legitimately deleted) must be discarded
+ * first — coins_kv_seed_from_node_db short-circuits when the migration stamp is
+ * already set, so without clearing it the reseed would no-op over a stale set.
+ *
+ * ONE BEGIN IMMEDIATE: DELETE FROM coins; clear COINS_KV_MIGRATION_COMPLETE_KEY
+ * + COINS_APPLIED_HEIGHT_KEY. The single legal standalone txn for a reindex
+ * epilogue (boot single-writer, no stage threads running yet — same
+ * justification as boot_index_clear_coins_state). Idempotent (a fresh store is
+ * a no-op delete + absent-key clears). Returns false on error so the caller
+ * aborts the epilogue and leaves the reindex sentinel pending for a retry. */
+bool coins_kv_reset_for_reseed(struct sqlite3 *db);
+
 #endif /* STORAGE_COINS_KV_H */
