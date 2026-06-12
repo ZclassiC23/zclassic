@@ -124,6 +124,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-operator-needed-sink check-doc-accuracy \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
+        test-reindex-smoke test-reindex-killmid \
         test-two-node-peer-tip chaos chaos-clean
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
@@ -503,6 +504,30 @@ test-crash-bootstrap: crash_recovery_test zclassic23 zcl-rpc
 	     --iterations=2 --min-delay-ms=200 --max-delay-ms=800 \
 	     --verbose; \
 	 echo "test-crash-bootstrap: PASS (recovery invariants held under SIGKILL)"'
+
+# Item-3 reindex epilogue acceptance (a): seed an isolated /tmp regtest node,
+# clean-restart with -reindex-chainstate, and assert the FOUR teeth (tip parity,
+# gettxoutsetinfo.txouts parity, getutxocommitment parity, SERVING + no coin
+# tear in node.log). A torn/no-op epilogue changes txouts/commitment and fails.
+# Opt-in (NOT in hermetic `make ci`): it SPAWNS a real regtest node. All
+# isolation is delegated to tools/scripts/isolated_node_env.sh.
+.PHONY: test-reindex-smoke
+test-reindex-smoke: zclassic23 zcl-rpc
+	@ISO_KIND=reindex ISO_PORT_BASE=$${ISO_PORT_BASE:-39050} \
+	    SEED_BLOCKS=50 KILL_MID=0 \
+	    bash tools/scripts/reindex_smoke.sh
+
+# Item-3 reindex epilogue acceptance (c): kill -9 mid-reindex then reboot
+# converges. Spawn with -reindex-chainstate, SIGKILL after a randomized
+# 200-2000ms during replay, reboot normally (crash-only re-replay), and assert
+# eventual SERVING at tip with the same four teeth within <=3 reboot cycles.
+# Proves the epilogue is crash-only safe (runs only after errors==0, clears the
+# sentinel only after the H* self-check). Opt-in (NOT in hermetic `make ci`).
+.PHONY: test-reindex-killmid
+test-reindex-killmid: zclassic23 zcl-rpc
+	@ISO_KIND=reindex ISO_PORT_BASE=$${ISO_PORT_BASE:-39054} \
+	    SEED_BLOCKS=50 KILL_MID=1 \
+	    bash tools/scripts/reindex_smoke.sh
 
 # C7 PEER-tip kill-9 (the FULL #7 claim): two isolated regtest nodes on
 # disjoint 39xxx quads, B connect-only to A. A mines; assert B syncs to A
