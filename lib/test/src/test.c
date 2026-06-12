@@ -1004,6 +1004,8 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    { extern int test_reindex_epilogue(void);
+      failures += test_reindex_epilogue(); }
     failures += test_chain_linkage_check();
     failures += test_invariant_sentinel();
     failures += test_seed_integrity_gate();
