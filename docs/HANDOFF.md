@@ -6,7 +6,65 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-12 (latest) — stability wave 2: a green node finally REPORTS healthy; parity oracle armed; one self-inflicted deadlock root-caused and fixed same-session
+## 2026-06-12 (latest) — wave 3 shipped + the copy-prove caught a permanent cold-import wedge BEFORE it reached live
+
+**Wave 3 (5 parallel worktree agents → adversarial refuters → merged
+`08cde64ca..128ac402f` + fix-forward `6ae0a837a`/`4aaf24c3d`):**
+- **#32** block_index.bin is now ONE atomic file (BIIE v2 embedded SHA3
+  header, one rename + dir fsync; legacy two-file still loads).
+- **#31** tip_finalize +1-convention unification (see below — this is the
+  one the copy-prove kept finding more of).
+- **#34** step_finalize read-decide-move window closed under
+  progress_store_tx_lock; stall log names the blocked class. long_op
+  deletion ABORTED correctly — live caller in sync_state_stuck.c.
+- **#36** coarse block-hash parity now fires AT TIP; a mismatch LATCHES
+  `parity_bh_drift_detected` (operator-cleared only) — separate key from
+  the SHA3 path so a later confirmation can never silently un-page it
+  (refuter-found missed-page defect, fixed + production-config test).
+- soak_attestation service: 60s JSON evidence log (MVP criterion 7),
+  live at `~/.zclassic-c23/soak_attestation.jsonl`, `zcl_state
+  subsystem=soak`.
+
+**The copy-prove story (read memory
+`project_l1_bump_anchor_collapse_hold_wedge_2026-06-12`):** the #31
+fixture prove caught TWO more lattice members that would have pinned any
+future cold import forever:
+1. `c796673c0` — the L1 reconcile's old `floor = hstar+1` bumped the
+   correctly-seeded tip_finalize cursor by one → fresh seed anchor
+   REJECTED by `reducer_anchor_candidate_ok` → trusted anchor collapsed
+   to the compiled checkpoint → I4.3 sweep latched the chain-linkage
+   HOLD over the log-less import region → step_finalize FATAL loop.
+   Fix: own-frame clamp band [hstar, hstar+1] capped at coins
+   applied-through; T9 + 3 sibling pins shifted (the pins ENCODED the
+   bug — proven, which is the bar for changing them).
+2. `41de86064` — step_finalize at cursor C consumes the utxo_apply row
+   AT C; on a cold import nothing ever writes row H (the import IS block
+   H's apply authority), so the stage idled forever on uv_row_missing.
+   Fix: the seed stamps its own ok=1 status='anchor' utxo_apply row at H
+   (INSERT OR IGNORE, after the upstream stamps — FIX-3's empty-log
+   prong reads utxo_apply_log emptiness).
+
+**Deployed live:** `c796673c0` at 19:18 UTC — healthy:true at tip within
+96s, soak attestation accumulating, no deadlock through the canary
+window. The seed-row fix (`41de86064`) only affects future cold imports;
+deploy it with the next regular deploy after the run-3 fixture prove
+converges. Diagnosis chain for any future "tip pinned at seed": HOLD
+refusals → `chain_linkage_check` refuse_from → which check set the hold
+→ if window_sweep I4.3, check anchor acceptance vs tip_finalize cursor
+frame; if TF_BLOCKED_UV_ROW_MISSING, check the utxo_apply row at the
+cursor height.
+
+**Perf note (backlog):** cold-import backfill routes 64-block getdata
+batches to slow REMOTE peers while the co-located zclassicd firehose
+idles (~2-4 blk/s observed); request routing should prefer localhost.
+Also: `contradiction_frozen` pages once per cold-import boot
+(`active_tip_ancestry_unlinkable (h=seed)`) — pre-existing transient,
+clears on the first commit; candidate for the RUNBOOK benign list after
+one more observation.
+
+---
+
+## 2026-06-12 — stability wave 2: a green node finally REPORTS healthy; parity oracle armed; one self-inflicted deadlock root-caused and fixed same-session
 
 **Outcome:** task #33 closed — the persisted chain-evidence active-tip
 now follows the live tip, so an at-tip node reports `healthy:true` and
