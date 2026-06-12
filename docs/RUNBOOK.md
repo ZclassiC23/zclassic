@@ -253,6 +253,25 @@ firing across many consecutive blocks is the actual signal.
   failure from `script_validate_stage.c` / `proof_validate_stage.c`, or a
   `bad-txns-*` reason) rather than a transient finalize/rewind reason.
 
+### healthy=false `degraded_reason="tip_stale"` during a slow block
+
+- **Pattern:** `/api/health` / `healthcheck` flips to `healthy:false` with
+  `degraded_reason:"tip_stale"` while the chain simply has not produced a
+  block for a while, then self-clears the moment the next block arrives.
+- **Emitted by:** `app/services/src/node_health_service.c:197` —
+  `tip_stale = (now - tip->nTime) > 600`.
+- **Why it fires:** ZClassic's target interval is 2.5 minutes; Poisson
+  variance puts roughly 2% of inter-block gaps past the 600 s threshold, so
+  an honest, fully-synced node reports tip_stale several times a day
+  (observed live 2026-06-12: a ~9-minute gap at h=3145090 flapped health for
+  two polls, cleared on the next block, hash-identical to zclassicd
+  throughout).
+- **Why it is benign:** the node is faithfully reporting that the *chain* is
+  slow, not that *it* is behind — peer height matches, `tip_lag=0`.
+- **Real alarm if:** tip_stale persists while `zclassicd` (or peer heights)
+  are AHEAD of the node — that is a genuine stall, see "Tip Regressed /
+  Stuck on Wrong Fork" below.
+
 ---
 
 ## BIP30 Stale Coinbase Wedge — fixed structurally (2026-05-26)

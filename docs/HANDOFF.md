@@ -6,6 +6,32 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
+## 2026-06-12 (latest) — stability wave 2: a green node finally REPORTS healthy; parity oracle armed; one self-inflicted deadlock root-caused and fixed same-session
+
+**Outcome:** task #33 closed — the persisted chain-evidence active-tip
+now follows the live tip, so an at-tip node reports `healthy:true` and
+`active_tip_hash_mismatch:false` (verified live across 5 block publishes,
+67/67 RPC probes, 0 failures). The MVP-C8 parity oracle is ACTIVE against
+the co-located zclassicd (`zcl_state subsystem=utxo_parity`:
+`active=true`, source `zclassicd-coarse`, structurally unable to
+false-page; checks fire only at reorg-safe heights — task #36 tracks
+making them fire at tip). RUNBOOK gained the "Benign log patterns at
+tip" section (now incl. the honest `tip_stale` flap on slow blocks).
+
+**The hard lesson (read `feedback_reducer_drive_lock_order_law` in
+memory + the header of `app/services/src/chain_evidence_live_advance.c`):**
+the first #33 deploy (`873ba9955`) ran the evidence follow on the
+reducer drive, which holds the coins_kv authority mutex; the health
+path takes csr->lock THEN coins_kv — the inverted edge ABBA-deadlocked
+the live node within two blocks (RPC dead, P2P alive). Fix
+(`b33898178`): the drive only stamps a leaf-mutex pending slot
+(`chain_evidence_note_finalized_tip`); `node_health_collect` drains it
+(init → drain → snapshot) with the established lock order. NOTHING on
+the drive may ever take csr->lock or construct a
+chain_evidence_controller.
+
+---
+
 ## 2026-06-12 (later) — task #30 ROOT-CAUSED + FIXED: the served tip no longer trails the network by one block
 
 **Outcome:** the "single-block header lag" (task #30) was never a
