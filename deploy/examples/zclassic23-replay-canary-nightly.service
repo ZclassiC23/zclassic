@@ -1,0 +1,30 @@
+[Unit]
+Description=ZClassic23 Replay Canary — nightly from-anchor
+# Independent of the live node: the canary spawns its OWN isolated /tmp
+# mainnet node and only READS the co-located zclassicd (RPC 8232) for the
+# cross-node coarse-stats assert. NO Requires=zclassic23.service.
+# zclassicd must be up for that read, hence After= it.
+After=zclassicd-rhett.service
+# OnFailure (a [Unit] key): on a non-zero harness exit, page via the
+# templated notifier. The AUTHORITATIVE verdict remains the sentinel FILE;
+# this is the systemd half of "how the timer reports red".
+OnFailure=zclassic23-replay-canary-onfailure@%n.service
+
+[Service]
+Type=oneshot
+# Replays bodies anchor(3,056,758)->tip through the HEAD reducer in an
+# isolated scratch datadir on 3905x ports, asserts zero consensus rejects,
+# the anchor checkpoint passed without an integrity FATAL, and coarse UTXO
+# stats == zclassicd gettxoutsetinfo. The AUTHORITATIVE verdict is the
+# sentinel FILE (~/.local/state/zclassic23-canary/replay_canary_anchor.json),
+# written atomically only after every assertion passes. The exit code is
+# advisory and drives the [Unit] OnFailure= above; "never exit-0-as-proof"
+# means a killed/OOM run leaves no fresh PASS sentinel. Output goes to the
+# journal (grep `journalctl -u %n` for `replay-canary: VERDICT=`).
+ExecStart=%h/github/zclassic23/tools/scripts/replay_canary.sh --from=anchor
+# > the 90-min (5400 s) hard budget the harness enforces internally.
+TimeoutStartSec=6000
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

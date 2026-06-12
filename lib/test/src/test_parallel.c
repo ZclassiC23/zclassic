@@ -229,7 +229,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(locktime_edge) X(reducer_block_ingest_gate) \
     X(onion_bootstrap_slice) X(shielded_receive_slice) \
     X(reducer_forward_progress_gate) X(parity_slice) \
-    X(coins_kv_reset_for_reseed) X(reindex_epilogue)
+    X(coins_kv_reset_for_reseed) X(reindex_epilogue) \
+    X(replay_canary_verdict)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

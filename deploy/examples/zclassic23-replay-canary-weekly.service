@@ -1,0 +1,25 @@
+[Unit]
+Description=ZClassic23 Replay Canary — weekly from-genesis
+# Same independence as the nightly: own isolated /tmp node, reads zclassicd
+# (RPC 8232) for the cross-node assert. The weekly run additionally dials
+# the co-located zclassicd P2P (127.0.0.1:8033) via -addnode to fetch bodies
+# for the genesis->tip replay — the ONE place a real peer is dialed, and it
+# is the read-only co-located zclassicd, never a public peer.
+After=zclassicd-rhett.service
+# OnFailure (a [Unit] key): page on a non-zero harness exit; the sentinel
+# FILE remains the authoritative verdict.
+OnFailure=zclassic23-replay-canary-onfailure@%n.service
+
+[Service]
+Type=oneshot
+# Replays genesis->tip with bg-validation ON (~6 h). Asserts the same four
+# checks AND script_verif_skipped_no_undo == 0 (full coverage; no post-
+# snapshot skips on the from-genesis path). Sentinel:
+# ~/.local/state/zclassic23-canary/replay_canary_genesis.json.
+ExecStart=%h/github/zclassic23/tools/scripts/replay_canary.sh --from=genesis
+# > the 8-h (28800 s) hard budget the harness enforces internally.
+TimeoutStartSec=30000
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
