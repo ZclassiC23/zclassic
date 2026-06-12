@@ -3202,8 +3202,10 @@ sapling_tree_boot_check_done:
      * restart left the tip_finalize cursor AHEAD of the applied coins tip,
      * tip_finalize idles and the connect gate rejects every block as
      * "block-not-finalized-by-reducer", wedging the chain. Clamp tip_finalize
-     * down to coins_best+1 so it re-finalizes forward. Reset-safe: deletes no
-     * log rows, so the public tip can never drop below coins_best (proven in
+     * down to the served-tip floor (coins_best == the applied tip's OWN height,
+     * NOT coins_best+1 — task #31 unifies this with the served-tip cursor
+     * convention) so it re-finalizes forward. Reset-safe: deletes no log rows,
+     * so the public tip can never drop below coins_best (proven in
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
     {
         /* SINGLE SOURCE OF TRUTH (docs/work/tip-durability-collapse.md):
@@ -3230,8 +3232,9 @@ sapling_tree_boot_check_done:
                 stage_reconcile_clamp_tip_finalize_to_floor(
                     pdb, (int)coins_best, &rr) && rr.clamped) {
                 printf("[boot] reducer reconcile: clamped tip_finalize cursor "
-                       "to genuine coins frontier+1=%d (height of "
-                       "coins_best_block hash) — re-finalizing forward\n",
+                       "to served-tip floor=%d (own height of the applied "
+                       "coins frontier / deepest finalized row) — "
+                       "re-finalizing forward\n",
                        rr.floor);
                 service_state_transition_and_persist(SERVICE_STATE_RECONCILE,
                                       "reducer cursor/coins desync reconcile");

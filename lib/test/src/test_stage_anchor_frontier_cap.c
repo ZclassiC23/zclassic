@@ -7,10 +7,11 @@
  *   T5  — stage_anchor_cap_target_at_log_frontier four-prong cap rule
  *         (direct calls on a synthetic log).
  *   T5b — panel regression: a FRESH-datadir seed above the compiled
- *         checkpoint must survive (anchor row + cursor at H+1, accepted by
- *         the reducer trusted-anchor scan) — the write-ordering defeat that
- *         a naive post-insert "log empty" probe would cause. Repeat seeds
- *         must not spuriously cap.
+ *         checkpoint must survive (anchor row + tip_finalize cursor at the
+ *         served-tip H, upstream cursors at H+1, accepted by the reducer
+ *         trusted-anchor scan whose tip_finalize read is convention-aware) —
+ *         the write-ordering defeat that a naive post-insert "log empty"
+ *         probe would cause. Repeat seeds must not spuriously cap.
  *   T7  — a cursor held at a rowless H is NOT bulldozed by
  *         set_authoritative_tip(H+k); with the successor present the stage
  *         then finalizes H normally (the 3,135,516 class).
@@ -244,9 +245,17 @@ static int fc_case_fresh_seed(void)
      * wedge every fresh cold-sync above the compiled checkpoint). */
     FC_CHECK("T5b: fresh seed above checkpoint succeeds",
              tip_finalize_stage_seed_anchor(H, hash.data, false));
-    FC_CHECK("T5b: cursor stamped to H+1",
-             tip_finalize_stage_cursor() == (uint64_t)H + 1u &&
-             fc_cursor(db, "tip_finalize") == (uint64_t)H + 1u);
+    /* TASK #31: the tip_finalize cursor is stamped to H — the seeded served
+     * tip's OWN height (cursor C == "served tip at C; C→C+1 pending"). The
+     * prior pin (H+1) encoded the +1 bug: stamping H+1 claimed the unfinalized
+     * H→H+1 transition and skipped it forever (one late block per cold-import
+     * seed). The UPSTREAM reducer cursors keep H+1 — they use the next-height
+     * convention (processed through H == next height H+1), and
+     * reducer_frontier_compute_hstar normalizes tip_finalize's H to that frame
+     * so the seed anchor is still accepted (the H* == H pin below). */
+    FC_CHECK("T5b: tip_finalize cursor stamped to served-tip H",
+             tip_finalize_stage_cursor() == (uint64_t)H &&
+             fc_cursor(db, "tip_finalize") == (uint64_t)H);
     FC_CHECK("T5b: upstream cursors aligned to H+1 (empty-log prong)",
              fc_cursor(db, "script_validate") == (uint64_t)H + 1u &&
              fc_cursor(db, "proof_validate") == (uint64_t)H + 1u &&
@@ -269,8 +278,8 @@ static int fc_case_fresh_seed(void)
      * H, so the scan finds no rowless height — no spurious cap. */
     FC_CHECK("T5b: repeat seed still succeeds",
              tip_finalize_stage_seed_anchor(H, hash.data, false));
-    FC_CHECK("T5b: repeat seed leaves the cursor at H+1",
-             tip_finalize_stage_cursor() == (uint64_t)H + 1u);
+    FC_CHECK("T5b: repeat seed leaves the cursor at served-tip H",
+             tip_finalize_stage_cursor() == (uint64_t)H);
     progress_store_tx_lock();
     hs_ok = reducer_frontier_compute_hstar(db, &hstar, &served);
     progress_store_tx_unlock();

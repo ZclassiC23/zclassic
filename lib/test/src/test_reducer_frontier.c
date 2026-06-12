@@ -164,6 +164,14 @@ static bool put_tip_anchor(sqlite3 *db, int32_t h)
     return put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "anchor");
 }
 
+/* Set every reducer cursor to `c` (the next-height frame == tip+1 in these
+ * fixtures). tip_finalize is given the SAME value: under the served-tip
+ * convention (task #31) its real cursor would be `c-1`, but
+ * reducer_frontier_compute_hstar / reducer_anchor_candidate_ok normalize
+ * tip_finalize's cursor to the next-height frame (cursor+1) before scanning,
+ * so a tip_finalize cursor of either `c` (legacy +1 lattice) or `c-1` (new
+ * served-tip value) yields the SAME H* here — these cases pin H* identically
+ * across the convention change. */
 static bool set_all_cursors(sqlite3 *db, int64_t c)
 {
     return set_cursor(db, "validate_headers", c)

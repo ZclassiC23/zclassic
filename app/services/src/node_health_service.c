@@ -279,10 +279,13 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     }
 
     /* Prime Directive health = network_tip - log_head. log_head is the
-     * tip_finalize cursor (the reducer's finalized height). */
+     * tip_finalize cursor, which under the served-tip convention (task #31)
+     * IS the reducer's finalized served height directly — cursor C means
+     * "served tip at C" (no longer cursor-1, which was the legacy +1
+     * lattice). A zero cursor means "nothing served yet" -> -1. */
     {
         uint64_t lh = tip_finalize_stage_cursor();
-        snapshot->log_head = (lh > 0) ? (int)(lh - 1) : -1;
+        snapshot->log_head = (lh > 0) ? (int)lh : -1;
         if (snapshot->peer_best_height >= 0 && snapshot->log_head >= 0)
             snapshot->log_head_gap =
                 snapshot->peer_best_height - snapshot->log_head;
