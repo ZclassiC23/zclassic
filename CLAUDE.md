@@ -39,12 +39,15 @@ total, warm-reboot-proven). zclassicd stays RUNNING (P2P=8033, RPC=8232):
 ```bash
 # 1. Headers FIRST — 3.14M headers in 60-74s from the live zclassicd datadir
 build/bin/zclassic23 --importblockindex $HOME/.zclassic
-# 2. Then the UTXO cold-import boot — tip in ~25 min
-build/bin/zclassic23 -cold-import=$HOME/.zclassic
+# 2. Then a NORMAL boot — it auto-reads/links ~/.zclassic (legacy import
+#    is on by default; opt out with -nolegacyimport) — tip in ~25 min
+build/bin/zclassic23
 ```
 
-`-cold-import` ALONE is a footgun: it leaves a 3.1M-header hole
-(headers=960) and the node pins forever.
+(The old `-cold-import=` flag no longer exists — the argv loop ignores
+unknown flags, so passing it silently no-ops.) Skipping step 1 is a
+footgun: importing UTXOs without the header import leaves a 3.1M-header
+hole (headers=960) and the node pins forever.
 
 **Consensus rule: validate against the CHAIN, not the reference text.**
 zclassicd source is a lossy proxy — the real chain contains a 125,811-byte
@@ -61,9 +64,15 @@ floor, not a liveness proof.
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8. Honest status today: ~2/8 met by hand, **0/8 CI-enforced**.
-**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, with the live wedge as priority #1 and the autonomous / owner-gated / operational critical path.
+**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path.
 
-**#1 priority — the live wedge:** the node holds at tip without finalizing forward (`tip_finalize` oscillating, boot self-heal exhausted). No v1 criterion that needs live forward progress (cold-sync, 7-day soak, consensus parity) can pass until it clears. Diagnose on a datadir COPY, never live — see [`docs/work/fast-path.md`](./docs/work/fast-path.md).
+**The live wedge CLEARED (2026-06-12):** the node holds tip AND finalizes
+forward — blocks publish at the arrival tick, restarts keep the connected
+extent, hash-identical to zclassicd at every probed height. The path is now
+open for the v1 criteria that need live forward progress (cold-sync, 7-day
+soak, consensus parity). **#1 priority: CI-enforce the MVP criteria and
+accumulate soak time.** When diagnosing any future wedge: datadir COPY,
+never live — see [`docs/work/fast-path.md`](./docs/work/fast-path.md).
 
 **The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes); [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) is the architecture debt board. Both are reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 

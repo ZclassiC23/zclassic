@@ -12,10 +12,12 @@ One binary, one onion, one stack.
 ## Status — active stabilization
 
 ZClassic23 is a work in progress and is **not production-ready**. The node
-is in active stabilization: live sync currently holds at tip without
-finalizing forward, and the v1 acceptance criteria in
-[`docs/MVP.md`](docs/MVP.md) are not yet met. Do not rely on this build as a
-mainnet node until they are.
+is in active stabilization. Live sync stays at tip (hash-identical to a
+local zclassicd reference at every height checked), blocks publish as they
+arrive, and restarts keep the connected chain — but the v1 acceptance
+criteria in [`docs/MVP.md`](docs/MVP.md) are not yet CI-enforced and no
+multi-day soak has been completed. Do not rely on this build as a mainnet
+node until they are.
 
 ZClassic23 is operator-owned full-node infrastructure. Its security model
 emphasizes local control: embedded Tor publishes the operator's own onion
@@ -82,7 +84,7 @@ internal docs — scaffolding is scaffolding):
 git clone https://github.com/ZclassiC23/zclassic.git
 cd zclassic
 make zclassic23     # main binary at build/bin/zclassic23
-make test           # 860+ test cases across 333 test files
+make test           # 860+ test cases across 350+ test files
 make lint           # defensive-coding gates (see docs/DEFENSIVE_CODING.md)
 ```
 
@@ -95,7 +97,9 @@ lifecycle tool), `make deploy` (install the systemd user service),
 ```bash
 build/bin/zclassic23                              # start node
 build/bin/zclassic23 -tor                         # with .onion hidden service
-build/bin/zclassic23 -cold-import=~/.zclassic     # bootstrap from legacy zclassicd data
+build/bin/zclassic23 --importblockindex ~/.zclassic   # fast header import from legacy zclassicd data
+                                                  # (then a normal boot auto-links ~/.zclassic;
+                                                  #  opt out with -nolegacyimport)
 build/bin/zclassic23 -addnode=74.50.74.102        # connect to a seed node
 ```
 
@@ -185,8 +189,8 @@ zclassic23 binary (~15 MB, statically linked)
   every write goes through the ActiveRecord lifecycle, every error return
   logs context, every allocation is checked, every long-running loop is
   registered with a supervisor liveness tree.
-- **Tests** — 860+ test cases across 333 test files (`make test`), run as
-  ~380 parallel suites by `test_parallel`. Bugs become 64-bit seeds in a
+- **Tests** — 860+ test cases across 350+ test files (`make test`), run as
+  ~415 parallel suites by `test_parallel`. Bugs become 64-bit seeds in a
   deterministic simulator (`docs/CHAOS_HARNESS.md`).
 - **Local gates** — `make lint` and `make ci` are the required integrity gates
   for this checkout. The contributor policy documents maintainer-run CI outside
