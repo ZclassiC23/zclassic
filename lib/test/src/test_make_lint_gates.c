@@ -2480,35 +2480,57 @@ static int t_block_index_flat_atomic_save_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
-    TEST("block index flat save is atomic") {
+    /* Task #32 strengthened the contract: the block index now persists
+     * as a SINGLE file with the 48-byte integrity header embedded inside
+     * block_index.bin, published with ONE atomic rename. The old pin
+     * encoded the TWO-file shape (body rename, then a separate
+     * bii_write_sidecar_raw sidecar rename) — that shape WAS the bug
+     * (a crash between the two renames stranded a fresh body under a
+     * stale sidecar; live 2026-06-12). The pin below enforces that:
+     *   - the writer streams a SHA3 over the payload in bif_emit_payload,
+     *   - it publishes via bii_write_embedded (the shared
+     *     placeholder-header → payload → back-patch → one-rename helper),
+     *   - it does NOT fall back to the legacy two-file sidecar writer
+     *     (bii_write_sidecar_raw is absent from the writer path).
+     * The single-rename + fsync + tmp-unlink atomicity itself lives in
+     * ssio_write_embedded, asserted separately below. */
+    TEST("block index flat save is a single atomic embedded-header file") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path),
                          "app/services/src/block_index_loader.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        char *tmp = strstr(buf, "block_index.bin\", datadir");
-        char *tmp_suffix = strstr(buf, "\"%s.tmp\", path");
-        char *unlink_tmp = strstr(buf, "(void)unlink(tmp_path)");
-        char *open_tmp = strstr(buf, "fopen(tmp_path, \"wb\")");
-        /* The integrity hash must be STREAMED over the written bytes
-         * (sha3 init before the write loop) so the sidecar lands
-         * milliseconds after the rename — a post-rename 500 MB rehash
-         * left a kill window that stranded a fresh body under a stale
-         * sidecar (live 2026-06-12). */
-        char *stream_hash = strstr(buf, "sha3_256_init(&body_sha3_ctx)");
-        char *rename_tmp = strstr(buf, "rename(tmp_path, path)");
-        char *sidecar = strstr(buf, "bii_write_sidecar_raw(datadir");
-        ASSERT(tmp != NULL);
-        ASSERT(tmp_suffix != NULL);
-        ASSERT(unlink_tmp != NULL);
-        ASSERT(open_tmp != NULL);
+        /* Payload is streamed through SHA3 as it is written. */
+        char *stream_hash = strstr(buf, "sha3_256_init(&hctx)");
+        char *stream_fin  = strstr(buf, "sha3_256_finalize(&hctx, out_payload_sha3)");
+        /* Publish via the embedded single-file helper. */
+        char *embedded = strstr(buf, "bii_write_embedded(datadir, bif_emit_payload");
+        /* The legacy two-file sidecar writer must NOT be on the save path. */
+        char *legacy_sidecar = strstr(buf, "bii_write_sidecar_raw(datadir");
         ASSERT(stream_hash != NULL);
+        ASSERT(stream_fin != NULL);
+        ASSERT(embedded != NULL);
+        ASSERT(legacy_sidecar == NULL);
+        ASSERT(stream_hash < embedded);
+        free(buf);
+        buf = NULL;
+
+        /* The atomic publish (tmp, fsync, single rename) lives in the
+         * shared embedded writer. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/storage/src/sha3_sidecar_io.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *fn        = strstr(buf, "ssio_write_embedded(");
+        ASSERT(fn != NULL);
+        char *open_tmp  = strstr(fn, "fopen(tmp_path, \"wb\")");
+        char *fsync_fd  = strstr(fn, "(void)fsync(fd)");
+        char *rename_tmp = strstr(fn, "rename(tmp_path, body_path)");
+        char *unlink_err = strstr(fn, "unlink(tmp_path)");
+        ASSERT(open_tmp != NULL);
+        ASSERT(fsync_fd != NULL);
         ASSERT(rename_tmp != NULL);
-        ASSERT(sidecar != NULL);
-        ASSERT(tmp_suffix < unlink_tmp);
-        ASSERT(unlink_tmp < open_tmp);
-        ASSERT(stream_hash < rename_tmp);
-        ASSERT(open_tmp < rename_tmp);
-        ASSERT(rename_tmp < sidecar);
+        ASSERT(unlink_err != NULL);
+        ASSERT(open_tmp < fsync_fd);
+        ASSERT(fsync_fd < rename_tmp);
         PASS();
     } _test_next:;
     free(buf);

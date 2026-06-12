@@ -33,6 +33,23 @@ static const struct ssio_spec bii_spec = {
     .corrupt_event = EV_BLOCK_INDEX_CORRUPT,
 };
 
+/* Embedded single-file spec (task #32): same body file, but the
+ * integrity header is the file's own first 48 bytes (magic "BIIE",
+ * version 2). The sidecar_name is unused on the embedded path but kept
+ * for ssio_quarantine, which moves any leftover legacy sidecar aside. */
+_Static_assert(BII_EMBEDDED_HEADER_BYTES == SSIO_EMBEDDED_HEADER_BYTES,
+               "bii embedded header must match the shared 48-byte layout");
+
+static const struct ssio_spec bii_embedded_spec = {
+    .body_name     = "block_index.bin",
+    .sidecar_name  = "block_index.bin.sha3",
+    .magic         = BII_EMBEDDED_MAGIC,
+    .version       = BII_EMBEDDED_VERSION,
+    .domain        = "bii",
+    .malloc_label  = "integrity_hash_buf",
+    .corrupt_event = EV_BLOCK_INDEX_CORRUPT,
+};
+
 struct zcl_result bii_write_sidecar(const char *datadir)
 {
     return ssio_write_sidecar(datadir, &bii_spec);
@@ -43,6 +60,24 @@ struct zcl_result bii_write_sidecar_raw(const char *datadir,
                                         const uint8_t body_sha3[32])
 {
     return ssio_write_sidecar_raw(datadir, &bii_spec, body_size, body_sha3);
+}
+
+struct zcl_result bii_write_embedded(
+    const char *datadir,
+    bool (*emit_payload)(FILE *f, void *ctx,
+                         uint64_t *out_payload_size,
+                         uint8_t out_payload_sha3[32]),
+    void *ctx)
+{
+    return ssio_write_embedded(datadir, &bii_embedded_spec, emit_payload, ctx);
+}
+
+int bii_verify_embedded(const char *datadir,
+                        struct ssio_sidecar_header *out,
+                        uint64_t *out_payload_off)
+{
+    return (int)ssio_verify_embedded(datadir, &bii_embedded_spec, out,
+                                     out_payload_off);
 }
 
 static enum bii_verdict bii_read_sidecar(const char *datadir,
@@ -120,6 +155,44 @@ enum bii_verdict bii_verify(const char *datadir,
         if (err_out) snprintf(err_out, err_cap,
                 "block_index.bin: %s", strerror(errno));
         return errno == ENOENT ? BII_BODY_MISSING : BII_BODY_UNREADABLE;
+    }
+
+    /* Embedded single-file format FIRST (task #32): the integrity header
+     * is the body's own first 48 bytes, so a re-hash of the payload
+     * verifies the whole file with no sidecar. BAD_MAGIC here just means
+     * "this is the legacy two-file body" — fall through to the sidecar
+     * path below. Any other non-OK verdict is a hard integrity failure. */
+    {
+        struct ssio_sidecar_header ehdr;
+        enum ssio_read_verdict ev =
+            ssio_verify_embedded(datadir, &bii_embedded_spec, &ehdr, NULL);
+        if (ev == SSIO_READ_OK) {
+            /* Body integrity proven by the embedded header; only the
+             * SQLite tip cross-check remains. */
+            enum bii_verdict sql = bii_check_tip_in_sql(db, declared_tip);
+            if (sql != BII_OK) {
+                if (err_out && declared_tip) snprintf(err_out, err_cap,
+                        "tip h=%d: %s", declared_tip->nHeight,
+                        bii_verdict_name(sql));
+                return sql;
+            }
+            return BII_OK;
+        }
+        if (ev != SSIO_READ_BAD_MAGIC) {
+            /* Embedded magic/version matched but the payload hash, size,
+             * or a read failed — refuse loudly with the specific reason. */
+            if (err_out) snprintf(err_out, err_cap,
+                    "embedded integrity: %s",
+                    ev == SSIO_READ_STALE      ? "payload hash/size mismatch" :
+                    ev == SSIO_READ_UNSUPPORTED ? "unsupported embedded version" :
+                    ev == SSIO_READ_MISSING    ? "block_index.bin vanished" :
+                                                 "block_index.bin unreadable");
+            return ev == SSIO_READ_MISSING ? BII_BODY_MISSING
+                                           : (ev == SSIO_READ_UNSUPPORTED
+                                                  ? BII_SIDECAR_UNSUPPORTED
+                                                  : BII_HASH_MISMATCH);
+        }
+        /* SSIO_READ_BAD_MAGIC → legacy two-file body; continue. */
     }
 
     /* Sidecar read. */

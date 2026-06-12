@@ -21,6 +21,7 @@
 #include "util/safe_alloc.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -148,6 +149,176 @@ struct zcl_result ssio_write_sidecar(const char *datadir,
                        (unsigned long long)hashed_size);
 
     return ssio_write_sidecar_raw(datadir, spec, hashed_size, body_sha3);
+}
+
+/* ── Embedded single-file integrity ─────────────────────────── */
+
+_Static_assert(sizeof(struct ssio_sidecar_header) == SSIO_EMBEDDED_HEADER_BYTES,
+               "embedded header must reuse the 48-byte sidecar layout");
+
+struct zcl_result ssio_write_embedded(
+    const char *datadir, const struct ssio_spec *spec,
+    bool (*emit_payload)(FILE *f, void *ctx,
+                         uint64_t *out_payload_size,
+                         uint8_t out_payload_sha3[32]),
+    void *ctx)
+{
+    if (!datadir) return ZCL_ERR(-1, "%s: null datadir", spec->domain);
+    if (!emit_payload) return ZCL_ERR(-1, "%s: null emit_payload", spec->domain);
+
+    char body_path[1024];
+    char tmp_path[1056];
+    ssio_body_path(body_path, sizeof(body_path), datadir, spec);
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", body_path);
+    (void)unlink(tmp_path);
+
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f)
+        return ZCL_ERR(-5, "%s: fopen %s: %s", spec->domain, tmp_path,
+                       strerror(errno));
+
+    /* Reserve the 48-byte header slot; it is back-patched once the
+     * payload (and its streamed hash) is known. */
+    struct ssio_sidecar_header hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
+        fclose(f); unlink(tmp_path);
+        return ZCL_ERR(-6, "%s: header placeholder write failed", spec->domain);
+    }
+
+    /* Caller streams the payload AND a SHA3 over exactly those bytes. */
+    uint64_t payload_size = 0;
+    uint8_t payload_sha3[32];
+    if (!emit_payload(f, ctx, &payload_size, payload_sha3)) {
+        fclose(f); unlink(tmp_path);
+        return ZCL_ERR(-8, "%s: payload emit failed", spec->domain);
+    }
+
+    /* Back-patch the real header now that size + hash are known. The
+     * digest commits to the PAYLOAD only (everything after offset 48)
+     * so a verifier never has to hash the header that carries it. */
+    memcpy(hdr.magic, spec->magic, 4);
+    hdr.version = spec->version;
+    hdr.body_size = payload_size;
+    memcpy(hdr.body_sha3, payload_sha3, 32);
+
+    if (fflush(f) != 0 || fseek(f, 0, SEEK_SET) != 0 ||
+        fwrite(&hdr, sizeof(hdr), 1, f) != 1) {
+        fclose(f); unlink(tmp_path);
+        return ZCL_ERR(-9, "%s: header back-patch failed: %s",
+                       spec->domain, strerror(errno));
+    }
+    if (fflush(f) != 0) {
+        fclose(f); unlink(tmp_path);
+        return ZCL_ERR(-9, "%s: header flush failed: %s",
+                       spec->domain, strerror(errno));
+    }
+    int fd = fileno(f);
+    if (fd >= 0) (void)fsync(fd);
+    fclose(f);
+
+    /* ONE atomic rename publishes the body + its integrity header as an
+     * indivisible unit — no second file, no inter-rename crash window. */
+    if (rename(tmp_path, body_path) != 0) {
+        struct zcl_result r = ZCL_ERR(-7, "%s: rename %s -> %s: %s",
+            spec->domain, tmp_path, body_path, strerror(errno));
+        unlink(tmp_path);
+        return r;
+    }
+
+    /* The embedded header makes the legacy sidecar redundant. REMOVE it
+     * (the simpler honest option vs. leaving a dangling file): once the
+     * body carries its own integrity, a stale sidecar can only be a
+     * source of future confusion, and the verifier checks the embedded
+     * header BEFORE the sidecar so it would be ignored anyway. Best
+     * effort — its absence is the correct steady state. */
+    char side_path[1024];
+    ssio_sidecar_path(side_path, sizeof(side_path), datadir, spec);
+    (void)unlink(side_path);
+
+    /* fsync the directory so the rename (the file's new identity) and the
+     * sidecar removal are durable across power loss. */
+    int dfd = open(datadir, O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        close(dfd);
+    }
+    return ZCL_OK;
+}
+
+enum ssio_read_verdict ssio_verify_embedded(const char *datadir,
+                                            const struct ssio_spec *spec,
+                                            struct ssio_sidecar_header *out,
+                                            uint64_t *out_payload_off)
+{
+    char body_path[1024];
+    ssio_body_path(body_path, sizeof(body_path), datadir, spec);
+
+    FILE *f = fopen(body_path, "rb");
+    if (!f) {
+        if (errno == ENOENT) return SSIO_READ_MISSING;
+        return SSIO_READ_UNREADABLE;
+    }
+
+    /* Magic check FIRST and on the first 4 bytes ONLY: a legacy body
+     * (whose first bytes are the "ZCLI" payload magic, not spec->magic,
+     * and which may be shorter than the 48-byte header) must return
+     * BAD_MAGIC so the caller falls back to the sidecar path — never a
+     * short-read STALE that would masquerade as embedded corruption. */
+    uint8_t lead4[4];
+    if (fread(lead4, 1, 4, f) != 4) {
+        fclose(f);
+        return SSIO_READ_BAD_MAGIC;  /* too short to be embedded → legacy */
+    }
+    if (memcmp(lead4, spec->magic, 4) != 0) {
+        fclose(f);
+        return SSIO_READ_BAD_MAGIC;
+    }
+
+    /* Embedded magic confirmed — now the full 48-byte header is required. */
+    struct ssio_sidecar_header hdr;
+    if (fseek(f, 0, SEEK_SET) != 0 ||
+        fread(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+        fclose(f);
+        return SSIO_READ_STALE;  /* embedded magic but header truncated */
+    }
+    if (hdr.version != spec->version) {
+        fclose(f);
+        return SSIO_READ_UNSUPPORTED;
+    }
+
+    /* Re-hash the payload (bytes [48, EOF)) and confirm the on-disk size
+     * is exactly header + declared payload — a truncated or extended file
+     * is rejected before any payload byte is trusted. */
+    struct sha3_256_ctx hctx;
+    sha3_256_init(&hctx);
+
+    enum { BUF_SIZE = 1u << 20 };  /* 1 MiB */
+    uint8_t *buf = zcl_malloc(BUF_SIZE, spec->malloc_label);
+    if (!buf) { fclose(f); return SSIO_READ_UNREADABLE; }
+
+    uint64_t hashed = 0;
+    size_t n;
+    while ((n = fread(buf, 1, BUF_SIZE, f)) > 0) {
+        sha3_256_write(&hctx, buf, n);
+        hashed += n;
+    }
+    bool io_err = ferror(f) != 0;
+    free(buf);
+    fclose(f);
+    if (io_err) return SSIO_READ_UNREADABLE;
+
+    if (hashed != hdr.body_size)
+        return SSIO_READ_STALE;  /* declared size != actual payload bytes */
+
+    uint8_t actual[32];
+    sha3_256_finalize(&hctx, actual);
+    if (memcmp(actual, hdr.body_sha3, 32) != 0)
+        return SSIO_READ_STALE;  /* payload corrupted */
+
+    if (out) *out = hdr;
+    if (out_payload_off) *out_payload_off = SSIO_EMBEDDED_HEADER_BYTES;
+    return SSIO_READ_OK;
 }
 
 /* ── Sidecar reader ─────────────────────────────────────────── */
