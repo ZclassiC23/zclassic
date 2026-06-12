@@ -216,6 +216,20 @@ bool csr_restore_in_memory_view(struct chain_state_repository *csr,
                                 struct block_index *old_header,
                                 const struct uint256 *old_coins_best);
 
+/* Align ONLY the in-memory coins-view best-block cursor to `hash`, under
+ * csr->lock (so a concurrent csr_snapshot reader never observes a torn
+ * write). The live reducer advances the served tip via the tip_finalize
+ * stage and applies UTXOs via the utxo_apply stage, but neither touches this
+ * cursor — so after boot it froze at the boot value while the served tip
+ * advanced, surfacing as chain_evidence's csr_cursor_mismatch (live tip hash
+ * != live coins cursor hash). On the linear forward path the served tip IS
+ * the coins frontier, so the reducer's post-finalize follow calls this to
+ * keep csr_snapshot self-consistent. This does NOT persist anything and does
+ * NOT move the tip/header — it is purely the in-memory cursor. Returns false
+ * (no-op) on a null/uninitialized csr or null hash. */
+bool csr_align_coins_best_block(struct chain_state_repository *csr,
+                                const struct uint256 *hash);
+
 /* ── Read-only introspection ──────────────────────────────────── */
 void csr_snapshot(struct chain_state_repository *csr,
                    struct chain_state_view *out);

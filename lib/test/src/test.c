@@ -750,6 +750,7 @@ int main(void)
     failures += test_rpc_safety();
     failures += test_chain_state_repo();
     failures += test_chain_evidence_controller();
+    failures += test_chain_evidence_live_advance();
     failures += test_long_op();
     failures += test_recovery_policy();
     failures += test_oracle_policy();
