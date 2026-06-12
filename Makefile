@@ -2,7 +2,11 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
-BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+# <short-hash>[-dirty] — the -dirty suffix means the binary contains
+# uncommitted tracked changes, so the hash alone does NOT identify the code
+# (a binary built minutes before its fix was committed reports the parent
+# commit; that ambiguity cost a live-deploy verification detour 2026-06-12).
+BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
 BUILD_DIR = build
 BIN_DIR = $(BUILD_DIR)/bin
 OBJ_DIR = $(BUILD_DIR)/obj
@@ -403,6 +407,19 @@ $(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h v
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -Ivendor/include \
 	    -o $@ tools/p2_invariant_check.c \
+	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
+
+# Read-only SQL query CLI over any sqlite db (progress.kv, node.db, fixture
+# datadirs). Python is banned and the host has no sqlite3 CLI; this is the
+# shell-side diagnostic primitive (zcl_sql covers node.db via MCP only).
+SQLQ_BIN = $(BIN_DIR)/sqlq
+.PHONY: sqlq
+sqlq: $(SQLQ_BIN)
+$(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L -Ivendor/include \
+	    -o $@ tools/sqlq.c \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
 
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
