@@ -31,6 +31,10 @@ static _Atomic bool g_tor_thread_done = false; /* true once tor thread returns *
 static _Atomic bool g_monitor_started = false;
 static char g_onion_address[128];
 static char g_tor_datadir[512];
+/* tor.log size at THIS boot's Tor start. The log is append-mode across
+ * boots and dynhost mints a fresh ephemeral service every start, so any
+ * address line below this offset names a dead service. */
+static long g_tor_log_scan_from = 0;
 
 static tor_request_handler_fn g_request_handler = NULL;
 static void *g_request_handler_ctx = NULL;
@@ -118,6 +122,51 @@ bool tor_write_torrc(const char *datadir, uint16_t p2p_port)
     return true;
 }
 
+/* Scan the dynhost log from byte offset scan_from and return the LAST
+ * "ephemeral service created with address:" match. Last-match + offset are
+ * both load-bearing: the log appends across boots and every Tor start mints
+ * a fresh ephemeral service, so an earlier line names a dead service (the
+ * old first-match-from-zero scan reported/published a dead onion after
+ * every restart). If the file shrank below scan_from (rotated/truncated),
+ * the scan restarts from the top. Exposed for testing. */
+bool tor_log_last_ephemeral_address(const char *log_path, long scan_from,
+                                    char *out, size_t out_size)
+{
+    if (!log_path || !out || out_size == 0)
+        return false;
+
+    FILE *f = fopen(log_path, "r");
+    if (!f)
+        return false;
+
+    if (scan_from > 0) {
+        if (fseek(f, 0, SEEK_END) != 0 || ftell(f) < scan_from ||
+            fseek(f, scan_from, SEEK_SET) != 0)
+            rewind(f);
+    }
+
+    static const char marker[] = "ephemeral service created with address: ";
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = strstr(line, marker);
+        if (!p)
+            continue;
+        p += sizeof(marker) - 1;
+        char *end = p;
+        while (*end && *end != '\n' && *end != '\r' && *end != ' ')
+            end++;
+        size_t len = (size_t)(end - p);
+        if (len > 0 && len < out_size) {
+            memcpy(out, p, len);
+            out[len] = '\0';
+            found = true;   /* keep scanning — a later line supersedes */
+        }
+    }
+    fclose(f);
+    return found;
+}
+
 /* Read .onion address from persistent hostname file (HiddenServiceDir).
  * Returns true if address was read successfully. */
 static bool read_onion_from_hostname_file(const char *datadir)
@@ -166,28 +215,11 @@ static bool read_onion_address(const char *datadir)
             return true;
 
         /* Fallback: parse ephemeral address from dynhost log */
-        FILE *f = fopen(log_path, "r");
-        if (f) {
-            char line[512];
-            while (fgets(line, sizeof(line), f)) {
-                char *p = strstr(line,
-                    "ephemeral service created with address: ");
-                if (p) {
-                    p += strlen("ephemeral service created with address: ");
-                    char *end = p;
-                    while (*end && *end != '\n' && *end != '\r' && *end != ' ')
-                        end++;
-                    size_t len = (size_t)(end - p);
-                    if (len > 0 && len < sizeof(g_onion_address)) {
-                        memcpy(g_onion_address, p, len);
-                        g_onion_address[len] = '\0';
-                        ensure_onion_suffix();
-                        fclose(f);
-                        return true;
-                    }
-                }
-            }
-            fclose(f);
+        if (tor_log_last_ephemeral_address(log_path, g_tor_log_scan_from,
+                                           g_onion_address,
+                                           sizeof(g_onion_address))) {
+            ensure_onion_suffix();
+            return true;
         }
         sleep(1);
     }
@@ -298,6 +330,14 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
      * Safe to remove: we're the only process that uses this tor_data. */
     snprintf(path, sizeof(path), "%s/tor_data/lock", datadir);
     unlink(path);
+
+    /* Record tor.log's current size BEFORE the tor thread can append: the
+     * address scan in read_onion_address starts here, so it can only see
+     * the service THIS start creates (see tor_log_last_ephemeral_address). */
+    snprintf(path, sizeof(path), "%s/tor.log", datadir);
+    struct stat log_st;
+    g_tor_log_scan_from =
+        (stat(path, &log_st) == 0) ? (long)log_st.st_size : 0;
 
     if (!tor_write_torrc(datadir, p2p_port))
         LOG_FAIL("tor", "failed to write torrc to %s", datadir);

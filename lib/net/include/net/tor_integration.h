@@ -70,6 +70,15 @@ bool tor_integration_is_enabled(void);
  * Exposed for testing — normally called by tor_integration_start(). */
 bool tor_write_torrc(const char *datadir, uint16_t p2p_port);
 
+/* Scan the dynhost log from byte offset scan_from and copy the LAST
+ * "ephemeral service created with address:" match into out. dynhost mints
+ * a fresh ephemeral service every Tor start and tor.log appends across
+ * boots, so callers pass the log size captured at Tor start as scan_from —
+ * earlier lines name dead services. Returns false if no match at/after the
+ * offset. Exposed for testing — normally driven by read_onion_address(). */
+bool tor_log_last_ephemeral_address(const char *log_path, long scan_from,
+                                    char *out, size_t out_size);
+
 /* ── Outbound .onion fetch API ─────────────────────────────── */
 
 /* Callback for onion fetch results. Invoked from Tor's thread —

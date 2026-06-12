@@ -426,6 +426,93 @@ static int test_tor_set_address_null_clears(void)
     return failures;
 }
 
+/* The dynhost log appends across boots and every Tor start mints a fresh
+ * ephemeral service: the scan must return the LAST address at/after the
+ * caller's start offset, never an earlier (dead) one. Covers the live
+ * defect where first-match-from-zero republished boot #1's dead onion
+ * after every restart. */
+static int test_tor_log_last_ephemeral_address(void)
+{
+    int failures = 0;
+    printf("test_tor_log_last_ephemeral_address: ");
+
+    char tmpdir[] = "/tmp/zcl_test_torlog_XXXXXX";
+    if (!mkdtemp(tmpdir)) {
+        printf("FAIL (mkdtemp)\n");
+        return 1;
+    }
+    char log_path[1100];
+    snprintf(log_path, sizeof(log_path), "%s/tor.log", tmpdir);
+
+    const char *boot1 =
+        "Jun 11 [notice] Activating dynhost ephemeral service\n"
+        "Jun 11 [notice] Dynamic onion host ephemeral service created "
+        "with address: aaaaboot1dead\n";
+    const char *boot2 =
+        "Jun 12 [notice] Bootstrapped 100% (done)\n"
+        "Jun 12 [notice] Dynamic onion host ephemeral service created "
+        "with address: bbbbboot2live\n";
+
+    FILE *f = fopen(log_path, "w");
+    if (!f) {
+        printf("FAIL (open log)\n");
+        remove_tree(tmpdir);
+        return 1;
+    }
+    fputs(boot1, f);
+    long boot2_offset = ftell(f);
+    fputs(boot2, f);
+    fclose(f);
+
+    char out[128];
+
+    /* From boot 2's start offset: only the live address is visible. */
+    bool ok_offset =
+        tor_log_last_ephemeral_address(log_path, boot2_offset, out,
+                                       sizeof(out)) &&
+        strcmp(out, "bbbbboot2live") == 0;
+
+    /* From offset 0 the LAST match still wins (never the dead first). */
+    bool ok_last =
+        tor_log_last_ephemeral_address(log_path, 0, out, sizeof(out)) &&
+        strcmp(out, "bbbbboot2live") == 0;
+
+    /* Offset beyond EOF (file rotated/shrank): falls back to full scan. */
+    bool ok_shrunk =
+        tor_log_last_ephemeral_address(log_path, 1 << 20, out,
+                                       sizeof(out)) &&
+        strcmp(out, "bbbbboot2live") == 0;
+
+    /* No match at/after the offset => false. */
+    f = fopen(log_path, "a");
+    long tail_offset = 0;
+    if (f) {
+        tail_offset = ftell(f);
+        fputs("Jun 12 [notice] nothing relevant here\n", f);
+        fclose(f);
+    }
+    bool ok_nomatch =
+        !tor_log_last_ephemeral_address(log_path, tail_offset, out,
+                                        sizeof(out));
+
+    /* Missing file => false. */
+    char missing[1100];
+    snprintf(missing, sizeof(missing), "%s/absent.log", tmpdir);
+    bool ok_missing =
+        !tor_log_last_ephemeral_address(missing, 0, out, sizeof(out));
+
+    if (ok_offset && ok_last && ok_shrunk && ok_nomatch && ok_missing) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (offset=%d last=%d shrunk=%d nomatch=%d missing=%d)\n",
+               ok_offset, ok_last, ok_shrunk, ok_nomatch, ok_missing);
+        failures++;
+    }
+
+    remove_tree(tmpdir);
+    return failures;
+}
+
 int test_tor(void)
 {
     int failures = 0;
@@ -444,6 +531,7 @@ int test_tor(void)
     failures += test_tor_persistent_hostname_read();
     failures += test_tor_address_persists_across_restarts();
     failures += test_tor_set_address_null_clears();
+    failures += test_tor_log_last_ephemeral_address();
 
     printf("Tor integration: %d failures\n", failures);
     return failures;
