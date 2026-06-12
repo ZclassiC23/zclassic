@@ -2489,16 +2489,24 @@ static int t_block_index_flat_atomic_save_contract(void)
         char *tmp_suffix = strstr(buf, "\"%s.tmp\", path");
         char *unlink_tmp = strstr(buf, "(void)unlink(tmp_path)");
         char *open_tmp = strstr(buf, "fopen(tmp_path, \"wb\")");
+        /* The integrity hash must be STREAMED over the written bytes
+         * (sha3 init before the write loop) so the sidecar lands
+         * milliseconds after the rename — a post-rename 500 MB rehash
+         * left a kill window that stranded a fresh body under a stale
+         * sidecar (live 2026-06-12). */
+        char *stream_hash = strstr(buf, "sha3_256_init(&body_sha3_ctx)");
         char *rename_tmp = strstr(buf, "rename(tmp_path, path)");
-        char *sidecar = strstr(buf, "bii_write_sidecar(datadir)");
+        char *sidecar = strstr(buf, "bii_write_sidecar_raw(datadir");
         ASSERT(tmp != NULL);
         ASSERT(tmp_suffix != NULL);
         ASSERT(unlink_tmp != NULL);
         ASSERT(open_tmp != NULL);
+        ASSERT(stream_hash != NULL);
         ASSERT(rename_tmp != NULL);
         ASSERT(sidecar != NULL);
         ASSERT(tmp_suffix < unlink_tmp);
         ASSERT(unlink_tmp < open_tmp);
+        ASSERT(stream_hash < rename_tmp);
         ASSERT(open_tmp < rename_tmp);
         ASSERT(rename_tmp < sidecar);
         PASS();

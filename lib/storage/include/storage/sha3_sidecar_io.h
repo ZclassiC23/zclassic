@@ -76,6 +76,17 @@ bool ssio_hash_body(const char *datadir, const struct ssio_spec *spec,
 struct zcl_result ssio_write_sidecar(const char *datadir,
                                      const struct ssio_spec *spec);
 
+/* Write the sidecar from a CALLER-SUPPLIED size + SHA3 (no body read,
+ * no rehash). For writers that stream the hash while producing the
+ * body: re-hashing a 500 MB body after the rename leaves a multi-
+ * second crash window where the new body sits under a stale sidecar
+ * and the next boot quarantines a perfectly good file (live
+ * 2026-06-12 deploy restart). Same atomic tmp+fsync+rename. */
+struct zcl_result ssio_write_sidecar_raw(const char *datadir,
+                                         const struct ssio_spec *spec,
+                                         uint64_t body_size,
+                                         const uint8_t body_sha3[32]);
+
 /* Read + validate the sidecar header at <datadir>/<sidecar_name>.
  * On SSIO_READ_OK, *out holds the parsed header. */
 enum ssio_read_verdict ssio_read_sidecar(const char *datadir,

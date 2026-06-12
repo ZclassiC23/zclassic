@@ -15,6 +15,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "storage/block_index_db.h"
+#include "crypto/sha3.h"
 #include "models/database.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
@@ -143,12 +144,26 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         free(sorted); return;
     }
 
+    /* Stream the integrity hash over EXACTLY the bytes written, so the
+     * sidecar can be stamped right after the rename without re-reading
+     * the ~500 MB body. The old rename-then-rehash order left a multi-
+     * second window where a killed shutdown stranded the fresh body
+     * under a stale sidecar — the next boot quarantined a good file
+     * (live 2026-06-12 deploy restart). */
+    struct sha3_256_ctx body_sha3_ctx;
+    sha3_256_init(&body_sha3_ctx);
+    uint64_t body_bytes = 0;
+
     uint32_t magic = 0x5A434C49; /* "ZCLI" */
+    uint32_t count32 = (uint32_t)count;
     if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
-        fwrite(&(uint32_t){(uint32_t)count}, 4, 1, f) != 1) {
+        fwrite(&count32, 4, 1, f) != 1) {
         fprintf(stderr, "save_block_index_flat: header write failed\n");
         fclose(f); unlink(tmp_path); free(sorted); return;
     }
+    sha3_256_write(&body_sha3_ctx, (const uint8_t *)&magic, 4);
+    sha3_256_write(&body_sha3_ctx, (const uint8_t *)&count32, 4);
+    body_bytes += 8;
 
     for (size_t i = 0; i < count; i++) {
         struct block_index_flat entry;
@@ -175,6 +190,9 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
                     "%zu/%zu: %s\n", i, count, strerror(errno));
             fclose(f); unlink(tmp_path); free(sorted); return;
         }
+        sha3_256_write(&body_sha3_ctx, (const uint8_t *)&entry,
+                       sizeof(entry));
+        body_bytes += sizeof(entry);
     }
     fflush(f);
     int fd = fileno(f);
@@ -191,7 +209,10 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     }
 
     {
-        struct zcl_result br = bii_write_sidecar(datadir);
+        uint8_t body_sha3[32];
+        sha3_256_finalize(&body_sha3_ctx, body_sha3);
+        struct zcl_result br = bii_write_sidecar_raw(datadir, body_bytes,
+                                                     body_sha3);
         if (!br.ok) {
             LOG_WARN("save_block_index_flat", "save_block_index_flat: sidecar write failed for %s: %s", path, br.message);
         }

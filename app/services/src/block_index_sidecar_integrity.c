@@ -38,6 +38,13 @@ struct zcl_result bii_write_sidecar(const char *datadir)
     return ssio_write_sidecar(datadir, &bii_spec);
 }
 
+struct zcl_result bii_write_sidecar_raw(const char *datadir,
+                                        uint64_t body_size,
+                                        const uint8_t body_sha3[32])
+{
+    return ssio_write_sidecar_raw(datadir, &bii_spec, body_size, body_sha3);
+}
+
 static enum bii_verdict bii_read_sidecar(const char *datadir,
                                           struct ssio_sidecar_header *out)
 {

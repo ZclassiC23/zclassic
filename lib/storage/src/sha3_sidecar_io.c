@@ -77,40 +77,25 @@ bool ssio_hash_body(const char *datadir, const struct ssio_spec *spec,
 
 /* ── Sidecar writer ─────────────────────────────────────────── */
 
-struct zcl_result ssio_write_sidecar(const char *datadir,
-                                     const struct ssio_spec *spec)
+struct zcl_result ssio_write_sidecar_raw(const char *datadir,
+                                         const struct ssio_spec *spec,
+                                         uint64_t body_size,
+                                         const uint8_t body_sha3[32])
 {
     if (!datadir) return ZCL_ERR(-1, "%s: null datadir", spec->domain);
+    if (!body_sha3) return ZCL_ERR(-1, "%s: null body_sha3", spec->domain);
 
-    char body_path[1024];
     char side_path[1024];
     char tmp_path[1056];
-    ssio_body_path(body_path, sizeof(body_path), datadir, spec);
     ssio_sidecar_path(side_path, sizeof(side_path), datadir, spec);
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", side_path);
-
-    struct stat st;
-    if (stat(body_path, &st) != 0)
-        return ZCL_ERR(-2, "%s: stat %s: %s", spec->domain, body_path,
-                       strerror(errno));
 
     struct ssio_sidecar_header hdr;
     memset(&hdr, 0, sizeof(hdr));
     memcpy(hdr.magic, spec->magic, 4);
     hdr.version = spec->version;
-    hdr.body_size = (uint64_t)st.st_size;
-
-    uint64_t hashed_size = 0;
-    if (!ssio_hash_body(datadir, spec, hdr.body_sha3, &hashed_size))
-        return ZCL_ERR(-3, "%s: hash body failed", spec->domain);
-    /* stat size and streamed size must agree — disagreement means
-     * something is truncating the file concurrently, which is a
-     * bigger problem than this function can solve. */
-    if (hashed_size != hdr.body_size)
-        return ZCL_ERR(-4, "%s: size drift stat=%llu hashed=%llu",
-                       spec->domain,
-                       (unsigned long long)hdr.body_size,
-                       (unsigned long long)hashed_size);
+    hdr.body_size = body_size;
+    memcpy(hdr.body_sha3, body_sha3, 32);
 
     FILE *f = fopen(tmp_path, "wb");
     if (!f)
@@ -134,6 +119,35 @@ struct zcl_result ssio_write_sidecar(const char *datadir,
         return r;
     }
     return ZCL_OK;
+}
+
+struct zcl_result ssio_write_sidecar(const char *datadir,
+                                     const struct ssio_spec *spec)
+{
+    if (!datadir) return ZCL_ERR(-1, "%s: null datadir", spec->domain);
+
+    char body_path[1024];
+    ssio_body_path(body_path, sizeof(body_path), datadir, spec);
+
+    struct stat st;
+    if (stat(body_path, &st) != 0)
+        return ZCL_ERR(-2, "%s: stat %s: %s", spec->domain, body_path,
+                       strerror(errno));
+
+    uint8_t body_sha3[32];
+    uint64_t hashed_size = 0;
+    if (!ssio_hash_body(datadir, spec, body_sha3, &hashed_size))
+        return ZCL_ERR(-3, "%s: hash body failed", spec->domain);
+    /* stat size and streamed size must agree — disagreement means
+     * something is truncating the file concurrently, which is a
+     * bigger problem than this function can solve. */
+    if (hashed_size != (uint64_t)st.st_size)
+        return ZCL_ERR(-4, "%s: size drift stat=%llu hashed=%llu",
+                       spec->domain,
+                       (unsigned long long)st.st_size,
+                       (unsigned long long)hashed_size);
+
+    return ssio_write_sidecar_raw(datadir, spec, hashed_size, body_sha3);
 }
 
 /* ── Sidecar reader ─────────────────────────────────────────── */

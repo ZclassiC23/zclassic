@@ -145,6 +145,16 @@ enum bii_verdict bii_verify(const char *datadir,
  * SIDECAR_MISSING). */
 struct zcl_result bii_write_sidecar(const char *datadir);
 
+/* Sidecar write from a caller-supplied size + SHA3 — no body rehash.
+ * save_block_index_flat streams the hash while writing the body, so
+ * the sidecar lands milliseconds after the rename instead of after a
+ * multi-second 500 MB rehash (a shutdown killed in that window left a
+ * fresh body under a stale sidecar and the next boot quarantined a
+ * good file — live 2026-06-12). */
+struct zcl_result bii_write_sidecar_raw(const char *datadir,
+                                        uint64_t body_size,
+                                        const uint8_t body_sha3[32]);
+
 /* ── Quarantine ───────────────────────────────────────────────
  * Renames both block_index.bin and block_index.bin.sha3 to
  * `<name>.corrupt.<unix_ts>`. Does NOT delete — operators need
