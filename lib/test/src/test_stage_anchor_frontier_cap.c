@@ -223,7 +223,21 @@ static int fc_case_fresh_seed(void)
             " block_hash BLOB)") &&
         fc_make_log(db, "body_persist_log") &&
         fc_make_log(db, "proof_validate_log") &&
-        fc_make_log(db, "utxo_apply_log");
+        /* utxo_apply_log needs the CANONICAL columns (not the minimal
+         * fc_make_log shape): the seed under test stamps its trust row
+         * with status/spent/added (task #31, cold-import row gap). */
+        fc_exec(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+            "  height               INTEGER PRIMARY KEY,"
+            "  status               TEXT    NOT NULL,"
+            "  ok                   INTEGER NOT NULL,"
+            "  spent_count          INTEGER NOT NULL,"
+            "  added_count          INTEGER NOT NULL,"
+            "  total_value_delta    INTEGER NOT NULL,"
+            "  first_failure_kind   TEXT,"
+            "  first_failure_detail BLOB,"
+            "  applied_at           INTEGER NOT NULL"
+            ")");
     FC_CHECK("T5b: frontier log tables created", tables);
 
     struct main_state ms;

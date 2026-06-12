@@ -887,6 +887,23 @@ int test_tip_finalize_stage(void)
                  log_row_at(progress_store_db(), 3, &row_ok, status,
                             sizeof(status), &depth, &utxos) &&
                  row_ok == 1 && strcmp(status, "anchor") == 0);
+        /* The seed's utxo_apply trust stamp is INSERT OR IGNORE: the real
+         * 'verified' verdict row at H (pre-written by seed_utxo_apply above)
+         * must survive the seed un-clobbered. */
+        {
+            sqlite3_stmt *st = NULL;
+            char ua_status[32] = ""; int ua_ok = -1;
+            TF_CHECK("seed_no_late_block: real utxo_apply row at H survives",
+                     sqlite3_prepare_v2(progress_store_db(),
+                         "SELECT status, ok FROM utxo_apply_log "
+                         "WHERE height = 3", -1, &st, NULL) == SQLITE_OK &&
+                     sqlite3_step(st) == SQLITE_ROW &&
+                     (snprintf(ua_status, sizeof(ua_status), "%s",
+                               sqlite3_column_text(st, 0)) > 0) &&
+                     (ua_ok = sqlite3_column_int(st, 1)) == 1 &&
+                     strcmp(ua_status, "verified") == 0);
+            if (st) sqlite3_finalize(st);
+        }
         /* The boot resolver returns the seeded tip self-consistently from the
          * served-tip cursor (no +1, no -1 splice). */
         int rh = -1; uint8_t rhash[32];
@@ -911,6 +928,92 @@ int test_tip_finalize_stage(void)
         TF_CHECK("seed_no_late_block: cursor advanced to H+1",
                  tip_finalize_stage_cursor() == 4);
         TF_CHECK("seed_no_late_block: H+1 is the published tip",
+                 tip_finalize_stage_last_height() == 4);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    /* TASK #31, second member — the COLD-IMPORT row gap: on a real import
+     * the utxo_apply cursor is seeded to H+1 with NO log rows at all (the
+     * coins arrived inside the verified chainstate; utxo_apply never
+     * re-applies ≤H). step_finalize at cursor H consumes the utxo_apply row
+     * AT H, so without the seed's own trust stamp the stage idles forever on
+     * uv_row_missing — copy-proven 2026-06-12 run 2: upstream applied through
+     * the live tip while tip_finalize held at the seed. This pins that the
+     * seed itself supplies the row and the first live successor publishes. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "seed_cold_import_row_gap");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 5);
+        for (int i = 0; ok_setup && i <= 3; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]);
+        /* The cold-import shape: utxo_apply cursor at H+1 with ZERO rows
+         * (seed_utxo_apply with n=0 creates the table + cursor only). */
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 0, -1);
+        ok_setup = ok_setup && exec_sql(progress_store_db(),
+            "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+            "VALUES('utxo_apply', 4, 1)");
+        ok_setup = ok_setup && tip_finalize_stage_init(&ms);
+        /* Production never wires the utxo counter (test-only seam) — and on
+         * a cold import sums-through(H) sees only the zero-delta anchor row,
+         * so a wired counter would false-diverge. NULL also clears the
+         * previous case's seam (its user pointer is out of scope). */
+        tip_finalize_stage_set_utxo_counter(NULL, NULL);
+        TF_CHECK("seed_cold_import_row_gap: setup", ok_setup);
+
+        TF_CHECK("seed_cold_import_row_gap: seed_anchor at H succeeds",
+                 tip_finalize_stage_seed_anchor(3, sc.hashes[3].data, true));
+        /* THE PIN: the seed supplied its own utxo_apply trust row at H. */
+        {
+            sqlite3_stmt *st = NULL;
+            char ua_status[32] = ""; int ua_ok = -1;
+            TF_CHECK("seed_cold_import_row_gap: seed stamps utxo_apply row at H",
+                     sqlite3_prepare_v2(progress_store_db(),
+                         "SELECT status, ok FROM utxo_apply_log "
+                         "WHERE height = 3", -1, &st, NULL) == SQLITE_OK &&
+                     sqlite3_step(st) == SQLITE_ROW &&
+                     (snprintf(ua_status, sizeof(ua_status), "%s",
+                               sqlite3_column_text(st, 0)) > 0) &&
+                     (ua_ok = sqlite3_column_int(st, 1)) == 1 &&
+                     strcmp(ua_status, "anchor") == 0);
+            if (st) sqlite3_finalize(st);
+        }
+        /* No successor yet → idle (and NOT uv_row_missing-pinned). */
+        TF_CHECK("seed_cold_import_row_gap: idle while successor absent",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+
+        /* The first live block H+1 (=4) arrives: index entry + its OWN
+         * apply verdict row + cursor → 5 (exactly what the live reducer
+         * writes). The stage must publish it on the FIRST step. */
+        ok_setup = block_map_insert(&ms.map_block_index,
+                                    sc.blocks[4].phashBlock, &sc.blocks[4]);
+        /* added-spent must equal the counter's count-after(5)==5: the seed
+         * anchor row at 3 contributes (0,0), so this live row carries the
+         * whole delta. (In production the counter seam is never wired.) */
+        ok_setup = ok_setup && exec_sql(progress_store_db(),
+            "INSERT OR REPLACE INTO utxo_apply_log "
+            "(height, status, ok, spent_count, added_count, "
+            " total_value_delta, applied_at) "
+            "VALUES (4, 'verified', 1, 0, 5, 5, 1)");
+        ok_setup = ok_setup && exec_sql(progress_store_db(),
+            "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+            "VALUES('utxo_apply', 5, 1)");
+        TF_CHECK("seed_cold_import_row_gap: successor arrival setup", ok_setup);
+        TF_CHECK("seed_cold_import_row_gap: H+1 publishes on FIRST arrival",
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
+        TF_CHECK("seed_cold_import_row_gap: cursor advanced to H+1",
+                 tip_finalize_stage_cursor() == 4);
+        TF_CHECK("seed_cold_import_row_gap: H+1 is the published tip",
                  tip_finalize_stage_last_height() == 4);
         tf_teardown(dir, &ms, &sc);
     }

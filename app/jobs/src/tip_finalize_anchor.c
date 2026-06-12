@@ -17,6 +17,7 @@
 #include "jobs/stage_helpers.h"
 #include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_log_store.h"
+#include "utxo_apply_log_store.h"
 
 #include "config/runtime.h"
 #include "core/uint256.h"
@@ -201,6 +202,51 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
                                           trusted_seed)) {
         progress_store_tx_unlock();
         return false;
+    }
+
+    /* The first forward step consumes the utxo_apply verdict AT the served
+     * height: step_finalize at cursor C reads utxo_apply_log row C to
+     * finalize the C→C+1 transition. On a cold import nothing ever writes
+     * row H — the import itself IS block H's apply authority (its coins
+     * arrived inside the verified chainstate), and utxo_apply starts at
+     * H+1 — so without this stamp the stage idles forever on
+     * TF_BLOCKED_UV_ROW_MISSING at the seed (run-2 copy-prove, 2026-06-12:
+     * upstream applied through the live tip while tip_finalize held at H).
+     * Same trust model as the anchor row above; INSERT OR IGNORE so a real
+     * verdict row is never clobbered. Zero deltas are safe: the
+     * utxo-count divergence check is a test-only seam (no production
+     * counter is wired) and the sums are COALESCE'd. MUST run AFTER the
+     * upstream cursor stamps: stage_anchor_cap_target_at_log_frontier's
+     * empty-log seed prong (FIX-3, prong 2) reads utxo_apply_log emptiness,
+     * and a pre-stamp row would cap an untrusted fresh-datadir seed at 0. */
+    {
+        if (!utxo_apply_log_ensure_schema(db)) {
+            progress_store_tx_unlock();
+            return false;
+        }
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db,
+                "INSERT OR IGNORE INTO utxo_apply_log"
+                "(height,status,ok,spent_count,added_count,"
+                " total_value_delta,applied_at) "
+                "VALUES(?,'anchor',1,0,0,0,0)",
+                -1, &st, NULL) != SQLITE_OK) {
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] seed utxo_apply anchor row prepare "
+                     "failed: %s", sqlite3_errmsg(db));
+            progress_store_tx_unlock();
+            return false;
+        }
+        sqlite3_bind_int(st, 1, height);
+        int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] seed utxo_apply anchor row insert "
+                     "failed: %s", sqlite3_errmsg(db));
+            progress_store_tx_unlock();
+            return false;
+        }
     }
 
     /* FIX-3 jump site 3: cap the self-stamp at the tip_finalize_log
