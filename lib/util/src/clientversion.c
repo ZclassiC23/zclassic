@@ -8,6 +8,15 @@
 
 const char CLIENT_NAME[] = "ZClassic-C23";
 
+#ifndef ZCL_BUILD_COMMIT
+#define ZCL_BUILD_COMMIT "unknown"
+#endif
+
+const char *zcl_build_commit(void)
+{
+    return ZCL_BUILD_COMMIT;
+}
+
 void FormatVersion(int nVersion, char *out, size_t out_size)
 {
     int major = nVersion / 1000000;

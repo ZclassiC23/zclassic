@@ -13,10 +13,6 @@
 #define CLIENT_VERSION_REVISION 0
 #define CLIENT_VERSION_BUILD 50
 
-#ifndef ZCL_BUILD_COMMIT
-#define ZCL_BUILD_COMMIT "unknown"
-#endif
-
 #if !defined(WINDRES_PREPROC)
 
 #include <stddef.h>
@@ -27,10 +23,11 @@
 
 extern const char CLIENT_NAME[];
 
-static inline const char *zcl_build_commit(void)
-{
-    return ZCL_BUILD_COMMIT;
-}
+/* Defined ONLY in clientversion.c. Must not be a static inline: each TU
+ * would freeze the ZCL_BUILD_COMMIT macro at its own last recompile, and
+ * version reporters inside one binary then disagree about which commit is
+ * running. The Makefile keeps clientversion.o fresh via a commit stamp. */
+const char *zcl_build_commit(void);
 
 void FormatVersion(int nVersion, char *out, size_t out_size);
 

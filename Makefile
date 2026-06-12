@@ -11,6 +11,17 @@ BUILD_DIR = build
 BIN_DIR = $(BUILD_DIR)/bin
 OBJ_DIR = $(BUILD_DIR)/obj
 
+# ZCL_BUILD_COMMIT is a -D macro, so a new commit never dirties any .o; a TU
+# reports whatever HEAD was when IT last recompiled. With the getter inlined
+# in every caller, version reporters inside one binary disagreed about which
+# commit was running (zcl_status top-level vs health, 2026-06-12). The getter
+# now lives only in lib/util/src/clientversion.c, and this stamp file —
+# rewritten only when BUILD_COMMIT changes — forces that one object stale.
+BUILD_COMMIT_STAMP := $(BUILD_DIR)/build_commit.stamp
+$(shell mkdir -p $(BUILD_DIR); \
+  [ "`cat $(BUILD_COMMIT_STAMP) 2>/dev/null`" = "$(BUILD_COMMIT)" ] || \
+  printf '%s' "$(BUILD_COMMIT)" > $(BUILD_COMMIT_STAMP))
+
 ZCLASSIC23_BIN = $(BIN_DIR)/zclassic23
 TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
 TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
@@ -901,6 +912,9 @@ ci-sync-smoke: zclassic23
 $(OBJ_DIR)/%.o: %.c $(TMPL_GEN)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# The one TU that bakes in ZCL_BUILD_COMMIT — see the stamp comment up top.
+$(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 
 # Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
 #

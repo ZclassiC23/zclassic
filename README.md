@@ -9,15 +9,17 @@ lets an AI agent operate the node through ~100 typed tools.
 
 One binary, one onion, one stack.
 
-## Status — active stabilization
+## Status — stable at tip, hardening toward v1
 
-ZClassic23 is a work in progress and is **not production-ready**. The node
-is in active stabilization. Live sync stays at tip (hash-identical to a
-local zclassicd reference at every height checked), blocks publish as they
-arrive, and restarts keep the connected chain — but the v1 acceptance
-criteria in [`docs/MVP.md`](docs/MVP.md) are not yet CI-enforced and no
-multi-day soak has been completed. Do not rely on this build as a mainnet
-node until they are.
+The node is live and stable on ZClassic mainnet: it holds the tip
+hash-identical to a local zclassicd reference at every height checked,
+publishes blocks the moment they arrive, and keeps the connected chain
+across restarts.
+
+It is **not yet production-ready**. The v1 acceptance criteria in
+[`docs/MVP.md`](docs/MVP.md) are not yet CI-enforced and the multi-day
+soak is still accumulating. Do not rely on this build as a mainnet node
+until they are.
 
 ZClassic23 is operator-owned full-node infrastructure. Its security model
 emphasizes local control: embedded Tor publishes the operator's own onion
