@@ -1593,6 +1593,30 @@ bool app_init(struct app_context *ctx)
         snprintf(lock_path, sizeof(lock_path), "%s/LOCK", blocktree_path);
         unlink(lock_path); /* harmless if doesn't exist */
     }
+    /* Remove scratch dirs a crashed prior boot may have stranded: a kill -9
+     * mid legacy-chainstate copy leaves chainstate_import_tmp /
+     * .legacy_ldb_snap on disk forever (their only cleanup is on the
+     * normal-return path of the import that created them). They are
+     * recreated from scratch whenever the import re-runs, so a torn copy
+     * has no recovery value — same proactive hygiene as the stale LOCK
+     * unlink above. */
+    {
+        const char *scratch[] = { "chainstate_import_tmp",
+                                  ".legacy_ldb_snap" };
+        for (size_t si = 0; si < sizeof(scratch) / sizeof(scratch[0]); si++) {
+            char spath[1100];
+            snprintf(spath, sizeof(spath), "%s/%s", ctx->datadir,
+                     scratch[si]);
+            struct stat sst;
+            if (stat(spath, &sst) == 0 && S_ISDIR(sst.st_mode)) {
+                char cmd[1300];
+                snprintf(cmd, sizeof(cmd), "rm -rf '%s'", spath);
+                int rc = system(cmd); // obs-ok:boot-scratch-hygiene
+                printf("[boot] removed stranded scratch dir %s (rc=%d)\n",
+                       spath, rc);
+            }
+        }
+    }
     if (block_tree_db_open(&g_block_tree, blocktree_path,
                            256 << 20, false, false)) {
         g_block_tree_open = true;
@@ -2219,8 +2243,17 @@ bool app_init(struct app_context *ctx)
          * the nChainTx propagation below, which turns the topped-up nTx
          * into the connected chain the boot scan keys on. Skipped on the
          * -rebuildfromlog path (the map IS the projection there). */
-        if (!rebuilt_from_log)
-            (void)block_index_projection_topup(&g_state, ctx->datadir);
+        if (!rebuilt_from_log &&
+            !block_index_projection_topup(&g_state, ctx->datadir)) {
+            /* Non-fatal by design (the node re-syncs the lost window from
+             * peers), but a silent false here IS the defect-#10 regression
+             * — the restart drops to the stale flat-file floor. Say so. */
+            LOG_WARN("boot",
+                     "[boot] block_index projection top-up FAILED — the "
+                     "connected extent may regress to the last flat-file "
+                     "save; expect a window re-chase (see node.log lines "
+                     "above for the failing fold step)");
+        }
 
         /* Propagate nChainTx for all blocks in the index.
          * The flat file and LevelDB don't always store correct nChainTx.

@@ -218,6 +218,19 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
         }
     }
 
+    /* fsync the datadir so BOTH renames (body, then sidecar) are durable
+     * as a pair across power loss — without it the two renames can reach
+     * disk independently and durably manifest the stale-sidecar mismatch
+     * even when no process was killed mid-write. Same dir-fsync pattern as
+     * boot_auto_reindex_request's sentinel. */
+    {
+        int dfd = open(datadir, O_RDONLY | O_DIRECTORY);
+        if (dfd >= 0) {
+            (void)fsync(dfd);
+            close(dfd);
+        }
+    }
+
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("Block index flat file: %zu entries, %zuMB (%llds)\n",
            count, count * sizeof(struct block_index_flat) / (1024*1024),

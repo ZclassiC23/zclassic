@@ -710,7 +710,7 @@ static void print_usage(const char *prog)
     printf("Node options:\n");
     printf("  -datadir=<dir>      Data directory\n");
     printf("  -paramsdir=<dir>    Params directory\n");
-    printf("  -port=<port>        P2P port (default: 8233)\n");
+    printf("  -port=<port>        P2P port (default: 8033)\n");
     printf("  -rpcport=<port>     RPC port (default: 18232; 8232 is legacy zclassicd)\n");
     printf("  -addnode=<ip>       Add peer\n");
     printf("  -gen                Enable mining\n");

@@ -32,6 +32,7 @@
 
 #include "util/log_macros.h"
 #include "util/blocker.h"
+#include "util/reducer_drive_guard.h"
 
 /* The activation FSM still hints the historical block-intake tail by admitting
  * a header to the inbox before driving the staged Job pipeline. The reducer
@@ -422,6 +423,15 @@ void activation_request_connect(struct chain_activation_controller *ctl,
      * it to the header inbox so the producer path can build its block_index,
      * then drive the stages; a NULL pblock is a pure cursor-driven kick (the
      * Group-2 path). */
+    /* Mark the synchronous drive so the staged_sync_supervisor yields its
+     * 2s stage ticks for the duration — the stages share the active-chain
+     * window, which is NOT under the per-stage progress.kv lock, and a
+     * concurrent supervisor drain races this drive (the same hazard
+     * reducer_ingest_block guards at reducer_ingest_service.c). This path
+     * IS live: msg_headers' all-data activation funnels here from the net
+     * thread on every at-tip catch-up, so the guard-header's "never on the
+     * live path" note does not hold for this chokepoint. */
+    reducer_drive_enter();
     if (pblock) {
         struct uint256 block_hash;
         block_get_hash(pblock, &block_hash);
@@ -442,6 +452,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
 
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
     int tip_h = tip ? tip->nHeight : 0;
+    reducer_drive_exit();
 
     ctl->last_activation_us = GetTimeMicros();
     ctl->last_tip_height = tip_h;

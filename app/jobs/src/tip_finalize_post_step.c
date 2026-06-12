@@ -69,6 +69,10 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                  "body unreadable; wallet/mempool/MMR/MMB deferred",
                  pindex_new->nHeight,
                  (pindex_new->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
+        /* A partial deserialize can have allocated blk.vtx before the
+         * read failed — the success path frees it at the bottom; this
+         * early return must too. */
+        block_free(&blk);
         return;
     }
 

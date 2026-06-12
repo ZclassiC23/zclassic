@@ -52,6 +52,39 @@ static _Atomic uint64_t g_total_work_added_low = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
+
+/* WHY the last idle/blocked tick idled. step_finalize has five distinct
+ * JOB_IDLE exits that used to stamp only g_last_blocked_unix — a held
+ * frontier was observationally identical across all five in zcl_state and
+ * the 2026-06-12 diagnosis required a code read to tell them apart. One
+ * token + one counter per class makes the cause one zcl_state call away.
+ * TF_BLOCKED_AT_UV_FRONTIER is the HEALTHY at-tip steady state (waiting
+ * for the next block), not a fault. */
+enum tf_blocked_class {
+    TF_BLOCKED_NONE = 0,
+    TF_BLOCKED_UV_CURSOR_GAP,     /* cursor ran ahead of utxo_apply */
+    TF_BLOCKED_AT_UV_FRONTIER,    /* caught up; next block not applied yet */
+    TF_BLOCKED_UV_ROW_MISSING,    /* utxo_apply log row absent at cursor */
+    TF_BLOCKED_LOOKAHEAD_MISSING, /* chain window has no successor H+1 */
+    TF_BLOCKED_TIP_MISSING,       /* chain window has no block at H */
+    TF_BLOCKED_SUCCESSOR_PENDING, /* successor known but not yet finalizable
+                                   * (detail in last_precondition_reason) */
+    TF_BLOCKED_CLASS_N
+};
+static const char *const k_tf_blocked_name[TF_BLOCKED_CLASS_N] = {
+    "", "uv_cursor_gap", "at_utxo_frontier", "utxo_apply_row_missing",
+    "lookahead_tip_missing", "current_tip_missing", "successor_pending",
+};
+static _Atomic int      g_last_blocked_class = TF_BLOCKED_NONE;
+static _Atomic uint64_t g_blocked_class_total[TF_BLOCKED_CLASS_N];
+
+static void tf_mark_blocked(enum tf_blocked_class cls)
+{
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    atomic_store(&g_last_blocked_class, (int)cls);
+    if (cls > TF_BLOCKED_NONE && cls < TF_BLOCKED_CLASS_N)
+        atomic_fetch_add(&g_blocked_class_total[cls], 1);
+}
 static uint8_t         g_last_advance_hash[32];
 static zcl_mutex_t     g_last_advance_hash_mu;
 
@@ -299,11 +332,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
             LOG_WARN("tip_finalize",
                 "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu repeats=%llu",
                 next_h, (unsigned long long)uv_cursor, (unsigned long long)shown);
-        atomic_store(&g_last_blocked_unix, now);
+        tf_mark_blocked(TF_BLOCKED_UV_CURSOR_GAP);
         return JOB_IDLE;
     }
     if ((uint64_t)next_h >= uv_cursor) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        tf_mark_blocked(TF_BLOCKED_AT_UV_FRONTIER);
         return JOB_IDLE;
     }
 
@@ -311,7 +344,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     int found = utxo_apply_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        tf_mark_blocked(TF_BLOCKED_UV_ROW_MISSING);
         return JOB_IDLE;
     }
 
@@ -328,11 +361,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     struct block_index *old_tip = active_chain_at(&ms->chain_active, next_h);
     struct block_index *new_tip = active_chain_at(&ms->chain_active, next_h + 1);
     if (!new_tip) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        tf_mark_blocked(TF_BLOCKED_LOOKAHEAD_MISSING);
         return JOB_IDLE;
     }
     if (!old_tip) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        tf_mark_blocked(TF_BLOCKED_TIP_MISSING);
         return JOB_IDLE;
     }
 
@@ -394,7 +427,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     if (transient_reason != NULL) {
         atomic_fetch_add(&g_successor_pending_total, 1);
         record_precondition_block(next_h, transient_reason);
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        tf_mark_blocked(TF_BLOCKED_SUCCESSOR_PENDING);
         /* No DB row, no cursor move: hold H until its successor is ready. */
         return JOB_IDLE;
     }
@@ -589,6 +622,9 @@ void tip_finalize_stage_shutdown(void)
     atomic_store(&g_total_work_added_low, (uint64_t)0);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
+    atomic_store(&g_last_blocked_class, TF_BLOCKED_NONE);
+    for (int i = 0; i < TF_BLOCKED_CLASS_N; i++)
+        atomic_store(&g_blocked_class_total[i], (uint64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
     atomic_store(&g_last_precondition_height, (int64_t)-1);
     log_throttle_reset(&g_precondition_throttle);
@@ -741,6 +777,19 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "last_step_unix", last);
     json_push_kv_int (out, "last_step_age_seconds", last > 0 ? now - last : -1);
     json_push_kv_int (out, "last_blocked_unix", atomic_load(&g_last_blocked_unix));
+    {
+        int cls = atomic_load(&g_last_blocked_class);
+        if (cls < 0 || cls >= TF_BLOCKED_CLASS_N)
+            cls = TF_BLOCKED_NONE;
+        json_push_kv_str(out, "last_blocked_reason", k_tf_blocked_name[cls]);
+        for (int i = TF_BLOCKED_NONE + 1; i < TF_BLOCKED_CLASS_N; i++) {
+            char key[64];
+            snprintf(key, sizeof key, "blocked_%s_total",
+                     k_tf_blocked_name[i]);
+            json_push_kv_int(out, key,
+                             (int64_t)atomic_load(&g_blocked_class_total[i]));
+        }
+    }
     json_push_kv_int (out, "log_rows", db ? stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") : 0);
     stage_dump_counters(out, g_stage);
     return true;

@@ -251,7 +251,28 @@ struct boot_validation_result validate_coins_chain_agreement(
                     r.coins_height = r.chain_height;
                     return r;
                 }
+                LOG_WARN("boot",
+                         "[boot] Case-3b AGREE denied: durable tip matches "
+                         "the active tip (h=%d) but coins_best is %s — "
+                         "falling through to Case 4",
+                         chain_tip->nHeight,
+                         cb ? "AHEAD of the chain tip" : "not in the index");
+            } else {
+                LOG_WARN("boot",
+                         "[boot] Case-3b AGREE denied: durable finalized tip "
+                         "(h=%d) does not match the active tip (h=%d, hash %s"
+                         ") — falling through to Case 4",
+                         fin_height, chain_tip->nHeight,
+                         fin_height == chain_tip->nHeight ? "MISMATCH"
+                                                          : "n/a");
             }
+        } else if (pdb) {
+            LOG_WARN("boot",
+                     "[boot] Case-3b AGREE denied: no self-consistent durable "
+                     "tip resolves from the tip_finalize cursor — falling "
+                     "through to Case 4 (a reset here loses no proven "
+                     "finality, but the cause should be named: empty cursor "
+                     "or no witness row at cursor/cursor-1)");
         }
     }
 
