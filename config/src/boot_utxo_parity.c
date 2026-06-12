@@ -89,9 +89,14 @@ static bool boot_utxo_parity_start(void *ctx)
     struct zcl_result zr = utxo_reference_source_zclassicd_init(
         &g_parity_ref, &g_parity_ref_zclassicd, &cfg.rpc);
     if (zr.ok) {
-        /* Arm the run gate now that an oracle is present. */
+        /* Arm the run gate now that an oracle is present. Re-apply the fully
+         * resolved RPC config (creds + port from ~/.zclassic/zclassic.conf)
+         * so the coarse block-hash check uses the same credentials as the
+         * UTXO reference source. */
         cfg.enabled = true;
+        cfg.rpc = g_parity_ref_zclassicd.rpc;
         (void)utxo_parity_init(&cfg, app_runtime_node_db());
+        utxo_parity_set_rpc_config(&g_parity_ref_zclassicd.rpc);
         utxo_parity_set_reference_source(&g_parity_ref);
         utxo_parity_poll_register();
         if (utxo_parity_poll_is_registered())

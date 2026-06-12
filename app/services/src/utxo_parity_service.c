@@ -5,22 +5,30 @@
  * Layout:
  *   1. Config + global state
  *   2. Finalized-frontier marker (EV_CHAIN_TIP_COMMIT observer, monotonic)
- *   3. utxo_parity_check_height() — one honest same-height comparison
- *   4. utxo_parity_tick_once() — the supervised, dormant-until-stable body
- *   5. init / set_reference_source / reset / dump_state_json
+ *   3. utxo_parity_check_height() — one honest same-height UTXO-SHA3 comparison
+ *   4. parity_coarse_block_hash_tick() — coarse getblockhash check at tip
+ *   5. utxo_parity_tick_once() — the supervised body (runs both checks)
+ *   6. init / set_reference_source / set_rpc_config / reset / dump_state_json
  *
- * Two correctness invariants, both load-bearing:
+ * Three correctness invariants, all load-bearing:
  *
- *   SAME-HEIGHT: the local SHA3 is computed over the LIVE utxos table, which
- *   reflects the set as of the live applied-coins height. There is no
+ *   SAME-HEIGHT (UTXO): the local SHA3 is computed over the LIVE utxos table,
+ *   which reflects the set as of the live applied-coins height. There is no
  *   historical "as-of height" local commitment, so a byte DRIFT is only
  *   declared when an EXACT reference is at that SAME applied height
  *   (enforced in utxo_audit_compare_source). The tick therefore compares at
  *   exactly the live applied height — never a relabeled stable_ceiling, which
  *   would strcmp the live set against a reference at a DIFFERENT height and
  *   false-page — and only once that applied height is itself reorg-safe
- *   (at/below frontier - finality_depth). Continuous at-tip exact parity
- *   needs a reorg-safe historical commitment; see the header follow-ups.
+ *   (at/below frontier - finality_depth).
+ *
+ *   COARSE BLOCK-HASH: fires at h_check = min(applied,frontier) -
+ *   finality_depth — the reorg-safe stable ceiling. Gets our local block
+ *   hash via the block index and the reference hash via getblockhash RPC on
+ *   the co-located zclassicd. Match → checks_total++. Mismatch → sets
+ *   utxo_drift_detected (the same Condition pages for free). Any reference
+ *   transport error or height-behind-h_check → skips_total++ (NEVER pages).
+ *   Once a height is checked it is never re-checked (advance-only cache).
  *
  *   FINALIZED FRONTIER: EV_CHAIN_TIP_COMMIT fires on every active-tip move,
  *   including reorgs and tip-clear ("to=-1"). It is NOT a finality signal.
@@ -38,6 +46,11 @@
 #include "config/runtime.h"
 #include "event/event.h"
 #include "models/database.h"
+#include "rpc/legacy_rpc_client.h"
+#include "validation/main_state.h"
+#include "validation/chainstate.h"
+#include "controllers/wallet_helpers.h"
+#include "core/uint256.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 
@@ -46,22 +59,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /* ── Constants ─────────────────────────────────────────────────── */
 
 #define PARITY_DEFAULT_FINALITY_DEPTH  100  /* matches ORACLE_TIP_SAFETY_MARGIN */
 #define PARITY_DEFAULT_MAX_PER_TICK     1
+#define PARITY_RPC_DEFAULT_HOST        "127.0.0.1"
+#define PARITY_RPC_DEFAULT_PORT        8232
 
 /* ── Global state ──────────────────────────────────────────────── */
 
 static struct {
-    pthread_mutex_t lock;       /* guards config + ref pointer + ndb */
+    pthread_mutex_t lock;       /* guards config + ref pointer + ndb + rpc */
     bool   initialized;
     bool   enabled;
     int    finality_depth;
     int    max_checks_per_tick;
     struct node_db *ndb;
     const struct utxo_reference_source *ref;
+
+    /* RPC config for the coarse block-hash check (getblockhash against the
+     * co-located zclassicd). Populated by utxo_parity_set_rpc_config(). */
+    struct utxo_parity_rpc_config rpc;
 
     /* Monotonic finalized-frontier marker (highest stable committed height). */
     _Atomic int32_t finalized_frontier;
@@ -74,11 +94,29 @@ static struct {
     _Atomic int64_t reference_errors;
     _Atomic int32_t last_checked_height;
     _Atomic int32_t last_mismatch_height;
+
+    /* Coarse block-hash check stats (advance-only, separate from UTXO SHA3). */
+    _Atomic int64_t block_hash_checks;    /* successful comparisons */
+    _Atomic int64_t skips_total;          /* transport/height-behind skips */
+    _Atomic int32_t last_bh_checked_height; /* last height compared (advance-only) */
+    char    last_skip_reason[128];        /* last skip reason (under lock) */
+
+    /* Test seam: override the local-block-hash lookup so unit tests do not
+     * require a live block index.  NULL → use active_chain_at in prod. */
+    bool (*local_hash_fn)(void *ctx, int32_t height, char out_hex[65]);
+    void *local_hash_ctx;
+
+    /* Test seam: override the reference getblockhash RPC.  NULL → real RPC. */
+    bool (*ref_hash_fn)(void *ctx, int32_t height, char out_hex[65],
+                        int32_t *ref_height_out,
+                        char err[128]);
+    void *ref_hash_ctx;
 } g_parity = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .finalized_frontier = 0,
     .last_checked_height = 0,
     .last_mismatch_height = -1,
+    .last_bh_checked_height = 0,
 };
 
 /* ── Finalized-frontier marker ─────────────────────────────────── */
@@ -176,6 +214,183 @@ struct zcl_result utxo_parity_check_height(int32_t height,
     return r;
 }
 
+/* ── Coarse block-hash check ───────────────────────────────────── */
+
+/* Get our local block hash at `height` via the active chain index.
+ * Returns false (and leaves out_hex[0]='\0') when the index has no entry. */
+static bool parity_local_hash_at(int32_t height, char out_hex[65])
+{
+    /* Test seam: injected by utxo_parity_set_local_hash_fn(). */
+    if (g_parity.local_hash_fn)
+        return g_parity.local_hash_fn(g_parity.local_hash_ctx, height, out_hex);
+
+    /* Production: walk the active chain index. */
+    struct main_state *ms = wallet_rpc_main_state();
+    if (!ms) {
+        out_hex[0] = '\0';
+        return false;
+    }
+    struct block_index *bi = active_chain_at(&ms->chain_active, (int)height);
+    if (!bi || !bi->phashBlock) {
+        out_hex[0] = '\0';
+        return false;
+    }
+    uint256_get_hex(bi->phashBlock, out_hex);
+    return true;
+}
+
+/* Get the reference block hash at `height` via getblockhash JSON-RPC.
+ * On success: fills out_hex (64 hex chars) and *ref_height_out.
+ * On transport/parse failure: fills err and returns false.
+ * The ref_height_out is always set to `height` on success (getblockhash
+ * returns the hash OF the requested height — not a coarse current height). */
+static bool parity_ref_hash_at(int32_t height,
+                                const struct utxo_parity_rpc_config *rpc,
+                                char out_hex[65], int32_t *ref_height_out,
+                                char err[128])
+{
+    /* Test seam: injected by utxo_parity_set_ref_hash_fn(). */
+    if (g_parity.ref_hash_fn)
+        return g_parity.ref_hash_fn(g_parity.ref_hash_ctx, height,
+                                    out_hex, ref_height_out, err);
+
+    const char *host = rpc->host[0] ? rpc->host : PARITY_RPC_DEFAULT_HOST;
+    int port         = rpc->port > 0 ? rpc->port : PARITY_RPC_DEFAULT_PORT;
+
+    char body[256];
+    snprintf(body, sizeof(body),
+             "{\"jsonrpc\":\"1.0\",\"id\":\"zcl-parity-bh\","
+             "\"method\":\"getblockhash\",\"params\":[%d]}", (int)height);
+
+    char *resp = NULL;
+    if (!legacy_rpc_call(host, port, rpc->user, rpc->password,
+                         body, &resp, err, 128) || !resp) {
+        if (resp) free(resp);
+        return false;
+    }
+
+    /* getblockhash returns {"result":"<64-hex>", ...} */
+    char parsed[65] = {0};
+    bool ok = legacy_rpc_parse_result_string(resp, parsed, sizeof(parsed),
+                                              err, 128);
+    free(resp);
+    if (!ok)
+        return false;
+    if (strlen(parsed) != 64) {
+        snprintf(err, 128, "getblockhash result not 64 hex chars (got %zu)",
+                 strlen(parsed));
+        return false;
+    }
+
+    memcpy(out_hex, parsed, 65);
+    *ref_height_out = height;  /* getblockhash returns the hash of `height` */
+    return true;
+}
+
+/* One coarse block-hash tick. Computes h_check = min(applied,frontier) -
+ * finality_depth, fetches both sides, and updates counters. Returns true
+ * if a comparison was attempted (even if skipped), false when preconditions
+ * were not met (service quiet). */
+static void parity_coarse_block_hash_tick(
+    bool rpc_enabled,
+    const struct utxo_parity_rpc_config *rpc,
+    int32_t frontier, int finality_depth,
+    struct node_db *ndb)
+{
+    if (!rpc_enabled)
+        return;
+
+    /* h_check = min(applied, frontier) - finality_depth.  Uses frontier
+     * directly (not applied) so the check fires even when the UTXO SHA3
+     * path is stalled — "at-tip" means at the reorg-safe stable ceiling. */
+    int applied = app_runtime_node_db_utxo_max_height(ndb);
+    if (applied <= 0)
+        return;
+    int32_t safe_top = (int32_t)applied < frontier ? (int32_t)applied : frontier;
+    int32_t h_check  = safe_top - (int32_t)finality_depth;
+    if (h_check <= 0)
+        return;
+
+    /* Advance-only: never re-check the same height. */
+    int32_t last_bh = atomic_load(&g_parity.last_bh_checked_height);
+    if (h_check <= last_bh)
+        return;
+
+    /* ── Local hash ───────────────────────────────────────────── */
+    char local_hex[65] = {0};
+    if (!parity_local_hash_at(h_check, local_hex) || !local_hex[0]) {
+        pthread_mutex_lock(&g_parity.lock);
+        snprintf(g_parity.last_skip_reason, sizeof(g_parity.last_skip_reason),
+                 "local block hash unavailable at h=%d", (int)h_check);
+        pthread_mutex_unlock(&g_parity.lock);
+        atomic_fetch_add(&g_parity.skips_total, 1);
+        return;
+    }
+
+    /* ── Reference hash (getblockhash RPC) ───────────────────── */
+    char ref_hex[65] = {0};
+    int32_t ref_height = 0;
+    char err[128] = {0};
+    if (!parity_ref_hash_at(h_check, rpc, ref_hex, &ref_height, err)) {
+        /* Transport/parse error: skip, NEVER page. */
+        pthread_mutex_lock(&g_parity.lock);
+        snprintf(g_parity.last_skip_reason, sizeof(g_parity.last_skip_reason),
+                 "ref getblockhash(%d) failed: %.96s", (int)h_check, err);
+        pthread_mutex_unlock(&g_parity.lock);
+        atomic_fetch_add(&g_parity.skips_total, 1);
+        atomic_fetch_add(&g_parity.reference_errors, 1);
+        return;
+    }
+
+    /* ── Height sanity ────────────────────────────────────────── */
+    if (ref_height != h_check) {
+        /* Reference replied at a different height than asked — skip. */
+        pthread_mutex_lock(&g_parity.lock);
+        snprintf(g_parity.last_skip_reason, sizeof(g_parity.last_skip_reason),
+                 "ref height %d != h_check %d", (int)ref_height, (int)h_check);
+        pthread_mutex_unlock(&g_parity.lock);
+        atomic_fetch_add(&g_parity.skips_total, 1);
+        return;
+    }
+
+    /* ── Advance the advance-only cursor ─────────────────────── */
+    int32_t cur = atomic_load(&g_parity.last_bh_checked_height);
+    while (h_check > cur) {
+        if (atomic_compare_exchange_weak(&g_parity.last_bh_checked_height,
+                                          &cur, h_check))
+            break;
+    }
+
+    /* ── Compare ─────────────────────────────────────────────── */
+    bool match = (strcasecmp(local_hex, ref_hex) == 0);
+    atomic_fetch_add(&g_parity.block_hash_checks, 1);
+    atomic_fetch_add(&g_parity.checks_total, 1);
+    atomic_store(&g_parity.last_checked_height, h_check);
+
+    if (match) {
+        atomic_fetch_add(&g_parity.matches, 1);
+        /* Clear any stale drift flag — a block-hash match confirms parity. */
+        if (ndb && ndb->open)
+            (void)node_db_state_set_int(ndb, "utxo_drift_detected", 0);
+        return;
+    }
+
+    /* Hash mismatch: real consensus drift. Set the flag — the wired
+     * utxo_drift_detected Condition pages the operator through the existing
+     * mechanism (single paging source of truth, no new EV_OPERATOR_NEEDED). */
+    atomic_fetch_add(&g_parity.mismatches, 1);
+    atomic_store(&g_parity.last_mismatch_height, h_check);
+    if (ndb && ndb->open)
+        (void)node_db_state_set_int(ndb, "utxo_drift_detected", 1);
+
+    LOG_WARN("parity",
+             "[parity] BLOCK-HASH MISMATCH h=%d local=%s ref=%s",
+             (int)h_check, local_hex, ref_hex);
+    event_emitf(EV_UTXO_DRIFT_DETECTED, 0,
+                "source=block_hash_parity h=%d local=%s ref=%s",
+                (int)h_check, local_hex, ref_hex);
+}
+
 /* ── Supervised tick body ──────────────────────────────────────── */
 
 void utxo_parity_tick_once(void)
@@ -190,17 +405,21 @@ void utxo_parity_tick_once(void)
                            ? g_parity.max_checks_per_tick
                            : PARITY_DEFAULT_MAX_PER_TICK;
     struct node_db *ndb = g_parity.ndb ? g_parity.ndb : app_runtime_node_db();
+    /* Snapshot RPC config under the lock so the coarse block-hash check can
+     * use it without re-acquiring the lock. */
+    struct utxo_parity_rpc_config rpc = g_parity.rpc;
+    bool rpc_has_creds = rpc.user[0] || g_parity.ref_hash_fn;
     pthread_mutex_unlock(&g_parity.lock);
 
-    /* Activation authority is the `enabled` flag (set by utxo_parity_init from
-     * cfg.enabled) AND a wired reference. Boot turns `enabled` on only when a
-     * zclassicd reference resolves (auto-detected from RPC creds, opt-out via
-     * ZCL_PARITY_ORACLE=0) — so without a co-located zclassicd, neither is set
-     * and the tick is a quiet no-op. The reference vtable owns reachability: if
-     * the daemon is momentarily down, commitment_at returns a reference error
-     * (counted, never a DRIFT), never a stall. No env var is required to run. */
-    if (!enabled || !ref)
+    /* Activation: `enabled` is the master gate. Either the coarse block-hash
+     * check (rpc_has_creds) or the UTXO SHA3 check (wired reference) must be
+     * ready; otherwise the tick is a quiet no-op. Boot turns `enabled` on only
+     * when a co-located zclassicd oracle resolves — an operator with no zclassicd
+     * sees neither check arm and no health impact. */
+    if (!enabled)
         return;
+    if (!ref && !rpc_has_creds)
+        return; /* truly dormant — nothing to check */
 
     /* Cross-check the volatile EV_CHAIN_TIP_COMMIT marker against the durable
      * finalized height; take the max so neither a missed event nor a reorg
@@ -211,6 +430,20 @@ void utxo_parity_tick_once(void)
     int32_t frontier = atomic_load(&g_parity.finalized_frontier);
     if (frontier <= 0)
         return; /* tip not advancing — genuinely dormant */
+
+    /* ── Coarse block-hash check (fires at tip, advance-only) ─────
+     * Runs before the UTXO SHA3 check because it is cheap (one RPC call,
+     * no local SHA3 recompute) and fires even when applied > stable_ceiling
+     * (i.e. exactly when the UTXO check is stalled). Does NOT require a
+     * SHA3 reference — block-hash check is independent of the SHA3 path. */
+    if (rpc_has_creds)
+        parity_coarse_block_hash_tick(enabled, &rpc, frontier,
+                                      finality_depth, ndb);
+
+    /* ── UTXO SHA3 check (exact, only when applied is reorg-safe) ─
+     * Requires a wired reference source; skip entirely if none. */
+    if (!ref)
+        return;
 
     /* Stability gate: only compare at a height that is provably below the
      * frontier by finality_depth (cannot reorg) AND that the live applied
@@ -229,9 +462,7 @@ void utxo_parity_tick_once(void)
      * reference at a DIFFERENT height and false-page). Only do so once
      * `applied` is itself reorg-safe (at/below frontier - finality_depth);
      * while the live tip races ahead of finality there is no reorg-safe height
-     * whose set the live table reflects, so we wait. Continuous at-tip exact
-     * parity needs a reorg-safe historical commitment (see the header
-     * follow-ups). */
+     * whose set the live table reflects, so we wait. */
     if ((int32_t)applied > stable_ceiling)
         return;
     int32_t target = (int32_t)applied;
@@ -262,15 +493,51 @@ struct zcl_result utxo_parity_init(const struct utxo_parity_config *cfg,
                                        ? cfg->max_checks_per_tick
                                        : PARITY_DEFAULT_MAX_PER_TICK;
     g_parity.ndb = ndb;
+    /* Copy RPC config when provided (coarse block-hash check transport). */
+    if (cfg)
+        g_parity.rpc = cfg->rpc;
     g_parity.initialized = true;
     pthread_mutex_unlock(&g_parity.lock);
     return ZCL_OK;
+}
+
+void utxo_parity_set_rpc_config(const struct utxo_parity_rpc_config *rpc)
+{
+    if (!rpc)
+        return;
+    pthread_mutex_lock(&g_parity.lock);
+    g_parity.rpc = *rpc;
+    pthread_mutex_unlock(&g_parity.lock);
 }
 
 void utxo_parity_set_reference_source(const struct utxo_reference_source *src)
 {
     pthread_mutex_lock(&g_parity.lock);
     g_parity.ref = src;
+    pthread_mutex_unlock(&g_parity.lock);
+}
+
+/* Test seam: inject a local-block-hash resolver so unit tests do not require
+ * a live block index. Pass NULL to restore the production path (active_chain_at). */
+void utxo_parity_set_local_hash_fn(
+    bool (*fn)(void *ctx, int32_t height, char out_hex[65]), void *ctx)
+{
+    pthread_mutex_lock(&g_parity.lock);
+    g_parity.local_hash_fn = fn;
+    g_parity.local_hash_ctx = ctx;
+    pthread_mutex_unlock(&g_parity.lock);
+}
+
+/* Test seam: inject a reference-getblockhash resolver so unit tests do not
+ * open real sockets. Pass NULL to restore the production RPC path. */
+void utxo_parity_set_ref_hash_fn(
+    bool (*fn)(void *ctx, int32_t height, char out_hex[65],
+               int32_t *ref_height_out, char err[128]),
+    void *ctx)
+{
+    pthread_mutex_lock(&g_parity.lock);
+    g_parity.ref_hash_fn = fn;
+    g_parity.ref_hash_ctx = ctx;
     pthread_mutex_unlock(&g_parity.lock);
 }
 
@@ -283,6 +550,12 @@ void utxo_parity_reset_for_test(void)
     g_parity.max_checks_per_tick = 0;
     g_parity.ndb = NULL;
     g_parity.ref = NULL;
+    memset(&g_parity.rpc, 0, sizeof(g_parity.rpc));
+    g_parity.local_hash_fn = NULL;
+    g_parity.local_hash_ctx = NULL;
+    g_parity.ref_hash_fn = NULL;
+    g_parity.ref_hash_ctx = NULL;
+    g_parity.last_skip_reason[0] = '\0';
     pthread_mutex_unlock(&g_parity.lock);
     atomic_store(&g_parity.finalized_frontier, 0);
     atomic_store(&g_parity.checks_total, 0);
@@ -292,6 +565,9 @@ void utxo_parity_reset_for_test(void)
     atomic_store(&g_parity.reference_errors, 0);
     atomic_store(&g_parity.last_checked_height, 0);
     atomic_store(&g_parity.last_mismatch_height, -1);
+    atomic_store(&g_parity.block_hash_checks, 0);
+    atomic_store(&g_parity.skips_total, 0);
+    atomic_store(&g_parity.last_bh_checked_height, 0);
 }
 
 /* ── State dump (see CLAUDE.md "Adding state introspection") ───── */
@@ -310,6 +586,8 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
     const char *ref_name = ref && ref->name ? ref->name : "none";
     bool ref_exact = ref ? ref->exact : false;
     struct node_db *ndb = g_parity.ndb;
+    char skip_reason[128];
+    snprintf(skip_reason, sizeof(skip_reason), "%s", g_parity.last_skip_reason);
     pthread_mutex_unlock(&g_parity.lock);
 
     bool drift_flag = false;
@@ -324,7 +602,6 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
      * reference. With no co-located zclassicd, boot leaves both off and this is
      * false (the service is quietly dormant — no health impact, no log spam). */
     json_push_kv_bool(out, "active", enabled && ref != NULL);
-    json_push_kv_bool(out, "env_force_on", getenv("ZCL_PARITY_ENABLE") != NULL);
     json_push_kv_str (out, "reference_source", ref_name);
     json_push_kv_bool(out, "reference_exact", ref_exact);
     json_push_kv_int (out, "finality_depth", finality_depth);
@@ -342,6 +619,15 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_parity.reference_errors));
     json_push_kv_int (out, "last_mismatch_height",
                       atomic_load(&g_parity.last_mismatch_height));
+    /* Block-hash parity counters (the at-tip coarse check). */
+    json_push_kv_int (out, "block_hash_checks",
+                      atomic_load(&g_parity.block_hash_checks));
+    json_push_kv_int (out, "skips_total",
+                      atomic_load(&g_parity.skips_total));
+    json_push_kv_int (out, "last_bh_checked_height",
+                      atomic_load(&g_parity.last_bh_checked_height));
+    if (skip_reason[0])
+        json_push_kv_str(out, "last_skip_reason", skip_reason);
     json_push_kv_bool(out, "drift_flag", drift_flag);
     return true;
 }
