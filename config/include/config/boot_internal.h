@@ -236,6 +236,12 @@ struct boot_svc_ctx *boot_active_svc(void);
  * only one call. Returns false on registration failure. */
 bool boot_utxo_parity_register(struct boot_svc_ctx *svc);
 
+/* Register the soak attestation service into the runtime kernel (defined
+ * in boot_soak_attestation.c). Writes one JSON line per 60 s to
+ * <datadir>/soak_attestation.jsonl — persistent evidence for MVP criterion 7.
+ * Always returns true (non-fatal if the supervisor registration misses). */
+bool boot_soak_attestation_register(struct boot_svc_ctx *svc);
+
 /* ── boot_runtime_sync_services.c ───────────────────────────────
  * Runtime service-kernel start/stop adapters for the sync-adjacent services
  * that influence the tip / header path (header_probe, legacy_mirror, gap_fill,

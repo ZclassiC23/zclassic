@@ -32,6 +32,7 @@
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe.h"
 #include "services/utxo_parity_service.h"
+#include "services/soak_attestation_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
@@ -529,6 +530,9 @@ static const struct dump_entry g_dumpers[] = {
                      "linkage + coinbase-label checks, authority-pair "
                      "self-check, window sweep, commitment audit, seed "
                      "gate, mirror divergence locator" },
+    { "soak",           soak_dump_state_json,
+                     "soak attestation log: lines_written, last_ts, "
+                     "last_healthy, rotations, write_failures, file_bytes" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
