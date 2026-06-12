@@ -3,7 +3,7 @@
  * seal_kv — implementation. See storage/seal_kv.h.
  *
  * The ring is four progress_meta blobs ("seal_slot_0".."seal_slot_3") plus a
- * head index ("seal_ring_head"). Each blob is a fixed 197-byte canonical
+ * head index ("seal_ring_head"). Each blob is a fixed 190-byte canonical
  * little-endian record with a trailing SHA3-256 self-hash so a torn/corrupt
  * slot is detectable and skippable. Writes ride the caller's open
  * progress.kv txn via progress_meta_set_in_tx (the sanctioned kernel hatch —
@@ -21,7 +21,7 @@
 #include <sqlite3.h>
 #include <string.h>
 
-/* Offset where self_sha3 begins: 197 - 32. */
+/* Offset where self_sha3 begins: 190 - 32. */
 #define SEAL_SELF_SHA3_OFFSET (SEAL_RECORD_BYTES - 32)
 
 static void put_u32_le(uint8_t *p, uint32_t v)

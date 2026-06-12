@@ -73,8 +73,8 @@ struct seal_record {
  * call once in seal_service_init. */
 bool seal_kv_ensure_schema(struct sqlite3 *db);
 
-/* Serialize r into out[197], filling out's last 32 bytes with self_sha3 =
- * sha3_256(out[0 .. 165)). Returns false on NULL args. */
+/* Serialize r into out[190], filling out's last 32 bytes with self_sha3 =
+ * sha3_256(out[0 .. 158)). Returns false on NULL args. */
 bool seal_serialize(const struct seal_record *r, uint8_t out[SEAL_RECORD_BYTES]);
 
 /* Deserialize in[len] into *out. len must == SEAL_RECORD_BYTES and version must

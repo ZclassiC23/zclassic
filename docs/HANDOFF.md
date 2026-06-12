@@ -6,7 +6,71 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-12 (latest) — wave 3 shipped + the copy-prove caught a permanent cold-import wedge BEFORE it reached live
+## 2026-06-12 (latest, eve) — wave 4 MERGED; live COIN TEAR found; soak/deploy split; redeploy = wipe + cold import
+
+**Wave 4 (3 parallel worktree implementers → adversarial review → merged
+`33838e421`, union gate 0/422 + lint all-pass, pushed):** tenacity-roadmap
+items 3, 5, and 4-M1.
+- **Item 3 — reindex epilogue** (`reindex_epilogue.c` + boot_index wiring):
+  after a clean from-genesis replay, ALL durable post-reindex state is
+  derived in one ordered commit (coins_kv reseed, SHA3 commitment recompute,
+  reducer cursors + coins_applied_height + tip_finalize anchor clamped to
+  the replayed tip). Without it the recovery path itself manufactured the
+  coins_applied > hstar coin-tear wedge. Epilogue failure PAGES and leaves
+  the reindex sentinel pending (retries do NOT advance the attempt budget —
+  the page is the backstop).
+- **Item 5 — replay canary** (`tools/scripts/replay_canary.sh` + Makefile
+  `replay-canary-anchor`/`-genesis` + systemd units): scheduled band replay
+  on a scratch datadir (`~/.zclassic-c23-canary-scratch`, NOT /tmp) with an
+  atomic PASS/FAIL sentinel — closes the "set parity had no continuous
+  gate" hole the coin tear exposed. The i5 reviewer caught a vaporware
+  staleness guard → made real + elapsed-time band in `f89a3b00c`. First
+  runs + the seeded known-bad RED proof must pass BEFORE green nights
+  count; reindex smoke is KNOWN BLOCKED on regtest durability (documented
+  SKIP). Opt-in node-spawning harnesses landed in `82ade88f2`.
+- **Item 4-M1 — seal** (`seal_kv` ring + candidate hook in
+  utxo_apply_stage in-stage-txn + ratifier in rolling_anchor_service +
+  row-8 page): every 1000-height grid point gets a candidate seal (height,
+  block_hash, coins_sha3, utxo_count, supply); ratified one anchor-window
+  later. Prune lands DARK (`SEAL_PRUNE_ENABLED 0`). nullifier_sha3 all-zero
+  in M1 (activation gap). `zcl_state subsystem=seal`. First live seal
+  expected when coins_applied crosses grid 3,146,000.
+- Repair-ladder census: 15,227 LOC (the M4 deletion target). WIP branch
+  `fix/crashonly-verb-selection` DROPPED after review (ideas mined; archived
+  tag).
+
+**LIVE COIN TEAR (found ~22:00 UTC by the wave-4 boot-smoke; PREDATES
+wave 4; root cause OPEN):** the live node wedged at 3,145,366 — UTXO set
+has 13 extra / ≥1 missing coins vs zclassicd, surfacing as
+`prevout_unresolved` on canonical 3,145,367 → `block_failed_mask_at_tip`
+paging. The wedged datadir is preserved at
+`~/.zclassic-c23-cointear-fixture-20260612` (KEEP — it is the root-cause
+fixture). A restart cannot fix a torn set; the remedy is a WIPE +
+fresh two-step cold import on the merged binary. Set parity had NO
+continuous gate before this — the wave-4 canary (item 5) is that gate.
+
+**SOAK/DEPLOY SPLIT (owner-approved):** rapid deploys are the norm on the
+main node; MVP-C6 soak time accrues on a dedicated `zclassic23-soak`
+linger service — pinned binary `~/.local/bin/zclassic23-soak` (= merged
+`33838e421`, never touched by `make deploy`), fresh datadir
+`~/.zclassic-c23-soak`, P2P 8043 / RPC 18242, no -tor, addnodes
+127.0.0.1:8033 + :8023. Its bootstrap (started 22:43 UTC: step-1 imported
+3,138,616 headers in 88 s, then normal boot) IS the run-4 cold-import
+real prove — and both cold-import lattice fixes (`41de86064` seed
+utxo_apply row + `7a28501e5`) are in the merged binary's ancestry, so
+this bootstrap exercises them.
+
+**Resume queue (in order):** (1) gate soak convergence — heights + hash
+probes + `gettxoutsetinfo` count/supply vs zclassicd; (2) live redeploy =
+stop zclassic23, wipe `~/.zclassic-c23` (wallet 0.00 verified, Tor
+identity outside datadir), `--importblockindex $HOME/.zclassic
+$HOME/.zclassic-c23/node.db`, start service, acceptance = healthy:true at
+tip + probes; (3) canary first runs + RED proof, then enable timers;
+(4) seal watch at grid 3,146,000.
+
+---
+
+## 2026-06-12 — wave 3 shipped + the copy-prove caught a permanent cold-import wedge BEFORE it reached live
 
 **Wave 3 (5 parallel worktree agents → adversarial refuters → merged
 `08cde64ca..128ac402f` + fix-forward `6ae0a837a`/`4aaf24c3d`):**

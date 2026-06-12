@@ -357,8 +357,11 @@ bool reindex_chainstate(struct main_state *ms,
      * (errors==0); g_utxo_commitment_skip is already CLEARED above so the
      * commitment recompute runs with tracking ON. On failure it PAGES
      * (EV_OPERATOR_NEEDED, inside the epilogue) and returns false so the
-     * reindex sentinel stays pending for a bounded next-boot retry — never
-     * serving torn, never FATAL. */
+     * reindex sentinel stays pending and the next boot retries — never
+     * serving torn, never FATAL. Retries via the still-pending sentinel do
+     * NOT advance the attempt budget (the count moves only when post-restore
+     * integrity re-requests the rebuild), so the per-failure page is the
+     * backstop for a persistently failing epilogue. */
     if (errors == 0) {
         if (!reindex_epilogue_derive(ms, ndb, datadir)) {
             fprintf(stderr, // obs-ok:paired-with-return-false-below
