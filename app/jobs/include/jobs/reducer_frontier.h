@@ -38,6 +38,26 @@
  * regression test. */
 #define REDUCER_FRONTIER_TRUSTED_ANCHOR ((int32_t)3056758)
 
+/* Durable trusted-base declaration (progress_meta, 8-byte LE height blob +
+ * 32-byte hash blob — the coins_applied_height storage convention). Written
+ * RAISE-ONLY by the cold-import/snapshot seed (tip_finalize_anchor.c);
+ * read by reducer_trusted_anchor as an anchor candidate vetted by the same
+ * reducer_anchor_candidate_ok gate as a tip_finalize_log 'anchor' row.
+ *
+ * WHY a meta key and not (only) the anchor row: the anchor row at H is
+ * pipeline-owned — the very first forward step REPLACES it with the
+ * 'finalized' row for the H→H+1 transition (log_insert is INSERT OR
+ * REPLACE, and the finalized row at H is the only durable source of
+ * hash(H+1) for the boot resolver, so the replacement is correct). A
+ * cold-import datadir whose ONLY anchor row was the seed's then starves
+ * reducer_trusted_anchor back to the compiled checkpoint, the frontier
+ * walk reads the legitimately log-less import region as an 88k hole, and
+ * the I4.3 sweep HOLD-wedges an otherwise healthy at-tip node (copy-proven
+ * 2026-06-12, run 3). A trust DECLARATION must not live in a row the
+ * pipeline consumes. */
+#define REDUCER_TRUSTED_BASE_HEIGHT_KEY "reducer_trusted_base_height"
+#define REDUCER_TRUSTED_BASE_HASH_KEY   "reducer_trusted_base_hash"
+
 /* Compute H* (deepest provably-consistent height) and served_floor from
  * durable state.
  *

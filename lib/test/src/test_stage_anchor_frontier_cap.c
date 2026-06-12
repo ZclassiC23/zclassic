@@ -300,6 +300,22 @@ static int fc_case_fresh_seed(void)
     FC_CHECK("T5b: H* still anchored at H after the repeat",
              hs_ok && hstar == H);
 
+    /* Member 3 of the #31 lattice (run-3 copy-prove, 2026-06-12): the
+     * pipeline CONSUMES the seed anchor row — the first forward step
+     * replaces it with the H→H+1 'finalized' row. The trusted base must
+     * survive that via the durable REDUCER_TRUSTED_BASE_HEIGHT_KEY
+     * declaration, or the frontier walk starves back to the compiled
+     * checkpoint and the I4.3 sweep HOLD-wedges the node over the
+     * log-less import region. Simulate the consumption and re-derive. */
+    FC_CHECK("T5b: simulate pipeline consuming the anchor row",
+             fc_exec(db, "UPDATE tip_finalize_log SET status='finalized' "
+                         "WHERE status='anchor'"));
+    progress_store_tx_lock();
+    hs_ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    progress_store_tx_unlock();
+    FC_CHECK("T5b: H* survives anchor-row consumption (durable base)",
+             hs_ok && hstar == H);
+
     tip_finalize_stage_shutdown();
     main_state_free(&ms);
     progress_store_close();
