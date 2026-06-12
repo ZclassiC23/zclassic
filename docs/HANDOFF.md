@@ -46,7 +46,11 @@ stage's to finalize. Nothing may stamp T+1.
 
 **Gates:** test_parallel 0/415 (twice), `make lint` all-pass. Binary
 `967437452` deployed 12:06:56 UTC, boot clean at the pre-restart parity
-height.
+height. **LIVE-VALIDATED 12:14–12:15 UTC:** blocks 3144908 and 3144909
+each published at the SAME 5 s watcher tick they arrived at zclassicd
+(previously one full inter-block interval late, every block); 6/6
+hash-identity probes MATCH; tip_finalize_log now shows consecutive
+finalized rows (the alternating finalized/anchor lattice is gone).
 
 **Open (task #31):** two cosmetic +1s remain, each costing one late
 block per EVENT (not per block): the boot clamp floors the cursor at
