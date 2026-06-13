@@ -1087,6 +1087,18 @@ deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
 release:
 	@./tools/release.sh
 
+# Install the tracked git hooks (shared across all worktrees via core.hooksPath).
+# pre-push runs the LOCAL CI gate (`make ci`) so nothing unverified reaches
+# origin — this project runs CI locally, never on GitHub Actions. Opt-in:
+# nothing changes until you run this. Bypass one push with `git push --no-verify`.
+.PHONY: install-hooks
+install-hooks:
+	@git config core.hooksPath tools/githooks
+	@chmod +x tools/githooks/* 2>/dev/null || true
+	@echo "Installed git hooks: core.hooksPath=tools/githooks"
+	@echo "  pre-push → runs 'make ci' before every push to origin"
+	@echo "  bypass one push: git push --no-verify   (or ZCL_SKIP_PREPUSH=1)"
+
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f test_zcl test_parallel zclassic23 zclassic-cli zcl-rpc zcl-nodectl \
