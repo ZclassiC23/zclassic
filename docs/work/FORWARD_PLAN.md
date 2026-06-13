@@ -59,7 +59,7 @@ a slice; `no` = not gated.
 |---|-----------|--------------|-----|------|
 | 1 | Single-binary install (clean Ubuntu) | met-manual | no | no clean-container install + `systemctl` CI job |
 | 2 | Tor onion bootstrap <60s | met-manual | no | onion live, but <60s timing not measured; non-hermetic → `make ci-stress` only |
-| 3 | Cold-start sync to tip <10 min | partial | slice ◐ | sync-FSM gate in `make ci`; the real two-step cold import is hand-proven (2026-06-13 live redeploy + soak bootstrap), not CI-gated |
+| 3 | Cold-start sync to tip <10 min | partial | slice ◐ | sync-FSM gate in `make ci`; the real two-step cold import is hand-proven (2026-06-13 live redeploy + soak bootstrap), not CI-gated — and the <10 min bound is not yet met (proven imports take ~25+ min) |
 | 4 | Receive shielded payment e2e | partial | no | gate exists but opt-in + needs `~/.zcash-params` → `make ci-stress` only |
 | 5 | List + sell file via store | partial | slice ◐ | in-process store-proxy gate in `make ci`; real shielded-buy+file-transfer unproven |
 | 6 | 7-day soak, zero intervention | accruing | no | wedge CLEARED 2026-06-12; dedicated `zclassic23-soak` node accruing the 168h window; `make soak-ci` bounded proxy + replay canary exist; full 7-day claim unmet |
@@ -70,9 +70,9 @@ a slice; `no` = not gated.
 
 ## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-Ordering principle: **make the node hold tip → make v1 measurable in CI → prove
-features → soak.** Refactor debt does not block a working sovereign node and
-must not jump the queue.
+Ordering principle: **the node holds tip (done 2026-06-12) → make v1 measurable
+in CI → prove features → soak.** Refactor debt does not block a working
+sovereign node and must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
 - [x] **Fix the wedge** — DONE: the live wedge CLEARED 2026-06-12 (tip_finalize
@@ -120,6 +120,14 @@ must not jump the queue.
       (adversary-vetted; original verdict DO_NOT_APPLY → corrected design at
       top). **Do NOT apply live without owner go.**
 - [ ] Persist `utxo_sha3` at finalized-tip so the self-heal has a fresh input.
+- [ ] **Reducer shielded-consensus enforcement** — the nullifier double-spend
+      gate landed (`app/jobs/src/utxo_apply_nullifiers.c`, C-3); REMAINING on
+      the forward path = anchor membership + ZIP-209 turnstile (design of
+      record
+      [`reducer-shielded-consensus-plan.md`](./reducer-shielded-consensus-plan.md)
+      — DESIGN-only, all 3 reviewers returned `consensus_safe=false`, a
+      refinement round is required before any code). Unblocked by the
+      2026-06-12 wedge clear; owner-gated + copy-prove.
 - [ ] The wedge HAS cleared (2026-06-12) — the deferred consensus hazards in
       [`concurrency-hazards-consensus-gated.md`](./concurrency-hazards-consensus-gated.md)
       are now unblocked (still owner-gated + repro-on-copy; item 1 = a real
