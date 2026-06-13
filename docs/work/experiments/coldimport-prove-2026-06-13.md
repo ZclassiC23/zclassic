@@ -57,6 +57,25 @@ Verdict signal — watch the served tip vs h=3,145,595:
 - **CLEAN:** served tip advances past 3,145,595 toward zclassicd's tip; also
   yields a fresh-sync wall-clock datapoint for MVP-C3 (<10 min cold-sync).
 
+## Result (2026-06-13): CLEAN
+
+A fresh two-step cold import on HEAD **connected through the wedge block
+3,145,595** (canonical `000001e170a22e…`, hash-matches zclassicd) and advanced
+to 3,145,830 — it did **not** reproduce the orphan-seed coin tear. Therefore the
+live tear was a **one-off** (an orphan captured during the *original* sync/reorg,
+recorded into the coin set and never reconciled), not a repeatable import defect.
+
+**Implication:** the Phase-1 import-correctness gate is **preventive** — refuse a
+coin-incomplete / active-chain-inconsistent set at *write time* so a
+transient-reorg artifact can never silently become "our" chain. There is no
+deterministic import-logic bug to fix.
+
+Caveat: the probe then plateaued at 3,145,830 due to **header-sync starvation**
+(it had only 1 peer — booted without `-addnode` — and tripped
+`header_stall_at_height` → `operator_needed`). That is a thin-peering setup
+artifact of the throwaway node, **not** the coin-tear wedge and not a reducer
+stall. A properly-peered fast-sync timing run (MVP-C3) is a separate measurement.
+
 ## Teardown
 
 ```
