@@ -11,9 +11,12 @@ Description=ZClassic23 Soak Evidence Collector — hourly MVP-C6 sample (read-on
 # evidence is itself evidence), never skipped.
 After=zclassic23-soak.service
 # OnFailure (the house pager pattern): fires ONLY when the collector
-# could not APPEND its sample — unreachable nodes are NOT a unit failure.
-# The AUTHORITATIVE record remains the evidence JSONL; this just makes a
-# broken collector loud.
+# could not LOCK (bounded flock -w 30 acquire) or APPEND its sample —
+# unreachable nodes are NOT a unit failure. The AUTHORITATIVE record
+# remains the evidence JSONL; this just makes a broken collector loud.
+# A collector that stops RUNNING entirely (timer disabled, box rebuilt,
+# script path broken) never trips OnFailure — that gap is caught by the
+# judge's staleness rung instead (MET requires a fresh last sample).
 OnFailure=zclassic23-soak-evidence-onfailure.service
 
 [Service]

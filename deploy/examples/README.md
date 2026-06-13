@@ -20,9 +20,12 @@ operator-specific peers. Copy and adapt before installing:
   collector: `tools/scripts/soak_evidence.sh collect` appends one READ-ONLY
   JSON sample (soak/zclassicd heights, gap, NRestarts, ActiveEnterTimestamp,
   VmRSS, ok) to `~/.local/state/zclassic23-soak-evidence/evidence.jsonl`.
-  An unreachable node is recorded as an `ok:false` line, never skipped.
-  Judge the window with `make soak-evidence-report`; the unit's OnFailure=
-  pages only when the APPEND itself fails.
+  An unreachable node is recorded as an `ok:false` line, never skipped —
+  and the judge GATES on those holes (soak unreachable beyond the 1%
+  budget = NOT_MET; a stale last sample caps MET at INSUFFICIENT, so a
+  dead collector can never leave an evergreen green verdict). Judge the
+  window with `make soak-evidence-report`; the unit's OnFailure= pages
+  only when the lock-acquire or APPEND itself fails.
 - `zclassic23-soak-evidence-onfailure.service` — `OnFailure=` arm for the
   collector; logs to the journal (`journalctl -t soak-evidence`).
 - `zclassic23-replay-canary-nightly.{service,timer}` — nightly from-anchor

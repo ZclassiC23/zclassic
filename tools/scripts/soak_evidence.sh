@@ -18,6 +18,8 @@
 #               rss_kb          VmRSS of MainPID from /proc/<pid>/status
 #                               (NOT cgroup MemoryCurrent — that includes
 #                               page cache and runs 3x high), or null
+#               mainpid         systemd MainPID at sample time (forensic
+#                               signal for restart-ambiguity analysis), or null
 #               ok              true iff BOTH RPCs answered
 #             If a node is unreachable the line is STILL appended with
 #             ok:false and nulls — a hole in the evidence is itself
@@ -28,15 +30,33 @@
 #             --window-hours N (default 168) window anchored at the LAST
 #             sample: coverage, sampling holes, NRestarts delta (with the
 #             autonomous-recycle note), operator-intervention detection,
-#             gap==0 rate, rss_first/rss_last. Verdict line:
+#             soak/oracle reachability, gap==0 rate, rss_first/rss_last,
+#             evidence freshness. Verdict line:
 #               soak-evidence: VERDICT=MET|NOT_MET|INSUFFICIENT reason=...
-#             MET ONLY if window_covered >= N hours AND no sampling hole
-#             > HOLE_THRESHOLD (2h cadence-doubling + 15 min slack) AND no
-#             operator intervention detected AND gap==0 in >= 99% of ok
-#             samples. The verdict comes from PARSED DATA only — an empty
-#             or short log is an explicit INSUFFICIENT, never a silent
-#             pass (never exit-0-as-proof). Exit: 0=MET 1=NOT_MET
-#             2=INSUFFICIENT.
+#             MET ONLY if ALL of:
+#               - window_covered >= N hours;
+#               - no sampling hole > HOLE_THRESHOLD (2h cadence-doubling
+#                 + 15 min slack);
+#               - no operator intervention detected;
+#               - the SOAK node answered in all but <= (100-GAP0_MIN_PCT)%
+#                 of window samples — a node whose RPC is dead/wedged for
+#                 the week (unit active, RPC unanswering, no restart: the
+#                 exact MVP-C6 failure mode) is NOT_MET
+#                 soak_unreachable_*, never MET; the few ok samples don't
+#                 get to carry the verdict while the holes are ignored;
+#               - the zclassicd ORACLE answered in >= 90% of window
+#                 samples — thinner gap evidence cannot prove the gap==0
+#                 claim => INSUFFICIENT oracle_coverage_thin_*;
+#               - gap==0 in >= GAP0_MIN_PCT% of ok samples;
+#               - the LAST sample is FRESH: now - last_ts <=
+#                 HOLE_THRESHOLD. A green week whose collector then died
+#                 (timer disabled, box rebuilt, script path broken — none
+#                 of which trip OnFailure) must NOT stay evergreen MET; it
+#                 caps at INSUFFICIENT stale_evidence_age_*. Pass
+#                 --allow-stale to deliberately judge a historical window.
+#             The verdict comes from PARSED DATA only — an empty or short
+#             log is an explicit INSUFFICIENT, never a silent pass (never
+#             exit-0-as-proof). Exit: 0=MET 1=NOT_MET 2=INSUFFICIENT.
 #
 # Restart semantics (reader-verified 2026-06-13):
 #   - systemd NRestarts counts AUTOMATIC restarts only; a manual
@@ -50,10 +70,20 @@
 #     and lets the criterion text decide; it does not gate MET on it.
 #     (Strict soak_harness.c math counts ANY observed downtime as
 #     FAIL_CRASH — both numbers stay visible, neither bar is redefined.)
+#   - SAMPLING-RESOLUTION LIMIT: with one sample per hour, a manual
+#     `systemctl restart` (NRestarts resets to 0) followed by >= prev+1
+#     autonomous recycles before the next sample lands ABOVE the previous
+#     sample's NRestarts and is indistinguishable from pure autonomous
+#     recycles. Every inter-sample interval where ActiveEnterTimestamp
+#     jumped AND NRestarts climbed is therefore reported as
+#     ambiguous_restarts (the restart count inside such intervals) —
+#     reported, NOT gating, consistent with the criterion-text-decides
+#     stance; the per-sample mainpid + the systemd journal are the
+#     forensic tiebreakers.
 #
 # Usage:
 #   soak_evidence.sh collect
-#   soak_evidence.sh judge [--window-hours N]
+#   soak_evidence.sh judge [--window-hours N] [--allow-stale]
 #   soak_evidence.sh --selftest        # hermetic; fixture JSONL, no nodes
 #
 # Env (test injection seams — the selftest needs no live nodes):
@@ -63,6 +93,8 @@
 #   ZCL_ZD_RPC_CMD         command printing the zclassicd getblockcount JSON
 #   ZCL_SOAK_SHOW_CMD      command printing `systemctl show` key=value lines
 #   ZCL_SOAK_RSS_CMD       command printing a "VmRSS: <n> kB" line
+#   ZCL_SOAK_NOW           epoch override for "now" in the judge staleness
+#                          math (test seam — keeps the selftest hermetic)
 #
 # No python (banned), no jq (installed but unused by repo convention) —
 # bash + sed + awk + flock only, same rule as replay_canary.sh.
@@ -150,19 +182,31 @@ cmd_collect() {
     rss_kb="$(printf '%s' "$rss_line" | sed -n 's/.*VmRSS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*kB.*/\1/p' | head -n1)"
 
     local line
-    line="$(printf '{"ts":%s,"soak_height":%s,"zd_height":%s,"gap":%s,"nrestarts":%s,"active_enter_ts":%s,"rss_kb":%s,"ok":%s}' \
+    line="$(printf '{"ts":%s,"soak_height":%s,"zd_height":%s,"gap":%s,"nrestarts":%s,"active_enter_ts":%s,"rss_kb":%s,"mainpid":%s,"ok":%s}' \
         "$ts" "$(jnum "$soak_height")" "$(jnum "$zd_height")" "$(jnum "$gap")" \
-        "$(jnum "$nrestarts")" "$(jnum "$aet_epoch")" "$(jnum "$rss_kb")" "$ok")"
+        "$(jnum "$nrestarts")" "$(jnum "$aet_epoch")" "$(jnum "$rss_kb")" \
+        "$(jnum "$mainpid")" "$ok")"
 
     # flock-serialized append: timer run + ad-hoc operator run can never
-    # interleave a torn line. Failure to APPEND is the only collect
-    # failure (exit 1 → unit OnFailure pages); an unreachable node is
-    # NOT a failure — it is the ok:false record itself.
-    if ! (
-        flock -x 9
+    # interleave a torn line. The lock acquire is BOUNDED (-w 30) and its
+    # failure is EXPLICIT (`|| exit 9`) — set -e is suppressed inside an
+    # if/|| condition context, so without the explicit exit a missing or
+    # failing `flock` would silently degrade to an UNLOCKED append, and
+    # without -w a stuck lock holder would block until the unit's
+    # TimeoutStartSec kills the run. Failure to LOCK or APPEND is the
+    # only collect failure (exit 1 → unit OnFailure pages); an
+    # unreachable node is NOT a failure — it is the ok:false record.
+    local append_rc=0
+    (
+        flock -x -w 30 9 || exit 9
         printf '%s\n' "$line" >&9
-    ) 9>>"$EVIDENCE_FILE"; then
-        echo "soak-evidence: FAIL could not append to $EVIDENCE_FILE" >&2
+    ) 9>>"$EVIDENCE_FILE" || append_rc=$?
+    if [ "$append_rc" -ne 0 ]; then
+        if [ "$append_rc" -eq 9 ]; then
+            echo "soak-evidence: FAIL could not acquire append lock on $EVIDENCE_FILE within 30s" >&2
+        else
+            echo "soak-evidence: FAIL could not append to $EVIDENCE_FILE (rc=$append_rc)" >&2
+        fi
         exit 1
     fi
 
@@ -176,17 +220,26 @@ cmd_collect() {
 # ── judge ──────────────────────────────────────────────────────────
 
 cmd_judge() {
-    local window_hours=168
+    local window_hours=168 allow_stale=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --window-hours)   shift; window_hours="${1:?--window-hours needs a value}" ;;
             --window-hours=*) window_hours="${1#*=}" ;;
+            --allow-stale)    allow_stale=1 ;;
             *) echo "soak-evidence: unknown judge arg '$1'" >&2; exit 2 ;;
         esac
         shift
     done
     case "$window_hours" in
         ''|*[!0-9]*) echo "soak-evidence: --window-hours must be a positive integer" >&2; exit 2 ;;
+    esac
+
+    # "now" feeds the staleness rung; ZCL_SOAK_NOW is the hermetic test
+    # seam (same pattern as the i5 replay-canary staleness-guard fix).
+    local now_ts
+    now_ts="${ZCL_SOAK_NOW:-$(date +%s)}"
+    case "$now_ts" in
+        ''|*[!0-9]*) echo "soak-evidence: ZCL_SOAK_NOW must be a positive integer epoch" >&2; exit 2 ;;
     esac
 
     if [ ! -s "$EVIDENCE_FILE" ]; then
@@ -198,7 +251,8 @@ cmd_judge() {
     local out
     out="$(awk -v wh="$window_hours" -v hole_thr="$HOLE_THRESHOLD_SEC" \
                -v slack="$WINDOW_SLACK_SEC" -v gap0_min="$GAP0_MIN_PCT" \
-               -v now="$(date +%s)" -v file="$EVIDENCE_FILE" '
+               -v now="$now_ts" -v allow_stale="$allow_stale" \
+               -v file="$EVIDENCE_FILE" '
         # fld(line,key) -> "" (missing) | "null" | numeric string
         function fld(line, key,    re, s) {
             re = "\"" key "\":(-?[0-9]+|null)"
@@ -214,6 +268,8 @@ cmd_judge() {
             n++
             ts[n]   = t + 0
             okv[n]  = ($0 ~ /"ok":true/) ? 1 : 0
+            shv[n]  = fld($0, "soak_height")
+            zdv[n]  = fld($0, "zd_height")
             gapv[n] = fld($0, "gap")
             nrv[n]  = fld($0, "nrestarts")
             aetv[n] = fld($0, "active_enter_ts")
@@ -233,13 +289,20 @@ cmd_judge() {
             cnt = n - i0 + 1
             covered = (last - ts[i0]) / 3600.0
 
-            hole_max = 0; op = 0; ok_cnt = 0; gap0 = 0; gapgt0 = 0
+            hole_max = 0; op = 0; ambiguous = 0; ok_cnt = 0; gap0 = 0; gapgt0 = 0
+            soak_null = 0; zd_null = 0
             max_gap = ""; nr_first = ""; nr_last = ""
             rss_first = ""; rss_last = ""
             prev_t = ""; prev_nr = ""; prev_aet = ""
             for (i = i0; i <= n; i++) {
                 if (prev_t != "") { d = ts[i] - prev_t; if (d > hole_max) hole_max = d }
                 prev_t = ts[i]
+                # Reachability accounting: a soak-null sample means the
+                # SOAK node did not answer (RPC dead/hung — the exact
+                # MVP-C6 failure mode); a zd-only-null sample means only
+                # the ORACLE was missing (gap unprovable, soak alive).
+                if (!isnum(shv[i]))      soak_null++
+                else if (!isnum(zdv[i])) zd_null++
                 if (okv[i] && isnum(gapv[i])) {
                     ok_cnt++
                     g = gapv[i] + 0
@@ -260,6 +323,13 @@ cmd_judge() {
                         # OPERATOR intervention.
                         if (r < prev_nr) op++
                         else if (jumped && r == prev_nr) op++
+                        # AET jumped AND NRestarts climbed: at hourly
+                        # sampling resolution this is indistinguishable
+                        # from a manual reset-to-0 followed by >= prev+1
+                        # autonomous recycles within the same interval.
+                        # Count the restarts in such intervals as
+                        # AMBIGUOUS — reported, not gated (see header).
+                        else if (jumped && r > prev_nr) ambiguous += r - prev_nr
                     }
                     prev_nr = r
                     if (a != "") prev_aet = a
@@ -273,13 +343,17 @@ cmd_judge() {
             gap0_pct = (ok_cnt > 0) ? (100.0 * gap0 / ok_cnt) : 0.0
 
             printf "soak-evidence: judge window_hours=%d file=%s file_samples=%d window_samples=%d malformed=%d\n", wh, file, n, cnt, malformed
-            printf "soak-evidence: window_covered_hours=%.1f first_ts=%d last_ts=%d last_sample_age_sec=%d\n", covered, ts[i0], last, now - last
+            printf "soak-evidence: window_covered_hours=%.1f first_ts=%d last_ts=%d last_sample_age_sec=%d allow_stale=%d\n", covered, ts[i0], last, now - last, allow_stale
             printf "soak-evidence: max_sampling_hole_sec=%d hole_threshold_sec=%d\n", hole_max, hole_thr
-            printf "soak-evidence: restarts_in_window=%s operator_interventions=%d (NRestarts delta; in-binary watchdog self-recycles count as AUTONOMOUS recovery — count reported, the criterion text decides; strict soak_harness math counts ANY observed downtime as FAIL_CRASH)\n", restarts, op
-            printf "soak-evidence: ok_samples=%d/%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
+            printf "soak-evidence: restarts_in_window=%s ambiguous_restarts=%d operator_interventions=%d (NRestarts delta; in-binary watchdog self-recycles count as AUTONOMOUS recovery — count reported, the criterion text decides; ambiguous = restarts in AET-jump intervals where a manual reset-then-climb is indistinguishable at hourly sampling resolution; strict soak_harness math counts ANY observed downtime as FAIL_CRASH)\n", restarts, ambiguous, op
+            printf "soak-evidence: ok_samples=%d/%d soak_null_samples=%d zd_null_samples=%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, soak_null, zd_null, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
             printf "soak-evidence: rss_first_kb=%s rss_last_kb=%s\n", (rss_first == "" ? "null" : rss_first ""), (rss_last == "" ? "null" : rss_last "")
 
             # Verdict ladder — deterministic priority, parsed data only.
+            # soak_unreachable gets the SAME 1% budget as the gap rate
+            # ((100 - gap0_min)% of window samples): an unanswering soak
+            # RPC is a liveness hole, and a hole in the evidence is
+            # itself evidence — judged, not just collected.
             if (cnt < 2) {
                 v = "INSUFFICIENT"; reason = "too_few_samples"
             } else if (covered < wh) {
@@ -288,12 +362,24 @@ cmd_judge() {
                 v = "NOT_MET"; reason = sprintf("operator_intervention_detected_x%d", op)
             } else if (hole_max > hole_thr) {
                 v = "NOT_MET"; reason = sprintf("sampling_hole_%ds_gt_%ds", hole_max, hole_thr)
-            } else if (ok_cnt == 0) {
-                v = "INSUFFICIENT"; reason = "no_ok_samples"
+            } else if (soak_null * 100 > cnt * (100 - gap0_min)) {
+                v = "NOT_MET"; reason = sprintf("soak_unreachable_in_%d_of_%d_samples", soak_null, cnt)
+            } else if (ok_cnt * 100 < cnt * 90) {
+                # Soak node fine, but the zclassicd oracle answered too
+                # rarely: the gap evidence is too thin to prove gap==0.
+                v = "INSUFFICIENT"; reason = sprintf("oracle_coverage_thin_ok_%d_of_%d", ok_cnt, cnt)
             } else if (gap0_pct < gap0_min) {
                 v = "NOT_MET"; reason = sprintf("gap_nonzero_in_%d_of_%d_ok_samples", ok_cnt - gap0, ok_cnt)
             } else {
                 v = "MET"; reason = sprintf("covered_%.1fh_hole_max_%ds_gap0_%.2fpct", covered, hole_max, gap0_pct)
+            }
+            # Staleness cap (the anti-evergreen rung, same defect class as
+            # the i5 replay-canary vaporware staleness guard f89a3b00c):
+            # a window anchored at the LAST sample can be green forever
+            # after the collector dies. MET requires the evidence to be
+            # FRESH; --allow-stale deliberately judges a historical window.
+            if (v == "MET" && !allow_stale && now - last > hole_thr) {
+                v = "INSUFFICIENT"; reason = sprintf("stale_evidence_age_%ds", now - last)
             }
             printf "soak-evidence: VERDICT=%s reason=%s\n", v, reason
         }' "$EVIDENCE_FILE")"
@@ -312,12 +398,15 @@ cmd_judge() {
 
 st_fail() { echo "selftest: FAIL $*" >&2; exit 1; }
 
-# st_judge <dir> <hours> <want_verdict> <want_reason_substr> <want_rc> <case>
+# st_judge <dir> <hours> <now> <want_verdict> <want_reason_substr> <want_rc> <case> [extra judge args...]
+# <now> is injected via the ZCL_SOAK_NOW seam so the staleness rung stays
+# hermetic (the fixtures live in 2023-epoch time, not wall-clock time).
 st_judge() {
-    local dir="$1" hours="$2" want_v="$3" want_r="$4" want_rc="$5" name="$6"
+    local dir="$1" hours="$2" jnow="$3" want_v="$4" want_r="$5" want_rc="$6" name="$7"
+    shift 7
     local out rc
     set +e
-    out="$(ZCL_SOAK_EVIDENCE_DIR="$dir" bash "$SELF" judge --window-hours "$hours" 2>&1)"
+    out="$(ZCL_SOAK_EVIDENCE_DIR="$dir" ZCL_SOAK_NOW="$jnow" bash "$SELF" judge --window-hours "$hours" "$@" 2>&1)"
     rc=$?
     set -e
     printf '%s\n' "$out" | grep -q "VERDICT=$want_v " \
@@ -343,11 +432,17 @@ cmd_selftest() {
     trap 'rm -rf "$ST_TMP"' EXIT
     local tmp="$ST_TMP"
     local base=1700000000 aet=$((1700000000 - 500)) i ts f
+    # The fixtures end at base + 168 h; "fresh" is one minute after that
+    # (injected via the ZCL_SOAK_NOW seam — the staleness rung must never
+    # depend on the real wall clock inside the hermetic selftest).
+    local last_ts=$((base + 168 * 3600)) fresh
+    fresh=$((base + 168 * 3600 + 60))
 
     # A) full-green 169 hourly samples spanning exactly 168 h, including
     #    ONE autonomous watchdog recycle (NRestarts 1->2 + AET bump at
     #    i=80) — must still be MET (autonomous recovery is reported, not
-    #    gated).
+    #    gated; the single-step climb is counted as ambiguous_restarts=1
+    #    because hourly sampling cannot exclude a reset-then-climb).
     f="$tmp/green"; mkdir -p "$f"
     for ((i = 0; i <= 168; i++)); do
         ts=$((base + i * 3600))
@@ -357,17 +452,17 @@ cmd_selftest() {
             st_line "$f/evidence.jsonl" "$ts" 0 2 $((base + 80 * 3600 - 100)) $((1500000 + i % 7))
         fi
     done
-    st_judge "$f" 168 MET "" 0 full-green-window
-    ZCL_SOAK_EVIDENCE_DIR="$f" bash "$SELF" judge --window-hours 168 2>&1 \
-        | grep -q 'restarts_in_window=1 operator_interventions=0' \
-        || st_fail "case=full-green-window expected restarts_in_window=1 operator_interventions=0"
+    st_judge "$f" 168 "$fresh" MET "" 0 full-green-window
+    ZCL_SOAK_EVIDENCE_DIR="$f" ZCL_SOAK_NOW="$fresh" bash "$SELF" judge --window-hours 168 2>&1 \
+        | grep -q 'restarts_in_window=1 ambiguous_restarts=1 operator_interventions=0' \
+        || st_fail "case=full-green-window expected restarts_in_window=1 ambiguous_restarts=1 operator_interventions=0"
 
     # B) short window: 12 hourly samples (11 h) => INSUFFICIENT.
     f="$tmp/short"; mkdir -p "$f"
     for ((i = 0; i <= 11; i++)); do
         st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" 1500000
     done
-    st_judge "$f" 168 INSUFFICIENT "window_short_" 2 short-window
+    st_judge "$f" 168 $((base + 11 * 3600 + 60)) INSUFFICIENT "window_short_" 2 short-window
 
     # C) sampling hole: full 168 h coverage but samples 50..53 missing
     #    (5 h hole > 8100 s threshold) => NOT_MET.
@@ -376,7 +471,7 @@ cmd_selftest() {
         [ "$i" -ge 50 ] && [ "$i" -le 53 ] && continue
         st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" 1500000
     done
-    st_judge "$f" 168 NOT_MET "sampling_hole_" 1 sampling-hole
+    st_judge "$f" 168 "$fresh" NOT_MET "sampling_hole_" 1 sampling-hole
 
     # D) persistent gap: 10 of 169 ok samples lag zclassicd by 3 blocks
     #    (gap0 94.1% < 99%) => NOT_MET.
@@ -388,7 +483,7 @@ cmd_selftest() {
             st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" 1500000
         fi
     done
-    st_judge "$f" 168 NOT_MET "gap_nonzero_in_10_of_169_ok_samples" 1 persistent-gap
+    st_judge "$f" 168 "$fresh" NOT_MET "gap_nonzero_in_10_of_169_ok_samples" 1 persistent-gap
 
     # E) operator intervention: NRestarts 2 -> 0 reset + AET bump at
     #    i=100 (the manual-restart signature) => NOT_MET.
@@ -400,11 +495,69 @@ cmd_selftest() {
             st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 0 $((base + 100 * 3600 - 30)) 1500000
         fi
     done
-    st_judge "$f" 168 NOT_MET "operator_intervention_detected" 1 operator-intervention
+    st_judge "$f" 168 "$fresh" NOT_MET "operator_intervention_detected" 1 operator-intervention
 
     # F) empty/missing log => explicit INSUFFICIENT (never silent pass).
     f="$tmp/empty"; mkdir -p "$f"
-    st_judge "$f" 168 INSUFFICIENT "no_evidence_file" 2 empty-log
+    st_judge "$f" 168 "$fresh" INSUFFICIENT "no_evidence_file" 2 empty-log
+
+    # I) soak node unreachable for nearly the whole window: 165 of 169
+    #    samples are ok:false with soak_height null (RPC dead/hung — the
+    #    exact MVP-C6 failure mode), only 4 ok gap==0 samples. The 4
+    #    green samples must NOT carry the verdict => NOT_MET. (This was
+    #    the reviewer-proven false-MET fixture.)
+    f="$tmp/soak-down"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        ts=$((base + i * 3600))
+        if [ "$i" -eq 0 ] || [ "$i" -eq 56 ] || [ "$i" -eq 112 ] || [ "$i" -eq 168 ]; then
+            st_line "$f/evidence.jsonl" "$ts" 0 1 "$aet" 1500000
+        else
+            printf '{"ts":%d,"soak_height":null,"zd_height":%d,"gap":null,"nrestarts":1,"active_enter_ts":%d,"rss_kb":null,"mainpid":null,"ok":false}\n' \
+                "$ts" $((3000000 + (ts % 100000))) "$aet" >> "$f/evidence.jsonl"
+        fi
+    done
+    st_judge "$f" 168 "$fresh" NOT_MET "soak_unreachable_in_165_of_169_samples" 1 soak-unreachable
+
+    # J) oracle coverage thin: soak node answers everywhere, but the
+    #    zclassicd oracle is null in 30 of 169 samples (ok 139/169 <
+    #    90%) — gap evidence too thin to prove gap==0 => INSUFFICIENT.
+    f="$tmp/oracle-thin"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        ts=$((base + i * 3600))
+        if [ "$i" -ge 20 ] && [ "$i" -le 49 ]; then
+            printf '{"ts":%d,"soak_height":%d,"zd_height":null,"gap":null,"nrestarts":1,"active_enter_ts":%d,"rss_kb":1500000,"mainpid":777,"ok":false}\n' \
+                "$ts" $((3000000 + (ts % 100000))) "$aet" >> "$f/evidence.jsonl"
+        else
+            st_line "$f/evidence.jsonl" "$ts" 0 1 "$aet" 1500000
+        fi
+    done
+    st_judge "$f" 168 "$fresh" INSUFFICIENT "oracle_coverage_thin_ok_139_of_169" 2 oracle-coverage-thin
+
+    # K) staleness cap: the SAME fully-green fixture as A, judged with
+    #    "now" 30 days after the last sample — a collector that died
+    #    after one green week must not stay evergreen MET =>
+    #    INSUFFICIENT stale_evidence_age_*; --allow-stale deliberately
+    #    judges the historical window => MET again.
+    st_judge "$tmp/green" 168 $((last_ts + 2592000)) INSUFFICIENT "stale_evidence_age_2592000s" 2 stale-green
+    st_judge "$tmp/green" 168 $((last_ts + 2592000)) MET "" 0 stale-green-allow-stale --allow-stale
+
+    # L) reset-then-climb ambiguity: NRestarts 5 -> 7 with an AET jump at
+    #    i=100 (could be 2 autonomous recycles OR a manual reset + 8
+    #    recycles inside one cadence — indistinguishable at hourly
+    #    resolution). Reported as ambiguous_restarts=2, NOT gated
+    #    (criterion text + journal forensics decide) => still MET.
+    f="$tmp/ambiguous"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        if [ "$i" -lt 100 ]; then
+            st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 5 "$aet" 1500000
+        else
+            st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 7 $((base + 100 * 3600 - 30)) 1500000
+        fi
+    done
+    st_judge "$f" 168 "$fresh" MET "" 0 ambiguous-reset-climb
+    ZCL_SOAK_EVIDENCE_DIR="$f" ZCL_SOAK_NOW="$fresh" bash "$SELF" judge --window-hours 168 2>&1 \
+        | grep -q 'restarts_in_window=2 ambiguous_restarts=2 operator_interventions=0' \
+        || st_fail "case=ambiguous-reset-climb expected restarts_in_window=2 ambiguous_restarts=2 operator_interventions=0"
 
     # G) collect with INJECTED commands (no live nodes): both fake RPCs
     #    answer => ok:true line with the computed gap and systemd fields.
@@ -419,8 +572,8 @@ cmd_selftest() {
     ) || st_fail "case=collect-up collect exited non-zero"
     grep -q '"soak_height":105,"zd_height":107,"gap":2,"nrestarts":3,' "$f/evidence.jsonl" \
         || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-up wrong fields"; }
-    grep -q '"rss_kb":123456,"ok":true}' "$f/evidence.jsonl" \
-        || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-up wrong rss/ok"; }
+    grep -q '"rss_kb":123456,"mainpid":4242,"ok":true}' "$f/evidence.jsonl" \
+        || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-up wrong rss/mainpid/ok"; }
     echo "selftest: ok case=collect-up"
 
     # H) collect with BOTH nodes down (commands fail): still appends an
@@ -434,7 +587,7 @@ cmd_selftest() {
         export ZCL_SOAK_RSS_CMD="false"
         bash "$SELF" collect > /dev/null 2>&1
     ) || st_fail "case=collect-down collect must exit 0 on unreachable nodes"
-    grep -q '"soak_height":null,"zd_height":null,"gap":null,"nrestarts":null,"active_enter_ts":null,"rss_kb":null,"ok":false}' \
+    grep -q '"soak_height":null,"zd_height":null,"gap":null,"nrestarts":null,"active_enter_ts":null,"rss_kb":null,"mainpid":null,"ok":false}' \
         "$f/evidence.jsonl" \
         || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-down wrong null line"; }
     echo "selftest: ok case=collect-down"
@@ -449,7 +602,7 @@ case "${1:-}" in
     judge)      shift; cmd_judge "$@" ;;
     --selftest) shift; cmd_selftest "$@" ;;
     *)
-        echo "usage: soak_evidence.sh collect | judge [--window-hours N] | --selftest" >&2
+        echo "usage: soak_evidence.sh collect | judge [--window-hours N] [--allow-stale] | --selftest" >&2
         exit 2
         ;;
 esac
