@@ -180,6 +180,21 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
                                                     struct node_db *ndb,
                                                     struct sqlite3 *progress_db);
 
+/* (2a.5) BOOT-TIME TORN-IMPORT GATE — the durable forward-evidence verdict
+ * that runs on a cold-import boot BEFORE the forward-only early-return (the
+ * live wedge sits in the forward-applied region). Its own focused TU; the
+ * full contract + the THREE-condition durability guard live in
+ * block_index_loader_torn_gate.c.
+ *
+ * Returns true iff a GENUINELY-UNRECOVERABLE tear fired the verdict (the caller
+ * MUST then refuse to bless and return its no-bless 0 — the gate stamps
+ * NOTHING, so H* stays pinned at the compiled checkpoint). false = no tear /
+ * transient-only / not-yet-refused → the caller proceeds. Caller passes the
+ * already-validated seed height H and the SHA3 checkpoint. */
+bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
+                                               struct sqlite3 *progress_db,
+                                               int32_t H, int32_t checkpoint);
+
 /* Shared projection-rebuild front door for boot (see the .c for contract).
  * Folds block_index_projection into ms's map, accepts iff the folded map has
  * > min_entries nodes. `publish_tip`=true publishes the cursor tip (the

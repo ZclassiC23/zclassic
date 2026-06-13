@@ -25,6 +25,45 @@ struct sqlite3;
 
 #define COIN_BACKFILL_MAX_ROUNDS 8
 
+/* Refusal-class classification for the durable terminal-refusal marker
+ * (block_index_loader_torn_gate.c condition (3)):
+ *   RETRYABLE          — the hole may still resolve as the node operates
+ *                        (node.db not wired, body not fetched, frontier cursor
+ *                        not loaded, owner-ack gate, in-flight scan, window-
+ *                        over-budget). NEVER persisted.
+ *   TERMINAL           — the coin's creator provably cannot exist in the chain
+ *                        we hold (corrupt txindex height, off active chain,
+ *                        txid mismatch, vout/value/script out of range,
+ *                        immature coinbase, metadata tear, round cap, proven
+ *                        double-spend). Persist unconditionally. (scan_gap is
+ *                        RETRYABLE — a missing body that resumes once fetched.)
+ *   TERMINAL_IF_TXINDEX_COMPLETE — txindex_miss: terminal IFF the txindex is
+ *                        COMPLETE (node.db tx_index_complete >= 3); otherwise
+ *                        the creating tx may simply not be indexed yet (IBD). */
+enum coin_backfill_terminal_class {
+    COIN_BACKFILL_TC_RETRYABLE = 0,
+    COIN_BACKFILL_TC_TERMINAL,
+    COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE,
+};
+
+/* Persist coin_backfill's durable refusal of a TERMINAL (h, hole_hash) so the
+ * boot-time torn-import gate (block_index_loader_torn_gate.c condition (3)) can
+ * FIRE on a subsequent boot — the gate runs at BOOT, before coin_backfill ticks
+ * this boot, so it can only read a durable row a PRIOR boot wrote. `refused_key`
+ * is the EXACT key the gate reads (coin_backfill_key_h_hash("coin_backfill.
+ * refused", h, hash)); mirrors the existing COIN_SCAN_SPENT_FOUND write (own
+ * recursive-lock span, WARN-on-fail-refuse-anyway). RETRYABLE never persists;
+ * TERMINAL_IF_TXINDEX_COMPLETE persists only when tx_index_complete >= 3 (so an
+ * in-progress IBD txindex_miss is never marked terminal); TERMINAL persists
+ * unconditionally. `value_class` is a short forensic token ("txindex_miss" /
+ * "unprovable" / "round_cap"); the gate only needs key presence.
+ * Call only OUTSIDE the enumerate/scan locked sections (it takes its own
+ * lock). NOT consensus state — a diagnostic progress.kv meta marker. */
+void coin_backfill_persist_terminal_refusal(
+    struct sqlite3 *db, const struct coin_backfill_io *io,
+    const char *refused_key, enum coin_backfill_terminal_class tc,
+    const char *value_class);
+
 static inline void coin_backfill_le32_put(uint8_t b[4], int32_t v)
 {
     uint32_t u = (uint32_t)v;

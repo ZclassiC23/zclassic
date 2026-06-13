@@ -527,6 +527,7 @@ int test_reducer_frontier(void);
 int test_chain_linkage_check(void);
 int test_invariant_sentinel(void);
 int test_seed_integrity_gate(void);
+int test_seed_torn_import_gate(void);
 int test_mirror_divergence_locator(void);
 int test_log_throttle(void);
 int test_reducer_stage_fuzz(void);

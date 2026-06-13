@@ -25,6 +25,7 @@
 #include "models/database.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 
 #include "utxo_recovery_internal.h"
 
@@ -75,4 +76,11 @@ void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
         "'cold_import_seed_anchor_hash',"
         "'cold_import_seed_anchor_utxo_count',"
         "'cold_import_seed_coins_kv_count')");
+    /* import-gate-spec.md PART A: the bless-time forward-evidence gate raises
+     * a PERMANENT "seed.torn_import" blocker on a torn import. PERMANENT
+     * blockers only clear by operator action; a wipe / reimport-prepare IS
+     * that action (the operator-prescribed remedy), so clear it here too —
+     * otherwise a clean re-import would stay permanently blocked by a stale
+     * blocker from the torn datadir it replaced. */
+    blocker_clear("seed.torn_import");
 }

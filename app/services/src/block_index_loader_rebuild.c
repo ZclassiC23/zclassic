@@ -40,6 +40,11 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
+/* The (2a.5) torn-import verdict is its own focused TU,
+ * block_index_loader_torn_gate.c (block_index_loader_torn_import_gate_fires,
+ * declared in services/block_index_loader.h): one durable forward-evidence
+ * decision, kept apart from the seed-loader plumbing it guards. */
+
 static int rebuild_cmp_height(const void *a, const void *b)
 {
     const struct block_index *pa = *(const struct block_index *const *)a;
@@ -528,6 +533,25 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;
     }
 
+    /* (2a.5) BOOT-TIME TORN-IMPORT GATE (import-gate-spec.md PART A,
+     *        RETARGETED 2026-06-13 + DURABILITY GUARD 2026-06-13). Runs on
+     *        EVERY cold-import boot, BEFORE the (2b) forward-only early-return —
+     *        the live wedge IS in the forward-only region (active tip
+     *        3,145,594 >= seed H 3,145,457), so the old bless-time-only gate
+     *        was dead code there.
+     *
+     *        The verdict (block_index_loader_torn_gate.c) fires ONLY on a
+     *        GENUINELY-UNRECOVERABLE tear: a durable in-window ok=0
+     *        prevout_unresolved row (transient 'internal_error' EXCLUDED, and
+     *        'block_decode_failed' is a FUTURE class coin_backfill never
+     *        refuses) that coin_backfill has DURABLY REFUSED as unprovable via
+     *        the progress.kv 'coin_backfill.refused.<h>.<hash>' marker. It
+     *        STAMPS NOTHING, so on a fire we refuse-to-bless here and H* stays
+     *        pinned at the checkpoint. */
+    if (block_index_loader_torn_import_gate_fires(ms, progress_db, H,
+                                                  checkpoint))
+        return 0;  // raw-return-ok:torn-import refusal — fail-loud in the gate, stamps nothing
+
     /* (2b) FORWARD-ONLY: never seed below where the active chain already is.
      *     The seed publishes a finalized frontier at H; if the live tip is
      *     already at or beyond H there is nothing to advance and lowering the
@@ -611,6 +635,9 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
             }
         }
     }
+
+    /* NOTE: the forward-evidence torn-import gate is now (2a.5) above (runs on
+     *       the wedged-boot path, ceiling = forward-apply frontier). */
 
     /* (3) GATE on the genuinely-pinned signal — H*, NOT the tip_finalize
      *     cursor (the boot reconcile clamp force-stamps tf cursor to H+1 on

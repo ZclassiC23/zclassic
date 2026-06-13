@@ -303,6 +303,21 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "seed_torn_import") == 0) {
+        printf("[test] ZCL_TEST_ONLY=seed_torn_import — running torn-import gate only\n");
+        failures += test_seed_torn_import_gate();
+        printf("\n=== seed_torn_import subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "coin_backfill") == 0) {
+        printf("[test] ZCL_TEST_ONLY=coin_backfill — running coin_backfill + torn-import gate only\n");
+        failures += test_stage_repair_coin_backfill();
+        failures += test_seed_torn_import_gate();
+        printf("\n=== coin_backfill subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "chaos_harness") == 0) {
         printf("[test] ZCL_TEST_ONLY=chaos_harness — running chaos harness only\n");
         failures += test_chaos_harness();
@@ -1011,6 +1026,7 @@ int main(void)
     failures += test_chain_linkage_check();
     failures += test_invariant_sentinel();
     failures += test_seed_integrity_gate();
+    failures += test_seed_torn_import_gate();
     failures += test_mirror_divergence_locator();
     failures += test_log_throttle();
     failures += test_reducer_frontier_reconcile_light();

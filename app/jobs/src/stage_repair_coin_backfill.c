@@ -151,19 +151,24 @@ static bool enumerate_unresolved_prevouts(sqlite3 *db, const struct block *blk,
 static void resolve_creator(const struct coin_backfill_io *io,
                             int hole_height, int frontier, int delta_horizon,
                             struct coin_backfill_outpoint *set, int n,
-                            int *out_floor, char reason[64])
+                            int *out_floor, char reason[64],
+                            enum coin_backfill_terminal_class *out_tc)
 {
     struct block cblk;
     struct uint256 chash;
     int loaded_h = -1;
     *out_floor = -1;
     reason[0] = '\0';
+    /* Default to RETRYABLE: only a path that proves the coin cannot exist in
+     * the chain we hold upgrades this. A blank reason (success) leaves it
+     * RETRYABLE, which is correct (the caller does not persist on success). */
+    *out_tc = COIN_BACKFILL_TC_RETRYABLE;
     block_init(&cblk);
 
     if (!io->ndb) {
         /* No node.db handle (unit fixture / txindex-less run): the creator
-         * cannot be resolved, so the whole set is unprovable — refuse, do
-         * not fail the dispatcher. */
+         * cannot be resolved THIS process, but a later boot with the handle
+         * wired may resolve it — transient, NOT a terminal verdict. */
         snprintf(reason, 64, "node_db_unavailable");
         block_free(&cblk);
         return;
@@ -174,17 +179,26 @@ static void resolve_creator(const struct coin_backfill_io *io,
         char hex[65];
         coin_backfill_txid_hex(set[k].txid, hex);
         if (!db_tx_find(io->ndb, set[k].txid, &row)) {
+            /* TERMINAL only when txindex is COMPLETE (the creating tx is
+             * provably absent from the chain we hold); transient while the
+             * index is still building during IBD. The caller's persist helper
+             * applies the tx_index_complete>=3 guard. */
+            *out_tc = COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE;
             snprintf(reason, 64, "txindex_miss tx=%.16s", hex);
             break;
         }
         int ch = row.block_height;
         if (ch <= 0 || ch >= frontier || ch > hole_height) {
+            /* corrupt/garbage txindex height: the creating block cannot exist
+             * at a valid height — terminal regardless of txindex state */
+            *out_tc = COIN_BACKFILL_TC_TERMINAL;
             snprintf(reason, 64, "creator_height_invalid h=%d", ch);
             break;
         }
         if (ch >= delta_horizon) {
             /* inside the reconstructible delta window = live apply-bug
-             * domain — masking it with a mint would be a guess */
+             * domain — masking it with a mint would be a guess. The forward
+             * stages may still fill it: RETRYABLE, do not persist. */
             snprintf(reason, 64, "creator_in_delta_window h=%d", ch);
             break;
         }
@@ -192,6 +206,8 @@ static void resolve_creator(const struct coin_backfill_io *io,
             block_free(&cblk);
             block_init(&cblk);
             if (!io->read_block(io->user, ch, &cblk, &chash)) {
+                /* txindex points off the active chain we hold — terminal */
+                *out_tc = COIN_BACKFILL_TC_TERMINAL;
                 snprintf(reason, 64, "creator_not_on_active_chain h=%d", ch);
                 break;
             }
@@ -202,10 +218,12 @@ static void resolve_creator(const struct coin_backfill_io *io,
             if (memcmp(cblk.vtx[i].hash.data, set[k].txid, 32) == 0)
                 tx = &cblk.vtx[i];
         if (!tx) {
+            *out_tc = COIN_BACKFILL_TC_TERMINAL;
             snprintf(reason, 64, "creator_txid_mismatch h=%d", ch);
             break;
         }
         if (set[k].vout >= tx->num_vout) {
+            *out_tc = COIN_BACKFILL_TC_TERMINAL;
             snprintf(reason, 64, "vout_out_of_range %u h=%d", set[k].vout,
                      ch);
             break;
@@ -213,16 +231,19 @@ static void resolve_creator(const struct coin_backfill_io *io,
         int64_t value = tx->vout[set[k].vout].value;
         size_t slen = tx->vout[set[k].vout].script_pub_key.size;
         if (value < 0 || value > MAX_MONEY) {
+            *out_tc = COIN_BACKFILL_TC_TERMINAL;
             snprintf(reason, 64, "value_out_of_range h=%d", ch);
             break;
         }
         if (slen > MAX_SCRIPT_SIZE) {
+            *out_tc = COIN_BACKFILL_TC_TERMINAL;
             snprintf(reason, 64, "script_too_long h=%d", ch);
             break;
         }
         bool cb = transaction_is_coinbase(tx);
         if (cb && hole_height - ch < COINBASE_MATURITY) {
-            /* genuinely-invalid spend: leave the hole, refuse */
+            /* genuinely-invalid spend: leave the hole, refuse — terminal */
+            *out_tc = COIN_BACKFILL_TC_TERMINAL;
             snprintf(reason, 64, "coinbase_immature depth=%d",
                      hole_height - ch);
             break;
@@ -546,9 +567,14 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                  hole_h);
 
     r->unresolved_count = n;
-    if (ereason[0])
+    if (ereason[0]) {
+        /* coin_present_unusable (metadata height tear) / too_many_unresolved
+         * are deterministic properties of the hole block — terminal. */
+        coin_backfill_persist_terminal_refusal(db, io, refused_key,
+                                 COIN_BACKFILL_TC_TERMINAL, "unprovable");
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash, "%s",
                       ereason);
+    }
     if (n == 0)
         return true; /* all prevouts resolve now → existing replay owns it */
     if (marker_hit[0])
@@ -557,9 +583,13 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     if (refused_marker)
         return refuse(r, COIN_BACKFILL_REFUSED_SPENT, &hole_hash,
                       "refusal_marker_present");
-    if (rounds >= COIN_BACKFILL_MAX_ROUNDS)
+    if (rounds >= COIN_BACKFILL_MAX_ROUNDS) {
+        /* repair exhausted its retry budget for this hole — terminal. */
+        coin_backfill_persist_terminal_refusal(db, io, refused_key,
+                                 COIN_BACKFILL_TC_TERMINAL, "round_cap");
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "round_cap rounds=%d", (int)rounds);
+    }
 
     /* G6 owner gate — the refusal already carries owner_ack_missing and the
      * page's escape text names the ack env var; no extra per-tick WARN */
@@ -585,11 +615,20 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     r->delta_horizon = horizon;
     int creator_floor = -1;
     char creason[64];
+    enum coin_backfill_terminal_class creator_tc = COIN_BACKFILL_TC_RETRYABLE;
     resolve_creator(io, hole_h, frontier, horizon, set, n, &creator_floor,
-                    creason);
-    if (creason[0])
+                    creason, &creator_tc);
+    if (creason[0]) {
+        /* txindex_miss persists ONLY when txindex is complete (guarded inside
+         * the helper); the corrupt creator_* classes persist unconditionally;
+         * node_db_unavailable / creator_in_delta_window stay RETRYABLE. */
+        coin_backfill_persist_terminal_refusal(db, io, refused_key, creator_tc,
+                                 creator_tc ==
+                                     COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE
+                                     ? "txindex_miss" : "unprovable");
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash, "%s",
                       creason);
+    }
     r->creator_floor = creator_floor;
 
     if (!apply) {
@@ -629,12 +668,22 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                  creator_floor);
         return true;
     case COIN_SCAN_GAP:
+        /* RETRYABLE, NOT terminal: scan_gap fires when a deep block body is
+         * simply UNREADABLE (not yet fetched) — it resumes to CLEAN once the
+         * body appears (stage_repair_coin_backfill_scan.c:454-468, proven by
+         * cb_case_scan_gap). Persisting a durable marker here would latch a
+         * transient missing-body into a permanent refusal and BLOCK the resume
+         * (the refused_marker check above would then REFUSED_SPENT it). Do NOT
+         * persist. (The design's class list mislabeled this; the live scan
+         * semantics + the resume test are authoritative.) */
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "scan_gap h=%d", next);
     case COIN_SCAN_WINDOW_OVER_BUDGET:
         /* TG-F1: the terminal window [frontier..H] must complete in ONE
          * chunk (mid-window checkpoints clamp back to the frontier); a
-         * window larger than the budget would pin SCANNING forever. */
+         * window larger than the budget would pin SCANNING forever. This is
+         * a budget artifact, NOT a coin-unprovability verdict — RETRYABLE,
+         * so do NOT persist the durable terminal marker. */
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "terminal_window_exceeds_budget w=%d cap=%d",
                       hole_h - frontier + 1, COIN_BACKFILL_SCAN_CHUNK_BLOCKS);

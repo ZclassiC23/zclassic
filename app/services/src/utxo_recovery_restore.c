@@ -306,9 +306,20 @@ struct utxo_import_result utxo_recovery_import_ldb(
         res.utxo_count = imported_count;
 
         const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        /* PART B1 (import-gate-spec.md): the utxo_sha3 stamp is an HONEST
+         * cryptographic certificate ONLY when the imported set matches the
+         * COMPILED checkpoint. Stamping at a non-checkpoint height made
+         * gate_commitment_check recompute the SHA3 over the SAME table and
+         * pass vacuously — it certified whatever was imported, including a
+         * torn set. Track the genuine match here and gate the stamp on it
+         * below; at non-checkpoint heights leave the commitment check
+         * honestly unarmed (Part A's forward-evidence gate is the sole trust
+         * authority above the single checkpoint). */
+        bool checkpoint_match = false;
         if (cp && imported_count == cp->utxo_count &&
             memcmp(imported_root, cp->sha3_hash, 32) == 0) {
             printf("=== SHA3 UTXO CHECKPOINT: PASSED ===\n");
+            checkpoint_match = true;
         } else if (imported_count > 100000) {
             printf("SHA3: %llu UTXOs (different height from "
                    "checkpoint, will verify later)\n",
@@ -374,8 +385,11 @@ struct utxo_import_result utxo_recovery_import_ldb(
                                                      node_db_utxo_count(ctx->ndb));
 
             /* Check 5, cold-import half: arm the seed gate's commitment
-             * check (trust model: seed_integrity_gate.h). */
-            if (ldb_height > 0 && sha3_root_valid)
+             * check (trust model: seed_integrity_gate.h). PART B1: stamp
+             * ONLY at a genuine compiled-checkpoint match — never at a
+             * non-checkpoint height, where the stamp would be a vacuous
+             * self-certificate of the imported (possibly torn) set. */
+            if (ldb_height > 0 && sha3_root_valid && checkpoint_match)
                 (void)seed_integrity_stamp_utxo_sha3(
                     ctx->ndb, ldb_height, imported_root, imported_count);
         }

@@ -23,6 +23,7 @@
 
 #include "jobs/stage_repair_coin_backfill.h"
 #include "jobs/created_outputs_index.h"
+#include "services/block_index_loader.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "event/event.h"
@@ -1130,6 +1131,183 @@ static int cb_case_scan_gap(void)
     return failures;
 }
 
+/* Case 5b: TERMINAL txindex_miss PERSISTS the durable refusal marker, and a
+ * RETRYABLE txindex_miss does NOT. This is the writer half of the boot-time
+ * torn-import gate's durability signal (block_index_loader_torn_gate.c
+ * condition (3)): the live tear refuses via resolve_creator txindex_miss, and
+ * the gate fires on a SUBSEQUENT boot ONLY if a prior boot durably persisted
+ * 'coin_backfill.refused.<h>.<hash>'. A txindex_miss is terminal ONLY when the
+ * txindex is COMPLETE (node.db tx_index_complete >= 3); during an in-progress
+ * IBD build the creating tx may simply not be indexed yet (transient) and MUST
+ * NOT be persisted. We delete the lost coin's creator (T_A) txindex row to
+ * force the miss, then toggle the completeness marker. */
+static int cb_case_txindex_miss_persistence(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("txidx_miss: setup", cb_setup(fx, "txidx_miss", 31, CBV_TA0,
+                                      CB_TA0_VALUE, false, true));
+
+    /* Drop the creator (T_A) txindex row so resolve_creator hits txindex_miss
+     * for the lost coin (T_A,0). */
+    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
+    CBT("txidx_miss: delete creator txindex row",
+        ta && db_tx_delete(&fx->ndb, ta->hash.data));
+
+    int64_t coins_before = coins_kv_count(fx->db);
+
+    /* (a) RETRYABLE: txindex completeness NOT marked (default node.db has no
+     * tx_index_complete row). The miss is transient (index still building) →
+     * REFUSED_UNPROVABLE but NO durable marker persisted. */
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("txidx_miss: refused on txindex_miss",
+        st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
+        strstr(res.refuse_reason, "txindex_miss") != NULL &&
+        res.inserted_count == 0 && coins_kv_count(fx->db) == coins_before);
+    CBT("txidx_miss: incomplete txindex => NO durable marker (retryable)",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    /* (b) TERMINAL: mark txindex complete (>= 3). The same miss is now a
+     * proven-absent creator → REFUSED_UNPROVABLE AND a durable marker. */
+    CBT("txidx_miss: mark txindex complete",
+        node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
+    st = cb_try_until(fx, &res);
+    CBT("txidx_miss: still refused on txindex_miss",
+        st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
+        strstr(res.refuse_reason, "txindex_miss") != NULL);
+    CBT("txidx_miss: complete txindex => durable marker persisted (terminal)",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+
+    /* The persisted marker keys on the HOLE (h, hash), exactly the key the
+     * boot gate reads via coin_backfill_meta_present. Verify presence. */
+    char refused_key[192];
+    bool present = false;
+    uint8_t blob[8];
+    size_t blen = 0;
+    char hex[65];
+    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hex);
+    snprintf(refused_key, sizeof(refused_key), "coin_backfill.refused.%d.%s",
+             CB_HOLE, hex);
+    CBT("txidx_miss: marker keyed on (hole_h, hole_hash)",
+        progress_meta_get(fx->db, refused_key, blob, sizeof(blob), &blen,
+                          &present) && present);
+    CBT("txidx_miss: still zero coin writes",
+        coins_kv_count(fx->db) == coins_before);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* Case 5c: node_db_unavailable is RETRYABLE — a fixture/txindex-less run with
+ * no node.db handle cannot resolve the creator THIS process, but a later boot
+ * with the handle wired may. It must refuse WITHOUT persisting a terminal
+ * marker (no false escalation of a transient infra gap). */
+static int cb_case_node_db_unavailable_no_persist(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("ndb_gone: setup", cb_setup(fx, "ndb_gone", 32, CBV_TA0,
+                                    CB_TA0_VALUE, false, true));
+
+    /* Strip the node.db handle from the io seam (the txindex-less run). */
+    fx->io.ndb = NULL;
+    int64_t coins_before = coins_kv_count(fx->db);
+
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("ndb_gone: refused node_db_unavailable",
+        st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
+        strstr(res.refuse_reason, "node_db_unavailable") != NULL &&
+        res.inserted_count == 0 && coins_kv_count(fx->db) == coins_before);
+    CBT("ndb_gone: NO durable marker (retryable infra gap)",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* A unique synthetic block hash for the gate-e2e active-tip slot (distinct
+ * from the fixture chain's real hashes so the index insert never collides). */
+static void cb_synth_tip_hash(int h, struct uint256 *out)
+{
+    memset(out->data, 0, 32);
+    out->data[0] = (uint8_t)(h & 0xFF);
+    out->data[1] = (uint8_t)((h >> 8) & 0xFF);
+    out->data[31] = 0x9e;
+}
+
+/* Case 5d: END-TO-END — the boot-time torn-import gate
+ * (block_index_loader_torn_import_gate_fires) FIRES on the durable marker that
+ * the REAL coin_backfill writer just persisted. This is the hermetic proof that
+ * the writer's key (coin_backfill.refused.<h>.<hash>, written from the txindex_miss
+ * terminal path) is byte-identical to the key the gate's reader builds for the
+ * SAME lowest prevout_unresolved hole — NOT a hand-seeded marker. We drive the
+ * REAL persistence path (txindex_miss + tx_index_complete>=3), install an active
+ * tip at the hole height, then call the gate with a low checkpoint (the gate
+ * takes the checkpoint as a parameter; production passes the SHA3 anchor, but
+ * the gate logic — window + status + durable-marker — is checkpoint-agnostic). */
+static int cb_case_gate_fires_on_real_marker(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("gate_e2e: setup", cb_setup(fx, "gate_e2e", 33, CBV_TA0,
+                                    CB_TA0_VALUE, false, true));
+
+    /* CONTROL: the gate must NOT fire before any marker exists — even though
+     * the hole row + window are already present (no false-fire). */
+    struct uint256 tip_hash;
+    cb_synth_tip_hash(CB_HOLE, &tip_hash);
+    struct block_index *tip =
+        chainstate_insert_block_index((struct chainstate *)&fx->ms, &tip_hash);
+    bool tip_ok = false;
+    if (tip) {
+        tip->nHeight = CB_HOLE;
+        tip->nStatus = BLOCK_VALID_TREE;
+        tip->nFile = -1;
+        tip_ok = active_chain_install_tip_slot(&fx->ms.chain_active, tip) &&
+                 active_chain_height(&fx->ms.chain_active) == CB_HOLE;
+    }
+    CBT("gate_e2e: active tip installed at the hole height", tip_ok);
+    CBT("gate_e2e: gate does NOT fire before any durable marker",
+        !block_index_loader_torn_import_gate_fires(&fx->ms, fx->db, CB_HOLE,
+                                                   CB_HOLE - 1));
+
+    /* Drive the REAL writer to a TERMINAL txindex_miss: drop the creator
+     * txindex row + mark the index complete. */
+    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
+    CBT("gate_e2e: delete creator txindex row + mark txindex complete",
+        ta && db_tx_delete(&fx->ndb, ta->hash.data) &&
+        node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
+
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("gate_e2e: real path refuses txindex_miss + persists marker",
+        st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
+        strstr(res.refuse_reason, "txindex_miss") != NULL &&
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+
+    /* Now the gate FIRES on that real-path marker (window: hole 16 in
+     * (15, 16]; status prevout_unresolved; durable marker present). */
+    blocker_reset_for_testing();
+    CBT("gate_e2e: gate FIRES on the real-path durable marker",
+        block_index_loader_torn_import_gate_fires(&fx->ms, fx->db, CB_HOLE,
+                                                  CB_HOLE - 1));
+    CBT("gate_e2e: PERMANENT seed.torn_import blocker raised",
+        blocker_exists("seed.torn_import") &&
+        blocker_class_for("seed.torn_import") == BLOCKER_PERMANENT);
+
+    blocker_reset_for_testing();
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
 /* Case 6: coin present but unusable (height >= frontier) — a metadata tear,
  * not a missing coin; never mint over it. */
 static int cb_case_present_unusable(void)
@@ -1964,6 +2142,9 @@ int test_stage_repair_coin_backfill(void)
     failures += cb_case_offchain_creator();
     failures += cb_case_delta_window();
     failures += cb_case_scan_gap();
+    failures += cb_case_txindex_miss_persistence();
+    failures += cb_case_node_db_unavailable_no_persist();
+    failures += cb_case_gate_fires_on_real_marker();
     failures += cb_case_present_unusable();
     failures += cb_case_coinbase_immature();
     failures += cb_case_multi_coin();

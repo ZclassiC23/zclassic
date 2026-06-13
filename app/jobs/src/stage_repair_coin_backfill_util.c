@@ -10,6 +10,7 @@
 
 #include "event/event.h"
 #include "json/json.h"
+#include "models/database.h"
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -128,6 +129,34 @@ bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
     if (found && n >= 4)
         *out = coin_backfill_le32_get(blob);
     return true;
+}
+
+/* tx_index_complete sentinel: node.db node_state marks the txindex build
+ * finished (additive build, 0 skipped blocks) at value 3
+ * (snapshot_controller_txindex.c:528, read at :320). Below this a txindex_miss
+ * may just be an unindexed-yet tx during IBD — transient, never terminal. */
+#define COIN_BACKFILL_TXINDEX_COMPLETE_MIN 3
+
+void coin_backfill_persist_terminal_refusal(
+    struct sqlite3 *db, const struct coin_backfill_io *io,
+    const char *refused_key, enum coin_backfill_terminal_class tc,
+    const char *value_class)
+{
+    if (tc == COIN_BACKFILL_TC_RETRYABLE)
+        return;
+    if (tc == COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE) {
+        int64_t complete = 0;
+        if (!io || !io->ndb ||
+            !node_db_state_get_int(io->ndb, "tx_index_complete", &complete) ||
+            complete < COIN_BACKFILL_TXINDEX_COMPLETE_MIN)
+            return; /* index still building / disabled: miss is transient */
+    }
+    progress_store_tx_lock();
+    if (!progress_meta_set(db, refused_key, value_class, strlen(value_class)))
+        LOG_WARN("coin_backfill",
+                 "[coin_backfill] terminal refusal marker write failed key=%s "
+                 "(refusing anyway)", refused_key);
+    progress_store_tx_unlock();
 }
 
 bool find_lowest_prevout_unresolved_hole_unlocked(
