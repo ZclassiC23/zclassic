@@ -6,7 +6,30 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-13 (LATEST) — CORRECTION: the wedge RECURRED; root-caused as a genuine cold-import COIN TEAR
+## 2026-06-13 (LATEST — session handoff) — torn-import DETECTION gate + write-time PREVENTION + Phase-0 observability all LANDED
+
+**HEAD `0b0f8b3f0`, `origin/main` synced. lint 37/37, build clean, `test_parallel` 0/424 groups failed (11 skipped).** Verify with `git status --short --branch`.
+
+**What landed + pushed this session (`6934ad512..0b0f8b3f0`, 8 commits):**
+1. **Torn-import DETECTION gate (`7a1f87471`)** — the recurring I4.3 anchor-collapse wedge is now a CLEAR, actionable verdict instead of an opaque HOLD (this is **MVP-C6**). At boot, `block_index_loader_torn_gate.c` raises a typed **PERMANENT `seed.torn_import`** blocker + `EV_OPERATOR_NEEDED` ("wipe + two-step cold re-import") when it detects the genuine tear. Fires iff: a durable `ok=0 prevout_unresolved` hole in `(checkpoint, forward-apply-frontier]` that **coin_backfill has durably refused as unprovable** — and `coin_backfill` now persists that durable refusal on its TERMINAL classes (`txindex_miss` only when `tx_index_complete>=3`, so a healthy/IBD node is NEVER mis-flagged). It reads-only and **stamps nothing** → H\* stays pinned at checkpoint 3,056,758. Proven on an **authentic live-datadir snapshot** (two-boot escalation: boot1 persists, boot2 fires). Two false-fire/no-fire bugs were caught by adversarial review before commit — see memory for the lesson (hermetic-only proof is insufficient for consensus-critical gates).
+2. **Write-time PREVENTION (in the same merge)** — `utxo_recovery_restore.c` PART B1 arms the SHA3 seed-integrity stamp ONLY at a genuine compiled-checkpoint match (never vacuously at a non-checkpoint height), so a future cold import cannot silently re-tear. Detection (1) + prevention (2) are the paired root-cause fix the prior roadmap called for.
+3. **Phase-0 observability/startup (`0b0f8b3f0`)** — coalesced the `[headers]` log flood (was **84.8%** of node.log), throttled 2 wedge-class WARNs, added 4 `zcl_state` dumpers (`bg_validation`/`disk_monitor`/`sync_monitor`/`db_maintenance`), and a warm-boot nChainTx skip-guard.
+4. **Hardening/CI** — deploy staleness guard, canary crash-reason detection, TENACITY-I3 ratchet lint gate (37th gate), opt-in **local** pre-push hook (`make install-hooks`; CI is local-only — never GitHub Actions), anchor-collapse regression guard.
+
+**Live node status:** STILL WEDGED at **3,145,594** on the OLD binary `6934ad512` (NOT yet deployed). The merged binary **detects** the tear loudly but does **not** auto-heal it.
+
+**#1 NEXT — owner-gated: deploy the merged binary + clear the live wedge.** The only correct recovery is wipe `~/.zclassic-c23` + the two-step cold re-import (`--importblockindex` then normal boot). The merged binary's write-time gate (2) prevents re-tearing; the detection gate (1) fires loud if it ever recurs. **Copy-prove on a fixture first** (`~/.zclassic-c23-livetear-fixture-20260613`, the authentic wedge snapshot — KEEP). This unblocks **MVP C3/C6/C8** (all need sustained live forward progress).
+
+**Structural roadmap (vetted + adversarially reviewed this session — full detail in memory `project_recurring_anchor_collapse_wedge_2026-06-13`):**
+- **Phase 2 (highest-leverage long-term, owner-gated, shares coins write path):** *rolling-commitment* — a forward-progress recovery certificate (ratified rolling seal at the applied frontier) so the NEXT anchor-collapse self-heals instead of needing an operator re-import. Must-fixes are documented (seal height = applied-frontier not MAX+1; RATIFIED seals only; off-by-one block_hash).
+- **Phase 3/4:** seal-ring consumer (`seal_kv_newest_ratified` currently has zero consumers); projection snapshots (owner triage first — the literal target `utxo_projection` is a dead store; live view is `coins_view_kv`).
+- **DO NOT BUILD:** *log-rotation-and-bounds* was adversarially ruled **UNSOUND** — `event_log_rotate` corrupts the event_log absolute-offset wire format, and a write-time `JOB_BLOCKED` on reducer `*_log` inserts converts disk pressure into a consensus forward-progress HALT (weakens a safety gate). Disk bounds are instead met by flipping the EXISTING `SEAL_PRUNE_ENABLED` (`seal_kv.h`) once seals accumulate + the Phase-0 spam coalesce.
+
+**Artifacts / how to resume:** type `continue zclassic23 development`; read this + `docs/MVP.md` + `docs/work/FORWARD_PLAN.md`; memory index `MEMORY.md`. KEEP fixtures: `~/.zclassic-c23-livetear-fixture-20260613` (15G, authentic pre-remediation wedge), `cointear-20260612`, `bandhole-20260611`. Consensus parity inviolable; copy-prove before any live deploy; push/deploy owner-gated.
+
+---
+
+## 2026-06-13 (earlier today) — CORRECTION: the wedge RECURRED; root-caused as a genuine cold-import COIN TEAR
 
 **The "REDEPLOYED and CURED" entry below (2026-06-13 ~00:20) DID NOT HOLD.** The
 same datadir re-wedged ~120 blocks later: the live node is forward-wedged at
