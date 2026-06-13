@@ -319,6 +319,7 @@ int test_condition_engine(void)
             "tip_label_divergence",
             "state_window_inconsistent",
             "mirror_divergence_located",
+            "replay_canary_failed",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));
