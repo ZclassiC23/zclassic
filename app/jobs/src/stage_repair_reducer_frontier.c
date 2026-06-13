@@ -18,6 +18,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -683,10 +684,21 @@ static bool reducer_frontier_reconcile_light_impl(
     }
 
     if (local.refused_coin_tear) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier L1 refused: "
-                 "coins_applied_height=%d > hstar_cursor=%d (L2 required)",
-                 local.coins_applied_height, local.hstar + 1);
+        /* De-storm: a wedged node reruns this reconcile every reducer pass.
+         * Key on (coins_applied_height, hstar+1) so a moving frontier re-emits
+         * but a stuck one collapses to first-fire + 60 s keepalive (reps). */
+        static struct log_throttle l1_refuse_throttle = LOG_THROTTLE_INIT;
+        uint64_t key = ((uint64_t)(uint32_t)local.coins_applied_height << 32)
+                       | (uint32_t)(local.hstar + 1);
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&l1_refuse_throttle, key,
+                                     platform_time_wall_unix(), 60, &reps))
+            LOG_WARN("stage_repair",
+                     "[stage_repair] reducer_frontier L1 refused: "
+                     "coins_applied_height=%d > hstar_cursor=%d (L2 required) "
+                     "repeats=%llu",
+                     local.coins_applied_height, local.hstar + 1,
+                     (unsigned long long)reps);
         if (out)
             *out = local;
         return true;

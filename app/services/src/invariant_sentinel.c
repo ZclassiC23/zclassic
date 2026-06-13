@@ -31,6 +31,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/supervisor.h"
 #include "validation/chain_linkage_check.h"
 
@@ -75,6 +76,12 @@ static bool     g_prev_sweep_valid = false;
 static char    g_pending_invariant[16];
 static int     g_pending_first_bad_h = -1;
 static bool    g_pending_valid = false;
+
+/* De-storm for the window-sweep "awaiting confirmation" WARN: while wedged it
+ * re-prints every 60 s sweep with the SAME invariant/detail. Throttle to
+ * first-occurrence + key change + 60 s keepalive (carrying repeat count). */
+static struct log_throttle g_unconfirmed_throttle = LOG_THROTTLE_INIT;
+static char g_unconfirmed_last_invariant[16], g_unconfirmed_last_detail[200];
 
 /* Frontier memo (single sweep thread): the utxo_apply_log contiguous
  * ok=1 prefix verified by the last CLEAN sweep, and the cursor it was
@@ -410,11 +417,20 @@ bool invariant_sentinel_sweep_once(void)
                 chain_linkage_hold_set("window_sweep", v.first_bad_h,
                                        v.detail);
         } else {
-            LOG_WARN("validation_pack",
-                     "[validation_pack] window sweep observed %s %s — "
-                     "awaiting confirmation on the next sweep (reorg "
-                     "unwind window / single-sweep transient)",
-                     v.invariant, v.detail);
+            bool changed = strcmp(v.invariant, g_unconfirmed_last_invariant)
+                        || strcmp(v.detail, g_unconfirmed_last_detail);
+            snprintf(g_unconfirmed_last_invariant,
+                     sizeof g_unconfirmed_last_invariant, "%s", v.invariant);
+            snprintf(g_unconfirmed_last_detail,
+                     sizeof g_unconfirmed_last_detail, "%s", v.detail);
+            uint64_t reps = 0;
+            if (log_throttle_should_emit_changed(&g_unconfirmed_throttle,
+                    changed, platform_time_wall_unix(), 60, &reps))
+                LOG_WARN("validation_pack",
+                         "[validation_pack] window sweep observed %s %s — "
+                         "awaiting confirmation on the next sweep (reorg "
+                         "unwind window / single-sweep transient) repeats=%llu",
+                         v.invariant, v.detail, (unsigned long long)reps);
         }
     } else {
         (void)invariant_sentinel_confirm_violation(&v); /* reset pending */

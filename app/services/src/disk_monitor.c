@@ -15,6 +15,7 @@
 #include "services/disk_monitor.h"
 
 #include "event/event.h"
+#include "json/json.h"
 #include "supervisors/domains.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
@@ -383,4 +384,27 @@ bool disk_monitor_is_critical(void)
 enum disk_monitor_level disk_monitor_level(void)
 {
     return (enum disk_monitor_level)atomic_load(&g_dm.atomic_level);
+}
+
+/* zcl_state subsystem=disk_monitor — free-space watchdog state: running
+ * flag, current level (ok/low/critical), last poll's free bytes + time, and
+ * the resolved warn/refuse thresholds. See CLAUDE.md "Adding state
+ * introspection". Reentrant-safe (the snapshot takes the brief poll lock). */
+bool disk_monitor_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct disk_monitor_status st;
+    disk_monitor_status_snapshot(&st);
+    json_push_kv_bool(out, "running", st.running);
+    json_push_kv_str (out, "level", dm_level_name(st.level));
+    json_push_kv_int (out, "last_free_bytes", st.last_free_bytes);
+    json_push_kv_int (out, "last_poll_unix", st.last_poll_unix);
+    json_push_kv_int (out, "warn_free_bytes", st.warn_free_bytes);
+    json_push_kv_int (out, "refuse_free_bytes", st.refuse_free_bytes);
+    json_push_kv_str (out, "datadir", st.datadir);
+    return true;
 }

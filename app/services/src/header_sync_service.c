@@ -13,11 +13,25 @@
 #include "chain/chain.h"
 #include <stdlib.h>
 #include <time.h>
+#include <stdatomic.h>
+#include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
 static int g_getheaders_log_count = 0;
 static bool g_block_file_scan_triggered = false;
+
+/* Aggregated stale-peer reporting for syncsvc_getheaders_interval. The
+ * interval is recomputed per peer per planning tick, so the old per-peer
+ * "interval=... for peer N" line re-printed for every backed-off peer and
+ * dominated node.log volume. Instead we fold every backoff interval above
+ * 60s into a window and emit ONE summary line per ~60s. State is atomic so
+ * the hot path stays lock-free across the (possibly concurrent) callers. */
+static _Atomic int64_t g_stale_window_start_unix = 0;
+static _Atomic int     g_stale_window_count = 0;
+static _Atomic int64_t g_stale_window_min = 0;
+static _Atomic int64_t g_stale_window_max = 0;
+#define STALE_SUMMARY_WINDOW_SECS ((int64_t)60)
 
 bool syncsvc_should_begin_peer_sync(const struct p2p_node *node,
                                     int our_height,
@@ -382,13 +396,35 @@ static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
         base = 600;
 
     if (base > 60) {
-        static int last_logged_peer = -1;
-        static int64_t last_logged_base = 0;
-        if (node->id != last_logged_peer || base != last_logged_base) {
-            printf("[headers] interval=%llds for peer %d (stale_count=%d)\n",
-                   (long long)base, node->id, stale);
-            last_logged_peer = node->id;
-            last_logged_base = base;
+        /* Fold this backoff into the window (cheap relaxed atomics, no
+         * per-peer line), then emit one summary when the window rolls over. */
+        const memory_order rx = memory_order_relaxed;
+        int64_t now = platform_time_wall_unix();
+        int64_t window_start = atomic_load_explicit(&g_stale_window_start_unix, rx);
+        if (window_start == 0) {
+            atomic_store_explicit(&g_stale_window_start_unix, now, rx);
+            window_start = now;
+        }
+        if (atomic_fetch_add_explicit(&g_stale_window_count, 1, rx) == 0) {
+            atomic_store_explicit(&g_stale_window_min, base, rx);
+            atomic_store_explicit(&g_stale_window_max, base, rx);
+        } else {
+            if (base < atomic_load_explicit(&g_stale_window_min, rx))
+                atomic_store_explicit(&g_stale_window_min, base, rx);
+            if (base > atomic_load_explicit(&g_stale_window_max, rx))
+                atomic_store_explicit(&g_stale_window_max, base, rx);
+        }
+        if (now - window_start >= STALE_SUMMARY_WINDOW_SECS) {
+            /* count is per-probe fold events (a backed-off peer is probed
+             * repeatedly inside one window) — an over-estimate of distinct
+             * peers, so labelled "observations". min/max bound the intervals. */
+            printf("[headers] %d stale-interval observations "
+                   "(intervals %llds-%llds)\n",
+                   atomic_load_explicit(&g_stale_window_count, rx),
+                   (long long)atomic_load_explicit(&g_stale_window_min, rx),
+                   (long long)atomic_load_explicit(&g_stale_window_max, rx));
+            atomic_store_explicit(&g_stale_window_count, 0, rx);
+            atomic_store_explicit(&g_stale_window_start_unix, now, rx);
         }
     }
 

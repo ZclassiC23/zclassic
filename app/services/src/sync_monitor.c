@@ -9,6 +9,7 @@
 #include "services/sync_monitor.h"
 #include "util/log_macros.h"
 
+#include "json/json.h"
 #include "framework/condition.h"
 #include "net/connman.h"
 #include "net/netaddr.h"
@@ -469,6 +470,49 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     case WATCHDOG_SNAPSHOT_RESNAPSHOT: return "SNAPSHOT_RESNAPSHOT";
     }
     return "UNKNOWN";
+}
+
+/* zcl_state subsystem=sync_monitor — the sync watchdog's recovery counters
+ * plus the local-recovery (header-refill) sub-state. See CLAUDE.md "Adding
+ * state introspection". Reentrant-safe (both accessors snapshot internally). */
+bool sync_monitor_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct watchdog_stats wd;
+    sync_monitor_get_stats(&wd);
+    json_push_kv_int (out, "recoveries_total", wd.recoveries_total);
+    json_push_kv_str (out, "last_recovery",
+                      watchdog_recovery_type_name(wd.last_recovery));
+    json_push_kv_int (out, "last_recovery_time", wd.last_recovery_time);
+    json_push_kv_int (out, "last_recovery_local_height",
+                      wd.last_recovery_local_height);
+    json_push_kv_int (out, "last_recovery_peer_height",
+                      wd.last_recovery_peer_height);
+    json_push_kv_int (out, "last_recovery_peer_count",
+                      wd.last_recovery_peer_count);
+    json_push_kv_int (out, "last_recovery_target_height",
+                      wd.last_recovery_target_height);
+    json_push_kv_int (out, "last_recovery_manifest_height",
+                      wd.last_recovery_manifest_height);
+    json_push_kv_str (out, "last_recovery_reason", wd.last_recovery_reason);
+    json_push_kv_str (out, "last_recovery_trigger", wd.last_recovery_trigger);
+
+    struct watchdog_local_recovery_stats lr;
+    sync_monitor_get_local_recovery_stats(&lr);
+    json_push_kv_bool(out, "local_recovery_active", lr.active);
+    json_push_kv_bool(out, "mirror_repair_gated", lr.mirror_repair_gated);
+    json_push_kv_bool(out, "retries_exhausted", lr.retries_exhausted);
+    json_push_kv_int (out, "missing_height", lr.missing_height);
+    json_push_kv_int (out, "retry_count", lr.retry_count);
+    json_push_kv_int (out, "distinct_peer_count", lr.distinct_peer_count);
+    json_push_kv_int (out, "peer_rotation_count", lr.peer_rotation_count);
+    json_push_kv_str (out, "local_recovery_mode", lr.mode);
+    json_push_kv_str (out, "local_recovery_last_reason", lr.last_reason);
+    return true;
 }
 
 #ifdef ZCL_TESTING

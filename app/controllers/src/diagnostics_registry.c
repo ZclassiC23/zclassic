@@ -34,6 +34,10 @@
 #include "services/utxo_parity_service.h"
 #include "services/soak_attestation_service.h"
 #include "services/canary_sentinel_watch.h"
+#include "services/bg_validation_service.h"
+#include "services/disk_monitor.h"
+#include "services/sync_monitor.h"
+#include "services/db_maintenance.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
@@ -543,6 +547,20 @@ static const struct dump_entry g_dumpers[] = {
                      "replay-canary sentinel watch: verdict_dir, last_scan, "
                      "files_seen, per-kind verdict+reason+ts, fail latch, "
                      "condition_active" },
+    { "bg_validation", bg_validation_dump_state_json,
+                     "background historical-proof re-verification: state, "
+                     "verified/chain height, sigs+proofs verified, "
+                     "blocks_per_sec, script-verify skips" },
+    { "disk_monitor", disk_monitor_dump_state_json,
+                     "free-space watchdog: running, level (ok/low/critical), "
+                     "last free bytes + poll time, warn/refuse thresholds, "
+                     "datadir" },
+    { "sync_monitor", sync_monitor_dump_state_json,
+                     "sync watchdog: recovery counters + last recovery detail, "
+                     "local header-refill recovery sub-state" },
+    { "db_maintenance", db_maintenance_dump_state_json,
+                     "WAL/ANALYZE/VACUUM worker: last-run times + durations, "
+                     "total runs/failures, last error" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

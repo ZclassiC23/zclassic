@@ -39,6 +39,7 @@
 #include "services/db_maintenance.h"
 
 #include "event/event.h"
+#include "json/json.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -200,6 +201,34 @@ void db_maintenance_status_snapshot(struct db_maintenance_status *out)
     snprintf(out->last_error, sizeof(out->last_error),
              "%s", g_dbm.last_error);
     pthread_mutex_unlock(&g_dbm.lock);
+}
+
+/* zcl_state subsystem=db_maintenance — the WAL-checkpoint / ANALYZE / VACUUM
+ * background worker's last-run timestamps, durations, run/failure totals, and
+ * last error. See CLAUDE.md "Adding state introspection". Reentrant-safe (the
+ * snapshot takes the brief worker lock). */
+bool db_maintenance_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct db_maintenance_status st;
+    db_maintenance_status_snapshot(&st);
+    json_push_kv_bool(out, "running", st.running);
+    json_push_kv_int (out, "wal_last_unix", st.wal_last_unix);
+    json_push_kv_int (out, "wal_last_duration_ms", st.wal_last_duration_ms);
+    json_push_kv_int (out, "analyze_last_unix", st.analyze_last_unix);
+    json_push_kv_int (out, "analyze_last_duration_ms",
+                      st.analyze_last_duration_ms);
+    json_push_kv_int (out, "vacuum_last_unix", st.vacuum_last_unix);
+    json_push_kv_int (out, "vacuum_last_duration_ms",
+                      st.vacuum_last_duration_ms);
+    json_push_kv_int (out, "total_runs", st.total_runs);
+    json_push_kv_int (out, "total_failures", st.total_failures);
+    json_push_kv_str (out, "last_error", st.last_error);
+    return true;
 }
 
 void db_maintenance_set_vacuum_gate(db_maintenance_vacuum_gate_fn fn)

@@ -78,6 +78,11 @@ struct disk_monitor_status {
 
 void disk_monitor_status_snapshot(struct disk_monitor_status *out);
 
+/* zcl_state subsystem=disk_monitor — free-space watchdog snapshot.
+ * See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool disk_monitor_dump_state_json(struct json_value *out, const char *key);
+
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
 /* Start the background thread. Returns a non-ok result if already

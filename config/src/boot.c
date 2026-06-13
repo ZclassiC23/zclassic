@@ -2258,8 +2258,40 @@ bool app_init(struct app_context *ctx)
         /* Propagate nChainTx for all blocks in the index.
          * The flat file and LevelDB don't always store correct nChainTx.
          * Without this, find_most_work_chain() skips blocks with
-         * nChainTx=0, causing "tip=X most_work=Y" with Y << X. */
+         * nChainTx=0, causing "tip=X most_work=Y" with Y << X.
+         *
+         * Skip-guard: block_index_loader persists+restores nChainTx, so a
+         * warm boot loads a map that is ALREADY fully propagated. The
+         * malloc+qsort+multi-pass below is O(n log n) over millions of
+         * entries while holding boot — wasted work when nothing changed.
+         * An O(n) pre-scan confirms every txn-bearing block already carries
+         * a nonzero nChainTx (and, where its parent's nChainTx is known, the
+         * child equals parent + nTx). If so, skip the rebuild entirely; only
+         * the cold/torn-import case (missing nChainTx) pays the full pass. */
+        bool nchaintx_already_computed = false;
         if (g_state.map_block_index.size > 100) {
+            nchaintx_already_computed = true;
+            size_t it = 0;
+            struct block_index *bi = NULL;
+            while (block_map_next(&g_state.map_block_index, &it, NULL, &bi)) {
+                if (!bi)
+                    continue;
+                if (bi->nTx > 0 && bi->nChainTx == 0) {
+                    nchaintx_already_computed = false;
+                    break;
+                }
+                /* pprev-consistency where the parent total is known. */
+                if (bi->nHeight > 0 && bi->pprev &&
+                    bi->pprev->nChainTx > 0 && bi->nTx > 0 &&
+                    bi->nChainTx != bi->pprev->nChainTx + bi->nTx) {
+                    nchaintx_already_computed = false;
+                    break;
+                }
+            }
+        }
+        if (nchaintx_already_computed) {
+            printf("nChainTx already computed, skipping propagation\n");
+        } else if (g_state.map_block_index.size > 100) {
             size_t n = g_state.map_block_index.size;
             struct block_index **sorted = zcl_malloc(n * sizeof(*sorted), "boot.nchaintx_sorted");
             if (sorted) {
