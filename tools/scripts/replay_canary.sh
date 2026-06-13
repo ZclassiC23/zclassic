@@ -184,6 +184,17 @@ fail() {
     local reason="$1"
     write_verdict "FAIL" "$reason"
     emit_verdict_line "FAIL" "$reason"
+    # Preserve forensics BEFORE the exit trap rm -rf's the scratch datadir:
+    # the isolated node's log tail is the only post-mortem for an
+    # unattended (02:30 nightly) FAIL. Tail-bounded so the verdict dir
+    # stays small; tmp+mv so a reader never sees a torn copy. Quietly
+    # skipped in selftest/fixture mode (no ISO_DD / no node.log).
+    if [ -n "${ISO_DD:-}" ] && [ -f "${ISO_DD}/node.log" ]; then
+        local flog="$VERDICT_DIR/lastfail_${FROM}_node.log"
+        { echo "# preserved by fail(reason=$reason) ts=$(date -u +%s) elapsed=${ELAPSED:-?}s"; \
+          tail -n 400 "${ISO_DD}/node.log"; } > "${flog}.tmp" 2>/dev/null \
+            && mv -f "${flog}.tmp" "$flog" 2>/dev/null || true
+    fi
     exit 1
 }
 
