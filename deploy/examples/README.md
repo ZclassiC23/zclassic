@@ -6,8 +6,28 @@ operator-specific peers. Copy and adapt before installing:
 
 - `zclassicd-rhett.service` — legacy C++ `zclassicd` dev peer used as a
   drift/consensus oracle (see CLAUDE.md "Services" and docs/SYNC.md).
-- `zclassic23-soak.service` / `.timer` — 10-minute three-guarantees soak
-  probe driving `tools/scripts/soak_assert.sh` (hardcoded repo path).
+- `zclassic23-soak.service` / `.timer` — the OLDER 10-minute three-guarantees
+  soak probe driving `tools/scripts/soak_assert.sh` against the MAIN node
+  (hardcoded repo path). **Naming caution:** on the operator box the unit
+  named `zclassic23-soak.service` is NOT this probe — it is the long-uptime
+  soak NODE, committed here as `zclassic23-soak-node.service`.
+- `zclassic23-soak-node.service` — the deployed long-uptime soak NODE
+  (pinned binary at `~/.local/bin/zclassic23-soak`, datadir
+  `~/.zclassic-c23-soak`, RPC 18242; installed on-box as
+  `zclassic23-soak.service`). `make deploy` never touches its binary;
+  re-pinning it is a conscious soak-clock re-baseline (see unit comments).
+- `zclassic23-soak-evidence.{service,timer}` — hourly MVP-C6 evidence
+  collector: `tools/scripts/soak_evidence.sh collect` appends one READ-ONLY
+  JSON sample (soak/zclassicd heights, gap, NRestarts, ActiveEnterTimestamp,
+  VmRSS, ok) to `~/.local/state/zclassic23-soak-evidence/evidence.jsonl`.
+  An unreachable node is recorded as an `ok:false` line, never skipped —
+  and the judge GATES on those holes (soak unreachable beyond the 1%
+  budget = NOT_MET; a stale last sample caps MET at INSUFFICIENT, so a
+  dead collector can never leave an evergreen green verdict). Judge the
+  window with `make soak-evidence-report`; the unit's OnFailure= pages
+  only when the lock-acquire or APPEND itself fails.
+- `zclassic23-soak-evidence-onfailure.service` — `OnFailure=` arm for the
+  collector; logs to the journal (`journalctl -t soak-evidence`).
 - `zclassic23-replay-canary-nightly.{service,timer}` — nightly from-anchor
   replay canary driving `tools/scripts/replay_canary.sh --from=anchor`
   (~45 min). Replays bodies anchor(3,056,758)->tip through the HEAD reducer

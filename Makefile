@@ -126,7 +126,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
         test-two-node-peer-tip chaos chaos-clean \
-        replay-canary-anchor replay-canary-genesis
+        replay-canary-anchor replay-canary-genesis \
+        soak-evidence-report soak-evidence-selftest
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
 all: test_zcl zclassic23 zclassic-cli
@@ -634,6 +635,40 @@ replay-canary-genesis: zclassic23 zcl-rpc
 	 fi; \
 	 rm -f "$$marker"; \
 	 echo "replay-canary-genesis: PASS (fresh sentinel verdict=PASS)"'
+
+# ── MVP-C6 live-soak evidence (opt-in; reads the LIVE soak node) ─────
+#
+# soak-evidence-report judges the hourly evidence JSONL accumulated by
+# the zclassic23-soak-evidence timer (deploy/examples/) against the
+# 168 h MVP #6 window and prints VERDICT=MET|NOT_MET|INSUFFICIENT from
+# PARSED DATA only. DELIBERATELY excluded from the default `ci:` recipe:
+# the collector reads the LIVE soak node + zclassicd (read-only RPC) and
+# `make ci` must stay hermetic — it must never depend on (or start) a
+# node. The hermetic logic check is soak-evidence-selftest (fixture
+# JSONL in a mktemp dir; no nodes, no live state). The false-green
+# guard below requires the judge to actually PRINT a verdict line — a
+# crashed/no-op judge fails loud, never exit-0-as-proof.
+.PHONY: soak-evidence-report
+soak-evidence-report:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/soak_evidence.sh judge $${ZCL_SOAK_JUDGE_ARGS:-}); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if ! echo "$$out" | grep -q "soak-evidence: VERDICT="; then \
+	     echo "soak-evidence-report: FALSE-GREEN GUARD — judge printed no VERDICT line (rc=$$rc)"; \
+	     exit 1; \
+	 fi; \
+	 exit "$$rc"'
+
+.PHONY: soak-evidence-selftest
+soak-evidence-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/soak_evidence.sh --selftest 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "soak-evidence-selftest: FAIL (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "soak-evidence-selftest: PASS"'
 
 # Always-fresh end-to-end MCP test.
 #
