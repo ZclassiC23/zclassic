@@ -1079,6 +1079,7 @@ int main(void)
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
     { extern int test_soak_attestation(void); failures += test_soak_attestation(); }
     { extern int test_replay_canary_verdict(void); failures += test_replay_canary_verdict(); }
+    { extern int test_canary_sentinel_watch(void); failures += test_canary_sentinel_watch(); }
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

@@ -33,6 +33,7 @@
 #include "services/header_probe.h"
 #include "services/utxo_parity_service.h"
 #include "services/soak_attestation_service.h"
+#include "services/canary_sentinel_watch.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
@@ -538,6 +539,10 @@ static const struct dump_entry g_dumpers[] = {
     { "soak",           soak_dump_state_json,
                      "soak attestation log: lines_written, last_ts, "
                      "last_healthy, rotations, write_failures, file_bytes" },
+    { "canary_watch",   canary_watch_dump_state_json,
+                     "replay-canary sentinel watch: verdict_dir, last_scan, "
+                     "files_seen, per-kind verdict+reason+ts, fail latch, "
+                     "condition_active" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

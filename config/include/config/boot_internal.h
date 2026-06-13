@@ -242,6 +242,12 @@ bool boot_utxo_parity_register(struct boot_svc_ctx *svc);
  * Always returns true (non-fatal if the supervisor registration misses). */
 bool boot_soak_attestation_register(struct boot_svc_ctx *svc);
 
+/* Register the replay-canary sentinel watch into the runtime kernel (defined
+ * in boot_canary_watch.c). 60 s supervised scan of the canary verdict dir;
+ * a FAIL sentinel pages via the replay_canary_failed Condition. Quiet no-op
+ * on boxes that never ran the canary. */
+bool boot_canary_watch_register(struct boot_svc_ctx *svc);
+
 /* ── boot_runtime_sync_services.c ───────────────────────────────
  * Runtime service-kernel start/stop adapters for the sync-adjacent services
  * that influence the tip / header path (header_probe, legacy_mirror, gap_fill,
