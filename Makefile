@@ -82,6 +82,13 @@ MCP_SRCS = $(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
+# Header-dependency tracking for the per-object / build-only inner loop. Without
+# this a header edit is invisible to make and build-only false-greens against
+# stale objects. The .d files are emitted by -MMD -MP in the %.o rule below; the
+# whole-program monolith (zclassic23 / test_zcl) recompiles all TUs regardless,
+# so it is unaffected. Leading '-' suppresses the first-build "no .d" noise.
+-include $(ALL_OBJS:.o=.d)
+
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
 GTK_DEF    := $(if $(GTK_CFLAGS),-DHAVE_GTK,)
@@ -89,7 +96,7 @@ WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
 WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
-CFLAGS = -std=c23 -O3 -march=native -flto=auto -Wall -Wextra -Werror -pedantic \
+CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	-fstack-protector-strong \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
@@ -1021,7 +1028,7 @@ ci-sync-smoke: zclassic23
 
 $(OBJ_DIR)/%.o: %.c $(TMPL_GEN)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 # The one TU that bakes in ZCL_BUILD_COMMIT — see the stamp comment up top.
 $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)

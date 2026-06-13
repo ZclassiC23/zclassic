@@ -383,6 +383,14 @@ make test           # Run 1500+ tests
 make deploy         # Build + setcap + restart service
 ```
 
+Note on `-j`: each binary is ONE whole-program `cc` over ~660–1400 `.c` files
+(LTO), so `-j$(nproc)` only overlaps the 2–3 separate binaries + the LTO link,
+NOT the per-binary front-end compile. For a fast compile-check inner loop use
+`make build-only` (476 `cc -c` genuinely parallel under `-j`); header edits are
+now tracked via depfiles, so it no longer false-greens on a header change.
+Default build targets `-march=x86-64-v3` (portable: AVX2/FMA/BMI2); pass
+`ZCL_NATIVE=1` to build for the host CPU only.
+
 ### Test
 ```bash
 build/bin/test_zcl  # All tests
