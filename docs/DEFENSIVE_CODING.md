@@ -768,6 +768,7 @@ edit it whenever you add/remove a gate.
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-authoritative-ram-state`
+- `check-no-new-repair-rung`
 - `check-no-silent-ready`
 - `check-observability-pairing`
 - `check-one-result-type`

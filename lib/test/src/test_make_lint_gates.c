@@ -876,6 +876,11 @@ static int run_gate_script_with_worker_files(const char *script_rel,
 /* The same worker WITH a supervisor_register_in_domain pairing — passes. */
 #define SUPDOM_OK_WORKER_REL  "test-tmp/_supdom_supervised_worker_fixture_tmp.c"
 
+#define RRUNG_SCRIPT_REL  "tools/scripts/check_no_new_repair_rung.sh"
+/* A new repair-rung-named file (basename contains "reconcile") planted under
+ * app/services/src so the gate's `find app -name '*.c'` scan sees it. */
+#define RRUNG_FIXTURE_DST "app/services/src/_repair_rung_fixture_tmp_reconcile.c"
+
 static int plant_oversized_file(const char *rel, int n_lines)
 {
     char path[PATH_MAX];
@@ -910,6 +915,40 @@ static int t_e1_file_size_ceiling(void)
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
         ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* TENACITY I3 ratchet — a NEW repair/reconcile/backfill rung in app/ with no
+ * baseline entry and no `// repair-rung-ok:` marker trips the gate; adding the
+ * marker (citing a write-time-invariant test) exempts it; removing the file
+ * restores green. */
+static int t_no_new_repair_rung(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    unlink_rel(RRUNG_FIXTURE_DST);
+    int baseline_rc = run_gate_script(RRUNG_SCRIPT_REL, NULL);
+    /* Unjustified new rung — must trip. */
+    int planted_bad = (repo_path(path, sizeof(path), RRUNG_FIXTURE_DST) == 0 &&
+                       write_file(path, "void rung(void){}\n") == 0) ? 0 : -1;
+    int trip_rc = planted_bad == 0 ? run_gate_script(RRUNG_SCRIPT_REL, NULL) : -1;
+    /* Same file WITH a write-time-invariant-test marker — must pass. */
+    int planted_ok = (repo_path(path, sizeof(path), RRUNG_FIXTURE_DST) == 0 &&
+                      write_file(path,
+                          "// repair-rung-ok:test_fixture_write_time_invariant\n"
+                          "void rung(void){}\n") == 0) ? 0 : -1;
+    int marker_rc = planted_ok == 0 ? run_gate_script(RRUNG_SCRIPT_REL, NULL) : -1;
+    unlink_rel(RRUNG_FIXTURE_DST);
+    int recover_rc = run_gate_script(RRUNG_SCRIPT_REL, NULL);
+    TEST("[lint-gate] TENACITY-I3 no-new-repair-rung: clean, trips, marker exempts, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted_bad == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(planted_ok == 0);
+        ASSERT(marker_rc == 0);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
@@ -3020,6 +3059,7 @@ int test_make_lint_gates(void)
     failures += t_projection_deferral_is_not_block_rejected_contract();
     failures += t_trusted_peer_stall_guard_contract();
     failures += t_e1_file_size_ceiling();
+    failures += t_no_new_repair_rung();
     failures += t_e9_operator_needed_sink();
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();

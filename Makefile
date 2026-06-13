@@ -129,6 +129,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
         check-operator-needed-sink check-doc-accuracy \
+        check-no-new-repair-rung \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
@@ -1081,7 +1082,7 @@ deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23
-	@./tools/deploy_verify.sh
+	@ZCL_DEPLOY_EXPECT_COMMIT="$(BUILD_COMMIT)" ./tools/deploy_verify.sh
 
 release:
 	@./tools/release.sh
@@ -1536,6 +1537,15 @@ check-consensus-parity:
 	@echo "══ LINT: consensus parity with zclassicd (E13) ══"
 	@./tools/scripts/check_consensus_parity.sh
 
+# Gate — no NEW repair rung without a write-time-invariant test (RATCHET for
+# TENACITY I3). A new repair/reconcile/backfill/heal file in app/ must cite a
+# write-time-invariant test (`// repair-rung-ok:<test>`) or be grandfathered in
+# tools/scripts/repair_rung_baseline.txt (shrink-only). Fix the WRITER, not
+# downstream with another rung.
+check-no-new-repair-rung:
+	@echo "══ LINT: no new repair rung (TENACITY I3) ══"
+	@./tools/scripts/check_no_new_repair_rung.sh
+
 # Gate E1 — file-size ceiling for app/ .c files (RATCHET). Mega-modules
 # cannot hide behind <500-LOC functions; baseline at
 # tools/scripts/file_size_ceiling_baseline.txt may only shrink.
@@ -1636,7 +1646,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

@@ -437,6 +437,25 @@ run_live() {
     # Poll until bg_validation reaches a terminal state or the budget blows.
     local deadline=$(( START_TS + budget ))
     while :; do
+        # Node-death check FIRST. A node that CRASHED (e.g. a SIGSEGV in a
+        # recovery/boot path) answers every RPC empty, so without this the loop
+        # would poll until the budget blows and then mislabel a crash as
+        # rpc_unreachable_getsyncdiag / bg_state=timeout (observed 2026-06-13,
+        # masking a real signal 11 in chain_restore_finalize). Detect the dead
+        # PID and FAIL FAST with the actual signal from node.log.
+        if [ -n "${ISO_NODE_PID:-}" ] && ! kill -0 "$ISO_NODE_PID" 2>/dev/null; then
+            ELAPSED=$(( $(date +%s) - START_TS ))
+            local sig=""
+            if [ -f "$ISO_DD/node.log" ]; then
+                sig="$(grep -aoE 'signal[^0-9]*[0-9]+' "$ISO_DD/node.log" \
+                        | grep -oE '[0-9]+' | tail -1)"
+            fi
+            if [ -n "$sig" ]; then
+                R_BGSTATE="crashed"; fail "node_crashed_signal_${sig}"
+            else
+                R_BGSTATE="exited"; fail "node_exited_unexpectedly"
+            fi
+        fi
         local sd; sd="$(iso_rpc getsyncdetail)"
         local st; st="$(json_str "$sd" state)"
         case "$st" in

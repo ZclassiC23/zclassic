@@ -26,6 +26,13 @@ RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
 INTERVAL=2
 
+# The build_commit we expect the restarted daemon to be running. `make deploy`
+# passes ZCL_DEPLOY_EXPECT_COMMIT=$(BUILD_COMMIT) (the exact baked value,
+# including any -dirty suffix); a by-hand run inside the repo falls back to
+# HEAD. Empty (e.g. deploying from a tarball with no git) => the staleness
+# assertion is skipped with a warning, never a hard fail.
+EXPECT_COMMIT="${ZCL_DEPLOY_EXPECT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+
 if [ ! -x "$RPC_TOOL" ]; then
     alt="./build/bin/zcl-rpc"
     if [ -x "$alt" ]; then
@@ -71,6 +78,16 @@ extract_height() {
     fi
     printf '%s' "$height"
 }
+
+extract_build_commit() {
+    printf '%s\n' "$1" |
+        grep -oE '"build_commit"[[:space:]]*:[[:space:]]*"[^"]*"' |
+        head -1 |
+        sed -E 's/.*"build_commit"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+}
+
+# Normalise a build_commit for comparison: lowercase, drop a trailing -dirty.
+norm_commit() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/-dirty$//'; }
 
 rpc_dumpstate() {
     component="$1"
@@ -184,7 +201,30 @@ verify_contract() {
     printf '%s\n' "$health" | grep -q '"degraded_reason"[[:space:]]*:[[:space:]]*"chain_evidence_gap"' &&
         { last_err="healthcheck reports generic evidence gap: $health"; return 1; }
 
-    echo "Deployed + RPC live at block $height; canonical diagnostics ready."
+    # Staleness guard: the binary actually answering RPC must be the one we just
+    # built. A restart that silently kept the OLD binary (stale unit, a rebuild
+    # that errored, wrong path on $PATH) otherwise reads as a green deploy — the
+    # exact footgun that shipped stale binaries for hours (MEMORY: "live binary
+    # still stale", "23h STALE"). Fail loud on a commit mismatch.
+    running_commit=$(extract_build_commit "$health")
+    if [ -n "$EXPECT_COMMIT" ] && [ -n "$running_commit" ]; then
+        r=$(norm_commit "$running_commit"); e=$(norm_commit "$EXPECT_COMMIT")
+        # Prefix-match either direction so differing short-hash lengths
+        # (7 vs 9 vs 10 hex) compare equal while a real divergence fails.
+        case "$r" in
+            "$e"*) : ;;
+            *) case "$e" in
+                   "$r"*) : ;;
+                   *) last_err="STALE DEPLOY: running build_commit '$running_commit' != expected '$EXPECT_COMMIT' (restart kept an old binary)"; return 1 ;;
+               esac ;;
+        esac
+    elif [ -z "$running_commit" ]; then
+        echo "deploy_verify: WARNING — running daemon exposes no build_commit; cannot assert freshness" >&2
+    elif [ -z "$EXPECT_COMMIT" ]; then
+        echo "deploy_verify: WARNING — no expected commit (not in a git tree); skipping staleness assertion" >&2
+    fi
+
+    echo "Deployed + RPC live at block $height (build_commit ${running_commit:-unknown}); canonical diagnostics ready."
     return 0
 }
 
