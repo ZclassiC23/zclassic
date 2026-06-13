@@ -60,13 +60,31 @@ real prove — and both cold-import lattice fixes (`41de86064` seed
 utxo_apply row + `7a28501e5`) are in the merged binary's ancestry, so
 this bootstrap exercises them.
 
-**Resume queue (in order):** (1) gate soak convergence — heights + hash
-probes + `gettxoutsetinfo` count/supply vs zclassicd; (2) live redeploy =
-stop zclassic23, wipe `~/.zclassic-c23` (wallet 0.00 verified, Tor
-identity outside datadir), `--importblockindex $HOME/.zclassic
-$HOME/.zclassic-c23/node.db`, start service, acceptance = healthy:true at
-tip + probes; (3) canary first runs + RED proof, then enable timers;
-(4) seal watch at grid 3,146,000.
+**RESOLVED (2026-06-13 ~00:20 UTC): both gates passed; the live node is
+REDEPLOYED and CURED.**
+- **Soak gate (run-4 cold-import prove)**: converged, 11/11 hash probes
+  MATCH, same-bestblock `gettxoutsetinfo` parity EXACT (txouts 1,344,643;
+  supply 10,395,252.99498115). The wave-3 lattice fixes held end-to-end.
+- **Live redeploy**: wipe + two-step recipe on the merged binary →
+  healthy:true at tip 3,145,475, gap 0, hash probes 6/6 MATCH, set parity
+  EXACT, operator_needed clear, 5 healthy peers / 5 groups, zero blockers.
+  The block_failed_mask_at_tip paging is GONE.
+- **Peer-floor gotcha (cost ~1 h, now durable)**: a localhost-only addnode
+  set can NEVER converge a cold import — announce-stream holes at the seed
+  boundary need body_fetch getdata, which the anti-eclipse floor (≥3
+  healthy peers) correctly gates. Both units now carry external addnodes;
+  do NOT lower the floor. The 20-min tip-stall watchdog recycle is what
+  re-dials the unit addnode list — it cleared both nodes' final stretch.
+- **Tor identity note**: "identity outside datadir" was WRONG — dynhost
+  mints a fresh ephemeral onion every boot; a wipe loses nothing. The
+  stale-address defect that hid this is fixed (`2e5b9cd23`, live-proven:
+  reported == tor.log newest).
+- **Canary**: hermetic verdict proofs 6/6 (pass + 5 typed FAILs on the
+  real script); live RED proven (fresh atomic FAIL sentinel from a real
+  spawn); RPC-ready window fixed (`3cde4fb52`); first live green
+  from-anchor run in flight. Timers (deploy/examples) install after PASS.
+- **Next**: seal watch at grid 3,146,000 (~12-22 h; check `zcl_state
+  subsystem=seal` for candidate+ratify; prune stays DARK).
 
 ---
 
