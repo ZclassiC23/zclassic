@@ -5,13 +5,15 @@
  *
  * Every block uses a private tmp dir exported via ZCL_CANARY_VERDICT_DIR
  * (the same env the canary harness reads), so the operator's real verdict
- * dir, the live node, and $HOME are never touched. Asserts the five
+ * dir, the live node, and $HOME are never touched. Asserts the six
  * contracts from the build spec:
  *   (a) FAIL sentinel  → condition raised (and pages),
  *   (b) PASS overwrite → condition cleared,
  *   (c) corrupt JSON   → no raise, no crash, logged once per mtime,
  *   (d) absent dir     → quiet no-op,
- *   (e) idempotency    → two ticks on the same FAIL = ONE raise/remedy.
+ *   (e) idempotency    → two ticks on the same FAIL = ONE raise/remedy,
+ *   (f) mixed kinds    → anchor=FAIL + genesis=PASS pages naming only the
+ *                        failing kind; all-green clears.
  * Plus the documented absence policy: a FAIL stays latched when its
  * sentinel disappears (a re-running canary must not un-page the node). */
 
@@ -216,6 +218,36 @@ int test_canary_sentinel_watch(void)
         ok = ok && snap.cleared_count == 1;
         ok = ok && condition_engine_get_active_count() == 0;
         CSW_CHECK("PASS overwrite clears the condition", ok);
+        watch_test_teardown(dir);
+    }
+
+    /* (f) mixed verdicts across kinds: anchor=FAIL + genesis=PASS must keep
+     * the condition raised with detail naming ONLY the failing kind; a later
+     * anchor PASS (all kinds green) clears it. */
+    {
+        watch_test_setup(dir);
+        bool ok = write_sentinel(dir, "anchor", "FAIL", "sha3_mismatch",
+                                 1718000100LL);
+        ok = ok && write_sentinel(dir, "genesis", "PASS", "", 1718000101LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+
+        char detail[256];
+        int fails = canary_sentinel_watch_fail_detail(detail, sizeof(detail));
+        ok = ok && fails == 1;
+        ok = ok && strstr(detail, "kind=anchor") != NULL;
+        ok = ok && strstr(detail, "kind=genesis") == NULL;
+
+        condition_engine_tick();
+        struct condition_runtime_snapshot snap;
+        ok = ok && cond_snapshot(&snap) && snap.currently_active;
+
+        ok = ok && write_sentinel(dir, "anchor", "PASS", "", 1718000160LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && !canary_sentinel_watch_fail_active();
+        condition_engine_tick();
+        ok = ok && cond_snapshot(&snap) && !snap.currently_active;
+        CSW_CHECK("mixed FAIL+PASS kinds page on the failing kind only", ok);
         watch_test_teardown(dir);
     }
 

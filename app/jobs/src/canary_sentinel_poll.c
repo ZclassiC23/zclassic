@@ -18,9 +18,10 @@
 
 static struct liveness_contract        g_contract;
 static _Atomic supervisor_child_id     g_id = SUPERVISOR_INVALID_ID;
-/* Monotonic per-tick counter so the supervisor's progress-quiet detector
- * sees movement even when the verdict dir is absent (a box that never ran
- * the canary legitimately no-ops forever). */
+/* Monotonic per-tick marker so `zcl_state subsystem=supervisor` shows the
+ * job ticking even on a box that never ran the canary (perpetual no-op).
+ * Progress-quiet stall detection is deliberately disabled for this job
+ * (progress_max_quiet_us=0 below), so the marker is introspection-only. */
 static _Atomic int64_t                 g_tick_counter = 0;
 
 static void canary_sentinel_poll_tick(struct liveness_contract *c)

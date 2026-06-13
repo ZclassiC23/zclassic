@@ -45,6 +45,7 @@ struct canary_kind_slot {
     bool    used;
     bool    fail;                       /* latched: latest verdict == FAIL */
     char    kind[CANARY_KIND_NAME_MAX];
+    char    from[CANARY_KIND_NAME_MAX]; /* sentinel's own `from` — display only */
     char    verdict[CANARY_VERDICT_MAX];
     char    reason[CANARY_REASON_MAX];
     int64_t ts;                         /* sentinel's own write-time epoch */
@@ -194,10 +195,12 @@ static void process_sentinel(const char *dir, const char *name)
 
     snprintf(slot->verdict, sizeof(slot->verdict), "%s", verdict);
     snprintf(slot->reason, sizeof(slot->reason), "%s", reason);
-    /* Prefer the sentinel's own `from` field as the kind label when present
-     * (it is the harness's authoritative name; the filename is derived). */
-    if (from[0])
-        snprintf(slot->kind, sizeof(slot->kind), "%s", from);
+    /* The slot key is the filename-derived kind, ALWAYS. Renaming the slot
+     * from the sentinel's `from` field would orphan a FAILed slot if the
+     * two ever disagreed (the PASS that should clear it would land in a
+     * fresh slot, leaving an un-clearable page). `from` is recorded for
+     * display only. */
+    snprintf(slot->from, sizeof(slot->from), "%s", from);
     slot->ts = ts;
     slot->fail = strcmp(verdict, "FAIL") == 0;
     slot->parse_fail_logged_mtime = 0; /* readable again: re-arm log-once */
@@ -326,6 +329,7 @@ bool canary_watch_dump_state_json(struct json_value *out, const char *key)
         json_init(&obj);
         json_set_object(&obj);
         json_push_kv_str(&obj, "kind", s->kind);
+        json_push_kv_str(&obj, "from", s->from[0] ? s->from : "-");
         json_push_kv_str(&obj, "verdict", s->verdict[0] ? s->verdict : "-");
         json_push_kv_str(&obj, "reason", s->reason);
         json_push_kv_int(&obj, "ts", s->ts);
