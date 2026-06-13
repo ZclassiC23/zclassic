@@ -415,7 +415,11 @@ run_live() {
         iso_spawn_mainnet_node "-nolegacyimport -addnode=127.0.0.1:8033"
     fi
 
-    if ! iso_wait_rpc_ready 180; then
+    # 600 s: a fresh-import boot walks 3.1M-header restore phases before the
+    # RPC listener starts; 180 s false-FAILed (rpc_never_ready) on a loaded
+    # box (first live RED run, 2026-06-13). The hard budget still bounds the
+    # whole run; this only lets the node finish booting.
+    if ! iso_wait_rpc_ready 600; then
         ELAPSED=$(( $(date +%s) - START_TS )); fail "rpc_never_ready"
     fi
 
