@@ -13,15 +13,20 @@
 
 ## #1 PRIORITY — CI-enforce the MVP criteria + accumulate soak/canary/seal evidence
 
-> **The live forward-progress wedge CLEARED 2026-06-12.** The node holds tip
-> AND finalizes forward — blocks publish at the arrival tick, restarts keep
-> the connected extent, hash-identical to zclassicd at every probed height.
-> The 2026-06-12 live coin tear (UTXO set 13-extra/≥1-missing at 3,145,366)
-> was CURED 2026-06-13 by wipe + the two-step cold import on the merged
-> wave-4 binary: healthy:true at tip, gap 0, hash probes 6/6 MATCH, set
-> parity EXACT vs zclassicd, 5 healthy peers / 5 groups, zero blockers.
-> Tear root cause still OPEN — fixture
-> `~/.zclassic-c23-cointear-fixture-20260612` (KEEP). Current state of
+> **⚠️ CORRECTED 2026-06-13 — the wedge is NOT cleared; it RECURS.** The
+> 2026-06-13 ~00:20 "cure" did not hold: the same datadir re-wedged ~120 blocks
+> later (live node forward-wedged at 3,145,594, build = HEAD). Root cause now
+> VERIFIED: a genuine cold-import **coin tear** — a non-checkpoint import skips
+> SHA3 verification (`utxo_recovery_restore.c:312-315`) and installed an
+> orphan-seeded UTXO set (canonical coinbase `60fc6f43…:0` missing at ≈3,145,486);
+> the canonical spend at 3,145,595 fails prevout_unresolved → anchor collapse →
+> I4.3 HOLD (an honest messenger, not a benign log-hole). **This GATES C3, C6,
+> C8.** Fix = the write-time import correctness gate (roadmap P1); REFUTED:
+> float-H* (consensus-unsafe) + build-L2 (forbidden rung). Delete the ladder
+> LAST. Full detail: memory `project_recurring_anchor_collapse_wedge_2026-06-13`
+> + the 2026-06-13 entry in [`../HANDOFF.md`](../HANDOFF.md); reproduction probe
+> `zcl-coldimport-prove.service` → [`experiments/coldimport-prove-2026-06-13.md`](./experiments/coldimport-prove-2026-06-13.md).
+> Fixture `~/.zclassic-c23-cointear-fixture-20260612` (KEEP). Current state of
 > record: [`../HANDOFF.md`](../HANDOFF.md). Wedge-era decision history:
 > [`working-mvp-strategy.md`](./working-mvp-strategy.md) (historical).
 
@@ -62,7 +67,7 @@ a slice; `no` = not gated.
 | 3 | Cold-start sync to tip <10 min | partial | slice ◐ | sync-FSM gate in `make ci`; the real two-step cold import is hand-proven (2026-06-13 live redeploy + soak bootstrap), not CI-gated — and the <10 min bound is not yet met (proven imports take ~25+ min) |
 | 4 | Receive shielded payment e2e | partial | no | gate exists but opt-in + needs `~/.zcash-params` → `make ci-stress` only |
 | 5 | List + sell file via store | partial | slice ◐ | in-process store-proxy gate in `make ci`; real shielded-buy+file-transfer unproven |
-| 6 | 7-day soak, zero intervention | accruing | no | wedge CLEARED 2026-06-12; dedicated `zclassic23-soak` node accruing the 168h window; `make soak-ci` bounded proxy + replay canary exist; full 7-day claim unmet |
+| 6 | 7-day soak, zero intervention | BLOCKED | no | ⚠️ wedge RECURS (cold-import coin tear, root-verified 2026-06-13) — the soak window CANNOT honestly accrue until roadmap P1 (write-time import gate) stops the recurrence; `make soak-ci` bounded proxy + replay canary exist (canary went RED live); full 7-day claim unmet |
 | 7 | Recover from kill -9 <2 min | met-manual | slice ◐ | SQLite-atomicity gate in `make ci`; full-binary restart-to-peer-tip proven by opt-in `make test-two-node-peer-tip` (2026-06-06); hermetic-CI promotion pending |
 | 8 | Consensus parity w/ zclassicd | partial | slice ◐ | diff service EXISTS and is ACTIVE live (`app/services/src/utxo_parity_service.c`, wired `config/src/boot_utxo_parity.c`; default-ON when a zclassicd oracle resolves, 2026-06-12; opt-out `ZCL_PARITY_ORACLE=0`); hermetic `mvp-parity-slice` gate (`test_parity_slice.c`) in `make ci-mvp-gates` proves the MATCH/DRIFT machinery; full claim needs 0 mismatches over the 7-day soak window + an exact byte reference (live reference is coarse/height-only) |
 
@@ -75,7 +80,12 @@ in CI → prove features → soak.** Refactor debt does not block a working
 sovereign node and must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
-- [x] **Fix the wedge** — DONE: the live wedge CLEARED 2026-06-12 (tip_finalize
+- [ ] **Fix the wedge ROOT** — REOPENED 2026-06-13: the 2026-06-12 "clear" was a
+      band-aid; the wedge RECURS (genuine cold-import coin tear, root verified —
+      see the top blockquote). The real fix is the write-time import correctness
+      gate (roadmap P1), NOT the tip_finalize/+1 work, which addressed a DIFFERENT
+      symptom. Original (still-true-for-its-symptom) note: the live wedge cleared
+      2026-06-12 for the tip_finalize symptom (tip_finalize
       +1-convention unification + the cold-import lattice fixes; see
       [`../HANDOFF.md`](../HANDOFF.md)). The node holds tip and finalizes
       forward; restarts keep the connected extent. The window-extender
@@ -157,8 +167,11 @@ sovereign node and must not jump the queue.
       already proves it; remaining = hermetic-CI promotion). Operator
       coverage: [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** the wedge is CLEARED (2026-06-12) — nothing v1 is gated on
-it. CI promotion (A) gates honest measurement of everything. C6 is wall-clock
+**Gating summary:** ⚠️ CORRECTED 2026-06-13 — the wedge is **NOT** cleared; it
+RECURS (genuine cold-import coin tear, root verified) and **GATES C3, C6, and
+C8** (all need sustained live forward progress). Roadmap P1 (the write-time
+import correctness gate) is the unblock — it makes the torn import unwritable.
+CI promotion (A) gates honest measurement of everything. C6 is wall-clock
 on the soak node. C8's oracle is up + active; it needs the soak window + an
 exact reference. C3 needs the snapshot-serve proof against the second node.
 Boot refactor gates nothing v1.

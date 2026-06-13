@@ -331,6 +331,104 @@ static int case_sparse_seed_anchor(void)
     return failures;
 }
 
+/* (b3) RECURRING POST-COLD-IMPORT WEDGE GUARD — the 2026-06-13 anchor-collapse.
+ *
+ * Models the live tear class exactly: a cold import seeded a trusted base at
+ * `base` (declared BOTH as a tip_finalize status='anchor' row AND the durable
+ * REDUCER_TRUSTED_BASE_HEIGHT_KEY, the way the import path writes it) over a
+ * LOG-LESS imported region [A+1 .. base-1] — a terminal UTXO snapshot carries
+ * no per-height reducer rows. Forward progress then reached base+2, but the
+ * canonical block at base+1 legitimately spends a coin the (orphan-seeded)
+ * import never installed, so script_validate HONESTLY recorded ok=0
+ * (prevout_unresolved) there while every other stage at base+1 is ok=1.
+ *
+ * reducer_anchor_candidate_ok(base) probes the first row above the base
+ * (base+1), finds script_validate ok=0, and REJECTS the base — both via the
+ * tip_finalize anchor-row scan and via the durable-base-key raise — so the
+ * trusted anchor collapses to the compiled SHA3 checkpoint A. The imported span
+ * being log-less, H* then falls all the way to A while served_floor still
+ * reports the imported tip. That ~88k-height gap is the wedge the I4.3 sweep
+ * latches into operator_needed.
+ *
+ * This case PINS that hstar == A is the CORRECT, consensus-safe answer: H* must
+ * NEVER float up to the trusted base / served_floor over a REAL ok=0 — that was
+ * adversarially refuted as consensus-UNSAFE (it would seal a torn coin set as
+ * finalized-by-construction). The durable remedy is upstream (refuse the torn
+ * import at write time) plus making the I4.3 *verdict* honest in
+ * invariant_sentinel; neither changes this value. A future "unwedge by raising
+ * H*" regression fails here, loudly. */
+static bool put_int64_le_meta(sqlite3 *db, const char *key, int64_t v)
+{
+    uint8_t blob[8];
+    for (int i = 0; i < 8; i++)
+        blob[i] = (uint8_t)((uint64_t)v >> (8 * i));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, blob, 8, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static int case_anchor_collapse_after_forward_ok0(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("collapse: schema", build_schema(db));
+
+    const int32_t base = A + 100;   /* the cold-import terminal tip */
+
+    /* Trusted base declared the way the import path writes it: a seed-anchor
+     * row AND the durable height key. */
+    RF_CHECK("collapse: seed anchor row", put_tip_anchor(db, base));
+    RF_CHECK("collapse: durable trusted base key",
+             put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
+
+    /* [A+1 .. base-1] is intentionally LOG-LESS (no rows) — the imported span.
+     * base+1 = the canonical spend block: every stage ok=1 EXCEPT script_validate,
+     * which honestly recorded ok=0 (prevout_unresolved on the missing coin). No
+     * tip_finalize row at base+1 (the block is block-not-finalized-by-reducer). */
+    uint8_t h1[32]; synth_hash(h1, base + 1, 0);
+    bool row =
+        put_log_row(db, "validate_headers_log", "hash", base + 1, 1, h1, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", base + 1, 0,
+                       NULL, "prevout_unresolved")
+        && put_log_row(db, "body_persist_log", NULL, base + 1, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, base + 1, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, base + 1, 1, NULL, NULL);
+    RF_CHECK("collapse: spend-block rows", row);
+
+    /* Forward progress reached base+2 across every stage (coins forged ahead,
+     * the live drift) so the candidate gate PROBES the ok=0 at base+1 rather
+     * than stopping short of it. */
+    RF_CHECK("collapse: cursors", set_all_cursors(db, base + 2));
+    /* coins_applied forged forward to base+1 — the live coins-ahead tear. */
+    RF_CHECK("collapse: coins_applied meta",
+             put_int64_le_meta(db, "coins_applied_height", base + 1));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("collapse: returns true", ok);
+    /* The trusted base is rejected over the real ok=0; H* collapses to the
+     * compiled SHA3 checkpoint. This MUST stay A — raising it would seal a torn
+     * coin set as final (refuted consensus-unsafe). */
+    RF_CHECK("collapse: hstar == anchor (refuses to float over real ok=0)",
+             hstar == A);
+    /* served_floor still reports the imported tip's seed anchor — the wedge is
+     * precisely H* << served_floor (the log-less span read as an ~88k hole). */
+    RF_CHECK("collapse: served_floor == base (imported tip)", served == base);
+    RF_CHECK("collapse: hstar < served_floor (the torn-view gap)",
+             hstar < served);
+
+    sqlite3_close(db);
+    return failures;
+}
+
 /* (c) Clamp-up: the only logged rows are an ok=0 failure just ABOVE the
  *     anchor, so the contiguous prefix would compute to (anchor) and a hash
  *     split below the anchor must never pull it lower. Even with an empty
@@ -463,6 +561,7 @@ int test_reducer_frontier(void)
     failures += case_consistent();
     failures += case_torn();
     failures += case_sparse_seed_anchor();
+    failures += case_anchor_collapse_after_forward_ok0();
     failures += case_clamp_up();
     failures += case_hash_split();
     failures += case_split_at_floor();

@@ -6,7 +6,64 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-12 (latest, eve) — wave 4 MERGED; live COIN TEAR found; soak/deploy split; redeploy = wipe + cold import
+## 2026-06-13 (LATEST) — CORRECTION: the wedge RECURRED; root-caused as a genuine cold-import COIN TEAR
+
+**The "REDEPLOYED and CURED" entry below (2026-06-13 ~00:20) DID NOT HOLD.** The
+same datadir re-wedged ~120 blocks later: the live node is forward-wedged at
+**3,145,594** (build = HEAD `6934ad512`, so the datadir is the problem, not a
+stale binary). This is a **recurring** class, not a one-off — confirmed by a deep
+architecture-evaluation workflow + first-hand code/live verification this session.
+
+**Root cause (VERIFIED, was "OPEN"):** a genuine, consensus-divergent **cold-import
+coin tear**, and the anchor-collapse/I4.3 HOLD machinery is an *honest messenger*
+of it — NOT a benign log-hole. A cold import at a non-checkpoint height **skips
+SHA3 verification** (`utxo_recovery_restore.c:312-315`, the `imported_count>100000`
+"will verify later" floor) and installed a UTXO set seeded from a **competing
+orphan block** at h≈3,145,486 (canonical coinbase `60fc6f43a630b5b7:0` absent),
+while block_index correctly tracks the canonical chain (so hash probes MATCH
+zclassicd — the tear is invisible to probes). Canonical 3,145,595 then spends that
+coinbase → `script_validate` honestly records ok=0 prevout_unresolved →
+`reducer_anchor_candidate_ok` rejects the trusted base (`reducer_frontier.c:209-236`)
+→ anchor collapses to the checkpoint → H* reads the log-less import span as an 88k
+hole → I4.3 latches the HOLD. **Wipe+reimport is a band-aid** (reruns the same
+unverified import) — that's the recurrence. **Blocks MVP C3, C6, C8.**
+
+**Verdict — do we need architecture reconsideration? YES, narrowly, at the
+COLD-IMPORT WRITE BOUNDARY.** REFUTED as consensus-UNSAFE: floating the trusted
+base to an unconditional H* floor (seals a torn set as final); building the
+never-built L2 reconcile (forbidden repair rung, TENACITY I3; re-derives the same
+wrong coin). The ~6,658-LOC repair ladder is the smell and should be DELETED — but
+STRICTLY AFTER import becomes a correct log/seal writer.
+
+**Roadmap (sequenced, consensus-parity inviolable):**
+1. **Write-time import correctness gate** — fail-loud refuse a coin-incomplete /
+   active-chain-inconsistent import at birth (makes the tear unwritable).
+   *Consensus-critical; autonomous to build; copy-prove first; deploy owner-gated.*
+2. **Make the I4.3 verdict honest without sealing a torn set** — floor only the
+   contiguity *walk* at the trusted base + a distinct typed status for a real
+   missing coin; **never float H\***.
+3. **CI-enforce MVP (0/8 → enforced) + a doctrinal ratchet lint gate** (no new
+   repair/reconcile rung without a write-time-invariant test).
+4. **Owner-gated, last:** seal-region import + delete the ladder.
+
+**In flight this session:**
+- Experiment `zcl-coldimport-prove.service` (linger): does a FRESH HEAD import
+  reproduce the orphan-seed, or was the live tear a one-off? →
+  `docs/work/experiments/coldimport-prove-2026-06-13.md`, results in
+  `/tmp/zcl-coldimport-prove/PROBE_RESULTS.txt`. This gates Phase-1's design.
+- **Regression guard LANDED**: `case_anchor_collapse_after_forward_ok0` in
+  `lib/test/src/test_reducer_frontier.c` pins that H* refuses to float over a real
+  ok=0 (locks out the refuted unsafe fix). Suite green **0/423**.
+- Velocity/onboarding improvement workflow running (build/deploy/test speed,
+  fast-sync, new-user convenience).
+- Full detail: memory `project_recurring_anchor_collapse_wedge_2026-06-13`.
+
+**Live remediation is owner-gated:** the only correct recovery is wipe + a *gated*
+reimport; never deploy anything that accepts 3,145,595 with the missing coin.
+
+---
+
+## 2026-06-12 (eve) — wave 4 MERGED; live COIN TEAR found; soak/deploy split; redeploy = wipe + cold import
 
 **Wave 4 (3 parallel worktree implementers → adversarial review → merged
 `33838e421`, union gate 0/422 + lint all-pass, pushed):** tenacity-roadmap
@@ -60,8 +117,13 @@ real prove — and both cold-import lattice fixes (`41de86064` seed
 utxo_apply row + `7a28501e5`) are in the merged binary's ancestry, so
 this bootstrap exercises them.
 
+**⚠️ SUPERSEDED — see the 2026-06-13 (LATEST) correction at the TOP of this
+file: this "cure" DID NOT HOLD. The same datadir re-wedged ~120 blocks later;
+the wedge is a RECURRING genuine cold-import coin tear, root cause now verified.
+Leaving the original (honest-at-the-instant) entry below for the audit trail.**
+
 **RESOLVED (2026-06-13 ~00:20 UTC): both gates passed; the live node is
-REDEPLOYED and CURED.**
+REDEPLOYED and CURED.** _(← superseded; see above)_
 - **Soak gate (run-4 cold-import prove)**: converged, 11/11 hash probes
   MATCH, same-bestblock `gettxoutsetinfo` parity EXACT (txouts 1,344,643;
   supply 10,395,252.99498115). The wave-3 lattice fixes held end-to-end.
