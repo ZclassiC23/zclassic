@@ -108,8 +108,8 @@
  * the scanner MUST hold progress_store_tx_lock (the _unlocked variant). See
  * stage_repair_coin_backfill_util.c:77/106/133. */
 bool find_lowest_prevout_unresolved_hole_unlocked(
-    struct sqlite3 *db, int cursor, int *out_height, char status_out[32],
-    struct uint256 *hash_out, bool *hash_found);
+    struct sqlite3 *db, int cursor, const char *wanted_status, int *out_height,
+    char status_out[32], struct uint256 *hash_out, bool *hash_found);
 bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
                               const struct uint256 *hash);
 bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
@@ -150,12 +150,14 @@ bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
     if (ceiling > checkpoint) {
         /* find_lowest_..._unlocked selects ok=0 rows with height < cursor;
          * cursor = ceiling+1 admits a hole AT the ceiling (the live spending
-         * block == coins_applied_height). One lock span (the lock is
+         * block == coins_applied_height). Scan for 'prevout_unresolved'
+         * specifically so a lower transient internal_error never masks the
+         * genuine tear that sits above it. One lock span (the lock is
          * recursive): the hole scan AND the refusal-marker read see a
          * consistent progress.kv snapshot. */
         (void)find_lowest_prevout_unresolved_hole_unlocked(
-            progress_db, (int)ceiling + 1, &hole_h, hole_status, &hole_hash,
-            &hole_hash_found);
+            progress_db, (int)ceiling + 1, "prevout_unresolved", &hole_h,
+            hole_status, &hole_hash, &hole_hash_found);
         hole_found = (hole_h > 0);
         /* (3) require coin_backfill's durable refusal of THIS hole. The key is
          * built from the hole's own block_hash (captured by the helper) — the

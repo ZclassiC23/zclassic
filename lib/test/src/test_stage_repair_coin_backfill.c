@@ -1757,20 +1757,23 @@ static int cb_case_dispatch_order(void)
     CBT("order: setup", cb_setup(fx, "order", 15, CBV_TA0, CB_TA0_VALUE,
                                  false, true));
 
+    /* BOO-2: a LOWER transient internal_error must NOT mask the higher genuine
+     * prevout_unresolved coin tear. internal_error is owned by the separate
+     * stale-script replay path; coin_backfill scans for prevout_unresolved
+     * specifically and repairs the real tear at CB_HOLE regardless. */
     CBT("order: seed lower internal_error hole",
         cb_put_script_row(fx->db, CB_HOLE - 1, "internal_error", 0,
                           &fx->chain.hashes[CB_HOLE - 1]));
 
     int64_t coins_before = coins_kv_count(fx->db);
     struct coin_backfill_result res;
-    memset(&res, 0, sizeof(res));
-    bool ok = stage_repair_coin_backfill_try(fx->db, &fx->ms, &fx->io, true,
-                                             &res);
-    CBT("order: NOT_APPLICABLE (existing replay owns the lower hole)",
-        ok && res.status == COIN_BACKFILL_NOT_APPLICABLE &&
-        res.inserted_count == 0 &&
-        coins_kv_count(fx->db) == coins_before &&
-        cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
+    int st = cb_try_until(fx, &res);
+    CBT("order: lower internal_error does NOT mask the prevout_unresolved tear",
+        st == COIN_BACKFILL_REPAIRED &&
+        res.hole_height == CB_HOLE &&
+        res.inserted_count == 1 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
+        coins_kv_count(fx->db) == coins_before + 1);
 
     cb_teardown(fx);
     free(fx);
@@ -2122,6 +2125,67 @@ static int cb_case_empty_script(void)
     return failures;
 }
 
+/* BOO-2 (boot torn-gate): a LOWER transient internal_error must not mask a
+ * higher durably-refused prevout_unresolved tear. Drive the REAL writer to a
+ * terminal txindex_miss (persisting coin_backfill.refused at CB_HOLE), add a
+ * lower ok=0 internal_error row, install the active tip at the hole, and assert
+ * the gate STILL fires (the lowest prevout_unresolved row is the verdict, not
+ * the lower internal_error). */
+static int cb_case_gate_not_masked_by_lower_internal_error(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("gate_mask: setup", cb_setup(fx, "gate_mask", 42, CBV_TA0,
+                                     CB_TA0_VALUE, false, true));
+
+    struct uint256 tip_hash;
+    cb_synth_tip_hash(CB_HOLE, &tip_hash);
+    struct block_index *tip =
+        chainstate_insert_block_index((struct chainstate *)&fx->ms, &tip_hash);
+    bool tip_ok = false;
+    if (tip) {
+        tip->nHeight = CB_HOLE;
+        tip->nStatus = BLOCK_VALID_TREE;
+        tip->nFile = -1;
+        tip_ok = active_chain_install_tip_slot(&fx->ms.chain_active, tip) &&
+                 active_chain_height(&fx->ms.chain_active) == CB_HOLE;
+    }
+    CBT("gate_mask: active tip installed at the hole height", tip_ok);
+
+    /* Lower transient internal_error hole below the genuine tear. */
+    CBT("gate_mask: seed lower internal_error hole",
+        cb_put_script_row(fx->db, CB_HOLE - 1, "internal_error", 0,
+                          &fx->chain.hashes[CB_HOLE - 1]));
+
+    /* Drive the REAL writer to a TERMINAL txindex_miss at CB_HOLE. */
+    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
+    CBT("gate_mask: delete creator txindex row + mark txindex complete",
+        ta && db_tx_delete(&fx->ndb, ta->hash.data) &&
+        node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
+
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("gate_mask: real path refuses txindex_miss + persists marker",
+        st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+
+    /* The gate fires on the prevout_unresolved tear despite the lower
+     * internal_error row. */
+    blocker_reset_for_testing();
+    CBT("gate_mask: gate FIRES (lower internal_error did not mask the tear)",
+        block_index_loader_torn_import_gate_fires(&fx->ms, fx->db, CB_HOLE,
+                                                  CB_HOLE - 1));
+    CBT("gate_mask: PERMANENT seed.torn_import blocker raised",
+        blocker_exists("seed.torn_import") &&
+        blocker_class_for("seed.torn_import") == BLOCKER_PERMANENT);
+
+    blocker_reset_for_testing();
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int test_stage_repair_coin_backfill(void);
@@ -2166,6 +2230,7 @@ int test_stage_repair_coin_backfill(void)
     failures += cb_case_scan_window_budget();
     failures += cb_case_spend_in_creator_block();
     failures += cb_case_empty_script();
+    failures += cb_case_gate_not_masked_by_lower_internal_error();
 
     event_clear_observers(EV_OPERATOR_NEEDED);
     blocker_reset_for_testing();

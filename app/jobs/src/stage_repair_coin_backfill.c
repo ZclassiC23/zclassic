@@ -464,16 +464,18 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                                               &utxo_cursor) &&
               coins_kv_get_applied_height(db, &frontier, &frontier_found) &&
               find_lowest_prevout_unresolved_hole_unlocked(
-                  db, script_cursor, &hole_h, hole_status, &hole_hash,
-                  &hash_found);
+                  db, script_cursor, "prevout_unresolved", &hole_h,
+                  hole_status, &hole_hash, &hash_found);
     progress_store_tx_unlock();
     if (!ok)
         LOG_FAIL("coin_backfill",
                  "[coin_backfill] cursor/hole snapshot read failed");
 
     r->hole_height = hole_h;
-    /* G2: applies only when the LOWEST repairable hole is prevout_unresolved
-     * (a lower internal_error/decode hole belongs to the existing replay) */
+    /* G2: repairs the lowest prevout_unresolved hole. internal_error/decode
+     * holes (transient / re-attempted) are owned by the separate stale-script
+     * replay path, so scanning for prevout_unresolved here means a lower
+     * internal_error can no longer mask a higher genuine coin tear. */
     if (hole_h < 0 || script_cursor <= 0 || hole_h >= script_cursor)
         return true;
     if (strcmp(hole_status, "prevout_unresolved") != 0)

@@ -160,28 +160,37 @@ void coin_backfill_persist_terminal_refusal(
 }
 
 bool find_lowest_prevout_unresolved_hole_unlocked(
-    struct sqlite3 *db, int cursor, int *out_height, char status_out[32],
-    struct uint256 *hash_out, bool *hash_found)
+    struct sqlite3 *db, int cursor, const char *wanted_status, int *out_height,
+    char status_out[32], struct uint256 *hash_out, bool *hash_found)
 {
     *out_height = -1;
     status_out[0] = '\0';
     *hash_found = false;
     if (cursor <= 0)
         return true;
+    if (!wanted_status)
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] hole scan NULL wanted_status");
 
+    /* Scan for the lowest hole of the EXACT status the caller is verdicting on
+     * (the tear/repair consumers want 'prevout_unresolved'); selecting any of
+     * the umbrella triplet here would let a lower transient internal_error
+     * mask a higher genuine prevout_unresolved tear. internal_error is owned
+     * by the separate stale-script replay path (stale_script_hole_unlocked). */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT height, status, block_hash FROM script_validate_log "
             "WHERE ok = 0 "
-            "  AND status IN ('internal_error', 'prevout_unresolved', "
-            "                 'block_decode_failed') "
+            "  AND status = ? "
             "  AND height < ? "
             "ORDER BY height LIMIT 1",
             -1, &st, NULL) != SQLITE_OK)
         LOG_FAIL("coin_backfill",
                  "[coin_backfill] hole prepare failed: %s",
                  sqlite3_errmsg(db));
-    if (sqlite3_bind_int(st, 1, cursor) != SQLITE_OK) {
+    if (sqlite3_bind_text(st, 1, wanted_status, -1, SQLITE_STATIC) !=
+            SQLITE_OK ||
+        sqlite3_bind_int(st, 2, cursor) != SQLITE_OK) {
         /* A NULL-bound param silently matches no rows and masks the hole. */
         sqlite3_finalize(st);
         LOG_FAIL("coin_backfill",

@@ -101,12 +101,16 @@ bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
 bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
                                int32_t *out);
 
-/* G2: lowest repairable hole below the script_validate cursor — same status
- * triplet as stale_script_hole_unlocked (single-frontier discipline), plus
- * the row's block_hash for hash binding. Caller holds the progress lock. */
+/* G2 + boot torn-gate: lowest hole of EXACTLY `wanted_status` below the
+ * script_validate cursor (the tear/repair consumers pass 'prevout_unresolved'),
+ * plus the row's block_hash for hash binding. Scanning for the exact status
+ * keeps a lower-height transient internal_error from masking a higher genuine
+ * prevout_unresolved tear; internal_error/decode holes stay owned by the
+ * separate replay path (stale_script_hole_unlocked). `wanted_status` must be
+ * non-NULL. Caller holds the progress lock. */
 bool find_lowest_prevout_unresolved_hole_unlocked(
-    struct sqlite3 *db, int cursor, int *out_height, char status_out[32],
-    struct uint256 *hash_out, bool *hash_found);
+    struct sqlite3 *db, int cursor, const char *wanted_status, int *out_height,
+    char status_out[32], struct uint256 *hash_out, bool *hash_found);
 
 /* Delta horizon: lowest L with BOTH a utxo_apply_log row AND a
  * utxo_apply_delta row at every height in [L..cursor-1]. Coins created at or
