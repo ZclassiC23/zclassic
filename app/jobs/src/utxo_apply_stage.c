@@ -221,10 +221,10 @@ static void upstream_hole_healed(int height)
  * IMMEDIATE — the coin mutation commits or rolls back as ONE atomic unit
  * with the cursor + inverse-delta + log row, closing the tip-wedge tear
  * class (docs/work/tip-durability-collapse.md). coins_kv is the SOLE live
- * UTXO author and read source (the projection is seed-only). Adds before
- * spends: created keys are unique (compute_block_delta rejects collisions)
- * and intra-block create-then-spend resolves to "absent", so the final set
- * is order-independent. */
+ * UTXO author and read source (the projection is seed-only). Adds run BEFORE
+ * spends and the ORDER IS LOAD-BEARING: an intra-block create-then-spend coin
+ * is in both arrays and coins_kv_spend no-ops on an absent row, so spends-first
+ * would leave a phantom UTXO (compute_block_delta rejects duplicate creates). */
 static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
                            uint32_t height)
 {
