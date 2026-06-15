@@ -493,8 +493,21 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
      * atomics keep the counters torn-read-safe regardless. */
     int32_t coins_applied = 0;
     bool coins_found = false;
-    if (coins_kv_get_applied_height(progress_db, &coins_applied, &coins_found)
-        && coins_found && coins_applied > ua_contig + 1) {
+    bool coins_read_ok =
+        coins_kv_get_applied_height(progress_db, &coins_applied, &coins_found);
+    if (!coins_read_ok) {
+        /* A read ERROR (not an absent key) silently disarms the tear
+         * diagnostic — surface it so the messenger going quiet is itself
+         * visible. Throttled like the tear WARN below; caller holds the lock. */
+        static struct log_throttle disarm_throttle = LOG_THROTTLE_INIT;
+        int64_t now = platform_time_wall_unix();
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&disarm_throttle, 1, now, 300, &reps))
+            LOG_WARN("reducer",
+                     "coins_applied_height read failed — coin-tear diagnostic "
+                     "disarmed this pass repeated=%llu",
+                     (unsigned long long)reps);
+    } else if (coins_found && coins_applied > ua_contig + 1) {
         static struct log_throttle tear_throttle = LOG_THROTTLE_INIT;
         uint64_t pair = ((uint64_t)(uint32_t)coins_applied << 32)
                         | (uint32_t)ua_contig;

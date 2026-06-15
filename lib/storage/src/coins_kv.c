@@ -52,6 +52,8 @@ bool coins_kv_ensure_schema(sqlite3 *db)
         ") WITHOUT ROWID",
         NULL, NULL, &err);
     if (rc != SQLITE_OK) {
+        LOG_WARN("coins_kv", "ensure_schema CREATE TABLE failed rc=%d: %s",
+                 rc, err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
     }
@@ -68,7 +70,8 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
         "INSERT OR REPLACE INTO coins"
         "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
         -1, &s, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("coins_kv", "add prepare failed: %s (ext=%d)",
+                 sqlite3_errmsg(db), sqlite3_extended_errcode(db));
     sqlite3_bind_blob (s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int  (s, 2, (int)vout);
     sqlite3_bind_int64(s, 3, (sqlite3_int64)value);
@@ -79,6 +82,11 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
     else
         sqlite3_bind_blob(s, 6, "", 0, SQLITE_STATIC);
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    /* The sole live UTXO author: a swallowed write would tear the coin set
+     * silently. Capture the db error before finalize (which can reset it). */
+    if (rc != SQLITE_DONE)
+        LOG_WARN("coins_kv", "add step failed rc=%d: %s (ext=%d)",
+                 rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
     sqlite3_finalize(s);
     return rc == SQLITE_DONE;
 }
@@ -90,10 +98,17 @@ bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
     if (sqlite3_prepare_v2(db,
         "DELETE FROM coins WHERE txid=? AND vout=?",
         -1, &s, NULL) != SQLITE_OK)
-        return false;
+        LOG_FAIL("coins_kv", "spend prepare failed: %s (ext=%d)",
+                 sqlite3_errmsg(db), sqlite3_extended_errcode(db));
     sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int (s, 2, (int)vout);
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    /* DELETE of an absent row returns SQLITE_DONE (a no-op, not an error) —
+     * intra-block double-spend safety relies on that; only a real engine
+     * error (rc!=DONE) is logged here. */
+    if (rc != SQLITE_DONE)
+        LOG_WARN("coins_kv", "spend step failed rc=%d: %s (ext=%d)",
+                 rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
     sqlite3_finalize(s);
     return rc == SQLITE_DONE;
 }

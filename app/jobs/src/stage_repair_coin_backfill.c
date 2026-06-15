@@ -577,9 +577,17 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     }
     if (n == 0)
         return true; /* all prevouts resolve now → existing replay owns it */
-    if (marker_hit[0])
+    if (marker_hit[0]) {
+        /* A previously-backfilled outpoint lost AGAIN is a proven repeated
+         * tear, never retryable. Persist the durable refusal marker the boot
+         * torn-gate reads (condition 3), mirroring the unprovable/round_cap
+         * terminal persists — otherwise refuse() raises only the in-memory
+         * blocker, which is gone after a reboot and the boot gate stays silent. */
+        coin_backfill_persist_terminal_refusal(db, io, refused_key,
+                                 COIN_BACKFILL_TC_TERMINAL, "relost");
         return refuse(r, COIN_BACKFILL_MARKER_SEEN, &hole_hash, "%s",
                       marker_hit);
+    }
     if (refused_marker)
         return refuse(r, COIN_BACKFILL_REFUSED_SPENT, &hole_hash,
                       "refusal_marker_present");

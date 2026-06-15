@@ -203,7 +203,8 @@ bool utxo_apply_emit_inverse_delta(sqlite3 *db, int height)
 
     sqlite3_finalize(st);
     if (!ok)
-        LOG_WARN("utxo_apply", "[utxo_apply] malformed inverse delta blob h=%d", height);
+        LOG_WARN("utxo_apply", "[utxo_apply] inverse delta unwind failed h=%d "
+                 "(malformed blob or coins_kv re-add)", height);
     return ok;
 }
 

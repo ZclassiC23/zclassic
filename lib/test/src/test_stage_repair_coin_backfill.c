@@ -1736,6 +1736,12 @@ static int cb_case_marker_seen_other_height(void)
         bv.found && bv.class == (int)BLOCKER_PERMANENT &&
         atomic_load(&g_cb_op_needed) == 1);
 
+    /* A re-lost coin is a proven repeated tear: it must leave the DURABLE
+     * refused marker the boot torn-gate reads, not just the in-memory blocker
+     * (which is gone after a reboot). */
+    CBT("marker: durable refused marker persisted for the boot torn-gate",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+
     cb_teardown(fx);
     free(fx);
     return failures;

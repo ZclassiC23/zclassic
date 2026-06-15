@@ -87,17 +87,23 @@ int reducer_drain_to_convergence(void)
     for (int round = 0; round < drain_hard_cap; round++) {
         int adv = reducer_drain_all_stages(per_stage_batch);
         total += adv;
-        if (adv == 0) {
-            char st[STAGE_NAME_MAX] = {0}, why[128] = {0};
-            if (stage_fatal_generation() != fatal_gen0 &&
-                stage_last_fatal(st, sizeof(st), why, sizeof(why)))
-                event_emitf(EV_OPERATOR_NEEDED, 0,
-                            "condition=reducer_stage_fatal stage=%s reason=%s",
-                            st, why);
+        if (adv == 0)
             break;
-        }
         if (GetTimeMicros() - start_us > drain_budget_us)
             break;
+    }
+    /* Page the operator on a FATAL latched during this drain regardless of
+     * which exit fired — convergence (adv==0) OR the 2s budget timeout. A
+     * stage can return JOB_FATAL every pass while another keeps advancing,
+     * so total>0 and the loop exits on the budget, not on adv==0; gating the
+     * page on the adv==0 break alone let that masked-FATAL recur unpaged. */
+    {
+        char st[STAGE_NAME_MAX] = {0}, why[128] = {0};
+        if (stage_fatal_generation() != fatal_gen0 &&
+            stage_last_fatal(st, sizeof(st), why, sizeof(why)))
+            event_emitf(EV_OPERATOR_NEEDED, 0,
+                        "condition=reducer_stage_fatal stage=%s reason=%s",
+                        st, why);
     }
     return total;
 }

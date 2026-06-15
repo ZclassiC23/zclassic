@@ -133,7 +133,12 @@ bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
     bool backfill_refused = false;
 
     progress_store_tx_lock();
-    (void)coins_kv_get_applied_height(progress_db, &applied, &applied_found);
+    bool applied_read_ok =
+        coins_kv_get_applied_height(progress_db, &applied, &applied_found);
+    if (!applied_read_ok)
+        LOG_WARN("torn_gate", "coins_applied_height read failed — torn-import "
+                 "ceiling falls back to active_h=%d (read error, not "
+                 "absent-key)", active_h);
     /* ceiling = the forward-apply frontier. coins_applied_height is the
      * NEXT-height cursor (applied-through B means value B+1), so it equals the
      * blocked height directly; raise by the active chain height so a hole
