@@ -119,7 +119,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 
-.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
         lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
@@ -1083,6 +1083,13 @@ deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23
 	@ZCL_DEPLOY_EXPECT_COMMIT="$(BUILD_COMMIT)" ./tools/deploy_verify.sh
+
+# Deploy the freshly-built binary to the DEV linger lane (isolated datadir
+# ~/.zclassic-c23-dev + ports 8053/18252) — where code-in-progress runs live
+# instead of rotting unrun in git. NEVER touches the operator-gated live node.
+# First run bootstraps via two-step cold import; later runs hot-swap the binary.
+deploy-dev:
+	@./tools/dev/deploy-dev-lane.sh
 
 release:
 	@./tools/release.sh

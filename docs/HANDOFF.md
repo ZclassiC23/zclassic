@@ -25,6 +25,30 @@ A 6-surface adversarial audit (50 agents, every finding re-verified against the 
 
 ---
 
+## Service lanes — always deploy fresh code to the DEV lane
+
+Standing workflow (owner directive 2026-06-15): **code you work on must actually
+RUN, not rot unrun in git.** Three isolated linger lanes:
+
+| Lane | Binary | Datadir | Ports (P2P/RPC) | Deploy |
+|---|---|---|---|---|
+| **live** | `~/zclassic23/build/bin/zclassic23` | `~/.zclassic-c23` | 8023 / 18232 | `make deploy` — **owner-gated** |
+| **soak** | `~/.local/bin/zclassic23-soak` (pinned) | `~/.zclassic-c23-soak` | 8043 / 18242 | deliberate re-baseline only |
+| **dev** | `~/.local/bin/zclassic23-dev` (fresh) | `~/.zclassic-c23-dev` | **8053 / 18252** | **`make deploy-dev`** after every build |
+
+`zclassicd` (the C++ oracle) is 8033/8232 — **never stop it.**
+
+**Deploy your build to the dev lane:** `make deploy-dev` (= `tools/dev/deploy-dev-lane.sh`).
+First run bootstraps via the two-step cold import; later runs hot-swap the binary
+and restart. It NEVER touches the live node or its datadir. Unit:
+`deploy/zcl23-dev.service` (Restart=always, resource-capped, no -tor, external
+peers so it clears the body-source floor). Query: `build/bin/zclassic-cli
+-rpcport=18252 getblockcount`; log: `~/.zclassic-c23-dev/node.log`. Optional MCP:
+`claude mcp add zcl23-dev -- ~/.local/bin/zclassic23-dev -mcp -datadir=$HOME/.zclassic-c23-dev -rpcport=18252`
+(takes effect next Claude restart).
+
+---
+
 ## 2026-06-13 (session handoff) — torn-import DETECTION gate + write-time PREVENTION + Phase-0 observability all LANDED
 
 **HEAD `0b0f8b3f0`, `origin/main` synced. lint 37/37, build clean, `test_parallel` 0/424 groups failed (11 skipped).** Verify with `git status --short --branch`.
