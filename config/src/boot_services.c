@@ -1031,8 +1031,8 @@ bool app_init_services(struct app_context *ctx,
                 }
 
                 if (svc->state->map_block_index.size > 1000) {
-                    printf("=== Data synced: %zu blocks on disk "
-                           "(SHA3 verified) ===\n",
+                    /* Block-file count on disk — NOT a coin-set verification. */
+                    printf("=== Data synced: %zu blocks on disk ===\n",
                            svc->state->map_block_index.size);
 
                     if (has_utxo_snapshot) {

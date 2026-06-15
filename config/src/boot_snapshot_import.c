@@ -7,6 +7,8 @@
  */
 
 #include "config/boot_snapshot_import.h"
+#include "chain/checkpoints.h"
+#include "coins/utxo_commitment.h"
 #include "models/database.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
@@ -209,6 +211,37 @@ bool boot_import_snapshot_db(struct node_db *ndb,
                 err ? err : "n/a");
         if (err) { sqlite3_free(err); err = NULL; }
         ok = false;
+    }
+    /* WRITE-TIME VERIFICATION (mirrors utxo_recovery_restore.c Part B1):
+     * before COMMIT, recompute the SHA3 over the just-installed set. At the
+     * compiled checkpoint height there is a cryptographic ground truth, so
+     * REJECT unless (root,count) byte-match it — a peer's per-chunk transport
+     * SHA3 only proves the file matches the SERVING PEER's manifest, NOT that
+     * the coin set is the real consensus set. Runs while the watchdog pump is
+     * still ticking (the walk is O(set)). Above the checkpoint there is no
+     * compiled root to verify against; that non-checkpoint provenance gap (the
+     * snapshot path writes no cold-import seed, so the boot torn-gate cannot
+     * see it) is a documented follow-up — the checkpoint reject is the
+     * load-bearing half and closes the fabricate-at-the-checkpoint hole. */
+    if (ok) {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp && snap_height == (int64_t)cp->height) {
+            uint8_t root[32]; uint64_t cnt = 0;
+            utxo_commitment_sha3_compute(ndb->db, root, &cnt);
+            if (cnt != cp->utxo_count || memcmp(root, cp->sha3_hash, 32) != 0) {
+                LOG_WARN("boot_snapshot_import",
+                         "checkpoint SHA3 MISMATCH at h=%lld (count=%llu "
+                         "want=%llu) — snapshot REJECTED, not installed as "
+                         "ground truth",
+                         (long long)snap_height, (unsigned long long)cnt,
+                         (unsigned long long)cp->utxo_count);
+                ok = false;
+            } else {
+                printf("[boot_snapshot_import] checkpoint SHA3 verified at "
+                       "h=%lld (%llu UTXOs)\n", (long long)snap_height,
+                       (unsigned long long)cnt);
+            }
+        }
     }
     if (ok)
         sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
