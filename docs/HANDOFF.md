@@ -6,7 +6,26 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## 2026-06-13 (LATEST — session handoff) — torn-import DETECTION gate + write-time PREVENTION + Phase-0 observability all LANDED
+## 2026-06-15 (LATEST) — robustness audit: architecture verdict SOUND + fail-loud/snapshot-verify hardening LANDED
+
+**HEAD `169cb02a1`, `origin/main` synced. lint 37/37, full build clean, `test-parallel` 0/424 (11 skipped).** Verify with `git status --short --branch`.
+
+A 6-surface adversarial audit (50 agents, every finding re-verified against the code) → **verdict: the log-as-truth/single-reducer architecture is SOUND, no refactor.** The recurring failure is not architectural — it is **torn UTXO sets installed at import time with no cryptographic proof**, detected ~80k blocks later. Full report + the prioritized/classified findings: **[`docs/work/robustness-audit-2026-06-15.md`](./work/robustness-audit-2026-06-15.md)**.
+
+**Landed + pushed this session (`2f3cbf3b0..169cb02a1`, 3 commits, all non-consensus / no live-deploy):**
+1. **fail-loud (`12a8196ef`)** — page masked reducer-stage FATALs on the 2s-budget exit (RED-1); log swallowed `coins_kv` prepare/step/schema errors, the sole live UTXO author (DEF-1/3); distinguish a coins_applied READ-error from absent-key so the tear messenger going quiet is visible (DEF-5); persist the durable re-lost-coin marker the boot torn-gate reads (COI-1).
+2. **BOO-1 (P1) snapshot-verify gate (`08b788a51`)** — `boot_import_snapshot_db` installed a P2P-downloaded UTXO set with ZERO SHA3/checkpoint verification (transport SHA3 only proves the file matches the serving peer's manifest). Now verifies vs the compiled checkpoint **before COMMIT** and hard-rejects a mismatch — mirrors `utxo_recovery_restore.c` Part B1. Protects FUTURE imports.
+3. **COI-4 comment (`169cb02a1`)** — corrected the dangerously-wrong "order-independent" claim in `apply_coins_kv` (adds-before-spends IS load-bearing; spends-first → phantom UTXO).
+
+**⚠ Audit correction:** the audit's REP-1 ("delete dead `stage_repair.c`") was WRONG — it has a **live caller at `config/src/boot.c:3260`** (the verifier grepped `app/ lib/ tools/`, missed `config/`). NOT deleted. See the report.
+
+**Deferred (real, want their own tested/copy-proven pass):** BOO-3 (warm-boot 3.1M-walk elimination — startup speed), BOO-7 (cold-import reorder), BOO-2+COI-3 (diagnostic whole-set verdict), CON-1/2/5 (diagnostics-thread concurrency). **Owner-gated:** clear the live wedge + ladder-deletion steps 2-7. **Report-only (consensus, needs full-history replay):** COI-2 within-block cross-tx double-spend acceptance. All detailed in the report.
+
+**Live node:** unchanged — still wedged at **3,145,594** on the OLD binary. The merged binary detects+prevents but does not auto-heal; clearing it is owner-gated (deploy + wipe + cold re-import, copy-prove on `~/.zclassic-c23-livetear-fixture-20260613` first).
+
+---
+
+## 2026-06-13 (session handoff) — torn-import DETECTION gate + write-time PREVENTION + Phase-0 observability all LANDED
 
 **HEAD `0b0f8b3f0`, `origin/main` synced. lint 37/37, build clean, `test_parallel` 0/424 groups failed (11 skipped).** Verify with `git status --short --branch`.
 
