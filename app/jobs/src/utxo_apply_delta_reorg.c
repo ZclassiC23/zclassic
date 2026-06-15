@@ -189,7 +189,11 @@ bool utxo_apply_emit_inverse_delta(sqlite3 *db, int height)
             if (!blob_get_u32(&p, end, &slen)) { ok = false; break; }
             const uint8_t *script = NULL;
             if (slen) {
-                if (p + slen > end) { ok = false; break; }
+                /* Bound-check without pointer overflow: blob_get_u32 above
+                 * guarantees p <= end, so (end - p) is a non-negative size.
+                 * `p + slen > end` with a uint32 slen is C-standard UB on a
+                 * corrupt self-authored blob (the optimizer may elide it). */
+                if (slen > (size_t)(end - p)) { ok = false; break; }
                 script = p;
                 p += slen;
             }

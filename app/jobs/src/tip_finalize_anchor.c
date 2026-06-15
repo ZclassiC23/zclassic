@@ -318,6 +318,16 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * still tolerated (the reducer re-finalizes forward from the frontier —
      * slower, never wrong). */
     stage_t *stage = tip_finalize_stage_handle();
+    /* Monotonic guard (mirrors the authority path's cursor>=target check):
+     * a re-anchor at or below the current served cursor must NEVER rewind it,
+     * and we must not republish a lower tip. The forward reducer owns
+     * advancement from the existing frontier. The upstream H+1 cursors were
+     * stamped earlier (separate from this served-tip cursor) and are
+     * untouched here. */
+    if (stage && cursor >= stamp) {
+        progress_store_tx_unlock();
+        return true;
+    }
     if (stage && !stage_set_cursor(stage, db, stamp)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] anchor seed: cursor stamp to %llu failed",

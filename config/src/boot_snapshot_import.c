@@ -243,16 +243,30 @@ bool boot_import_snapshot_db(struct node_db *ndb,
             }
         }
     }
-    if (ok)
-        sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL);
-    else
+    if (ok) {
+        /* A failed COMMIT (SQLITE_FULL / IO error) leaves the bulk-copy txn
+         * uncommitted — we must NOT then stamp coins_best_block at the
+         * snapshot tip (that is the snapshot-path coin-tear class). Capture
+         * the rc, roll back, and propagate failure so the caller falls back
+         * to normal sync instead of trusting a half-installed set. */
+        if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+            LOG_WARN("boot_snapshot_import",
+                     "COMMIT failed (%s) — rolling back snapshot install",
+                     sqlite3_errmsg(ndb->db));
+            sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+            ok = false;
+        }
+    } else {
         sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
+    }
     sqlite3_exec(ndb->db, "DETACH DATABASE snapsrc", NULL, NULL, NULL);
     progress_pump_stop(&pump);
 
-    if (!ok)
+    if (!ok) {
         LOG_FAIL("boot_snapshot_import",
-                 "bulk copy failed; node.db rolled back");
+                 "snapshot install failed; node.db rolled back");
+        return false;
+    }
 
     /* CACHE-REFRESH (wave 2): 'coins_best_block' is a projection key —
      * authority = reducer_frontier_derive_coins_best over coins_kv.

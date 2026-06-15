@@ -356,7 +356,11 @@ struct utxo_import_result utxo_recovery_import_ldb(
 
         uint8_t one = 1;
         if (imported_count > 100000) {
-            node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
+            if (!node_db_state_set(ctx->ndb, "leveldb_utxo_migrated",
+                                   &one, 1))
+                LOG_WARN("utxo_recovery",
+                         "failed to persist leveldb_utxo_migrated stamp; "
+                         "re-import retried next boot");
 
             /* Seed coins_kv from the ACCEPTED import — the projection-based
              * boot rebuild ran pre-import (empty, no-op); without this the
