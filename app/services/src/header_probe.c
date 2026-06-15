@@ -75,11 +75,18 @@ static struct {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-static void hp_publish_header_admit(const struct block_index *pindex,
+/* Returns false when the admit ring is saturated, so the pull loop can apply
+ * backpressure (stop pulling) rather than fetch + re-validate more headers only
+ * to drop them. The header is already in the block index either way and the
+ * admit stage reads the index (the inbox is a fast-path notification, not the
+ * source of truth), so a skipped push is recovered by the stage's own cursor
+ * scan — backpressure just avoids the wasted RPC churn and the drop-log storm
+ * seen on the first post-cold-import boot. */
+static bool hp_publish_header_admit(const struct block_index *pindex,
                                     const struct block_header *header)
 {
     if (!pindex || !pindex->phashBlock)
-        return;
+        return true;
 
     struct header_admit_msg msg = {
         .height = pindex->nHeight,
@@ -95,9 +102,7 @@ static void hp_publish_header_admit(const struct block_index *pindex,
             msg.header = *header;
         }
     }
-    if (!mailbox_header_admit_push(&msg)) {
-        LOG_INFO("header_probe", "[header_probe] header_admit inbox full; drop height=%d", pindex->nHeight);
-    }
+    return mailbox_header_admit_push(&msg);
 }
 
 static void hp_save_repair_header(const struct block_index *pindex,
@@ -176,6 +181,7 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
 
     int added = 0;
     int h = start_height;
+    bool inbox_full = false;  /* admit ring saturated → stop pulling this call */
     /* Batched fast path: fetch headers via JSON-RPC arrays. Per-item accept
      * still validates PoW + chain link locally after the RPC helper
      * deserializes wire headers. */
@@ -212,10 +218,13 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
                 atomic_fetch_add(&g_hp.headers_added, 1);
                 added++;
                 hp_save_repair_header(pindex, &hdr);
-                hp_publish_header_admit(pindex, &hdr);
                 if (pindex && pindex->nHeight > 0)
                     atomic_store(&g_hp.last_local_height,
                                  pindex->nHeight);
+                if (!hp_publish_header_admit(pindex, &hdr)) {
+                    inbox_full = true;  /* backpressure: resume next tick */
+                    break;
+                }
                 h++;
                 continue;
             }
@@ -232,17 +241,20 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
                 atomic_fetch_add(&g_hp.headers_added, 1);
                 added++;
                 hp_save_repair_header(pindex, &hbuf[i]);
-                hp_publish_header_admit(pindex, &hbuf[i]);
                 if (pindex && pindex->nHeight > 0)
                     atomic_store(&g_hp.last_local_height,
                                  pindex->nHeight);
+                if (!hp_publish_header_admit(pindex, &hbuf[i])) {
+                    inbox_full = true;  /* backpressure: resume next tick */
+                    break;
+                }
             } else {
                 atomic_fetch_add(&g_hp.headers_rejected, 1);
                 reject = true;
                 break;
             }
         }
-        if (reject) break;
+        if (reject || inbox_full) break;
         if (parsed < n) {
             /* Partial batch — surface per-item decode/deserialize
              * failures as RPC errors so callers see the same
@@ -252,6 +264,10 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
         }
         h += parsed;
     }
+    if (inbox_full)
+        LOG_INFO("header_probe",
+                 "[header_probe] admit ring saturated at h=%d; paused pull "
+                 "(admitted=%d this call) — resuming next tick", h, added);
     free(hbuf);
 
     if (out_added) *out_added = added;
