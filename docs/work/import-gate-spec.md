@@ -1,6 +1,9 @@
 # Import-Correctness Gate — design spec
 
-**Status:** design, not yet implemented (2026-06-13).
+**Status:** implemented (2026-06-13, commit `7a1f87471`) — bless-time
+forward-evidence torn-import gate in `block_index_loader_torn_gate.c` (Part A)
++ de-vacuumed SHA3 checkpoint stamp in `utxo_recovery_restore.c` (Part B1).
+Residuals (unspent-forever torn coin; P2P-snapshot seed path) tracked below.
 **Motivates:** the recurring I4.3 anchor-collapse wedge (live main node held at
 h=3,145,594). Root cause memory: `project_recurring_anchor_collapse_wedge_2026-06-13`.
 **Blocks (when fixed):** MVP C3 (fast cold-sync), C6 (zero operator

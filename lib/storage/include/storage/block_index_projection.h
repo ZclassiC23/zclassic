@@ -108,10 +108,10 @@ int block_index_projection_commitment(block_index_projection_t *p,
  * "block_index_backfilled"). Persisted in the projection's own SQLite so
  * wiping the projection resets the flag atomically with the data it gates.
  *
- * block_index_backfill_canonical_chain() (app/services) gates SOLELY on
- * this flag — never on a row count — because the live projection already
- * carries tail rows, so a count guard would brick a never-backfilled
- * store. Returns false if `p` is NULL or not open. */
+ * A backfill pass gates SOLELY on this flag — never on a row count —
+ * because the live projection already carries tail rows, so a count guard
+ * would brick a never-backfilled store. Returns false if `p` is NULL or not
+ * open. */
 bool block_index_projection_backfill_done(block_index_projection_t *p);
 bool block_index_projection_mark_backfilled(block_index_projection_t *p);
 

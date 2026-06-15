@@ -21,7 +21,6 @@ app/jobs/src/stage_repair_reducer_frontier_refill.c
 app/jobs/src/stage_repair_reducer_frontier_tipfin.c
 app/jobs/src/stage_repair_rewind.c
 app/jobs/src/utxo_apply_delta_repair.c
-app/services/src/block_index_backfill.c
 app/services/src/chain_restore_disk_repair.c
 app/services/src/chain_restore_repair.c
 app/services/src/utxo_recovery_backfill.c
