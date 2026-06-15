@@ -1668,9 +1668,20 @@ check-honest-witness:
 lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung
 	@echo "══ LINT: all checks passed ══"
 
-ci: lint bench-regress zclassic23 test_zcl
-	@echo "══ CI: test ══"
-	ulimit -s unlimited && $(TEST_ZCL_BIN)
+# CI runs the PER-PROCESS isolated test runner (test_parallel), not the
+# monolith (test_zcl). Both build from the same TEST_SRCS and cover the same
+# groups; test_parallel forks each group into its own process so a global
+# singleton set by one group (e.g. a chain_linkage HOLD or a registered
+# active_chain_authority) cannot leak into a later group. The monolith shares
+# one address space across all groups and currently SIGSEGVs on exactly that
+# cross-group leak in test_chain_state_validator — a test-harness artifact, not
+# a node bug (the parallel run is green). Using the isolated runner makes `make
+# ci` (and the pre-push gate that runs it) reliable + armable. The monolith
+# full run remains available as `make test-full` and its global-isolation
+# hardening is tracked separately.
+ci: lint bench-regress zclassic23 test_parallel
+	@echo "══ CI: test (per-process isolated runner) ══"
+	ulimit -s unlimited && $(TEST_PARALLEL_BIN)
 	@echo ""
 	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"
 	$(MAKE) ci-mvp-gates

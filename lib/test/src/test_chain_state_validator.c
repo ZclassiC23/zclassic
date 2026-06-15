@@ -7,6 +7,7 @@
 #include "test/test_helpers.h"
 #include "services/chain_state_validator.h"
 #include "validation/main_state.h"
+#include "validation/chain_linkage_check.h"
 #include "storage/progress_store.h"
 #include "jobs/tip_finalize_stage.h"
 #include <sqlite3.h>
@@ -61,6 +62,16 @@ int test_chain_state_validator(void)
 {
     printf("\n=== chain state validator tests ===\n");
     int failures = 0;
+
+    /* Test isolation: clear any chain-linkage HOLD left set by a PRIOR test
+     * group in the shared-process monolith (test_zcl). The validator's HOLD is
+     * process-global and persists until witnessed success; without this reset
+     * an inherited g_refuse_from makes csv_build_chain's advance refuse
+     * unexpectedly and the success-path assertions below deref a tip that was
+     * never promoted -> SIGSEGV. The per-process parallel runner (test_parallel)
+     * is unaffected (fresh globals per group) — this is a test_zcl-only leak
+     * that kept `make ci` red, so the pre-push gate could never be armed. */
+    chain_linkage_reset_for_testing();
 
     /* ── 1. Coins and chain agree → BOOT_OK ──────────── */
 
