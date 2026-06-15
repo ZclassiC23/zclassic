@@ -205,8 +205,15 @@ void db_maintenance_status_snapshot(struct db_maintenance_status *out)
 
 /* zcl_state subsystem=db_maintenance — the WAL-checkpoint / ANALYZE / VACUUM
  * background worker's last-run timestamps, durations, run/failure totals, and
- * last error. See CLAUDE.md "Adding state introspection". Reentrant-safe (the
- * snapshot takes the brief worker lock). */
+ * last error. See CLAUDE.md "Adding state introspection".
+ *
+ * A single VACUUM holds g_dbm.lock for its whole (minutes-long) duration, so
+ * the diagnostics path must never block on it — a stuck zcl_state call would
+ * hide exactly the long-running maintenance an operator is trying to observe.
+ * We trylock the worker mutex (same as dbm_on_stall) and, when the worker is
+ * mid-op, emit busy:true and skip the per-op snapshot fields. loop_ticks is
+ * atomic and always emitted so the worker's liveness is visible even while it
+ * holds the lock. */
 bool db_maintenance_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -214,20 +221,40 @@ bool db_maintenance_dump_state_json(struct json_value *out, const char *key)
         return false;
     json_set_object(out);
 
-    struct db_maintenance_status st;
-    db_maintenance_status_snapshot(&st);
-    json_push_kv_bool(out, "running", st.running);
-    json_push_kv_int (out, "wal_last_unix", st.wal_last_unix);
-    json_push_kv_int (out, "wal_last_duration_ms", st.wal_last_duration_ms);
-    json_push_kv_int (out, "analyze_last_unix", st.analyze_last_unix);
+    /* Always available without the lock — proves the worker is alive even
+     * while a VACUUM holds g_dbm.lock. */
+    json_push_kv_int(out, "loop_ticks", atomic_load(&g_dbm.loop_ticks));
+
+    if (pthread_mutex_trylock(&g_dbm.lock) != 0) {
+        json_push_kv_bool(out, "busy", true);
+        return true;
+    }
+    bool    running                  = g_dbm.thread_running;
+    int64_t wal_last_unix            = g_dbm.wal_last_unix;
+    int64_t wal_last_duration_ms     = g_dbm.wal_last_duration_ms;
+    int64_t analyze_last_unix        = g_dbm.analyze_last_unix;
+    int64_t analyze_last_duration_ms = g_dbm.analyze_last_duration_ms;
+    int64_t vacuum_last_unix         = g_dbm.vacuum_last_unix;
+    int64_t vacuum_last_duration_ms  = g_dbm.vacuum_last_duration_ms;
+    int64_t total_runs               = g_dbm.total_runs;
+    int64_t total_failures           = g_dbm.total_failures;
+    char    last_error[256];
+    snprintf(last_error, sizeof(last_error), "%s", g_dbm.last_error);
+    pthread_mutex_unlock(&g_dbm.lock);
+
+    json_push_kv_bool(out, "busy", false);
+    json_push_kv_bool(out, "running", running);
+    json_push_kv_int (out, "wal_last_unix", wal_last_unix);
+    json_push_kv_int (out, "wal_last_duration_ms", wal_last_duration_ms);
+    json_push_kv_int (out, "analyze_last_unix", analyze_last_unix);
     json_push_kv_int (out, "analyze_last_duration_ms",
-                      st.analyze_last_duration_ms);
-    json_push_kv_int (out, "vacuum_last_unix", st.vacuum_last_unix);
+                      analyze_last_duration_ms);
+    json_push_kv_int (out, "vacuum_last_unix", vacuum_last_unix);
     json_push_kv_int (out, "vacuum_last_duration_ms",
-                      st.vacuum_last_duration_ms);
-    json_push_kv_int (out, "total_runs", st.total_runs);
-    json_push_kv_int (out, "total_failures", st.total_failures);
-    json_push_kv_str (out, "last_error", st.last_error);
+                      vacuum_last_duration_ms);
+    json_push_kv_int (out, "total_runs", total_runs);
+    json_push_kv_int (out, "total_failures", total_failures);
+    json_push_kv_str (out, "last_error", last_error);
     return true;
 }
 

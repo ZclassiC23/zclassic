@@ -20,6 +20,7 @@
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,9 +56,20 @@ static struct {
     char last_reason[64];
 } g_local_recovery;
 
+/* Guards the multi-word g_local_recovery diagnostic struct: the condition
+ * engine writes it from sync_monitor_local_header_refill() while the legacy
+ * mirror, health, and MCP threads read it via
+ * sync_monitor_get_local_recovery_stats(). This lock must NEVER be held while
+ * taking cm->manager.cs_nodes (or cs_main/coins_kv): the refill path snapshots
+ * cs_nodes-derived state to locals and only touches g_local_recovery after
+ * releasing cs_nodes, so the two never nest. */
+static pthread_mutex_t g_local_recovery_lock = PTHREAD_MUTEX_INITIALIZER;
+
 void sync_monitor_init(void)
 {
+    pthread_mutex_lock(&g_local_recovery_lock);
     memset(&g_local_recovery, 0, sizeof(g_local_recovery));
+    pthread_mutex_unlock(&g_local_recovery_lock);
     memset(g_last_recovery_reason, 0, sizeof(g_last_recovery_reason));
     memset(g_last_recovery_trigger, 0, sizeof(g_last_recovery_trigger));
     atomic_store(&g_recoveries_total, 0);
@@ -355,6 +367,14 @@ int sync_monitor_local_header_refill(struct connman *cm,
 
     int eligible = 0;
     struct p2p_node *worst = NULL;
+    bool rotated_peer = false;
+
+    /* Snapshot the prior retry count before taking cs_nodes so the peer scan
+     * never touches g_local_recovery while cs_nodes is held (lock-order: the
+     * recovery lock must not nest under cs_nodes). */
+    pthread_mutex_lock(&g_local_recovery_lock);
+    int prev_retry_count = g_local_recovery.retry_count;
+    pthread_mutex_unlock(&g_local_recovery_lock);
 
     zcl_mutex_lock(&cm->manager.cs_nodes);
     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
@@ -382,18 +402,21 @@ int sync_monitor_local_header_refill(struct connman *cm,
             worst = n;
     }
 
-    if (g_local_recovery.retry_count > 0 && worst && eligible >= 2 &&
+    if (prev_retry_count > 0 && worst && eligible >= 2 &&
         eligible < LOCAL_HEADER_REFILL_MIN_PEERS) {
         worst->disconnect = true;
-        g_local_recovery.peer_rotation_count++;
+        rotated_peer = true;
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 
-    if (g_local_recovery.retry_count > 0 &&
+    if (prev_retry_count > 0 &&
         eligible < LOCAL_HEADER_REFILL_MIN_PEERS) {
         connman_kick_seed_discovery(cm);
     }
 
+    pthread_mutex_lock(&g_local_recovery_lock);
+    if (rotated_peer)
+        g_local_recovery.peer_rotation_count++;
     g_local_recovery.active = true;
     g_local_recovery.missing_height = next_h;
     g_local_recovery.retry_count++;
@@ -406,6 +429,7 @@ int sync_monitor_local_header_refill(struct connman *cm,
     if (eligible >= LOCAL_HEADER_REFILL_MIN_PEERS ||
         g_local_recovery.retry_count >= LOCAL_HEADER_REFILL_MAX_RETRIES)
         g_local_recovery.retries_exhausted = true;
+    pthread_mutex_unlock(&g_local_recovery_lock);
 
     return eligible;
 }
@@ -415,6 +439,7 @@ void sync_monitor_get_local_recovery_stats(
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
+    pthread_mutex_lock(&g_local_recovery_lock);
     out->active = g_local_recovery.active;
     out->mirror_repair_gated = g_local_recovery.active &&
         !g_local_recovery.retries_exhausted;
@@ -426,6 +451,7 @@ void sync_monitor_get_local_recovery_stats(
     snprintf(out->mode, sizeof(out->mode), "%s", g_local_recovery.mode);
     snprintf(out->last_reason, sizeof(out->last_reason), "%s",
              g_local_recovery.last_reason);
+    pthread_mutex_unlock(&g_local_recovery_lock);
 }
 
 void sync_monitor_get_stats(struct watchdog_stats *out)
@@ -522,6 +548,7 @@ void sync_monitor_test_set_local_recovery(bool active,
                                           int retry_count,
                                           const char *mode)
 {
+    pthread_mutex_lock(&g_local_recovery_lock);
     g_local_recovery.active = active;
     g_local_recovery.retries_exhausted = retries_exhausted;
     g_local_recovery.missing_height = missing_height;
@@ -531,6 +558,7 @@ void sync_monitor_test_set_local_recovery(bool active,
     snprintf(g_local_recovery.mode, sizeof(g_local_recovery.mode), "%s",
              mode ? mode : "");
     g_local_recovery.last_reason[0] = '\0';
+    pthread_mutex_unlock(&g_local_recovery_lock);
 }
 
 void sync_monitor_test_set_tip_advance_ts(int64_t ts)

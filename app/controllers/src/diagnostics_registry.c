@@ -204,51 +204,78 @@ static bool block_index_dump_state_json(struct json_value *out, const char *key)
         return true;
     }
 
-    json_push_kv_bool(out, "found", true);
-    json_push_kv_int(out, "nHeight", (int64_t)bi->nHeight);
-    json_push_kv_int(out, "nVersion", (int64_t)bi->nVersion);
-    json_push_kv_int(out, "nTime", (int64_t)bi->nTime);
-    json_push_kv_int(out, "nBits", (int64_t)bi->nBits);
-    json_push_kv_int(out, "nChainTx", (int64_t)bi->nChainTx);
-    json_push_kv_int(out, "nTx", (int64_t)bi->nTx);
-    json_push_kv_int(out, "nFile", (int64_t)bi->nFile);
-    json_push_kv_int(out, "nDataPos", (int64_t)bi->nDataPos);
-    json_push_kv_int(out, "nUndoPos", (int64_t)bi->nUndoPos);
-    json_push_kv_int(out, "nSequenceId", (int64_t)bi->nSequenceId);
-    json_push_kv_int(out, "nStatus_raw", (int64_t)bi->nStatus);
-    json_push_kv_str(out, "nStatus_validity",
-                     block_validity_level_name(bi->nStatus));
-    {
-        struct json_value flags_arr = {0};
-        json_set_array(&flags_arr);
-        push_block_status_flags(&flags_arr, bi->nStatus);
-        json_push_kv(out, "nStatus_flags", &flags_arr);
-        json_free(&flags_arr);
+    /* Snapshot every field we report under cs_main and release before any
+     * JSON formatting. A concurrent reorg/restore writer mutates these
+     * block_index fields (nStatus/nFile/nDataPos via
+     * stage_repair_reducer_frontier.c, pprev/nChainWork via reorg) while
+     * holding cs_main, so a lock-free read here can tear the multi-word
+     * nChainWork or report a half-updated field set. cs_main is the inner
+     * lock relative to the reducer's coins_kv/progress_store tx lock (that
+     * lock is always taken first); taking ONLY cs_main here, and never
+     * coins_kv while holding it, keeps the established order and cannot form
+     * the ABBA cycle the lock-order law guards against. */
+    struct {
+        int64_t nHeight, nVersion, nTime, nBits, nChainTx, nTx;
+        int64_t nFile, nDataPos, nUndoPos, nSequenceId, nStatus;
+        bool have_hash, have_prev_hash, on_chain;
+        char hash[65], hash_prev[65], chain_work[65];
+    } snap = {0};
+
+    if (g_diag.main_state)
+        zcl_mutex_lock(&g_diag.main_state->cs_main);
+    snap.nHeight = (int64_t)bi->nHeight;
+    snap.nVersion = (int64_t)bi->nVersion;
+    snap.nTime = (int64_t)bi->nTime;
+    snap.nBits = (int64_t)bi->nBits;
+    snap.nChainTx = (int64_t)bi->nChainTx;
+    snap.nTx = (int64_t)bi->nTx;
+    snap.nFile = (int64_t)bi->nFile;
+    snap.nDataPos = (int64_t)bi->nDataPos;
+    snap.nUndoPos = (int64_t)bi->nUndoPos;
+    snap.nSequenceId = (int64_t)bi->nSequenceId;
+    snap.nStatus = (int64_t)bi->nStatus;
+    if (bi->phashBlock) {
+        uint256_get_hex(bi->phashBlock, snap.hash);
+        snap.have_hash = true;
     }
-    {
-        char hex[65];
-        if (bi->phashBlock) {
-            uint256_get_hex(bi->phashBlock, hex);
-            json_push_kv_str(out, "hash", hex);
-        } else {
-            json_push_kv_str(out, "hash", "");
-        }
-        if (bi->pprev && bi->pprev->phashBlock) {
-            uint256_get_hex(bi->pprev->phashBlock, hex);
-            json_push_kv_str(out, "hash_prev", hex);
-        } else {
-            json_push_kv_str(out, "hash_prev", "");
-        }
-        arith_uint256_get_hex(&bi->nChainWork, hex);
-        json_push_kv_str(out, "nChainWork", hex);
+    if (bi->pprev && bi->pprev->phashBlock) {
+        uint256_get_hex(bi->pprev->phashBlock, snap.hash_prev);
+        snap.have_prev_hash = true;
     }
-    bool on_chain = false;
+    arith_uint256_get_hex(&bi->nChainWork, snap.chain_work);
     if (g_diag.main_state) {
         struct block_index *at = active_chain_at(
             &g_diag.main_state->chain_active, bi->nHeight);
-        on_chain = (at == bi);
+        snap.on_chain = (at == bi);
+        zcl_mutex_unlock(&g_diag.main_state->cs_main);
     }
-    json_push_kv_bool(out, "on_active_chain", on_chain);
+
+    json_push_kv_bool(out, "found", true);
+    json_push_kv_int(out, "nHeight", snap.nHeight);
+    json_push_kv_int(out, "nVersion", snap.nVersion);
+    json_push_kv_int(out, "nTime", snap.nTime);
+    json_push_kv_int(out, "nBits", snap.nBits);
+    json_push_kv_int(out, "nChainTx", snap.nChainTx);
+    json_push_kv_int(out, "nTx", snap.nTx);
+    json_push_kv_int(out, "nFile", snap.nFile);
+    json_push_kv_int(out, "nDataPos", snap.nDataPos);
+    json_push_kv_int(out, "nUndoPos", snap.nUndoPos);
+    json_push_kv_int(out, "nSequenceId", snap.nSequenceId);
+    json_push_kv_int(out, "nStatus_raw", snap.nStatus);
+    json_push_kv_str(out, "nStatus_validity",
+                     block_validity_level_name((unsigned)snap.nStatus));
+    {
+        struct json_value flags_arr = {0};
+        json_set_array(&flags_arr);
+        push_block_status_flags(&flags_arr, (unsigned)snap.nStatus);
+        json_push_kv(out, "nStatus_flags", &flags_arr);
+        json_free(&flags_arr);
+    }
+    json_push_kv_str(out, "hash", snap.have_hash ? snap.hash : "");
+    json_push_kv_str(out, "hash_prev",
+                     snap.have_prev_hash ? snap.hash_prev : "");
+    json_push_kv_str(out, "nChainWork", snap.chain_work);
+    json_push_kv_bool(out, "on_active_chain", snap.on_chain);
     return true;
 }
 
