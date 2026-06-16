@@ -348,10 +348,17 @@ int test_reducer_block_ingest_gate(void)
         return failures;
     }
 
-    /* Make utxo_apply author the projection in-process (production default is
-     * STAGE; set it explicitly so the test is robust to runner ordering, and
-     * restore on teardown). The stage emits EV_UTXO_* into `lg`, which `proj`
-     * folds, so the applied coinbase lands in the UTXO set. */
+    /* Put utxo_apply in STAGE author mode (the production default; set
+     * explicitly so the test is robust to runner ordering, restored on
+     * teardown). STAGE author means the stage writes the applied coinbase
+     * into coins_kv — the SOLE live UTXO author and read source. The stage
+     * emits NO EV_UTXO_* events; the utxo_projection is a seed-only MIRROR
+     * derived from coins_kv via utxo_projection_reseed_from_coins_kv (exactly
+     * how production rebuilds it — utxo_apply_delta_repair.c:444). We reseed
+     * the projection from coins_kv at both the before/after snapshots below,
+     * so the UTXO-count/commitment assertions compare the store the reducer
+     * genuinely authored. (The event log `lg` is wired only so the projection
+     * can open against it; it carries no applied-delta frames.) */
     utxo_projection_set_event_log(lg);
     utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
@@ -418,6 +425,13 @@ int test_reducer_block_ingest_gate(void)
     int height_before = active_chain_height(&ms.chain_active);
     RBI_CHECK("genesis tip height is 0", height_before == 0);
 
+    /* Mirror the projection from the authoritative coins_kv set the reducer
+     * writes (the production derivation; see the wiring note above). coins_kv
+     * is empty here — genesis seeded only the utxo_apply_log row — so
+     * count_before==0 and commit_before is the empty-set hash, preserving the
+     * gate's baseline. (Runs after utxo_apply_stage_init, so the coins schema
+     * exists.) */
+    (void)utxo_projection_reseed_from_coins_kv(proj, progress_store_db());
     uint64_t count_before = utxo_projection_count(proj);
     uint8_t commit_before[32];
     bool have_commit_before =
@@ -556,8 +570,9 @@ int test_reducer_block_ingest_gate(void)
      * Block 1's coinbase is live in the UTXO set and the SHA3 commitment moved.
      * (The set also carries block 2's coinbase as the pending successor; we
      * assert specifically on block 1's coinbase — the block under test.) */
-    uint64_t off = utxo_projection_catch_up(proj);
-    RBI_CHECK("projection caught up to the applied delta", off != UINT64_MAX);
+    bool reseeded = utxo_projection_reseed_from_coins_kv(proj,
+                                                         progress_store_db());
+    RBI_CHECK("projection reseeded from the applied coins_kv set", reseeded);
 
     uint64_t count_after = utxo_projection_count(proj);
     printf("reducer_block_ingest_gate: utxo count %llu -> %llu\n",

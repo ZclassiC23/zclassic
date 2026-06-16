@@ -16,21 +16,70 @@
 
 #include <string.h>
 
-/* The legacy `create_new_block` writes the 3-byte BIP34 height push
- * directly into `script.data` without checking the height's range; the
- * implicit invariant is that mainnet height fits in 24 bits. We make
- * that invariant explicit and reject heights that would overflow. */
+/* Heights are bounded so a minimal CScriptNum push always fits the
+ * coinbase scriptSig buffer; 2^24-1 covers ~79 years of 2.5-minute blocks
+ * past the cap with margin. (The cap is a builder-side guard only — the
+ * validator parses whatever encoding is on disk.) */
 #define DCB_HEIGHT_MAX 0x00FFFFFF /* 2^24 - 1 */
 
-/* Write [push3, h0, h1, h2] into `out->data[0..3]`. Returns the number
- * of bytes written (always 4). Caller has already validated `height`. */
-static size_t dcb_write_height_prefix(struct script *out, int n_height)
+/* Replicate zclassicd's CScriptNum::serialize for a non-negative value:
+ * minimal little-endian magnitude, with a trailing 0x00 sign byte appended
+ * when the top byte's high bit is set (keeping the value non-negative).
+ * Writes up to 5 bytes into `buf`, returns the byte count (0 for value 0).
+ * This is the exact `CScriptNum(value).getvch()` for value >= 0. */
+static size_t dcb_scriptnum_serialize(uint32_t value, uint8_t buf[5])
 {
-    out->data[0] = 0x03; /* push 3 bytes */
-    out->data[1] = (uint8_t)(n_height & 0xff);
-    out->data[2] = (uint8_t)((n_height >> 8) & 0xff);
-    out->data[3] = (uint8_t)((n_height >> 16) & 0xff);
-    return 4;
+    size_t n = 0;
+    uint32_t v = value;
+    while (v) {
+        buf[n++] = (uint8_t)(v & 0xff);
+        v >>= 8;
+    }
+    if (n > 0 && (buf[n - 1] & 0x80))
+        buf[n++] = 0x00; /* sign byte: value is positive */
+    return n;
+}
+
+/* Replicate `CScript() << nHeight` (CScript::push_int64) for height >= 0:
+ *   0        -> OP_0 (0x00)
+ *   1..16    -> OP_1..OP_16 (0x50 + n), a single opcode byte
+ *   else     -> minimal data push: [len][CScriptNum LE bytes]
+ * Writes at `out->data + off`, returns the new offset. Byte-for-byte the
+ * coinbase height encoding zclassicd's CreateNewBlock emits and its
+ * ContextualCheckBlock BIP34 check (`CScript expect = CScript() << nHeight`)
+ * verifies — so a block we mine is accepted by zclassicd and our own
+ * bip34_check_coinbase_height at every height, not just where the magnitude
+ * happens to be 3 bytes wide. */
+static size_t dcb_push_height(struct script *out, size_t off, int n_height)
+{
+    if (n_height == 0) {
+        out->data[off++] = 0x00; /* OP_0 */
+    } else if (n_height >= 1 && n_height <= 16) {
+        out->data[off++] = (uint8_t)(0x50 + n_height); /* OP_1..OP_16 */
+    } else {
+        uint8_t buf[5];
+        size_t len = dcb_scriptnum_serialize((uint32_t)n_height, buf);
+        out->data[off++] = (uint8_t)len; /* push N bytes (len < OP_PUSHDATA1) */
+        memcpy(out->data + off, buf, len);
+        off += len;
+    }
+    return off;
+}
+
+/* Replicate `CScript() << CScriptNum(value)` — ALWAYS a minimal data push
+ * of the CScriptNum serialization (unlike `<< int`, small values are NOT
+ * collapsed to OP_N). value 0 serializes to the empty vector, which the
+ * `CScript << vector` operator pushes as a single length-0 byte (0x00).
+ * Writes at `out->data + off`, returns the new offset. */
+static size_t dcb_push_scriptnum(struct script *out, size_t off,
+                                 uint32_t value)
+{
+    uint8_t buf[5];
+    size_t len = dcb_scriptnum_serialize(value, buf);
+    out->data[off++] = (uint8_t)len; /* len byte (0 for value 0) */
+    memcpy(out->data + off, buf, len);
+    off += len;
+    return off;
 }
 
 struct zcl_result domain_consensus_coinbase_script_sig_placeholder(
@@ -48,10 +97,10 @@ struct zcl_result domain_consensus_coinbase_script_sig_placeholder(
     if (n_height > DCB_HEIGHT_MAX)
         return ZCL_ERR(DOMAIN_CONSENSUS_COINBASE_ERR_HEIGHT_RANGE,
                        "coinbase_script_sig_placeholder: height %d exceeds "
-                       "BIP34 3-byte range", n_height);
+                       "builder height cap (2^24-1)", n_height);
 
-    size_t n = dcb_write_height_prefix(out, n_height);
-    out->data[n++] = (uint8_t)OP_0;
+    size_t n = dcb_push_height(out, 0, n_height); /* CScript() << nHeight */
+    out->data[n++] = (uint8_t)OP_0;               /* << OP_0 (single byte) */
     out->size = (uint16_t)n;
     return ZCL_OK;
 }
@@ -72,25 +121,14 @@ struct zcl_result domain_consensus_coinbase_script_sig_with_extra_nonce(
     if (n_height > DCB_HEIGHT_MAX)
         return ZCL_ERR(DOMAIN_CONSENSUS_COINBASE_ERR_HEIGHT_RANGE,
                        "coinbase_script_sig_with_extra_nonce: height %d "
-                       "exceeds BIP34 3-byte range", n_height);
+                       "exceeds builder height cap (2^24-1)", n_height);
 
-    size_t n = dcb_write_height_prefix(out, n_height);
-
-    uint8_t en_bytes[4];
-    en_bytes[0] = (uint8_t)(extra_nonce & 0xff);
-    en_bytes[1] = (uint8_t)((extra_nonce >> 8) & 0xff);
-    en_bytes[2] = (uint8_t)((extra_nonce >> 16) & 0xff);
-    en_bytes[3] = (uint8_t)((extra_nonce >> 24) & 0xff);
-
-    /* Minimal little-endian length; a zero nonce keeps one zero byte to
-     * match the legacy `increment_extra_nonce` semantics byte-for-byte. */
-    int en_len = 4;
-    while (en_len > 1 && en_bytes[en_len - 1] == 0)
-        en_len--;
-
-    out->data[n++] = (uint8_t)en_len;
-    memcpy(out->data + n, en_bytes, (size_t)en_len);
-    n += (size_t)en_len;
+    /* `CScript() << nHeight << CScriptNum(nExtraNonce)` — exactly the
+     * scriptSig zclassicd's IncrementExtraNonce builds (miner.cpp). The
+     * extra nonce is a CScriptNum data push (minimal LE + sign byte), so a
+     * zero nonce is a single length-0 byte (0x00), not a 4-byte field. */
+    size_t n = dcb_push_height(out, 0, n_height);
+    n = dcb_push_scriptnum(out, n, extra_nonce);
     out->size = (uint16_t)n;
     return ZCL_OK;
 }
@@ -116,8 +154,8 @@ struct zcl_result domain_consensus_coinbase_build(
                        "coinbase_build: negative height %d", in->n_height);
     if (in->n_height > DCB_HEIGHT_MAX)
         return ZCL_ERR(DOMAIN_CONSENSUS_COINBASE_ERR_HEIGHT_RANGE,
-                       "coinbase_build: height %d exceeds BIP34 3-byte range",
-                       in->n_height);
+                       "coinbase_build: height %d exceeds builder height "
+                       "cap (2^24-1)", in->n_height);
     if (in->total_fees < 0)
         return ZCL_ERR(DOMAIN_CONSENSUS_COINBASE_ERR_NEG_FEES,
                        "coinbase_build: negative fees %lld",

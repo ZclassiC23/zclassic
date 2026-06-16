@@ -22,8 +22,43 @@
 #include "util/log_throttle.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
+
+#ifdef ZCL_TESTING
+/* Test-only override of the compiled SHA3-checkpoint anchor floor. The L0
+ * frontier (H*) and the L1 reconcile it gates are clamped to never operate
+ * below get_sha3_utxo_checkpoint()->height (mainnet 3,056,758) — a security
+ * floor (never reorg/reconcile below a trusted checkpoint). A hermetic regtest
+ * harness that drives the REAL reorg re-bind path (purge non-canonical
+ * verdicts -> refill -> re-validate) cannot build a contiguous chain to that
+ * height, so it lowers this floor and runs the IDENTICAL production logic at
+ * testable heights. Sentinel -1 = use the compiled checkpoint (production
+ * default; never changed off-test). Mirrored src-private by the test that
+ * uses it (the witness/post_remedy_hook pattern). */
+static _Atomic int32_t g_test_compiled_anchor_override = -1;
+
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
+void reducer_frontier_test_set_compiled_anchor(int32_t height)
+{
+    atomic_store(&g_test_compiled_anchor_override, height);
+}
+#endif
+
+/* The compiled anchor floor (the SHA3 UTXO checkpoint height): the minimum
+ * height H* and the L1 reconcile may operate at. Single source so a test
+ * override (if any) covers every read site identically. */
+static int32_t reducer_frontier_compiled_anchor(void)
+{
+#ifdef ZCL_TESTING
+    int32_t ov = atomic_load(&g_test_compiled_anchor_override);
+    if (ov >= 0)
+        return ov;
+#endif
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    return cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+}
 
 /* Per-row reads return a tri-state so contiguity and discrimination can
  * tell "no row" apart from "ok=0 row". */
@@ -418,8 +453,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     /* TRUSTED_ANCHOR: the SHA3-verified UTXO checkpoint height. Fall back to
      * the compiled constant if the checkpoint table is somehow empty, so H*
      * still has a hard floor. */
-    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    int32_t compiled_anchor = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t compiled_anchor = reducer_frontier_compiled_anchor();
     int32_t anchor = compiled_anchor;
     if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))
         LOG_FAIL("reducer", "trusted anchor read failed");
@@ -539,8 +573,7 @@ bool reducer_frontier_log_frontier(sqlite3 *progress_db,
     /* Recursive lock: safe whether or not the caller already holds it. */
     progress_store_tx_lock();
 
-    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    int32_t compiled_anchor = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t compiled_anchor = reducer_frontier_compiled_anchor();
     int32_t anchor = compiled_anchor;
     int32_t h = anchor;
     int64_t cursor = 0;

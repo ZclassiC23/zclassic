@@ -72,8 +72,13 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
+#include "conditions/reducer_frontier_reconcile_light.h"
+#include "framework/condition.h"
+#include "net/connman.h"
+#include "net/net.h"
 #include "services/chain_activation_service.h"
 #include "services/header_admit_inbox.h"
+#include "services/sync_monitor.h"
 #include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
@@ -104,6 +109,16 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* src-private test hook (app/jobs/src/reducer_frontier.c, the witness-test
+ * mirror pattern): lower the L0/L1 compiled anchor floor so the PRODUCTION
+ * reorg re-bind path (reducer_frontier_reconcile_light: purge non-canonical
+ * verdicts -> refill -> re-validate) operates at the regtest heights PART 2
+ * mines. Off-test the floor is the mainnet SHA3 checkpoint (3,056,758); a
+ * hermetic harness cannot build a contiguous chain to that height, so it runs
+ * the identical reconcile logic at low heights via this override. -1 restores
+ * the compiled checkpoint. */
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 #define RFP_CHECK(name, expr) do {                            \
     printf("reducer_forward_progress_gate: %s... ", (name));  \
@@ -645,13 +660,69 @@ int test_reducer_forward_progress_gate(void)
 
             uint64_t reorg_before = utxo_apply_stage_reorg_unwound_total();
 
-            /* Drive the reducer to convergence: tip_finalize detects the pprev
-             * divergence + rewinds its cursor, utxo_apply detects the
-             * branch_hash divergence + emits the inverse deltas and re-advances
-             * over W, then tip_finalize re-finalizes W. */
-            for (int it = 0; it < 4000 && reducer_kick(&ctl) > 0; it++) {
-                /* keep draining */
+            /* Wire the PRODUCTION self-heal condition layer exactly as the live
+             * node runs it. After a reorg, utxo_apply's fail-closed label_splice
+             * gate REFUSES to apply a W block while the script_validate_log
+             * verdict at that height is still hash-bound to the displaced L
+             * block — that refusal is correct, and the bare reducer drain cannot
+             * clear it. The live re-bind path is the
+             * reducer_frontier_reconcile_light Condition (ticked by the
+             * self_heal supervisor every 5 s): it purges the now-non-canonical
+             * L-bound verdicts at the reorged heights and rewinds the producer
+             * cursors so the stages refill them for W, after which utxo_apply
+             * re-binds + applies. A faithful reorg drive must therefore run BOTH
+             * engines — the reducer drain AND the condition engine — the same
+             * two the live node runs. (Zero peers => the reconcile peer gate
+             * allows the local repair; the tip-staleness detect gate is forced
+             * open each round as the deterministic stand-in for the production
+             * "tip stalled >= 60 s".) */
+            struct connman cm;
+            memset(&cm, 0, sizeof(cm));
+            net_manager_init(&cm.manager);
+            condition_engine_reset_for_testing();
+            reducer_frontier_reconcile_light_test_reset();
+            sync_monitor_init();
+            sync_monitor_set_context(&cm, NULL, &ms);
+            register_reducer_frontier_reconcile_light();
+            /* Lower the L0/L1 compiled anchor floor (mainnet 3,056,758) to
+             * genesis so the reconcile's purge/refill window [hstar+1, ...]
+             * covers the regtest reorg heights instead of being empty. The
+             * production logic is identical; only the security floor moves,
+             * and only inside this hermetic test. */
+            reducer_frontier_test_set_compiled_anchor(0);
+
+            /* Converge: one reducer_kick + one condition tick per round until
+             * neither the reducer nor the reorg re-bind moves the tip for a
+             * sustained run. The reducer drain advances the stages until it
+             * hits the label_splice refusal; the condition tick purges the
+             * stale verdicts + rewinds cursors; the next drain refills W. */
+            {
+                int prev_tip = -2, idle = 0;
+                for (int it = 0; it < 8000; it++) {
+                    int kicked = reducer_kick(&ctl);
+                    /* Stand in for ">= 60 s since the last tip advance" so the
+                     * detect gate stays open across the whole convergence (a
+                     * forward finalization mid-loop would otherwise reset it). */
+                    sync_monitor_test_set_tip_advance_ts(1);
+                    condition_engine_tick();
+                    int t = active_chain_height(&ms.chain_active);
+                    if (kicked == 0 && t == prev_tip) {
+                        if (++idle >= 16) break;
+                    } else {
+                        idle = 0;
+                    }
+                    prev_tip = t;
+                }
             }
+
+            /* Tear down the condition layer; the assertions below are pure
+             * reads of the reorged coins_kv + active chain. */
+            reducer_frontier_test_set_compiled_anchor(-1); /* restore mainnet floor */
+            sync_monitor_set_context(NULL, NULL, NULL);
+            sync_monitor_test_set_tip_advance_ts(0);
+            condition_engine_reset_for_testing();
+            reducer_frontier_reconcile_light_test_reset();
+            net_manager_free(&cm.manager);
 
             uint64_t reorg_after = utxo_apply_stage_reorg_unwound_total();
             int reorg_tip = active_chain_height(&ms.chain_active);
