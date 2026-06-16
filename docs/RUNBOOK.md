@@ -2,27 +2,23 @@
 
 Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how to fix.
 
+Current truth (2026-06-16): the live node is healthy at tip; the multi-day wedge is CLEARED. Program of record: `docs/work/rock-solid-program-2026-06-16.md` + `docs/work/stability-improvements-2026-06-16.md`.
+
 ---
 
 ## Running the soak / chaos harnesses safely
 
-Two opt-in harnesses spawn a **real** node. Both are **fully isolated**
-and never touch the live node — but read this before running.
+Two opt-in harnesses spawn a **real** node. Both are fully isolated and never
+touch the live node. Hard rails enforced by `tools/scripts/isolated_node_env.sh`:
 
-### Hard rails (enforced by `tools/scripts/isolated_node_env.sh`)
-
-- They run on a throwaway `/tmp/zcl23-*` datadir and 39xxx ports only.
-  They **refuse** to start if any chosen port is already `LISTEN`ing or
-  is in the live set, or if the datadir would resolve under
-  `~/.zclassic-c23*`.
-- They never use `-tor`, always pass `-nobgvalidation -nolegacyimport`,
-  and `-connect` a dead sink so they form 0 peers and cannot dial
-  `zclassicd`.
-- The spawned node is killed by **process group** and the datadir is
-  `rm -rf`'d on exit (success, failure, or Ctrl-C).
-- They are **NOT** in `make ci` (CI stays hermetic). Run them explicitly.
-
-### Commands
+- Throwaway `/tmp/zcl23-*` datadir + 39xxx ports only. **Refuse** to start if a
+  chosen port is already `LISTEN`ing or in the live set, or if the datadir would
+  resolve under `~/.zclassic-c23*`.
+- Never `-tor`; always `-nobgvalidation -nolegacyimport`; `-connect` a dead sink
+  (0 peers, cannot dial `zclassicd`).
+- Spawned node killed by **process group**; datadir `rm -rf`'d on exit (success,
+  failure, or Ctrl-C).
+- **NOT** in `make ci` (CI stays hermetic). Run them explicitly.
 
 ```bash
 # C7 full-binary kill-9 self-test: spawn an isolated regtest node,
@@ -34,265 +30,67 @@ make test-crash-bootstrap
 make soak-ci
 ```
 
-### Reading the output
+**Reading the output:**
+- Crash harness prints `passes / height_regress / utxo_decrease /
+  commitment_drift / utxo_above_tip / harness_errors`. Any non-zero failure
+  column → exit 1. `over=-1` = "not-applicable" (no UTXO set, e.g. genesis-only).
+- Soak runner writes a TSV log (`# ts<TAB>alive<TAB>height<TAB>rss_bytes`) and a
+  trailer (`# ended=… verdict=… tip_hwm=… rss_max=… rss_baseline=…`). Exit status
+  = verdict ordinal (`0 = SOAK_OK`); `make soak-ci` greps `verdict=OK` as a
+  false-green guard.
 
-- **Crash harness summary** prints `passes / height_regress /
-  utxo_decrease / commitment_drift / utxo_above_tip / harness_errors`.
-  Any non-zero failure column → exit 1. `over=-1` means
-  "not-applicable" (no UTXO set, e.g. genesis-only).
-- **Soak runner** writes a TSV log (`# ts<TAB>alive<TAB>height<TAB>rss_bytes`)
-  and a trailer (`# ended=… verdict=… tip_hwm=… rss_max=… rss_baseline=…`).
-  Exit status = verdict ordinal (`0 = SOAK_OK`). `make soak-ci` greps for
-  `verdict=OK` as a false-green guard.
+**Build caveat:** regtest `generate` does not solve Equihash, so a self-spawned
+chain stays at genesis. The crash harness reports `DEGRADED genesis-only recovery
+mode` (still validates boot recovery); the soak proxy reports `FAIL_TIP_STALL`
+with `tip_hwm=0`, noting the **node miner** (not the harness) is the cause.
+`make soak-ci` stays red until a working regtest miner lands — honest, not a defect.
 
-### Known build caveat
-
-On the current build the regtest `generate` RPC does not solve Equihash,
-so a self-spawned chain stays at genesis. The crash harness reports this
-as `DEGRADED genesis-only recovery mode` (still validates boot recovery);
-the soak proxy will report `FAIL_TIP_STALL` with `tip_hwm=0` and an
-explicit NOTE that the **node miner**, not the harness, is the cause.
-`make soak-ci` therefore goes red until a working regtest miner lands —
-that is honest, not a harness defect.
-
-### Escalating to the long / operational versions (OPERATOR actions)
-
-These touch a **live or real-peer** environment — they are not hermetic:
-
-- **`make soak-7day`** — the real 168 h MVP #6 soak against the
-  *installed live node* under real tx load. Needs 7 days of wall time
-  AND the live wedge cleared (node must hold tip AND finalize forward).
-  The CI proxy is a signal, not this acceptance.
-- **C7 `--with-peer`** two-node resync-to-peer-tip — the operational
-  form of the literal MVP #7 "caught up to peer-tip within 2 min" claim;
-  timing-sensitive, opt-in, not in default CI.
+**Long / operational forms (OPERATOR actions, not hermetic):**
+- **`make soak-7day`** — real 168 h MVP #6 soak against the *installed live node*
+  under real tx load. Needs 7 days wall time. CI proxy is a signal, not acceptance.
+- **C7 `--with-peer`** — two-node resync-to-peer-tip, the operational form of MVP
+  #7 ("caught up to peer-tip within 2 min"); timing-sensitive, opt-in.
 
 ---
 
 ## Benign log patterns at tip
 
-These patterns look alarming during a healthy soak but are **expected** on a
-node that is holding tip and finalizing forward. Each entry cites the emitting
-source file so a future reader can re-verify. A pattern stops being benign only
-when it crosses the named **real-alarm** threshold — until then, do **not**
-restart or intervene.
+On a node holding tip and finalizing forward, these patterns look alarming but
+are **expected**. Mental model: the served tip and every derived projection
+(headers, bodies, scripts, proofs, coins) converge a few seconds *after* each
+block lands; most "noise" is one stage briefly observing a frontier another stage
+hasn't caught up to yet. At tip this self-resolves next tick — sustained firing
+across many consecutive blocks is the actual signal. Do **not** restart or
+intervene until a pattern crosses its **real-alarm** threshold.
 
-The shared mental model: the served tip and every derived projection (headers,
-bodies, scripts, proofs, coins) converge a few seconds *after* each block lands.
-Most "noise" below is one stage briefly observing a frontier that another stage
-has not caught up to yet. At tip this self-resolves on the next tick; sustained
-firing across many consecutive blocks is the actual signal.
-
-### header-resync WARN storms when at tip
-
-- **Pattern:**
-  `[supervisor] staged.header_admit stalled (cursor=… admitted=…) — stage log behind live chain`,
-  `[supervisor] staged.validate_headers stalled (cursor=… passed=… failed=…) — validator behind admit`,
-  `[condition:header_stall_at_height] header=… peer_max=… age=…s action=kick_headers`,
-  and `WARNING: Peer …: all N headers rejected — sync stalled!`
-- **Emitted by:** `app/supervisors/src/staged_sync_supervisor.c:76,83`,
-  `app/conditions/src/header_stall_at_height.c:74`, `lib/net/src/msg_headers.c:410`.
-- **Why it fires:** at tip the node already holds every header a peer can offer,
-  so a fresh `headers` message is 100% already-known and "all N rejected" is the
-  duplicate-rejection path — not an invalid-header path. The staged supervisor
-  WARNs whenever the header stage cursor momentarily trails the live chain (which
-  it does for a few seconds after each new block until the admit/validate stages
-  re-converge), and `header_stall_at_height` kicks a re-request as a precaution.
-- **Why it is benign:** these are duplicate/known-header rejections and a
-  precautionary re-request, not header-validation failures. The header chain is
-  complete; the WARN is the stage describing a transient lag it then closes.
-- **Real alarm if:** the same `staged.validate_headers stalled` line repeats with
-  `failed>0` climbing (genuine header-validation failures, not duplicates), or
-  `header_stall_at_height` keeps firing with `age` growing for many minutes while
-  `peer_max` stays well above your header height — meaning headers are genuinely
-  not advancing, not merely re-offered. Cross-check height against zclassicd.
-
-### have_data_missing races at tip (body announced, not yet persisted)
-
-- **Pattern:** `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing`
-  (also surfaces as the `tip_finalize` precondition reason `have_data_missing` /
-  `block_missing` in `zcl_state subsystem=…` precondition fields).
-- **Emitted by:** `app/jobs/src/tip_finalize_stage.c:173` (the
-  `precondition_block_reason` → `record_precondition_block` path; see the TRANSIENT
-  case comment at `tip_finalize_stage.c:390`).
-- **Why it fires:** a block (or the tip's one-block lookahead successor H+1) has a
-  header but its body has not finished the
-  `body_persist → script_validate → utxo_apply` pipeline yet. `BLOCK_HAVE_DATA` is
-  still clear for that index entry when the finalize stage looks.
-- **Why it is benign:** it is a TRANSIENT precondition, handled explicitly: the
-  finalize stage returns `JOB_IDLE` (cursor unchanged, the framework rolls back
-  the txn so no junk row is written) and retries on the next tick once the body
-  lands. H itself stays genuinely finalizable; only its lookahead witness is
-  momentarily missing.
-- **Real alarm if:** the SAME height stays `have_data_missing` for many
-  consecutive ticks (minutes), i.e. a body that never arrives — that is a stuck
-  body fetch, not a race. Confirm via `zcl_syncstate` (body frontier not
-  advancing) and the `tip_advance_age_seconds` health check climbing.
-
-### "database is locked" transients (SQLite WAL contention)
-
-- **Pattern:** SQLite `SQLITE_BUSY` / `SQLITE_LOCKED` retries; the `database is
-  locked` boot-table row notes a stale *second instance* (see "Boot Failure"
-  below — that case is a real conflict, not this transient one).
-- **Emitted by:** the bounded busy/locked retry loop in
-  `app/services/src/chain_state_service.c:159-219`
-  (`csr_sqlite_busy_or_locked` + `csr_set_last_persist_locked` only after the
-  retry budget is exhausted), plus `sqlite3_busy_timeout(...)` set on the
-  hot writers (e.g. `app/controllers/src/snapshot_controller_import.c:91`,
-  `app/views/src/explorer_stats_view.c:387`).
-- **Why it fires:** several stage writers (chain-state cursor, body persist, tx
-  index, explorer projections) share one WAL-mode node.db. Under a burst of
-  writes two of them briefly contend for the write lock; SQLite returns BUSY and
-  the writer retries within its busy_timeout.
-- **Why it is benign:** WAL contention is expected and the retry loop is bounded
-  and succeeds — the persist completes on a later attempt within the timeout.
-  Only after the retry budget is **exhausted** does the code call
-  `csr_set_last_persist_locked(... "bounded retry exhausted")` and surface it.
-- **Real alarm if:** you see the exhausted-retry surface (`last_persist_locked`
-  set / "bounded retry exhausted"), or a `database is locked` that coincides with
-  two live `zclassic23` PIDs on the same datadir (a real second-instance
-  conflict — see the Boot Failure table). A bloated WAL (>100 MB) can also cause
-  sustained contention; force a checkpoint (see "Disk > 99% Full").
-
-### bg-validation undo-data-missing warnings
-
-- **Pattern:** `[bg-valid] h=…: N non-coinbase tx(s) NOT script-verified (undo
-  missing) — block advances, not fully verified`.
-- **Emitted by:** `app/services/src/bg_validation_service.c:389-392`; the
-  health surface notes the same in `app/controllers/src/health_controller.c:196`
-  ("undo missing/mismatched — expected post-snapshot").
-- **Why it fires:** background validation re-verifies historical blocks and wants
-  each block's undo data to fully reconstruct inputs. Blocks brought in via a UTXO
-  snapshot / fast-sync (rather than connected from genesis with full undo) do not
-  carry undo data for the pre-snapshot range.
-- **Why it is benign:** this is **expected post-snapshot**. The block still
-  advances — its scripts were verified at connect time where data existed; only
-  the optional historical re-verification is skipped for the undo-less range. The
-  skip count is tallied (persisted across restarts) for honesty, not as an error.
-- **Real alarm if:** `[bg-valid] script verification FAILED h=…`
-  (`bg_validation_service.c:384`) appears — that is a genuine verification
-  failure, not a missing-undo skip — or the skip count keeps growing for blocks
-  that were connected normally (with undo data) rather than only the
-  pre-snapshot range.
-
-### crash-only auto-reindex ("auto-recovery" instead of a FATAL crash-loop)
-
-- **Pattern:**
-  `[boot] crash-only recovery: post-restore tip-above-extent at tip_h=… (zero_nbits=0, attempt M/3) — requesting -reindex-chainstate; restarting to rebuild from blocks/`
-  followed on the next boot by
-  `[boot] crash-only recovery: consuming auto-reindex request — rebuilding the UTXO set from block data (-reindex-chainstate)`.
-- **Emitted by:** `config/src/boot_crashonly.c:22,70` (the recovery decision),
-  written/consumed via `lib/storage/src/boot_auto_reindex.c`. Landed in commit
-  `706a7c00a`, which turned the old FATAL crash-loop into this auto-recovery.
-- **Why it fires:** a kill-9 mid-connect can leave the derived chain tip installed
-  ABOVE the validated on-disk index extent. The post-restore integrity gate used
-  to FATAL on this (crash-loop to systemd-FAILED, operator required). Now, since
-  blocks/ + wallet are the only durable truth and the UTXO set is derived, the
-  node RE-DERIVES it: it records a bounded reindex request and restarts to rebuild
-  the UTXO set from blocks/ (`-reindex-chainstate`).
-- **Why it is benign:** this is strictly safer than the old crash-loop in every
-  case — it never deletes blocks/ or wallet, only rebuilds the derived UTXO set,
-  and the request is bounded (max 3 attempts per anchor episode). A single
-  request → restart → consume cycle that ends with the node serving is a
-  successful self-heal, not an incident.
-- **Real alarm if:** you see
-  `[boot] crash-only recovery EXHAUSTED after N reindex attempts …`
-  (`boot_crashonly.c:81`) — the bounded budget ran out, which means blocks/ is
-  genuinely unable to back the tip and the node is paging the operator (a real
-  corrupt-block-data signal), OR the same anchor keeps requesting a reindex across
-  many restarts without ever converging.
-
-### rpc-unreachable alerts during a deploy restart window (~60s)
-
-- **Pattern:** external monitors / `mirror_status` showing `rpc-unreachable`,
-  connection-refused, or "RPC did not become ready" briefly around a
-  `make deploy` / `systemctl --user restart zclassic23`.
-- **Emitted by:** the mirror blocker `lms_record_blocker("rpc-unreachable", …)`
-  in `app/services/src/legacy_mirror_sync_service.c:270,299,516`
-  (and the `mirror.rpc-unreachable` note in
-  `app/services/src/mirror_divergence_locator.c:7`); the deploy/control path
-  tolerates a readiness poll via `rpc_ready(c23, 90)` in `tools/zcl-nodectl.c:562`.
-- **Why it fires:** during a restart the node process is down and then re-opening
-  its datadir, rebuilding the block-index map, and binding the RPC socket. For
-  that window the RPC port is not yet answering, so any poller sees connection
-  refused / unreachable. The control tooling explicitly budgets up to ~90s for the
-  RPC to come ready before treating it as a failure.
-- **Why it is benign:** it is the expected restart gap. Once the node finishes
-  boot and binds RPC, `rpc-unreachable` clears on its own and the mirror resumes.
-- **Real alarm if:** RPC stays unreachable well past the readiness budget (node
-  did not finish boot — check `journalctl --user -u zclassic23` for a boot
-  failure or the crash-only auto-reindex flow above), or `rpc-unreachable`
-  appears while the node process is **up and stable** (a bound/auth problem, not a
-  restart window).
-
-### val.block_rejected "block-not-finalized-by-reducer" single events at tip arrival
-
-- **Pattern:** a single `EV_BLOCK_REJECTED` carrying
-  `tip_finalize precondition_failed … reason=…` or the validation reason
-  `block-not-finalized-by-reducer`, fired right as a new tip arrives.
-- **Emitted by:** `app/jobs/src/tip_finalize_stage.c:294,380,439` (the finalize
-  stage's transient/precondition emits) and the reducer-ingest read-back path
-  `app/services/src/reducer_ingest_service.c:152` (returns
-  `block-not-finalized-by-reducer` when the just-arrived block has not yet been
-  finalized by the reducer at read-back time). The repair controller knows this
-  string is benign: `app/controllers/src/repair_controller_rebuild.c:255,272`
-  documents `not-finalized-by-reducer` as tip_finalize's one-block lookahead.
-- **Why it fires:** when a block first arrives, the reducer ingests it but the
-  finalize stage's one-block lookahead has not yet observed the successor, so a
-  read-back of "is this block finalized?" momentarily answers no. A reorg
-  cursor-rewind at the lookahead also emits `EV_BLOCK_REJECTED` describing the
-  rewind (not a rejection of a valid block).
-- **Why it is benign:** the event is the reducer/finalize machinery describing a
-  transient lookahead/rewind state for the freshly-arrived tip, not a consensus
-  rejection of a valid block. On the next tick the successor is observed and the
-  tip finalizes; the convention-aware read-back
-  (`reducer_ingest_service.c:138-149`) then answers yes.
-- **Real alarm if:** the SAME height keeps emitting `block-not-finalized-by-reducer`
-  across many ticks (the tip never finalizes — the live-wedge failure mode), or
-  an `EV_BLOCK_REJECTED` carries a hard consensus reason (e.g. a script/proof
-  failure from `script_validate_stage.c` / `proof_validate_stage.c`, or a
-  `bad-txns-*` reason) rather than a transient finalize/rewind reason.
-
-### healthy=false `degraded_reason="tip_stale"` during a slow block
-
-- **Pattern:** `/api/health` / `healthcheck` flips to `healthy:false` with
-  `degraded_reason:"tip_stale"` while the chain simply has not produced a
-  block for a while, then self-clears the moment the next block arrives.
-- **Emitted by:** `app/services/src/node_health_service.c:197` —
-  `tip_stale = (now - tip->nTime) > 600`.
-- **Why it fires:** ZClassic's target interval is 2.5 minutes; Poisson
-  variance puts roughly 2% of inter-block gaps past the 600 s threshold, so
-  an honest, fully-synced node reports tip_stale several times a day
-  (observed live 2026-06-12: a ~9-minute gap at h=3145090 flapped health for
-  two polls, cleared on the next block, hash-identical to zclassicd
-  throughout).
-- **Why it is benign:** the node is faithfully reporting that the *chain* is
-  slow, not that *it* is behind — peer height matches, `tip_lag=0`.
-- **Real alarm if:** tip_stale persists while `zclassicd` (or peer heights)
-  are AHEAD of the node — that is a genuine stall, see "Tip Regressed /
-  Stuck on Wrong Fork" below.
+| Pattern | Meaning (emitted by) | Benign? | Real alarm if |
+|---------|----------------------|---------|---------------|
+| **header-resync WARN storm** — `staged.header_admit/validate_headers stalled …`, `condition:header_stall_at_height … action=kick_headers`, `Peer …: all N headers rejected` | At tip the node already holds every header a peer offers; "all N rejected" is the duplicate-rejection path, plus a precautionary re-request. `staged_sync_supervisor.c:76,83`, `header_stall_at_height.c:74`, `msg_headers.c:410` | Yes | `validate_headers stalled` repeats with `failed>0` climbing (genuine validation failures, not dups), or `header_stall_at_height` keeps firing with `age` growing for minutes while `peer_max` stays well above your height. Cross-check height vs zclassicd. |
+| **have_data_missing race** — `EV_BLOCK_REJECTED … tip_finalize … reason=have_data_missing` / `block_missing` | A block (or tip's H+1 lookahead) has a header but its body hasn't finished `body_persist → script_validate → utxo_apply`. Finalize returns `JOB_IDLE` (cursor unchanged, txn rolled back) and retries next tick. `tip_finalize_stage.c:173` (TRANSIENT case at `:390`) | Yes | The SAME height stays `have_data_missing` for many consecutive ticks (minutes) — a body that never arrives. Confirm via `zcl_syncstate` (body frontier not advancing) + `tip_advance_age_seconds` climbing. |
+| **"database is locked" transient** — SQLite `SQLITE_BUSY`/`SQLITE_LOCKED` retries | Stage writers (chain-state cursor, body persist, tx index, explorer projections) share one WAL `node.db`; under a write burst two briefly contend and retry within `busy_timeout`. Bounded retry loop `chain_state_service.c:159-219`; `sqlite3_busy_timeout` on hot writers e.g. `snapshot_controller_import.c:91`, `explorer_stats_view.c:387` | Yes (retry succeeds) | The exhausted-retry surface appears (`last_persist_locked` set / "bounded retry exhausted"), or `database is locked` coincides with two live `zclassic23` PIDs on one datadir (real second-instance — see Boot Failure). A bloated WAL (>100 MB) can sustain contention — force a checkpoint (see "Disk > 99% Full"). |
+| **bg-validation undo-data-missing** — `[bg-valid] h=…: N non-coinbase tx(s) NOT script-verified (undo missing) — block advances, not fully verified` | Snapshot/fast-sync blocks carry no undo data for the pre-snapshot range; scripts were verified at connect time, only optional historical re-verify is skipped. Skip count tallied for honesty. `bg_validation_service.c:389-392`; `health_controller.c:196` | Yes (expected post-snapshot) | `[bg-valid] script verification FAILED h=…` (`bg_validation_service.c:384`) appears, or the skip count grows for blocks connected normally (with undo data), not just the pre-snapshot range. |
+| **crash-only auto-reindex** — `[boot] crash-only recovery: post-restore tip-above-extent … requesting -reindex-chainstate; restarting …` then `… consuming auto-reindex request — rebuilding the UTXO set from block data` | A kill-9 mid-connect left the derived tip above the validated on-disk extent. blocks/ + wallet are the only durable truth and the UTXO set is derived, so the node bounded-requests a rebuild and restarts. Never deletes blocks/ or wallet; max 3 attempts/anchor. `boot_crashonly.c:22,70`; `boot_auto_reindex.c` (commit `706a7c00a`) | Yes (strictly safer self-heal) | `[boot] crash-only recovery EXHAUSTED after N reindex attempts …` (`boot_crashonly.c:81`) — blocks/ genuinely can't back the tip (real corrupt-block-data), or the same anchor keeps requesting a reindex without converging. |
+| **rpc-unreachable during deploy** — monitors / `mirror_status` show `rpc-unreachable` / connection-refused briefly around `make deploy` / restart | The process is down then re-opening the datadir, rebuilding the index map, binding RPC; the port isn't answering yet. Control tooling budgets ~90s (`rpc_ready(c23, 90)` `zcl-nodectl.c:562`). `legacy_mirror_sync_service.c:270,299,516`; `mirror_divergence_locator.c:7` | Yes (expected restart gap) | RPC stays unreachable well past the readiness budget (boot didn't finish — check `journalctl --user -u zclassic23` or the crash-only flow above), or `rpc-unreachable` appears while the process is **up and stable** (a bind/auth problem). |
+| **block-not-finalized-by-reducer single event** — one `EV_BLOCK_REJECTED … tip_finalize precondition_failed …` / reason `block-not-finalized-by-reducer` right as a new tip arrives | The reducer ingested the block but finalize's one-block lookahead hasn't seen the successor yet, so a read-back momentarily answers no; a reorg cursor-rewind also emits this. `tip_finalize_stage.c:294,380,439`; `reducer_ingest_service.c:152` (read-back), known-benign at `repair_controller_rebuild.c:255,272` | Yes | The SAME height keeps emitting `block-not-finalized-by-reducer` across many ticks (tip never finalizes — the live-wedge mode), or an `EV_BLOCK_REJECTED` carries a hard consensus reason (script/proof failure from `script_validate_stage.c`/`proof_validate_stage.c`, or `bad-txns-*`). |
+| **healthy=false `degraded_reason="tip_stale"` during a slow block** — `/api/health` / `healthcheck` flips false then self-clears on the next block | `tip_stale = (now - tip->nTime) > 600` (`node_health_service.c:197`). Target interval is 2.5 min; Poisson variance puts ~2% of gaps past 600s, so an honest synced node reports tip_stale several times a day. | Yes (chain is slow, not the node — peer height matches, `tip_lag=0`) | tip_stale persists while `zclassicd` / peer heights are AHEAD of the node — a genuine stall, see "Tip Regressed / Stuck on Wrong Fork". |
 
 ---
 
 ## BIP30 Stale Coinbase Wedge — fixed structurally (2026-05-26)
 
-**Symptoms:** `zcl_status` shows the tip frozen (`tip_advance_age_seconds`
-climbing, gap > 0) while legacy peers advance, and `node.log` repeats lines like
-`bad-txns-BIP30` or `csr-tip-commit-rejected` at `tip+1`.
+**Symptoms:** tip frozen (`tip_advance_age_seconds` climbing, gap > 0) while
+legacy peers advance; `node.log` repeats `bad-txns-BIP30` / `csr-tip-commit-rejected`
+at `tip+1`.
 
-This was the stale coinbase / coins-overshoot shape: after a kill-9 mid-connect
-the UTXO set lands at `tip+1` (or higher) while the cursor rewinds, so a retry
-sees the block's own outputs already present and rejects it as BIP30 — a false
-positive (post-BIP34 coinbase txids are height-unique).
+**Shape:** after a kill-9 mid-connect the UTXO set lands at `tip+1`+ while the
+cursor rewinds, so a retry sees the block's own outputs already present and
+false-rejects it as BIP30 (post-BIP34 coinbase txids are height-unique).
 
-**It now self-heals on restart — no manual unwedge.** The cure is structural,
-not operational:
-- `connect_block.c` tolerates a same-height self-write for *every* vtx (overwrites
-  the stale coins instead of rejecting; full script/proof validation still runs).
-- `chain_evidence_reconstruct.c` treats a coins-cursor lag/overshoot as a
-  recoverable projection state, not a freeze — the tip publishes as `LOCAL_IMPORT`.
-- `chain_evidence_controller.c` re-derives any stale freeze on boot and lifts it
-  when the tip is provably consistent.
+**It self-heals on restart — no manual unwedge.** The cure is structural:
+`connect_block.c` tolerates a same-height self-write for every vtx (full
+script/proof validation still runs); `chain_evidence_reconstruct.c` treats a
+coins-cursor lag/overshoot as recoverable (tip publishes as `LOCAL_IMPORT`);
+`chain_evidence_controller.c` re-derives any stale freeze on boot.
 
 **Diagnose, read-only:**
 ```bash
@@ -300,21 +98,18 @@ build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'   # tip_advance_age +
 build/bin/zcl-rpc getblockcount                              # is it climbing?
 ```
 
-If the tip is genuinely stuck, the live `chain_evidence` state names the precise
-reason (`zcl_state subsystem=chain_evidence`) — a blocker, never a silent halt.
-Recovery is a plain `systemctl --user restart zclassic23` (or `make deploy` for a
-new binary); boot routes through the tolerant `chain_restore` + evidence
-re-derivation path. Full forensic history: the `project_bip30_stale_coins_wedge`
-memory note.
+If genuinely stuck, `zcl_state subsystem=chain_evidence` names the precise reason
+(a blocker, never a silent halt). Recovery is `systemctl --user restart zclassic23`
+(or `make deploy` for a new binary). Forensics: `project_bip30_stale_coins_wedge`.
 
-**Do not:** manually delete UTXO ranges or bypass BIP30. The fix is bounded to a
+**Do not** manually delete UTXO ranges or bypass BIP30 — the fix is bounded to a
 same-height self-write; a different-height duplicate is still a hard rejection.
 
 ---
 
 ## Disk > 99% Full
 
-**Symptoms:** `EV_DISK_CRITICAL` events, node may refuse new blocks, SQLite writes fail.
+**Symptoms:** `EV_DISK_CRITICAL`, node may refuse new blocks, SQLite writes fail.
 
 **Diagnose:**
 ```bash
@@ -330,7 +125,7 @@ build/bin/zcl-rpc healthcheck | jq '.disk'
    ```bash
    sqlite3 ~/.zclassic-c23/node.db 'PRAGMA wal_checkpoint(TRUNCATE);'
    ```
-4. If block files are consuming >5GB and you don't need full history, enable block pruning (`app/services/src/block_pruning_service.c`).
+4. If block files consume >5GB and you don't need full history, enable block pruning (`app/services/src/block_pruning_service.c`).
 5. Move datadir to larger volume: stop node, `mv ~/.zclassic-c23 /mnt/bigger/`, symlink or use `-datadir=`.
 
 **Prevention:** Set `ZCL_WAL_MAX_BYTES=104857600` (100MB cap, auto-checkpoint). Monitor `zcl_disk_free_bytes` in Grafana with alert at 1GB.
@@ -339,7 +134,7 @@ build/bin/zcl-rpc healthcheck | jq '.disk'
 
 ## Peer Misbehaving / Banned
 
-**Symptoms:** `EV_PEER_MISBEHAVE` or `EV_PEER_BANNED` events. Peer count dropping.
+**Symptoms:** `EV_PEER_MISBEHAVE` / `EV_PEER_BANNED`. Peer count dropping.
 
 **Diagnose:**
 ```bash
@@ -360,7 +155,7 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
    build/bin/zcl-rpc getblockchaininfo | jq '{blocks, bestblockhash}'
    # Compare height with a known-good explorer
    ```
-3. If your node is on a stale fork, see **Tip Regressed / Stuck on Wrong Fork** below.
+3. If your node is on a stale fork, see **Tip Regressed / Stuck on Wrong Fork**.
 
 **Prevention:** Monitor `zcl_peer_offences_total` rate in Grafana. A sudden spike in `invalid_block` offences usually means your node or the peers are on a bad chain.
 
@@ -368,7 +163,7 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
 
 ## Public Node Strength
 
-**Symptoms:** The node is synced but public P2P looks weak: peers stay in `connecting`, no completed MagicBean or ZClassic-C23 handshakes, or watchdog logs repeat `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
+**Symptoms:** synced but public P2P looks weak: peers stay `connecting`, no completed MagicBean or ZClassic-C23 handshakes, or watchdog repeats `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
 
 **Diagnose:**
 ```bash
@@ -427,10 +222,10 @@ build/bin/zcl-rpc dumpstate legacy_mirror | jq '{
    build/bin/zcl-rpc dumpstate peer_lifecycle | jq '.state.peers[] | select(.timeout>0 or .rejected>0)'
    ```
 2. **External IP missing or wrong:** set `-externalip=<public-ip>` in the service environment and verify it appears in `getnetworkinfo.localaddresses`. For public reachability, `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is stronger evidence than outbound-only handshakes.
-3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures are concentrated in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
-4. **Coordinator blocked or waiting:** use `dumpstate chain_advance_coordinator` first. `initialized=true` plus `has_connman=true`, `has_main_state=true`, and `has_node_db=true` confirm the running daemon has the coordinator wired into live P2P, chainstate, and persistence. `authority` must remain `local_consensus_validation`; `selected_source` shows the best current input, `selected_source_trust`/`sources[].trust` explain its trust class, and `sources[].selectable=false` with `selection_blocker` explains why a source was excluded before score ranking. `activation_allowed=false` or a non-empty `blocker` explains why the node is refusing to advance.
-5. **Legacy advisory active:** legacy data may be used only as `candidate_source=legacy_advisory`. `legacy_mirror.state` should be `observing`, `catching_up`, or `healthy`. Treat `blocked`, `gated_by_local_retries`, or `legacy_advisory_gated_by_native_retries=true` as actionable states; inspect `candidate_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_safe`, `last_override_scope`, and `last_error`. `consensus_authority` must stay `local_consensus_validation`; `candidate_trust` describes candidate data, not a co-authority. `unsafe_overrides_total` must stay `0` on a healthy node; any increase fails health and means an unsafe override path was reached. Stop trusting legacy-assisted recovery until the cause is understood and local validation has re-established the tip.
-6. **When not to restart:** if `chain_advance.decision` is `use_source` or `wait` with a clear reason, `lag <= 1`, and peer lifecycle shows active handshakes, leave the node running. Restarting resets peer reputation and can make public reachability look worse for a few minutes.
+3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures concentrate in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
+4. **Coordinator blocked or waiting:** use `dumpstate chain_advance_coordinator` first. `initialized=true` plus `has_connman=true`, `has_main_state=true`, `has_node_db=true` confirm the coordinator is wired into live P2P, chainstate, and persistence. `authority` must stay `local_consensus_validation`; `selected_source` shows the best input, `selected_source_trust`/`sources[].trust` explain its trust class, and `sources[].selectable=false` with `selection_blocker` explains why a source was excluded before score ranking. `activation_allowed=false` or a non-empty `blocker` explains why the node refuses to advance.
+5. **Legacy advisory active:** legacy data may be used only as `candidate_source=legacy_advisory`. `legacy_mirror.state` should be `observing`, `catching_up`, or `healthy`. Treat `blocked`, `gated_by_local_retries`, or `legacy_advisory_gated_by_native_retries=true` as actionable; inspect `candidate_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_safe`, `last_override_scope`, `last_error`. `consensus_authority` must stay `local_consensus_validation`; `candidate_trust` describes candidate data, not a co-authority. `unsafe_overrides_total` must stay `0`; any increase fails health and means an unsafe override path was reached — stop trusting legacy-assisted recovery until the cause is understood and local validation has re-established the tip.
+6. **When not to restart:** if `chain_advance.decision` is `use_source` or `wait` with a clear reason, `lag <= 1`, and peer lifecycle shows active handshakes, leave it running. Restarting resets peer reputation and can make reachability look worse for a few minutes.
 
 **Prevention:** Alert when `handshaked_connections == 0` for 5 minutes, `peer_lifecycle.timeout` rises quickly, `chain_advance.decision == "blocked"`, or `legacy_mirror.state == "blocked"`.
 
@@ -438,7 +233,7 @@ build/bin/zcl-rpc dumpstate legacy_mirror | jq '{
 
 ## Wallet Backup Failed
 
-**Symptoms:** `EV_WALLET_BACKUP_FAILED` event. `zcl_status` health check shows wallet backup warning.
+**Symptoms:** `EV_WALLET_BACKUP_FAILED`. `zcl_status` health shows wallet backup warning.
 
 **Diagnose:**
 ```bash
@@ -457,13 +252,13 @@ ls -la ~/.zclassic-c23/backups/
    sqlite3 ~/.zclassic-c23/node.db ".backup '~/.zclassic-c23/backups/node-$(date +%Y%m%d).db'"
    ```
 
-**Prevention:** The node's built-in backup service runs automatically. Verify it works after first boot by checking for `EV_WALLET_BACKUP` events.
+**Prevention:** The built-in backup service runs automatically. Verify after first boot by checking for `EV_WALLET_BACKUP` events.
 
 ---
 
 ## Tip Regressed / Stuck on Wrong Fork
 
-**Symptoms:** Chain height decreases or lags significantly behind network. `EV_REORG_START` with large depth. Peers disconnecting because of chain mismatch.
+**Symptoms:** Height decreases or lags far behind network. `EV_REORG_START` with large depth. Peers disconnecting over chain mismatch.
 
 **Diagnose:**
 ```bash
@@ -474,16 +269,14 @@ build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced
 ```
 
 **Fix:**
-1. If tip is just behind (node is syncing): wait. Check `zcl_syncstate` — if state is `BLOCKS_DOWNLOAD` or `CONNECTING_BLOCKS`, sync is in progress.
+1. If tip is just behind (syncing): wait. Check `zcl_syncstate` — `BLOCKS_DOWNLOAD` or `CONNECTING_BLOCKS` means sync in progress.
 2. If tip regressed after a reorg:
-   - Small reorg (<10 blocks): normal, node should recover automatically. Watch `EV_REORG_RECOVERY_COMPLETE`.
-   - Large reorg (>10 blocks): investigate. Check if peers agree on the fork:
+   - Small (<10 blocks): normal, recovers automatically. Watch `EV_REORG_RECOVERY_COMPLETE`.
+   - Large (>10 blocks): investigate whether peers agree on the fork:
      ```bash
      build/bin/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
      ```
-3. If node is stuck on a dead fork (no peers agree), see the
-   nuclear option below — invalidateblock / reconsiderblock RPCs are
-   not currently exposed.
+3. If stuck on a dead fork (no peers agree), see the nuclear option below — invalidateblock / reconsiderblock RPCs are not currently exposed.
 4. Nuclear option (last resort): stop node, delete state, resync:
    ```bash
    systemctl --user stop zclassic23
@@ -499,7 +292,7 @@ build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced
 
 ## Node Stuck (Not Syncing)
 
-**Symptoms:** Chain height frozen. `zcl_syncstate` returns `IDLE` or `FAILED`. No blocks connecting.
+**Symptoms:** Height frozen. `zcl_syncstate` returns `IDLE` or `FAILED`. No blocks connecting.
 
 **Diagnose:**
 ```bash
@@ -523,24 +316,22 @@ build/bin/zcl-rpc getnetworkinfo | jq '{connections, localservices}'
    build/bin/zcl-rpc eventlog | grep -i reject
    # Via MCP: zcl_events, zcl_consensus_report
    ```
-3. **Sync state is FAILED:**
+3. **Sync state is FAILED:** restart — transient failures often clear:
    ```bash
-   # Restart the node — transient failures often clear on restart
    systemctl --user restart zclassic23
    ```
-4. **Stuck in SNAPSHOT_RECEIVE:** Snapshot peer may have disconnected.
+4. **Stuck in SNAPSHOT_RECEIVE:** snapshot peer may have disconnected. Restart to retry from another peer:
    ```bash
-   # Restart to retry snapshot from another peer
    systemctl --user restart zclassic23
    ```
 
-**Prevention:** Monitor sync state. Alert on `FAILED` state or height stalled >10 min.
+**Prevention:** Monitor sync state. Alert on `FAILED` or height stalled >10 min.
 
 ---
 
 ## RPC 429 (Rate Limited)
 
-**Symptoms:** RPC clients receive HTTP 429 responses. `EV_RPC_TIMEOUT` events. `zcl_rpc_rate_limited_*` counters climbing.
+**Symptoms:** RPC clients get HTTP 429. `EV_RPC_TIMEOUT`. `zcl_rpc_rate_limited_*` counters climbing.
 
 **Diagnose:**
 ```bash
@@ -551,7 +342,7 @@ echo "Per-IP: ${ZCL_RPC_PER_IP_RPS:-5} rps, burst ${ZCL_RPC_PER_IP_BURST:-10}"
 ```
 
 **Fix:**
-1. If your own tooling is hitting per-IP limits, increase per-IP budget:
+1. If your own tooling hits per-IP limits, raise per-IP budget:
    ```bash
    export ZCL_RPC_PER_IP_RPS=20
    export ZCL_RPC_PER_IP_BURST=40
@@ -563,8 +354,8 @@ echo "Per-IP: ${ZCL_RPC_PER_IP_RPS:-5} rps, burst ${ZCL_RPC_PER_IP_BURST:-10}"
    export ZCL_RPC_BURST=400
    systemctl --user restart zclassic23
    ```
-3. If a specific IP is flooding, it will auto-ban after `ZCL_RPC_AUTH_FAIL_THRESHOLD` (default 5) auth failures. For non-auth flooding, the per-IP rate limit handles it.
-4. Loopback (127.0.0.1) bypasses per-IP limits but still counts against global. If your local tools are fighting each other for global budget, raise `ZCL_RPC_RPS`.
+3. If a specific IP is flooding, it auto-bans after `ZCL_RPC_AUTH_FAIL_THRESHOLD` (default 5) auth failures. For non-auth flooding, the per-IP rate limit handles it.
+4. Loopback (127.0.0.1) bypasses per-IP limits but still counts against global. If local tools fight for global budget, raise `ZCL_RPC_RPS`.
 
 **Prevention:** Monitor `zcl_rpc_rate_limited_*` in Grafana. Right-size limits for your deployment.
 
@@ -585,13 +376,13 @@ echo "Rotation interval: ${ZCL_RPC_COOKIE_ROTATE_SEC:-86400}s"
 
 **Fix:**
 1. If cookie file is stale or missing: restart node to regenerate.
-2. If client caches the cookie: client must re-read `.cookie` file on 401 response. During rotation, both current and previous cookies are valid.
+2. If client caches the cookie: it must re-read `.cookie` on a 401. During rotation, both current and previous cookies are valid.
 3. If IP is banned from too many auth failures:
    - Ban auto-expires after `ZCL_RPC_BAN_SECONDS` (default 3600s = 1hr).
    - To clear immediately: restart the node (ban table is in-memory).
 4. If using `rpcuser`/`rpcpassword` instead of cookie: rotation doesn't apply, check credentials.
 
-**Prevention:** Ensure clients re-read the `.cookie` file periodically (at least once per rotation interval).
+**Prevention:** Ensure clients re-read the `.cookie` file at least once per rotation interval.
 
 ---
 
@@ -607,15 +398,15 @@ cat /proc/$(pgrep zclassic23)/status | grep -E 'VmRSS|VmPeak'
 ```
 
 **Fix:**
-1. If background validation is consuming too much: disable with `-nobgvalidation` or restart (it auto-detects <8GB machines and reduces batch size).
-2. If UTXO cache is large: the node batches flushes. A restart forces a flush and reclaims memory.
+1. If background validation consumes too much: disable with `-nobgvalidation` or restart (it auto-detects <8GB machines and reduces batch size).
+2. If UTXO cache is large: the node batches flushes; a restart forces a flush and reclaims memory.
 3. If mempool is bloated:
    ```bash
    build/bin/zcl-rpc getmempoolinfo | jq '{size, bytes}'
    # Mempool has configurable limits — check environment
    ```
 
-**Prevention:** Monitor RSS via external tool (e.g., `node_exporter` for Prometheus). Background validation is the biggest consumer — disable on RAM-constrained machines.
+**Prevention:** Monitor RSS externally (e.g. `node_exporter`). Background validation is the biggest consumer — disable on RAM-constrained machines.
 
 ---
 
