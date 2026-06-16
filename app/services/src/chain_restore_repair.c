@@ -623,7 +623,22 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
      * (reachable via the small-tip csr commit) and cs_main -> active_chain
      * write_lock are forward edges. Released before the lock-free post-restore
      * integrity reader below. The rebuild path takes no coins_kv, so the
-     * LOCK-ORDER LAW (drive's coins_kv never crosses cs_main) is preserved. */
+     * LOCK-ORDER LAW (drive's coins_kv never crosses cs_main) is preserved.
+     *
+     * DORMANT-EDGE NOTE (keep this invariant intact): at the BOOT call site
+     * (boot.c:~3408, before app_init_services registers the tip_finalize
+     * chain-height authority) active_chain_tip/active_chain_height fall back to
+     * progress_store_tx_lock (chainstate.c), so this wrap transiently takes
+     * cs_main -> progress_store_tx_lock — the OPPOSITE of the reducer reconcile's
+     * progress_store_tx_lock -> cs_main. That is NOT a deadlock today only
+     * because the two orders are TEMPORALLY DISJOINT: the condition-engine /
+     * reducer-reconcile threads start AFTER boot's finalize, and at RUNTIME the
+     * registered authority makes active_chain_height take its lock-free atomic
+     * fast-path so this wrap never touches progress. Do NOT (a) start a
+     * progress->cs_main thread before app_init_services, (b) defer authority
+     * registration, or (c) call this from a new concurrent pre-app_init_services
+     * context. Permanent fix (tracked follow-up): read the tip via lock-free
+     * active_chain_cached_tip / c->height inside the wrap to delete the edge. */
     zcl_mutex_lock(&ms->cs_main);
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     if (tip)

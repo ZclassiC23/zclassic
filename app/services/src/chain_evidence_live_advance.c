@@ -194,6 +194,17 @@ static void cec_lift_boot_tip_divergence_freeze(
                                 "empty", strlen("empty") + 1);
         (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
                                 "", 1);
+        /* freeze() left cec.publish_state at FROZEN_CONTRADICTION. Clear it to
+         * the truthful post-lift value: this tip is the live active tip,
+         * finalized by the reducer, so it IS locally publishable. Required
+         * because the idempotence early-return below can skip the forward
+         * persist that would otherwise rewrite publish_state — leaving it stale
+         * FROZEN -> snapshot's publish_state_not_local -> a false "unhealthy"
+         * (the TASK #33 symptom) on that one path. NOTE: snapshot keys
+         * publish_state_not_local on (state != LOCAL_EVIDENCE), so 0/empty would
+         * NOT clear it — LOCAL_EVIDENCE is the only value that does + is honest. */
+        (void)node_db_state_set_int(authority->ndb, "cec.publish_state",
+                                    CEC_PUBLISH_LOCAL_EVIDENCE);
     }
     LOG_WARN("cec", "[cec] (d2) lifting stale boot-transient freeze: live tip "
              "h=%d hash-consistent (csr==finalized) — clearing '"
