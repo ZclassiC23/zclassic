@@ -6,15 +6,14 @@ One line per doc. Start with the entry points, in order.
 
 - [`HANDOFF.md`](./HANDOFF.md) — current state; read this FIRST on a fresh session.
 - [`MVP.md`](./MVP.md) — the v1 contract: 8 binary acceptance criteria (v1 = MRS 8/8).
-- [`work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) — THE plan, MVP-anchored, with the live wedge as priority #1.
+- [`work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) — THE plan, MVP-anchored.
 
 ## Architecture (reference, off the v1 path)
 
 - [`FRAMEWORK.md`](./FRAMEWORK.md) — canonical architecture: Prime Directive, Ten Laws of Beauty, the eight shapes.
 - [`ARCHITECTURE_DIAGRAMS.md`](./ARCHITECTURE_DIAGRAMS.md) — Mermaid diagrams of the current boot sequence and subsystem topology.
 - [`adr/0001-personal-sovereignty-stack.md`](./adr/0001-personal-sovereignty-stack.md) — ADR for the 2026-05-22 Personal Sovereignty Stack pivot.
-- [`REFACTOR_STATUS.md`](./REFACTOR_STATUS.md) — architecture debt board (~90% done; NOT the v1 path).
-- [`PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md) — file-purpose map of the repo tree for a developer taking over.
+- [`REFACTOR_STATUS.md`](./REFACTOR_STATUS.md) — architecture debt board (live debt only; NOT the v1 path).
 
 ## Operations
 
