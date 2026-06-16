@@ -23,7 +23,6 @@ void contacts_projection_set_event_log(event_log_t *log);
 bool contacts_projection_emit_set(const char *address, const char *name);
 bool contacts_projection_emit_touched(const char *address,
                                       uint32_t last_used);
-bool contacts_projection_emit_delete(const char *address);
 struct json_value;
 bool contacts_projection_dump_state_json(struct json_value *out,
                                          const char *key);

@@ -747,9 +747,6 @@ static int t_clear_active_tip_requires_typed_auth(void)
     return failures;
 }
 
-/* (wave-2 deletion) t_coins_best_repair_requires_typed_auth removed with
- * csr_repair_set_coins_best — the coins-best fact is derived, not repaired. */
-
 static int t_extend_chain(void)
 {
     int failures = 0;

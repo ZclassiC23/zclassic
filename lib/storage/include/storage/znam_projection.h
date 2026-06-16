@@ -74,19 +74,6 @@ bool znam_projection_emit_update_text(const char *name, const char *key,
                                       const char *value,
                                       const uint8_t update_txid[32]);
 
-bool znam_projection_emit_update_primary(const char *name,
-                                         uint8_t target_type,
-                                         const char *target_value,
-                                         const uint8_t update_txid[32]);
-
-bool znam_projection_emit_transfer(const char *name, const char *new_owner,
-                                   const uint8_t update_txid[32]);
-
-bool znam_projection_emit_renew(const char *name, int32_t new_expiry_height,
-                                const uint8_t update_txid[32]);
-
-bool znam_projection_emit_expire(const char *name, int32_t expired_at_height);
-
 struct json_value;
 bool znam_projection_dump_state_json(struct json_value *out, const char *key);
 

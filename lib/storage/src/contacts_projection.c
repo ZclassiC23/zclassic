@@ -374,29 +374,6 @@ bool contacts_projection_emit_touched(const char *address,
                                 &g_emit_touched_total);
 }
 
-bool contacts_projection_emit_delete(const char *address)
-{
-    event_log_t *log = atomic_load_explicit(&g_event_log,
-                                            memory_order_acquire);
-    if (!log)
-        return true;
-    size_t address_len = bounded_strlen(address, EV_CONTACT_ADDRESS_MAX);
-    struct ev_contact_delete ev = {
-        .address_len = (uint8_t)address_len,
-        .address = address,
-    };
-    uint8_t payload[EV_CONTACT_DELETE_FIXED_LEN + EV_CONTACT_ADDRESS_MAX];
-    size_t len = 0;
-    if (address_len == 0 || address_len > EV_CONTACT_ADDRESS_MAX ||
-        !ev_contact_delete_serialize(&ev, payload, sizeof(payload), &len)) {
-        atomic_fetch_add_explicit(&g_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        return false;
-    }
-    return append_contact_event(EV_CONTACT_DELETE, payload, len,
-                                &g_emit_delete_total);
-}
-
 bool contacts_projection_dump_state_json(struct json_value *out,
                                          const char *key)
 {

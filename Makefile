@@ -1074,7 +1074,15 @@ install: zclassic23 zcl-rpc
 	fi
 	@echo "make install: zclassic23 + zcl-rpc -> $(DESTDIR)$(PREFIX)/bin"
 
-deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
+deploy: lint zclassic-cli tools/wal_checkpoint
+	@# Force a fresh production binary. The $(ZCLASSIC23_BIN) rule is a single
+	@# whole-program cc over $(ALL_SRCS) with NO depfile tracking, so a
+	@# header-only edit leaves every .c mtime unchanged and `make` would skip
+	@# the relink and ship a STALE binary — the exact footgun behind a
+	@# multi-day stale-binary outage. Removing the binary forces the rebuild;
+	@# deploy_verify.sh below then confirms the running build_commit matches.
+	rm -f $(ZCLASSIC23_BIN)
+	$(MAKE) zclassic23
 	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
 	    $(WAL_CHECKPOINT_BIN) $(HOME)/.zclassic-c23/node.db \
 	        || { echo "WAL checkpoint failed"; exit 1; }; \

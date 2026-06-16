@@ -645,10 +645,6 @@ enum csr_result csr_clear_active_tip(
     return CSR_OK;
 }
 
-/* (wave-2 deletion) csr_repair_set_coins_best removed: a zero-production-
- * caller repair entry point whose only purpose was installing the coins-best
- * cache by hand — the fact is DERIVED now (reducer_frontier_derive_coins_best). */
-
 bool csr_restore_in_memory_view(struct chain_state_repository *csr,
                                 struct block_index *old_tip,
                                 struct block_index *old_header,

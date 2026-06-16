@@ -2472,10 +2472,6 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* (wave-2 deletion) boot_resolve_cold_import_pending_anchor removed:
-     * its 'cold_import_pending_*' node_state keys had NO writer anywhere in
-     * the tree — a dead consumer of a key family nothing produced. */
-
     /* ── LDB UTXO import (runs AFTER block index load) ──
      * Skipped on the log-rebuild path: the UTXO projection (bound as the
      * coins read view above) is the sole money authority there; reading the

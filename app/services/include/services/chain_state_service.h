@@ -164,11 +164,6 @@ struct chain_state_clear_commit {
     const char         *reason;             /* logged; required */
 };
 
-/* (wave-2 deletion) struct chain_state_coins_best_repair +
- * csr_repair_set_coins_best removed — the coins-best fact is DERIVED
- * (jobs/reducer_frontier.h reducer_frontier_derive_coins_best), never
- * hand-installed. */
-
 /* ── Lifecycle ─────────────────────────────────────────────────
  * Pass NULL for any source you don't have wired up yet — the
  * repository will skip the related cross-checks gracefully. The

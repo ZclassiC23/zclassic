@@ -73,8 +73,12 @@ static void dns_seed_resolve(struct connman *cm)
         hints.ai_socktype = SOCK_STREAM;
 
         struct addrinfo *res = NULL;
-        if (getaddrinfo(host, NULL, &hints, &res) != 0)
+        int gai_rc = getaddrinfo(host, NULL, &hints, &res);
+        if (gai_rc != 0) {
+            LOG_WARN("connman", "DNS seed %s resolution failed: %s",
+                     host, gai_strerror(gai_rc));
             continue;
+        }
 
         int count = 0;
         for (struct addrinfo *p = res; p && count < 256; p = p->ai_next) {

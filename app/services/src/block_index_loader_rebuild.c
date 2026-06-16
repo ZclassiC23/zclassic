@@ -475,8 +475,10 @@ static bool cold_import_set_applied_if_behind(sqlite3 *db, int32_t want)
     if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
         ok = false;
     if (!ok) {
-        if (err) LOG_WARN("block_index",
-                          "cold-import seed: applied_height set failed: %s", err);
+        LOG_WARN("block_index",
+                 "cold-import seed: applied_height set to %d failed: %s", want,
+                 err ? err : "(no sqlite errmsg — coins_kv/progress write "
+                             "returned false)");
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     }
     if (err) sqlite3_free(err);

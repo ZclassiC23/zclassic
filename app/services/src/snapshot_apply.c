@@ -125,12 +125,6 @@ struct zcl_result snapsync_stage_promote_active_internal(struct node_db *ndb,
      * snapshot into the authoritative log/projection engine + tip cursor
      * BEFORE the staging table is discarded below. Best-effort. */
     snapsync_seed_projection_boot(ndb, svc);
-    /* (wave-2 deletion) the 'snapshot_pending_coins_best_block/_height'
-     * writes removed: a WRITE-ONLY key family — no production reader ever
-     * existed. The publishable coins-best fact is derived
-     * (reducer_frontier_derive_coins_best); the evidenced tip activation
-     * still goes through chain_state_repository. */
-
     for (int i = 0; i < 32; i++) {
         if (svc->offered_mmb_root[i]) {
             has_mmb = true;

@@ -469,9 +469,8 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
         if (utxo_commitment_load_checkpoint(ctx->ndb->db, &saved_uc)) {
             utxo_commitment_compute_db(ctx->ndb->db, &computed_uc);
             if (!utxo_commitment_equal(&saved_uc, &computed_uc)) {
-                /* (wave-2 deletion) the "corruption candidate" branch was
-                 * dead by construction — its predicate was hardcoded false.
-                 * A mismatch here is a stale checkpoint: refresh it. */
+                /* A mismatch here is a stale checkpoint, not corruption —
+                 * refresh it. */
                 printf("INFO: skipping XOR commitment corruption warning: "
                        "stored commitment checkpoint is stale "
                        "(saved_count=%llu computed_count=%llu)\n",
