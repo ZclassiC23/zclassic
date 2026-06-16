@@ -11,7 +11,15 @@
  *   - Sentinels: replay_canary_<kind>.json (<kind> = anchor | genesis | ...),
  *     each atomically replaced (tmp + rename) by every run — file content IS
  *     the latest verdict for that kind. Fields read: verdict, from, ts,
- *     reason.
+ *     reason, build_commit.
+ *
+ * Cross-build staleness (load-bearing): the verdict dir is SHARED across
+ * lanes and restarts. A sentinel whose build_commit differs from the running
+ * binary's (zcl_build_commit()) is NOT evidence about this binary — a prior
+ * build's FAIL must never latch the pager on a freshly-deployed node. Such a
+ * FAIL is recorded for display (stale_build=true in the dump) but does not
+ * raise; only a SAME-build (or no-build_commit legacy) FAIL pages. The drop
+ * is logged once per mtime (never a silent swallow).
  *
  * Absence/staleness policy (explicit, load-bearing): a sentinel can be
  * legitimately ABSENT — every canary run deletes its sentinel first, so a

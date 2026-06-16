@@ -1985,6 +1985,22 @@ bool app_init(struct app_context *ctx)
             bool need_zcd = ((int64_t)g_state.map_block_index.size <
                              (int64_t)chain_h * 9 / 10);
         if (need_zcd) {
+            /* OPTION 1 (cold-import restart fragility, 2026-06-16): derive our
+             * OWN coins frontier up front. The zclassicd LevelDB index tops out
+             * at zclassicd's own tip; if our derived frontier is STRICTLY above
+             * it, promoting/saving zclassicd's best would commit the public tip
+             * BACKWARD below our frontier — the restart-fragility downshift that
+             * detaches our coins-best block, forces a window re-chase, and
+             * latches contradiction_frozen. We STILL import the index for the
+             * 0..zcd-tip ANCESTRY (so the detached block gets a real pprev
+             * root), but suppress the backward tip COMMIT. (We still save the
+             * resulting flat — it is now ENRICHED with that ancestry and carries
+             * no tip field, so persisting it is desirable.) Key strictly on '>'
+             * so a legitimate fresh fast-cold-sync (at/below zclassicd) and a
+             * legacy datadir (no derived frontier) promote exactly as before.
+             * See project_coldimport_restart_fragility_2026-06-15. */
+            struct boot_derived_coins_best ndcb;
+            bool have_ndcb = boot_derive_coins_best(&ndcb);
             const char *home = getenv("HOME");
             char zcd_idx_path[1024];
             if (home)
@@ -2107,18 +2123,46 @@ bool app_init(struct app_context *ctx)
                                 }
                                 free(sorted);
 
-                                if (best && best->nHeight > 0 &&
-                                    boot_promote_tip_via_csr(
-                                        best, "zclassicd_import_best",
-                                        false)) {
-                                    printf("Chain tip from zclassicd: height=%d "
-                                           "nChainTx=%u\n",
-                                           best->nHeight, best->nChainTx);
+                                if (best && best->nHeight > 0) {
+                                    int32_t zcd_best_h = best->nHeight;
+                                    if (have_ndcb &&
+                                        ndcb.height > zcd_best_h) {
+                                        /* Our derived frontier is ahead of
+                                         * zclassicd's index — do NOT commit the
+                                         * tip backward. Ancestry is already
+                                         * imported; the downstream restore
+                                         * utxo_recovery_restore_chain_tip
+                                         * (reason coins_best_restore, later in
+                                         * this boot) promotes our real derived
+                                         * tip from the same coins authority. */
+                                        fprintf(stderr,
+                                            "[boot] suppressing "
+                                            "zclassicd_import_best tip commit: "
+                                            "derived coins-best h=%d > zclassicd "
+                                            "index-best h=%d (would commit tip "
+                                            "backward below our frontier)\n",
+                                            ndcb.height, zcd_best_h);
+                                        event_emitf(EV_RECOVERY_ACTION, 0,
+                                            "action=zcd_import_tip_suppressed "
+                                            "derived=%d zcd_best=%d",
+                                            ndcb.height, zcd_best_h);
+                                    } else if (boot_promote_tip_via_csr(
+                                                   best, "zclassicd_import_best",
+                                                   false)) {
+                                        printf("Chain tip from zclassicd: "
+                                               "height=%d nChainTx=%u\n",
+                                               best->nHeight, best->nChainTx);
+                                    }
                                 }
                             }
                         }
 
-                        /* Save flat file for instant future boots */
+                        /* Save flat file for instant future boots. The map is
+                         * now ENRICHED with zclassicd's 0..zcd-tip ancestry; the
+                         * flat persists the entry SET only (no tip), so saving it
+                         * is desirable even when the backward tip promotion above
+                         * was suppressed — OPTION 1's durable effect is the
+                         * skipped CSR promotion, not flat avoidance. */
                         save_block_index_flat(ctx->datadir, &g_state);
                     }
                     block_tree_db_close(&zcd_btdb);

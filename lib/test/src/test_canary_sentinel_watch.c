@@ -14,6 +14,11 @@
  *   (e) idempotency    → two ticks on the same FAIL = ONE raise/remedy,
  *   (f) mixed kinds    → anchor=FAIL + genesis=PASS pages naming only the
  *                        failing kind; all-green clears.
+ *   (g) cross-build    → a FAIL written by a DIFFERENT build than the one
+ *                        running is ignored (shared dir + fresh deploy); a
+ *                        same-build FAIL still pages.
+ *   (h) -dirty norm    → a bare-hash FAIL from the same SOURCE still pages even
+ *                        when the binary is a dirty build (dev-lane default).
  * Plus the documented absence policy: a FAIL stays latched when its
  * sentinel disappears (a re-running canary must not un-page the node). */
 
@@ -23,6 +28,7 @@
 #include "json/json.h"
 #include "services/canary_sentinel_watch.h"
 #include "conditions/replay_canary_failed.h"
+#include "util/clientversion.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -50,22 +56,45 @@ static bool write_file(const char *dir, const char *name, const char *body)
     return ok;
 }
 
-/* Mirror the harness's sentinel shape (extra fields prove tolerance). */
-static bool write_sentinel(const char *dir, const char *kind,
-                           const char *verdict, const char *reason,
-                           long long ts)
+/* Mirror the harness's sentinel shape (extra fields prove tolerance), with an
+ * explicit build_commit so a test can exercise the cross-build staleness drop
+ * (a FAIL written by a DIFFERENT build than the one running must not page). */
+static bool write_sentinel_commit(const char *dir, const char *kind,
+                                  const char *verdict, const char *reason,
+                                  long long ts, const char *build_commit)
 {
     char name[128];
     char body[512];
     snprintf(name, sizeof(name), "replay_canary_%s.json", kind);
     snprintf(body, sizeof(body),
              "{\"verdict\":\"%s\",\"from\":\"%s\",\"ts\":%lld,"
-             "\"started_ts\":%lld,\"build_commit\":\"deadbee\","
+             "\"started_ts\":%lld,\"build_commit\":\"%s\","
              "\"tip\":3145000,\"verified_height\":3145000,"
              "\"bg_state\":\"complete\",\"consensus_rejects\":0,"
              "\"reason\":\"%s\",\"elapsed_sec\":1234}\n",
-             verdict, kind, ts, ts - 1200, reason);
+             verdict, kind, ts, ts - 1200,
+             build_commit ? build_commit : "", reason);
     return write_file(dir, name, body);
+}
+
+/* The common case: a sentinel written by the RUNNING build, so a FAIL latches
+ * (same-build verdicts are genuine evidence about this binary). */
+static bool write_sentinel(const char *dir, const char *kind,
+                           const char *verdict, const char *reason,
+                           long long ts)
+{
+    return write_sentinel_commit(dir, kind, verdict, reason, ts,
+                                 zcl_build_commit());
+}
+
+/* Strip a trailing "-dirty" — the canary harness writes the bare short hash
+ * while a dirty-built binary's zcl_build_commit() carries the suffix. */
+static void strip_dirty(const char *in, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s", in ? in : "");
+    char *d = strstr(out, "-dirty");
+    if (d)
+        *d = '\0';
 }
 
 static void rm_in_dir(const char *dir, const char *name)
@@ -289,6 +318,55 @@ int test_canary_sentinel_watch(void)
         ok = ok && !canary_sentinel_watch_fail_active();
         CSW_CHECK("FAIL stays latched across sentinel absence until PASS",
                   ok);
+        watch_test_teardown(dir);
+    }
+
+    /* (g) Cross-build staleness: a FAIL written by a DIFFERENT binary than the
+     * one running is not evidence about THIS build (shared verdict dir + a
+     * freshly-deployed binary) — it must NOT latch the pager. A SAME-build
+     * FAIL alongside it still pages, proving we did not disable FAIL paging
+     * wholesale; the stale one is excluded from the page detail. */
+    {
+        watch_test_setup(dir);
+        /* Stale cross-build FAIL alone → recorded but never raises. */
+        bool ok = write_sentinel_commit(dir, "anchor", "FAIL",
+                                        "rpc_unreachable", 1718000500LL,
+                                        "deadbee_oldbuild");
+        canary_sentinel_watch_tick_once();
+        ok = ok && !canary_sentinel_watch_fail_active();
+        ok = ok && dump_bool("fail_latched") == false;
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && replay_canary_failed_test_remedy_calls() == 0;
+
+        /* A same-build FAIL on another kind DOES page. */
+        ok = ok && write_sentinel(dir, "genesis", "FAIL", "sha3_mismatch",
+                                  1718000501LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        char detail[256];
+        int fails = canary_sentinel_watch_fail_detail(detail, sizeof(detail));
+        ok = ok && fails == 1;                            /* only the genuine one */
+        ok = ok && strstr(detail, "kind=genesis") != NULL;
+        ok = ok && strstr(detail, "kind=anchor") == NULL; /* stale one excluded */
+        CSW_CHECK("cross-build FAIL ignored; same-build FAIL still pages", ok);
+        watch_test_teardown(dir);
+    }
+
+    /* (h) -dirty normalization: the canary harness writes the BARE short hash
+     * while a dirty-built binary's zcl_build_commit() carries "-dirty". A
+     * same-SOURCE FAIL must STILL page — never be demoted as cross-build (the
+     * dev-lane default deploy is a dirty build). */
+    {
+        watch_test_setup(dir);
+        char bare[64];
+        strip_dirty(zcl_build_commit(), bare, sizeof(bare));
+        bool ok = write_sentinel_commit(dir, "anchor", "FAIL", "sha3_mismatch",
+                                        1718000600LL, bare);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        CSW_CHECK("same-source FAIL pages even when binary is -dirty "
+                  "(bare-hash sentinel)", ok);
         watch_test_teardown(dir);
     }
 
