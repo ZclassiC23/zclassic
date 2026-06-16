@@ -44,8 +44,6 @@ detects its worktree ID, and the push/completion ritual — lives in
 - **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md).
 - **Session entrypoint:** [`../HANDOFF.md`](../HANDOFF.md).
 - **Worker protocol:** this file plus [`agent-protocol.md`](./agent-protocol.md).
-- **Archived records:** [`done/`](./done/) — point-in-time diagnoses and
-  assessments whose work landed or was superseded; kept for the audit trail.
 
 ## How assignments are structured
 

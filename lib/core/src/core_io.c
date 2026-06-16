@@ -288,16 +288,16 @@ void script_pub_key_to_json(const struct script *script_pub_key,
         json_push_kv_str(out, "hex", hex);
     }
 
+    enum txnouttype type;
+    unsigned char solutions[16][65];
+    size_t solution_sizes[16];
+    size_t num_solutions = 0;
+    script_solver(script_pub_key, &type, solutions, solution_sizes,
+                  &num_solutions);
+    json_push_kv_str(out, "type", get_txn_output_type(type));
+
     struct tx_destination dest;
     if (script_extract_destination(script_pub_key, &dest)) {
-        enum txnouttype type;
-        unsigned char solutions[16][65];
-        size_t solution_sizes[16];
-        size_t num_solutions = 0;
-        script_solver(script_pub_key, &type, solutions, solution_sizes,
-                      &num_solutions);
-        json_push_kv_str(out, "type", get_txn_output_type(type));
-
         if (type == TX_MULTISIG) {
             json_push_kv_int(out, "reqSigs",
                              script_decode_op_n(
@@ -328,14 +328,6 @@ void script_pub_key_to_json(const struct script *script_pub_key,
         }
         json_push_kv(out, "addresses", &addrs);
         json_free(&addrs);
-    } else {
-        enum txnouttype type;
-        unsigned char solutions[16][65];
-        size_t solution_sizes[16];
-        size_t num_solutions = 0;
-        script_solver(script_pub_key, &type, solutions, solution_sizes,
-                      &num_solutions);
-        json_push_kv_str(out, "type", get_txn_output_type(type));
     }
 }
 

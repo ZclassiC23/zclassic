@@ -83,3 +83,33 @@ before deploy. `owner-gated` = consensus parity or a structural/topology decisio
 - **O4 — INJECT event vocabulary for the seed-tape simulator** (PEER_DROP /
   HEADER_ADMIT / IMPORT_TIP) so cold-import/peer-floor failures become replayable
   64-bit seeds + chaos commands.
+
+## DRY backlog (duplication audit)
+
+Applied this pass (safe, contained, gate-verified): `lib/core/src/core_io.c`
+(hoisted the duplicated `script_solver` decode out of the if/else),
+`tools/mcp/controllers/ops_controller.c` (added `status_extract_json_int` +
+`status_count_json_objects`, routed the ~6 inlined scrape/brace-count sites).
+
+Tracked structural dedups (each its own reviewed change — cross-file, some
+consensus-adjacent; ~900 duplicated lines total):
+
+- **DRY1 — projection lifecycle template** (~340 lines): `open`/`close`/
+  `set_event_log`/`current`/`exec_sql`/`append_*_event`/`dump_state` preambles are
+  near-identical across the 8 `lib/storage/src/*_projection.c`. Extract a shared
+  base; must keep the E4 *projections-pure* gate satisfied.
+- **DRY2 — adapter scalar-read idiom** (~160 lines): `prepare → AR_STEP_ROW_READONLY
+  → read col 0 → finalize` is copy-pasted ~20× across `adapters/outbound/persistence/*`.
+  Add one checked scalar-read helper. Also: byte-identical `wal_size_bytes`
+  (node_health_store + db_maintenance) and the `ctx_of/db_of/ndb_of` casts (→ one
+  `PORT_SELF` macro).
+- **DRY3 — reducer stage prologue** (~110 lines): `*_stage_init(ms)` prologue is
+  identical across the 8 `app/jobs/src/*_stage.c`; the cross-table "read row at
+  height" log readers (~90) and `*_log_ensure_schema` template (~85) repeat across
+  `app/jobs/src/*_log_store.c`. Consensus-adjacent — gate + review.
+- **DRY4 — controller boilerplate**: rpc-table register tail (24 controllers → macro),
+  `main_state`-not-initialized guard (~12×), inline byte→hex loops bypassing
+  `HexStr` (~12×), and the HTTP-200 no-cache response preamble (~13×).
+- **DRY5 — small byte-identical helpers**: `load_u256`/`state_get_i32` across the 3
+  `chain_evidence_*` files; the `DOMAIN_TX_FAIL`/`DOMAIN_SAP_FAIL` macros in
+  `domain/consensus/src` (consensus path — move with care).

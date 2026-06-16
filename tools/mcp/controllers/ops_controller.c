@@ -78,6 +78,30 @@ static bool status_extract_json_str(const char *json, const char *key,
     return true;
 }
 
+/* Pull a top-level numeric field out of a raw JSON response (same strstr style
+ * as status_extract_json_str). Returns dflt when the key is absent. */
+static long long status_extract_json_int(const char *json, const char *key,
+                                         long long dflt)
+{
+    if (!json || !key) return dflt;
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if (!p) return dflt;
+    p += strlen(pat);
+    while (*p == ' ' || *p == ':') p++;
+    return atoll(p);
+}
+
+/* Count JSON objects in a flat array body by counting '{' — sufficient for the
+ * peer arrays returned by getpeerinfo. */
+static int status_count_json_objects(const char *s)
+{
+    int n = 0;
+    if (s) for (const char *c = s; *c; c++) if (*c == '{') n++;
+    return n;
+}
+
 static int blocker_status_priority(int cls)
 {
     switch ((enum blocker_class)cls) {
@@ -172,7 +196,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
 
     int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
     if (p) {
-        for (char *c = p; *c; c++) if (*c == '{') pc++;
+        pc = status_count_json_objects(p);
         /* Count inbound vs outbound */
         const char *sp = p;
         while ((sp = strstr(sp, "\"inbound\"")) != NULL) {
@@ -198,15 +222,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     }
 
     /* Extract header_height from getblockchaininfo best_header_height */
-    int header_height = 0;
-    if (ci) {
-        const char *bhh = strstr(ci, "\"best_header_height\"");
-        if (bhh) {
-            bhh += strlen("\"best_header_height\"");
-            while (*bhh == ' ' || *bhh == ':') bhh++;
-            header_height = atoi(bhh);
-        }
-    }
+    int header_height = (int)status_extract_json_int(ci, "best_header_height", 0);
 
     /* Extract max peer starting_height from getpeerinfo */
     int max_peer_height = 0;
@@ -226,22 +242,8 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     bool sync_behind = header_gap > 144;
 
     /* Extract memory_rss_mb and uptime_seconds from healthcheck response */
-    int64_t memory_rss_mb = -1;
-    int64_t uptime_secs = 0;
-    if (hc) {
-        const char *rss = strstr(hc, "\"memory_rss_mb\"");
-        if (rss) {
-            rss += strlen("\"memory_rss_mb\"");
-            while (*rss == ' ' || *rss == ':') rss++;
-            memory_rss_mb = atoll(rss);
-        }
-        const char *ut = strstr(hc, "\"uptime_seconds\"");
-        if (ut) {
-            ut += strlen("\"uptime_seconds\"");
-            while (*ut == ' ' || *ut == ':') ut++;
-            uptime_secs = atoll(ut);
-        }
-    }
+    int64_t memory_rss_mb = status_extract_json_int(hc, "memory_rss_mb", -1);
+    int64_t uptime_secs   = status_extract_json_int(hc, "uptime_seconds", 0);
 
     struct json_value root;
     json_init(&root);
@@ -343,10 +345,7 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
     char *chain     = mcp_node_rpc("getblockchaininfo", NULL);
     char *network   = mcp_node_rpc("getnetworkinfo",    NULL);
 
-    int peer_count = 0;
-    if (peers) {
-        for (char *c = peers; *c; c++) if (*c == '{') peer_count++;
-    }
+    int peer_count = status_count_json_objects(peers);
 
     size_t cap = 65536;
     char *out = zcl_malloc(cap, "kpi_body");
