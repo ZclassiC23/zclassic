@@ -145,6 +145,61 @@ static int cla_state_get_i32(struct node_db *ndb, const char *key, int def)
     return (int)v;
 }
 
+/* (d2) The ONLY freeze reason that may self-clear: the boot-reconcile transient
+ * where the csr-snapshot tip and the separately-read active-chain tip briefly
+ * diverged (chain_evidence_reconstruct.c raises "active_tip_hash != csr_tip_hash
+ * (h=...)"). NEVER matches ancestry/chainwork/snapshot/persist/utxo-ahead — those
+ * are genuine contradictions that MUST keep paging. The reason embeds a height,
+ * so match the stable prefix. */
+#define CEC_BOOT_TIP_DIVERGENCE_PREFIX "active_tip_hash != csr_tip_hash"
+
+/* True iff the boot-transient tip divergence is PROVABLY gone: the reducer has
+ * finalized this exact tip AND the live csr-snapshot active tip hash equals it
+ * (csr_snapshot's active_tip_hash IS the active-chain tip's hash). Fail-closed
+ * (return false) on any uncertainty — a still-diverged or reorg-in-flight state
+ * keeps the freeze and keeps paging. Runs on the health/drain path, which owns
+ * the csr->lock-THEN-coins_kv order; csr_snapshot acquires+releases csr->lock
+ * alone (no coins_kv held), never the reducer drive. */
+static bool cec_boot_tip_divergence_resolved(
+    struct chain_evidence_controller *authority,
+    const struct block_index *finalized_tip)
+{
+    if (strncmp(authority->contradiction_reason,
+                CEC_BOOT_TIP_DIVERGENCE_PREFIX,
+                strlen(CEC_BOOT_TIP_DIVERGENCE_PREFIX)) != 0)
+        return false; /* not the self-clearable reason — keep paging */
+    if (!authority->csr)
+        return false;
+    struct chain_state_view view;
+    csr_snapshot(authority->csr, &view); /* tip_height=-1 if csr uninitialized */
+    if (view.tip_height < 0)
+        return false;
+    if (view.tip_height != finalized_tip->nHeight)
+        return false;
+    return memcmp(view.tip_hash.data,
+                  finalized_tip->phashBlock->data, 32) == 0;
+}
+
+/* Lift the stale boot-transient freeze in memory + on disk (mirrors the
+ * canonical boot lift). publish_state + forward evidence are written by the
+ * persist block this function falls through to in record_finalized_tip. */
+static void cec_lift_boot_tip_divergence_freeze(
+    struct chain_evidence_controller *authority, int height)
+{
+    authority->state = CEC_EMPTY;
+    memset(authority->contradiction_reason, 0,
+           sizeof(authority->contradiction_reason));
+    if (authority->ndb) {
+        (void)node_db_state_set(authority->ndb, "cec.sync_state",
+                                "empty", strlen("empty") + 1);
+        (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
+                                "", 1);
+    }
+    LOG_WARN("cec", "[cec] (d2) lifting stale boot-transient freeze: live tip "
+             "h=%d hash-consistent (csr==finalized) — clearing '"
+             CEC_BOOT_TIP_DIVERGENCE_PREFIX "' and resuming", height);
+}
+
 bool chain_evidence_controller_record_finalized_tip(
     struct chain_evidence_controller *authority,
     struct block_index *finalized_tip,
@@ -162,9 +217,17 @@ bool chain_evidence_controller_record_finalized_tip(
 
     /* A frozen controller is in a genuine contradiction state; the boot
      * reconcile owns lifting it. Do not paper over it from the hot path —
-     * just decline (health already names the contradiction). */
-    if (authority->state == CEC_CONTRADICTION_FROZEN)
-        return false;
+     * EXCEPT a demonstrably-reconciled boot-transient tip divergence (d2):
+     * if the reducer has finalized this exact tip and the live csr tip now
+     * agrees, the contradiction is provably gone, so self-clear and fall
+     * through to publish honest evidence. Every other freeze — and any
+     * unreconciled divergence — still declines and keeps paging; the
+     * condition's witness (state!=FROZEN) auto-clears only after a real lift. */
+    if (authority->state == CEC_CONTRADICTION_FROZEN) {
+        if (!cec_boot_tip_divergence_resolved(authority, finalized_tip))
+            return false;
+        cec_lift_boot_tip_divergence_freeze(authority, finalized_tip->nHeight);
+    }
 
     /* Cheap idempotence: the served tip re-finalizes the SAME height on a
      * held frontier and post_finalize fires once per published block, so the

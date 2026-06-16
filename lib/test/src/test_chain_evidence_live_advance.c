@@ -294,6 +294,105 @@ static int test_live_advance_rejects_bad_args(void)
     return failures;
 }
 
+/* (d2) A demonstrably-reconciled boot-transient tip divergence self-clears:
+ * the freeze reason is the "active_tip_hash != csr_tip_hash" prefix, the reducer
+ * finalized the SAME tip the live active chain holds, and csr agrees — so
+ * record_finalized_tip lifts the freeze and publishes evidence. This is the
+ * dev-lane false-page fix (un-pages without a reboot via the health drain). */
+static int test_live_advance_clears_boot_tip_divergence_freeze(void)
+{
+    int failures = 0;
+    struct live_fixture f;
+    if (!live_fixture_init(&f))
+        return 1;
+
+    if (!promote_to(&f, 1))
+        failures++;
+    if (!reducer_move_served_tip(&f, 2))   /* live active tip = block 2 */
+        failures++;
+    chain_evidence_controller_freeze(&f.authority,
+                                     "active_tip_hash != csr_tip_hash (h=1)");
+    if (f.authority.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+
+    /* Reducer finalized the SAME tip the live active chain holds -> resolved. */
+    if (!chain_evidence_controller_record_finalized_tip(
+            &f.authority, &f.blocks[2], "unit.finalize"))
+        failures++;
+    if (f.authority.state != CEC_EMPTY)
+        failures++;
+    if (f.authority.contradiction_reason[0] != '\0')
+        failures++;
+
+    struct chain_evidence_controller_view after;
+    chain_evidence_controller_snapshot(&f.authority, &after);
+    if (after.persisted_active_tip_height != 2 ||
+        after.active_tip_hash_mismatch ||
+        after.health_reason[0] != '\0')
+        failures++;
+
+    live_fixture_free(&f);
+    return failures;
+}
+
+/* (d2) narrow gating: a freeze whose reason is NOT the boot-divergence prefix
+ * (a genuine structural contradiction) is NEVER self-cleared, even when the live
+ * tip is fully reconciled. It declines and stays frozen — the operator page
+ * holds. */
+static int test_live_advance_keeps_genuine_freeze(void)
+{
+    int failures = 0;
+    struct live_fixture f;
+    if (!live_fixture_init(&f))
+        return 1;
+
+    if (!promote_to(&f, 1))
+        failures++;
+    if (!reducer_move_served_tip(&f, 2))
+        failures++;
+    chain_evidence_controller_freeze(&f.authority,
+                                     "active_tip_ancestry_unlinkable (h=1)");
+
+    if (chain_evidence_controller_record_finalized_tip(
+            &f.authority, &f.blocks[2], "unit.finalize"))
+        failures++;   /* must decline */
+    if (f.authority.state != CEC_CONTRADICTION_FROZEN)
+        failures++;   /* must stay frozen */
+
+    live_fixture_free(&f);
+    return failures;
+}
+
+/* (d2) fail-closed: even WITH the self-clearable reason, the freeze holds unless
+ * the reducer-finalized tip PROVABLY equals the live csr/active tip. A finalize
+ * for a height other than the live active tip (reorg-in-flight / stale) declines
+ * and stays frozen — never a false clear. */
+static int test_live_advance_keeps_unreconciled_divergence(void)
+{
+    int failures = 0;
+    struct live_fixture f;
+    if (!live_fixture_init(&f))
+        return 1;
+
+    if (!promote_to(&f, 1))
+        failures++;
+    if (!reducer_move_served_tip(&f, 2))   /* live active tip = block 2 */
+        failures++;
+    chain_evidence_controller_freeze(&f.authority,
+                                     "active_tip_hash != csr_tip_hash (h=1)");
+
+    /* Finalize names block 1, but the live active tip is block 2 -> NOT proven
+     * reconciled -> declines, stays frozen. */
+    if (chain_evidence_controller_record_finalized_tip(
+            &f.authority, &f.blocks[1], "unit.finalize"))
+        failures++;
+    if (f.authority.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+
+    live_fixture_free(&f);
+    return failures;
+}
+
 int test_chain_evidence_live_advance(void)
 {
     int failures = 0;
@@ -302,6 +401,9 @@ int test_chain_evidence_live_advance(void)
     failures += test_live_advance_note_then_drain();
     failures += test_live_advance_is_idempotent();
     failures += test_live_advance_declines_when_frozen();
+    failures += test_live_advance_clears_boot_tip_divergence_freeze();
+    failures += test_live_advance_keeps_genuine_freeze();
+    failures += test_live_advance_keeps_unreconciled_divergence();
     failures += test_live_advance_rejects_bad_args();
     if (failures == 0)
         printf("  all chain_evidence_live_advance tests passed\n");

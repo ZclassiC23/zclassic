@@ -610,6 +610,21 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
     chain_restore_quarantine_synthetic_tip(ms, datadir);
     chain_restore_clear_resolved_anchor(ms, datadir);
 
+    /* (c) 2026-06-16: the rebuild cascade below mutates shared block_index node
+     * fields (nStatus/nFile/nDataPos/phashBlock/pprev/pskip/nBits/...) and the
+     * active_chain slot array. bg_hash_verification_service reads EXACTLY those
+     * fields under ms->cs_main, so this rebuild MUST hold cs_main too —
+     * otherwise it tears block_index/active_chain state out from under a
+     * concurrent reader (the malloc_trim-during-free heap-corruption SEGV, same
+     * class as the fixed phashBlock UAF). Lock order is progress_store_tx_lock
+     * -> cs_main (see stage_repair_reducer_frontier.c); chain_restore_quarantine
+     * _synthetic_tip above owns progress_store_tx_lock and has already returned,
+     * so acquiring cs_main here introduces no inversion. cs_main -> csr->lock
+     * (reachable via the small-tip csr commit) and cs_main -> active_chain
+     * write_lock are forward edges. Released before the lock-free post-restore
+     * integrity reader below. The rebuild path takes no coins_kv, so the
+     * LOCK-ORDER LAW (drive's coins_kv never crosses cs_main) is preserved. */
+    zcl_mutex_lock(&ms->cs_main);
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     if (tip)
         (void)chain_restore_rebuild_active_chain(ms, tip, datadir);
@@ -625,6 +640,7 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
      * trust-rooted chains and at band closure. */
     if (tip)
         utxo_recovery_note_band_unrooted_tip(tip, "chain_restore_finalize");
+    zcl_mutex_unlock(&ms->cs_main);
 
     struct chain_integrity_result r;
     chain_integrity_check_post_restore(&r, ms);
