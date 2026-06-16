@@ -241,8 +241,7 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
      * per-input scriptSig verification + inputs-exist + fee policy)
      * via the ONE shared helper that the P2P `tx` path also uses. This
      * is what stops sendrawtransaction from relaying a tx with a bad
-     * signature, a forged shielded proof, or missing inputs — all of
-     * which the old path admitted and fluffed before block-connect. */
+     * signature, a forged shielded proof, or missing inputs. */
     if (ctx->mempool) {
         enum mempool_accept_result r = accept_to_mempool(
             ctx->mempool, ctx->coins_tip, ctx->main_state,

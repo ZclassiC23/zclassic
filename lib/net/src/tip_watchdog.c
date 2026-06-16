@@ -60,10 +60,11 @@ static int64_t now_ns(void)
 
 /* in_flight slots may each be paid back with a block body; queued
  * entries are hash + bookkeeping only and have solicited nothing yet.
- * Charging them differently is what makes the estimate honest — see
- * the constants block in tip_watchdog.h for the full reachability
- * arithmetic (false-trigger incident: 3,066 queued ≈ 196 KB real,
- * previously "estimated" as 6 GB). */
+ * Charging them differently is what makes the estimate honest —
+ * charging queued entries the in-flight body size grossly over-states
+ * the real queue footprint and false-triggers backpressure. See the
+ * constants block in tip_watchdog.h for the full reachability
+ * arithmetic. */
 static size_t download_queue_bytes_estimate(void)
 {
     int64_t override = atomic_load(&g_test_queue_bytes);

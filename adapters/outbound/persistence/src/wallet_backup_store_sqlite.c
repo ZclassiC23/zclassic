@@ -4,19 +4,14 @@
  * wallet_backup_store_sqlite — sqlite implementation of
  * wallet_backup_store_port.
  *
- * The four methods below are the raw sqlite ops that used to live inline
- * in app/services/src/wallet_backup_service.c (wbs_source_path,
- * wbs_count_rows, and the open/ATTACH/CREATE-TABLE-AS-SELECT/DETACH body
- * of wallet_backup_run_once plus its verify reopen). They are moved behind
- * the port with EXACT same SQL text, the same per-table existence probe,
- * the same open flags, and the same AR step macros, so the produced backup
- * file and its verification are bit-for-bit identical.
+ * The four methods below are the raw sqlite ops behind the port: EXACT same
+ * SQL text, per-table existence probe, open flags, and AR step macros, so
+ * the produced backup file and its verification are bit-for-bit identical.
  *
  * Writes: the CREATE TABLE AS SELECT copies go through sqlite3_exec — the
- * same AR-compatible exec path the inline code used (the AR lint gate
- * forbids raw sqlite3_step in app code; sqlite3_exec is the blessed
- * statement-less write path, and the ATTACH step uses the AR_STEP macro).
- * No raw sqlite3_step appears here.
+ * AR-compatible exec path (the AR lint gate forbids raw sqlite3_step in app
+ * code; sqlite3_exec is the blessed statement-less write path, and the
+ * ATTACH step uses the AR_STEP macro). No raw sqlite3_step appears here.
  */
 
 #include "adapters/outbound/persistence/wallet_backup_store_sqlite.h"
@@ -68,7 +63,7 @@ static bool wbs_store_count_rows(void *self, const char *table, int64_t *out)
 }
 
 /* Open dst, ATTACH source by path, CREATE TABLE AS SELECT per existing
- * table, DETACH, close. Verbatim from wallet_backup_run_once. */
+ * table, DETACH, close. */
 static enum wallet_backup_store_status wbs_store_write_snapshot(
     void *self,
     const char *dst_path,

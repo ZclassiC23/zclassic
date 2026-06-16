@@ -4,8 +4,7 @@
 
 /* sync_controller: shared helpers + job-status book-keeping.
  *
- * The sync controller was historically a single ~3,600-line file. It
- * has been split along functional boundaries:
+ * The sync controller is split along functional boundaries:
  *
  *   sync_controller.c           — this file: init, job status,
  *                                 turbo-mode helpers, sync_run_write,

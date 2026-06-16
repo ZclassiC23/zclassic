@@ -9,10 +9,10 @@
  * UTXO-set snapshot from a peer. It is CONSENSUS-ADJACENT: the snapshot
  * is pinned to a SHA3-256 UTXO commitment, so the bytes written to the
  * staging table and the rows counted out of it must be bit-for-bit
- * identical to the pre-seam inline code.
+ * identical.
  *
- * This port captures exactly the raw-sqlite STORAGE access those three
- * files used to perform inline against `node_db->db` (and the cached
+ * This port captures exactly the raw-sqlite STORAGE access for those three
+ * files against `node_db->db` (and the cached
  * `stmt_snapshot_staging_insert` statement). The SHA3 commitment math
  * itself — fast_sync_compute_utxo_root_db() and
  * utxo_commitment_sha3_compute_table() — is NOT part of this seam: it
@@ -33,23 +33,21 @@
  *   staging_count()            "SELECT COUNT(*) FROM snapshot_staging_utxos"
  *                              — number of staged (not-yet-promoted) rows.
  *                              Returns the count, or -1 on prepare/step
- *                              miss, exactly as the inline helper did.
+ *                              miss.
  *
  *   tip_chainwork(hash,out)    "SELECT chain_work FROM blocks WHERE hash=?"
  *                              — the 32-byte chainwork blob for a block.
  *                              Returns true and fills out[32] only when the
  *                              row exists, the blob is >= 32 bytes, AND the
- *                              chainwork is non-zero (matching the inline
- *                              guard); false otherwise.
+ *                              chainwork is non-zero; false otherwise.
  *
  *   staging_insert(u)          the cached INSERT OR REPLACE INTO
  *                              snapshot_staging_utxos statement — the hot
  *                              chunk-apply write. Binds the db_utxo fields
  *                              in the same order; returns true on
- *                              SQLITE_DONE. This is the only write the seam
+ *                              SQLITE_DONE. This is the only write this port
  *                              owns; it goes through the AR cached-save
- *                              lifecycle in the adapter exactly as the
- *                              original cached-statement step intended.
+ *                              lifecycle in the adapter.
  *
  *   set_busy_timeout(ms)       sqlite3_busy_timeout(db, ms) — the
  *                              receive-mode busy timeout knob.
@@ -61,7 +59,7 @@
  *
  * Threading: the live adapter wraps the single node_db opened by boot.
  * Callers serialise through the snapshot service lock / db_service write
- * runner exactly as the inline code did; the port adds no locking.
+ * runner; the port adds no locking.
  */
 
 #ifndef ZCL_PORTS_SNAPSHOT_STORE_PORT_H
@@ -82,8 +80,7 @@ struct snapshot_store_port {
     bool (*utxo_count)(void *self, int64_t *out);
 
     /* "SELECT COUNT(*) FROM snapshot_staging_utxos". Returns the count, or
-     * -1 on NULL/closed connection or prepare/step miss (the inline helper's
-     * sentinel). */
+     * -1 on NULL/closed connection or prepare/step miss. */
     int64_t (*staging_count)(void *self);
 
     /* "SELECT chain_work FROM blocks WHERE hash=?". Fills out[32] and returns

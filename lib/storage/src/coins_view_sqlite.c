@@ -2,11 +2,11 @@
  *
  * SQLite-backed coins view over node.db `utxos`.
  *
- * AUTHORITY NOTE (wave 2, canonical-frontier plan step 6): node.db `utxos`
+ * AUTHORITY NOTE: node.db `utxos`
  * and the node_state 'coins_best_block' key are a PROJECTION (rebuildable
  * cache) of the canonical coins_kv store in progress.kv
  * (storage/coins_kv.h). They serve explorer/RPC/wallet reads and the
- * fast-sync SERVE path (until plan step 5 re-points it); consensus and
+ * fast-sync SERVE path; consensus and
  * recovery DECISIONS derive the coins-best fact via
  * reducer_frontier_derive_coins_best, never from here. The writes below
  * are projection maintenance.
@@ -130,16 +130,16 @@ static int coins_view_sqlite_delete_bind_height(sqlite3 *db,
 
 /* Shared crash-recovery rewind for stale UTXO rows above a selected tip.
  *
- * Original behavior (still performed): DELETE utxos where
- * height > tip_height, clear the stored `utxo_commitment` row.
+ * Base behavior: DELETE utxos where height > tip_height, clear the
+ * stored `utxo_commitment` row.
  *
- * strengthening (added 2026-04-19 after live-node BIP30 stall):
+ * Additionally:
  *   - Sweep any utxos row whose txid appears in `transactions` with
  *     block_height > tip_height, regardless of the utxos.height column
  *     value. Covers the wrong-height failure mode where a partially-
  *     applied block left utxos rows at height<=tip but the tx_index
  *     row at height=tip+1, so `have_coins(coinbase_txid)` tripped
- *     BIP30 on the orphan coinbase (production 2026-04-19 22:10 stall).
+ *     BIP30 on the orphan coinbase.
  *   - Purge the stale `transactions` rows themselves so the tx_index
  *     stays consistent with the rewound utxos set.
  *
@@ -267,14 +267,14 @@ rollback:
     return -1;
 }
 
-/* wave-3 delete: unreachable on canonical datadirs since the derived gate in
- * check_tip_consistency (coins_applied_height present => PASS, no reconcile).
- * Kept callable as the legacy-datadir rung until canonical-plan step 5 lands.
+/* Legacy-datadir-only reconciliation rung; unreachable on canonical datadirs,
+ * where the derived gate in check_tip_consistency already passes
+ * (coins_applied_height present => PASS, no reconcile).
  *
  * Boot-time commitment-validated reconciliation of a STALE coins_best_block
- * anchor — the "§3" boot-wedge where the anchor pointer was reset far below
- * the real applied UTXO frontier (e.g. anchor resolves to height 200 while
- * `utxos` holds millions of rows). The strict tip-consistency check below
+ * anchor reset far below the real applied UTXO frontier (e.g. anchor resolves
+ * to height 200 while `utxos` holds millions of rows). The strict
+ * tip-consistency check below
  * correctly refuses a blind fast-forward; this routine is the ONLY sanctioned
  * way to heal it, and it heals ONLY under cryptographic proof.
  *
@@ -466,7 +466,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
     int64_t max_height = -1;
     bool have_utxos = false;
 
-    /* ── DERIVED-GATE (wave 2, canonical-frontier plan step 6) ──────────
+    /* ── DERIVED-GATE ──────────
      * When coins_kv is the PROVEN authority (coins_kv_is_proven_authority:
      * co-committed coins_applied_height present + migration stamp + a
      * non-empty set — the same rungs the L1 heal demands), the coins-best
@@ -621,7 +621,7 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
             return true;
         }
         /* Last resort before the strict halt: a STALE coins_best_block anchor
-         * (the §3 boot-wedge, e.g. anchor reset to height 200 while the UTXO
+         * (e.g. anchor reset to height 200 while the UTXO
          * set is millions of blocks ahead). coins_reconcile_stale_anchor heals
          * ONLY when the live UTXO set is cryptographically proven intact
          * against a stored height-stamped SHA3 commitment; it returns false
@@ -656,15 +656,14 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
 
     /* prefer a dedicated sqlite3 handle on the same file.
      *
-     * Live-node stall 2026-04-19 at h=3,081,408 was caused by
-     * SAVEPOINT on the SHARED handle returning SQLITE_BUSY
+     * SAVEPOINT on the SHARED handle returns SQLITE_BUSY
      * ("cannot open savepoint - SQL statements in progress")
-     * whenever any other subsystem's writer VDBE had
+     * whenever any other subsystem's writer VDBE has
      * `nVdbeWrite>0`.  The busy handler is NOT invoked for that
      * guard — the flush bails immediately, the DIRTY+pruned
      * tombstone is retained in RAM but never reaches disk, and
      * the next cache eviction re-reads the stale row → BIP30
-     * trip loop (seen 3,478 times in node.log).
+     * trip loop.
      *
      * A dedicated handle puts BEGIN IMMEDIATE on a separate
      * `nVdbeWrite` counter.  Cross-connection WAL writer
@@ -1120,9 +1119,9 @@ bool coins_view_sqlite_batch_write_ex( // one-write-path-ok:coins-sqlite-writer-
     }
 
     /* Write UTXO commitment inside the same transaction (atomic with
-     * the coins flush). Previously this was a separate call after flush,
-     * creating a window where concurrent readers could block the next
-     * SAVEPOINT. */
+     * the coins flush). Kept inside the same transaction as the coins
+     * flush so no window exists where a concurrent reader could block
+     * the next SAVEPOINT. */
     if (commit) {
         uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
         utxo_commitment_serialize(commit, buf);

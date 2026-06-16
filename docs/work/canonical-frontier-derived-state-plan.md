@@ -6,9 +6,7 @@ The owner mandate: *"the node must always strongly stay synced to tip; multiple
 layers of redundancy; do it the strongest way; simulator + real data, no guessing;
 **don't add more repair code — make it canonical and DRY**; commit + push."*
 
-This plan is the output of the `canonical-sync-architecture` workflow (6 mappers →
-diagnose → 3 designs → judge panel → synthesis). It is **net-subtractive**: two small
-gates added, nine repair modules deleted.
+It is **net-subtractive**: two small gates added, nine repair modules deleted.
 
 ## The one defect, two faces
 
@@ -22,8 +20,7 @@ block_map / SQLite / UTXO-count but **never against the durable header frontier*
 (`validate_headers_log` contiguous ok=1 prefix). It then **slams**
 `pindex_best_header` forward to the installed tip (`csr_commit_tip:723-729`). So a tip
 lands at 3143175 while headers were validated only to 3141533 → a 1267-block hole
-window that `chain_integrity_check_post_restore` then FATALs on. *A checker diagnosing
-corruption the install step manufactured.* (Live: NRestarts=11, systemd FAILED.)
+window that `chain_integrity_check_post_restore` then FATALs on.
 
 ### Wedge B — false coin-tear dead-ending at the unimplemented L2
 `utxo_apply` (stage 6) gates on `proof_validate`; `tip_finalize` (stage 7) gates on
@@ -31,8 +28,7 @@ corruption the install step manufactured.* (Live: NRestarts=11, systemd FAILED.)
 finalize but proofs passed (the post-reimport state), `utxo_apply` leads, `coins_applied`
 reaches `hstar+2`, and `read_frontier_snapshot` (`stage_repair_reducer_frontier.c:277`)
 flags `coins_applied > hstar+1` as `refused_coin_tear` — terminal, because L2
-(`reducer_frontier_reconcile_deep`) was **never implemented**. The "tear" is legitimate
-pipeline depth misread as corruption.
+(`reducer_frontier_reconcile_deep`) was **never implemented**.
 
 ## Canonical invariants (enforced by construction at one chokepoint each)
 
@@ -68,10 +64,9 @@ pipeline depth misread as corruption.
 4. **Collapse restore tip-selection** to derive-from-frontier (clamp candidate before commit).
 5. **Re-point SHA3 / fast-sync serve readers to coins_kv** (parity-gated, utxos still present).
 6. **Derive `coins_best_block` from `coins_applied_height`** (kills the two-name drift).
-   *Status: implemented on `refactor/derive-coins-best-demote-mirror` —
-   `reducer_frontier_derive_coins_best` + `coins_kv_is_proven_authority`; every
-   decision-path reader derives, every legacy repair rung is gated on !derived,
-   caches labeled. Serve-side (step 5) still pending.*
+   *Status: landed on `refactor/derive-coins-best-demote-mirror`
+   (`reducer_frontier_derive_coins_best` + `coins_kv_is_proven_authority`); serve-side
+   (step 5) still pending.*
 7. **Delete the dead heal ladder** (grep-proven zero callers): chain_restore_integrity,
    chain_restore rebuild ladder, stage_repair_reducer_frontier_{tipfin,refill,purge} +
    tear branch, reducer_frontier_reconcile_light, utxo_recovery_torn_anchor (M2),

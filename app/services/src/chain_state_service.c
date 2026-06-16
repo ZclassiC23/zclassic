@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Chain state repository — implementation. See header for the design
- * rationale and the 2026-04-10 incident that motivated this service. */
+ * rationale and the incident class that motivated this service. */
 
 #include "services/chain_state_service.h"
 
@@ -102,11 +102,11 @@ static int64_t csr_sqlite_utxo_count(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         LOG_RETURN(-1, "csr", "ndb not available");
-    /* Wave 2: the CANONICAL coin count is coins_kv (progress.kv, co-committed
+    /* The CANONICAL coin count is coins_kv (progress.kv, co-committed
      * with the stage cursor) — but only once it is the PROVEN authority
      * (migration stamp + frontier + non-empty, coins_kv.h); a partial
      * mid-migration set must not steer the CSR validation thresholds. The
-     * node.db mirror count is the legacy fallback. */
+     * node.db mirror count is the fallback. */
     {
         sqlite3 *pdb = progress_store_db();
         if (pdb && coins_kv_is_proven_authority(pdb, NULL))
@@ -161,11 +161,10 @@ static bool csr_sqlite_busy_or_locked(int rc)
     return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
 }
 
-/* CACHE-REFRESH of the derived coins-best (wave 2): writes the node_state
+/* CACHE-REFRESH of the derived coins-best: writes the node_state
  * 'coins_best_block' key, which is display / legacy-boot fallback only —
  * the authority is reducer_frontier_derive_coins_best over coins_kv's own
- * co-committed state. Reject-on-persist-failure semantics intentionally
- * unchanged this wave (no behavior delta). */
+ * co-committed state. */
 static enum csr_result csr_persist_coins_best_locked(
     struct chain_state_repository *csr,
     const struct chain_state_commit *commit)
@@ -314,7 +313,7 @@ static enum csr_result csr_validate_locked(
      * above the proposed tip, this commit is rolling the chain
      * backwards in a way that has historically corrupted the UTXO
      * set. Combined with a non-trivial UTXO row count it is the
-     * exact disaster shape from 2026-04-10.
+     * exact disaster shape this guard exists to catch.
      *
      * Carve-out: a forward step relative to the CURRENT active chain
      * tip cannot be a rollback, regardless of what other blocks the
@@ -323,11 +322,10 @@ static enum csr_result csr_validate_locked(
      * reducer activation: body-pull pre-populates the block_index
      * (and SQLite) for hundreds of blocks above the active tip, then
      * reducer activation advances the active tip one block at a
-     * time into that pre-populated range. Before this carve-out
-     * every forward step from h=N → h=N+1 was rejected as
-     * stale_index because sql_max sat at h=N+1000+. The 2026-04-10
-     * disaster shape requires new_tip < active_tip; allowing
-     * new_tip > active_tip cannot reproduce it. */
+     * time into that pre-populated range. A forward step from h=N to
+     * h=N+1 must not be rejected as stale_index merely because sql_max
+     * sits above it; the disaster shape requires new_tip < active_tip,
+     * so allowing new_tip > active_tip cannot reproduce it. */
     int64_t sql_max = csr_sqlite_max_block_height(csr->ndb);
     if (sql_max >= 0 &&
         sql_max - (int64_t)new_tip->nHeight > csr->stale_index_height_gap) {
@@ -470,9 +468,9 @@ static void csr_emit_rejected_event(struct chain_state_repository *csr,
     event_emitf(EV_CHAIN_TIP_REJECTED, 0,
                 "code=%s from=%d to=%d reason=%s",
                 csr_result_name(rc), from_height, to_h, reason);
-    /* Validation pack check 3(a): csr Step 4 already REFUSED the pair —
-     * surface it as the typed authority-pair blocker + one page so it
-     * can never stay a quiet reject counter (no second refusal here). */
+    /* csr Step 4 already REFUSED the pair — surface it as the typed
+     * authority-pair blocker + one page so it can never stay a quiet
+     * reject counter (no second refusal here). */
     if (rc == CSR_REJECTED_HASH_MISMATCH)
         invariant_sentinel_pair_violation("csr_commit", to_h, -1);
 }
@@ -720,7 +718,7 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
         /* The rollback-auth carve-out bypasses the >= ratchet on purpose:
          * an authorized restore legitimately moves the header tip DOWN.
          * The restore family is frontier-gated UPSTREAM (Invariant A in
-         * utxo_recovery_commit_tip), so this carve-out can no longer
+         * utxo_recovery_commit_tip), so this carve-out cannot
          * publish an underivable height from a restore. Ordinary commits
          * keep the forward-only ratchet — pindex_best_header legitimately
          * runs AHEAD of the validated frontier during header-first sync,

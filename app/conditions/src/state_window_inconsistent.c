@@ -11,7 +11,7 @@
  * SELF-CLEARING on a later clean pass (repair jobs may legitimately fix
  * holes); this Condition keeps an unresolved violation escalating.
  *
- * WINDOW_REBUILD TRIGGER SEAM (wave 3, designed): replace this
+ * WINDOW_REBUILD TRIGGER SEAM: replace this
  * re-witness remedy with window_rebuild(first_bad_h) — the blocker
  * reason names the exact invariant + heights. Clear ON WITNESSED success
  * only. Until then: HOLD + PAGE, the operator owns the repair. */
@@ -30,7 +30,7 @@ static bool detect_state_window_inconsistent(void)
 
 static enum condition_remedy_result remedy_state_window_inconsistent(void)
 {
-    /* WINDOW_REBUILD TRIGGER SEAM (wave 3): rebuild the named window.
+    /* WINDOW_REBUILD TRIGGER SEAM: rebuild the named window.
      * v1: no automated repair — FAILED escalates to the operator. */
     return COND_REMEDY_FAILED;
 }
@@ -39,7 +39,7 @@ static bool witness_state_window_inconsistent(int64_t target_at_detect)
 {
     (void)target_at_detect;
     // honest-witness-ok: remedy returns COND_REMEDY_FAILED (no automated
-    // repair until the wave-3 window_rebuild seam), so this read can
+    // repair until the window_rebuild seam is wired), so this read can
     // never be credited as a remedy-caused clear. The blockers it reads
     // are SELF-CLEARING only on a later CLEAN sweep/audit over the real
     // durable state (cursors/logs/commitment re-derived), so a clear

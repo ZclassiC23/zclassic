@@ -8,9 +8,10 @@
 
 The framework refactor runs in parallel across multiple working
 directories ("worktrees" — actually separate clones). Each worktree picks
-up an assignment, branches, commits, pushes, and reports completion. A
-single **orchestrator** session (typically in the main repo at
-`~/github/zclassic23`) merges and dispatches the next round.
+up an assignment, commits, pushes, and reports completion. A single
+**orchestrator** session (typically in the main repo at
+`~/github/zclassic23`) reviews, runs the full test suite
+(`make test_parallel`), and dispatches the next round.
 
 ## Worktree map
 
@@ -33,18 +34,9 @@ cd ~/github/zclassic23-2
 claude   # or claude -p "continue zclassic23 development"
 ```
 
-The agent's startup ritual (defined in
-[`agent-protocol.md`](./agent-protocol.md)):
-
-1. Auto-loaded: `CLAUDE.md`, `MEMORY.md`
-2. Read: `docs/FRAMEWORK.md` (architecture)
-3. Read: `docs/REFACTOR_STATUS.md` (current phase)
-4. Detect worktree ID from `pwd`
-5. Read: `docs/work/wt<N>-*.md` (this worker's assignment)
-6. Pull latest from origin
-7. Branch off main per assignment
-8. Execute assignment
-9. Commit + push + append completion summary
+The agent startup and dispatch contract — what each session reads, how it
+detects its worktree ID, and the push/completion ritual — lives in
+[`agent-protocol.md`](./agent-protocol.md), the authoritative source of truth.
 
 ## Where to look
 
@@ -67,25 +59,9 @@ Each assignment lives at `docs/work/wt<N>-<slug>.md` and contains:
 - **Commit + push instructions** — exact git commands
 - **Completion ritual** — what to append at the end
 
-## How the orchestrator dispatches
-
-When wt2 and wt3 finish their assignments and push branches, the
-orchestrator:
-
-1. Pulls the branches
-2. Reviews + runs full test suite (`make test_parallel`)
-3. Merges to main (fast-forward if possible, merge commit otherwise)
-4. Pushes main to origin
-5. Updates `REFACTOR_STATUS.md` (conformance count, recently completed, in flight cleared)
-6. deletes the finished assignment doc (git history is the record)
-7. Writes the next round of assignments
-7. Pushes
-8. Reports to user: "wt2/wt3 ready for next round"
-
 ## Conflict avoidance
 
 - **Disjoint file scope**: each assignment lists exact files it owns; no other assignment may touch those files until it merges.
-- **Disjoint branches**: each worker on its own branch, never on `main` directly.
 - **No concurrent edits to** `REFACTOR_STATUS.md`: only orchestrator writes it. Workers append to their own assignment doc.
 - **Pull-rebase before push**: workers always `git pull --rebase origin main` before push to keep history linear.
 
@@ -94,11 +70,3 @@ orchestrator:
 - **Worker discovers assignment is wrong or impossible** → worker appends a `BLOCKED` section to its assignment doc with details, pushes, reports to user. Orchestrator session must respond.
 - **Worker's tests fail** → worker does NOT merge; pushes a `WIP` branch + appends `FAILED` section with the failing test output.
 - **Two workers touch overlapping files (should not happen)** → second-to-merge rebases, orchestrator session resolves.
-
-## Why this works
-
-- **One source of truth per task** — the assignment doc.
-- **Single writer per file** — no merge hell.
-- **All progress visible** — `REFACTOR_STATUS.md` is the dashboard.
-- **Async, human-paced** — humans run workers when ready; orchestrator catches up.
-- **Recoverable** — every step writes to git and pushes; a crashed session resumes from `git log`.

@@ -5,8 +5,8 @@
 /*
  * Block Index Loader: projection top-up for the NORMAL boot path.
  *
- * Defect #10 (task #29, live 2026-06-11): the flat/LevelDB block-index
- * loaders only know what was persisted at the LAST boot-time save.
+ * The flat/LevelDB block-index loaders only know what was persisted at
+ * the LAST boot-time save.
  * Every block connected after that save mutates its in-memory entry
  * only (reducer ingest / body_persist set HAVE_DATA + nFile/nDataPos
  * + nTx in RAM); the durable record of those mutations is the

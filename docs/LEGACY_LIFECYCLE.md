@@ -50,7 +50,7 @@ leaving `find_most_work_chain` stuck.
 | File | Status | Role |
 |------|--------|------|
 | `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns the public `-cold-import`, `-fastimport`, and `-legacy-attach` wrapper contracts plus the shared mode implementation. |
-| `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (pathology — see memory). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
+| `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (body-pull pathology). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
 | `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status`. |
 | `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |
 
@@ -70,28 +70,26 @@ leaving `find_most_work_chain` stuck.
 
 ### Self-heal recovery (`lib/validation/src/`)
 
-The missing-UTXO / stuck-tip self-heal coordinator lives here. Its
-*recovery island* — the four files that performed an out-of-band
-chain-scan / legacy-RPC / direct-inject repair — was **deleted in Wave 2**
-(commit `1cef5fe01`) because authoritative recovery now routes through the
-reducer (cursor move + `reducer_kick`), the same app-layer controller reach
-`process_block_revalidate.c` / `process_block_invalidate.c` take. There is
-**no longer** any block-disconnect-engine or legacy-RPC repair path.
+The missing-UTXO / stuck-tip self-heal coordinator lives here.
+Recovery routes through the reducer (cursor move + `reducer_kick`), the
+same app-layer controller reach `process_block_revalidate.c` /
+`process_block_invalidate.c` take. There is **no longer** any
+block-disconnect-engine or legacy-RPC repair path; the per-file detail
+is in the table.
 
 | File | Status | Role |
 |------|--------|------|
 | `process_block_self_heal.c` | **KEPT — load-bearing** | Failure-tracking state (`s_utxo_*`), `process_block_is_missing_utxo_failure`, `process_block_note_utxo_failure`, `ZCL_TESTING` hooks. Recovery retry routes through the reducer. **Do not delete** in any "purge legacy" sweep — it is the surviving coordinator, not island residue. |
 | `process_block_self_heal_hot_loop.c` | **KEPT — load-bearing** | Hot-loop retry helper for the coordinator above. |
 | `process_block_self_heal_scan_state.c` | **KEPT — load-bearing** | Scan-state bookkeeping for the coordinator above. |
-| `process_block_self_heal_chain_scan.c` | **DELETED** (Wave 2, `1cef5fe01`) | Out-of-band chain-scan repair island. Gone — recovery is reducer-driven now. |
-| `process_block_self_heal_sqlite_tx_index.c` | **DELETED** (Wave 2, `1cef5fe01`) | SQLite tx-index island. Gone. |
-| `process_block_self_heal_legacy_rpc.c` | **DELETED** (Wave 2, `1cef5fe01`) | Legacy-RPC repair island. Gone. |
-| `process_block_self_heal_inject.c` | **DELETED** (Wave 2, `1cef5fe01`) | Direct-inject repair island. Gone. |
+| `process_block_self_heal_chain_scan.c` | **DELETED** (Wave 2, `1cef5fe01`) | Out-of-band chain-scan repair island. |
+| `process_block_self_heal_sqlite_tx_index.c` | **DELETED** (Wave 2, `1cef5fe01`) | SQLite tx-index island. |
+| `process_block_self_heal_legacy_rpc.c` | **DELETED** (Wave 2, `1cef5fe01`) | Legacy-RPC repair island. |
+| `process_block_self_heal_inject.c` | **DELETED** (Wave 2, `1cef5fe01`) | Direct-inject repair island. |
 
 A future "delete legacy" grep that matches `process_block_self_heal` must
-therefore treat the three KEPT files as load-bearing and only confirm the
-four island files stay absent — this row exists so that distinction is
-unambiguous.
+treat the three KEPT files as load-bearing and only confirm the four
+island files stay absent.
 
 ---
 
@@ -100,8 +98,7 @@ unambiguous.
 Nothing in the table above is scheduled for removal in the near term —
 the bootstrap path is still the fastest way to spin up a fresh
 `zclassic23` against a working `zclassicd`, and drift detection has
-caught real bugs (see the Wave 9 memory entries on CSR rollback +
-chain_evidence_controller).
+caught real bugs.
 
 The narrowest cleanup target is the `legacy_body_pull` API: keep the
 runtime incremental catch-up entrypoint used by `legacy_mirror_sync_service`,

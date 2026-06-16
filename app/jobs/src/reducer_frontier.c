@@ -76,12 +76,12 @@ enum log_row_state {
  * `served_tip` distinguishes the cursor convention. The upstream reducer
  * stages count the NEXT height to process — cursor U means "rows expected
  * up to U-1; U is the next height". tip_finalize uses the served-tip
- * convention (task #30/#31): cursor C means "served tip at C; the C→C+1
- * transition is pending", so its rows are expected up to C (the anchor row
- * at C plus finalized rows below). frontier_next_cursor() below normalizes
+ * convention: cursor C means "served tip at C; the C→C+1 transition is
+ * pending", so its rows are expected up to C (the anchor row at C plus
+ * finalized rows below). frontier_next_cursor() below normalizes
  * tip_finalize's cursor to the upstream "next height" frame (C+1) at every
  * scan/candidate read site, so the contiguity and anchor-candidate algorithms
- * stay byte-identical across the convention change. */
+ * stay identical regardless of the cursor convention. */
 struct frontier_log {
     const char *log_table;
     const char *cursor_name;
@@ -164,12 +164,10 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
 
     /* ONE ranged scan instead of a prepare+bind+step PER HEIGHT (measured
      * 53x cheaper; the walk runs full length precisely on HEALTHY nodes,
-     * where it used to cost ~2.3 us/height under the global progress
-     * lock). `height` is the table's PRIMARY KEY, so rows stream back in
-     * strictly increasing height order: the first height JUMP is a hole
-     * (the old per-height probe's LOG_ROW_ABSENT) and the first ok=0 row
-     * is a recorded failure — both terminate the contiguous prefix,
-     * byte-for-byte the old semantics. */
+     * under the global progress lock). `height` is the table's PRIMARY KEY,
+     * so rows stream back in strictly increasing height order: the first
+     * height JUMP is a hole (a missing row) and the first ok=0 row is a
+     * recorded failure — both terminate the contiguous prefix. */
     char sql[160];
     int n = snprintf(sql, sizeof(sql),
                      "SELECT height, ok FROM %s "
@@ -251,10 +249,10 @@ static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height)
         int64_t raw_cursor = 0;
         if (!cursor_at(db, k_logs[i].cursor_name, &raw_cursor))
             return false;
-        /* Normalize tip_finalize's served-tip cursor to the next-height frame
-         * (task #31): a seed anchor at H now stamps tip_finalize cursor == H,
-         * whose next-height equivalent is H+1 == first — the same value the
-         * old +1-convention cursor held, so this candidate gate is unchanged. */
+        /* Normalize tip_finalize's served-tip cursor to the next-height frame:
+         * a seed anchor at H stamps tip_finalize cursor == H, whose next-height
+         * equivalent is H+1 == first, so this candidate gate matches the
+         * upstream stages' next-height cursors. */
         int64_t cursor = frontier_next_cursor(&k_logs[i], raw_cursor);
         if (cursor < first)
             return false;
@@ -480,8 +478,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
                      k_logs[i].cursor_name);
         /* Normalize tip_finalize's served-tip cursor (C == served tip) to the
          * next-height frame (C+1) the contiguity scan's exclusive upper bound
-         * expects — its rows run up to C (the anchor row included), the same
-         * span the old +1-convention cursor named (task #31). */
+         * expects — its rows run up to C (the anchor row included). */
         int64_t scan_cursor = frontier_next_cursor(&k_logs[i], raw_cursor);
 
         /* C1 diagnostic: a cursor behind the anchor is a defect state the
@@ -671,9 +668,8 @@ bool reducer_frontier_derive_coins_best(sqlite3 *progress_db,
          * carries hash(h) (step_finalize binds the LOOKAHEAD successor into
          * the row), and an anchor seed row at h carries the block's own
          * hash(h). Reading the raw row AT h would return hash(h+1) for
-         * finalized rows: the inconsistent (height, hash) authority-pair
-         * shape the 2026-06-11 splice forensic banned (tip_finalize_stage.c
-         * step_finalize publish comment). */
+         * finalized rows: an inconsistent (height, hash) authority-pair shape
+         * (see tip_finalize_stage.c step_finalize publish comment). */
         uint8_t tf[32];
         bool tf_found = tip_finalize_stage_block_hash_at(progress_db, h, tf);
         /* Hash witness 2: validate_headers_log.hash at h (own-hash by

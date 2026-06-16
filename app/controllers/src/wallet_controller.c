@@ -62,8 +62,8 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
     /* Persist the fresh key to wallet_keys BEFORE handing the address
      * to the user. If the flush fails, roll back the keystore add
      * (we capture the new key_id from the tail) so in-memory and
-     * on-disk agree. Returning an address we cannot persist is the
-     * exact "lost 0.4 ZCL" bug we're fixing. */
+     * on-disk agree. Never return an address we cannot persist: a
+     * receive to an unsaved key would lose funds on the next restart. */
     if (ctx->wallet_db) {
         struct key_id new_kid;
         bool have_kid = wallet_last_key_id(ctx->wallet, &new_kid);
@@ -155,15 +155,15 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "keypoolsize", (int64_t)ctx->wallet->key_pool_size);
     json_push_kv_real(result, "paytxfee", strtod(fee, NULL));
 
-    /* Persistence health block (plan §6). Aggregates the canary
-     * status + a live count query so operators and tooling can see
-     * at a glance whether the wallet storage is healthy.
+    /* Persistence health block. Aggregates the canary status + a live
+     * count query so operators and tooling can see at a glance whether
+     * the wallet storage is healthy.
      *
      *   healthy = open && canary_ok && !mismatch
      *
-     * A false value here is the signal that D/E/F abort paths would
-     * have fired on the next restart — surface it before the user
-     * sends funds to an address that won't survive reboot. */
+     * A false value here means the persistence-abort paths would fire
+     * on the next restart — surface it before the user sends funds to
+     * an address that won't survive reboot. */
     sqlite3 *wallet_sqlite_handle = (ctx->wallet_db && ctx->wallet_db->open)
                                       ? ctx->wallet_db->db
                                       : NULL;

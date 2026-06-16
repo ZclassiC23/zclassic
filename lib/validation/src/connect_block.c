@@ -259,10 +259,10 @@ bool connect_block(const struct block *block,
                      * advance the tip; the full script/proof validation
                      * below still runs. Without this, a personal-stack
                      * node that took a kill-9 mid-connect wedges forever
-                     * on its own coins. The original tolerance only
-                     * covered vtx[0] (coinbase); a partial apply leaves
-                     * the block's NON-coinbase outputs in the set too,
-                     * so we extend it to every same-height self-write. */
+                     * on its own coins. A partial apply can leave the
+                     * block's NON-coinbase outputs in the set too, so
+                     * every same-height self-write is tolerated, coinbase
+                     * and non-coinbase alike. */
                     bool own_self_write =
                         existing.height == pindex->nHeight &&
                         pindex->nHeight > 0;
@@ -315,13 +315,10 @@ bool connect_block(const struct block *block,
      * `sc->txdata` points into `txdatas[]`.  If either array is
      * reallocated to a new base address while collection is still
      * running, ALL previously recorded pointers become dangling.
-     * Worker threads later dereference them → SEGV.
-     *
-     * Live 2026-04-22 reproduction: block h=3,070,085 has two
-     * 200-input txs (+ one coinbase) = 400 checks total; starting
-     * cap 256 caused realloc to 512 mid-collection; every earlier
-     * check_ptrs[0..255] became stale; workpool_run → SIGSEGV
-     * (three restarts + one direct-gdb session to confirm).
+     * Worker threads later dereference them → SEGV. A block with
+     * enough inputs to grow the array past its initial cap (e.g. two
+     * 200-input txs) triggers a realloc mid-collection that strands
+     * every earlier pointer; workpool_run then crashes.
      *
      * Fix: pre-scan the block once to get exact upper bounds on
      * num_checks and num_txdatas, then allocate those sizes up
@@ -782,7 +779,7 @@ bool disconnect_block(const struct block *block,
          * Matches Bitcoin Core's CCoinsViewCache semantics (erase
          * semantics propagate through LevelDB's CDBBatch::Erase),
          * while staying compatible with our DIRTY-driven SQLite
-         * flush path. See docs/archive/2026-04/2026-04-19-bip30-stall.md.
+         * flush path.
          *
          * `coins_view_cache_modify` fetches the backing entry into
          * the scratch on miss; freeing the coins + re-init'ing makes

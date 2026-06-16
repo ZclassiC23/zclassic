@@ -215,17 +215,14 @@ bool process_block_commit_tip(struct main_state *ms,
     return false;
 }
 
-/* Propagate tip-publisher rejection to caller. Previously this function
- * was void — if process_block_commit_tip returned false (CSR refused
- * the commit for coins_mismatch / tip_not_in_index / stale_index /
- * etc.), the failure was silently discarded. The old block-connect path kept
- * returning true while the in-memory chain tip stayed at the old
- * height, so every inbound block re-emitted EV_BLOCK_CONNECTED for
- * the same height forever. That is exactly the 2026-04-18 live
- * outage at h=3,081,601 — 43+ `val.block_connected h=3081601`
- * events per second until the download queue buffered the node to
- * 6 GB RSS and SIGABRT. Returning false here lets the reducer surface the
- * failure so the caller stops treating the block as accepted. */
+/* Propagate tip-publisher rejection to the caller. If
+ * process_block_commit_tip returns false (CSR refused the commit for
+ * coins_mismatch / tip_not_in_index / stale_index / etc.) the caller
+ * must not treat the block as accepted: otherwise the in-memory chain
+ * tip stays at the old height while every inbound block re-emits
+ * EV_BLOCK_CONNECTED for that same height forever, ballooning the
+ * download queue and RSS until SIGABRT. Returning false here lets the
+ * reducer surface the failure and stop the re-emit loop. */
 bool update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     if (pindex_new) {

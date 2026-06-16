@@ -51,16 +51,14 @@ struct boot_validation_result validate_coins_chain_agreement(
 
     /* Case 1: Chain at genesis or empty */
     if (!chain_tip || chain_tip->nHeight <= 0) {
-        /* Wave 2: the restore target is the DERIVED coins-best when the
-         * canonical store is proven — the legacy coins.db view below is a
-         * lagging rebuildable projection. Without this, a boot whose
-         * in-memory chain reads as genesis at validation time restored to
-         * the stale legacy height and bulldozed the CSR's correct derived
-         * tip (defect #9, live 2026-06-11: "Chain at genesis but coins at
-         * h=3137373 — restoring chain tip" while CSR held 3143804,
-         * committed from=3143804 to=3137373 every boot). Requires the
-         * durable hash witness + the block present in the index at the
-         * derived height; otherwise falls through to the legacy paths. */
+        /* The restore target is the DERIVED coins-best when the canonical
+         * store is proven — the legacy coins.db view below is a lagging
+         * rebuildable projection. Without this, a boot whose in-memory chain
+         * reads as genesis at validation time restores to the stale legacy
+         * height: committing the stale legacy height bulldozes the CSR's
+         * correct derived tip. Requires the durable hash witness + the block
+         * present in the index at the derived height; otherwise falls through
+         * to the legacy paths. */
         {
             int32_t d_h = -1;
             uint8_t d_hash[32];
@@ -174,17 +172,15 @@ struct boot_validation_result validate_coins_chain_agreement(
         return r;
     }
 
-    /* Case 3a (wave 2 — the DERIVED coins-best is the runtime coins
-     * authority): if the active tip equals the derivation (coins_kv
-     * proven authority + durable-log hash witness), the legacy coins.db
-     * view read above is just a LAGGING REBUILDABLE PROJECTION — AGREE
-     * and let it reconcile forward. Without this, a stale legacy view
-     * below a freshly restored derived tip drove Case-4 RESET_CHAIN
-     * every boot (defect #9, live 2026-06-11: restore to 3,143,804 then
-     * "chain_coins_mismatch_reset" back to the 3,137,373 floor —
-     * deterministic pull-down of the seeded tip). Hash-checked when the
-     * derivation has a durable witness; height-only otherwise (the
-     * derivation abstains entirely unless coins_kv is proven). */
+    /* Case 3a (the DERIVED coins-best is the runtime coins authority): if
+     * the active tip equals the derivation (coins_kv proven authority +
+     * durable-log hash witness), the legacy coins.db view read above is just
+     * a LAGGING REBUILDABLE PROJECTION — AGREE and let it reconcile forward.
+     * Without this, a stale legacy view below a freshly restored derived tip
+     * drives Case-4 RESET_CHAIN every boot — a deterministic pull-down of the
+     * seeded tip. Hash-checked when the derivation has a durable witness;
+     * height-only otherwise (the derivation abstains entirely unless coins_kv
+     * is proven). */
     if (chain_tip->phashBlock) {
         int32_t d_h = -1;
         uint8_t d_hash[32];
@@ -213,22 +209,21 @@ struct boot_validation_result validate_coins_chain_agreement(
      * authored in-txn with the tip_finalize cursor, so it IS at this finalized
      * tip by atomic co-commit; a stale/behind coins.db coins_best_block is
      * benign lagging materialization the reducer reconciles forward — NOT a
-     * chain disagreement. Returning BOOT_OK here
-     * stops the Case-4 RESET_CHAIN that discarded finalized progress on every
-     * restart (observed: reset tip 3,135,248 -> stale coins 3,134,303, losing
-     * the climb).
+     * chain disagreement. Returning BOOT_OK here stops the Case-4 RESET_CHAIN
+     * that would discard finalized progress on every restart.
      *
      * STRICTLY guarded so it can never mask real corruption: AGREE only when
      * the active tip's (height,hash) BYTE-MATCHES the durable finalized tip,
      * resolved self-consistently by tip_finalize_stage_resolve_durable_tip
      * (the returned height always owns the returned hash, across BOTH log
-     * conventions — anchor rows and finalized lookahead rows). The earlier
-     * raw fin_cursor-1 read matched anchor rows only, so a clean shutdown
-     * whose last row was a finalized row fell through to the Case-4 reset
-     * this branch exists to stop. No-resolve, coins.db AHEAD of the
-     * finalized tip, or not in the index, falls through to the Case-4
-     * reset/wipe path unchanged. Read is safe here: progress_store_open
-     * (boot.c:1581) precedes this validator (boot.c:2734). */
+     * conventions — anchor rows and finalized lookahead rows). Resolving the
+     * tip self-consistently across both conventions is required: a raw
+     * fin_cursor-1 read matches anchor rows only, so a clean shutdown whose
+     * last row is a finalized row would fall through to the Case-4 reset this
+     * branch exists to stop. No-resolve, coins.db AHEAD of the finalized tip,
+     * or not in the index, falls through to the Case-4 reset/wipe path
+     * unchanged. Read is safe here: progress_store_open precedes this
+     * validator in boot ordering. */
     if (chain_tip->phashBlock) {
         sqlite3 *pdb = progress_store_db();
         int fin_height = -1;

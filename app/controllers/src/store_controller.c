@@ -170,7 +170,7 @@ static bool route_is_order_create(const char *method, const char *path)
 /* Validate address: must be a valid ZClassic t-address or z-address,
  * with the Base58Check / Bech32 *checksum* verified — not just a
  * syntactically-plausible prefix.  A one-character typo in a t-addr
- * passes the old shape check but decodes to a random 20-byte hash
+ * passes a syntactic prefix check but decodes to a random 20-byte hash
  * whose payments are unspendable: funds sent to such an order are
  * burned.  Also prevents XSS via customer_addr in HTML output.
  *

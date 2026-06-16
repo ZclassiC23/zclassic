@@ -230,12 +230,12 @@ static bool header_from_disk_block_file(const struct block_index *bi,
 
 /* A wrong-epoch (but internally valid) Equihash solution must not ride
  * the forward path: the header-accept check rejects it, but the staged
- * validator did NOT — so a block whose header every peer-facing path
- * refuses could still be applied from a disk body (2026-06-10 trackb:
- * ~93 Equihash 200,9 blocks applied straight through under 192,7
- * rules). Pin the expected size whenever the header carries a full
- * solution; sol_size==0 headers stay permissive (sparse fast-sync
- * tails re-verify with full context later). */
+ * validator must too — else a block whose header every peer-facing path
+ * refuses could still be applied from a disk body (without this, blocks
+ * were applied straight through under the wrong-epoch rules). Pin the
+ * expected size whenever the header carries a full solution; sol_size==0
+ * headers stay permissive (sparse fast-sync tails re-verify with full
+ * context later). */
 static bool header_solution_size_in_epoch(const struct block_header *h,
                                           int height,
                                           const struct chain_params *cp,
@@ -478,7 +478,7 @@ bool validate_headers_default_validator(const struct block_index *bi,
      * FIRST source: the progress.kv header_solution_repair side-table.
      * header_probe writes this row at accept_block_header time for the
      * live frontier, so it is the authoritative source for heights ABOVE
-     * the persisted node.db tip (the wedge). When it holds a (hash-bound)
+     * the persisted node.db tip. When it holds a (hash-bound)
      * solution it hashes to bi->phashBlock identically to every other
      * source, so the PoW/Equihash verdict is source-independent. */
     bool had_hash_mismatch = false;

@@ -8,16 +8,16 @@
 
 > **Live values are tracked in one place:** [`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md)
 > (append-only, measured, dated). This table is the *spec* — targets and how to
-> measure. The "Latest" column is a pointer, not a source; never quote an
-> estimate here. `—` = not measured this run.
+> measure. Never quote an estimate here; the ledger is the only source for
+> measured numbers.
 
-| # | Benchmark | Target | Latest (see ledger) | How measured |
-|---|---|---|---|---|
-| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | 180s (05-24, halt recovery path) | `time build/bin/zclassic23 -bench-coldstart` |
-| 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | 37.7s (05-24, real restart→tip) | `time build/bin/zclassic23 -bench-warmstart` |
-| 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | soak in progress (started 05-24) | 30-day chaos soak (kill -9, net blip, peer churn) |
-| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | ~2.4 GB & climbing (05-24 soak, 6.6% bg-verify) | `zcl_status.memory_rss_mb` over a soak |
-| 5 | **Recovery from kill -9** | ≤ **60 s** | — (not measured this session) | scripted kill loop, recovery histogram |
+| # | Benchmark | Target | How measured |
+|---|---|---|---|
+| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | `time build/bin/zclassic23 -bench-coldstart` |
+| 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | `time build/bin/zclassic23 -bench-warmstart` |
+| 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | 30-day chaos soak (kill -9, net blip, peer churn) |
+| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | `zcl_status.memory_rss_mb` over a soak |
+| 5 | **Recovery from kill -9** | ≤ **60 s** | scripted kill loop, recovery histogram |
 
 ### Soak: hermetic proxy vs. operational acceptance (#3/#4)
 
@@ -56,16 +56,6 @@ The user is not an operator. If zclassic23 stalls, recovery is automatic or the 
 is broken. There is no acceptable middle ground where "operator manually deletes a
 sentinel from progress.kv" is the answer.
 
-## How we hit each number — architecture levers
-
-| # | Lever |
-|---|---|
-| 1 | **A2 peer snapshot bridge** — adapts S-4b's cursor-stamp pattern to a chainstate downloaded over Tor from any peer; SHA3-verified against baked-in `g_sha3_windows`; same atomic stamp at snapshot height. Genesis-walk becomes the always-works fallback, not the default. |
-| 2 | **Mmap'd flat block_index** (file already exists from prior speed work) + **parallel startup** of wallet/mempool/RPC/supervisor instead of the current serial chain. |
-| 3 | **Wave S staged pipeline** (cursor-on-disk per stage = halts impossible by construction). Lint gate #18 at S-10 makes it permanent. |
-| 4 | **Paged block_index** (LRU keeps last N=10k hot; rest live in mmap'd file). UTXO via LSM (already on roadmap at S-8 → utxo.lsm). |
-| 5 | **Stage primitive's BEGIN IMMEDIATE** atomic commit + sentinel pattern (already shipped F-2/S-1/S-4b). Each stage's crash-replay test enforces. |
-
 ## How we know we hit them
 
 `make bench` runs all 5 primaries against a clean checkout.
@@ -77,18 +67,9 @@ By default the harness never touches the live service. Set
 and uptime when a live `zclassic23.pid` is available. Timing benchmarks that
 restart or kill a node remain explicit subcommands.
 
-## Dream roadmap (sequenced so each wave moves a benchmark)
+## Architecture levers and sequencing
 
-1. **Wave B — Benchmarks (1 session).** `build/bin/zclassic23 -bench` runs all 5 primaries. `docs/bench-history.csv`. CI regression gate. **Today's numbers become the baseline.** Without this, every other wave is unmeasurable.
-2. **Wave S close (3–6 sessions).** S-5..S-12. Halts extinct. Locks benchmarks 3 + 5.
-3. **Wave P — Peer Snapshot (~3 sessions).** A2 of the bridge. Locks benchmark 1 (cold-start over Tor).
-4. **Wave W — Warm-start (1 session).** Mmap + parallel boot. Locks benchmark 2.
-5. **Wave R — RAM diet (2 sessions).** Paged block_index + LSM UTXO. Locks benchmark 4.
-
-After these, ALL five benchmarks hold green continuously. That is the dream architecture.
-
-## What's deferred (do not touch until the five are green)
-
-Wave M (Claude as participant), Wave Z (ZNAM as DID), Wave T (deterministic simulator),
-Wave R-release (signed reproducible builds). They are all good ideas. They do not
-make the node strong for the user. They come later.
+The architecture levers and wave sequencing that move each benchmark live in
+[`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) and
+[`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md). Deferred waves (M, Z, T,
+R-release) wait until the five are green.

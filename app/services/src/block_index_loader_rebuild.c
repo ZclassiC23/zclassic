@@ -4,8 +4,7 @@
  *
  * load_block_index_from_projection() reconstructs the in-memory block
  * index map purely from the log-derived block_index_projection, then
- * seeds the active tip from the tip_finalize cursor in progress.kv. This
- * restores the active tip from the tip_finalize cursor in progress.kv.
+ * seeds the active tip from the tip_finalize cursor in progress.kv.
  *
  * This file owns projection-backed rebuild. The shared height-sorted forward
  * pass (block_index_forward_pass) lives in block_index_loader.c and is
@@ -136,12 +135,12 @@ static bool projection_link_pprev_cb(const uint8_t hash[32],
 
 /* Seed the active tip from the durable tip_finalize cursor. The (height,
  * hash) pair is resolved SELF-CONSISTENTLY by
- * tip_finalize_stage_resolve_durable_tip — the old `tip = cursor-1` +
- * finalized_tip_at raw read paired cursor-1 with the row's LOOKAHEAD
- * hash(cursor), publishing the splice-class poisoned pair when the last
- * row was a finalized row (the crash window between a finalize advance
- * and the next trusted-tip anchor). NULL `progress_db` skips the seed
- * (map rebuilt, no tip published). */
+ * tip_finalize_stage_resolve_durable_tip so the returned height OWNS the
+ * returned hash — a raw `tip = cursor-1` + finalized_tip_at read would pair
+ * cursor-1 with the row's LOOKAHEAD hash(cursor), publishing a splice-class
+ * poisoned pair in the crash window between a finalize advance and the next
+ * trusted-tip anchor. NULL `progress_db` skips the seed (map rebuilt, no tip
+ * published). */
 static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
 {
     if (!progress_db)
@@ -200,8 +199,8 @@ static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
  * Safety (this runs on the live consensus-boot path): it NEVER rewinds the
  * tip (strictly-higher guard), NEVER swaps a fork (the walk must land on the
  * current tip), and NEVER mutates the tip_finalize_log or any cursor (read
- * only). A sparse/header-only frontier yields a no-op, not a hole — so it
- * cannot reproduce the reverted best-header pre-extend churn.
+ * only). A sparse/header-only frontier yields a no-op, not a hole — never a
+ * best-header pre-extend that punches a body hole.
  *
  * Returns 1 = seeded forward, 0 = no-op, -1 = error. */
 int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
@@ -214,8 +213,8 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
         return 0;
 
     /* Self-consistent resolve: the returned height OWNS the returned hash
-     * (see rebuild_seed_tip above — the raw cursor-1 read manufactured the
-     * splice-class poisoned pair in the advance→anchor crash window). */
+     * (see rebuild_seed_tip above — a raw cursor-1 read would manufacture a
+     * splice-class poisoned pair in the advance->anchor crash window). */
     int tip_height = -1;
     uint8_t tip_hash[32];
     if (!tip_finalize_stage_resolve_durable_tip(progress_db, &tip_height,
@@ -535,12 +534,10 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;
     }
 
-    /* (2a.5) BOOT-TIME TORN-IMPORT GATE (import-gate-spec.md PART A,
-     *        RETARGETED 2026-06-13 + DURABILITY GUARD 2026-06-13). Runs on
-     *        EVERY cold-import boot, BEFORE the (2b) forward-only early-return —
-     *        the live wedge IS in the forward-only region (active tip
-     *        3,145,594 >= seed H 3,145,457), so the old bless-time-only gate
-     *        was dead code there.
+    /* (2a.5) BOOT-TIME TORN-IMPORT GATE (import-gate-spec.md PART A). Runs on
+     *        EVERY cold-import boot, BEFORE the (2b) forward-only early-return:
+     *        the torn-import case can sit in the forward-only region (active
+     *        tip >= seed H), so this gate must run here, not only at bless time.
      *
      *        The verdict (block_index_loader_torn_gate.c) fires ONLY on a
      *        GENUINELY-UNRECOVERABLE tear: a durable in-window ok=0
@@ -595,7 +592,7 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
      *     was written (kill-9 mid-write, partial reimport keeping >100k rows),
      *     the live count differs and the seed is refused.
      *
-     *     Wave 2: the CANONICAL token is checked FIRST —
+     *     The CANONICAL token is checked FIRST —
      *     'cold_import_seed_coins_kv_count' attests the coins_kv store
      *     (progress.kv) the reducer actually spends from. The mirror-count
      *     token remains the fallback for seeds written before the canonical
@@ -638,7 +635,7 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         }
     }
 
-    /* NOTE: the forward-evidence torn-import gate is now (2a.5) above (runs on
+    /* NOTE: the forward-evidence torn-import gate is (2a.5) above (runs on
      *       the wedged-boot path, ceiling = forward-apply frontier). */
 
     /* (3) GATE on the genuinely-pinned signal — H*, NOT the tip_finalize
@@ -659,7 +656,7 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return 0;  /* not wedged (or already healed) — no-op */
 
     /* (3b) NO tip_finalize REGRESSION: tip_finalize_stage_seed_anchor stamps
-     *      the tip_finalize cursor to H (the served-tip convention, task #31)
+     *      the tip_finalize cursor to H (the served-tip convention)
      *      via an UNCONDITIONAL stage_set_cursor (with trusted_seed=true the
      *      frontier cap is exempted), so if the cursor is ALREADY at or beyond
      *      H the seed would LOWER it. The forward-only gate (2b) only guards
@@ -686,7 +683,7 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return -1;  // raw-return-ok:cold_import_set_applied_if_behind logs on failure
 
     /* Record-only: a seed anchor NOT pprev-contiguous to a trust root is
-     * the band-hole class (2026-06-11) — note it loudly so the header
+     * the band-hole class — note it loudly so the header
      * planner backfills the band; the seed itself proceeds untouched.
      * Covers re-boots that re-seed without re-running the LDB branch.
      * Ancestry-derived: on the proven two-step cold-import recipe the

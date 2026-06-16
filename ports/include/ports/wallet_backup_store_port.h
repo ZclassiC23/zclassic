@@ -12,7 +12,7 @@
  * dirent/stat. Everything in the service that touches sqlite is captured
  * here, so the service never names sqlite once it depends on this port.
  *
- * The seam captures exactly four operations:
+ * This port captures exactly four operations:
  *
  *   source_path(out,cap)        sqlite3_db_filename(src,"main") — the
  *                               absolute on-disk path backing the source
@@ -34,8 +34,7 @@
  *                               then DETACH + close. Reports which stage
  *                               failed so the caller can preserve the
  *                               file-on-disk-for-forensics behaviour and
- *                               compose the same error messages it did
- *                               before the seam.
+ *                               compose the same error messages.
  *
  *   count_rows_in_file(...)     reopen a backup file READ-ONLY and count
  *                               rows in a table — the verify reopen. This
@@ -47,8 +46,7 @@
  * adapters/outbound/persistence/ is the only thing that includes sqlite
  * for this subsystem. The bind wraps the already-open source connection
  * (the node_db that owns the wallet tables) and never closes it. The
- * write/verify methods open and close their OWN destination connections,
- * exactly as the inline code did.
+ * write/verify methods open and close their OWN destination connections.
  *
  * Key-material safety: the snapshot copies wallet_* rows verbatim through
  * sqlite's own "CREATE TABLE AS SELECT"; the bytes (encrypted blobs and
@@ -59,8 +57,8 @@
  *
  * Threading: the live adapter wraps the single node_db connection opened
  * by boot. The backup thread is the only caller; wallet_backup_now() may
- * also run on a request thread, serialised by the service mutex — the same
- * concurrency contract the raw inline code had before the seam.
+ * also run on a request thread; the service mutex serialises them, and the
+ * port adds no locking.
  */
 
 #ifndef ZCL_PORTS_WALLET_BACKUP_STORE_PORT_H
@@ -71,9 +69,9 @@
 #include <stdint.h>
 
 /* Outcome of write_snapshot(). The caller maps each non-ok stage to the
- * exact zcl_result code + message it produced before the seam, so the
- * RPC / event surface is unchanged. WB_STORE_OK means every existing
- * wallet table was copied; the dst file is on disk and closed. */
+ * exact zcl_result code + message for each stage, so the RPC / event surface
+ * is fixed. WB_STORE_OK means every existing wallet table was copied; the
+ * dst file is on disk and closed. */
 enum wallet_backup_store_status {
     WB_STORE_OK = 0,            /* snapshot written, dst closed */
     WB_STORE_OPEN_DST_FAILED,   /* sqlite3_open_v2(dst) failed */
@@ -95,8 +93,8 @@ struct wallet_backup_store_port {
      * Sets *out and returns true on the single returned row; false (out
      * untouched, leaving the caller's -1 sentinel) on any prepare/step
      * miss or NULL arg. `table` is a trusted internal identifier (one of
-     * the WALLET_TABLES constants), interpolated exactly as the inline
-     * code did. */
+     * the WALLET_TABLES constants), interpolated as a trusted internal
+     * identifier. */
     bool (*count_rows)(void *self, const char *table, int64_t *out);
 
     /* Core primitive. Opens `dst_path` as a fresh empty DB, ATTACHes the
@@ -105,10 +103,9 @@ struct wallet_backup_store_port {
      * "CREATE TABLE t AS SELECT * FROM src.t". DETACHes and closes the dst
      * connection before returning (even on copy failure, so the file is
      * left on disk for forensics). On WB_STORE_COPY_FAILED, `out_copy_err`
-     * (if non-NULL) is filled with "copy <table>: <sqlite msg>" exactly as
-     * the inline code composed it. self may NOT be NULL (source path is
-     * supplied by the caller via `src_path`, but the method still needs a
-     * bound adapter). */
+     * (if non-NULL) is filled with "copy <table>: <sqlite msg>". self may NOT
+     * be NULL (source path is supplied by the caller via `src_path`, but the
+     * method still needs a bound adapter). */
     enum wallet_backup_store_status (*write_snapshot)(
         void *self,
         const char *dst_path,
@@ -120,8 +117,8 @@ struct wallet_backup_store_port {
 
     /* Reopen `file_path` READ-ONLY and return count(*) of `table`, or -1 on
      * open/prepare/step failure. Operates on the given file, not the bound
-     * source, so self is unused (may be NULL). Mirrors the verify reopen
-     * the inline code performed against the freshly written backup. */
+     * source, so self is unused (may be NULL). The verify reopen: count rows
+     * in the freshly written backup. */
     int64_t (*count_rows_in_file)(void *self,
                                   const char *file_path,
                                   const char *table);

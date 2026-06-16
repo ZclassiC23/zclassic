@@ -16,13 +16,11 @@
 
 /* BLOCK_FAILED_CHILD propagation with OOM-amplifier guards.
  *
- * History: the original block-connect path inlined a full block_map scan +
- * qsort on every failed connect_block. At a live tip of ~3M entries
- * that is ~24 MB of scratch + O(N log N) work per call. In the
- * 2026-04-19 BIP30 stall, a single stuck block was retried on every
- * FSM flap; the repeated propagation walk is what drove RSS to the
- * cgroup high-water mark in 2h51m (see
- * docs/archive/2026-04/2026-04-19-bip30-stall.md).
+ * A naive full block_map scan + qsort on every failed connect_block is
+ * O(N log N) work plus ~24 MB of scratch at a ~3M-entry tip. Under a
+ * retry storm (repeated FSM flaps re-propagating from the same stuck
+ * block), that repeated walk drives RSS to the cgroup limit. The two
+ * early returns below bound this.
  *
  * The two early returns are part of the production contract; see the header
  * for the full guard description. */

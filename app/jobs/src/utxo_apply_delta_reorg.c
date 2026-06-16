@@ -163,8 +163,7 @@ bool utxo_apply_emit_inverse_delta(sqlite3 *db, int height)
             /* Inverse-ADD: SPEND the created outpoint in the atomic coins set IN
              * THIS txn (the caller wraps emit_inverse_delta in BEGIN IMMEDIATE)
              * so coins_kv unwinds with the cursor — no orphaned above-fork
-             * coins. coins_kv is the sole UTXO store after the dual-write was
-             * removed. */
+             * coins. coins_kv is the sole UTXO store. */
             if (!coins_kv_spend(db, txid, vout)) { ok = false; break; }
         }
     }
@@ -436,8 +435,8 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * as the cursor rewind is the fix that keeps coins_kv from drifting from the
      * cursor on a crash mid-unwind (docs/work/tip-durability-collapse.md):
      * coins_kv mutation + delete + cursor commit or roll back as one unit. The
-     * projection is no longer written here (the live dual-write was removed —
-     * coins_kv is the sole live UTXO store; the projection is seed-only). Only
+     * projection is not written here: coins_kv is the sole live UTXO store; the
+     * projection is seed-only. Only
      * the configured UTXO author unwinds. The in-memory s->cursor is reloaded
      * from this DB row at the top of the next stage_run_once (cursor_read). */
     char *err = NULL;

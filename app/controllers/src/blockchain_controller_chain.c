@@ -130,13 +130,12 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
      * valid when has_chain_*_value is true (i.e., every ancestor's
      * per-block value was known at connect time).
      *
-     * The previous implementation read SUM(blocks.sapling_value) but
-     * sync_block_lean (sync_controller_catchup.c:86-109) writes
-     * sapling_value=0 for every block, so on a datadir whose history
-     * came through the catchup path (vs the consensus connect_block
-     * path) the SUM under-reports the pool balance. The fix is to use
-     * the chain_index field which is always populated by
-     * connect_block when the value is known. */
+     * Read the pool values from the chain_index field (populated by
+     * connect_block whenever the value is known), never from
+     * SUM(blocks.sapling_value): the lean catchup path (sync_block_lean
+     * in sync_controller_catchup.c) writes sapling_value=0 per block, so
+     * a SUM under-reports the pool balance on any datadir whose history
+     * came through catchup rather than the consensus connect_block path. */
     if (tip) {
         struct json_value pools = {0};
         json_set_array(&pools);

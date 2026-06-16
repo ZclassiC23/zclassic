@@ -37,10 +37,10 @@ struct rf_log_evidence {
 };
 
 /* The five per-height evidence point reads, prepared ONCE per flag sweep and
- * reset/rebound per height (created_outputs_index_put_block's prepare-once
- * batch idiom): the sweep walks every height in (hstar, sweep_top] and a
- * per-row sqlite3_prepare_v2 of constant SQL paid the SQL parser five times
- * per height while holding the progress + cs_main locks. */
+ * reset/rebound per height: the sweep walks every height in (hstar, sweep_top]
+ * while holding the progress + cs_main locks, so re-parsing this constant SQL
+ * with a per-row sqlite3_prepare_v2 would pay the parser five times per height
+ * under the locks. */
 struct rf_evidence_stmts {
     sqlite3_stmt *validate_hash; /* ok, hash       FROM validate_headers_log */
     sqlite3_stmt *script_hash;   /* ok, block_hash FROM script_validate_log  */
@@ -228,9 +228,9 @@ static bool read_frontier_snapshot(sqlite3 *db,
      * MIN H*. coins_applied tracks the utxo_apply cursor by construction
      * (co-committed in one BEGIN IMMEDIATE), so a real tear is coins applied
      * above utxo_apply's own ok=1 prefix; coins legitimately leading the
-     * slower-to-finalize H* is pipeline depth, not a tear (the false positive
-     * that dead-ended at the never-built L2). Read under the lock already held;
-     * reducer_frontier_log_frontier re-takes the recursive lock safely. */
+     * slower-to-finalize H* is pipeline depth, not a tear. Read under the lock
+     * already held; reducer_frontier_log_frontier re-takes the recursive lock
+     * safely. */
     int32_t utxo_apply_contig = hstar;
     if (!reducer_frontier_log_frontier(db, "utxo_apply_log", "utxo_apply",
                                        &utxo_apply_contig)) {
@@ -407,7 +407,7 @@ static bool reconcile_tip_finalize_cursor(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    /* OWN-frame (task #31): tip_finalize's cursor IS the served tip height.
+    /* OWN-frame: tip_finalize's cursor IS the served tip height.
      * The anchored walk proves served = hstar when the tip_finalize_log row
      * at hstar is an anchor/absent, and served = hstar+1 when it is a
      * 'finalized' transition row (the row at H proves the H -> H+1 move).
@@ -424,9 +424,7 @@ static bool reconcile_tip_finalize_cursor(
      * ok=1 row at H+1 that cannot exist, REJECTED the seed anchor, the
      * trusted anchor collapsed to the compiled checkpoint, and the I4.3
      * sweep latched the chain-linkage HOLD over the legitimately log-less
-     * import region — tip pinned at the seed forever (copy-proven on the
-     * 2026-06-12 wave-3 fixture: HOLD refuse_from=3056759, step_finalize
-     * FATAL loop at h=3145076). */
+     * import region — tip pinned at the seed forever. */
     int lo = out->hstar;
     int hi = out->hstar + 1;
     if (out->coins_applied_found && out->coins_applied_height >= 0) {

@@ -1,5 +1,10 @@
 # Consensus parity backlog (c23 vs zclassicd) — supplemental audit (2026-06-08)
 
+> **Status:** all 6 confirmed divergences below have LANDED in the tree. This
+> doc is kept as a parity-regression record. The durable payload is section 3
+> (refuted candidates — do not re-investigate) and section 4 (111 sub-rules
+> verified decision-identical).
+
 Source of truth: zclassicd reference at `/home/rhett/zclassic-cpp` (origin
 `ZclassicCommunity/zclassic`). c23 audited at the post-fix state of branch
 `consensus/zclassicd-parity-2026-06-08` (FR-1 expiry, FR-2 finality, FR-3
@@ -20,12 +25,10 @@ enforces every one of these rules, so the immutable chain contains no block that
 violates them. Adding the rule to c23 cannot newly-reject history, exactly the
 FR-3 argument.)
 
-**Root pattern:** c23 ports the per-tx / per-block *contextual* rules faithfully
-but **never wires them into the production block-connect path**.
-`contextual_check_block()` has ZERO production callers; the reducer connect path
-runs only context-free structural checks plus the staged proof gate. Four of six
-confirmed items share this single root cause; wiring that one call (with an IBD
-early-return gate) closes #2, #3, #4 together. #1 and #5 are localized adds.
+**Root pattern:** `contextual_check_block()` had ZERO production callers — the
+reducer connect path ran only context-free structural checks plus the staged
+proof gate. Four of six confirmed items shared that single root cause; the call
+is now wired on the connect path with an IBD early-return gate.
 
 | # | Surface | Class | Reachability |
 |---|---------|-------|--------------|
@@ -35,137 +38,100 @@ early-return gate) closes #2, #3, #4 together. #1 and #5 are localized adds.
 | 4 | Height-gated Sapling/Overwinter structural rules unwired | forward | live/future tip |
 | 5 | Coinbase-must-be-shielded rule absent (`bad-txns-coinbase-spend-has-transparent-outputs`) | forward | live tip & forever forward |
 
-## 2. CONFIRMED divergences
+## 2. CONFIRMED divergences (all landed)
 
 ### #1 — CHECKDATASIG/CHECKDATASIGVERIFY counted as 0 sigops (block sigop undercount)
-- **c23:** `domain/consensus/src/check_block.c:168-169` (CheckBlock passes
-  `SCRIPT_VERIFY_NONE`); `lib/validation/src/connect_block.c:286` (ConnectBlock
-  `flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY`), feeding the
-  legacy tally at `:358` and the P2SH tally at `:429`. Counter itself is correct:
-  `lib/script/src/script.c:109-113` gates the `+1` on bit 11.
-- **zclassicd:** `src/main.cpp:4006` (CheckBlock via `STANDARD_SCRIPT_VERIFY_FLAGS`,
-  which includes the bit per `src/script/standard.h:62`); `src/main.cpp:2567`
-  (ConnectBlock `... | SCRIPT_VERIFY_CHECKDATASIG_SIGOPS`) used at `:2615`/`:2634`.
-- **Decision that differs:** c23 omits `SCRIPT_VERIFY_CHECKDATASIG_SIGOPS` (bit 11)
-  at both block-sigop count sites, so every top-level `OP_CHECKDATASIG` (0xba) /
-  `OP_CHECKDATASIGVERIFY` (0xbb) contributes **0** sigops in c23 vs **+1** in
-  zclassicd. A block whose true sigop total crosses `MAX_BLOCK_SIGOPS=20000` only
-  via these opcodes is ACCEPTED by c23 / REJECTED by zclassicd (`bad-blk-sigops`).
-  Bit 11 affects sigop counting only, never EvalScript execution.
-- **Mainnet reachability:** Rule is unconditional (active since genesis). Crossing
-  20000 needs ~20000 *top-level* CHECKDATASIG opcodes in one block — exotic; no
-  known historical block crosses it (most 0xBA/0xBB bytes are push-data, skipped by
-  the GetOp walker in both trees). History-safe (zclassicd counted these and
-  rejected any crosser, so the chain has none).
-- **Fix:** Add bit 11 at both count sites — (a) `connect_block.c:286` OR-in the bit
-  (covers `:358` and `:429`); (b) `check_block.c:169` replace `SCRIPT_VERIFY_NONE`
-  with a flags value including bit 11. Define one shared `CONSENSUS_SIGOP_COUNT_FLAGS`
-  so the two can't drift. verify_script sites need no change (bit 11 is a no-op for
-  execution). Regression test: a tx with >20000 CHECKDATASIG ops must be
-  `bad-blk-sigops` in both CheckBlock and ConnectBlock.
+- **c23 vs zclassicd:** c23 omitted `SCRIPT_VERIFY_CHECKDATASIG_SIGOPS` (bit 11)
+  at both block-sigop count sites (`check_block.c` CheckBlock with
+  `SCRIPT_VERIFY_NONE`; `connect_block.c:286` ConnectBlock flags). zclassicd
+  includes the bit via `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/main.cpp:4006`) and
+  `SCRIPT_VERIFY_CHECKDATASIG_SIGOPS` in ConnectBlock (`src/main.cpp:2567`). Bit
+  11 affects sigop counting only, never EvalScript execution.
+- **Decision that differs:** every top-level `OP_CHECKDATASIG` (0xba) /
+  `OP_CHECKDATASIGVERIFY` (0xbb) contributed **0** sigops in c23 vs **+1** in
+  zclassicd; a block whose true sigop total crosses `MAX_BLOCK_SIGOPS=20000` only
+  via these opcodes was ACCEPTED by c23 / REJECTED by zclassicd (`bad-blk-sigops`).
+  Reachability: unconditional rule (active since genesis), but ~20000 *top-level*
+  CHECKDATASIG opcodes in one block is exotic — no known historical block crosses
+  it; history-safe.
+- **LANDED:** `domain/consensus/src/check_block.c:59` defines
+  `DOMAIN_CONSENSUS_SIGOP_COUNT_FLAGS SCRIPT_VERIFY_CHECKDATASIG_SIGOPS`, used at
+  `check_block.c:183`.
 
-### #2 — ContextualCheckBlock per-tx height-gated rules NOT enforced on connect (`contextual_check_block` has zero production callers) — ROOT
-- **c23:** `lib/validation/src/check_block.c:390-414` — `contextual_check_block` is
-  orphaned (callers are only tests `test_bip113_bip65.c`, `test_chain.c`). It would
-  call `contextual_check_transaction` (`lib/validation/src/contextual_check_tx.c:32`;
-  expiry branch `:67-74`) and `is_final_tx` (`check_block.c:412`). The live path
-  `connect_block.c:125` → `check_block()` runs only context-free `check_transaction`
-  (`domain/consensus/src/tx_structural.c`). `bad-cb-height` (`check_block.c:417`) is
-  likewise stranded inside the orphan.
-- **zclassicd:** `src/main.cpp:4070` `ContextualCheckBlock` → `:4079`
-  `ContextualCheckTransaction(tx,state,nHeight,100)` (expiry `:1012-1015`, version
-  gating `:949-1000`) and `:4086` `IsFinalTx` → `bad-txns-nonfinal`; invoked
-  unconditionally from AcceptBlock (`:4203`) and TestBlockValidity (`:4311`).
-  `ContextualCheckTransaction` short-circuits `return true` only while
-  `IsInitialBlockDownload()` is true, which latches false permanently at tip
-  (`:1814-1837`).
-- **Decision that differs:** On connect, c23 never runs any height-gated per-tx
-  rule — Overwinter expiry (`tx-overwinter-expired`), network-upgrade version gating,
-  per-tx finality (`bad-txns-nonfinal`), BIP34 `bad-cb-height`. A tip block
-  containing an expired, non-final, or height-inappropriate-version tx is ACCEPTED
-  by c23 / REJECTED by at-tip zclassicd → permanent fork. (Shielded *proofs* are
-  separately enforced via the staged proof reducer — not part of this.)
-- **Fix:** Invoke `contextual_check_block(block, state, params, pindex->pprev)` on
-  the production connect path — inside `connect_block.c` near the `check_block()`
-  gate (`:125`) and/or the reducer ingest gate
-  (`app/services/src/reducer_ingest_service.c:271`). **Critically, gate it with the
-  same IBD semantics zclassicd uses** (thread an `isInitBlockDownload` predicate
-  into `contextual_check_transaction` so it is a no-op during IBD) — otherwise c23
-  becomes *stricter* than zclassicd during sync and could reject historical blocks
-  (an opposite fork). The finality cutoff already correctly uses
-  `block.GetBlockTime()` (`check_block.c:411` == `main.cpp:4083-4086`, our FR-2).
+### #2 — ContextualCheckBlock per-tx height-gated rules NOT enforced on connect (`contextual_check_block` had zero production callers) — ROOT
+- **c23 vs zclassicd:** c23's `contextual_check_block` (which calls
+  `contextual_check_transaction` for expiry/version-gating and `is_final_tx`, and
+  guards `bad-cb-height`) was orphaned — callers were only tests; the live path
+  `connect_block.c:125` → `check_block()` ran only context-free
+  `check_transaction`. zclassicd invokes `ContextualCheckBlock`
+  (`src/main.cpp:4070` → `ContextualCheckTransaction`, `IsFinalTx`)
+  unconditionally from AcceptBlock and TestBlockValidity, short-circuiting only
+  while `IsInitialBlockDownload()` is true (latches false permanently at tip).
+- **Decision that differs:** on connect, c23 never ran any height-gated per-tx
+  rule — Overwinter expiry (`tx-overwinter-expired`), network-upgrade version
+  gating, per-tx finality (`bad-txns-nonfinal`), BIP34 `bad-cb-height`. A tip
+  block containing an expired, non-final, or height-inappropriate-version tx was
+  ACCEPTED by c23 / REJECTED by at-tip zclassicd → permanent fork. (Shielded
+  *proofs* are separately enforced via the staged proof reducer.)
+- **LANDED:** `app/jobs/src/script_validate_contextual.c:107` calls
+  `contextual_check_block(...)` on the production connect path, gated by the
+  `is_ibd` predicate (`script_validate_contextual.c:94`) matching zclassicd's IBD
+  semantics so c23 does not become stricter than zclassicd during sync.
 
 ### #3 — JoinSplit Ed25519 signature NOT verified on the block-connection consensus path
-- **c23:** `lib/validation/src/contextual_check_tx.c:99-103` (the `ed25519_verify`
-  exists) but its only non-test caller is `accept_to_mempool.c:125` (mempool) + the
-  dead `contextual_check_block`. The authoritative connect gate — reducer
-  `app/services/src/reducer_ingest_service.c:271` → `check_block()` (structural only)
-  and the proof gate `app/jobs/src/proof_validate_stage.c:101-220`
-  (`default_verify_tx`) — verifies Sapling spend/output/binding + Sprout zk-SNARK but
-  **OMITS** the JoinSplit Ed25519 sig. The only ed25519 check on a live-block path is
-  background `app/services/src/bg_validation_proofs.c:54-61`; on failure
-  `bg_validation_service.c:~519` only sets `BG_VALIDATION_FAILED` — no invalidate, no
-  reorg.
-- **zclassicd:** `src/main.cpp:1044-1058` (`crypto_sign_verify_detached` over
-  `dataToBeSigned`, reason `bad-txns-invalid-joinsplit-signature`) inside
-  `ContextualCheckTransaction`, run per-tx by `ContextualCheckBlock`.
-- **Decision that differs:** A block with a Sprout-joinsplit tx carrying a valid
-  zk-proof but a **forged** `joinSplitSig` is accepted and finalized by c23 (proof
-  gate never checks the Ed25519 sig) / rejected DoS(100) by zclassicd. The zk-SNARK
-  binds `joinSplitPubKey` into `h_sig` but does NOT substitute for the Ed25519
-  signature over the tx sighash.
-- **Fix:** In `proof_validate_stage.c:default_verify_tx`, after computing `sighash`
-  (`:137`), when `tx->num_joinsplit > 0` call `ed25519_verify(tx->joinsplit_sig,
-  sighash.data, 32, tx->joinsplit_pubkey.data)` before the per-joinsplit zk-SNARK
-  loop; on failure set `out->ok=false`, `first_failure_proof_type="joinsplit_sig"`.
-  Propagates `ok=0` → `utxo_apply` `upstream_failed` → blocks `tip_finalize`.
-  Respect the existing `g_deferred_proof_validation_below_height` defer semantics.
-  **(Codex-adjacent: this file is on Codex's forward-sync proof/script path —
-  coordinate.)**
+- **c23 vs zclassicd:** c23's `ed25519_verify` over the JoinSplit sig existed but
+  its only non-test caller was `accept_to_mempool.c:125` (mempool) plus the dead
+  `contextual_check_block`; the authoritative connect gate (reducer →
+  `check_block()` structural + proof gate `proof_validate_stage.c`) verified
+  Sapling spend/output/binding + Sprout zk-SNARK but OMITTED the JoinSplit Ed25519
+  sig (only background `bg_validation_proofs.c` checked it, with no
+  invalidate/reorg on failure). zclassicd verifies it via
+  `crypto_sign_verify_detached` over `dataToBeSigned` inside
+  `ContextualCheckTransaction` (`src/main.cpp:1044-1058`), reason
+  `bad-txns-invalid-joinsplit-signature`.
+- **Decision that differs:** a block with a Sprout-joinsplit tx carrying a valid
+  zk-proof but a **forged** `joinSplitSig` was accepted/finalized by c23 /
+  rejected DoS(100) by zclassicd. The zk-SNARK binds `joinSplitPubKey` into
+  `h_sig` but does NOT substitute for the Ed25519 signature over the tx sighash.
+- **LANDED:** `app/jobs/src/proof_validate_stage.c:141` calls `ed25519_verify`
+  over the sighash before the per-joinsplit zk-SNARK loop; on failure
+  `first_failure_proof_type="joinsplit_sig"` (`proof_validate_stage.c:144`),
+  propagating `ok=0` to block `tip_finalize`.
 
 ### #4 — Height-gated Sapling/Overwinter structural tx rules NOT enforced on connect
-- **c23:** `domain/consensus/src/sapling_structural.c:36-161` (overwinter-not-active,
-  tx-overwintered-flag-not-set, bad-sapling-tx-version-group-id,
-  bad-tx-sapling-version-too-low/high, tx-overwinter-active, pre-Sapling
-  bad-txns-oversize) is reached only via `contextual_check_tx.c:46-56`, whose only
-  non-test callers are `accept_to_mempool.c:125` (mempool) and the dead
-  `contextual_check_block`. The connect gate enforces only the height-**independent**
-  version rules.
-- **zclassicd:** `src/main.cpp:935-1025` per-tx via `ContextualCheckBlock`;
-  Overwinter+Sapling both activate at `476969`.
-- **Decision that differs:** At height ≥ 476969, a block whose tx is non-overwintered
-  (Sprout-format), carries the wrong version-group-id for the height, or an
-  out-of-range Sapling version, passes c23's connect gates and is finalized, while
-  zclassicd rejects it. Note the OVERWINTER group-id is accepted by `tx_structural`
-  at a Sapling height, so the Sapling-group-id rule genuinely escapes the
-  context-free path.
-- **Fix:** Same surface as #2 — call the already-correct `contextual_check_block`
-  from the connect path, **gated with the IBD early-return**. Regression test: a
-  v4-non-overwintered tx and a Sprout-format tx at height ≥ 476969 are rejected at
-  connect, not just at mempool.
+- **c23 vs zclassicd:** c23's `domain/consensus/src/sapling_structural.c:36-161`
+  (overwinter-not-active, tx-overwintered-flag-not-set,
+  bad-sapling-tx-version-group-id, bad-tx-sapling-version-too-low/high,
+  tx-overwinter-active, pre-Sapling bad-txns-oversize) was reached only via
+  `contextual_check_tx.c`, whose only non-test callers were mempool and the dead
+  `contextual_check_block`; the connect gate enforced only the
+  height-**independent** version rules. zclassicd runs these per-tx via
+  `ContextualCheckBlock` (`src/main.cpp:935-1025`); Overwinter+Sapling both
+  activate at `476969`.
+- **Decision that differs:** at height ≥ 476969, a block whose tx is
+  non-overwintered (Sprout-format), carries the wrong version-group-id for the
+  height, or an out-of-range Sapling version, passed c23's connect gates and was
+  finalized while zclassicd rejected it. (The OVERWINTER group-id is accepted by
+  `tx_structural` at a Sapling height, so the Sapling-group-id rule genuinely
+  escapes the context-free path.)
+- **LANDED:** same surface as #2 — `contextual_check_block` is now called from
+  the connect path (`app/jobs/src/script_validate_contextual.c:107`), IBD-gated.
 
 ### #5 — Missing rule: coinbase outputs must be spent only to shielded outputs
-- **c23:** `lib/validation/src/connect_block.c:366-385` — the coinbase-input branch
-  has the maturity check (`:373-374`) but **no** coinbase-protection check. Config
-  flags exist but are never read: `lib/chain/src/chainparams.c:107`
-  (`fCoinbaseMustBeProtected=true` mainnet; `:577` false regtest) and
-  `lib/validation/include/validation/main_state.h:41,73`
-  (`fCoinbaseEnforcedProtectionEnabled=true`). Both write-only. Mempool and the
-  reducer value path (`utxo_apply_delta.c:155-316`) also lack it.
-- **zclassicd:** `src/main.cpp:2062-2070` inside `Consensus::CheckTxInputs`; enabled
-  by `src/main.cpp:76` + `src/chainparams.cpp:85`.
-- **Decision that differs:** zclassicd REJECTS (`bad-txns-coinbase-spend-has-transparent-outputs`)
-  any tx that spends a coinbase output and has a non-empty transparent `vout`; the
-  rule is absent in c23, which ACCEPTS such a tx. Not height-gated (active from
-  genesis on mainnet; disabled only on regtest).
-- **Fix:** In the production value/coinbase path (reducer `utxo_apply_delta.c`
-  non-coinbase branch, where spent-input `is_coinbase` is already known; and/or
-  `connect_block.c` after the maturity check), when `prev_coins.is_coinbase`, flags
-  enabled, and `tx->num_vout != 0`: reject with
-  `bad-txns-coinbase-spend-has-transparent-outputs`. Thread the
-  `fCoinbaseEnforcedProtectionEnabled` flag into the path (not currently in
-  `struct consensus_params`). Consume existing flags (no new config); the regtest
-  carve-out is automatic. Also add to mempool relay.
+- **c23 vs zclassicd:** c23's coinbase-input branch had the maturity check but
+  no coinbase-protection check; `fCoinbaseMustBeProtected`/
+  `fCoinbaseEnforcedProtectionEnabled` flags were write-only, and the reducer
+  value path lacked it. zclassicd rejects inside `Consensus::CheckTxInputs`
+  (`src/main.cpp:2062-2070`, enabled via `src/chainparams.cpp:85`).
+- **Decision that differs:** zclassicd REJECTS
+  (`bad-txns-coinbase-spend-has-transparent-outputs`) any tx that spends a
+  coinbase output and has a non-empty transparent `vout`; the rule was absent in
+  c23, which ACCEPTED such a tx. Not height-gated (active from genesis on
+  mainnet; disabled only on regtest, so the carve-out is automatic).
+- **LANDED:** `app/jobs/src/utxo_apply_delta.c:315` and
+  `app/jobs/src/utxo_apply_stage.c:475` reject
+  `bad-txns-coinbase-spend-has-transparent-outputs` when a spent input is
+  coinbase and the tx has transparent outputs.
 
 ## 3. Refuted candidates (do not re-investigate)
 
@@ -240,11 +206,3 @@ Spot-confirmed identical between trees:
   accounting, ZIP209 turnstile on a from-genesis chain, Sapling/Sprout proof gating in
   `proof_validate_stage.c`, shielded sighash, activation heights. (Known FR-4
   `bad-sapling-root-in-block` and FR-5 `HaveShieldedRequirements` stub owned by Codex.)
-
-## Cross-cutting fix note
-
-#2, #3, #4 share one root cause — the connect/reducer path does not invoke
-`contextual_check_transaction`/`contextual_check_block`. Wiring that single call
-(with the IBD early-return gate to avoid the opposite over-strict fork) closes #2,
-#3, and #4 together; #1 and #5 are independent localized adds. Implement on a datadir
-COPY-proven branch; do not weaken the must-never-fork gates.

@@ -36,7 +36,7 @@ void mirror_consensus_record_override(int height, const char *reason)
     const char *r = (reason && reason[0]) ? reason : "local_consensus_overridden";
     /* All overrides are classified "unsafe": there is no scope/auth machinery
      * to tag an override as authorized. The override observability stays
-     * intact; the stats just no longer split safe vs unsafe. */
+     * intact; the stats do not split safe vs unsafe. */
     bool safe = false;
     int64_t overrides =
         atomic_fetch_add(&g_mirror_consensus.overrides_total, 1) + 1;

@@ -113,9 +113,9 @@ void block_index_forward_pass(struct block_index **sorted,
 /* ── save_block_index_flat ───────────────────────────────── */
 
 /* Payload writer for the embedded single-file format. Streams the
- * same "ZCLI"+count+entries payload the old whole file held, at the
- * current file offset (48, right after the integrity header the shared
- * helper owns) while hashing exactly those bytes.
+ * "ZCLI"+count+entries payload at the current file offset (48, right
+ * after the integrity header the shared helper owns) while hashing
+ * exactly those bytes.
  * The shared helper back-patches the {magic, version, size, sha3}
  * header and publishes the whole file with ONE atomic rename, so the
  * integrity commitment and the bytes it certifies can never diverge
@@ -135,7 +135,7 @@ static bool bif_emit_payload(FILE *f, void *vctx,
     sha3_256_init(&hctx);
     uint64_t bytes = 0;
 
-    uint32_t magic = 0x5A434C49; /* "ZCLI" payload magic (unchanged) */
+    uint32_t magic = 0x5A434C49; /* "ZCLI" payload magic */
     uint32_t count32 = (uint32_t)c->count;
     if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
         fwrite(&count32, 4, 1, f) != 1) {
@@ -206,8 +206,7 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
      * inside block_index.bin itself, so a kill anywhere before the
      * single rename leaves only the old good file — there is no second
      * sidecar file and therefore no inter-rename window that can strand
-     * a fresh body under a stale commitment (the live 2026-06-12
-     * incident that quarantined a good file). No lock is taken on this
+     * a fresh body under a stale commitment. No lock is taken on this
      * path (it only iterates the single-threaded block_map), so the
      * shutdown/drive lock order is unaffected. */
     struct bif_emit_ctx ectx = { .sorted = sorted, .count = count };
@@ -259,13 +258,13 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         return false;
     }
 
-    /* Format detection: the embedded single-file format (task #32)
-     * prefixes the body with a 48-byte integrity header (magic "BIIE").
-     * The legacy two-file format starts directly with the "ZCLI"
-     * payload magic at offset 0 and carries its integrity in a separate
-     * .sha3 sidecar. We peek 4 bytes to choose the payload offset, then
-     * — for the embedded format — VERIFY the embedded SHA3 over the
-     * payload BEFORE trusting a single byte. */
+    /* Format detection: the embedded single-file format prefixes the
+     * body with a 48-byte integrity header (magic "BIIE"). The legacy
+     * two-file format starts directly with the "ZCLI" payload magic at
+     * offset 0 and carries its integrity in a separate .sha3 sidecar.
+     * We peek 4 bytes to choose the payload offset, then — for the
+     * embedded format — VERIFY the embedded SHA3 over the payload
+     * BEFORE trusting a single byte. */
     uint64_t payload_off = 0;
     {
         uint32_t lead;
@@ -390,9 +389,8 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         struct block_index *pindex = &arena[i];
         /* Link by the entry's own prev_hash, NOT by its stored height:
          * an entry persisted with a corrupt height 0 (a detached root a
-         * past relabel stamped — the 2026-06-10 global -2 incident) was
-         * skipped by the old `nHeight > 0` test and stayed detached on
-         * every subsequent boot. An all-zero prev_hash is genesis. */
+         * relabel stamped) is skipped by an `nHeight > 0` test and stays
+         * detached on every boot. An all-zero prev_hash is genesis. */
         bool has_prev = false;
         for (int pb = 0; pb < 32; pb++)
             if (entries[i].prev_hash[pb]) { has_prev = true; break; }
@@ -421,11 +419,10 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
      * forward pass (nChainWork, nChainTx, skip links, cached branch id,
      * failed-child propagation) — the same helper the LevelDB loader and
      * the projection rebuild use. The flat file may carry stale values
-     * for blocks saved mid-sync; the hand-rolled fix-up this replaces
-     * additionally KEPT a stale nonzero nChainTx whenever an ancestor
-     * was header-only (pprev->nChainTx == 0), leaving wrongly-eligible
-     * entries for find_most_work_chain. The forward pass zeroes those:
-     * nChainTx > 0 again means "every ancestor's tx count is known".
+     * for blocks saved mid-sync. The forward pass zeroes nChainTx
+     * whenever an ancestor is header-only (pprev->nChainTx == 0), so
+     * nChainTx > 0 means "every ancestor's tx count is known" — without
+     * this, wrongly-eligible entries reach find_most_work_chain.
      * Inserted entries are marked by phashBlock != NULL (dropped and
      * duplicate arena slots never get it set). */
     {

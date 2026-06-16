@@ -22,8 +22,7 @@ static volatile sig_atomic_t g_crash_hook_running = 0;
 /* Durable, append-only crash log (best-effort). Opened once the datadir is
  * known via signal_handler_set_crash_log(). Both this module's handler and
  * the event-log crash handler mirror their backtrace here and fsync, so a
- * crash leaves a forensic record even when stderr routing is lost — the gap
- * that swallowed 6 SEGV backtraces on 2026-05-30. */
+ * crash leaves a forensic record even when stderr routing is lost. */
 static volatile int g_crash_fd = -1;
 
 void signal_handler_set_crash_log(const char *path)

@@ -4,12 +4,10 @@
  * bg_validation_store_sqlite — sqlite implementation of
  * bg_validation_store_port.
  *
- * The two methods below are the crash-resume cursor reads/writes that used
- * to live inline in app/services/src/bg_validation_service.c
- * (load_progress / save_progress over the node-DB state-kv path). They are
- * moved behind the port with the EXACT same state key
- * ("bg_validation_height") and the same get/set int semantics so resume
- * behaviour is bit-for-bit identical.
+ * The two methods below are the crash-resume cursor reads/writes
+ * (load_progress / save_progress over the node-DB state-kv path). The state
+ * key ("bg_validation_height") and the get/set int semantics are part of the
+ * contract: an existing on-disk cursor must read back bit-for-bit identical.
  */
 
 #include "adapters/outbound/persistence/bg_validation_store_sqlite.h"
@@ -18,8 +16,8 @@
 
 #include <stdint.h>
 
-/* The single state key the cursor lives under — verbatim from the inline
- * code so an existing on-disk cursor is read back unchanged. */
+/* The single state key the cursor lives under: "bg_validation_height".
+ * Fixed by contract so an existing on-disk cursor is read back unchanged. */
 #define BGV_PROGRESS_KEY "bg_validation_height"
 
 /* Separate key for the cumulative "non-coinbase tx not script-verified

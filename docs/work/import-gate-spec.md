@@ -9,39 +9,20 @@ h=3,145,594). Root cause memory: `project_recurring_anchor_collapse_wedge_2026-0
 **Blocks (when fixed):** MVP C3 (fast cold-sync), C6 (zero operator
 intervention), C8 (consensus parity at tip) — all need sustained live forward
 progress, which the wedge denies.
-**Derivation:** 14-agent design workflow (5 ground readers → 4 strategy
-proposals → 4 adversarial refutations → synthesis), every claim grounded in
-code + live state. This doc is the synthesized result with file:line anchors.
 
 ---
 
 ## TL;DR — the reframe
 
-The original framing ("a *write-time* gate that refuses a coin-incomplete
-import") is **infeasible** as stated, and the adversarial pass proved it:
-
-- At cold-import write time the block **bodies are stripped** — `--importblockindex`
-  clears `BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO` and zeroes file positions
-  (`app/controllers/src/snapshot_controller_import.c:174-193`); bodies are fetched
-  lazily over P2P *after* import. So at the moment of import you cannot ask "does
-  the active chain spend a coin I am missing" without the **full replay** fast-sync
-  exists to avoid (~25 min, the C3 budget) — or a trusted UTXO commitment at the
-  import height, which does not exist (only **one** compiled SHA3 checkpoint, at
-  3,056,758, ~88k blocks below the import — `lib/chain/src/checkpoints.c:86-104`).
-- A missing *mature* coin (the live tear is at depth **109 > COINBASE_MATURITY=100**,
-  so it was legitimately spendable) is **indistinguishable at write time** from a
-  coin that is legitimately absent because it was spent. Any per-height
-  coinbase-presence heuristic therefore either misses the tear or false-rejects a
-  faithfully-pruned set. (Verified live: 155 distinct coinbase heights exist in the
-  region — a coverage-count gate never fires.)
-
-The sound, honest fix is therefore a **bless-time forward-evidence gate** plus a
-**de-vacuumed commitment stamp**. It does not promise write-time completeness it
-cannot deliver; it guarantees that **a coin set forward-validation has already
-proven torn is never blessed as the trusted base**, and that the operator gets a
-**typed, actionable** verdict instead of an opaque HOLD. It is a no-op on a
-faithful import (zero false-reject), never floats H* over a real `ok=0`, and adds
-no repair rung (TENACITY I3 preserved).
+A *write-time* gate that refuses a coin-incomplete import is **infeasible**: at
+cold-import write time the block **bodies are stripped** and a missing *mature*
+coin is indistinguishable from a legitimately-spent one. The sound fix is a
+**bless-time forward-evidence gate** plus a **de-vacuumed commitment stamp**. It
+does not promise write-time completeness it cannot deliver; it guarantees that **a
+coin set forward-validation has already proven torn is never blessed as the
+trusted base**, and that the operator gets a **typed, actionable** verdict instead
+of an opaque HOLD. It is a no-op on a faithful import (zero false-reject), never
+floats H* over a real `ok=0`, and adds no repair rung (TENACITY I3 preserved).
 
 ---
 
@@ -76,21 +57,27 @@ node's original P2P sync (a transient reorg captured a wrong coinbase, recorded
 into the coin set, never reconciled). So the gate is **preventive**: stop a
 transient artifact from silently becoming "our" chain across reboots.
 
-### Corrections the adversarial pass made to the working model
+Why no cheaper detector exists:
 
 - **block_map_find is a pure hash lookup** (`lib/validation/src/chainstate.c:53-72`)
-  — it does *not* resolve orphan siblings by height. The tear is invisible to any
-  header/hash probe (block_index is canonical, hash-matches zclassicd); it lives
-  **only in the coin set**.
-- **Depth 109 > maturity 100.** An earlier idea ("the missing coinbase is inside
-  the strictly-unspendable tail") is an arithmetic error — 109 > 100 means the
-  coinbase was already mature and legitimately spendable, which is *why* 3,145,595
-  spends it. So per-height coinbase presence cannot distinguish torn from spent.
+  — the tear is invisible to any header/hash probe (block_index is canonical,
+  hash-matches zclassicd); it lives **only in the coin set**.
+- **Depth 109 > COINBASE_MATURITY=100** means the coinbase was already mature and
+  legitimately spendable, which is *why* 3,145,595 spends it. So per-height
+  coinbase presence cannot distinguish torn from spent. (155 distinct coinbase
+  heights exist in the region — a coverage-count gate never fires.)
 - **The failure is per-OUTPOINT, not per-height.** `created_index_prevout`
   (`app/jobs/src/script_validate_stage.c:118-189`) resolves `prevout->hash` +
   `prevout->n` via `coins_kv_get`; a same-height *different-txid* orphan coinbase
-  never resolves the missing canonical outpoint, and `get_block_subsidy` (pure
-  function of height) cannot disambiguate orphan from canonical.
+  never resolves the missing canonical outpoint.
+
+There is only **one** compiled SHA3 checkpoint, at 3,056,758, ~88k blocks below
+the import (`lib/chain/src/checkpoints.c:86-104`); and at cold-import write time
+`--importblockindex` clears `BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO` and zeroes file
+positions (`app/controllers/src/snapshot_controller_import.c:174-193`), so bodies
+are fetched lazily over P2P *after* import — there is nothing to ask "does the
+active chain spend a coin I am missing" against without the full replay fast-sync
+exists to avoid (~25 min, the C3 budget).
 
 ---
 
@@ -200,100 +187,67 @@ rather than being re-discovered by forward validation each boot.
 
 ---
 
-## Failing test (write this FIRST)
+## Where it lives
 
-New `test_seed_torn_import_gate` (or extend a cold-import seed test / `test_invariant_sentinel`):
-
-- **Synthesize the buried tear** against an in-memory/temp `progress.kv` + `node.db`:
-  1. Seed a faithful trusted base at H (e.g. H=3,145,595): write
-     `cold_import_seed_anchor_height=H`, `_hash`, `_utxo_count`, `_coins_kv_count`,
-     and seed `coins_kv` with a correct set **except delete** the coinbase coin for
-     a height H−109 (drop the `(txid,0)` row), with the count token matched to the
-     **torn** live count so it defeats the count cross-check exactly like the real tear.
-  2. Populate `script_validate_log` with the durable forward evidence the real node
-     has: `INSERT` a row `(height=H, status='prevout_unresolved', ok=0,
-     block_hash=<canonical hash at H>)` — mirroring live state.
-- **Assert (torn):** `block_index_loader_seed_stages_from_cold_import` returns 0
-  (no bless); a blocker `seed.torn_import` is present; an `EV_OPERATOR_NEEDED` event
-  naming `first_hole_h` was emitted; **no** tip_finalize anchor row written and
-  `coins_applied_height` **not** advanced to H+1; `reducer_frontier_compute_hstar`
-  still returns the compiled anchor (H* not floated).
-- **Clean control:** identical fixture but **no** `ok=0` row → assert the gate is a
-  no-op: seeding proceeds, H* reaches H, no blocker, no event.
-
----
-
-## Sequencing (test-first; copy-prove before any live deploy)
-
-1. **Write the failing test** (above). Run it — it must FAIL (gate not implemented).
-2. **Implement Part A** in `block_index_loader_rebuild.c` after the (2d) count
-   cross-check, under `progress_store_tx_lock()`. Make the test pass.
-3. **Implement Part B1** in `utxo_recovery_restore.c:308-315` (stamp only at the
-   compiled checkpoint). Add a unit assertion that no stamp is written for a
-   non-checkpoint import.
-4. **Wire the blocker clear** into the clean-reimport path next to
-   `utxo_recovery_clear_cold_import_seed` (`utxo_recovery_seed_provenance.c:68-78`)
-   so a clean re-import is not permanently blocked by a stale `seed.torn_import`.
-5. **Full suite green** (`make test` / `test_parallel`); confirm lint (E13
-   consensus-parity unaffected — this touches no consensus predicate, only the bless
-   decision and the stamp condition).
-6. **Copy-prove FIRES:** copy `~/.zclassic-c23-cointear-fixture-20260612` to a
-   scratch datadir, boot HEAD against the **copy** (never live, per the recovery
-   doctrine), confirm the gate fires at bless time (typed `seed.torn_import` blocker
-   + `EV_OPERATOR_NEEDED`, no anchor stamp, H* pinned at the checkpoint). Capture the
-   operator message.
-7. **Copy-prove NO false-reject:** on a fresh probe-clean two-step cold import (the
-   path that connects through 3,145,830), confirm the gate is a **no-op** and the
-   seed blesses to H*. Both copy-proves must hold before any owner-gated live deploy.
-8. **(Owner-gated, deferred) Part B2:** only if the owner wants to close the
-   unspent-forever gap — design the higher-checkpoint shipping ceremony with a
-   same-binary cross-node SHA3-equality proof first.
-
----
-
-## File-by-file insertion points
-
-- `app/services/src/block_index_loader_rebuild.c` :
-  `block_index_loader_seed_stages_from_cold_import` — **INSERT Part A** after the
-  (2d) coin-count cross-check (~`:613`) and before the (3) H* gate (~`:615`) / (5)
-  `tip_finalize_stage_seed_anchor` (`:671`). Primary mechanism.
-- `app/services/src/utxo_recovery_restore.c:308-315` — **Part B1**: gate the
+- **Part A** is `block_index_loader_torn_gate.c`, called from
+  `block_index_loader_seed_stages_from_cold_import` after the (2d) coin-count
+  cross-check (~`:613`) and before the (3) H* gate (~`:615`) /
+  `tip_finalize_stage_seed_anchor` (`:671`). It reuses
+  `find_lowest_prevout_unresolved_hole_unlocked`
+  (`app/jobs/src/stage_repair_coin_backfill_util.c:133-180`) as-is, holding
+  `progress_store_tx_lock`. The typed blocker id `seed.torn_import` and entry point
+  live in `app/services/include/services/seed_integrity_gate.h` (helper in
+  `app/services/src/utxo_recovery_frontier_gate.c`), reusing
+  `blocker_init(BLOCKER_PERMANENT)` + `event_emitf(EV_OPERATOR_NEEDED)` exactly as
+  `seed_integrity_gate.c:61-69` / `invariant_sentinel.c:115`.
+- **Part B1** is `utxo_recovery_restore.c:308-315`: gate the
   `seed_integrity_stamp_utxo_sha3` call (`:378-380`) on the compiled-checkpoint
-  match only; do not stamp at non-checkpoint heights.
-- `app/jobs/src/stage_repair_coin_backfill_util.c:133-180` — **REUSE**
-  `find_lowest_prevout_unresolved_hole_unlocked` as-is (no change); caller must hold
-  `progress_store_tx_lock` (it is the `_unlocked` variant).
-- `app/services/include/services/seed_integrity_gate.h` (or a small helper in
-  `app/services/src/utxo_recovery_frontier_gate.c`, already the Invariant-A seam) —
-  declare/define the typed blocker id `seed.torn_import` and the gate entry point;
-  reuse `blocker_init(BLOCKER_PERMANENT)` + `event_emitf(EV_OPERATOR_NEEDED)` exactly
-  as `seed_integrity_gate.c:61-69` / `invariant_sentinel.c:115`.
-- `app/services/src/utxo_recovery_seed_provenance.c:68-78` — ensure the new
-  `seed.torn_import` blocker is **cleared** on the same clean-reimport path as
+  match only.
+- The `seed.torn_import` blocker is **cleared** on the clean-reimport path in
+  `app/services/src/utxo_recovery_seed_provenance.c:68-78`, next to
   `utxo_recovery_clear_cold_import_seed`, so a clean re-import is not permanently
   blocked.
 
+Tested by `lib/test/src/test_seed_torn_import_gate.c`: torn fixture →
+`block_index_loader_seed_stages_from_cold_import` returns 0, blocker
+`seed.torn_import` present, `EV_OPERATOR_NEEDED` emitted naming `first_hole_h`, no
+tip_finalize anchor row, `coins_applied_height` not advanced to H+1,
+`reducer_frontier_compute_hstar` still returns the compiled anchor (H* not
+floated); clean control (no `ok=0` row) → no-op (seeding proceeds, H* reaches H,
+no blocker, no event).
+
 ---
 
-## Open questions (resolve during implementation)
+## Sequencing — copy-prove before any live deploy
 
-1. **Cursor argument.** `find_lowest_prevout_unresolved_hole_unlocked` selects
-   `height < cursor`; pass `cursor=H+1` so heights up to and including H are
-   considered. The recorded `ok=0` row is at the **spending** block (live: 3,145,595),
-   not the creator (3,145,486) — confirm H (seed height) ≥ the recorded hole height
-   in all torn cases, and bound the hole within `(compiled_anchor, H]`.
-2. **Blocker lifecycle.** Confirm the clear path runs on wipe/reimport-prepare and
-   add the `seed.torn_import` clear there, so a subsequent faithful import is not
-   blocked by a stale blocker.
-3. **Part B1 interaction.** Demoting the stamp leaves `gate_commitment_check`
+lint: E13 consensus-parity unaffected — this touches no consensus predicate, only
+the bless decision and the stamp condition.
+
+- **Copy-prove FIRES:** copy `~/.zclassic-c23-cointear-fixture-20260612` to a
+  scratch datadir, boot HEAD against the **copy** (never live, per the recovery
+  doctrine), confirm the gate fires at bless time (typed `seed.torn_import` blocker
+  + `EV_OPERATOR_NEEDED`, no anchor stamp, H* pinned at the checkpoint). Capture the
+  operator message.
+- **Copy-prove NO false-reject:** on a fresh probe-clean two-step cold import (the
+  path that connects through 3,145,830), confirm the gate is a **no-op** and the
+  seed blesses to H*. Both copy-proves must hold before any owner-gated live deploy.
+- **(Owner-gated, deferred) Part B2:** only if the owner wants to close the
+  unspent-forever gap — design the higher-checkpoint shipping ceremony with a
+  same-binary cross-node SHA3-equality proof first.
+
+---
+
+## Residual / open
+
+1. **Part B1 interaction.** Demoting the stamp leaves `gate_commitment_check`
    vacuously-true (returns true when no stamp) at non-checkpoint heights — grep
    `utxo_commitment_sha3_load` callers to confirm no path treats *presence* of a
    stamp as a hard trust signal that would now be absent.
-4. **Seed-path coverage.** Should Part A also run on the snapshot/FlyClient seed
+2. **Seed-path coverage.** Should Part A also run on the snapshot/FlyClient seed
    path, not just the cold-import LDB path? The buried-tear class can arise from any
    trusted base seeded over a log-less region — confirm whether `snapshot_apply.c`
    routes through the same `block_index_loader` bless consumer.
-5. **Part B2 cadence (owner-gated).** If shipping higher checkpoints: how often must
+3. **Part B2 cadence (owner-gated).** If shipping higher checkpoints: how often must
    `(height, sha3, count)` rows be burned/signed, and is the cross-binary SHA3 over
    `(txid,vout,value,script,height,is_coinbase)` byte-stable across a fresh importer
    vs the owner's reference node? Prove with a same-binary cross-node SHA3-equality

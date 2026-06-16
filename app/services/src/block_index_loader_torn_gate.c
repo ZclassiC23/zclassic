@@ -14,18 +14,17 @@
  * block_index_loader_torn_import_gate_fires() right before its forward-only
  * early-return.
  *
- * THE TEAR (live, 2026-06-13): a cold-import coin set matches the recorded
- * count yet is MISSING a canonical coinbase (60fc6f43a630b5b7:0 ~3,145,486).
- * The active chain spends it at the apply frontier, so forward validation
- * recorded a DURABLE `ok=0 prevout_unresolved` row at the SPENDING block
- * (3,145,595 == coins_applied_height), 138 blocks ABOVE seed H — persistent
- * proof the trusted base is torn.
+ * THE TEAR CLASS: a cold-import coin set matches the recorded count yet is
+ * MISSING a canonical coinbase. The active chain spends it at the apply
+ * frontier, so forward validation records a DURABLE `ok=0 prevout_unresolved`
+ * row at the SPENDING block (== coins_applied_height), ABOVE seed H —
+ * persistent proof the trusted base is torn.
  *
  * THE VERDICT FIRES ONLY WHEN ALL THREE HOLD (the durability guard):
  *   (1) hole_found && hole_h in (checkpoint, ceiling], ceiling = the
  *       FORWARD-APPLY frontier (coins_applied_height raised by the active
- *       chain height), NOT seed H — the live hole sits ABOVE H and a
- *       (checkpoint, H] window misses it.
+ *       chain height), NOT seed H — the hole can sit ABOVE H and a
+ *       (checkpoint, H] window would miss it.
  *   (2) hole_status is 'prevout_unresolved' — EXCLUDE 'internal_error' (and
  *       every other class). script_validate persists status='internal_error'
  *       DURABLY (ok=0) for TRANSIENT, RESURRECTABLE infra failures (sapling-
@@ -76,10 +75,9 @@
  * genuinely failed (:267-285) or the body was undecodable (:230-234). A node
  * that has not reached the height has no row → strict no-op.
  *
- * A REFUSAL + typed PERMANENT blocker, NOT a heal/reconcile/backfill (TENACITY
- * I3: no new repair rung). Stamps NOTHING — H* stays pinned at the checkpoint;
- * the VALUE is a CLEAR actionable verdict in place of the opaque I4.3
- * window.consistency HOLD. */
+ * A REFUSAL + typed PERMANENT blocker, NOT a heal/reconcile/backfill (no new
+ * repair rung). Stamps NOTHING — H* stays pinned at the checkpoint; the VALUE
+ * is a CLEAR actionable verdict naming the hole, not an opaque HOLD. */
 
 #include "services/block_index_loader.h"
 #include "validation/main_state.h"

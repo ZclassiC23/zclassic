@@ -176,10 +176,10 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
                                          struct block_index *target,
                                          const char *datadir)
 {
-    /* The reducer is the engine; the old block-disconnect path is gone.
-     * state / coins_tip / params / datadir are retained in the signature
-     * (callers pass the controller-owned context) but the stage-side unwind
-     * needs only the active-chain cursor + a reducer kick. */
+    /* The reducer is the engine: the stage-side unwind needs only the
+     * active-chain cursor + a reducer kick. state / coins_tip / params /
+     * datadir are retained in the signature (callers pass the
+     * controller-owned context) but are unused here. */
     (void)state;
     (void)coins_tip;
     (void)params;

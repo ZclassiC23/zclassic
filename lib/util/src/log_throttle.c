@@ -5,7 +5,7 @@
 
 /* Core decision shared by both entry points. `changed` is true on the first
  * key / a key transition (the caller has already swapped the new key in for the
- * key-based path). Cadence matches the three hand-rolled originals exactly:
+ * key-based path). Cadence:
  *
  *   changed   -> emit; out_reps = the PRIOR key's accumulated count; reset the
  *                counter to 0 for the new key; stamp last_emit = now.
@@ -44,8 +44,7 @@ bool log_throttle_should_emit(struct log_throttle *t, uint64_t key,
             *out_reps = 0;
         return false;
     }
-    /* Swap the new key in and detect a transition in one atomic step (the
-     * reducer_frontier original's atomic_exchange(&last_pair, ...) != pair). */
+    /* Swap the new key in and detect a transition in one atomic step. */
     bool changed = atomic_exchange(&t->last_key, key) != key;
     return throttle_decide(t, changed, now_unix, keepalive_secs, out_reps);
 }

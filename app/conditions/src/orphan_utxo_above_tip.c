@@ -91,11 +91,11 @@ static bool detect_orphan_utxo_above_tip(void)
     if (tip_h <= 0)
         return false; /* tip not yet established — stay quiet */
 
-    /* Wave 2 (module = wave-3 delete): on canonical datadirs
-     * (coins_applied_height present) "mirror rows above tip" is Invariant-B
-     * pipeline depth or harmless projection lag of the rebuildable node.db
-     * utxos cache — NEVER a defect to heal by deleting rows. Detect only on
-     * legacy datadirs where the mirror is still the only coins store. */
+    /* On canonical datadirs (coins_applied_height present) "mirror rows above
+     * tip" is Invariant-B pipeline depth or harmless projection lag of the
+     * rebuildable node.db utxos cache — NEVER a defect to heal by deleting
+     * rows. Detect only on legacy datadirs where the mirror is still the only
+     * coins store. */
     {
         int32_t d_h = -1;
         if (reducer_frontier_derive_coins_best_now(&d_h, NULL, NULL))

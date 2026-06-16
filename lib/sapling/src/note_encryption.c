@@ -14,8 +14,8 @@
  * debug build), we record a small ring of the most-recently-used esk
  * values per process and abort loudly on a collision. This does not
  * defend against multi-process reuse, but catches the in-process
- * RNG-failure scenario that showed up in the 2025-03 incident where a
- * misconfigured entropy source produced a repeating stream. */
+ * RNG-failure scenario where a degraded entropy source produces a
+ * repeating stream and esk repeats. */
 
 #include "sapling/note_encryption.h"
 #include "crypto/blake2b.h"

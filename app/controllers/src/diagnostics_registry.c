@@ -1,11 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Diagnostics registry — the `g_dumpers[]` table and the `dumpstate` /
- * `zcl_state` dispatcher. This is the gem of the old diagnostics
- * mega-module: a single declarative registry that maps a subsystem name
- * to its `*_dump_state_json` function, so adding a new introspectable
- * subsystem is one line here plus one dump function in the owning module
- * (see CLAUDE.md "Adding state introspection").
+ * `zcl_state` dispatcher. A single declarative registry that maps a
+ * subsystem name to its `*_dump_state_json` function, so adding a new
+ * introspectable subsystem is one line here plus one dump function in
+ * the owning module (see CLAUDE.md "Adding state introspection").
  *
  * It also owns the controller-level state (main_state + datadir) shared
  * across the diagnostics controller family, because the block_index dump
@@ -424,9 +423,8 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
 
 /* ── RPC: getmirrorstatus ──────────────────────────────────────────
  *
- * Backs the `zcl_mirror_status` MCP tool: the legacy_mirror monitor.
- * Relocated here when the old comparison apparatus was deleted; this remains
- * the production drift-detection introspection surface.
+ * Backs the `zcl_mirror_status` MCP tool: the legacy_mirror
+ * drift-detection introspection surface.
  */
 bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
                               struct json_value *result)

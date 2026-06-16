@@ -142,7 +142,7 @@ static void reject_memo_clear(void)
     pthread_mutex_unlock(&g_reject_lock);
 }
 
-/* FIX-4 durable-upstream-hole observability (counters declared above, dumped
+/* Durable-upstream-hole observability (counters declared above, dumped
  * by utxo_apply_stage_dump.c). The transition memo is touched ONLY by the
  * single-threaded step path — the g_cursor_gap_warn convention from
  * tip_finalize_stage.c — so it needs no lock. */
@@ -310,7 +310,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (found == 0) {
         /* Reaching here implies next_h < pv_cursor (the >= guard above
          * returned otherwise), so this is a DURABLE upstream hole — a
-         * stale-replay / self-restart artifact — never "not yet" (FIX-4).
+         * stale-replay / self-restart artifact — never "not yet".
          * DELIBERATELY JOB_IDLE, not JOB_BLOCKED: JOB_BLOCKED feeds the
          * supervisor escalation/restart ladder, and a watchdog self-restart
          * is what manufactured this hole class in the first place. The L1
@@ -335,17 +335,16 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     /* Hash-bound verdict gate — the structural stop for the header
-     * height-splice class (forensic 2026-06-11, splice at h=3143355). Stage
-     * logs are keyed BY HEIGHT, so after an in-memory header relabel the
-     * script_validate_log row at next_h can be the verdict for a DIFFERENT
-     * block than the one chain[] now exposes; applying with that stale
-     * verdict tears the coin set at the splice height (the TRUE block never
-     * applies; surfaces ~28 labels later as bad-cb-height). Same
-     * hash-identity guard as tip_finalize's finalize_script_log_ok: a row
-     * provably bound to another hash refuses the apply with a typed
-     * transient blocker until script_validate re-binds the height. A NULL
-     * (pre-column) hash or an absent row cannot prove a mismatch and passes
-     * through — the proof_validate cursor guard above covers ordering. */
+     * height-splice class. Stage logs are keyed BY HEIGHT, so after an
+     * in-memory header relabel the script_validate_log row at next_h can be
+     * the verdict for a DIFFERENT block than the one chain[] now exposes;
+     * applying with that stale verdict tears the coin set at the splice
+     * height (the TRUE block never applies; surfaces ~28 labels later as
+     * bad-cb-height). Same hash-identity guard as tip_finalize's
+     * finalize_script_log_ok: a row provably bound to another hash refuses
+     * the apply with a typed transient blocker until script_validate re-binds
+     * the height. A NULL hash or an absent row cannot prove a mismatch and
+     * passes through — the proof_validate cursor guard above covers ordering. */
     struct script_validate_verdict_row sv_row;
     int sv_found = script_validate_log_verdict_at(db, next_h, &sv_row);
     if (sv_found < 0)
@@ -539,8 +538,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
  * handle inside the apply path's progress_store_tx_lock, and apply_coins_kv
  * authors coins_kv IN the stage txn — a coin created by an earlier block is
  * already committed before a later block's step_apply resolves it, so reads
- * are inherently fresh with no catch_up dependency (the projection's
- * last_consumed_offset freshness hack is gone). */
+ * are inherently fresh with no catch_up dependency. */
 static bool projection_live_lookup(const struct uint256 *txid, uint32_t vout,
                                    struct utxo_apply_lookup *out, void *user)
 {
@@ -675,7 +673,7 @@ bool utxo_apply_stage_init(struct main_state *ms)
     /* Wire the production UTXO-set resolver unless a caller (a test)
      * already installed one: with g_lookup NULL the delta builder treats
      * EVERY external coin as absent and rejects every cross-block
-     * transparent spend as spend_unknown_utxo (live-wedge blocker #5). */
+     * transparent spend as spend_unknown_utxo. */
     if (!g_lookup)
         g_lookup = projection_live_lookup;
     pthread_mutex_unlock(&g_lock);

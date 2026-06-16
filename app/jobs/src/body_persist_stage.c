@@ -273,8 +273,8 @@ static job_result_t step_persist(struct stage_step_ctx *c)
      * so mark BLOCK_HAVE_DATA on the in-memory block_index entry. Then re-emit
      * EV_BLOCK_HEADER with updated nStatus so the projection persists the
      * HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). nTx rides
-     * the same emit (defect #10): an n_tx=0 row breaks the next boot's
-     * nChainTx propagation exactly at this block. */
+     * the same emit: an n_tx=0 row breaks the next boot's nChainTx propagation
+     * exactly at this block. */
     bi->nStatus |= BLOCK_HAVE_DATA;
     if (bi->nTx == 0 && blk.num_vtx > 0)
         bi->nTx = (unsigned int)blk.num_vtx;

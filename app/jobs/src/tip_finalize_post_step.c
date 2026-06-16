@@ -4,21 +4,11 @@
  * See tip_finalize_post_step.h for the contract.
  *
  * tip_finalize_run_post_finalize owns the wallet_sync / Sapling trial-decrypt
- * / nullifier-spend / mempool-remove / MMR / MMB side effects that used to
- * live inside the old block-connect engine. The reducer now runs them after
- * tip publication; the differences from the old inline source are mechanical,
- * not behavioural:
- *
- *   - the connected block is READ BACK from disk via
- *     stage_default_block_reader rather than received as a parameter (the
- *     legacy path already holds the block in hand);
- *   - the wallet / node_db / mempool handles are fetched through the
- *     public app_runtime_* accessors instead of the lib/validation private
- *     process_block_{wallet,mempool,node_db_internal}() accessors (both
- *     ultimately resolve to the same app_runtime context);
- *   - the per-stage timing logger (process_block_log_live_stage) and the
- *     "projection deferred" no-op comment block are dropped — neither is a
- *     side effect, and the design step scopes this to the six effects.
+ * / nullifier-spend / mempool-remove / MMR / MMB side effects, run after tip
+ * publication. The connected block is READ BACK from disk via
+ * stage_default_block_reader (the reducer does not receive it as a parameter),
+ * and the wallet / node_db / mempool handles are fetched through the public
+ * app_runtime_* accessors.
  */
 
 #include "tip_finalize_post_step.h"
@@ -52,14 +42,14 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
     if (!pindex_new)
         return;
 
-    /* Note the published tip for the chain-evidence follow (TASK #33). The
-     * drive MUST NOT run the evidence machinery itself: it holds the
-     * coins_kv authority mutex, and the evidence path takes csr->lock then
-     * coins_kv — calling it from here is the inverted ABBA edge that
-     * deadlocked the live node on 2026-06-12 (deploy 873ba9955). This stamps
-     * one leaf-mutex slot and returns; node_health_collect drains it with
-     * the correct lock order before every health snapshot, so the mismatch
-     * this follow exists to clear is never observed. */
+    /* Note the published tip for the chain-evidence follow. The drive MUST
+     * NOT run the evidence machinery itself: it holds the coins_kv authority
+     * mutex, and the evidence path takes csr->lock then coins_kv — calling it
+     * from here is the inverted ABBA edge that would deadlock via inverted
+     * lock order. This stamps one leaf-mutex slot and returns;
+     * node_health_collect drains it with the correct lock order before every
+     * health snapshot, so the mismatch this follow exists to clear is never
+     * observed. */
     chain_evidence_note_finalized_tip(pindex_new);
 
     char datadir[2048];
@@ -68,13 +58,12 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
     struct block blk;
     block_init(&blk);
     if (!stage_default_block_reader(&blk, pindex_new, datadir, NULL)) {
-        /* No on-disk body (HAVE_DATA absent / read failed). The legacy
-         * path always has the just-connected block in hand; here we read
-         * it back from disk, so a missing body is a benign skip — the tip
-         * still advanced, only the derived side effects are deferred.
-         * The skip must be DIAGNOSED, never silent: all six side effects
-         * (wallet sync, note decrypt, nullifier spend, mempool remove,
-         * MMR, MMB) are dropped for this height. */
+        /* No on-disk body (HAVE_DATA absent / read failed). The body is read
+         * back from disk, so a missing body is a benign skip — the tip still
+         * advanced, only the derived side effects are deferred. The skip must
+         * be DIAGNOSED, never silent: all six side effects (wallet sync, note
+         * decrypt, nullifier spend, mempool remove, MMR, MMB) are dropped for
+         * this height. */
         LOG_WARN("tip_finalize",
                  "post-finalize side effects skipped h=%d have_data=%d: "
                  "body unreadable; wallet/mempool/MMR/MMB deferred",
@@ -91,10 +80,10 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
      * in the coinbase scriptSig must equal OUR label for the block just
      * finalized. The body was already read back from disk above, so this
      * costs one header hash + a few byte compares — no extra I/O. A
-     * mismatch is the 28-blocks-late splice signature caught at block 1:
-     * HOLD the pipeline (refuse h+1 onward) + PAGE. E13-neutral: the
-     * block stays valid; only OUR pipeline holds. Crash-only: no FATAL,
-     * side effects still run so the published tip stays coherent.
+     * mismatch is a label/height shift (a mis-spliced chain): HOLD the
+     * pipeline (refuse h+1 onward) + PAGE. E13-neutral: the block stays
+     * valid; only OUR pipeline holds. Crash-only: no FATAL, side effects
+     * still run so the published tip stays coherent.
      *
      * HASH-BOUND: the check fires only when the read body IS the indexed
      * block (header hash == phashBlock). A body that hashes differently
@@ -177,8 +166,7 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                 (unsigned int)pindex_new->nHeight);
     }
 
-    /* Projection-deferred DIAGNOSTIC (preserved from the old inline
-     * block-connect side effect).
+    /* Projection-deferred DIAGNOSTIC.
      * The reducer consensus path does NOT write the derived block/tx SQLite
      * projection inline — the active chain, block index, and coins view are
      * authoritative and the projection is repairable from verified block

@@ -568,9 +568,8 @@ bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc)
 {
-    /* Timing only (no behavior change): break p2p_services_start
-     * (~11s in docs/work/sync-perf-profile-2026-05-29.md) into its
-     * synchronous sub-stages so projection-storage / file-sync / network /
+    /* Timing-only: break p2p_services_start into its synchronous
+     * sub-stages so projection-storage / file-sync / network /
      * RPC-register / frontend(Tor) / runtime costs are individually
      * visible. Markers reuse the existing [boot] <phase> Nms idiom on the
      * same monotonic-ms basis. */
@@ -1406,28 +1405,28 @@ bool app_init_services(struct app_context *ctx,
 
     atomic_store(svc->running, true);
 
-    /* Round 5: start the supervisor thread BEFORE runtime services
-     * register their liveness contracts. Idempotent — subsequent calls
-     * return true without re-spawning. The supervisor runs its own
-     * monotonic-clock loop independent of the lib/health sweeper, so a
-     * wedged sweeper can no longer silence stall detection. */
+    /* Start the supervisor thread BEFORE runtime services register their
+     * liveness contracts. Idempotent — subsequent calls return true
+     * without re-spawning. The supervisor runs its own monotonic-clock
+     * loop independent of the lib/health sweeper, so a wedged sweeper
+     * cannot silence stall detection. */
     if (!supervisor_start()) {
         fprintf(stderr,  // obs-ok:supervisor-start-fallback-warn
             "WARNING: supervisor_start failed; lib/health sweeper alone\n");
     }
     supervisor_domains_init();
 
-    /* Round 6 C1+C5: initialize the typed blocker primitive. Must
-     * come before any subsystem calls blocker_set / mirror_consensus_
-     * record_blocker. Idempotent. */
+    /* Initialize the typed blocker primitive. Must come before any
+     * subsystem calls blocker_set / mirror_consensus_record_blocker.
+     * Idempotent. */
     blocker_module_init();
 
     /* Outbound peer-floor liveness contract.
      *
-     * Failure mode being addressed: on 2026-05-21 the node sat with 0
-     * outbound peers + 1 stuck inbound for 8.6 h. thread_open_connections
-     * was running but addrman was exhausted, so `connman_pick_next_outbound_target`
-     * returned false on every tick — silently, with no log, no event.
+     * Failure mode being addressed: the node can sit with 0 outbound
+     * peers + a stuck inbound indefinitely. thread_open_connections keeps
+     * running but addrman is exhausted, so `connman_pick_next_outbound_target`
+     * returns false on every tick — silently, with no log, no event.
      *
      * Contract semantics:
      *   on_tick (every 15 s): snapshot outbound_healthy via
@@ -1452,15 +1451,15 @@ bool app_init_services(struct app_context *ctx,
     /* Close the alert loop: install the event→sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches a human/MCP and the health
-     * surface instead of dead-ending. Was never called in production. */
+     * surface instead of dead-ending. */
     alerts_init();
     self_heal_register(svc->state);
     staged_sync_supervisor_register(svc->state);
 
-    /* §3.1: recover the durable finalized frontier a reboot dropped, then heal
-     * the cold-import staged-sync wedge. staged_sync_supervisor_register (above)
-     * ran tip_finalize_stage_init, registering the chain-height authority seeded
-     * from the coins-restore tip. Adopt the durable frontier forward-only HERE —
+    /* Recover the durable finalized frontier a reboot dropped.
+     * staged_sync_supervisor_register (above) ran tip_finalize_stage_init,
+     * registering the chain-height authority seeded from the coins-restore
+     * tip. Adopt the durable frontier forward-only HERE —
      * after the authority is live (active_chain_height reads the real coins tip)
      * but BEFORE runtime services / reducer ingest start — so there is no race.
      * Both calls are no-ops unless their precondition holds; neither rewinds,
@@ -1621,9 +1620,8 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
     printf("[shutdown] stopping runtime services\n");
     zcl_service_kernel_stop_all(&svc->runtime_kernel);
-    /* Round 5: stop the supervisor AFTER runtime services so any
-     * stall-detection callbacks they emit at teardown are still
-     * delivered. */
+    /* Stop the supervisor AFTER runtime services so any stall-detection
+     * callbacks they emit at teardown are still delivered. */
     supervisor_stop();
     printf("[shutdown] joining runtime workers\n");
     boot_join_address_backfill_service(svc);

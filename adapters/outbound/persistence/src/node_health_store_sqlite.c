@@ -4,12 +4,10 @@
  * node_health_store_sqlite — sqlite implementation of
  * node_health_store_port.
  *
- * The three methods below are the raw reads that used to live inline in
- * app/services/src/node_health_service.c (health_query_int /
- * health_query_int64 over fixed SQL, and the sqlite3_db_filename + WAL
- * stat). They are moved behind the port with EXACT same SQL text and the
- * same WAL-path construction so the health snapshot is bit-for-bit
- * identical.
+ * The three methods below are the raw health reads (fixed-SQL int /
+ * int64 queries, and the sqlite3_db_filename + WAL stat). The EXACT SQL
+ * text and the WAL-path construction are load-bearing: they must stay
+ * identical so the health snapshot is bit-for-bit identical.
  */
 
 #include "adapters/outbound/persistence/node_health_store_sqlite.h"

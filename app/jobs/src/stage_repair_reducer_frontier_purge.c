@@ -26,11 +26,11 @@
  * the canonical active-chain block at their height, plus the hashless
  * downstream rows (proof/body_persist/tip_finalize) at those heights.
  * Rows like this exist only after a height-relabel or reorg residue:
- * the 2026-06-10 -2 relabel processed network blocks under labels two
- * below their true heights, persisting false ok=0 bad-cb-height
- * verdicts that NO other repair touches (their status is outside every
- * replay filter, the refills fire only on ROWLESS holes, and the
- * cursors moved past them) — pinning H* forever. Purging converts them
+ * a height-relabel can process network blocks under labels below their
+ * true heights, persisting false ok=0 bad-cb-height verdicts that NO
+ * other repair touches (their status is outside every replay filter,
+ * the refills fire only on ROWLESS holes, and the cursors moved past
+ * them) — pinning H* forever. Purging converts them
  * into ordinary rowless holes the existing refill + cursor machinery
  * already heals. Genuine consensus rejects are SAFE: their stored hash
  * IS the canonical block at that height, so they never match the
@@ -148,7 +148,7 @@ bool stage_reducer_frontier_purge_noncanonical(
     return true;
 }
 
-/* ── FIX-A: stale reorg-residue tip_finalize verdict replacement ──────
+/* ── stale reorg-residue tip_finalize verdict replacement ────────────
  * Tri-state read of a tip_finalize_log row's ok column at `height`:
  * RF_TIPFIN_ABSENT (no row), RF_TIPFIN_OK (ok=1), RF_TIPFIN_FAIL (ok=0).
  * Only an ok=0 row is eligible for replacement (an absent row is the

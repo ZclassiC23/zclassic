@@ -4,10 +4,6 @@ This document records EXACTLY what cryptographic validation is performed at
 each stage of block processing. "Trust nothing" — every hash, every signature,
 every proof is verified by one of these layers.
 
-> Moved here from `lib/validation/include/validation/validation_audit.h`
-> (a documentation-only header with zero includers) so the matrix is
-> searchable under `docs/`.
-
 ## Validation Stages
 
 | STAGE | Hash | PoW | Merkle | Scripts | UTXOs | Shielded |
@@ -87,8 +83,8 @@ ZClassic uses Equihash(200,9) with solution size 1344 bytes.
 - SHA3-256 verification against hardcoded checkpoint
 - Loads `block_index.bin` flat file (~8s for 6M entries)
 - Connects remaining blocks via P2P (~2s)
-- File: `config/src/boot.c` (lines 740-880)
-- File: `app/controllers/src/sync_controller.c` (lines 2831-3108)
+- File: `config/src/boot.c`
+- File: `app/controllers/src/sync_controller.c`
 
 **Method 2 — P2P Fast Sync (~60 seconds):**
 - Connect to NODE_ZCL23 peer → receive UTXO chunk manifest

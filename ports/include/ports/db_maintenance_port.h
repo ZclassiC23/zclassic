@@ -32,8 +32,7 @@
  * never closes it.
  *
  * Contract for every method:
- *   - Runs the op's SQL verbatim via the same exec path the inline code
- *     used (sqlite3_exec, no statement caching).
+ *   - Runs the op's SQL verbatim via sqlite3_exec (no statement caching).
  *   - Returns true iff the op reported success (SQLITE_OK).
  *   - On failure returns false and, if `err`/`errsz` are non-NULL, copies
  *     a NUL-terminated SQLite error string into `err` (truncated to
@@ -41,12 +40,10 @@
  *   - Returns false (with a "no/closed db" message) if `self` is NULL or
  *     the wrapped connection is NULL — the scheduler validates db-open
  *     state before it ever reaches the port, so this is a belt-and-braces
- *     guard mirroring the original null check.
+ *     guard.
  *
  * Threading: the scheduler holds its own mutex across the call, so a
- * synchronous run_now and the tick thread never race on the handle —
- * exactly the concurrency contract the raw inline code had before the
- * seam.
+ * synchronous run_now and the tick thread never race on the handle.
  */
 
 #ifndef ZCL_PORTS_DB_MAINTENANCE_PORT_H
@@ -73,8 +70,7 @@ struct db_maintenance_port {
      * known and the WAL file stat()s successfully; returns false (out
      * untouched) for a NULL self / NULL out / NULL connection, an
      * in-memory DB with no on-disk path, or a WAL file that does not exist
-     * yet — exactly the "size unavailable -> 0" behaviour the inline code
-     * had. */
+     * yet (size-unavailable returns false / out untouched). */
     bool (*wal_size_bytes)(void *self, int64_t *out);
 };
 

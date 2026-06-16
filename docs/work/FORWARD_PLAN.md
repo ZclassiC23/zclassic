@@ -20,29 +20,20 @@
 > [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md).
 > Coin-tear fixture `~/.zclassic-c23-cointear-fixture-20260612` (KEEP).
 
-**The #1 work now** ([`../MVP.md`](../MVP.md) is the scoreboard of record):
-1. **Promote ◐ slice-gates to full ✅ CI gates** — #3 real sync, #5 real
-   shielded buy, #7 full-binary restart-to-peer-tip, plus net-new jobs for
-   #1 (clean-container install) and #8 (parity). Only ✅ moves the MRS.
-2. **Accumulate evidence windows** — MVP-C6 soak accrues on the dedicated
-   `zclassic23-soak` node (pinned binary, RPC 18242); the C8 parity oracle
-   is ACTIVE vs zclassicd (default-ON when an oracle resolves); replay-canary
-   nightly/weekly timers install after the first live green run; first seal
-   ratification expected at grid 3,146,000 (`zcl_state subsystem=seal`).
-3. **Harden cold-import bootstrap** — write-time import correctness gate
-   (REFUTED: float-H* (consensus-unsafe) + build-L2 (forbidden rung); delete
-   the ladder LAST); root-cause on the preserved fixture, datadir COPY never
-   live ([`fast-path.md`](./fast-path.md)).
+**The #1 work now:** promote ◐ slice-gates to full ✅ CI gates and accumulate
+soak/canary/seal evidence (first seal ratification expected at grid 3,146,000,
+`zcl_state subsystem=seal`) — only ✅ moves the MRS; the **Critical path**
+checklist below is the detail. Cold-import bootstrap hardening = a write-time
+import correctness gate (REFUTED: float-H* (consensus-unsafe) + build-L2
+(forbidden rung); delete the ladder LAST); root-cause on the preserved
+fixture, datadir COPY never live ([`fast-path.md`](./fast-path.md)).
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;
 NEVER ship a consensus-adjacent change without a copy proof.
 
 **MRS scoreboard:** see **[`docs/MVP.md`](../MVP.md)** (scoreboard of record).
-Summary: ~2/8 met by hand, 0/8 CI-verified full. `make ci` chains five hermetic
-**slice-gates** (◐) — each FOCUSED via `ZCL_TEST_ONLY`, false-green-guarded;
-they protect a *slice* of a criterion, not the full operator claim, so they are
-◐ not ✅ and do not move the MRS.
+Summary: ~2/8 met by hand, 0/8 CI-verified full.
 
 ---
 
@@ -120,11 +111,9 @@ must not jump the queue.
       proves it; remaining = hermetic-CI promotion). Operator coverage:
       [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** the node holds tip (recovered 2026-06-16), so C3/C6/C8 are
-unblocked for live forward progress. CI promotion (A) gates honest measurement
-of everything. C6 is wall-clock on the soak node. C8's oracle is up + active; it
-needs the soak window + an exact reference. C3 needs the snapshot-serve proof
-against the second node. Boot refactor gates nothing v1.
+**Gating summary:** the node holds tip (recovered 2026-06-16) → C3/C6/C8 are
+unblocked for live forward progress; CI promotion (A) gates honest measurement;
+the boot refactor gates nothing v1.
 
 ---
 

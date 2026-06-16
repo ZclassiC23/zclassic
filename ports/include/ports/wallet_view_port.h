@@ -26,8 +26,7 @@
  *
  * Threading: the live adapter wraps a single sqlite3* opened by boot.
  * Both methods are read-only and run on request threads; sqlite's own
- * locking serializes them against the wallet writer — the same
- * concurrency contract the raw code had before the seam.
+ * locking serializes them against the wallet writer.
  */
 
 #ifndef ZCL_PORTS_WALLET_VIEW_PORT_H
@@ -54,8 +53,8 @@ struct wallet_view_held_token {
 /* ── Page-projection row types ────────────────────────────────
  * The rows the wallet view PAGES (dashboard / coins / history /
  * node / shield) read. Each mirrors exactly the column list and
- * order of the SELECT the controller used to issue inline, so the
- * rendered HTML stays byte-identical. The adapter is the only place
+ * order of each SELECT, so the rendered HTML stays byte-identical.
+ * The adapter is the only place
  * that names sqlite for these; controllers reach them through the
  * service wrappers in services/wallet_view_projection.h. */
 

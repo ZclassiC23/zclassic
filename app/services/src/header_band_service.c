@@ -2,14 +2,14 @@
  *
  * Header band backfill — closes the installed-above-frontier header hole.
  *
- * The defect class (live, 2026-06-11): cold-import installs a pprev-less
- * island anchor + cursor tip ABOVE the genesis-rooted header frontier,
- * leaving a band of never-requested headers between the contiguous
- * frontier (h=3,140,573) and the island root (h=3,143,301). Header
- * sync's restart-from-tip policy then kills every conversation that
- * could fill the band ("low batch ... restarting getheaders from tip"),
- * while tip-anchored locators die at the island root and can never name
- * a band block — the hole is permanent by construction.
+ * The defect class: cold-import installs a pprev-less island anchor +
+ * cursor tip ABOVE the genesis-rooted header frontier, leaving a band of
+ * never-requested headers between the contiguous frontier and the island
+ * root. Header sync's restart-from-tip policy then kills every
+ * conversation that could fill the band ("low batch ... restarting
+ * getheaders from tip"), while tip-anchored locators die at the island
+ * root and can never name a band block — the hole is permanent by
+ * construction.
  *
  * The fix is request-side only (header ACCEPTANCE is untouched):
  *   - syncsvc_header_band_continue: a below-tip batch that extends the
@@ -18,8 +18,8 @@
  *     recorded, periodic getheaders anchor at the contiguous frontier
  *     (the peer forks there and serves the band). The anchor is the
  *     HIGHER of two authorities: the highest populated active-chain
- *     slot AND the index-frontier cursor (defect #7 — slots lag the
- *     block index during the walk; a slot-only anchor livelocks).
+ *     slot AND the index-frontier cursor (slots lag the block index
+ *     during the walk; a slot-only anchor livelocks).
  *   - syncsvc_header_band_after_batch: on closure (tip descends
  *     contiguously to a trust root) run a NON-DESTRUCTIVE in-memory
  *     slot-fill (the pprev chain IS contiguous at closure — that is the
@@ -58,26 +58,24 @@
 
 #include <stdatomic.h>
 
-/* Band INDEX-frontier cursor — defect #7 (band anchor slot/index
- * divergence livelock, live 2026-06-11 ~19:50): header ACCEPTANCE
- * inserts into the block index WITHOUT populating active-chain slots
- * (slots only move on tip moves / boot restore repair), so an anchor
- * derived from populated slots alone pins one batch behind the index
- * once the walk passes the boot-populated slot extent. The pinned
- * locator makes the peer fork at the stale slot frontier and re-serve
- * the same already-known range forever (accepted=160, newly_added=0 —
- * live pin: anchor 3,141,533 → re-served 3,141,534..3,141,693), nothing
- * in that batch path populates slots, and the anchor never advances:
- * livelock.
+/* Band INDEX-frontier cursor — guards the band anchor slot/index
+ * divergence livelock: header ACCEPTANCE inserts into the block index
+ * WITHOUT populating active-chain slots (slots only move on tip moves /
+ * boot restore repair), so an anchor derived from populated slots alone
+ * pins one batch behind the index once the walk passes the boot-populated
+ * slot extent. The pinned locator makes the peer fork at the stale slot
+ * frontier and re-serve the same already-known range forever
+ * (accepted=160, newly_added=0), nothing in that batch path populates
+ * slots, and the anchor never advances: livelock.
  *
  * The cursor is the index half of the anchor derivation: the highest
  * accepted batch tail that walks pprev-contiguously to a trust root
  * (utxo_recovery_block_trust_rooted) strictly below the island root. It
  * is a HINT, never an authority — re-verified (trust-rooted + below
  * island) at every use, monotone under concurrent peer threads, cleared
- * on band closure. block_index nodes are heap-stable for the process
- * lifetime (the 2026-06-03 phashBlock fix pinned per-node storage), so
- * a stale cursor is droppable, never dangling. */
+ * on band closure. block_index nodes have per-node hashBlock storage
+ * stable for the process lifetime, so a stale cursor is droppable, never
+ * dangling. */
 static _Atomic(struct block_index *) g_band_index_frontier;
 
 /* Monotone cursor advance (CAS loop: a re-served lower batch must never
@@ -126,11 +124,10 @@ bool syncsvc_header_band_continue(const struct active_chain *chain,
     if (!blocker_exists(HEADER_BAND_BLOCKER_ID))
         utxo_recovery_note_band_unrooted_tip(tip, "band_continue");
 
-    /* Defect #7: advance the index-frontier cursor even when the batch
-     * added nothing new (newly_added==0) — an all-known trust-rooted
-     * batch still proves the index extends to last_header, and the next
-     * request must anchor there (or higher) or the peer re-serves the
-     * same range forever. */
+    /* Advance the index-frontier cursor even when the batch added nothing
+     * new (newly_added==0) — an all-known trust-rooted batch still proves
+     * the index extends to last_header, and the next request must anchor
+     * there (or higher) or the peer re-serves the same range forever. */
     band_cursor_advance(last_header);
 
     LOG_INFO("headers",
@@ -161,7 +158,7 @@ struct block_index *syncsvc_header_band_backfill_anchor(
      * Sufficient at boot (the restored chain ends there), but it LAGS
      * the block index during the walk: header acceptance inserts into
      * the index only, so a slot-only anchor pins one batch back and the
-     * peer re-serves the same known range forever (defect #7). */
+     * peer re-serves the same known range forever. */
     struct block_index *slot_frontier = NULL;
     for (int h = island_root->nHeight - 1; h >= 0; h--) {
         struct block_index *slot = active_chain_at(chain, h);
@@ -263,7 +260,7 @@ void syncsvc_header_band_after_batch(struct main_state *ms,
          * advance the index-frontier cursor here: short batches (<160)
          * never reach band_continue (the continuation gate requires a
          * full batch), but they extend the index all the same and the
-         * next kick must anchor past them (defect #7). */
+         * next kick must anchor past them. */
         if (last_header && last_header->nHeight < island_root->nHeight) {
             if (utxo_recovery_block_trust_rooted(last_header))
                 band_cursor_advance(last_header);

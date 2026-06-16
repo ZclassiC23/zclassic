@@ -115,8 +115,8 @@ bool rpc_importprivkey(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "importprivkey: failed to derive pubkey from privkey");
     }
 
-    /* Plan §5.4: persist BEFORE mutating the keystore. If the write
-     * fails we have not touched wallet state — simply error out. */
+    /* Persist BEFORE mutating the keystore. If the write fails we have
+     * not touched wallet state — simply error out. */
     if (ctx->wallet_db) {
         struct zcl_result wr = wallet_sqlite_write_key_r(ctx->wallet_db, &pk, &key);
         if (!wr.ok) {
@@ -129,8 +129,8 @@ bool rpc_importprivkey(const struct json_value *params, bool help,
         }
 
         /* Readback: prove the write hit disk with the bytes we asked
-         * for. A passing write + failing readback was the exact
-         * footgun behind the bug this change fixes. */
+         * for. A passing write + failing readback would silently lose
+         * the key. */
         if (!wallet_readback_key(ctx->wallet_db, &pk, &key)) {
             memory_cleanse(key.vch, 32);
             json_set_str(result,

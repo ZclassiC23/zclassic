@@ -41,7 +41,7 @@ static bool detect_stale_validate_headers_repair(void)
     /* For a SOLUTIONLESS poison the symptom is "the frontier block's Equihash
      * solution is missing." Once the CORRECT solution is backfilled, the
      * non-destructive validate_headers recheck (header_from_repair_table +
-     * recheck_failed_rows, 060a5cb4c) flips the ok=0 row forward — no
+     * recheck_failed_rows) flips the ok=0 row forward — no
      * destructive rewind is needed. So this Condition must DEACTIVATE the moment
      * the correct solution is present, letting the recheck self-heal and the
      * attempt counter reset (condition.c resets on !detected once cleared). The
@@ -106,7 +106,7 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
         /* Step 2 — if the correct solution is now present, DEFER to the
          * non-destructive validate_headers recheck. Do NOT poison_rewind: the
          * recheck flips the ok=0 row forward (recheck floor pinned at the lowest
-         * repairable height, 060a5cb4c) while preserving all downstream
+         * repairable height) while preserving all downstream
          * progress. A destructive rewind here would delete forward validate work
          * and re-starve the recheck (forcing a long forward re-drain that parks
          * the recheck) — the precise churn that produced the 5x-unwitnessed

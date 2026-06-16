@@ -96,9 +96,8 @@ bool db_tx_find(struct node_db *ndb, const uint8_t txid[32],
      * explorer/onion request threads (tx + address pages) and wallet
      * paths reach this lookup concurrently, and interleaved
      * reset/bind/step on one shared statement corrupts its internal
-     * state — the same class that SIGABRTed node_db_state_get before
-     * its per-call fix. Sub-millisecond cost; not a per-block path.
-     * The cached stmt_tx_find stays allocated but unused. */
+     * state. Sub-millisecond cost; not a per-block path. The cached
+     * stmt_tx_find is intentionally left unused. */
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT block_hash,block_height,tx_index,"

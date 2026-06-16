@@ -610,7 +610,7 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
     chain_restore_quarantine_synthetic_tip(ms, datadir);
     chain_restore_clear_resolved_anchor(ms, datadir);
 
-    /* (c) 2026-06-16: the rebuild cascade below mutates shared block_index node
+    /* (c) the rebuild cascade below mutates shared block_index node
      * fields (nStatus/nFile/nDataPos/phashBlock/pprev/pskip/nBits/...) and the
      * active_chain slot array. bg_hash_verification_service reads EXACTLY those
      * fields under ms->cs_main, so this rebuild MUST hold cs_main too —
@@ -722,9 +722,8 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
             false, false);
         /* Integrity is verifiably clean — any pending auto-reindex
          * request is stale (already served, or written for a state that
-         * no longer exists). Without this, a sentinel left by a past
-         * unrecoverable verdict makes every subsequent healthy boot
-         * re-run a full -reindex-chainstate forever (task #29). */
+         * no longer exists). Without this, a stale sentinel makes every
+         * subsequent healthy boot re-run a full -reindex-chainstate forever. */
         if (datadir && datadir[0] && boot_auto_reindex_pending(datadir)) {
             boot_auto_reindex_clear(datadir);
             LOG_INFO("chain", "[chain-integrity] cleared stale auto-reindex "

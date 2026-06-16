@@ -6,13 +6,13 @@
  *
  * The parallel LevelDB → SQLite UTXO import orchestration (turbo scope,
  * recovery_policy wipe gate, decoder/writer thread pipeline + chunk
- * ring-buffer, LevelDB reader loop, validation loop, cleanup) was relocated
- * into app/services/src/node_db_import_service.c, which speaks struct
- * zcl_result (Law 2). This controller is dumb glue: it keeps the legacy
- * node_db_sync_import_utxos() name + `int rows-or--1` contract so its callers
- * do not change, and adapts the Service's result back to that int — on
- * success it returns the imported-row count, on failure -1 (the reason was
- * already logged + travels in the result). */
+ * ring-buffer, LevelDB reader loop, validation loop, cleanup) lives in
+ * app/services/src/node_db_import_service.c, which speaks struct zcl_result
+ * (Law 2). This controller is dumb glue: it keeps the node_db_sync_import_utxos()
+ * name + `int rows-or--1` contract so its callers do not change, and adapts the
+ * Service's result back to that int — on success it returns the imported-row
+ * count, on failure -1 (the reason was already logged + travels in the
+ * result). */
 
 #include "controllers/sync_controller.h"
 #include "services/node_db_import_service.h"

@@ -3,7 +3,7 @@
  * stage_repair_reducer_frontier_tipfin — FIX-1: hash-bound tip_finalize_log
  * hole backfill (row-only repair, runs before the L1 coin-tear refusal).
  *
- * The live wedge class: a rowless tip_finalize_log span [H*+1 .. served_floor)
+ * The failure class this repairs: a rowless tip_finalize_log span [H*+1 .. served_floor)
  * pins H* while every upstream log (including utxo_apply_log — coins DID
  * apply those heights) is ok=1 through the span. Re-finalizing instead was
  * REJECTED: clamping tip_finalize back trips the live-UTXO-count check

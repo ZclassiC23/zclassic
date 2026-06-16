@@ -4,13 +4,11 @@
  * block_index_sidecar_sqlite — sqlite implementation of
  * block_index_sidecar_port.
  *
- * The lookup below is the raw cross-check read that used to live inline
- * in app/services/src/block_index_sidecar_integrity.c
- * (bii_check_tip_in_sql): prepare "SELECT height FROM blocks WHERE
- * hash=?", bind the 32-byte tip hash as a blob, single-shot readonly
- * step, read column-0 as int64, finalize. It is moved behind the port
- * with the EXACT same SQL text, bind order, step, and column read so the
- * bii_verify() verdict is bit-for-bit identical.
+ * The lookup below is the raw cross-check read backing bii_verify():
+ * prepare "SELECT height FROM blocks WHERE hash=?", bind the 32-byte tip
+ * hash as a blob, single-shot readonly step, read column-0 as int64,
+ * finalize. The EXACT SQL text, bind order, step, and column read are
+ * load-bearing so the bii_verify() verdict is bit-for-bit identical.
  */
 
 #include "adapters/outbound/persistence/block_index_sidecar_sqlite.h"
@@ -25,8 +23,8 @@ static inline struct block_index_sidecar_sqlite_ctx *ctx_of(void *self)
     return (struct block_index_sidecar_sqlite_ctx *)self;
 }
 
-/* "SELECT height FROM blocks WHERE hash=?" — verbatim from the inline
- * bii_check_tip_in_sql path. Returns the three-way lookup result. */
+/* "SELECT height FROM blocks WHERE hash=?". Returns the three-way
+ * lookup result. */
 static enum bii_height_lookup bii_sql_lookup_block_height(void *self,
                                                           const uint8_t hash32[32],
                                                           int64_t *out_height)

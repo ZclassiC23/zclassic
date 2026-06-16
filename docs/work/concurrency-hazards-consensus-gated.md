@@ -1,14 +1,12 @@
 # Consensus-gated concurrency hazards (boot-validation blocked)
 
 Status: **root-caused + verified by direct code reads (2026-06-03).** These are
-real cross-thread hazards in the consensus/chain-advance path. Each fix changes
-locking on the live chain path and MUST be boot-validated for both correctness
-and absence of deadlock under live reorg — currently **BLOCKED by the §3
-coins-wedge** (a fresh boot FATAL-halts at the coins-integrity gate before P2P).
-They are documented here, with precise fixes, to apply as a focused
-boot-validated pass once the wedge is resolved. Surfaced by the tree-wide
-concurrency sweep (the same audit that found and we fixed the unit-testable
-hazards). NONE is the already-fixed `phashBlock` UAF.
+real cross-thread hazards in the consensus/chain-advance path, documented here
+with precise fixes. Each fix changes locking on the **live chain path** and MUST
+be boot-validated for both correctness AND absence of deadlock under live reorg
+before applying — currently **BLOCKED by the §3 coins-wedge** (a fresh boot
+FATAL-halts at the coins-integrity gate before P2P). NONE is the already-fixed
+`phashBlock` UAF.
 
 ## 1 — bg_validation_service.c lock-free `chain_active` read (HIGHEST value — a real UAF)
 
@@ -24,9 +22,8 @@ active_chain_move_window_tip → active_chain_fill_window`
 `c->height` as the tip advances. `struct active_chain` has NO internal lock; the
 protecting lock is `ms->cs_main`, which `bg_validation_service.c` **never takes**
 (grep `cs_main` in that file = empty). When the realloc fires, the bg thread
-reads a freed `c->chain` array → SIGSEGV/UAF. This is the **same class as the
-fixed phashBlock UAF** (lock-free read of a structure the writer reallocs), in a
-different structure.
+reads a freed `c->chain` array → SIGSEGV/UAF. Same class as the fixed phashBlock
+UAF, in a different structure.
 
 **Proof it is real, not speculative:** the sibling service
 `bg_hash_verification_service.c` (~lines 185-206) does the identical work and
@@ -42,12 +39,8 @@ and the height bound into locals; release `cs_main`; THEN do
 `read_block_from_disk` + `validate_block_proofs` on the snapshot (block_index
 nodes are per-node and never freed, so retaining `pindex` across disk I/O is
 safe — only the `active_chain` array access must move under `cs_main`). Apply to
-the :430/:454 refresh and the :670-671 genesis probe.
-
-**Why deferred:** changes locking around chain advance; must be boot-validated
-for liveness (no deadlock vs the reducer's `chain_activation_controller` mutex)
-and forward-progress. Cannot be unit-tested without the live reducer-vs-bg-thread
-realloc race.
+the :430/:454 refresh and the :670-671 genesis probe. Cannot be unit-tested
+without the live reducer-vs-bg-thread realloc race.
 
 ## 2 — chainstate.c `nChainWork` 256-bit torn read (consensus-critical)
 
@@ -67,10 +60,6 @@ consensus walkers under one lock (cs_main, or take the block_map rwlock as a rea
 lock for a work-comparison walk and a write lock around the `nChainWork` update),
 so a 256-bit work value is never read mid-update.
 
-**Why deferred:** alters locking on chain selection across header/validation/
-message-handler threads; a wrong tip decision is a consensus fault. Needs
-boot-validation for correctness + deadlock-freedom under live reorg.
-
 ## 3 — node_health_service.c / chain_tip.c lock-free `pindex_best_header` read (low)
 
 `node_health_service.c:254-255` reads `ms->pindex_best_header->nHeight` with no
@@ -83,9 +72,7 @@ correctly take `cs_main`.
 
 **Fix:** wrap the read in `zcl_mutex_lock(&ms->cs_main)`/unlock, copy `nHeight`
 into a local (match `gap_fill_service.c`); apply to `chain_tip.c:64-65` too.
-**Why deferred:** taking `cs_main` on the health/diagnostic path needs
-confirmation it adds no contention/ordering issue vs live chain-advance
-(boot-validation). Low value (stale display only) — batch with items 1/2.
+Low value (stale display only) — batch with items 1/2.
 
 ## 4 — progress_store.c diagnostic race on `g_path`/`g_opened_at` (low)
 
@@ -94,6 +81,5 @@ confirmation it adds no contention/ordering issue vs live chain-advance
 `_Atomic` so the open/closed flag is race-free; `g_path`/`g_opened_at` are plain
 and can be read mid-write → garbled/stale path string in a state dump, no crash.
 **Fix (if pursued):** snapshot both into locals under `g_lock` inside the dump.
-**Why deferred:** diagnostic-only, no memory-safety/consensus impact; adding a
-`g_lock` acquire on the dump path interleaves with the open/close init mutex —
-worth a deliberate review, not a drive-by edit.
+Diagnostic-only — the `g_lock` acquire interleaves with the open/close init
+mutex, so it is a deliberate review, not a drive-by edit. Batch with items 1/2.

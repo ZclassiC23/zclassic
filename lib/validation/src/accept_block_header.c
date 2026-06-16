@@ -226,16 +226,15 @@ bool accept_block_header(const struct block_header *header,
                                                 "bad-prevblk", NULL);
             }
             /* Heights are DERIVED from the parent link, never installed from
-             * the active-chain label. The deleted label-trust path here
+             * the active-chain label. A label-trust path here
              * (expected_height = active_chain_height() when pindex ==
              * active_tip, plus a parent nHeight rewrite to active_h - 1) let
              * an internally inconsistent authority pair re-height the live
              * tip header and its parent one LOW when a peer re-delivered a
              * headers batch containing the current tip — cascading a -1
              * splice over every header above and unwinding the reducer onto
-             * the wrong blocks (forensic 2026-06-11, splice at h=3143355,
-             * detected 28 labels later as bad-cb-height). The hash-linked
-             * derive-walk below remains the only height repair. */
+             * the wrong blocks. The hash-linked derive-walk below is the
+             * only height repair. */
             int expected_height = header_prev->nHeight + 1;
             if (pindex->pprev != header_prev ||
                 pindex->nHeight != expected_height) {

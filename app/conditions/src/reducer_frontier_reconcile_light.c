@@ -31,13 +31,13 @@ static _Atomic int g_tip_finalize_cursor_at_detect = -1;
  * 0 = record absent at detect, 1 = record present at detect. */
 static _Atomic int g_coin_backfill_scan_present_at_detect = -1;
 static _Atomic int g_coin_backfill_scan_next_at_detect = -1;
-/* tipfin backfill progress record snapshot (FIX-5), same convention. */
+/* tipfin backfill progress record snapshot, same convention. */
 static _Atomic int g_tipfin_backfill_present_at_detect = -1;
 static _Atomic int g_tipfin_backfill_progress_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_tear_bypass_warn_total = 0;
 
-/* FIX-5 peer-gate visibility memos. detect runs only on the serial
+/* Peer-gate visibility memos. detect runs only on the serial
  * condition-engine tick thread, so these plain statics need no lock. The
  * gate-suppress WARN is the shared log_throttle de-storm primitive, keyed on a
  * single "active" token: log_throttle_reset() re-arms it when the suppression
@@ -231,7 +231,7 @@ static bool coin_backfill_scan_witnessed(sqlite3 *db)
     return present_now && next_now != next_before;
 }
 
-/* ── FIX-5 tipfin backfill witness channel ──────────────────────────────
+/* ── tipfin backfill witness channel ────────────────────────────────────
  * The TIPFIN no-spend backfill persists a progress_meta record keyed
  * tipfin_backfill.progress whose value begins [progress i32 LE], bumped
  * after every repaired batch (that package owns the writes/deletes; this
@@ -241,8 +241,7 @@ static bool coin_backfill_scan_witnessed(sqlite3 *db)
  * row-only backfill moves NO stage cursor and NO chain height, so it is
  * structurally unwitnessable through the channels above — without this one
  * the attempt budget freezes at max_attempts and pages the operator while
- * the repair is genuinely progressing (panel constraint: FIX-1
- * attempt-budget starvation). */
+ * the repair is genuinely progressing (attempt-budget starvation). */
 static bool read_tipfin_backfill_progress(sqlite3 *db, bool *present,
                                           int *progress)
 {
@@ -336,11 +335,11 @@ static bool peer_lag_allows_repair(struct main_state *ms)
     return connman_get_node_count(cm) == 0;
 }
 
-/* Peer-gate BYPASS for a pending refused_coin_tear (FIX-5): the gate's
+/* Peer-gate BYPASS for a pending refused_coin_tear: the gate's
  * purpose — refusing repairs without peer-staleness evidence — does not
  * apply here, because coins_applied_height sitting above H*+1 is durable
  * internal-store evidence of damage, independent of any peer's height
- * (panel constraint: peer-gate silent idle). Transition-logged: one WARN
+ * (guards against the peer gate silently idling). Transition-logged: one WARN
  * when the bypass engages, re-armed when the tear state ends. */
 static void note_tear_bypass(
     const struct stage_reducer_frontier_reconcile_result *rr)
@@ -383,11 +382,12 @@ static bool repair_evidence_pending(
     return false;
 }
 
-/* The peer gate suppressing an actionable detect used to idle the WHOLE L1
- * layer with no log. Stay quiet only for the plain cursor-churn class with
- * no other repair evidence (the gate's intended job); otherwise WARN on the
- * transition plus a 300 s keep-alive carrying the suppressed-tick count
- * (storm-safe: first occurrence never suppressed). */
+/* The peer gate can suppress an actionable detect, silently idling the whole
+ * L1 layer; this logging keeps such suppressions visible. Stay quiet only for
+ * the plain cursor-churn class with no other repair evidence (the gate's
+ * intended job); otherwise WARN on the transition plus a 300 s keep-alive
+ * carrying the suppressed-tick count (storm-safe: first occurrence never
+ * suppressed). */
 static void note_gate_suppressed(
     sqlite3 *db,
     const struct stage_reducer_frontier_reconcile_result *rr)
@@ -426,7 +426,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
     if (!db || !ms)
         return false;
 
-    /* FIX-5: the read-only dry-run runs BEFORE the peer gate so a durable
+    /* The read-only dry-run runs BEFORE the peer gate so a durable
      * internal tear can bypass it. No new steady-state cost: it already ran
      * on every detect tick whenever a peer was ahead. */
     struct stage_reducer_frontier_reconcile_result rr;
@@ -441,7 +441,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
          * noncanonical_found counts relabel/reorg-residue rows the
          * dry-run judged stale — the apply purge is the remedy.
          * reorg_residue_tipfin_found counts stale ok=0 reorg_detected
-         * tip_finalize verdicts the apply path replaces in place (FIX-A). */
+         * tip_finalize verdicts the apply path replaces in place. */
         g_tear_bypass_active = false;
         log_throttle_reset(&g_gate_suppress);
         return false;

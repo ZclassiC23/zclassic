@@ -86,15 +86,13 @@ bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
      * Cursor C means "transitions through C-1→C are finalized; C→C+1 is
      * pending". An authority committing tip H proves exactly C=H; stamping
      * H+1 claims the H→H+1 transition that nothing finalized, and SKIPS it
-     * forever (the cursor is monotonic). On the live path that skip is the
+     * forever (the cursor is monotonic). That skip manifests as the
      * served-tip-trails-by-one-block defect: every finalize advance is
      * followed by a trusted_tip re-anchor of the just-published tip, so
-     * each new block could only be published when ITS successor arrived
-     * (the alternating finalized/anchor lattice in tip_finalize_log,
-     * forensic 2026-06-12 at h=3144857: block arrived 11:05, published
-     * 11:17 when the next block landed). Boot/restore readers resolve the
-     * durable tip via tip_finalize_stage_resolve_durable_tip, which
-     * handles both this convention and the legacy +1 lattice. */
+     * each new block could only be published once ITS successor arrived.
+     * Boot/restore readers resolve the durable tip via
+     * tip_finalize_stage_resolve_durable_tip, which handles both this
+     * convention and the legacy +1 lattice. */
     uint64_t target = (uint64_t)height;
     uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
     /* PRE-INSERT row count: the FIX-3 seed-exemption discriminator for the
@@ -199,8 +197,7 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * the pipeline cannot consume it. Without this, a cold-import datadir
      * starves reducer_trusted_anchor back to the compiled checkpoint the
      * moment the seed row is consumed, and the I4.3 sweep HOLD-wedges the
-     * node over the legitimately log-less import region (run-3 copy-prove,
-     * 2026-06-12). */
+     * node over the legitimately log-less import region. */
     {
         int32_t prev_h = 0;
         bool prev_found = false;
@@ -250,8 +247,7 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * row H — the import itself IS block H's apply authority (its coins
      * arrived inside the verified chainstate), and utxo_apply starts at
      * H+1 — so without this stamp the stage idles forever on
-     * TF_BLOCKED_UV_ROW_MISSING at the seed (run-2 copy-prove, 2026-06-12:
-     * upstream applied through the live tip while tip_finalize held at H).
+     * TF_BLOCKED_UV_ROW_MISSING at the seed.
      * Same trust model as the anchor row above; INSERT OR IGNORE so a real
      * verdict row is never clobbered. Zero deltas are safe: the
      * utxo-count divergence check is a test-only seam (no production
@@ -296,8 +292,8 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * instead of manufacturing a hole behind the cursor.
      *
      * The tip_finalize cursor floor is the seeded tip's OWN height — never
-     * height+1 (task #31, unifying the last two +1 conventions with the
-     * task-#30 authority-anchor fix). Cursor C means "served tip at C; the
+     * height+1 (unifying the +1 conventions with the authority-anchor
+     * convention). Cursor C means "served tip at C; the
      * C→C+1 transition is pending"; stamping H+1 claims the H→H+1 transition
      * that the seed never finalized and SKIPS it forever (the cursor is
      * monotonic), which is one late block per cold-import/snapshot seed:

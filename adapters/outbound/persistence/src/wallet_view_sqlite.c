@@ -3,10 +3,9 @@
  *
  * wallet_view_sqlite — sqlite implementation of wallet_view_port.
  *
- * The two methods below are the raw queries that used to live inline in
- * app/services/src/wallet_view_projection.c, moved behind the port with
- * EXACT same SQL text and column order so the explorer / wallet UI
- * surface is byte-for-byte identical.
+ * This adapter is the only place that names sqlite for the wallet_view
+ * surface. The SQL text and column order are fixed so the explorer /
+ * wallet UI surface is byte-for-byte identical.
  */
 
 #include "adapters/outbound/persistence/wallet_view_sqlite.h"
@@ -84,10 +83,9 @@ static int wv_list_held_tokens_sqlite(
 }
 
 /* ── Page-projection queries ──────────────────────────────────
- * The SQL below is the byte-exact text the wallet_view PAGE
- * controllers used to issue inline; moved here so the controllers
- * never name sqlite. Column order is preserved so the rendered
- * pages stay identical. */
+ * Byte-exact SQL for the wallet_view page projections; this adapter is
+ * the only place that names sqlite. Column order is preserved so the
+ * rendered pages stay identical. */
 
 static int wv_list_token_cards_sqlite(
     void *self, struct wallet_view_token_balance *out, size_t max)

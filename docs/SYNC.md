@@ -1,8 +1,8 @@
 # ZClassic23 Sync Guide
 
-**zclassic23** is the next-generation ZClassic power node. This guide covers
-how a fresh zclassic23 node reaches chain tip, and the one legacy-bootstrap
-path that exists only while the zclassic23 peer network is still small.
+**zclassic23** is the next-generation ZClassic power node. This guide covers how
+a fresh node reaches chain tip, plus the one legacy-bootstrap path that exists
+only while the zclassic23 peer network is still small.
 
 Primary = zclassic23-native. Legacy = pulling data from the old C++ `zclassicd`.
 
@@ -62,15 +62,15 @@ default and only user-facing path.
 ### zclassic-only serving profile
 
 Use `-profile=zclassic-only` for power nodes whose job is to sync other
-zclassic23 nodes quickly. This profile keeps consensus state, P2P, RPC,
-snapshot offer construction, FlyClient/MMB proof serving, and normal block
-relay. It intentionally does not start explorer cache prewarming, store/market
-services, onion hosting unless `-tor` is explicitly set, or file-service
-snapshot export and chunk/block-piece manifests.
+zclassic23 nodes quickly. It keeps consensus state, P2P, RPC, snapshot offer
+construction, FlyClient/MMB proof serving, and normal block relay, and does not
+start explorer cache prewarming, store/market services, onion hosting (unless
+`-tor` is explicitly set), or file-service snapshot export and chunk/block-piece
+manifests.
 
-Full, onion-node, and legacy-compat profiles keep the broader app surfaces.
-The explorer profile keeps explorer APIs and cache prewarming but still avoids
-store and file-service serving.
+Full, onion-node, and legacy-compat profiles keep the broader app surfaces. The
+explorer profile keeps explorer APIs and cache prewarming but still avoids store
+and file-service serving.
 
 ---
 
@@ -95,12 +95,11 @@ scratch).
 
 **This path exists because the zclassic23 peer network is still small on
 mainnet.** We temporarily read data from a synced legacy `zclassicd` (C++)
-node on the same machine to get developer workstations to tip fast.
-`zclassicd` is advisory only: its block files, UTXO snapshots, and height/hash
-answers can seed candidates only. Tip publication still requires the local
-activation/evidence path described above and cannot be justified merely by
-matching the legacy daemon.
-Once the zclassic23 peer network is healthy, this path goes away.
+node on the same machine to get developer workstations to tip fast. Its block
+files, UTXO snapshots, and height/hash answers seed candidates only — tip
+publication still requires the local activation/evidence path (see the Canonical
+Authority Model above). Once the zclassic23 peer network is healthy, this path
+goes away.
 
 Requirements: a local synced legacy `zclassicd` with `~/.zclassic/`.
 
@@ -142,8 +141,7 @@ catchup, fast-sync offer construction, FlyClient proof fallback, and the
 zclassicd drift oracle share that transport instead of parsing JSON-RPC in
 their own service code.
 
-This boundary keeps legacy compatibility behind a small adapter: zclassic23
-services may use legacy responses as bridge/oracle inputs, but snapshot
+This boundary keeps legacy compatibility behind a small adapter. Snapshot
 acceptance still requires the native v2 manifest contract, FlyClient MMB/MMR
 proofs, PoW/chainwork checks, finality policy, and UTXO SHA3 verification.
 
@@ -204,12 +202,10 @@ Finality policy: `ZCL_FINALITY_DEPTH=10`. Heights `<= tip - 10` are treated as
 immutable for reorg refusal, snapshot eligibility, rolling SHA3 anchors,
 block-window reuse, and diagnostics. Steady-state reorgs of 10 blocks or less
 are allowed; 11-block reorgs are refused. IBD can still resolve deeper
-competition before a verified immutable anchor is installed.
-
-The code path for these decisions is centralized in
-`validation/sync_evidence_policy.h`. `COINBASE_MATURITY=100` remains a consensus
-spend-maturity rule and does not control reorg depth or immutable-prefix
-policy.
+competition before a verified immutable anchor is installed. These decisions are
+centralized in `validation/sync_evidence_policy.h`. `COINBASE_MATURITY=100`
+remains a consensus spend-maturity rule and does not control reorg depth or
+immutable-prefix policy.
 
 Snapshot protocol: zclassic23 peers must speak
 `FAST_SYNC_PROTOCOL_VERSION=2` and `FAST_SYNC_SNAPSHOT_SCHEMA_VERSION=1`.
@@ -217,17 +213,16 @@ Missing v2 fields, zero chainwork, non-final anchors, missing MMR/MMB roots,
 or stale schemas are rejected. Legacy/non-v2 data may still be used locally
 for bootstrap acceleration, but it is not trusted P2P snapshot sync.
 
-Quorum model: votes are grouped by source class: local zclassic23,
-local zclassicd, and remote zclassic23 peers. Remote votes are keyed by
-unique peer and expire by TTL; rolling-anchor commits require a matching
-source-class quorum when multiple source classes are available. Splits halt
-anchor extension and are visible through the quorum/oracle dumpstate surface.
+Quorum model: votes are grouped by source class — local zclassic23, local
+zclassicd, and remote zclassic23 peers. Remote votes are keyed by unique peer
+and expire by TTL; rolling-anchor commits require a matching source-class quorum
+when multiple source classes are available. Splits halt anchor extension and are
+visible through the quorum/oracle dumpstate surface.
 
-Rolling anchors: runtime SHA3 windows are only persisted for fully immutable
+Rolling anchors: runtime SHA3 windows are persisted only for fully immutable
 windows with local block bytes present, normal oracle policy, and quorum
-approval. On load, runtime anchor files are checksum-, schema-, alignment-,
-and continuity-checked against compiled anchors; failures discard the runtime
-file.
+approval. On load, runtime anchor files are checksum-, schema-, alignment-, and
+continuity-checked against compiled anchors; failures discard the runtime file.
 
 ---
 

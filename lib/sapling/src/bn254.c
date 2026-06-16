@@ -1939,9 +1939,9 @@ void ppzksnark_vk_free(struct ppzksnark_vk *vk)
 /* The canonical alt_bn128 (BN254) G2 generator = libsnark G2::one(), the
  * "G2_one" every PHGR13/BCTV14 pairing check pairs against. SINGLE SOURCE OF
  * TRUTH — bn254.c's verifier and the tests both build it here, so the constant
- * cannot drift independently again (it was corrupted before 2026-05-30, which
- * false-rejected every Sprout proof; the test that should have caught it only
- * checked VK parsing). The bytes are the canonical big-endian encodings,
+ * cannot drift independently. A corrupt generator silently false-rejects every
+ * Sprout proof, so both verifier and tests must construct it from this one
+ * place. The bytes are the canonical big-endian encodings,
  * independently verified on-curve:
  *   x = (10857046999023057135944570762232829481370756359578518086990519993285655852781,
  *        11559732032986387107991004021392285783925812861821192530917403151452391805634)
@@ -1976,7 +1976,7 @@ void bn254_g2_one(struct bn_g2 *out)
 /* True iff the affine G2 point (z assumed normalized to 1) lies on the BN254
  * twist curve y^2 = x^3 + b', with b' = 3/(9+u). Used to guard the hardcoded
  * G2 generator ("G2_one") against constant corruption — a bad G2_one silently
- * false-rejects every pairing check (the 2026-05-30 PHGR13 flood). */
+ * false-rejects every pairing check. */
 bool bn_g2_is_on_curve(const struct bn_g2 *p)
 {
     struct bn_fq2 y2, x2, x3, xi, twist_b, three, rhs;
@@ -2027,9 +2027,9 @@ bool ppzksnark_verify(const struct ppzksnark_vk *vk,
 
     /* G2 generator ("G2_one" in the pairing checks). Single source of truth
      * (bn254_g2_one) shared with the tests so the constant can never silently
-     * drift again — it was CORRUPTED before 2026-05-30 and false-rejected every
-     * Sprout PHGR13 proof at pairing check 1 (this verifier is also on the
-     * consensus path). The on-curve guard makes any future drift fail LOUD. */
+     * drift — a corrupt generator false-rejects every Sprout PHGR13 proof at
+     * pairing check 1, and this verifier is also on the consensus path. The
+     * on-curve guard makes any future drift fail LOUD. */
     struct bn_g2 g2_gen;
     bn254_g2_one(&g2_gen);
     if (!bn_g2_is_on_curve(&g2_gen)) {

@@ -768,10 +768,9 @@ static void *thread_open_connections(void *arg)
          *     overflow MAX_OUTBOUND_CONNECTIONS.
          *   `outbound_healthy` — only outbound peers past handshake,
          *     used to decide if we need aggressive backfill. Without
-         *     this distinction a node with 1 working peer + 4 stuck
-         *     in PEER_CONNECTING reads as "5 outbound" and never
-         *     hunts for replacements — the live failure mode that
-         *     left this node alone with one C++ peer for 9h. */
+         *     this distinction a node with 1 working peer + several stuck
+         *     in PEER_CONNECTING reads as fully-outbound and never
+         *     hunts for replacements. */
         size_t outbound_slot = 0;
         size_t outbound_healthy = 0;
         zcl_mutex_lock(&cm->manager.cs_nodes);

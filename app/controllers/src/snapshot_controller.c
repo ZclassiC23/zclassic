@@ -4,8 +4,8 @@
  *
  * Creates timestamped snapshots of the C++ data dir using hard links
  * (instant for block files) and clean LevelDB copies. The import that
- * consumes these snapshots replaces the old sequential catchup (~6 hours)
- * with a parallel LevelDB-to-SQLite bulk import (~1-2 minutes).
+ * consumes these snapshots is a parallel LevelDB-to-SQLite bulk import
+ * (~1-2 minutes).
  *
  * This file holds the snapshot directory management + snapshot_create,
  * plus the shared SQLite transaction helpers used by every snapshot

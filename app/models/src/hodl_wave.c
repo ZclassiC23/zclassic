@@ -140,10 +140,10 @@ bool hodl_wave_scan_current_utxos(sqlite3 *db, int64_t tip_height,
     while (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW) {
         int64_t height = sqlite3_column_int64(stmt, 0);
         int64_t value = sqlite3_column_int64(stmt, 1);
-        /* Reject impossible UTXOs: pre-genesis, after-tip (the old "tip+100"
-         * slop accepted future-dated rows and routed them via the negative-
-         * age silent clamp into the <1d bucket, distorting "young coins"),
-         * and zero-value (consensus forbids but the row could exist). */
+        /* Reject impossible UTXOs: pre-genesis, after-tip (future-dated rows
+         * would compute a negative age and clamp into the <1d bucket,
+         * distorting the young-coins reading), and zero-value (consensus
+         * forbids it, but a stale row could exist). */
         if (height < 0 || height > tip_height || value <= 0) {
             out->skipped_rows++;
             continue;

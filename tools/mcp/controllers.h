@@ -29,8 +29,7 @@ void mcp_register_meta(void);     /* zcl_tools_list, zcl_self_test, zcl_logtail 
 
 /* Compile-time element count for a statically-sized array. Used by the
  * route + param-spec tables in every controller, and by the register
- * loops. Replaces the `sizeof(arr) / sizeof(arr[0])` boilerplate that
- * was repeated ~50 times across the MCP layer. */
+ * loops. Replaces the `sizeof(arr) / sizeof(arr[0])` idiom. */
 #define PARAM_COUNT(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 /* ── Defaulted JSON accessors ─────────────────────────────────────
@@ -41,8 +40,7 @@ void mcp_register_meta(void);     /* zcl_tools_list, zcl_self_test, zcl_logtail 
  *   int64_t v = mc ? json_get_int(mc) : 1;
  *
  * Three inline helpers collapse the two-line pattern to one line and
- * make the default visible inline at the call site. Repeated ~30
- * times across the controllers prior to adoption.
+ * make the default visible inline at the call site.
  */
 static inline int64_t
 json_get_int_or(const struct json_value *obj, const char *key, int64_t dflt)

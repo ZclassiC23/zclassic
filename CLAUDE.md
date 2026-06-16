@@ -63,16 +63,8 @@ floor, not a liveness proof.
 
 ## Current focus — **Ship v1 (MVP 8/8)**
 
-**The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8. Honest status today: ~2/8 met by hand, **0/8 CI-enforced**.
-**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path.
-
-**The live wedge CLEARED (2026-06-12):** the node holds tip AND finalizes
-forward — blocks publish at the arrival tick, restarts keep the connected
-extent, hash-identical to zclassicd at every probed height. The path is now
-open for the v1 criteria that need live forward progress (cold-sync, 7-day
-soak, consensus parity). **#1 priority: CI-enforce the MVP criteria and
-accumulate soak time.** When diagnosing any future wedge: datadir COPY,
-never live — see [`docs/work/fast-path.md`](./docs/work/fast-path.md).
+**The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
+**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: CI-enforce the MVP criteria and accumulate soak time.**
 
 **The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes); [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) is the architecture debt board. Both are reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 
@@ -85,12 +77,6 @@ Type **`continue zclassic23 development`**. The agent will:
 2. `cat docs/HANDOFF.md` FIRST (the current entry point), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan). `docs/FRAMEWORK.md` + `docs/REFACTOR_STATUS.md` are architecture reference, off the v1 path.
 3. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`.
 4. If orchestrator → review in-flight work in status board, merge pushed branches, dispatch next assignments.
-
-### Prior planning history (reference, not active)
-
-Past plans at `~/.claude/plans/` (zclassic23-plan.md, zclassic23-ideal-architecture.md, come-up-with-architecture-concurrent-sutherland.md, zclassic23-50-year-architecture.md) are reference material. The framework refactor at `docs/FRAMEWORK.md` supersedes them all for active work.
-
-Wave F-1..F-5 kernel primitives (stage, mailbox, projection, platform.clock, platform.rng) shipped and are part of the framework base. Wave S staged sync stages are Jobs in the new framework and form the reducer path. Current cleanup work should prefer subtraction over new compatibility surfaces.
 
 ## Defensive Coding Standards (MANDATORY)
 
@@ -158,10 +144,6 @@ games, metrics, replay buffer, admin) is a typed tool too — discover it via
 `zcl_tools_list` rather than memorizing it here. The three **primitives** plus
 the `zcl_rpc` escape hatch answer most one-off questions without a new tool.
 
-### Example: Check Everything
-
-Call `zcl_status` — returns height, peer count, sync state, validation progress, onion address, and health in one response.
-
 ### Example: Raw RPC
 
 For commands without a dedicated tool, use `zcl_rpc`:
@@ -228,18 +210,9 @@ reverse scan in 64 KB chunks.
 
 ## Node Architecture
 
-ZClassic23 is a single ~15 MB C23 binary that includes:
-
-- Full ZClassic blockchain node (PoW, Equihash 200,9)
-- Block explorer with charts and HODL wave analysis
-- Embedded Tor with .onion hidden service (dynhost)
-- P2P fast sync via FlyClient + SHA3 UTXO snapshots
-- MVC web framework served over .onion
-- ZSLP token protocol
-- Shielded transactions (Sapling zk-SNARKs)
-- P2P game framework with latency measurement
-- E-commerce store with shielded payments
-- MCP server for AI agent integration
+A single ~15 MB C23 binary (Equihash 200,9 PoW, Sapling zk-SNARKs). The full
+subsystem list is in the Vision section above; the rest of this section covers
+how to run and observe it.
 
 ### Running
 

@@ -605,7 +605,7 @@ size_t dl_queue_blocks(struct download_manager *dm,
      * inserts: callers legitimately hand over tens of thousands of
      * blocks per call (gap_fill window, header batches), and a per-item
      * insert is an O(queue_len) memmove — O(n^2) per call while holding
-     * cs, which starved the whole node (2026-06-09 tracka wedge). */
+     * cs, which starves the whole node. */
 
     /* 1. Filter into a staging array: not in-flight, not queued, not a
      *    duplicate within this batch (the qset insert handles that).

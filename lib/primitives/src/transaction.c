@@ -413,9 +413,8 @@ void transaction_compute_hash(struct transaction *tx)
 {
     /* Thin mutating wrapper over the const sibling. On serialize
      * failure (only reachable via OOM on the growable scratch stream)
-     * tx->hash is left untouched; the historical code hashed the
-     * partial scratch buffer in that same corner — neither produces a
-     * usable hash, but leaving it untouched is at least deterministic. */
+     * tx->hash is left untouched: at least deterministic. Hashing a
+     * partial scratch buffer would be neither. */
     (void)transaction_hash_serialized(tx, &tx->hash);
 }
 

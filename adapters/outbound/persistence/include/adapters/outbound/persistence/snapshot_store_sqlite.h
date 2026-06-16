@@ -5,12 +5,10 @@
  * snapshot_store_port.
  *
  * This adapter is the ONLY place that names sqlite for the fast-sync
- * snapshot subsystem. Its methods hold the raw sqlite reads/writes that
- * used to live inline in app/services/src/snapshot_offer.c,
- * snapshot_fetch.c, and snapshot_sync_service.c — moved here with
- * byte-for-byte identical SQL text, the same bind order, the same open
- * connection, and the same step macros, so the staging rows written and
- * the counts read are identical to before the seam.
+ * snapshot subsystem. Its methods hold the raw sqlite reads/writes for
+ * the snapshot path: the SQL text, bind order, open connection, and step
+ * macros are fixed so the staging rows written and the counts read stay
+ * byte-for-byte identical to the inline service code they replace.
  *
  * The subsystem is CONSENSUS-ADJACENT (the snapshot is pinned to a
  * SHA3-256 commitment), so this adapter touches ONLY the storage access
@@ -43,8 +41,7 @@ struct snapshot_store_sqlite_ctx {
  * caller-owned storage the port's `self` will alias; it must outlive every
  * call through the returned port. Returns false (and leaves *out_port / *ctx
  * untouched) only if ctx or out_port is NULL; a NULL ndb is permitted (the
- * methods then return false/-1, mirroring the original "db not open"
- * behaviour). */
+ * methods then return false/-1, db-not-open). */
 bool snapshot_store_sqlite_bind(struct snapshot_store_sqlite_ctx *ctx,
                                 struct node_db *ndb,
                                 struct snapshot_store_port *out_port);

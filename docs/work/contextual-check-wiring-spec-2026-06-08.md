@@ -1,14 +1,17 @@
 # #26 — Wire per-tx contextual block checks into the live c23 reducer (spec)
 
-Implementation-ready, fork-safety-reviewed spec for audit finding #26 (the root
-cause of #2/#4): the per-tx contextual rules — Overwinter expiry, network-upgrade
-version gating, Sapling/Overwinter structural, per-tx finality (`bad-txns-nonfinal`),
-BIP34 `bad-cb-height` — run **nowhere** on the live reducer path. `contextual_check_block()`
-(lib/validation/src/check_block.c:390) has zero production callers.
+> **Status: LANDED (reference, not a TODO).** Implementation in
+> `app/jobs/src/script_validate_contextual.c`; disposition in
+> `docs/work/security-audit-response-2026-06-09.md`. This doc is kept for the
+> fork-safety analysis behind the gating conditions, which both the live code
+> comment and the audit-response link here for.
 
-Produced by a 19-agent design+adversarial-verify workflow (3 strategies × 5
-fork-safety dimensions + synthesis), then **every load-bearing claim verified by
-hand against the zclassicd source** before trusting it. Corrections below.
+Fork-safety-reviewed spec for audit finding #26 (the root cause of #2/#4): the
+per-tx contextual rules — Overwinter expiry, network-upgrade version gating,
+Sapling/Overwinter structural, per-tx finality (`bad-txns-nonfinal`), BIP34
+`bad-cb-height` — run **nowhere** on the live reducer path.
+`contextual_check_block()` (lib/validation/src/check_block.c:390) has zero
+production callers.
 
 ## Verification corrections (do NOT skip — the raw synthesis had one false blocker)
 
@@ -56,7 +59,7 @@ ContextualCheckBlock(block, state, pindex->pprev)` (main.cpp:4203), which runs *
   height (`next_h`) + `g_ms` are all in scope, runs once per height on a forward-only
   cursor, and already owns the fail-closed `ok=0` mechanism.
 
-## Code (apply only after re-verifying each symbol — see "verify before implementing")
+## Reference implementation (as landed)
 
 ### `contextual_check_block` — add `is_ibd`, gate only the per-tx call
 ```c
@@ -80,9 +83,8 @@ bool contextual_check_block(const struct block *block, struct validation_state *
     return true;
 }
 ```
-Callers to update with `is_ibd=false`: any boot-reindex/mempool caller + the test callers
-(`test_chain.c`, `test_bip113_bip65.c`, `test_validation.c`). (Confirm the real caller set —
-the audit found zero *production* callers; reindex uses `connect_block`, not this.)
+Callers pass `is_ibd=false` (the live caller set is in the tree; the audit found zero
+*production* callers — reindex uses `connect_block`, not this).
 
 ### `script_validate_stage.c step_validate` — the 3-part gate, before script verify
 ```c
@@ -107,7 +109,6 @@ if (cp && bi->pprev && next_h >= tip_h - CTX_TIP_WINDOW &&
     }
 }
 ```
-Surface `g_contextual_reject_total` in `script_validate_dump_state_json` + reset on shutdown.
 
 ## Rule → zclassicd map (all verified against main.cpp)
 
@@ -128,49 +129,4 @@ coins, `coins_applied_height` unchanged → `tip_finalize` gated on the utxo_app
 stays JOB_IDLE, never publishes H. This is the existing, proven `spend_unknown`/`value_overflow`
 reject shape; the hash-stamp lets a legitimate replacement block at H get a fresh verdict.
 
-## Test plan (new `test_script_validate_contextual_gate.c`, harness default CHAIN_MAIN)
-
-1. expired-at-tip → ok=0, tx-overwinter-expired, BLOCK_VALID_SCRIPTS unset, counter++.
-2. non-final-at-tip → bad-txns-nonfinal. **Discriminator:** a tx with nLockTime between MTP
-   and header time is ACCEPTED (proves header-time cutoff, not MTP).
-3. wrong-version-for-height → tx-overwintered-flag-not-set / bad-sapling-tx-version-group-id.
-4. bad-cb-height (reuse test_chain.c BIP34 wrong-height fixture).
-5. NEGATIVE: each invalid block with IBD=true → per-tx gate skipped; BUT finality + BIP34
-   STILL fire under IBD (proves BLOCKER-2 + parity).
-6. NEGATIVE: IBD=false but finalized tip far above next_h (next_h = tip-1000) → gate SKIPPED
-   (proves the tip-proximity guard prevents history re-rejection).
-7. snapshot-tail: sparse pprev → `process_block_should_skip_contextual_header` true → skipped.
-8. valid-at-tip → no reject, BLOCK_VALID_SCRIPTS set, counter unchanged.
-9. cursor cascade: script+proof advanced, utxo_apply JOB_BLOCKED cursor held at H,
-   coins_applied_height unchanged, tip_finalize IDLE, no JOB_FATAL.
-10. self-heal-benign: drive the utxo_apply blocker escape past retry_budget for a
-    contextually-invalid block → NO anchor rewind / height wipe / reindex / BLOCK_FAILED_MASK.
-11. regression: test_script_validate_stage, test_reducer_ingest_e2e, test_chain (BIP34),
-    test_bip113_bip65, test_validation — green; update their contextual_check_block calls.
-12. lint guard (test_make_lint_gates): script_validate_stage references all four gate symbols.
-
-## Verify-before-implementing (symbols the spec assumes; confirm signatures/lines first)
-
-`tip_finalize_stage_last_height()`, `script_validate_log_insert(...)` exact arg list,
-`REJECT_UNLESS` / `validation_state_init` availability in this TU, `bip34_check_coinbase_height`,
-`process_block_should_skip_contextual_header`, the exact step_validate body-read/insert lines,
-and whether `contextual_check_transaction` runs shielded proofs at tip (see coordination note).
-
-## ⚠ COORDINATION + merge-gating (read before implementing)
-
-- **Codex collision:** `script_validate_stage.c` (the chosen insertion file) AND
-  `proof_validate_stage.c` are Codex's ACTIVE files — the forward-sync stall (prevout_unresolved)
-  is in `script_validate`, and #3 (JoinSplit Ed25519 sig) is in `proof_validate`. Implementing
-  the #26 wiring in `script_validate` in parallel will hard-conflict on merge. **Sequence #26
-  AFTER Codex's script_validate forward-sync work lands, or assign the wiring to Codex.**
-- **#3 overlap:** if c23's `contextual_check_transaction` runs the JoinSplit Ed25519 check, the
-  at-tip contextual call would enforce #3 too (defense-in-depth with Codex's proof_validate fix,
-  not a conflict — both reject the same forged-sig block). Confirm and de-dup if desired.
-- **Merge-blocking datadir-copy proves (owner-gated, on a COPY never live):**
-  1. Historical-replay ZERO-reject: with IBD latched false, drive the reducer across the
-     post-IBD historical window, assert zero new `ok=0` contextual_reject rows below the
-     tip-proximity window. (The must-never-fork proof.)
-  2. utxo_apply blocker-escape: force a contextual reject at a synthetic tip, exhaust
-     retry_budget, confirm a benign indefinite hold — NO destructive self-heal / BLOCK_FAILED_MASK.
-  3. IBD-latch timing parity: c23 `nMinimumChainWork` / `nMaxTipAge` match the deployed
-     zclassicd (same chainparams) so the latch flips at the same chain state.
+Test coverage: `test_script_validate_contextual_gate.c`.

@@ -3,21 +3,16 @@
  *
  * snapshot_store_sqlite — sqlite implementation of snapshot_store_port.
  *
- * The five methods below are the raw sqlite ops that used to live inline
- * in the snapshot subsystem (snapsync_read_tip_chainwork_internal and the
- * "SELECT count(*) FROM utxos" in snapshot_offer.c; the
- * "SELECT COUNT(*) FROM utxos" in snapshot_sync_service.c;
- * snapsync_staging_count_internal, snapsync_insert_staging_raw, and the
- * sqlite3_busy_timeout knob in snapshot_fetch.c). They are moved behind the
- * port with EXACT same SQL text, the same bind order, the same column
- * extraction, the same chainwork guards, and the same step semantics, so
- * the staging rows written and the counts read are bit-for-bit identical.
+ * The five methods below implement the port for the raw sqlite snapshot
+ * storage ops (utxo count, staging count, tip chainwork read, staging
+ * insert, busy-timeout knob). The SQL text, bind order, column extraction,
+ * chainwork guards, and step semantics are bit-for-bit identical to the
+ * snapshot subsystem's storage path, so the staging rows written and the
+ * counts read match exactly.
  *
- * Reads use the AR_STEP_ROW_READONLY macro, matching the originals. The
- * staging insert preserves the original's cached-statement raw step
- * (the inline code carried a `raw-sql-ok` lint suppression marker because
- * the caller handles the return code per-row in the chunk-apply loop); it
- * is reproduced verbatim here so behaviour is identical.
+ * Reads use the AR_STEP_ROW_READONLY macro. The staging insert uses a
+ * cached-statement raw step with a `raw-sql-ok` lint suppression because
+ * the chunk-apply caller handles the return code per-row.
  *
  * The SHA3 commitment math (fast_sync_compute_utxo_root_db /
  * utxo_commitment_sha3_compute_table) is NOT here — it stays in the service.
@@ -80,7 +75,7 @@ static int64_t snap_store_staging_count(void *self)
 }
 
 /* "SELECT chain_work FROM blocks WHERE hash=?" — fills out[32] only on a
- * non-zero chainwork hit, matching the inline guard. */
+ * non-zero chainwork hit. */
 static bool snap_store_tip_chainwork(void *self, const uint8_t hash[32],
                                      uint8_t out[32])
 {
@@ -106,8 +101,8 @@ static bool snap_store_tip_chainwork(void *self, const uint8_t hash[32],
     return ok;
 }
 
-/* Cached INSERT OR REPLACE INTO snapshot_staging_utxos. Verbatim from
- * snapsync_insert_staging_raw, including the cached-statement raw step. */
+/* Cached INSERT OR REPLACE INTO snapshot_staging_utxos, using the
+ * cached-statement raw step (caller handles the per-row return code). */
 static bool snap_store_staging_insert(void *self, const struct db_utxo *u)
 {
     struct snapshot_store_sqlite_ctx *c = ctx_of(self);

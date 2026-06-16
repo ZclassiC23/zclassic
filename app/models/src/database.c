@@ -51,10 +51,9 @@ static void node_db_state_destroy(struct node_db *ndb)
 }
 
 /* Execute `sql`, logging any error with `where` context.  Returns the
- * sqlite3 rc so callers can make tolerance decisions.  Replaces the
- * prior pattern where `sqlite3_exec(db, sql, ...)` was called with its
- * return value discarded — the class of silent failures fixed here
- * was previously hiding schema-migration and turbo-mode regressions. */
+ * sqlite3 rc so callers can make tolerance decisions.  Wrapping
+ * sqlite3_exec ensures the rc is never silently discarded — a dropped
+ * rc hides schema-migration and turbo-mode failures. */
 int db_exec_checked(sqlite3 *db, const char *sql, const char *where)
 {
     char *err = NULL;
@@ -262,10 +261,9 @@ static bool prepare_statements(struct node_db *ndb)
 }
 
 /* the cache_size and mmap_size values below are *the* tuning
- * knobs for node.db in normal (non-IBD-turbo) mode.  They were
- * originally put here during the 2026-03 IBD performance pass and
- * the P7 wave locks them in with a test (test_db_pragma_tuning in
- * test_sqlite.c).  Do not bump mmap_size beyond 256 MB without
+ * knobs for node.db in normal (non-IBD-turbo) mode.  Pinned by a
+ * regression test (test_db_pragma_tuning in test_sqlite.c).  Do not
+ * bump mmap_size beyond 256 MB without
  * rereading the landmine comment at config/src/boot_index.c:306 —
  * secondary RW connections to the same file concurrent with the
  * main connection's WAL writes can dereference invalidated mmap

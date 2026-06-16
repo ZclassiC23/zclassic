@@ -1,11 +1,9 @@
 # Chain-Tip-Durability Collapse — the wedge-class kill
 
-Status: **GO, mechanism corrected** (adversarially verified across two 7–9 agent
-workflows, 2026-06-07). The earlier "ATTACH utxo_projection.db into progress.kv"
-mechanism was **refuted** (WAL — see below); the corrected mechanism is to move
-the coins set INTO progress.kv as a table. Supersedes the prior task#2
-"convergent" and "layered" designs and the rejected "collapse-onto-utxo_apply-
-cursor" variant.
+The corrected mechanism (move the coins set INTO progress.kv as a `coins` table)
+has **landed** (`lib/storage/src/coins_kv.c`). This doc is the rationale of
+record for the `coins_kv` subsystem — the WHY/invariant anchor cited by the
+source.
 
 ## The disease (every tip-wedge for weeks)
 
@@ -35,23 +33,11 @@ that window leaves the cursor ahead of/behind the coins it claims to have
 applied. Worse, `last_consumed_offset` is **height-blind** and is **never
 rewound** when a reorg rewinds the stage cursor — so `catch_up` resumes from a
 stale offset and **no forward path can rebuild a torn projection**
-(`script_validate` then logs `prevout_unresolved` on perfectly valid blocks; the
-PROOF below hit exactly this at height 3134571). The in-code comment at
+(`script_validate` then logs `prevout_unresolved` on perfectly valid blocks; this
+hit exactly height 3134571, which the oracle confirms is a **valid** main-chain
+block — so torn LOCAL state, not a consensus bug). The in-code comment at
 `utxo_apply_stage.c:447` ("crash-safe … independent of the stage cursor txn") is
 the bug, stated as a feature.
-
-### PROOF (2026-06-07)
-
-A full copy of the live torn datadir, booted on the Step-2 binary (`e9e7a1f6c`),
-**could not climb past the wedge**. Boot took the "restoring chain tip" path; the
-Step-2 reconcile clamp never fired (reorg detection had already rewound
-tip_finalize *below* the floor, disarming the `cur>floor` clamp precondition,
-`stage_repair.c:56`). Preserved log summary showed the disease end-to-end:
-`565×` cec anti-rewind "refusing to rewrite persisted high tip 3134559 down to
-3134313", `246` block-body holes from 3134314 (`have_data_missing`),
-`not_script_valid` at 3134570. The oracle (zclassicd, height 3138774) confirms
-3134571 is a **valid** main-chain block — so this is torn LOCAL state, not a
-consensus bug. A torn datadir is **unhealable by forward self-heal**.
 
 ## The single source of truth (verified)
 
@@ -79,49 +65,21 @@ nothing for boot to guess between.
 ONLY in rollback-journal mode. **progress.kv and utxo_projection.db are both WAL**
 (`progress_store.c:59`, `utxo_projection.c` checkpoints) — in WAL there is no
 master journal, so a cross-attached-db transaction is **NOT atomic**. ATTACH
-would reintroduce the exact tear. (This refuted the first design's step 3.)
+would reintroduce the exact tear.
 
 **Why NOT collapse onto a separate-db `applied_height`:** the inverse-delta (for
 reorg unwind) lives in progress.kv and MUST be atomic with the coin mutation;
 keeping coins in a separate db forces a second non-atomic boundary. One db is the
 only clean answer.
 
-## Ordered steps (each independently gateable + copy-provable)
+## Boot invariant + standing regression contract
 
-The established safe pattern in this repo for consensus-store moves is
-**additive → flip reads → delete old** (cf. the single-engine `EV_BLOCK_HEADER`
-work). Apply it here so the tree stays green per commit:
+**Boot invariant:** served tip == tip_finalize contiguous ok=1 frontier == coins
+MAX height; FAIL LOUD on divergence (silent-halt doctrine).
 
-1. **Additive coins table in progress.kv** + an in-txn apply primitive
-   `coins_kv_apply_delta(db, height, hash, adds[], spends[])` (INSERT adds /
-   DELETE spends + inverse-delta) callable from inside `step_apply` so it lands
-   in `stage_run_once`'s txn. Schema mirrors the projection's `utxo` table.
-   Gate: build + lint + test_parallel 0; unit test that apply+rollback is atomic.
-2. **Dual-write** (authoring): `step_apply` writes the coins delta into the
-   progress.kv `coins` table in-txn AND (temporarily) keeps the event_log emit,
-   so existing readers are unaffected. Gate: parity test — progress.kv `coins`
-   == utxo_projection `utxo` after a drain (reuse `test_utxo_apply_authorship_parity`).
-3. **Flip reads**: repoint `projection_live_lookup`, `script_validate`'s prevout
-   resolver, `coins_view_projection`, snapshot_apply, reorg-unwind, and the
-   commitment/explorer readers to the progress.kv `coins` table. Gate: build +
-   lint + full test_parallel 0 + **COPY-PROOF** (clean-pipeline climb + SHA3
-   UTXO-commitment EXACT match vs oracle `gettxoutsetinfo`).
-4. **Delete the old path** on the live forward path: drop the event_log emit +
-   post-step `catch_up` (keep `catch_up` only for boot back-compat replay of
-   pre-migration datadirs). Delete `cec.coins_best_block_height` + Guard A
-   (`chain_evidence_authority_service.c:635/527`, `chain_evidence_reconstruct.c:200`,
-   `utxo_recovery_service.c:192`; repoint readers `event_controller.c:53`,
-   `diagnostics_registry.c:346`, `chain_evidence_snapshot.c:96` + fix
-   `test_syncdiag_rpc.c`, `test_node_health_service.c`). Pure subtraction.
-5. **Boot invariant assert** (in a TU outside the frozen `boot.c`): served tip ==
-   tip_finalize contiguous ok=1 frontier == coins MAX height; FAIL LOUD on
-   divergence (silent-halt doctrine). Demote `coins_best_block` HASH writes to
-   the cold-import/recovery path only.
-
-**MANDATORY acceptance gate for steps 3–4:** kill-9 mid-climb ≥10×, restart each
-time — coins MAX height == `utxo_apply` cursor-1 == tip_finalize frontier on
-EVERY restart (no drift). ADVANCE_DEADLINE ≥300s. This is the proof the class is
-dead.
+**MANDATORY acceptance gate:** kill-9 mid-climb ≥10×, restart each time — coins
+MAX height == `utxo_apply` cursor-1 == tip_finalize frontier on EVERY restart (no
+drift). ADVANCE_DEADLINE ≥300s. This is the proof the class is dead.
 
 No must-never-fork gate is weakened: reorg detect, chainwork-greater, UTXO
 conservation, PoW/Equihash, MMB/FlyClient, script/proof validation, crypto,
@@ -129,12 +87,14 @@ sapling all stay exactly where they are on the tip_finalize publish path. The
 change only moves the *durability boundary* of the coins fold (now atomic),
 which can only make consensus state more consistent. No `tip_finalize_log` row is
 ever deleted (anti-rewind preserved); the public tip can never drop below the
-contiguous ok=1 frontier.
+contiguous ok=1 frontier. (Boot keeps a back-compat replay of pre-migration
+event_log into the new progress.kv `coins` table.)
 
 ## Live-node recovery (the torn datadir is unhealable — rebuild clean)
 
-The live `~/.zclassic-c23` is shredded across body_fetch holes, projection,
-coins, and the cec counter. It must be **rebuilt clean**, owner-gated.
+A torn datadir is **unhealable by forward self-heal**. The live `~/.zclassic-c23`
+is shredded across body_fetch holes, projection, coins, and the cec counter. It
+must be **rebuilt clean**, owner-gated.
 
 **`cold-import` is NOT safe against the always-running oracle** (refuted,
 2026-06-07): the auto-trigger pending-anchor metadata is read but not written by
@@ -149,10 +109,3 @@ zero oracle risk; produces coins == projection == frontier by construction (and
 exercises MVP #1 cold-sync). Prove it on a fresh isolated datadir first; the live
 wipe+resync is the one OWNER-GATED action. The structural fix must land first so
 the rebuilt datadir cannot re-tear.
-
-## Deferred (off the critical path, owner-gated)
-
-- Eventual deletion of the dead `process_block` / `coins_view_sqlite` legacy
-  connect engine once recovery is re-rooted off it.
-- Migration of existing on-disk datadirs (boot replay of pre-migration event_log
-  into the new progress.kv `coins` table — back-compat path in step 4).

@@ -26,16 +26,15 @@
  * cec.coins_best_block_height froze at the last boot reconcile while the
  * served tip advanced every block — so chain_evidence_controller_snapshot's
  * active_tip_hash_mismatch (live tip vs persisted) degraded health further
- * with each block until the next reboot (TASK #33: a green at-tip node
- * reporting healthy=false, /api/health 503).
+ * with each block until the next reboot: a green at-tip node reporting
+ * healthy=false, /api/health 503.
  *
- * LOCK-ORDER LAW (live deadlock 2026-06-12, deploy 873ba9955): the reducer
- * drive holds the coins_kv authority mutex for the whole ingest; the health
- * path takes csr->lock THEN coins_kv (csr_snapshot ->
- * coins_kv_is_proven_authority). Taking csr->lock from inside the drive is
- * therefore the inverted ABBA edge — it deadlocked the live node within two
- * blocks of deploy (net thread blocked in record_finalized_tip wanting
- * csr->lock; an RPC healthcheck held csr->lock wanting coins_kv). So the
+ * LOCK-ORDER LAW: the reducer drive holds the coins_kv authority mutex for
+ * the whole ingest; the health path takes csr->lock THEN coins_kv
+ * (csr_snapshot -> coins_kv_is_proven_authority). Taking csr->lock from
+ * inside the drive is therefore the inverted ABBA edge — it inverts the
+ * established order and deadlocks (net thread blocked in record_finalized_tip
+ * wanting csr->lock; an RPC healthcheck held csr->lock wanting coins_kv). So the
  * drive NEVER calls the evidence machinery: tip_finalize only stamps the
  * pending slot below (chain_evidence_note_finalized_tip — one leaf mutex,
  * never nested), and chain_evidence_drain_pending_tip runs the actual
@@ -145,7 +144,7 @@ static int cla_state_get_i32(struct node_db *ndb, const char *key, int def)
     return (int)v;
 }
 
-/* (d2) The ONLY freeze reason that may self-clear: the boot-reconcile transient
+/* The ONLY freeze reason that may self-clear: the boot-reconcile transient
  * where the csr-snapshot tip and the separately-read active-chain tip briefly
  * diverged (chain_evidence_reconstruct.c raises "active_tip_hash != csr_tip_hash
  * (h=...)"). NEVER matches ancestry/chainwork/snapshot/persist/utxo-ahead — those
@@ -200,13 +199,13 @@ static void cec_lift_boot_tip_divergence_freeze(
          * because the idempotence early-return below can skip the forward
          * persist that would otherwise rewrite publish_state — leaving it stale
          * FROZEN -> snapshot's publish_state_not_local -> a false "unhealthy"
-         * (the TASK #33 symptom) on that one path. NOTE: snapshot keys
+         * on that one path. NOTE: snapshot keys
          * publish_state_not_local on (state != LOCAL_EVIDENCE), so 0/empty would
          * NOT clear it — LOCAL_EVIDENCE is the only value that does + is honest. */
         (void)node_db_state_set_int(authority->ndb, "cec.publish_state",
                                     CEC_PUBLISH_LOCAL_EVIDENCE);
     }
-    LOG_WARN("cec", "[cec] (d2) lifting stale boot-transient freeze: live tip "
+    LOG_WARN("cec", "[cec] lifting stale boot-transient freeze: live tip "
              "h=%d hash-consistent (csr==finalized) — clearing '"
              CEC_BOOT_TIP_DIVERGENCE_PREFIX "' and resuming", height);
 }
@@ -228,7 +227,7 @@ bool chain_evidence_controller_record_finalized_tip(
 
     /* A frozen controller is in a genuine contradiction state; the boot
      * reconcile owns lifting it. Do not paper over it from the hot path —
-     * EXCEPT a demonstrably-reconciled boot-transient tip divergence (d2):
+     * EXCEPT a demonstrably-reconciled boot-transient tip divergence:
      * if the reducer has finalized this exact tip and the live csr tip now
      * agrees, the contradiction is provably gone, so self-clear and fall
      * through to publish honest evidence. Every other freeze — and any
@@ -282,8 +281,8 @@ bool chain_evidence_controller_record_finalized_tip(
      * advance with the tip. Doing it first also makes Guard A's
      * frontier clamp a no-op (coins == tip) instead of pinning the persisted
      * cec.coins_best_block_height at the STALE boot cursor height — that
-     * staleness was the same csr_cursor_mismatch / coins_best_block_height
-     * freeze TASK #33 is fixing. The write is serialized under csr->lock
+     * staleness is the csr_cursor_mismatch / coins_best_block_height freeze
+     * this follow exists to prevent. The write is serialized under csr->lock
      * against a concurrent csr_snapshot reader. */
     (void)csr_align_coins_best_block(authority->csr, finalized_tip->phashBlock);
 

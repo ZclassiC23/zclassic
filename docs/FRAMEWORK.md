@@ -162,13 +162,8 @@ every advance is a stage returning `ADVANCED` or a typed `BLOCKED`, then
 `network_tip − log_head` growing) or a named blocker at a known height. There is
 no third state. That is strictly stronger than detectors watching proxies.
 
-**Today vs target:** the staged reducer is now the authoritative
-chain-advance architecture and the legacy block-connect engine files have been
-deleted. The lint baselines are now empty; the remaining work is to make that
-truth complete everywhere: keep stale cutover/shadow language out, keep the
-coins.db write path explicit through inline guardrail tags, finish migrating
-mixed-purpose code toward the correct shapes, and prove the result on a live
-node. The checklist tracks that cleanup move by move.
+The staged reducer is the authoritative chain-advance architecture; the legacy
+block-connect engine has been deleted. Cleanup remains — the checklist tracks it.
 
 ---
 
@@ -185,15 +180,12 @@ know the shape.
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (24 conditions live) | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-and-empty **by design**: the Event concept is wholly owned by `lib/event/` (in-process bus) + `lib/storage/event_log.c` (durable fact log) + `lib/storage/*_projection.c`; app/ code only *produces* events via those primitives (~50 sites) and the one app-level subscriber is correctly a Service (`consensus_reject_index.c`). Keep `app/events/` empty until a file has a typed app-level contract + subscriber surface — see `app/events/README.md`. | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — OUTBOUND-ONLY by design; inbound adapter layer reserved-empty by design (Models ARE storage — Law 5)**: writes go out through swappable ports (Law 2) — `adapters/outbound/persistence/` has 15 ports + 12 sqlite impls, all real and wired; reads are owned by the Models (Law 5), so no inbound "repository" port fronts them by design. The 49 bare-sqlite `app/` sites are all legitimate (Models ARE storage via AR internals; Jobs use the progress-kv kernel store; Views are read-only introspection). Same posture as `app/events/` (reserved-empty by design). `check_raw_sqlite.sh` stays CLEAN with an empty baseline. | `adapters/outbound/persistence/` |
+| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-empty **by design** — owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c`; see `app/events/README.md` | `lib/storage/event_log.c` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 15 ports + 12 sqlite impls; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, the projection/state-dump registry, and
 the Storage Adapter (outbound-only by design) are real and enforced; Supervisor is
-partial; Controller and Service still carry legacy debt.** That gap — not the absence of ideas — is
-the work. Underneath the shapes the pure `domain/` core is real and the storage
-seam is growing behind ports, but remaining mixed-purpose code still needs to
-converge on one clear shape per file.
+partial; Controller and Service still carry legacy debt.**
 
 ### The canonical form is struct-registration, not a block-DSL
 
@@ -217,13 +209,9 @@ void block_failed_mask_at_tip_register(void) { condition_register(&cond); }
 
 No `CONDITION(){ DETECT{…} }` macro hides the control flow; the engine handles
 poll, backoff, attempts, witness, and `EV_OPERATOR_NEEDED` paging. Adding a
-healer is one ~50-LOC file plus one line in the registry. **Every other shape
-converges on this form**: a Service is functions returning `zcl_result`; a Model
-is `DEFINE_MODEL_CALLBACKS` + `validates_*` queries; a Job is a step function
-returning advance/blocked/idle with a durable cursor; a Supervisor is a
-declared child list. Where a primitive is missing (a uniform Job header, a real
-Event shape), the checklist names it — but the form is always *struct +
-register*, never *macro you can't breakpoint*.
+healer is one ~50-LOC file plus one line in the registry. Every other shape
+converges on this form — the form is always *struct + register*, never *macro
+you can't breakpoint*.
 
 The contracts, briefly:
 
@@ -283,19 +271,18 @@ human reviewer. The ladder is deliberate:
 - **RATCHET** — a law the tree doesn't yet satisfy but must monotonically approach. The baseline can only shrink; growing it costs an ADR.
 - **HARD** — a law the tree already satisfies. One regression is one too many.
 
-**Live gates (29).** Hygiene + adoption are well covered: no bare malloc, no
-raw `sqlite3_step` (compiler-poisoned), no silent error returns, no raw
-clock/RNG outside `lib/platform/`, threads only via the registry,
-observability-pairing, before/after-save hooks, function ≤500 LOC,
-`lib/`→`app/` layering (ratchet), supervisor registration (ratchet), typed
-blockers (ratchet), framework-shape (ratchet). The gates are themselves under
+Hygiene + adoption gates cover: no bare malloc, no raw `sqlite3_step`
+(compiler-poisoned), no silent error returns, no raw clock/RNG outside
+`lib/platform/`, threads only via the registry, observability-pairing,
+before/after-save hooks, function ≤500 LOC, `lib/`→`app/` layering, supervisor
+registration, typed blockers, framework-shape. The gates are themselves under
 test (`test_make_lint_gates.c` plants a fixture, asserts the gate trips,
 removes it, asserts green).
 
-**10 of the 11 architecture gates are now enforced** (6 HARD: E3, E4, E5, E8,
-E9, E11; 4 RATCHET: E1, E2, E6, E10). **E7**
-(no-authoritative-RAM-state) is clean at zero grandfathered entries. The Ten
-Laws and the Prime Directive land as gates with the work they guard:
+Of the 11 architecture gates, 6 are HARD (E3, E4, E5, E8, E9, E11), 4 are
+RATCHET (E1, E2, E6, E10), and **E7** (no-authoritative-RAM-state) is clean at
+zero grandfathered entries. The Ten Laws and the Prime Directive land as gates
+with the work they guard:
 
 | Gate | Enforces (law) | Mode |
 |------|----------------|------|

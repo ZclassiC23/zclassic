@@ -7,10 +7,9 @@ There are **two distinct chaos tools**, for two different layers:
 | `zclassic23-chaos` | **Simulation engine** | Nothing real — a deterministic in-process state machine driven by `.scenario` files | `make chaos` |
 | `crash_recovery_test` | **Real process (C7)** | A real `build/bin/zclassic23` binary, via `SIGKILL` to its process group | `make test-crash` / `make test-crash-bootstrap` |
 
-The sim engine (documented below, from "Chaos Harness" onward) is for
-fast, hermetic, seed-reproducible consensus/boot scenarios. The
-**full-binary kill-9 harness** (next section) is for proving on-disk
-recovery of a real node process under `SIGKILL`.
+Use the **full-binary kill-9 harness** (next section) to prove on-disk
+recovery of a real node process under `SIGKILL`; use the **sim engine**
+(below) for fast, hermetic, seed-reproducible consensus/boot scenarios.
 
 ---
 
@@ -20,8 +19,7 @@ recovery of a real node process under `SIGKILL`.
 **real** `build/bin/zclassic23`, drives it briefly, `SIGKILL`s its whole process
 group, restarts it, and asserts the recovery invariants. It is the
 end-to-end counterpart to the in-process kill9 unit test
-(`lib/test/src/test_kill9_recovery.c`) — it asserts the *same* on-disk
-shape against the real binary instead of a hand-built SQLite slice.
+(`lib/test/src/test_kill9_recovery.c`).
 
 ### Isolation contract (the hard rails)
 
@@ -57,7 +55,7 @@ a spawned test node can never touch the live node, datadir, or ports:
 `make test-crash-bootstrap` runs the harness with **no external
 fixture**: it mints an isolated `/tmp` regtest datadir, spawns the node,
 mines `--seed-blocks` blocks via `generate`, then runs the kill/restart
-loop. This is the C7 self-test.
+loop — the C7 self-test.
 
 > **Build caveat (current):** on this build the regtest `generate` RPC
 > does not solve Equihash, so the seed stays at genesis. The harness
@@ -230,7 +228,7 @@ beside the scenario and reduce the command list until the failure is minimal.
 For parser failures, the `chaos:LINE:` prefix points to the offending line.
 The failure summary in `chaos-output/` records the seed, replay command,
 scenario path, boot phase, peer counts, byte counters, clock movement,
-partition drops, and key metrics needed to promote the failure into a
+partition drops, and the key metrics needed to promote the failure into a
 checked-in regression.
 
 Before committing a scenario, run:

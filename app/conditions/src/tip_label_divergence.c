@@ -10,12 +10,12 @@
  * condition engine + zcl_state + health until it is actually repaired,
  * and escalates through the engine's attempt ladder.
  *
- * WINDOW_REBUILD TRIGGER SEAM (wave 3, designed): replace this
- * re-witness remedy with window_rebuild(first_bad_h). The HOLD latch +
- * blocker reason carry refuse_from_h; window_rebuild consumes it,
- * rebuilds [refuse_from_h, tip], then chain_linkage_hold_clear(check_id)
- * + blocker clear ON WITNESSED success only. Until then: HOLD + PAGE,
- * the operator owns the repair. */
+ * WINDOW_REBUILD TRIGGER SEAM: replace this re-witness remedy with
+ * window_rebuild(first_bad_h). The HOLD latch + blocker reason carry
+ * refuse_from_h; window_rebuild consumes it, rebuilds [refuse_from_h,
+ * tip], then chain_linkage_hold_clear(check_id) + blocker clear ON
+ * WITNESSED success only. Until then: HOLD + PAGE, the operator owns
+ * the repair. */
 
 #include "conditions/condition_registry.h"
 #include "framework/condition.h"
@@ -32,7 +32,7 @@ static bool detect_tip_label_divergence(void)
 
 static enum condition_remedy_result remedy_tip_label_divergence(void)
 {
-    /* WINDOW_REBUILD TRIGGER SEAM (wave 3): call
+    /* WINDOW_REBUILD TRIGGER SEAM: call
      * window_rebuild(chain_linkage_hold_refuse_from()) here. v1 has no
      * automated repair for a label divergence — report FAILED so the
      * engine escalates to the operator after its attempt budget. */
@@ -43,8 +43,8 @@ static bool witness_tip_label_divergence(int64_t target_at_detect)
 {
     (void)target_at_detect;
     // honest-witness-ok: remedy returns COND_REMEDY_FAILED (v1 has no
-    // automated repair; the window_rebuild seam above replaces it in
-    // wave 3), so the engine can never credit this read as a remedy-
+    // automated repair; the window_rebuild seam above is the intended
+    // replacement), so the engine can never credit this read as a remedy-
     // caused clear. The PERMANENT blockers it reads are cleared only by
     // a real repair (operator / window_rebuild via
     // chain_linkage_hold_clear), so this is a truthful "divergence

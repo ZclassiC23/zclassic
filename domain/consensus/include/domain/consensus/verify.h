@@ -20,9 +20,8 @@
  *   It must NOT #include from:
  *     - app/, lib/net/, lib/storage/, adapters/
  *
- * During Epoch I, some implementations delegate to existing
- * lib/chain, lib/script, lib/sapling functions. Over later epochs the
- * implementations migrate to be self-contained within domain/.
+ * Some implementations may delegate to the lib/chain, lib/script, and
+ * lib/sapling implementations.
  */
 
 #ifndef ZCL_DOMAIN_CONSENSUS_VERIFY_H

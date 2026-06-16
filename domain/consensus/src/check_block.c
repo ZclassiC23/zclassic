@@ -50,10 +50,8 @@
  * ORs in SCRIPT_VERIFY_CHECKDATASIG_SIGOPS (zclassic-cpp/src/main.cpp:4006,
  * 2567). For the legacy (non-accurate) count, bit 1<<11 is the ONLY flag
  * that changes the tally, so passing it alone reproduces the reference count
- * exactly while counting each CHECKDATASIG opcode as +1 (previously, with
- * SCRIPT_VERIFY_NONE, they counted 0 — an undercount that let c23 accept a
- * block zclassicd rejects with bad-blk-sigops). History-safe: zclassicd
- * already rejected any block whose true sigop total (incl. CHECKDATASIG)
+ * exactly while counting each CHECKDATASIG opcode as +1. History-safe:
+ * zclassicd already rejected any block whose true sigop total (incl. CHECKDATASIG)
  * exceeds 20000, so the immutable chain contains no block this newly
  * rejects. */
 #define DOMAIN_CONSENSUS_SIGOP_COUNT_FLAGS  SCRIPT_VERIFY_CHECKDATASIG_SIGOPS

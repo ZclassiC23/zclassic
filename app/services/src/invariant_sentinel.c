@@ -216,9 +216,8 @@ void invariant_sentinel_sweep_evaluate(
      * the ordering set: bodies and headers arrive through MULTIPLE
      * writers (direct P2P connect, legacy mirror, import), so a
      * downstream cursor legitimately overtakes body_fetch's own cursor
-     * during live catch-up — proven by a false fire on the healthy
-     * negative fixture (script_validate=3143207 > body_fetch=3143163
-     * while the node was finalizing forward normally, 2026-06-11). */
+     * during live catch-up (script_validate may legitimately run ahead
+     * of body_fetch while finalizing forward — not an inversion). */
     const struct { const char *a; int64_t va; const char *b; int64_t vb; }
     order[] = {
         { "tip_finalize", in->cur_tip_finalize,
@@ -242,8 +241,8 @@ void invariant_sentinel_sweep_evaluate(
     }
 
     /* I4.3 — utxo_apply log contiguity: the contiguous ok=1 prefix must
-     * reach cursor-1 (FIX-3 guarantees an anchor can never manufacture a
-     * rowless hole; a frontier below cursor-1 is a real hole/ok=0 row). */
+     * reach cursor-1 (an anchor can never manufacture a rowless hole; a
+     * frontier below cursor-1 is a real hole/ok=0 row). */
     if (in->ua_log_frontier_known && in->cur_utxo_apply > 0 &&
         (int64_t)in->ua_log_frontier < in->cur_utxo_apply - 1) {
         out->violated = true;
@@ -259,7 +258,7 @@ void invariant_sentinel_sweep_evaluate(
 
     /* I4.4 — Invariant B re-asserted every minute: coins_applied must not
      * exceed utxo_apply's OWN contiguous ok=1 prefix + 1 (the torn-coin
-     * shape, measured against the correct authority — c8018a388). */
+     * shape, measured against the correct authority). */
     if (in->coins_applied_found && in->ua_log_frontier_known &&
         in->coins_applied > in->ua_log_frontier + 1) {
         out->violated = true;
@@ -272,8 +271,8 @@ void invariant_sentinel_sweep_evaluate(
     }
 
     /* I4.5 — tip_finalize oscillation: many reorg_detected increments in
-     * one window while the finalize cursor did not move = the live-wedge
-     * signature (today it only logs quietly). */
+     * one window while the finalize cursor did not move = the wedge
+     * signature. */
     if (in->prev_cur_tip_finalize >= 0 &&
         in->cur_tip_finalize == in->prev_cur_tip_finalize &&
         in->reorg_detected_total >= in->prev_reorg_detected_total &&
@@ -540,11 +539,9 @@ bool invariant_sentinel_commitment_audit_once(void)
         return true;
     }
 
-    /* Shared stale-vs-corruption classifier (REAL since 2026-06-11; it
-     * was an unconditional-false stub, which made this entire fire path
-     * dead code): growth past the checkpoint = stale (legitimate, never
-     * fires); shrink or equal-count-different-hash = corruption
-     * candidate. */
+    /* Shared stale-vs-corruption classifier: growth past the checkpoint =
+     * stale (legitimate, never fires); shrink or
+     * equal-count-different-hash = corruption candidate. */
     if (!utxo_recovery_xor_mismatch_is_corruption_candidate(
             saved.count, computed.count))
         return true;

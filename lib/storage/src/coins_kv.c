@@ -15,9 +15,8 @@
  * + script_validate prevout reads), the self-heal/condition-engine thread
  * (stage_repair_coin_backfill.c), the reorg unwind, and chain_state_validator
  * reads via coins_view_kv. FULLMUTEX serializes individual sqlite3_* calls,
- * NOT a reset/bind/step sequence, so a shared cached statement is the exact
- * cross-thread race class fixed in db_tx_find (3b2033e15) and
- * node_db_state_get (8b8d7c1b5). Per-block batching belongs at the hot-loop
+ * NOT a reset/bind/step sequence, so a shared cached statement is a
+ * cross-thread race class. Per-block batching belongs at the hot-loop
  * call sites (created_outputs_index_put_block's prepare-once idiom). Within a
  * call, txid/script bind with SQLITE_STATIC: every caller's buffers outlive
  * the statement, which never escapes the call.
@@ -366,7 +365,7 @@ bool coins_kv_is_proven_authority(sqlite3 *db, int32_t *out_applied)
 
     /* (2) migration stamp: the store provably holds the live set. A
      * cursor-backfilled frontier on a pre-migration datadir is NOT proof —
-     * without this rung the wave-2 derived gates would pass datadirs whose
+     * without this rung the derived gates would pass datadirs whose
      * coins still live only in the node.db mirror. */
     uint8_t mig = 0;
     size_t mlen = 0;

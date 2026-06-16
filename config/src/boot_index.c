@@ -124,7 +124,7 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
 
     printf("SQLite UTXO set: %lld UTXOs (canonical)\n", (long long)total);
 
-    /* Wave 2: the derived coins-best (coins_kv authority) outranks the
+    /* The derived coins-best (coins_kv authority) outranks the
      * node_state cache key — a missing/stale cache must not refuse the
      * rebuild on a canonical datadir. Legacy fallback: the cache key. */
     {
@@ -219,10 +219,9 @@ bool reindex_chainstate(struct main_state *ms,
 
     /* The replay reads every block from h=0 and cannot skip. Verify the
      * verb is executable BEFORE wiping the derived set: a cold-import
-     * datadir has no block data below its import window, and the old
-     * wipe-then-discover order destroyed a healthy mirror for nothing
-     * (defect #6, live 2026-06-11: "wiped SQLite UTXO set" followed by
-     * "failed to read block at height 1"). */
+     * datadir has no block data below its import window, so a
+     * wipe-then-discover order destroys a healthy mirror for nothing
+     * (the wipe succeeds, then the very first genesis-side read fails). */
     for (int h = 0; h <= (tip_height < 1 ? tip_height : 1); h++) {
         struct block_index *probe = active_chain_at(&ms->chain_active, h);
         struct block pblk;
@@ -459,7 +458,7 @@ int propagate_nchaintx(struct main_state *ms)
     return total_propagated;
 }
 
-/* ── Coins/tip consistency safety check (moved from boot.c) ────────────
+/* ── Coins/tip consistency safety check ────────────────────────────────
  *
  * After LDB import, the UTXO set can sit far above the chain tip (or the
  * coins_best hash can be missing from the index entirely). Promote the
@@ -467,11 +466,10 @@ int propagate_nchaintx(struct main_state *ms)
  *
  * INVARIANT A (index half) on every real-block promotion: the coins
  * cursor PROPOSES a tip, it does not get to INSTALL one. A coins-best
- * block on a detached index island must not become the live tip — the
- * 2026-06-11 copy-prove re-wedged exactly here: after the restore
- * correctly committed h=3,137,373, the ungated promotion raised the tip
- * to the island root h=3,142,801 (1,267 tip-window holes, crash-only
- * reindex). Refuse loudly and let header/body refill re-derive. */
+ * block on a detached index island must not become the live tip — an
+ * ungated promotion to an island root leaves tip-window holes and forces
+ * a crash-only reindex. Refuse loudly and let header/body refill
+ * re-derive. */
 void boot_index_verify_coins_tip_consistency(struct main_state *ms,
                                              struct coins_view_sqlite *cvs,
                                              struct node_db *ndb)
@@ -484,14 +482,13 @@ void boot_index_verify_coins_tip_consistency(struct main_state *ms,
     int utxo_max_h = 0;
     bool derived = false;
 
-    /* Wave 2: DERIVED inputs first. This function is the exact site that
-     * re-wedged the 2026-06-11 copy-prove — the stale-label promotion below
-     * guessed from the mirror's MAX(height) + the node_state anchor cache.
-     * On canonical datadirs both inputs are substituted from coins_kv's own
-     * co-committed state: coins_hash = the derived hash (when the durable
-     * logs resolve one), utxo_max_h = the derived height. The promotion
-     * heuristic then cannot fire above the derivation. Legacy datadirs keep
-     * the cache reads unchanged. */
+    /* DERIVED inputs first. The stale-label promotion below guesses from
+     * the mirror's MAX(height) + the node_state anchor cache, which can
+     * over-promote to a detached island. On canonical datadirs both inputs
+     * are substituted from coins_kv's own co-committed state: coins_hash =
+     * the derived hash (when the durable logs resolve one), utxo_max_h =
+     * the derived height. The promotion heuristic then cannot fire above
+     * the derivation. Legacy datadirs keep the cache reads unchanged. */
     {
         int32_t d_h = -1;
         uint8_t d_hash[32];

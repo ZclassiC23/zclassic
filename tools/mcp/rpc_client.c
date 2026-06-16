@@ -67,9 +67,7 @@ static void base64_encode(const char *in, size_t len, char *out)
  * missing/unreadable/empty — callers MUST NOT proceed to send a request
  * with an empty credential, because the node then answers 401 Unauthorized
  * with no hint that the real cause is a cookie problem.  That silent 401
- * was the recurring "zcl_state returns 401" symptom: it bites every tool
- * but is noticed on zcl_state because operators reach for it during
- * incidents. */
+ * masquerades as a generic auth failure on every tool. */
 static bool read_cookie(void)
 {
     char path[600];

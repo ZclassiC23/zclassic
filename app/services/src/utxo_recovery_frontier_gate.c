@@ -8,19 +8,15 @@
 /*
  * INVARIANT A — never INSTALL a tip above what can be DERIVED.
  *
- * The live wedge (2026-06-11): a boot restore installed tip_h=3,143,175
- * from a finalized-floor row recorded at h=3,143,171 (the row's own hash
- * resolved to a DIFFERENT height) on a detached 375-block index island
- * rooted at 3,142,801, while the hash-linked index extent died at
- * 3,141,533. Post-restore integrity reported 1,267 tip-window holes plus
- * 631 active-chain mismatches and the node crash-looped.
+ * Failure mode this guards: a boot restore can install a tip from a
+ * finalized-floor row whose own hash resolves to a DIFFERENT height on a
+ * detached index island above the trust root, producing tip-window holes
+ * plus active-chain mismatches and a crash loop.
  *
- * The copy-prove of the first gate build taught the second lesson: the
- * LOG half alone is fabricatable. The wedged run had stamped a
- * tip_finalize status='anchor' row at 3,143,171 AND advanced every stage
- * cursor past it, so reducer_trusted_anchor accepted the anchor and the
- * validate_headers frontier read 3,143,206 — ABOVE the floor. Both
- * authorities must agree before an install:
+ * The LOG half alone is fabricatable: a fabricated anchor row plus
+ * advanced stage cursors makes reducer_trusted_anchor accept an
+ * underivable frontier above the floor. Both authorities must agree
+ * before an install:
  *
  *   LOG half   — utxo_recovery_header_frontier: the contiguous ok=1
  *       prefix of validate_headers_log (DRY reader
@@ -230,9 +226,9 @@ struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
     if (frontier_out)
         *frontier_out = fh;
     if (candidate->nHeight <= fh) {
-        /* Log-derivable — but the INDEX must agree (the 2026-06-11 wedge:
-         * the log frontier was fabricated ABOVE the candidate, so the
-         * height test alone would have installed a detached-island tip). */
+        /* Log-derivable — but the INDEX must agree: the log frontier can
+         * be fabricated ABOVE the candidate, so a height test alone would
+         * install a detached-island tip. */
         if (utxo_recovery_block_trust_rooted(candidate))
             return candidate;          /* derivable by BOTH authorities */
         LOG_WARN("utxo_recovery",
@@ -250,12 +246,9 @@ struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
      * candidate BELOW the oldest row the log still covers cannot be
      * refuted by the log — only fail to be vouched for — so the log half
      * abstains and the index half (trust-rooted ancestry) decides alone.
-     * Without this, rewinding fabricated anchor rows collapses the
-     * frontier to the compiled SHA3 anchor and the clamp drags a
-     * perfectly trust-rooted candidate 86K blocks down to it (the
-     * 2026-06-11 copy-prove regression: candidate 3,137,373 was clamped
-     * to 3,056,758 because validate_headers_log only covered
-     * [3,142,802 .. 3,143,206]). */
+     * Without this carve-out, rewinding fabricated anchor rows collapses
+     * the frontier to the compiled SHA3 anchor and drags a trust-rooted
+     * candidate tens of thousands of blocks down to it. */
     {
         int32_t log_lo = 0;
         bool lo_found = false;
@@ -303,8 +296,8 @@ struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
         return walk;
     }
 
-    /* 2) torn extent (pprev dies above fh — the live wedge): derive the
-     * frontier tip from validate_headers_log's OWN hash (log-as-truth). */
+    /* 2) torn extent (pprev dies above fh — the torn-extent case): derive
+     * the frontier tip from validate_headers_log's OWN hash (log-as-truth). */
     uint8_t lh[32];
     bool found = false;
     if (reducer_frontier_log_hash_at(progress_store_db(),
@@ -356,14 +349,11 @@ int utxo_recovery_settle_finalized_floor(struct utxo_recovery_ctx *ctx,
      *   INDEX half — the floor row's OWN hash resolves in the index AT
      *                the recorded height, on a trust-rooted chain.
      *
-     * The 2026-06-11 wedge floor failed the index half twice over: its
-     * row hash mapped to a DIFFERENT height (3,143,175 vs 3,143,171) on
-     * a detached 375-block island, while fabricated anchor rows had
-     * pushed the LOG frontier to 3,143,206 so a log-only test passed and
-     * the fabricated restored_height=floor was installed raw downstream
-     * — crash-only reindex. Flip unbackable rows (loudest-first, history
-     * preserved) until the floor is evidence again or stops outranking
-     * scan_fallback. */
+     * A fabricated floor can fail the index half: its row hash maps to a
+     * DIFFERENT height on a detached island while fabricated anchor rows
+     * push the LOG frontier above it so a log-only test passes. Flip
+     * unbackable rows (loudest-first, history preserved) until the floor
+     * is evidence again or stops outranking scan_fallback. */
     if (!ctx || !ctx->state || !served_hash || !have_served_hash)
         return served_floor;
 

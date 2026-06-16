@@ -476,8 +476,8 @@ static const struct mcp_param_spec p_node_log[] = {
  * we patch the pointers once at boot. New subsystems added to
  * app/controllers/src/diagnostics_controller.c auto-propagate to the MCP
  * schema with no further plumbing. */
-/* Sized for the full registry: the list passed 512 bytes at ~38 subsystems
- * (the schema enum was silently truncating mid-name). */
+/* Sized for the full registry: an undersized buffer silently truncates the
+ * schema enum mid-subsystem-name. */
 static char g_state_subsystems_csv[1024];
 static char g_state_subsystem_desc[768];
 static struct mcp_param_spec p_state[] = {

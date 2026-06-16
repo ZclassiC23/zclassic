@@ -42,17 +42,10 @@ and every worker rebases on top of it before pushing.
    # SKIP any whose Status starts with "QUEUED" — gated on prerequisite.
    $ cat docs/work/<chosen-file>           # full spec — branch name, scope, tasks
 
-5. Verify assignment is unclaimed / in-progress for you
-   - Check the "Status" section at the bottom of your assignment doc
-   - If status is "DONE" → nothing to do; report to user
-   - If status is "BLOCKED" or "FAILED" → re-read the issue, decide whether
-     to retry or escalate
-   - If status is "READY" or "IN PROGRESS (wt<N>)" → proceed
+5. Verify the assignment doc's "Status" section: DONE → report to user;
+   BLOCKED/FAILED → re-read, retry or escalate; READY/IN PROGRESS (wt<N>) → proceed.
 
-6. Stay on main
-   - DO NOT branch off — workers commit directly to main.
-   - If you need to experiment, use `git stash` or a LOCAL-ONLY scratch
-     branch, but the work that ships goes onto main directly.
+6. Stay on main (see Workflow note above — commit directly to main).
    - **IGNORE any `**Branch:**` field at the top of older assignment docs.**
      That was a legacy of the feature-branch workflow; the field is dead.
      You stay on `main` regardless of what the doc says.
@@ -64,7 +57,7 @@ and every worker rebases on top of it before pushing.
    - $ git push origin main                   # see "Push discipline" below
 ```
 
-After this, **execute the assignment's Tasks section in order**.
+Then **execute the assignment's Tasks section in order**.
 
 ---
 
@@ -145,10 +138,7 @@ When all tasks pass and acceptance criteria are met:
    All green = ready. Any red = back to debugging.
 
    **⚠️ A GREEN TEST SUITE IS NOT A HEALTHY NODE (RESILIENCE DOCTRINE #1).**
-   On 2026-05-24 the C-3 header cutover (`ad34efb65`) shipped with
-   `test_parallel` 0/196 green and **froze the live chain for the whole
-   session** — the tip never advanced one block. Tests passed; the node was
-   dead. So: **if your change touches sync, validation, header/block admit, a
+   **If your change touches sync, validation, header/block admit, a
    cutover, or anything on the chain-advance path, forward progress on the
    LIVE node is a required gate, not optional:**
    ```bash
@@ -253,6 +243,6 @@ Whether you finished or not:
 
 1. `git status` — verify clean (or known WIP).
 2. `git push origin main` — back up.
-3. If finished: update assignment Status to `✅ DONE — pushed YYYY-MM-DD`.
-4. If not finished: update assignment Status to `IN PROGRESS (wt<N>) — paused at task <X>` and `git push origin main`.
-5. Report briefly to user.
+3. Update assignment Status: `✅ DONE — pushed YYYY-MM-DD` if finished, else
+   `IN PROGRESS (wt<N>) — paused at task <X>` (and `git push origin main`).
+4. Report briefly to user.

@@ -7,16 +7,15 @@
  * CANONICAL next bodies never arrive over P2P — yet a trusted local
  * zclassicd oracle is reachable and strictly ahead and HAS those bodies.
  *
- * Root-caused on the live node (2026-06-02): the node held at height H with
- * its full header chain synced far ahead (best_header >> H). We send
- * well-formed getdata(MSG_BLOCK) for the missing canonical bodies, but the
- * zcashd/MagicBean peers return neither `block` nor `notfound`, so no body
- * ever lands, tip_finalize never gets the H+1/H+2 lookahead bodies it
- * needs, and the tip is stuck. body_fetch_missing_have_data re-queues the
- * doomed P2P fetch and escalates to operator_needed; tip_fork_stale
- * deliberately stays quiet because the missing block IS on the best-header
- * chain (not a fork). Nothing fell back to the reachable oracle that
- * demonstrably holds every missing body.
+ * The wedge: the node holds at height H with its full header chain synced
+ * far ahead (best_header >> H). We send well-formed getdata(MSG_BLOCK) for
+ * the missing canonical bodies, but the zcashd/MagicBean peers return
+ * neither `block` nor `notfound`, so no body ever lands, tip_finalize never
+ * gets the H+1/H+2 lookahead bodies it needs, and the tip is stuck.
+ * body_fetch_missing_have_data re-queues the doomed P2P fetch and escalates
+ * to operator_needed; tip_fork_stale deliberately stays quiet because the
+ * missing block IS on the best-header chain (not a fork). Nothing falls
+ * back to the reachable oracle that demonstrably holds every missing body.
  *
  * detect() fires TRUE only when ALL hold:
  *   (a) the active tip has not advanced for a sustained window

@@ -395,9 +395,8 @@ int node_db_catchup_service_run(struct node_db *ndb,
      * BLOCK_HAVE_DATA yet deserialize as garbage from OUR files. The old
      * abort-on-first-bad-frame turned one such frame into an infinite
      * restart loop that never reached the readable rows the tip needs
-     * (defect #8, live 2026-06-11: 486 garbage reads at h~9.8k, catchup
-     * "aborting (failed=1)" forever, tip pinned). Consumers already
-     * handle missing lean rows (height_not_found). */
+     * (garbage reads at low height, catchup aborting forever, tip pinned).
+     * Consumers already handle missing lean rows (height_not_found). */
     int lean_holes = 0;
     int first_hole_h = -1;
     int skip_file = -1;

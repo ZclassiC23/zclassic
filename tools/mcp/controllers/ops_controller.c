@@ -249,9 +249,9 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     json_push_kv_int(&root, "height", block_height);
     /* build_commit must describe the NODE. This MCP server is a separate
      * long-lived process and can be running an older binary than the node
-     * it queries — stamping our own hash here once mis-reported a deploy
-     * by three commits (2026-06-12). Scrape the node's value from its
-     * healthcheck; surface ours only when it differs. */
+     * it queries — stamping our own hash here can mis-report the deployed
+     * node version. Scrape the node's value from its healthcheck; surface
+     * ours only when it differs. */
     char node_commit[64];
     bool have_node_commit =
         status_extract_json_str(hc, "build_commit",
@@ -506,7 +506,7 @@ static int h_zcl_rebuild_recent(const struct mcp_request *req,
 }
 
 /* zcl_blockers — dedicated MCP tool returning the typed blocker
- * registry (Round 6 C5).
+ * registry.
  *
  * The generic `zcl_state subsystem=blocker` primitive already exposes
  * the JSON dump, but operators expect a top-level tool name for "show

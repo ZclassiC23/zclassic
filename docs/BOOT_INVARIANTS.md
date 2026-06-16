@@ -1,11 +1,7 @@
 # Boot Invariants
 
-`config/src/boot.c` is the ~3,300 LOC entry point that initializes
-every long-lived global the node depends on. The work is sequential
-and ordering-sensitive: a misplaced step doesn't fail loudly — it
-produces silent corruption that only surfaces hours later when an
-inconsistency reaches an integrity check or a query returns wrong
-results.
+`config/src/boot.c` is the sequential, ordering-sensitive entry point
+that initializes every long-lived global the node depends on.
 
 This file is the source of truth for the boot ordering and what
 each stage guarantees. The state machine that enforces the
@@ -49,10 +45,6 @@ Stages are strictly **monotonic**. The advance API enforces:
 
 ## Currently wired (incremental adoption)
 
-This list grows as the team identifies more boundaries. Stages not in
-this list still exist in the enum but show up as `WARN forward-jump`
-gaps until wired.
-
 - `BOOT_STAGE_DATADIR_LOCKED` — `boot_step_select_chain_and_datadir`
 - `BOOT_STAGE_CRYPTO_READY` — `boot_step_init_crypto_and_state`
 - `BOOT_STAGE_DB_OPEN` — `app_init` after `node_db_sync_init` succeeds
@@ -64,13 +56,10 @@ gaps until wired.
 
 ## Coins vs block-index ordering
 
-Per the Wave 8 incident (memory: at-tip kill-9 ordering invariant):
-
 > coins.db must commit before LevelDB block_index fsync
 
-In commits `039840fa1` + `b1bf121b1`, the chain advance path was
-re-ordered so a kill -9 between (7) coins commit and (8) block_index
-fsync leaves the system in a forward-recoverable state:
+The chain advance path is ordered so a kill -9 between (7) coins commit
+and (8) block_index fsync leaves the system forward-recoverable:
 
 - coins.db at N+1, block_index at N → boot detects drift, replays
   block_index forward.
@@ -89,10 +78,10 @@ When wiring `BOOT_STAGE_BLOCK_INDEX_LOADED` and
 ## Coins integrity gate and the stale-anchor self-heal
 
 `coins_view_sqlite_open` runs `coins_view_sqlite_check_tip_consistency`
-during `DB_OPEN`. It exists to catch the dangerous class "UTXO writes
-landed but the tip pointer didn't" (crash mid-flush), which could
-double-spend on restart. Its verdict (`true` = consistent/healed,
-`false` = halt) gates boot at `config/src/boot.c` — a `false` is FATAL.
+during `DB_OPEN`. It catches the dangerous class "UTXO writes landed but
+the tip pointer didn't" (crash mid-flush), which could double-spend on
+restart. Its verdict (`true` = consistent/healed, `false` = halt) gates
+boot at `config/src/boot.c` — a `false` is FATAL.
 
 The gate's branches, in order, when `max_utxo_height > resolved_tip`:
 
@@ -127,8 +116,7 @@ which wipes `utxos` and replays every block) or restore the datadir.
 > Follow-ups for full auto-heal: (a) persist `utxo_sha3` at finalized-tip
 > checkpoints so a recurring wedge self-heals; (b) `-reindex-chainstate`
 > currently runs *after* this gate, so a torn anchor FATALs before the
-> rebuild can run — a pre-gate coins wipe when reindex is requested makes
-> the documented recovery reachable.
+> rebuild can run.
 
 ---
 

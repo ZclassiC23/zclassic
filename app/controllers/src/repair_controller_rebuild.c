@@ -37,10 +37,9 @@
 /* "Recent" by construction: at ~75 s/block this window is ~4 days of
  * blocks. Anything larger is a cold-import / reindex job, not a recent
  * fork repair — we refuse it so this lever can never be mistaken for a
- * full resync. Sized to cover one full cold-import seed window (the
+ * full resync. Sized to cover one full cold-import seed window: the
  * stable-LevelDB-image lag behind the live zclassicd tip runs ~5.5-7k
- * blocks, observed live 2026-06-11: a 6,910-block window that the old
- * 5000 cap refused, leaving no validated-path recovery verb). */
+ * blocks. */
 #define REBUILD_RECENT_MAX_RANGE   10000
 /* Default look-back below the active tip when from_height is omitted.
  * Small margin so a 1-block stale fork is always inside the window. */
@@ -206,21 +205,20 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
     if (!ok) {
         format_state_message(&state, msg, sizeof(msg));
 
-        /* CODE4 — single FRONTIER poison_rewind. The new reducer pipeline
-         * latches a solutionless validate_headers failure for the wedge gap and
-         * its forward-only cursor is parked PAST it, so even after the
-         * solutions are backfilled (CODE3) the gap is never re-validated until
-         * the cursor is rewound. The self-heal Condition that would normally do
-         * this has exhausted its attempts. Do it once, here: when the FIRST
-         * block of the window (the only height where height==active_tip+1 holds)
-         * comes back "no-header-solution-backfill-required" and its solution is
-         * now available, call the sanctioned frontier poison_rewind — it deletes
-         * the validate_headers + downstream log rows at/above the frontier and
+        /* Single FRONTIER poison_rewind. The reducer pipeline latches a
+         * solutionless validate_headers failure for the gap and its forward-only
+         * cursor is parked PAST it, so even after the solutions are backfilled
+         * the gap is never re-validated until the cursor is rewound. Do it once,
+         * here: when the FIRST block of the window (the only height where
+         * height==active_tip+1 holds) comes back
+         * "no-header-solution-backfill-required" and its solution is now
+         * available, call the sanctioned frontier poison_rewind — it deletes the
+         * validate_headers + downstream log rows at/above the frontier and
          * rewinds those cursors, but REFUSES if any finalized (ok=1) row sits
          * at/above the frontier (the Tier-2 public-tip floor), so it can never
          * disturb finalized history — then re-ingest the in-hand block. After
          * this single rewind, validate_headers re-drains the whole gap forward
-         * (solutions all present from CODE3 + per-ingest fix-1); later blocks
+         * (solutions all present, plus the per-ingest backfill); later blocks
          * are NOT at the frontier, so this fires at most once per run. */
         if (strstr(msg, "no-header-solution-backfill-required") &&
             ctx && ctx->main_state) {
@@ -522,7 +520,7 @@ void register_rebuild_recent_rpc_commands(struct rpc_table *t)
         rpc_table_must_append(t, &cmds[i]);
 }
 
-/* ── backfill_header_solutions (CODE3) ──────────────────────────────────
+/* ── backfill_header_solutions ───────────────────────────────────────────
  *
  * Bulk-fill the progress.kv header_solution_repair side-table for every
  * height in [from .. header_tip] whose solution is not already stored,

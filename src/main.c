@@ -1243,7 +1243,7 @@ int main(int argc, char **argv)
         if (ins) sqlite3_finalize(ins);
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
-        /* OFFLINE CACHE RESET (wave 2 label): 'coins_best_block' is a
+        /* OFFLINE CACHE RESET: 'coins_best_block' is a
          * projection key — authority = reducer_frontier_derive_coins_best
          * over coins_kv. The --repair modified the utxos mirror directly,
          * so refresh its cached anchor to match; the derivation is
@@ -1529,7 +1529,7 @@ int main(int argc, char **argv)
     /* UTXO commitment MINT ceremony — compute the SHA3 commitment over the
      * current (operator-trusted, synced) UTXO set and emit a paste-ready
      * sha3_utxo_checkpoint for lib/chain/src/checkpoints.c. This is the
-     * "fresh checkpoint" half of the trust model (decision 2026-05-29): a
+     * "fresh checkpoint" half of the trust model: a
      * release ceremony run on a node synced+verified from a trusted source,
      * so that future fast-imports can FATAL-verify their UTXO set against a
      * signed commitment near the tip instead of trusting the source blindly.

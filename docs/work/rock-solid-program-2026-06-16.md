@@ -5,40 +5,37 @@ Inputs: 4 phase-1 verification findings (areas A–D), the two root-cause
 memories (`project_recurring_anchor_collapse_wedge_2026-06-13`,
 `project_coldimport_restart_fragility_2026-06-15`), `docs/HANDOFF.md`,
 `docs/work/robustness-audit-2026-06-15.md`, `docs/work/FORWARD_PLAN.md`,
-`docs/MVP.md`. Every code reference below was re-grepped against HEAD this
-session and is marked **[verified]**; anything I could not read first-hand is
-marked **[assumed]**.
+`docs/MVP.md`.
 
 ---
 
 ## 1. Diagnosis (one paragraph)
 
-The node has been wedged for ~2.85 days for two compounding reasons that are
+The node has been wedged ~2.85 days for two compounding reasons that are
 **both about the datadir and the deploy, not the software**. First, the live
 binary (`6934ad512`) is **18 commits stale** and predates HEAD's torn-import
 detection gate, so when its cold-imported datadir developed a genuine **coin
-tear** — a durable `ok=0 prevout_unresolved` hole at h=3,145,595 caused by a
-missing canonical coinbase `60fc6f43a630b5b7:0`, with the trusted SHA3 anchor
-collapsed to checkpoint+1 (`hstar_cursor=3,056,759`) — it surfaces only as an
-opaque `I4.3 window.consistency` HOLD and a watchdog that has fired 1,138
-fruitless recoveries. The block index is **hash-identical to zclassicd** at the
-wedge block, the spending region, and the tip (`zcl_probe_zclassicd
-match:true`), so the damage is purely in the coin set — invisible to hash
-probes, which is the defining trait of this class **[verified live]**. Second,
-that tear was *created* by cold import being a non-self-sufficient "borrow from
-zclassicd" bootstrap that skips SHA3 verification at non-checkpoint heights and,
-on a clean restart of a node that forward-synced past zclassicd, commits its tip
-*down* to zclassicd's index-best (a 10,984-block backward commit observed live
-on the dev lane). **The software itself is sound:** the dev lane (HEAD code,
-fresh cold-import) is genuinely at the network tip and advancing block-by-block,
-consensus-correct vs zclassicd, with no crash/flap/SEGV in 9h **[verified
-live]**. The remaining defects are (a) the live datadir is torn and the live
-binary can't even name the tear; (b) two health signals on HEAD false-latch
-(`replay_canary_failed` from a 3-day-old cross-binary sentinel, and
+tear** — a durable `ok=0 prevout_unresolved` hole at h=3,145,595 from a missing
+canonical coinbase `60fc6f43a630b5b7:0`, with the trusted SHA3 anchor collapsed
+to checkpoint+1 (`hstar_cursor=3,056,759`) — it surfaces only as an opaque
+`I4.3 window.consistency` HOLD and a watchdog that has fired 1,138 fruitless
+recoveries. The block index is **hash-identical to zclassicd** at the wedge
+block, the spending region, and the tip (`zcl_probe_zclassicd match:true`), so
+the damage is purely in the coin set — invisible to hash probes, the defining
+trait of this class **[verified live]**. Second, cold import is a
+non-self-sufficient "borrow from zclassicd" bootstrap that skips SHA3 verify at
+non-checkpoint heights and, on a clean restart of a node that forward-synced past
+zclassicd, commits its tip *down* to zclassicd's index-best (a 10,984-block
+backward commit observed live on the dev lane). **The software
+itself is sound:** the dev lane (HEAD code, fresh cold-import) is at the network
+tip and advancing, consensus-correct vs zclassicd, with no crash/flap/SEGV in
+9h **[verified live]**. The remaining defects: (a) the live datadir is torn and
+the live binary can't even name the tear; (b) two health signals on HEAD
+false-latch (`replay_canary_failed` from a 3-day-old cross-binary sentinel,
 `contradiction_frozen` from the restart-fragility backward commit) so an
-otherwise-healthy node pages the operator forever; (c) a real data-race SEGV in
-the `chain_restore_finalize` recovery cascade; and (d) the restart-fragility bug
-itself is unfixed.
+otherwise-healthy node pages forever; (c) a real data-race SEGV in the
+`chain_restore_finalize` recovery cascade; (d) the restart-fragility bug itself
+is unfixed.
 
 ---
 
@@ -81,15 +78,14 @@ make deploy        # build + setcap + restart  (only after the running gate is g
 HEAD's gate `block_index_loader_torn_import_gate_fires()` **[verified
 app/services/src/block_index_loader_torn_gate.c:118]** converts the opaque
 `I4.3 window.consistency` HOLD into a legible typed-PERMANENT `seed.torn_import`
-blocker + `EV_OPERATOR_NEEDED`. All three of its conditions are satisfied by the
-current live state (hole 3,145,595 in `(3,056,758, ceiling]`; status
-`prevout_unresolved`; durable `coin_backfill.refused` marker with
-`tx_index_complete=3`) **[verified live for conditions 1–2; condition 3's
-progress.kv marker is assumed-present — every precondition for a prior boot to
-have written it is met, but progress.kv is not reachable via the in-process
-node.db SQL handle and must not be opened with a second writer]**. Deploying HEAD
-alone does **not** un-wedge the node — the datadir is still torn — but it makes
-the failure legible and stops the 1,138-recovery watchdog churn.
+blocker + `EV_OPERATOR_NEEDED`. Its three conditions are satisfied by the current
+live state: hole 3,145,595 in `(3,056,758, ceiling]`; status `prevout_unresolved`;
+durable `coin_backfill.refused` marker with `tx_index_complete=3` **[verified
+live for conditions 1–2; condition 3's progress.kv marker is assumed-present —
+progress.kv is not reachable via the in-process node.db handle and must not be
+opened with a second writer]**. Deploying HEAD alone does **not** un-wedge the
+node — the datadir is still torn — but it makes the failure legible and stops the
+1,138-recovery watchdog churn.
 
 ### 2.3 Wipe + two-step cold re-import (THE proven recipe, in order)
 The tear lives in the coin set; the only honest fix is a fresh import. The
@@ -158,11 +154,10 @@ successor** — do not start a competing `make` in this worktree.
   the real reorg re-bind path below the SHA3 checkpoint **[verified diff]**, the
   three expanded test files, and the `Makefile` CI flake-tolerance retry
   **[verified diff]**.
-- **Why it matters for stability:** this is a **consensus-parity** correctness
-  fix on the coinbase builder — exactly the inviolable axis. Shipping it removes
-  a latent fork-risk (a mined block with a non-3-byte height encoding would
-  diverge from zclassicd). The reducer test hooks unblock real coverage of the
-  reorg path that today can only be exercised against mainnet height. The CI
+- **Why it matters for stability:** a **consensus-parity** correctness fix on
+  the coinbase builder removes a latent fork-risk (a mined block with a non-3-byte
+  height encoding would diverge from zclassicd); the reducer test hooks unblock
+  coverage of the reorg path otherwise only exercisable at mainnet height; the CI
   retry keeps the gate armable.
 - **Touchpoints [verified]:** `domain/consensus/src/coinbase.c:19-90`
   (the new encoders + `DCB_HEIGHT_MAX`); `app/jobs/src/reducer_frontier.c:26-60`
@@ -176,9 +171,7 @@ successor** — do not start a competing `make` in this worktree.
   — confirm the golden values still match and that a regtest mine→zclassicd-accept
   round-trip passes if available. Branch off `main`, do **not** commit on a dirty
   detour.
-- **Effort:** S (the code is written and reportedly green; this is review +
-  consensus-parity confirmation + commit). **Do first — it is finished work
-  sitting uncommitted and at risk.**
+- **Effort:** S.
 
 ### (b) Cold-import restart-fragility — OPTION 1 fix
 - **What:** stop the destructive `zclassicd_import_best` backward commit (and the
@@ -210,11 +203,10 @@ successor** — do not start a competing `make` in this worktree.
     app/services/src/block_index_loader.c:183-227]** refuse to overwrite a good
     flat whose top `>=` derived coins-best with one whose top is below it.
 - **Why it matters for stability:** this is the **root cause of the live
-  `contradiction_frozen` latch** and the 2nd documented cold-import failure
-  class. Fixing it prevents the harmful backward commit from ever being raised,
-  which prevents the frozen-contradiction page, which is half of "node reports
-  healthy at tip." It also stops the partial-flat amplification that degrades
-  every subsequent restart.
+  `contradiction_frozen` latch** and the 2nd documented cold-import failure class
+  — preventing the harmful backward commit prevents the frozen-contradiction page
+  (half of "node reports healthy at tip") and stops the partial-flat
+  amplification that degrades every subsequent restart.
 - **Touchpoints [verified]:** `config/src/boot.c:1975-1987` (need_zcd gate),
   `:2081-2107` (best-chain scan), `:2110-2117` (the backward commit),
   `:2122` (flat re-save), `:737-774` (`boot_promote_tip_via_csr` def with
@@ -244,8 +236,7 @@ successor** — do not start a competing `make` in this worktree.
     future datadirs (the live forward-bridge bodies are gone; it heals only via
     P2P crawl or a fresh fixed-binary import).
 - **Effort:** M (small, surgical patch; the cost is the disciplined copy-prove
-  matrix). **Do second — it is the root cause of the dev lane's permanent page
-  and Layer-0's residual risk.**
+  matrix).
 
 ### (c) chain_restore_finalize SEGV — serialize the recovery cascade
 - **What:** make the `chain_restore_finalize` rebuild cascade hold `ms->cs_main`
@@ -264,13 +255,13 @@ successor** — do not start a competing `make` in this worktree.
   - **Defense-in-depth:** gate the runtime self-heal invocation so the heavy
     rebuild does not run concurrently with bg workers (pause/quiesce bg-validation
     + bg-hash around it, or only run the rebuild at boot before workers spawn).
-- **Why it matters for stability:** a recovery path that **crashes the node** is
-  the worst kind of instability — it defeats self-healing and corrupts memory.
-  The runtime trigger (`chain_integrity_failed` remedy) is **not currently armed
-  on the live wedge** (`currently_active=false, attempts=0` **[verified live]**),
-  so this is presently a canary/anchor-replay hazard plus a latent boot-path /
-  recovery-path hazard — but it WILL arm whenever `chain_integrity_failed` fires
-  with bg workers live, and it already crashed the canary run.
+- **Why it matters for stability:** a recovery path that **crashes the node** and
+  corrupts memory is the worst kind of instability. The runtime trigger
+  (`chain_integrity_failed` remedy) is **not currently armed on the live wedge**
+  (`currently_active=false, attempts=0` **[verified live]**), so this is presently
+  a canary/anchor-replay hazard plus a latent boot/recovery-path hazard — but it
+  WILL arm whenever `chain_integrity_failed` fires with bg workers live, and it
+  already crashed the canary run.
 - **Touchpoints [verified]:** `app/services/src/chain_restore_repair.c:606`
   (`chain_restore_finalize` entry), `:615` (calls rebuild), `:88-267` (the
   rebuild sweep; writes `c->chain[h]` under write_lock `:231-242`, mutates
@@ -299,7 +290,6 @@ successor** — do not start a competing `make` in this worktree.
 - **Effort:** M–L (the repro + sanitizer build is the bulk; the fix is a lock
   change but must be reviewed for new lock-order hazards vs the LOCK-ORDER LAW —
   do NOT take `cs_main` while holding a leaf lock the drive path holds).
-  **Do third.**
 
 ### (d) Health-signal de-staling — make HEAD report healthy when it IS healthy
 This is the *other half* (with (b)) of "deploy HEAD + fresh import = healthy node
@@ -474,38 +464,23 @@ user with no oracle cannot bootstrap trustlessly.
 ## 6. Sequencing — the critical path
 
 **Owner-gated (destructive / deploy):**
-1. **Layer 0** — restore the live node (snapshot fixture → deploy HEAD → wipe +
-   two-step re-import → verify). Unblocks: a working live node + soak accrual.
-   Residual risk until 1(b) lands: restart-fragility page.
+1. **Layer 0** — restore the live node (§2). Residual risk until L1(b) lands.
 
-**Autonomous (copy-prove-gated, no live mutation) — run in this order:**
-2. **L1 (a)** — commit the verified-green WIP (consensus-parity coinbase + test
-   hooks). *Do first:* finished work at risk; pure win; gated by the running
-   build gate + E13.
-3. **L1 (b)** — cold-import restart-fragility OPTION 1. *Critical:* root cause of
-   the live `contradiction_frozen` latch and Layer-0's residual risk. Unblocks:
-   "node reports healthy at tip after a restart" + removes a re-tear vector.
-4. **L1 (d1)** — scope the replay-canary sentinel (build_commit/ts). Unblocks:
-   replay-canary can go green; (4.3).
-5. **L1 (c)** — chain_restore_finalize SEGV (cs_main serialization). Unblocks:
-   a green anchor-replay canary; removes a crash-on-recovery hazard. (Needs the
-   sanitizer repro; can run in parallel with 3–4.)
-6. **L1 (d2)** — contradiction_frozen self-clear. Belt-and-suspenders for any
-   datadir already carrying the latch; lower urgency once (b) ships.
+**Autonomous (copy-prove-gated, no live mutation) — in this order:**
+2. **L1 (a)** — commit the verified-green WIP (§3a).
+3. **L1 (b)** — cold-import restart-fragility OPTION 1 (§3b). Keystone.
+4. **L1 (d1)** — scope the replay-canary sentinel (§3d1).
+5. **L1 (c)** — chain_restore_finalize SEGV (§3c). Can run in parallel with 3–4.
+6. **L1 (d2)** — contradiction_frozen self-clear (§3d2). Lower urgency once (b) ships.
 
 **Continuous (Layer 2, stand up as the L1 items land):**
-7. **L2 4.1/4.2** — pre-push hook (core.hooksPath) + nightly `make ci` timer.
-   Can be stood up immediately; depends on nothing.
+7. **L2 4.1/4.2** — pre-push hook + nightly `make ci` timer. Stand up immediately.
 8. **L2 4.3** — schedule the replay canary, green once (c)+(d1) land.
-9. **L2 4.4** — continuous MVP-C8 parity oracle on live+soak. Stand up
-   immediately (read-only probe).
-10. **L2 4.5** — rolling-commitment seal: owner-gated, designed not built, after
-    §5 is decided.
+9. **L2 4.4** — continuous MVP-C8 parity oracle on live+soak. Stand up immediately.
+10. **L2 4.5** — rolling-commitment seal: owner-gated, after §5 is decided.
 
 **Strategic (owner decision, parallel to everything):**
-11. **§5 fork** — decide how much to invest in self-sufficient sync (B) before
-    v1. Recommendation: ship v1 on hardened cold import (A), fund B immediately
-    after as the v1.x flagship.
+11. **§5 fork** — how much to invest in self-sufficient sync (B) before v1.
 
 **What unblocks what, in one line:** Layer-0 gets a working node now; L1(a) ships
 finished consensus-correctness; L1(b) is the keystone that makes restarts safe

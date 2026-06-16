@@ -4,12 +4,10 @@
  * bg_hash_verify_store_sqlite — sqlite implementation of
  * bg_hash_verify_store_port.
  *
- * The two methods below are the crash-resume cursor reads/writes that used
- * to live inline in app/services/src/bg_hash_verification_service.c
- * (load_progress / save_progress over the node-DB state-kv path). They are
- * moved behind the port with the EXACT same state key
- * ("bg_hash_verification_height") and the same get/set int semantics so
- * resume behaviour is bit-for-bit identical.
+ * The two methods below are the crash-resume cursor reads/writes
+ * (load_progress / save_progress over the node-DB state-kv path). The cursor
+ * lives under the EXACT state key "bg_hash_verification_height" with get/set
+ * int semantics, so an existing on-disk cursor resumes bit-for-bit identical.
  */
 
 #include "adapters/outbound/persistence/bg_hash_verify_store_sqlite.h"
@@ -18,8 +16,8 @@
 
 #include <stdint.h>
 
-/* The single state key the cursor lives under — verbatim from the inline
- * code so an existing on-disk cursor is read back unchanged. */
+/* The single state key the cursor lives under — fixed so an existing on-disk
+ * cursor is read back unchanged. */
 #define BGHV_PROGRESS_KEY "bg_hash_verification_height"
 
 /* `self` aliases the node_db* directly — there is no wrapper struct. */

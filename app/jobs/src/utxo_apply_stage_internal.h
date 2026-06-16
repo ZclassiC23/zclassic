@@ -37,7 +37,7 @@ extern _Atomic int64_t g_ua_last_step_unix;
 extern _Atomic int64_t g_ua_last_blocked_unix;
 extern _Atomic int64_t g_ua_last_advance_height;
 
-/* FIX-4 durable-upstream-hole observability. Reaching step_apply's
+/* Durable-upstream-hole observability. Reaching step_apply's
  * found==0 branch implies next_h < pv_cursor (the cursor guard above it
  * already returned JOB_IDLE otherwise), so a missing proof_validate_log row
  * there is a DURABLE upstream hole — a stale-replay / self-restart
@@ -54,13 +54,13 @@ extern _Atomic uint64_t g_ua_upstream_hole_warn_total;
 
 /* Hash-bound verdict refusals: the script_validate_log row at the apply
  * height was provably bound to a DIFFERENT block hash than the one being
- * applied (the header height-splice class, forensic 2026-06-11). Counts
+ * applied (the header height-splice class). Counts
  * refusal heights via the JOB_BLOCKED path (re-fires per tick are visible
  * in the blocker registry, not here). */
 extern _Atomic uint64_t g_ua_label_splice_total;
 
 /* The live stage handle (NULL before init / after shutdown). The dump reads
- * it lock-free exactly as the pre-extraction in-TU dump did. */
+ * it lock-free. */
 stage_t *utxo_apply_stage_handle(void);
 
 #endif /* ZCL_JOBS_UTXO_APPLY_STAGE_INTERNAL_H */

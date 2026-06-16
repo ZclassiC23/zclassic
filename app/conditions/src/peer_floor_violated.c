@@ -157,9 +157,9 @@ static bool witness_peer_floor_violated(int64_t target_at_detect)
         return false;
 
     /* DOCTRINE: a peer_floor remedy only resolved the symptom if the chain
-     * actually resumed making progress. Counting peers alone is the original
-     * false-ok bug: during a header-admit wedge we HAD >=3 healthy
-     * peers, so the old witness reported `ok` 46x while the tip never moved.
+     * actually resumed making progress. Counting peers alone is a false-ok: a
+     * node can hold >=3 healthy peers while the tip never moves (e.g. a
+     * header-admit stall), so peer count alone must never satisfy the witness.
      *
      * Resolution = either (a) the local height advanced past the height
      * recorded at detect (chain is moving again), OR (b) there is genuinely

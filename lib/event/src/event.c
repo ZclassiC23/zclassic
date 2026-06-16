@@ -689,11 +689,9 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
  * redirected to node.log (fully-buffered FILE*), fprintf() output
  * silently dies on _exit because libc's atexit handlers don't run.
  * backtrace_symbols_fd() writes straight to STDERR_FILENO via write(2)
- * which bypasses the FILE buffer and therefore always lands — that's
- * why the live-node crash today preserved only the "sys.crash" event,
- * not the header or the backtrace line.  Fix: everything this handler
- * emits goes through write(2) directly, and we flush+fsync before
- * _exit so event_dump_recent's fprintf output lands too. */
+ * which bypasses the FILE buffer and therefore always lands. So
+ * everything this handler emits goes through write(2) directly, and we
+ * flush+fsync before _exit so event_dump_recent's fprintf output lands too. */
 static void crash_write_fd(int fd, const char *s, size_t n)
 {
     ssize_t w = write(fd, s, n);
@@ -702,8 +700,7 @@ static void crash_write_fd(int fd, const char *s, size_t n)
 
 /* Emit header + backtrace to one fd. Reused for stderr and the durable
  * crash log so a crash is recorded in BOTH places (the durable file
- * survives even when systemd's stderr routing loses the buffer — the gap
- * that swallowed 6 SEGV backtraces on 2026-05-30). */
+ * survives even when systemd's stderr routing loses the buffer). */
 static void crash_emit_to(int fd, int sig, void *const *frames, int nframes)
 {
     char buf[160];
@@ -757,8 +754,7 @@ void event_install_crash_handler(void)
 {
     /* Alternate signal stack: without SA_ONSTACK + a registered alt stack a
      * stack-overflow SIGSEGV cannot run this handler at all (the thread stack
-     * is already exhausted) — exactly how 6 SEGVs on 2026-05-30 produced ZERO
-     * backtraces. The static buffer lives for the process lifetime. */
+     * is already exhausted). The static buffer lives for the process lifetime. */
     static char alt_stack[64 * 1024];
     stack_t ss;
     memset(&ss, 0, sizeof(ss));

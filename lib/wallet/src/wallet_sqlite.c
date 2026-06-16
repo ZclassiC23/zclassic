@@ -5,10 +5,10 @@
  *
  * Rich-error primary (`*_r`) returns struct zcl_result — every failure
  * carries a code, a message, and a source file:line. The bool-returning
- * names are kept as thin wrappers so legacy callers (controllers) keep
- * compiling; each wrapper LOG_FAILs on non-ok, so silent
- * `wallet_sqlite_open() returned false and nobody noticed` is no
- * longer possible. That silent path lost real money on 2026-04-12. */
+ * names are kept as thin wrappers so callers (controllers) keep
+ * compiling; each wrapper LOG_FAILs on non-ok, so a false return is
+ * never silent (a silent `wallet_sqlite_open() returned false and
+ * nobody noticed` would regenerate fresh keys and lose funds). */
 
 #include "platform/time_compat.h"
 #include "wallet/wallet_sqlite.h"
@@ -28,10 +28,10 @@
 #include <time.h>
 
 /* Sentinel key used by wallet_sqlite_self_test.  The probe round-trips
- * this string through the node_state table — chosen because that table
- * is in the baseline SCHEMA[] and doesn't rely on Agent 3's future
- * wallet_canary table.  The value is overwritten with 32 fresh random
- * bytes on every self-test, so stale probes never pass. */
+ * this string through the node_state table — chosen because node_state
+ * is in the baseline SCHEMA[] and always present.  The value is
+ * overwritten with 32 fresh random bytes on every self-test, so stale
+ * probes never pass. */
 #define WSQL_CANARY_KEY "wallet_sqlite_canary"
 
 /* Counts rows dropped by read_keys_r because decode/decrypt failed.
@@ -133,25 +133,14 @@ static bool wallet_decrypt_blob(const uint8_t *envelope, size_t env_len,
 
 /* ── Open / Close ──────────────────────────────────────────────── *
  *
- * Root cause of the silent-open bug (found while migrating to
- * zcl_result): lib/wallet/src/wallet_sqlite.c prepares statements
- * against six wallet tables, one of which is `wallet_watch_only`.
- * That table was added (watch-only addresses) but only to
- * `db/schema.sql`, which is a reference dump and never executed.
- * The production schema runner in
- * `app/models/src/database.c:SCHEMA[]` never learned about the new
- * table.  On any pre-existing node.db, prepare_v2 returned
- * SQLITE_ERROR for the watch_only statements, the old code fell
- * through its `goto fail` path with a single fprintf, and the outer
- * boot logic saw `false`, generated a fresh keypool of 100 keys, and
- * skipped the flush (g_wallet_sqlite.open was false).  Every restart
- * regenerated fresh keys — the 0.4 ZCL loss path.
- *
- * Fix: the missing `wallet_watch_only` CREATE is now in
- * app/models/src/database.c SCHEMA[] alongside the other wallet_*
- * tables.  This code path additionally reports a WSQL_SCHEMA_MISSING
- * or WSQL_PREPARE_FAIL with the offending table name so any future
- * drift is loud, not silent. */
+ * Invariant: every wallet table this code prepares statements against
+ * must exist in app/models/src/database.c SCHEMA[] (the production
+ * schema runner).  db/schema.sql is a reference dump and is never
+ * executed, so a table present only there is absent at runtime.  A
+ * missing table must surface WSQL_SCHEMA_MISSING / WSQL_PREPARE_FAIL
+ * with the offending table name rather than returning a bare false:
+ * a silent false lets boot conclude the keystore is empty, regenerate
+ * a fresh keypool, and skip the flush — losing the real keys. */
 
 /* Preparation descriptors — every statement includes the table name
  * it depends on so we can report which table is missing. */
@@ -320,10 +309,8 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
  * Write → read → compare → delete round-trip on the `node_state`
  * table, which is already part of the baseline schema.  The probe
  * overwrites any previous canary value with 32 fresh random bytes
- * every call, so a stale blob can never pass the comparison.
- * Agent 3's future wallet_canary table (plan §5.3) is a separate,
- * more durable canary intended for the boot state machine; this
- * self-test is a lightweight subsystem check independent of that. */
+ * every call, so a stale blob can never pass the comparison.  This is
+ * a lightweight subsystem check, not a durable boot-state canary. */
 struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws)
 {
     if (!ws)
@@ -570,12 +557,11 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
 
     int loaded = 0;
     int rc;
-    /* Silent row drops were the original data-loss path: a single
-     * malformed row used to vanish with a stderr line nobody read,
-     * so boot.c STATE F couldn't tell a corruption from an empty
-     * keystore.  Every drop now increments a counter surfaced via
-     * getwalletinfo.persistence so operators see drift instead of
-     * discovering it when funds fail to spend. */
+    /* A dropped corrupt row must increment a counter surfaced via
+     * getwalletinfo.persistence: boot.c STATE F cannot distinguish a
+     * corrupted keystore from an empty one, so a silently-dropped row
+     * would look like an empty wallet.  Counting drift lets operators
+     * see it instead of discovering it when funds fail to spend. */
     while ((rc = AR_STEP_ROW_READONLY(s)) == SQLITE_ROW) {
         int pk_len = sqlite3_column_bytes(s, 1);
         const void *pk_data = sqlite3_column_blob(s, 1);
@@ -886,13 +872,12 @@ bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
                  sqlite3_errmsg(ws->db));
 
     /* Bump next_child so future address derivation skips this index.
-     * The old code ignored every sqlite rc on this UPDATE: a single
-     * SQLITE_BUSY from a concurrent reader would leave next_child
-     * stale, and the very next derive_address() call would reuse the
+     * Every sqlite rc on this UPDATE must be observed and propagated:
+     * if a SQLITE_BUSY from a concurrent reader silently left
+     * next_child stale, the next derive_address() call would reuse the
      * child index — producing two addresses bound to the same spend
      * authority.  That collision voids receiver unlinkability, which
-     * is the entire point of per-key diversifiers.  Now every op has
-     * its rc observed and any failure propagates up. */
+     * is the entire point of per-key diversifiers. */
     sqlite3_stmt *upd = NULL;
     int prep_rc = sqlite3_prepare_v2(ws->db,
         "UPDATE wallet_seed SET next_child=MAX(next_child,?+1) WHERE id=1",
@@ -1116,13 +1101,12 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
 
     zcl_mutex_lock(&w->cs);
 
-    /* Invariant: if ANY writer fails, we must ROLLBACK the whole
-     * transaction rather than COMMIT a partial state.  The old code
-     * only tracked key-write failures AND still committed afterward —
-     * the exact class of silent-partial-state bug that lost 0.4 ZCL
-     * on 2026-04-12.  Now every writer's rc is observed; the first
-     * failure short-circuits the remaining work so we don't bloat
-     * the rolled-back txn with more doomed writes. */
+    /* Invariant: if ANY writer fails, ROLLBACK the whole transaction
+     * rather than COMMIT a partial state — committing only the writes
+     * that happened to succeed is silent-partial-state corruption.
+     * Every writer's rc is observed; the first failure short-circuits
+     * the remaining work so we don't bloat the rolled-back txn with
+     * more doomed writes. */
     struct zcl_result first_fail = ZCL_OK;
     int n_key_fail = 0;
     int n_tx_fail = 0;

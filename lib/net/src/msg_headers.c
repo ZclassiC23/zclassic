@@ -553,11 +553,9 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         mp, MSG_ACTIVATE_BLOCK_FILE_SCAN);
                 }
 
-                /* structural repair moved out of the
-                 * P2P handler into block_index_integrity. The handler
-                 * is no longer the right layer to fix block_map
-                 * heights / restore active tip — that's repair-module
-                 * surgery. */
+                /* Structural repair (block_map heights, active-tip
+                 * restore) belongs in block_index_integrity, not this
+                 * P2P handler. */
                 msg_processor_repair_post_activation_anchor(mp);
             }
         }
@@ -697,13 +695,11 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
              * active tip). Continuing from pindex_last would crawl the
              * known span 160 headers per round trip — with millions of
              * known headers that is a multi-day stall that also burns a
-             * core re-accepting known headers (2026-06-09 tracka:
-             * header sync pinned ~640 headers/30min at h=170k while the
-             * supervisor starved). Skip the conversation straight to
-             * best_header; the exponential locator still lets the peer
-             * pick an earlier fork point if our best header is stale.
-             * Gated on repaired heights — with scrambled heights this
-             * skip used to loop forever, which is why it was removed.
+             * core re-accepting known headers. Skip the conversation
+             * straight to best_header; the exponential locator still
+             * lets the peer pick an earlier fork point if our best
+             * header is stale. Gated on repaired heights — with
+             * scrambled heights this skip would loop forever.
              * Also gated on the peer's advertised starting_height being
              * ABOVE our best header: an honest peer whose tip is below
              * best_header answers a best_header-anchored getheaders with

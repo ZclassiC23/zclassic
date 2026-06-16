@@ -34,13 +34,12 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                                          int first_mismatch_h,
                                          bool reindex_executable)
 {
-    /* Verb check FIRST (defect #6, live 2026-06-11): on a cold-import
-     * datadir there is no block data below the import window, so
-     * replay-from-blocks/ can never succeed — requesting it burns a
-     * full boot cycle per attempt and (pre-fix) wiped the mirror before
-     * discovering the dead end. Name the right verb loudly and tell the
-     * caller to keep serving instead of exiting into an impossible
-     * rebuild. */
+    /* Verb check FIRST: on a cold-import datadir there is no block data
+     * below the import window, so replay-from-blocks/ can never succeed —
+     * requesting it burns a full boot cycle per attempt and can wipe the
+     * mirror before discovering the dead end. Name the right verb
+     * (cold-import re-seed) loudly and tell the caller to keep serving
+     * degraded instead of exiting into an impossible rebuild. */
     if (zero_nbits == 0 && !reindex_executable) {
         fprintf(stderr,
             "[boot] crash-only recovery: tip-above-extent at tip_h=%d is the "
@@ -52,8 +51,7 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
             "condition=cold_import_reseed_required tip=%d "
             "reason=reindex_unexecutable", tip_h);
         /* A sentinel left by an earlier boot can never be served on this
-         * datadir; clearing it stops the per-boot consume→refuse cycle
-         * (task #29 follow-up). */
+         * datadir; clearing it stops the per-boot consume→refuse cycle. */
         boot_auto_reindex_clear(datadir);
         return false;
     }

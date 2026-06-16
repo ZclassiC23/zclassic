@@ -8,15 +8,7 @@
 
 ## Context
 
-For two days (2026-05-20 → 2026-05-22) the project oscillated between three incompatible framings while the live node sat wedged at h=3,115,059 (legacy at 3,118,574+):
-
-1. **Audit-first** — treat the legacy `zclassicd` as authoritative consensus forever; keep the hexagonal scaffolding as a perpetual N-version verifier. The destination was a permanently-shadowed node.
-2. **Ruthless purge** — delete the hexagonal skeleton, the shadow feeder, large fractions of `lib/util/`, and several recently-shipped milestones; rebuild on a smaller surface.
-3. **Demolition-only plan** — frame every remaining task as "what to delete next."
-
-Each framing produced a plan; each plan contradicted the previous one's recent commits. The user named the failure mode in `feedback_dream_first_dont_flip_flop.md` ("schizo flip-flopping — you keep wanting to delete the thing you just shipped") and again in `feedback_less_is_more_holistic.md` ("less is more — but only after we know what we want; right now we don't, so we keep whack-a-moling"). The maintainer then asked: *"imagine the best thing, the best architecture zclassic23 could possibly be that would get you excited."*
-
-That question reframed the problem from "what should we delete?" to "what are we building?". The answer is in `~/.claude/plans/zclassic23-ideal-architecture.md`: L1–L7 layer cake, staged sync, single-writer actors, deterministic simulator, MCP as primary operator surface.
+For two days (2026-05-20 → 2026-05-22) the project oscillated between three incompatible framings — audit-first, ruthless purge, demolition-only (each rejected below in Alternatives) — while the live node sat wedged at h=3,115,059 (legacy at 3,118,574+). Each framing produced a plan that contradicted the previous one's recent commits. The user named the failure mode in `feedback_dream_first_dont_flip_flop.md` and `feedback_less_is_more_holistic.md`. The maintainer then reframed it with: *"imagine the best thing, the best architecture zclassic23 could possibly be that would get you excited"* — turning "what should we delete?" into "what are we building?", answered in `~/.claude/plans/zclassic23-ideal-architecture.md`.
 
 The wedge at h=3,115,059 is **not** treated as an emergency. It is the canonical example of the structural problem the new architecture solves by construction: chain progress becomes a stage cursor on disk, and "in-memory cache stale, watchdog firing but coordinator unable to decide" exits the state space entirely. Patching it now would be the whack-a-mole pattern the user explicitly rejected.
 
@@ -36,14 +28,12 @@ Concretely:
 **Positive:**
 
 - Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`, `mutator/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), 93 MCP tools — stays as bedrock. Months of work retain their value.
-- The pure-delete surface is bounded and well-justified (~2,500 LOC documented per file in plan Wave F-1).
 - The wedge stops being a recurring crisis; it becomes the first regression scenario for the Wave T simulator.
-- One canonical plan + one canonical architecture doc + this ADR. Future sessions stop re-deriving the framing from scratch.
 
 **Negative / Risk:**
 
 - The live wedge persists until Wave S lands (estimated 2–4 weeks). Operator must accept the legacy `zclassicd` carrying tip-following duty in the interim.
-- "Build forward, transform in place" is more LOC-churn than "delete-then-rebuild," so the working tree gets temporarily larger before it gets smaller.
+- Build-forward churns more LOC than delete-then-rebuild, so the working tree gets temporarily larger before it gets smaller.
 - Discipline required: any future session proposing "we should just delete X" against bedrock-listed modules must justify it against this ADR.
 
 ## Alternatives considered

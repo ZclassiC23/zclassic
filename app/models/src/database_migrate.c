@@ -29,10 +29,9 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
     /* Per-call prepare, NOT the cached ndb->stmt_state_set: SQLite
      * statements are not thread-safe, and state_set is called from the
      * chain_advance worker, the cec persistence service, and boot-state
-     * writers concurrently — the same shared-statement race that
-     * SIGABRTed state_get (see the comment there) applies to writes.
-     * The cached stmt_state_set field is kept for source compatibility
-     * but no longer used. */
+     * writers concurrently — the same shared-statement race described
+     * in state_get applies to writes. The cached stmt_state_set field
+     * is intentionally unused. */
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR REPLACE INTO node_state(key,value) VALUES(?,?)",
@@ -68,7 +67,7 @@ bool node_db_state_get(struct node_db *ndb, const char *key,
      * Per-call prepare adds a sub-millisecond cost per lookup; that's
      * fine because state_get is not a hot path (called once per
      * background task, not per block). The cached stmt_state_get
-     * field is kept for source compatibility but no longer used. */
+     * field is intentionally unused. */
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT value FROM node_state WHERE key=?",

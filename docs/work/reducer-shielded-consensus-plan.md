@@ -1,23 +1,18 @@
 # Reducer shielded-consensus enforcement — design (NOT yet implementation-ready)
 
-> **Status: DESIGN, with open fork-risk gaps.** Architecture is adversarially
-> vetted as sound; **consensus-exactness is NOT** (all 3 reviewers returned
-> `consensus_safe=false`). The three gaps in §8 MUST be closed in a
-> refinement round before any code. **Gated behind the live-wedge fix and the
-> fork single-sourcing** (§7). Consensus-critical: the enforce flip is
+> **Status: DESIGN, NOT implementation-ready.** Architecture is sound but
+> consensus-exactness is not: all 3 reviewers returned `consensus_safe=false`.
+> The three §8 gaps MUST close before any code. The enforce flip is
 > owner-gated and copy-proved on a datadir COPY, never deployed blind.
 
-Source of record: best-full-node audit finding #1 (vetted real/sound) + the
-`design-reducer-shielded-consensus` workflow.
-
-## 1. The gap (verified)
+## 1. The gap
 
 The live-tip reducer (`body_persist → script_validate → proof_validate →
 utxo_apply → tip_finalize`) **never calls `connect_block`**
 (`lib/validation/src/connect_block.c`), the only site with shielded-consensus
 enforcement. `coins_view_cache_have_joinsplit_requirements`
-(`lib/coins/src/coins_view.c:477-483`) is a hardcoded `return true;` whose sole
-caller is `connect_block.c:406`, which the reducer never reaches.
+(`lib/coins/src/coins_view.c:477-483`) is a hardcoded `return true;` called from
+`connect_block.c:406`, which the reducer never reaches.
 `proof_validate_stage.c` only verifies the zk-SNARK against the anchor the tx
 *claims* (`sd->anchor` at :230, `js->anchor` at :273/:284) — it never checks:
 
@@ -28,7 +23,7 @@ caller is `connect_block.c:406`, which the reducer never reaches.
 So a forward-path block that double-spends a shielded nullifier, proves against
 a fabricated anchor, or drives a pool negative **is finalized → inflation**.
 
-## 2. Load-bearing atomicity fact (drives the whole design)
+## 2. Load-bearing atomicity fact
 
 The reducer's atomic unit is **`progress.kv`** (`progress_store.c:28`), written
 under `progress_store_tx_lock()` + `stage_run_once` `BEGIN IMMEDIATE`
@@ -70,7 +65,7 @@ A new sibling pass `utxo_apply_check_shielded(db, &blk, next_h, bi, &res)` calle
 inside `step_apply` (`utxo_apply_stage.c`) **after** the transparent delta
 succeeds (after the `if (summary.ok)` block at :251) and **before**
 `utxo_apply_delta_persist` at :252 — inside the same stage txn. Keep
-`utxo_apply_compute_block_delta` pure (transparent only). Per tx, block order
+`utxo_apply_compute_block_delta` transparent-only. Per tx, block order
 (mirroring connect_block):
 
 - **A. NULLIFIER** (replaces the `coins_view.c:482` stub): reject if any
@@ -103,7 +98,7 @@ inside the existing single atomic unwind txn (:366-384):
 3. Cursor rewind (:375) unchanged; step_apply re-applies the winning branch,
    re-inserting exactly what the winner spends/adds.
 
-## 6. Commitment folding (parity + self-heal coverage)
+## 6. Commitment folding
 
 New `shielded_commitment_sha3_compute(progress_db, out[32])` SHA3s the progress.kv
 tables in canonical order (`shielded_nullifiers ORDER BY pool,nf`;
@@ -128,7 +123,7 @@ the single trusted UTXO commitment).
 
 ## 8. OPEN fork-risk gaps — close these BEFORE coding
 
-All three adversarial reviewers returned `consensus_safe=false`:
+These are the three §8 gaps behind the `consensus_safe=false` verdict:
 
 1. **Interstitial / intermediate anchors (Sprout).** A Sprout JoinSplit can
    anchor against a treestate that exists only *within* a tx/block (the tree is

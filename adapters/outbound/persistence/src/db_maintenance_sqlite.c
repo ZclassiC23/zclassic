@@ -3,12 +3,10 @@
  *
  * db_maintenance_sqlite — sqlite implementation of db_maintenance_port.
  *
- * The three methods below are the raw maintenance executions that used to
- * live inline in app/services/src/db_maintenance.c (sqlite3_exec over a
- * fixed SQL string per op, with the SQLite error message captured into
- * the caller's state). They are moved behind the port with EXACT same SQL
- * text and the same sqlite3_exec / sqlite3_free error handling so the
- * EV_DB_MAINTENANCE_* surface is bit-for-bit identical.
+ * The maintenance ops below run sqlite3_exec over a fixed SQL string per
+ * op, with the SQLite error message captured into the caller's buffer.
+ * The SQL text and the sqlite3_exec / sqlite3_free error handling are the
+ * exact exec path so the EV_DB_MAINTENANCE_* surface is identical.
  */
 
 #include "adapters/outbound/persistence/db_maintenance_sqlite.h"
@@ -32,9 +30,9 @@ static void dbm_set_err(char *err, size_t errsz, const char *msg)
     snprintf(err, errsz, "%s", msg ? msg : "sqlite error");
 }
 
-/* Run one fixed maintenance statement via sqlite3_exec — the verbatim
- * path the scheduler used inline. Returns true on SQLITE_OK; on failure
- * copies the sqlite error text into `err` and frees it. */
+/* Run one fixed maintenance statement via sqlite3_exec. Returns true on
+ * SQLITE_OK; on failure copies the sqlite error text into `err` and frees
+ * it. */
 static bool dbm_exec(void *self, const char *sql, char *err, size_t errsz)
 {
     struct db_maintenance_sqlite_ctx *c = ctx_of(self);
@@ -71,7 +69,7 @@ static bool dbm_vacuum(void *self, char *err, size_t errsz)
 }
 
 /* Resolve the wrapped connection's "main" filename, then stat
- * "<path>-wal" — the verbatim WAL-size probe the scheduler used inline. */
+ * "<path>-wal" — the WAL-size probe. */
 static bool dbm_wal_size_bytes(void *self, int64_t *out)
 {
     struct db_maintenance_sqlite_ctx *c = ctx_of(self);

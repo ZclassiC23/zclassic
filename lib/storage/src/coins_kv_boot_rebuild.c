@@ -115,10 +115,10 @@ bool coins_kv_boot_rebuild_if_needed(sqlite3 *progress_db,
  * LevelDB import. The generic boot rebuild above copies from the utxo
  * PROJECTION, which is still EMPTY on the import boot (it catches up
  * from the event log later) — leaving coins_kv empty, which strands
- * script_validate's prevout resolver for every pre-anchor coin
- * (trackb 2026-06-10: prevout_unresolved ok=0 at the first
- * post-anchor block with a spend, anchor candidate rejected, tip
- * pinned at the import anchor). Same ATTACH-copy + done-stamp shape;
+ * script_validate's prevout resolver for every pre-anchor coin.
+ * The symptom is prevout_unresolved at the first post-anchor block
+ * with a spend: the anchor candidate is rejected and the tip pins
+ * at the import anchor. Same ATTACH-copy + done-stamp shape;
  * idempotent via the same migration key. */
 bool coins_kv_seed_from_node_db(sqlite3 *progress_db,
                                 const char *node_db_path)

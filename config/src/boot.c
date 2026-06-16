@@ -525,8 +525,8 @@ static bool boot_step_init_observability(void)
      * gets a logged backtrace before systemd sees the exit. */
     if (signal_handler_install() != 0) {
         /* Fatal: booting without a crash handler means the next SEGV/ABRT is
-         * silent and undiagnosable — the exact failure mode that scrambled
-         * block storage on 2026-05-30. Refuse to start blind. */
+         * silent and undiagnosable — a silent crash can scramble block
+         * storage. Refuse to start blind. */
         fprintf(stderr, "FATAL: signal_handler_install failed; refusing to "
                         "boot without a crash handler\n");
         return false;
@@ -553,10 +553,10 @@ static bool boot_step_init_observability(void)
     event_observe_async(EV_MODEL_VALIDATION_FAILED, error_ring_observer, er);
 
     /* Typed blocker registry: init BEFORE the restore/import producers.
-     * blocker_module_init memsets the registry, and its previous first
-     * call sat in boot_services (AFTER restore), silently wiping any
-     * band/producer blockers recorded during restore. Idempotent — the
-     * boot_services call remains as a backstop. */
+     * blocker_module_init memsets the registry; if it first ran AFTER
+     * restore it would silently wipe any band/producer blockers recorded
+     * during restore. Idempotent — the boot_services call remains as a
+     * backstop. */
     blocker_module_init();
 
     event_emitf(EV_NODE_STARTING, 0, "zclassic23 1.0.0");
@@ -1139,11 +1139,9 @@ bool app_init(struct app_context *ctx)
     if (!boot_step_init_crypto_and_state(ctx, params))
         return false;
 
-    /* Timing only (no behavior change): the prologue above
+    /* Timing only (no behavior change): emit the boot prologue
      * (observability, chain/datadir select, postmortem, unclean-shutdown
-     * detect, disk/IBD guards, crypto+state init) was previously
-     * uninstrumented — part of the ~20s warm-start "unattributed gap" in
-     * docs/work/sync-perf-profile-2026-05-29.md. Emit it as a named phase
+     * detect, disk/IBD guards, crypto+state init) as a named phase
      * matching the existing [boot] <phase> Nms idiom. */
     printf("[boot] %-30s %lldms\n", "prologue",
            (long long)(boot_clock_ms() - t_boot_start));
@@ -1635,7 +1633,7 @@ bool app_init(struct app_context *ctx)
         /* -reindex-chainstate explicitly rebuilds the UTXO set from on-disk
          * block data, discarding the stored coins state. Clear that state
          * BEFORE the coins-integrity gate runs — otherwise a torn coins anchor
-         * (the §3 wedge) FATAL-halts boot before reindex_chainstate (which
+         * FATAL-halts boot before reindex_chainstate (which
          * performs the same wipe idempotently, ~line 2539) can run the rebuild
          * the operator asked for. Guarded strictly on the explicit request: a
          * normal boot never wipes a recoverable coins set here. */
@@ -1743,12 +1741,13 @@ bool app_init(struct app_context *ctx)
     /* coins_kv-backed read authority: the coins_tip RAM cache resolves
      * misses against coins_kv (canonical UTXO set in progress.kv), authored
      * in-txn by the reducer so it is atomically consistent with the stage
-     * cursor on every crash — the durability the projection's separate WAL
-     * lacked (tip-wedge tear class, docs/work/tip-durability-collapse.md).
+     * cursor on every crash — durability the projection's separate WAL
+     * lacks, which is what guards against the tip-wedge tear class.
      * We still open the log + UTXO projection (no-op reuse of the later
      * boot_start_projection_storage open): it is the SEED conduit only
-     * (coins_kv_boot_rebuild_if_needed copies it into coins_kv); the read view
-     * no longer binds it. FATAL only if progress.kv (the coins_kv home) is not
+     * (coins_kv_boot_rebuild_if_needed copies it into coins_kv); the read
+     * view binds coins_kv, not the projection. FATAL only if progress.kv
+     * (the coins_kv home) is not
      * open — coins_view_kv binds progress_store_db() lazily at read time. */
     (void)boot_ensure_log_and_utxo_projection(ctx->datadir);
     if (!progress_store_db() ||
@@ -1846,9 +1845,10 @@ bool app_init(struct app_context *ctx)
 
         /* Event-log cold-start (-rebuildfromlog): rebuild the in-memory
          * block index + active tip purely from the log-derived projection,
-         * so boot no longer reads the legacy flat/SQLite/LevelDB loaders, the
-         * zclassicd-LDB import, or the legacy UTXO importer. The projection
-         * read-view (set above) is already the coins authority. Opt-in: only
+         * bypassing the legacy flat/SQLite/LevelDB loaders, the zclassicd-LDB
+         * import, and the legacy UTXO importer. The projection read-view (set
+         * above) is the coins authority; the legacy loaders are the fallback.
+         * Opt-in: only
          * taken when ctx->boot_from_log is set AND the rebuild yields a
          * non-trivial map with an authority tip — otherwise it falls through
          * to the legacy loaders so a sparse/empty projection never bricks
@@ -1985,20 +1985,19 @@ bool app_init(struct app_context *ctx)
             bool need_zcd = ((int64_t)g_state.map_block_index.size <
                              (int64_t)chain_h * 9 / 10);
         if (need_zcd) {
-            /* OPTION 1 (cold-import restart fragility, 2026-06-16): derive our
-             * OWN coins frontier up front. The zclassicd LevelDB index tops out
-             * at zclassicd's own tip; if our derived frontier is STRICTLY above
-             * it, promoting/saving zclassicd's best would commit the public tip
-             * BACKWARD below our frontier — the restart-fragility downshift that
-             * detaches our coins-best block, forces a window re-chase, and
-             * latches contradiction_frozen. We STILL import the index for the
-             * 0..zcd-tip ANCESTRY (so the detached block gets a real pprev
+            /* Derive our OWN coins frontier up front. The zclassicd LevelDB
+             * index tops out at zclassicd's own tip; if our derived frontier
+             * is STRICTLY above it, promoting/saving zclassicd's best would
+             * commit the public tip BACKWARD below our frontier — a downshift
+             * that detaches our coins-best block, forces a window re-chase,
+             * and latches contradiction_frozen. We STILL import the index for
+             * the 0..zcd-tip ANCESTRY (so the detached block gets a real pprev
              * root), but suppress the backward tip COMMIT. (We still save the
-             * resulting flat — it is now ENRICHED with that ancestry and carries
-             * no tip field, so persisting it is desirable.) Key strictly on '>'
-             * so a legitimate fresh fast-cold-sync (at/below zclassicd) and a
-             * legacy datadir (no derived frontier) promote exactly as before.
-             * See project_coldimport_restart_fragility_2026-06-15. */
+             * resulting flat — it is now ENRICHED with that ancestry and
+             * carries no tip field, so persisting it is desirable.) Key
+             * strictly on '>' so a legitimate fresh fast-cold-sync (at/below
+             * zclassicd) and a legacy datadir (no derived frontier) promote
+             * normally. */
             struct boot_derived_coins_best ndcb;
             bool have_ndcb = boot_derive_coins_best(&ndcb);
             const char *home = getenv("HOME");
@@ -2277,7 +2276,7 @@ bool app_init(struct app_context *ctx)
                 printf("Linked %d block files from zclassicd\n", linked);
         }
 
-        /* Projection top-up (defect #10, task #29): the loaders above only
+        /* Projection top-up: the loaders above only
          * know what was persisted at the LAST boot-time save — every block
          * connected since then (reducer ingest sets HAVE_DATA + positions +
          * nTx in memory only) exists durably ONLY in the event log →
@@ -2290,8 +2289,8 @@ bool app_init(struct app_context *ctx)
         if (!rebuilt_from_log &&
             !block_index_projection_topup(&g_state, ctx->datadir)) {
             /* Non-fatal by design (the node re-syncs the lost window from
-             * peers), but a silent false here IS the defect-#10 regression
-             * — the restart drops to the stale flat-file floor. Say so. */
+             * peers), but a silent false here drops the restart to the stale
+             * flat-file floor. Say so. */
             LOG_WARN("boot",
                      "[boot] block_index projection top-up FAILED — the "
                      "connected extent may regress to the last flat-file "
@@ -2638,10 +2637,10 @@ bool app_init(struct app_context *ctx)
                     &g_state.map_block_index, &boot_restored_authority_hash);
                 /* HEIGHT-AGREEMENT BELT (Invariant A consumer side): the
                  * restore result's hash must map to an index block AT the
-                 * recorded height before it may become the live tip. The
-                 * 2026-06-11 wedge installed h=3,143,175 here from a floor
-                 * row recorded at 3,143,171 — a raw install of fabricated
-                 * state that ended in crash-only reindex. */
+                 * recorded height before it may become the live tip. Without
+                 * this, a floor row whose recorded height disagrees with the
+                 * index would raw-install fabricated state and end in
+                 * crash-only reindex. */
                 if (restored && restored->nHeight == cr.restored_height) {
                     int populated = chain_restore_rebuild_active_chain(
                         &g_state, restored, NULL);
@@ -3275,8 +3274,8 @@ sapling_tree_boot_check_done:
      * tip_finalize idles and the connect gate rejects every block as
      * "block-not-finalized-by-reducer", wedging the chain. Clamp tip_finalize
      * down to the served-tip floor (coins_best == the applied tip's OWN height,
-     * NOT coins_best+1 — task #31 unifies this with the served-tip cursor
-     * convention) so it re-finalizes forward. Reset-safe: deletes no log rows,
+     * NOT coins_best+1 — the served-tip cursor convention) so it re-finalizes
+     * forward. Reset-safe: deletes no log rows,
      * so the public tip can never drop below coins_best (proven in
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
     {
@@ -3439,7 +3438,7 @@ sapling_tree_boot_check_done:
                  * Verb check first: replay-from-blocks/ needs genesis-side
                  * block data, which a cold-import datadir does not have —
                  * probe h=1 readability so the classifier never exits into an
-                 * impossible rebuild (defect #6). */
+                 * impossible rebuild. */
                 bool reindex_ok = false;
                 {
                     struct block_index *probe =
@@ -3577,7 +3576,7 @@ static void shutdown_alarm_abort(int sig)
 
 /* Written LAST in app_shutdown: marker present == every teardown step
  * completed. An alarm-forced exit mid-shutdown must read as UNCLEAN so
- * the next boot runs recovery (it used to be written first). */
+ * the next boot runs recovery. */
 static void write_clean_shutdown_marker(void)
 {
     if (!g_datadir) return;

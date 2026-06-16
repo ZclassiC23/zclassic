@@ -44,7 +44,7 @@ static _Atomic uint64_t g_utxo_count_diverged_total = 0;
 static _Atomic uint64_t g_precondition_failed_total = 0;
 /* Lookahead successor (H+1) is not yet body-on-disk / script-valid: the
  * finalize of H is correctly DEFERRED (cursor held, JOB_IDLE), not skipped.
- * Distinct from g_precondition_failed_total, which now counts ONLY the genuine
+ * Distinct from g_precondition_failed_total, which counts ONLY the genuine
  * competing-fork skip (chainwork_not_greater). */
 static _Atomic uint64_t g_successor_pending_total = 0;
 static _Atomic uint64_t g_total_work_added_high = 0;
@@ -54,10 +54,9 @@ static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 
 /* WHY the last idle/blocked tick idled. step_finalize has five distinct
- * JOB_IDLE exits that used to stamp only g_last_blocked_unix — a held
- * frontier was observationally identical across all five in zcl_state and
- * the 2026-06-12 diagnosis required a code read to tell them apart. One
- * token + one counter per class makes the cause one zcl_state call away.
+ * JOB_IDLE exits; a held frontier is observationally identical across all
+ * five in zcl_state, so one token + one counter per class makes the cause
+ * one zcl_state call away (no code read needed to tell them apart).
  * TF_BLOCKED_AT_UV_FRONTIER is the HEALTHY at-tip steady state (waiting
  * for the next block), not a fault. */
 enum tf_blocked_class {
@@ -161,8 +160,7 @@ static int reorg_depth_from(struct block_index *old_tip,
 }
 
 /* Returns the specific precondition that fails, or NULL if all pass.
- * Check order is identical to the prior preconditions_ok() it replaces, so
- * the derived bool (reason == NULL) is bit-for-bit the same verdict. Set:
+ * The derived bool (reason == NULL) is the finalize-gate verdict. Set:
  *   block_missing       — no candidate block_index for this height
  *   have_data_missing   — body not on disk (BLOCK_HAVE_DATA clear)
  *   not_script_valid    — validity below BLOCK_VALID_SCRIPTS (script stall)
@@ -235,8 +233,8 @@ static bool finalized_row_active_match(sqlite3 *db, int row_height,
     /* Skip tip SEED rows. An anchor row stores the block's OWN hash (row H ->
      * hash H), not the finalized lookahead convention (row H -> hash H+1) that
      * this match assumes. Comparing an anchor's hash(H) to active_chain_at(H+1)
-     * ALWAYS mismatches, which false-detected a reorg and rewound the cursor
-     * back onto the seed forever (the 3134304<->3134302 oscillation). A genuine
+     * ALWAYS mismatches, which false-detects a reorg and rewinds the cursor
+     * back onto the seed forever (a finalize-frontier oscillation). A genuine
      * reorg at/around the seed is still caught by the real finalized rows. */
     if (row.is_anchor)
         return true;  /* out_known stays false → no-op for the rewind scan */
@@ -323,7 +321,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         /* Key the de-storm on the (cursor_in, utxo_apply) height pair: a
          * change in either height re-emits immediately, otherwise a 300 s
          * keep-alive. Both fit 32 bits (block heights), so the pack is
-         * lossless and key-equality is identical to the old field compare. */
+         * lossless and key-equality is exact. */
         uint64_t key = ((uint64_t)(uint32_t)next_h << 32)
                        | (uint32_t)uv_cursor;
         uint64_t shown = 0;
@@ -393,7 +391,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      *      genuinely finalizable; we are only missing its lookahead witness.
      *      We must NOT advance the cursor — advancing strands H forever
      *      because anchor_cursor_to_authority is MONOTONIC (never pulls back),
-     *      which is the live 3134304<->3134302 oscillation. Return JOB_IDLE:
+     *      producing a finalize-frontier oscillation. Return JOB_IDLE:
      *      cursor unchanged, framework rolls back the txn (no junk row), and
      *      the frontier retries on the next tick once the successor lands.
      *
@@ -401,9 +399,9 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      *      valid PoW chain GetBlockProof() is strictly >= 1 per block, so this
      *      is unreachable for a real header; it appears only from a
      *      corrupt/zero-work synthetic candidate that must NEVER finalize.
-     *      Preserve the prior behavior EXACTLY: persist the precondition_failed
-     *      ok=0 row, count it, emit the reject, and ADVANCE past it so the
-     *      pipeline cannot deadlock on an unfinalizable lighter candidate. */
+     *      Persist the precondition_failed ok=0 row, count it, emit the
+     *      reject, and ADVANCE past it so the pipeline cannot deadlock on an
+     *      unfinalizable lighter candidate. */
     const char *transient_reason = precondition_block_reason(new_tip);
     /* not_script_valid from the block_index mirror is NOT authoritative: the bit
      * can drift CLEAR on a restored datadir while the reducer's hash-bound
@@ -487,12 +485,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         tip_finalize_run_post_finalize(new_tip);
         /* Publish the SELF-CONSISTENT authority pair: the served tip block's
          * OWN height with its OWN hash — derive the label from the block,
-         * never the cursor. Publishing (next_h, hash(next_h+1)) made
+         * never the cursor. Publishing (next_h, hash(next_h+1)) makes
          * active_chain_height() == active_chain_tip()->nHeight - 1 at the
          * finalize frontier, and accept_block_header's label-trust install
-         * turned that inconsistent pair into a -1 height splice across the
-         * whole header graph when a peer re-delivered the tip header
-         * (forensic 2026-06-11, splice at h=3143355). */
+         * turns that inconsistent pair into a -1 height splice across the
+         * whole header graph when a peer re-delivers the tip header. */
         update_last_advance(new_tip->nHeight, new_tip->phashBlock->data);
     }
     c->cursor_out = c->cursor_in + 1;
@@ -642,7 +639,7 @@ void tip_finalize_stage_shutdown(void)
 }
 
 /* tip_finalize_stage_set_authoritative_tip and tip_finalize_stage_seed_anchor
- * live in tip_finalize_anchor.c (E1 extraction + FIX-3 frontier caps). */
+ * live in tip_finalize_anchor.c. */
 
 bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
                                          uint8_t out_hash[32])
@@ -689,8 +686,7 @@ bool tip_finalize_stage_block_hash_at(sqlite3 *db, int height,
     /* ANCHOR convention (tip_finalize_stage_seed_anchor): a seed row at
      * height carries the block's OWN hash. A finalized row at height carries
      * hash(height+1) — the successor's hash — and must NOT be returned as
-     * this height's hash (the off-by-one authority-pair shape the 2026-06-11
-     * splice forensic banned). */
+     * this height's hash (an inconsistent authority pair). */
     struct finalized_tip_row own;
     if (finalized_tip_row_at(db, height, &own) &&
         own.found && own.ok && own.has_tip_hash && own.is_anchor) {

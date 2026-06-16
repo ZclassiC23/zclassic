@@ -52,8 +52,7 @@ static struct zcl_result recovery_exec_status_ok(void)
 }
 
 /* utxo_recovery_repair_stale_cursor_from_sync_projection (the legacy
- * node_state-anchor repair, wave-3 delete) lives in
- * utxo_recovery_stale_cursor.c. */
+ * node_state-anchor repair) lives in utxo_recovery_stale_cursor.c. */
 
 struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
                               struct block_index **tip_inout,
@@ -203,9 +202,8 @@ struct utxo_count_check_result utxo_recovery_classify_count_check(
 }
 
 /* See header doc. Shrink/equal-count = corruption candidate; growth =
- * stale (frozen-tracking import advanced the set). Wave 2 deleted the
- * old unconditional-false stub; the fail-loud pack made it REAL — the
- * hourly commitment audit (invariant_sentinel) is its live consumer. */
+ * stale (frozen-tracking import advanced the set). The hourly commitment
+ * audit (invariant_sentinel) is its live consumer. */
 bool utxo_recovery_xor_mismatch_is_corruption_candidate(
     uint64_t saved_count, uint64_t computed_count)
 {
@@ -219,8 +217,8 @@ bool utxo_recovery_xor_mismatch_is_corruption_candidate(
  * a grep-able reason string, and refuses loudly if the proposed wipe
  * is larger than ZCL_MAX_UTXO_WIPE_ROWS (default 1000).
  *
- * This is the gate that would have saved the 1.3M UTXOs on
- * 2026-04-10. Do not bypass. */
+ * This is the gate that exists to prevent a mass UTXO wipe.
+ * Do not bypass. */
 struct zcl_result utxo_recovery_wipe(struct node_db *ndb, const char *reason)
 {
     int64_t proposed = node_db_utxo_count(ndb);
@@ -261,8 +259,8 @@ struct zcl_result utxo_recovery_prepare_reimport(struct node_db *ndb)
     printf("Forced UTXO re-import requested.\n");
     /* Only clear the migration flag — the wipe happens inside
      * utxo_recovery_import_ldb (the "boot.ldb_import_prepare" wipe in
-     * utxo_recovery_restore.c).  Wiping here AND in import_ldb was one of
-     * the three redundant wipes that could destroy imported UTXOs. */
+     * utxo_recovery_restore.c).  Wiping here AND in import_ldb would be a
+     * redundant double-wipe that can destroy freshly imported UTXOs. */
     if (!node_db_exec(ndb,
             "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'"))
         return ZCL_ERR(-50, "prepare_reimport: failed to clear "
@@ -282,15 +280,14 @@ struct zcl_result utxo_recovery_prepare_reimport(struct node_db *ndb)
 /* ── Validation recovery execution ──────────────────────────── */
 
 /* Helper: recover from stale metadata by fixing coins_best_block
- * from UTXO set heights instead of wiping.
- * wave-3 delete (with the gated boot rungs): on canonical datadirs the
- * derived coins-best replaces this guess; the coins_kv-first reads below
- * keep the abort-wipe check honest meanwhile. */
+ * from UTXO set heights instead of wiping. On canonical datadirs the
+ * derived coins-best supersedes this guess; the coins_kv-first reads
+ * below keep the abort-wipe check honest either way. */
 static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
 {
-    /* Wave 2: count the CANONICAL store first (coins_kv); the node.db
-     * mirror count is the legacy fallback. A populated coins_kv must
-     * abort the wipe exactly like a populated mirror. */
+    /* Count the CANONICAL store first (coins_kv); the node.db mirror
+     * count is the legacy fallback. A populated coins_kv must abort the
+     * wipe exactly like a populated mirror. */
     int64_t actual_utxos = coins_kv_count(progress_store_db());
     if (actual_utxos <= 0)
         actual_utxos = node_db_utxo_count(ctx->ndb);
@@ -303,7 +300,7 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
              (long long)actual_utxos);
 
     int max_h = 0;
-    /* Wave 2: replacement tip height = the DERIVED coins-best when
+    /* Replacement tip height = the DERIVED coins-best when
      * coins_applied_height is present; mirror MAX(height) is the legacy
      * fallback. */
     {
@@ -390,7 +387,7 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
     int tip_h = active_chain_height(&ctx->state->chain_active);
 
     /* A: Stale UTXO wipe — chain at genesis but UTXO set non-empty.
-     * Wave 2: SKIPPED on canonical datadirs (coins_applied_height present).
+     * SKIPPED on canonical datadirs (coins_applied_height present).
      * There, the coins live in coins_kv and a genesis tip means the TIP
      * restore is incomplete — not that the coins are stale; wiping the
      * mirror would destroy a rebuildable projection while leaving the
@@ -568,11 +565,10 @@ struct recovery_exec_result utxo_recovery_execute(
          * the coins), never a rollback: when the CSR already holds a
          * HIGHER restored tip (the derived coins-best installed moments
          * earlier), committing the stale legacy view's lower height
-         * bulldozes it — the deterministic boot pull-down of defect #9
-         * (live 2026-06-11: from=3143804 to=3137373 reason=
-         * chain_coins_mismatch_reset, every boot). Refuse the downward
-         * commit loudly and let the higher tip stand; the legacy
-         * projection reconciles forward. */
+         * bulldozes it — a deterministic every-boot pull-down (csr_commit
+         * from a higher restored tip down to the stale legacy floor).
+         * Refuse the downward commit loudly and let the higher tip stand;
+         * the legacy projection reconciles forward. */
         if (coins_block) {
             struct chain_state_view csv;
             csr_snapshot(csr_instance(), &csv);

@@ -1,10 +1,8 @@
 # Robustness audit — 2026-06-15
 
-A 6-surface adversarial audit of the node's critical path (reducer engine,
+A 6-surface adversarial audit of the node's critical path — reducer engine,
 repair ladder, coin/UTXO apply+backfill, boot/import/recovery, defensive-coding
-surface, concurrency/lifecycle). 50 agents, every finding independently
-verified by reading the cited code. This doc records the **verdict**, what
-**landed**, and the **deferred / owner-gated** follow-ups with validation plans.
+surface, concurrency/lifecycle — every finding verified by reading the cited code.
 
 ## Architecture verdict — SOUND, no refactor
 
@@ -22,14 +20,14 @@ invariant was verified first-hand:
 - the **phashBlock UAF class is closed** (per-node `hashBlock` storage).
 - the **LOCK-ORDER LAW** is respected on the reducer drive.
 
-**The recurring failure is not architectural.** It is that **torn UTXO sets are
-INSTALLED at import time with no cryptographic proof**, then DETECTED ~80k
-blocks later when forward apply spends a missing coin. The cure is **write-time
-prevention** (verify imports vs the compiled checkpoint) plus, longer-term, an
-**incremental order-independent rolling UTXO commitment** so a tear is caught at
-the apply that creates it — NOT a per-block full rescan, and NOT more repair
-rungs. The ~6,040-LOC repair ladder should be **deleted leaf-first** once the
-write-time gate makes torn coins uninstallable.
+**The recurring failure is not architectural.** **Torn UTXO sets are INSTALLED at
+import time with no cryptographic proof**, then DETECTED ~80k blocks later when
+forward apply spends a missing coin. The cure is **write-time prevention** (verify
+imports vs the compiled checkpoint) plus, longer-term, an **incremental
+order-independent rolling UTXO commitment** so a tear is caught at the apply that
+creates it — NOT a per-block full rescan, and NOT more repair rungs. The
+~6,040-LOC repair ladder should be **deleted leaf-first** once the write-time gate
+makes torn coins uninstallable.
 
 ## Landed this session (origin/main, all non-consensus, no live-deploy)
 
@@ -43,14 +41,10 @@ Gate at each step: lint 37/37 clean, full LTO build clean, `test-parallel` 0/424
 
 ## Correction to the audit — REP-1 was WRONG
 
-The audit flagged `stage_reconcile_clamp_tip_finalize_to_floor`
-(`app/jobs/src/stage_repair.c`) as dead code (ladder-deletion step 1). **It is
-not dead.** The verifier's grep scoped `app/ lib/ tools/` but **missed
-`config/`**: there is a **live production caller at `config/src/boot.c:3260-3274`**
-that clamps the tip_finalize cursor to the served-tip floor every boot (before
-stages init) and transitions to `SERVICE_STATE_RECONCILE`. **Do not delete this
-TU.** Any ladder-deletion sequencing must re-derive the caller graph with
-`config/` in scope. (Lesson: trust nothing in an audit you have not re-grepped.)
+`stage_reconcile_clamp_tip_finalize_to_floor` (`app/jobs/src/stage_repair.c`) is
+**NOT dead.** There is a **live production caller at `config/src/boot.c:3260-3274`**.
+**Do not delete this TU.** Any ladder-deletion sequencing must re-derive the
+caller graph with `config/` in scope.
 
 ## Deferred — safe, but want their own tested pass (NOT started)
 

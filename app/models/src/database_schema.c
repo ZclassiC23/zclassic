@@ -123,11 +123,9 @@ static const char *SCHEMA[] = {
     "id INTEGER PRIMARY KEY CHECK (id=1),"
     "seed BLOB NOT NULL,next_child INTEGER NOT NULL DEFAULT 0)",
 
-    /* Watch-only addresses (importaddress). Added to the baseline
-     * schema because earlier code put the CREATE only in
-     * db/schema.sql — production nodes never got the table, which
-     * caused wallet_sqlite_open() to silently fail when preparing
-     * its watch_only statements and every restart regenerated the
+    /* Watch-only addresses (importaddress) MUST be in the baseline
+     * schema — if missing, wallet_sqlite_open() silently fails preparing
+     * its watch_only statements and every restart regenerates the
      * keypool against empty memory. See WALLET_PERSISTENCE_PLAN §2. */
     "CREATE TABLE IF NOT EXISTS wallet_watch_only ("
     "address_hash BLOB PRIMARY KEY,address TEXT NOT NULL,"

@@ -3,7 +3,7 @@
 /* Condition: tip_fork_stale
  *
  * The capstone self-healer for the "stale data-bearing fork at tip+1"
- * wedge class. Root-caused on the live node: the active tip stops
+ * wedge class. The active tip stops
  * advancing because a STALE block sits at tip+1 as an active-tip child
  * (it carries BLOCK_HAVE_DATA), the evidence controller correctly
  * refuses to connect it (incomplete_index_evidence, nakamoto=0), and the
@@ -18,7 +18,7 @@
  *       uses;
  *   (b) a higher-work HEADER chain exists — pindex_best_header has
  *       strictly more nChainWork than the active tip (best_header is
- *       chainwork-ranked as of commit 9574d0127);
+ *       chainwork-ranked);
  *   (c) the block the node keeps trying to connect at tip+1 is a CHILD of
  *       the active tip carrying BLOCK_HAVE_DATA, AND it is NOT on the
  *       best-header chain:
@@ -37,10 +37,10 @@
  * remedy():
  *   1. process_block_invalidate(stale tip+1 child) — marks it
  *      BLOCK_FAILED_VALID + disconnects/reorgs via the validated path so
- *      find_most_work_chain stops selecting it. (commit 5b2bbcedb)
+ *      find_most_work_chain stops selecting it.
  *   2. rebuild_recent(from ~tip-2) — fetch+connect the canonical chain's
  *      recent bodies from zclassicd through the normal validated accept
- *      path. (commit 06e1165d6)
+ *      path.
  *   Both are bounded and idempotent. No new consensus writer.
  *
  * witness(): the active tip advanced beyond its detect-time height.

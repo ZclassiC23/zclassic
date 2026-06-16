@@ -1189,12 +1189,12 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                          * atomic compare-exchange on g_swarm_active
                          * (false → true) closes the TOCTOU window between
                          * the "is a swarm already running?" check and the
-                         * "claim the slot" write. Two peers racing on
-                         * near-simultaneous manifests would previously
-                         * both observe false and both call swarm_sync_init
-                         * — the second overwriting the first's chunk index.
-                         * Now whichever peer wins the CAS gets the init;
-                         * the loser drops its message. */
+                         * "claim the slot" write. Without it, two peers
+                         * racing on near-simultaneous manifests could both
+                         * observe false and both call swarm_sync_init, the
+                         * loser overwriting the winner's chunk index. The
+                         * CAS lets only one peer win the init; the loser
+                         * drops its message. */
                         if (height > our_h + 100) {
                             bool expected = false;
                             if (!atomic_compare_exchange_strong(

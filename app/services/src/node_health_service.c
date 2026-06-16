@@ -168,9 +168,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     snapshot->has_peers = snapshot->peer_count > 0;
 
     /* Classify handshaked peers by subver so /api/health.network can
-     * report magicbean vs zclassic-c23 counts (Goal 3 — magic-bean
-     * reporting). Uses the same msg_version_classify_peer() helper as
-     * getnetworkinfo so the two surfaces never drift. */
+     * report magicbean vs zclassic-c23 counts. Uses the same
+     * msg_version_classify_peer() helper as getnetworkinfo so the two
+     * surfaces never drift. */
     if (cm) {
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
@@ -207,8 +207,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         /* The three persistent reads node_health does go through the
          * node_health_store port so the service never names sqlite. The
          * two SELECTs read the shared query connection; the WAL stat
-         * resolves the primary node-DB filename. Same SQL, same WAL path,
-         * same fall-back-to-in-memory-estimate behaviour as before. */
+         * resolves the primary node-DB filename. Falls back to an
+         * in-memory estimate when a persistent read fails. */
         struct node_health_store_sqlite_ctx store_ctx;
         struct node_health_store_port store = {0};
         node_health_store_sqlite_bind(&store_ctx, app_runtime_query_db(),
@@ -279,10 +279,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     }
 
     /* Prime Directive health = network_tip - log_head. log_head is the
-     * tip_finalize cursor, which under the served-tip convention (task #31)
-     * IS the reducer's finalized served height directly — cursor C means
-     * "served tip at C" (no longer cursor-1, which was the legacy +1
-     * lattice). A zero cursor means "nothing served yet" -> -1. */
+     * tip_finalize cursor, which under the served-tip convention IS the
+     * reducer's finalized served height directly — cursor C means "served
+     * tip at C". A zero cursor means "nothing served yet" -> -1. */
     {
         uint64_t lh = tip_finalize_stage_cursor();
         snapshot->log_head = (lh > 0) ? (int)lh : -1;
@@ -469,11 +468,11 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         struct chain_evidence_controller_view view;
         chain_evidence_controller_init(&cec, ndb, csr_instance());
         /* Drain the reducer's pending published tip BEFORE snapshotting:
-         * the durable evidence follow (TASK #33) runs here — the health
-         * path owns the established csr->coins_kv lock order — never on
-         * the drive (ABBA deadlock, 2026-06-12). Doing it first means the
-         * snapshot below compares against evidence that already names the
-         * served tip, so a green node reads healthy. */
+         * the durable evidence follow runs here — the health path owns the
+         * established csr->coins_kv lock order — never on the drive (ABBA
+         * deadlock). Doing it first means the snapshot below compares
+         * against evidence that already names the served tip, so a green
+         * node reads healthy. */
         (void)chain_evidence_drain_pending_tip(&cec);
         chain_evidence_controller_snapshot(&cec, &view);
         if (view.state == CEC_CONTRADICTION_FROZEN) {

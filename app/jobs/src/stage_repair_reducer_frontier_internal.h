@@ -45,7 +45,7 @@ bool stage_reducer_frontier_reconcile_validate_hash_split_cursor(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
-/* FIX-2a: pre-refusal clamp of the script_validate / proof_validate cursors
+/* Pre-refusal clamp of the script_validate / proof_validate cursors
  * back to the lowest rowless (unapplied) hole at or above the coins-applied
  * floor. PRECONDITION: a coin-tear refusal must be pending
  * (out->refused_coin_tear set by the frontier snapshot) — the call site
@@ -63,12 +63,12 @@ bool stage_reducer_frontier_try_unapplied_hole_clamp(
 
 /* Purge hash-bearing stage-log rows in (hstar, min(sweep_top, tip)]
  * whose stored hash != the canonical active-chain block at their height
- * (relabel/reorg residue — e.g. the 2026-06-10 -2 incident's false
- * bad-cb-height verdicts), plus the hashless downstream rows at those
- * heights. Dry-run (apply=false) only counts into out->noncanonical_*.
- * Purged rows become ordinary rowless holes for the existing refill +
- * cursor machinery. Genuine consensus rejects keep their rows (their
- * hash IS canonical). Returns false only on store errors.
+ * (relabel/reorg residue — e.g. false bad-cb-height verdicts left by a
+ * height-relabel), plus the hashless downstream rows at those heights.
+ * Dry-run (apply=false) only counts into out->noncanonical_*. Purged rows
+ * become ordinary rowless holes for the existing refill + cursor machinery.
+ * Genuine consensus rejects keep their rows (their hash IS canonical).
+ * Returns false only on store errors.
  * Implemented in stage_repair_reducer_frontier_purge.c. */
 bool stage_reducer_frontier_purge_noncanonical(
     struct sqlite3 *db,
@@ -76,7 +76,7 @@ bool stage_reducer_frontier_purge_noncanonical(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
-/* FIX-A: REPLACE (never delete — served_floor invariant) a stale ok=0
+/* REPLACE (never delete — served_floor invariant) a stale ok=0
  * skip-status tip_finalize_log residue row (reorg_detected / utxo_count_
  * diverged) that pins H* below the coins frontier and so manufactures a
  * FALSE coin-tear refusal. A row at height h is eligible ONLY when it is
@@ -98,7 +98,7 @@ bool stage_reducer_frontier_purge_stale_reorg_tipfin(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
-/* FIX-1: pre-refusal tip_finalize_log backfill of the span below the pinned
+/* Pre-refusal tip_finalize_log backfill of the span below the pinned
  * frontier (insert-only; never writes at/above served_floor and never where
  * any row exists). PRECONDITION: a coin-tear refusal must be pending
  * (out->refused_coin_tear) — the call site MUST gate on it; without a tear

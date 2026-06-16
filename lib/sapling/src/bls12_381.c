@@ -1331,10 +1331,10 @@ bool g2_from_uncompressed(struct g2_point *p, const uint8_t in[192])
 /* BLS parameter x = -0xd201000000010000 */
 #define BLS_X 0xd201000000010000ULL
 
-/* Fr modulus is 255-bit, so a scalar safely holds 254 bits of payload
- * (BLS12-381). Was previously 253 (BN-254), which broke Sapling Groth16
- * verification — bit 253 of the nullifier landed in the wrong packed
- * scalar. Used by both multipack_bytes_to_fr variants. */
+/* Fr modulus is 255-bit, so a BLS12-381 scalar safely holds 254 bits of
+ * payload. Must be 254: 253 would mis-pack bit 253 of the nullifier into
+ * the wrong packed scalar, breaking Sapling Groth16 verification. Used by
+ * both multipack_bytes_to_fr variants. */
 #define BLS12_381_FR_CAPACITY 254
 
 /* Doubling step for Miller loop (Algorithm 26 from https://eprint.iacr.org/2010/354.pdf) */
