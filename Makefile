@@ -762,6 +762,7 @@ ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP "it works": mined block -> reducer front door -> tip+1 (hermetic),reducer_ingest,=== reducer-ingest subset complete:)
 	$(call mvp_gate,MVP gate 2 (slice): onion bootstrap <60s budget + v3 address (hermetic),onion_slice,=== onion_bootstrap_slice subset complete:)
 	$(call mvp_gate,MVP gate 4 (slice): note encrypted to wallet ivk -> wallet decrypts -> z-balance (hermetic),shielded_receive,=== shielded_receive subset complete:)
+	$(call mvp_gate,MVP gate 4b: DURABLE receive — decrypt -> node.db -> reopen -> z-balance (hermetic),shielded_receive_persist,=== shielded_receive_persist subset complete:)
 	$(call mvp_gate,MVP forward-progress: N sequential blocks + heavier-fork reorg (hermetic),reducer_forward,=== reducer-forward subset complete:)
 	$(call mvp_gate,MVP gate 8 (slice): consensus-parity mismatch-detection machinery (hermetic fixture),parity_slice,=== parity_slice subset complete:)
 	@echo "══ MVP hermetic gates: ALL PASSED ══"
@@ -792,6 +793,10 @@ mvp-onion-slice: test_zcl
 .PHONY: mvp-shielded-receive
 mvp-shielded-receive: test_zcl
 	$(call mvp_gate,MVP C4 (receive): note encrypted to wallet ivk -> wallet decrypts -> z-balance,shielded_receive,=== shielded_receive subset complete:)
+
+.PHONY: mvp-shielded-receive-persist
+mvp-shielded-receive-persist: test_zcl
+	$(call mvp_gate,MVP C4b (durable receive): decrypt -> node.db -> reopen -> z-balance,shielded_receive_persist,=== shielded_receive_persist subset complete:)
 	@echo "══ MVP shielded-receive gate: PASSED ══"
 
 # mvp-forward-progress: the live-wedge repro gate — boots a fresh in-process
@@ -1837,7 +1842,18 @@ lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-c
 # ci` (and the pre-push gate that runs it) reliable + armable. The monolith
 # full run remains available as `make test-full` and its global-isolation
 # hardening is tracked separately.
+# ci-symbol-floor (C1 portability floor): pure-static objdump/ldd check of the
+# built binary's GLIBC/GLIBCXX/CXXABI symbol-version floor — hermetic (no node,
+# net, params, docker, wall-clock), so unlike ci-install* it lives IN `make ci`.
+# SKIPs cleanly (exit 2 -> 0) when objdump/ldd are absent.
+.PHONY: ci-symbol-floor
+ci-symbol-floor: zclassic23
+	@bash -c 'bash tools/scripts/ci_symbol_floor_gate.sh; rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then echo "ci-symbol-floor: SKIP (objdump/ldd absent)"; exit 0; fi; exit $$rc'
+
 ci: lint bench-regress zclassic23 test_parallel
+	@echo "══ CI: portability symbol-floor (C1) ══"
+	$(MAKE) ci-symbol-floor
 	@echo "══ CI: test (per-process isolated runner) ══"
 	@# Flake-tolerance: a rare resource-pressure flake under full 32-worker load
 	@# (verified: green in isolation, ~1/4 under load) must not false-fail the

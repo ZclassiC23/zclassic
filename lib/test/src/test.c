@@ -112,6 +112,15 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "shielded_receive_persist") == 0) {
+        printf("[test] ZCL_TEST_ONLY=shielded_receive_persist — "
+               "running the durable-receive gate only\n");
+        { extern int test_shielded_receive_persist(void);
+          failures += test_shielded_receive_persist(); }
+        printf("\n=== shielded_receive_persist subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "reducer_forward") == 0) {
         printf("[test] ZCL_TEST_ONLY=reducer_forward — running the forward-progress gate only\n");
         { extern int test_reducer_forward_progress_gate(void);
@@ -762,6 +771,7 @@ int main(void)
     /* MVP C2/C4 hermetic slices (self-skip without ZCL_STRESS_TESTS) */
     { extern int test_onion_bootstrap_slice(void);  failures += test_onion_bootstrap_slice(); }
     { extern int test_shielded_receive_slice(void); failures += test_shielded_receive_slice(); }
+    { extern int test_shielded_receive_persist(void); failures += test_shielded_receive_persist(); }
     { extern int test_reducer_forward_progress_gate(void); failures += test_reducer_forward_progress_gate(); }
     { extern int test_parity_slice(void);           failures += test_parity_slice(); }
     failures += test_event();

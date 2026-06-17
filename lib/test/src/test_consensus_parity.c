@@ -22,6 +22,8 @@
 #include "consensus/upgrades.h"
 #include "core/uint256.h"
 #include "domain/consensus/tx_structural.h"
+#include "coins/utxo_commitment.h"   /* C8: pin the UTXO commitment byte-layout */
+#include "crypto/sha3.h"
 
 /* The generated empirical oversize-grandfather table (see
  * docs/CONSENSUS_PARITY_DOCTRINE.md "Empirical oversize grandfather"),
@@ -181,6 +183,76 @@ int test_consensus_parity(void)
               domain_consensus_tx_oversize_grandfathered(&last, 108629));
         CHECK("oversize grandfather: wrong size NOT excused (size-exact match)",
               !domain_consensus_tx_oversize_grandfathered(&first, 125810));
+    }
+
+    /* ── Golden vector: canonical UTXO SHA3 commitment byte-layout ──────────
+     * utxo_sha3_serialize_record() is the "must-never-fork" consensus encoder
+     * behind the UTXO commitment that C8 parity rests on. Pin its exact byte
+     * output AND a streamed multi-record SHA3-256 digest to constants computed
+     * INDEPENDENTLY (Python hashlib.sha3_256), so a silent layout / endianness /
+     * is_coinbase-normalization drift fails LOUD here — a cross-implementation
+     * contract, not a zclassic23-vs-zclassic23 self-comparison. Layout:
+     * txid[32] || vout(LE32) || value(LE64) || slen(LE32) || script ||
+     * height(LE32) || is_coinbase(1 byte, normalized to 0/1). */
+    {
+        uint8_t a_txid[32];
+        for (int i = 0; i < 32; i++) a_txid[i] = (uint8_t)i;
+        static const uint8_t a_script[25] = {
+            0x76,0xa9,0x14, 0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,
+            0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11, 0x88,0xac };
+        /* serialize(a_txid, vout=7, value=12345678901, a_script, h=654321, cb=0) */
+        static const uint8_t A_GOLDEN[78] = {
+            0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,
+            0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,
+            0x1c,0x1d,0x1e,0x1f,0x07,0x00,0x00,0x00,0x35,0x1c,0xdc,0xdf,0x02,0x00,
+            0x00,0x00,0x19,0x00,0x00,0x00,0x76,0xa9,0x14,0x11,0x11,0x11,0x11,0x11,
+            0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11,
+            0x11,0x88,0xac,0xf1,0xfb,0x09,0x00,0x00 };
+
+        uint8_t rec[256];
+        size_t rlen = 0;
+        bool ok_a = utxo_sha3_serialize_record(rec, sizeof(rec), &rlen,
+                        a_txid, 7u, (int64_t)12345678901LL,
+                        a_script, (uint32_t)sizeof(a_script), 654321u, 0);
+        CHECK("utxo sha3 record A: serializes to independent golden bytes",
+              ok_a && rlen == sizeof(A_GOLDEN) &&
+              memcmp(rec, A_GOLDEN, sizeof(A_GOLDEN)) == 0);
+
+        /* Record B: coinbase, EMPTY script; is_coinbase passed as 2 MUST
+         * normalize to the trailing byte 0x01 (not 0x02). */
+        uint8_t b_txid[32];
+        memset(b_txid, 0xCB, sizeof(b_txid));
+        static const uint8_t B_GOLDEN[53] = {
+            0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,
+            0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,0xcb,
+            0xcb,0xcb,0xcb,0xcb,0x00,0x00,0x00,0x00,0x40,0xbe,0x40,0x25,0x00,0x00,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x76,0xa4,0x2e,0x00,0x01 };
+        size_t rlen_b = 0;
+        bool ok_b = utxo_sha3_serialize_record(rec, sizeof(rec), &rlen_b,
+                        b_txid, 0u, (int64_t)625000000LL,
+                        NULL, 0u, 3056758u, 2);
+        CHECK("utxo sha3 record B: empty script + is_coinbase 2 -> 0x01 golden",
+              ok_b && rlen_b == sizeof(B_GOLDEN) &&
+              memcmp(rec, B_GOLDEN, sizeof(B_GOLDEN)) == 0 &&
+              B_GOLDEN[sizeof(B_GOLDEN) - 1] == 0x01);
+
+        /* Streamed SHA3-256 over record A then B via the PRODUCTION sponge
+         * writer; digest pinned to the independent Python computation. */
+        static const uint8_t DIGEST_GOLDEN[32] = {
+            0x94,0xf2,0x28,0x4f,0x24,0xd3,0x2f,0xfa,0x44,0x68,0x08,0x37,0xcc,0x1b,
+            0xcf,0x97,0x07,0xba,0x39,0x66,0x30,0xcc,0xd2,0x75,0x00,0x82,0x4f,0x32,
+            0x00,0xef,0x7a,0xe0 };
+        struct sha3_256_ctx sctx;
+        sha3_256_init(&sctx);
+        utxo_commitment_sha3_write_record(&sctx, a_txid, 7u,
+                        (int64_t)12345678901LL, a_script,
+                        (uint32_t)sizeof(a_script), 654321u, 0);
+        utxo_commitment_sha3_write_record(&sctx, b_txid, 0u,
+                        (int64_t)625000000LL, NULL, 0u, 3056758u, 2);
+        uint8_t digest[32];
+        sha3_256_finalize(&sctx, digest);
+        CHECK("utxo sha3 streamed digest(A||B) matches independent golden",
+              memcmp(digest, DIGEST_GOLDEN, 32) == 0);
     }
 
 #undef CHECK

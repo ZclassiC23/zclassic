@@ -18,9 +18,11 @@
 #      when docker is unreachable — the SAME SKIP-not-FAIL discipline as
 #      mvp-onion-local / mvp-coldstart-local, so a docker-less runner never
 #      false-FAILs.
-#   2. Run a clean ubuntu:24.04 container (glibc 2.39 >= the binary's
-#      GLIBC_2.38 floor) with ONLY build/bin mounted READ-ONLY — no repo
-#      checkout, no compiler.
+#   2. Run a clean ubuntu:24.04 container (glibc 2.39 / GLIBCXX 3.4.33 — at or
+#      above the binary's real TRIPLE symbol-version floor GLIBC_2.38 /
+#      GLIBCXX_3.4.30 / CXXABI_1.3.9, the floor that ci_symbol_floor_gate.sh
+#      pins) with ONLY build/bin mounted READ-ONLY — no repo checkout, no
+#      compiler.
 #   3. Log the image identity + `ldd` for the record, and note if a
 #      compiler is unexpectedly present (image not minimal).
 #   4. Spawn the node as an ISOLATED regtest node with the SAME proven flag
