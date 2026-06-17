@@ -60,11 +60,19 @@ must not jump the queue.
       mismatch. Hermetic `mvp-parity-slice` gate (`test_parity_slice.c`, in
       `make ci-mvp-gates`) proves MATCH/DRIFT with a negative control.
       REMAINING ◐→✅: 0 mismatches over the 7-day soak + an exact byte reference.
-- [x] **Regtest on-demand mining `generate N`** — works end-to-end; reducer-mined
-      blocks survive a clean restart (`801832692`) and a real `kill -9`
-      (`4e7fc176f`), and a follower catches up to peer-tip after kill-9
-      (`f135abb5f`). `make test-crash-bootstrap` / `make test-two-node-peer-tip`
-      pass; both opt-in (spawn real nodes), so CI promotion is the remaining step.
+- [~] **Regtest on-demand mining `generate N`** — PARTIAL. The in-process
+      reducer mining engine is green (`make mvp-it-works`: real regtest block,
+      tip 0→1, finalized by `tip_finalize`). But the **full-binary `generate`-RPC
+      path does not advance a spawned node's tip** (verified 2026-06-17 via the
+      new `make mvp-verify`): a fresh regtest node boots correctly to genesis,
+      yet `generate N` leaves tip=0, so **`make test-two-node-peer-tip` FAILS**
+      and `make test-crash-bootstrap` soft-passes as "KNOWN BLOCKED (owner-gated
+      reducer boot-init)". The earlier "works end-to-end / both pass" claim
+      (`801832692`/`4e7fc176f`/`f135abb5f`) is STALE for the full-binary path.
+      **Next concrete C7/C3/C6 target:** wire `generate`→reducer-finalize on a
+      live spawned node so the tip durably advances (owner-gated; engine is fine,
+      it's the live RPC→reducer wiring). Run `make mvp-verify` for the current
+      per-member status.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 

@@ -843,6 +843,97 @@ ci-stress: test_zcl
 ci-install: zclassic23 zcl-rpc
 	@bash tools/scripts/ci_install_gate.sh
 
+# ── mvp-onion-local (C2 real <60s bootstrap, Tor-egress-gated) ─
+#
+# The FULL C2 claim (a fresh node bootstraps its v3 onion in <60s over the
+# real Tor network) needs Tor network EGRESS, which a hermetic CI container
+# lacks — so it CANNOT live in `make ci` and stays out of ci-mvp-gates (the
+# hermetic onion half is mvp-onion-slice). This target runs the real timed
+# bootstrap test (ZCL_TEST_ONLY=onion) but FIRST probes for Tor egress and
+# SKIPs cleanly (exit 0) when egress is unavailable, so it never false-FAILS
+# on a sandboxed host — same SKIP-not-FAIL discipline as test-shielded-payment.
+# Locally-verified, network-gated; NOT a hermetic-✅ gate.
+.PHONY: mvp-onion-local
+mvp-onion-local: test_zcl
+	@bash -c 'set -uo pipefail; \
+	 echo "══ MVP C2 (real): onion bootstrap <60s over Tor (egress-gated) ══"; \
+	 reachable=0; \
+	 for hp in moria1.torproject.org:9101 tor26.torproject.org:443 dizum.com:443; do \
+	     h=$${hp%%:*}; p=$${hp##*:}; \
+	     if timeout 5 bash -c "exec 3<>/dev/tcp/$$h/$$p" 2>/dev/null; then reachable=1; break; fi; \
+	 done; \
+	 if [ "$$reachable" != "1" ]; then \
+	     echo "mvp-onion-local: SKIP (no Tor network egress detected — run on a host where Tor egress is allowed)"; \
+	     exit 0; \
+	 fi; \
+	 echo "mvp-onion-local: Tor egress present — running the real timed onion bootstrap"; \
+	 ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion $(TEST_ZCL_BIN)'
+
+# ── mvp-verify: ONE-COMMAND local verification of the real MVP claims ──
+#
+# The operator's local counterpart to the hermetic `make ci` gate. It runs the
+# full-scope MVP proofs that CANNOT join hermetic `make ci` because each spawns
+# a real isolated /tmp regtest node (C1/C7) or needs Tor network egress (C2).
+# They are DELIBERATELY out of `make ci` — see the per-target notes and the
+# ci-install no-node invariant. It runs ALL members and reports each (a FAIL
+# does not stop the run), then exits non-zero if any member failed — an HONEST
+# local diagnostic, not a rubber stamp.
+#
+# Known live gap (2026-06-17): the full-binary `generate`-RPC path does not yet
+# advance a spawned node's tip, so test-two-node-peer-tip FAILS and
+# test-crash-bootstrap soft-passes as KNOWN-BLOCKED. The in-process reducer
+# mining engine itself is green (make mvp-it-works). C7 full-binary teeth wait
+# on the owner-gated generate->reducer forward-progress wiring. See MVP.md #7.
+#
+# Membership (all already exist; mvp-verify only composes them):
+#   ci-install             C1 — install both binaries to a throwaway /tmp
+#                               prefix + spawn one isolated regtest node
+#   test-crash-bootstrap   C7 — single-node full-binary kill-9 boot recovery
+#   test-two-node-peer-tip C7 — two-node native-P2P peer-tip kill-9 recovery
+#   mvp-shielded-receive   C4 — params-free receive half (note→ivk→z-balance)
+#   mvp-onion-local        C2 — real <60s onion bootstrap (Tor-egress-gated,
+#                               SKIPs cleanly when egress is unavailable)
+#
+# IMPORTANT (doc-honesty): passing `make mvp-verify` does NOT promote any
+# criterion ◐→✅ in docs/MVP.md — the MVP update rule reserves ✅ for the FULL
+# operator claim run inside the HERMETIC `make ci` job. These members are
+# LOCALLY-VERIFIED (they spawn a node / need Tor egress / need params), which
+# that rule explicitly excludes from ✅.
+.PHONY: mvp-verify
+mvp-verify: zclassic23 zcl-rpc test_zcl
+	@bash -c 'set -uo pipefail; \
+	 echo "══════════════════════════════════════════════════════════════"; \
+	 echo "  mvp-verify: LOCAL full-scope MVP proofs (NOT hermetic ✅)"; \
+	 echo "  These spawn real /tmp regtest nodes / need Tor egress — they"; \
+	 echo "  stay OUT of hermetic make ci. Locally-verified only."; \
+	 echo "  Runs ALL members + reports each; a FAIL does not stop the run."; \
+	 echo "══════════════════════════════════════════════════════════════"; \
+	 declare -A NAME=( \
+	   [1]="C1 install mechanism (ci-install)" \
+	   [2]="C7 single-node kill-9 boot recovery (test-crash-bootstrap)" \
+	   [3]="C7 two-node peer-tip kill-9 recovery (test-two-node-peer-tip)" \
+	   [4]="C4 shielded receive, params-free (mvp-shielded-receive)" \
+	   [5]="C2 real onion bootstrap, Tor-egress-gated (mvp-onion-local)" ); \
+	 declare -A TGT=( [1]=ci-install [2]=test-crash-bootstrap \
+	   [3]=test-two-node-peer-tip [4]=mvp-shielded-receive [5]=mvp-onion-local ); \
+	 declare -A ST; fails=0; \
+	 for i in 1 2 3 4 5; do \
+	   echo ""; echo "── mvp-verify [$$i/5]: $${NAME[$$i]} ──"; \
+	   if $(MAKE) $${TGT[$$i]}; then ST[$$i]="PASS"; else ST[$$i]="FAIL"; fails=$$((fails+1)); fi; \
+	 done; \
+	 echo ""; echo "══ mvp-verify SUMMARY (local, NOT a ◐→✅ promotion) ══"; \
+	 for i in 1 2 3 4 5; do printf "  [%s] %-58s %s\n" "$$i" "$${NAME[$$i]}" "$${ST[$$i]}"; done; \
+	 echo ""; \
+	 if [ "$$fails" -eq 0 ]; then \
+	   echo "  ALL LOCAL FULL-SCOPE PROOFS PASSED (or SKIPped cleanly)."; \
+	 else \
+	   echo "  $$fails member(s) FAILED. Known live gap: the full-binary regtest"; \
+	   echo "  generate-RPC path does not advance a spawned node tip yet (C7 teeth"; \
+	   echo "  blocked on the owner-gated generate->reducer wiring; the in-process"; \
+	   echo "  reducer engine itself is green via make mvp-it-works). See MVP.md #7."; \
+	 fi; \
+	 exit $$fails'
+
 # ── libFuzzer harnesses ───────────────────────────────────────
 #
 # Fuzz targets use clang + libFuzzer + ASan + UBSan. They compile
@@ -1702,6 +1793,15 @@ ci: lint bench-regress zclassic23 test_parallel
 	@echo ""
 	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"
 	$(MAKE) ci-mvp-gates
+	@echo ""
+	@# C6 judge-logic regression guard: the soak-evidence verdict machine is the
+	@# ONLY soak-side item that is fully hermetic (mktemp JSONL fixtures + injected
+	@# timestamps, no node, no network, no params — <1s). Gating it here protects
+	@# the VERDICT=MET|NOT_MET|INSUFFICIENT logic that scores the real 168h window.
+	@# It does NOT shortcut the soak hours, so C6 stays ◐ — only the judge LOGIC is
+	@# now CI-protected, not the soak claim itself.
+	@echo "══ CI: soak-evidence-selftest (hermetic C6 verdict-judge guard) ══"
+	$(MAKE) soak-evidence-selftest
 	@echo ""
 	@echo "══ CI: test-crash ══"
 	$(MAKE) test-crash
