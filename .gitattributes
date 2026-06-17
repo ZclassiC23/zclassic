@@ -26,6 +26,8 @@ COPYING      linguist-documentation
 NOTICE       linguist-documentation
 
 # Build / test / deploy / ops tooling — load-bearing, kept, not the product.
+Makefile     linguist-vendored
+*.mk         linguist-vendored
 *.sh         linguist-vendored
 *.py         linguist-vendored
 tools/**     linguist-vendored
