@@ -849,26 +849,11 @@ ci-stress: test_zcl
 ci-install: zclassic23 zcl-rpc
 	@bash tools/scripts/ci_install_gate.sh
 
-# ── ci-install-container (C1 self-contained binary on a CLEAN OS) ─
-#
-# The on-host ci-install gate proves the install MECHANISM but runs on this
-# contaminated dev host. This gate proves the half it cannot: the
-# self-contained ~15 MB binary RUNS on a clean ubuntu:24.04 (glibc 2.39 >=
-# the binary's GLIBC_2.38 floor) with ONLY build/bin mounted read-only — no
-# compiler, no repo source — and answers getblockcount as an isolated regtest
-# node. Like mvp-onion-local / mvp-coldstart-local it is docker-gated and
-# SKIPs cleanly (exit 2 -> SKIP) when docker is unreachable (no group
-# membership / no passwordless sudo / offline), so it never false-FAILs. Out
-# of `make ci` (spawns a container); a mvp-verify member. NOT a hermetic-✅.
-.PHONY: ci-install-container
-ci-install-container: zclassic23 zcl-rpc
-	@bash -c 'set -uo pipefail; \
-	 bash tools/scripts/ci_install_container_gate.sh; rc=$$?; \
-	 if [ "$$rc" -eq 2 ]; then \
-	     echo "ci-install-container: SKIP (docker unreachable — grant docker-group access or run where docker is usable)"; \
-	     exit 0; \
-	 fi; \
-	 exit $$rc'
+# The clean-OS half of C1 is proven WITHOUT docker (docker is never used in this
+# project): the portability guarantee is enforced statically by
+# `make ci-symbol-floor` (tools/scripts/ci_symbol_floor_gate.sh, in `make ci`),
+# and the real `systemctl --user start` operator claim is exercised by the
+# linger-service install proof (`make ci-install-linger`).
 
 # ── mvp-onion-local (C2 real <60s bootstrap, Tor-egress-gated) ─
 #
@@ -940,8 +925,6 @@ mvp-coldstart-local: zclassic23 zcl-rpc
 # Membership (all already exist; mvp-verify only composes them):
 #   ci-install             C1 — install both binaries to a throwaway /tmp
 #                               prefix + spawn one isolated regtest node
-#   ci-install-container   C1 — self-contained binary runs on a CLEAN
-#                               ubuntu:24.04 (docker-gated, SKIPs cleanly)
 #   test-crash-bootstrap   C7 — single-node full-binary kill-9 boot recovery
 #   test-two-node-peer-tip C7 — two-node native-P2P peer-tip kill-9 recovery
 #   mvp-coldstart-local    C3 — real snapshot-first cold boot (>1M UTXOs <90s,
@@ -968,24 +951,23 @@ mvp-verify: zclassic23 zcl-rpc test_zcl
 	 echo "══════════════════════════════════════════════════════════════"; \
 	 declare -A NAME=( \
 	   [1]="C1 install mechanism (ci-install)" \
-	   [2]="C1 self-contained binary on clean OS (ci-install-container)" \
-	   [3]="C7 single-node kill-9 boot recovery (test-crash-bootstrap)" \
-	   [4]="C7 two-node peer-tip kill-9 recovery (test-two-node-peer-tip)" \
-	   [5]="C4 shielded receive, params-free (mvp-shielded-receive)" \
-	   [6]="C4 full shielded send+receive, params-gated (test-shielded-payment)" \
-	   [7]="C3 real snapshot cold boot, fixture-gated (mvp-coldstart-local)" \
-	   [8]="C2 real onion bootstrap, Tor-egress-gated (mvp-onion-local)" ); \
-	 declare -A TGT=( [1]=ci-install [2]=ci-install-container \
-	   [3]=test-crash-bootstrap [4]=test-two-node-peer-tip \
-	   [5]=mvp-shielded-receive [6]=test-shielded-payment \
-	   [7]=mvp-coldstart-local [8]=mvp-onion-local ); \
+	   [2]="C7 single-node kill-9 boot recovery (test-crash-bootstrap)" \
+	   [3]="C7 two-node peer-tip kill-9 recovery (test-two-node-peer-tip)" \
+	   [4]="C4 shielded receive, params-free (mvp-shielded-receive)" \
+	   [5]="C4 full shielded send+receive, params-gated (test-shielded-payment)" \
+	   [6]="C3 real snapshot cold boot, fixture-gated (mvp-coldstart-local)" \
+	   [7]="C2 real onion bootstrap, Tor-egress-gated (mvp-onion-local)" ); \
+	 declare -A TGT=( [1]=ci-install \
+	   [2]=test-crash-bootstrap [3]=test-two-node-peer-tip \
+	   [4]=mvp-shielded-receive [5]=test-shielded-payment \
+	   [6]=mvp-coldstart-local [7]=mvp-onion-local ); \
 	 declare -A ST; fails=0; \
-	 for i in 1 2 3 4 5 6 7 8; do \
-	   echo ""; echo "── mvp-verify [$$i/8]: $${NAME[$$i]} ──"; \
+	 for i in 1 2 3 4 5 6 7; do \
+	   echo ""; echo "── mvp-verify [$$i/7]: $${NAME[$$i]} ──"; \
 	   if $(MAKE) $${TGT[$$i]}; then ST[$$i]="PASS"; else ST[$$i]="FAIL"; fails=$$((fails+1)); fi; \
 	 done; \
 	 echo ""; echo "══ mvp-verify SUMMARY (local, NOT a ◐→✅ promotion) ══"; \
-	 for i in 1 2 3 4 5 6 7 8; do printf "  [%s] %-68s %s\n" "$$i" "$${NAME[$$i]}" "$${ST[$$i]}"; done; \
+	 for i in 1 2 3 4 5 6 7; do printf "  [%s] %-68s %s\n" "$$i" "$${NAME[$$i]}" "$${ST[$$i]}"; done; \
 	 echo ""; \
 	 if [ "$$fails" -eq 0 ]; then \
 	   echo "  ALL LOCAL FULL-SCOPE PROOFS PASSED (or SKIPped cleanly)."; \
@@ -993,8 +975,8 @@ mvp-verify: zclassic23 zcl-rpc test_zcl
 	   echo "  $$fails member(s) FAILED. The C7 full-binary harnesses now PASS"; \
 	   echo "  (test-crash-bootstrap height_regress:0 via keystone 341020c05;"; \
 	   echo "  test-two-node-peer-tip via f83101b81), so a FAIL here usually means"; \
-	   echo "  a missing local dependency (docker/params/Tor egress/snapshot"; \
-	   echo "  fixture) — check the per-member SKIP line above. See MVP.md #7."; \
+	   echo "  a missing local dependency (params/Tor egress/snapshot fixture) —"; \
+	   echo "  check the per-member SKIP line above. See MVP.md #7."; \
 	 fi; \
 	 exit $$fails'
 

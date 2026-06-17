@@ -57,16 +57,14 @@ must not jump the queue.
       branch the live `zclassicd` oracle hits (C1 match / C2 skip-on-skew / C3
       clears a stale exact drift); the real snapshot cold-boot proof (C3
       `ci-coldstart`) and the full Groth16 send+receive (C4 `test-shielded-payment`)
-      are de-orphaned into `make mvp-verify`. A new C1 clean-OS gate landed too:
-      `make ci-install-container` (`tools/scripts/ci_install_container_gate.sh`)
-      runs the self-contained binary inside a clean `ubuntu:24.04` (only
-      `build/bin` mounted RO, no compiler/source) and asserts it answers
-      `getblockcount` — the real "self-contained binary on a clean OS" half of C1
-      that the on-host `ci-install` proxy can't make. Docker-gated (SKIPs cleanly
-      when docker is unreachable); inner spawn/poll host-validated; the container
-      run-proof is pending a one-time owner action (docker-group access on the
-      build host). Audit of record: the 8-criterion gap scoreboard (workflow
-      `mvp8-gap-audit-and-close`, 2026-06-17).
+      are de-orphaned into `make mvp-verify`. C1's portability floor is enforced
+      WITHOUT docker (docker is never used in this project) by the hermetic
+      `make ci-symbol-floor` (`tools/scripts/ci_symbol_floor_gate.sh`, in
+      `make ci`): max GLIBC/GLIBCXX/CXXABI symbol ≤ the documented triple floor.
+      The retired docker-based clean-OS gate is replaced by a planned
+      linger-service install proof (`make ci-install-linger`) exercising the real
+      `make install` + `systemctl --user start`. Audit of record: the 8-criterion
+      gap scoreboard (workflow `mvp8-gap-audit-and-close`, 2026-06-17).
 - [x] **Consensus-parity-diff service (C8)** — exists at
       `app/services/src/utxo_parity_service.c` (wired at boot via
       `config/src/boot_utxo_parity.c`), default-ON when a zclassicd oracle
