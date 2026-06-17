@@ -735,18 +735,28 @@ int test_reducer_forward_progress_gate(void)
 
             RFP_CHECK("PART2: utxo_apply performed a reorg unwind",
                       reorg_after > reorg_before);
-            /* One-block-lookahead: with W's tip at N+1, the finalized authority
-             * height lands at N (block N+1 is the pending lookahead successor),
-             * and the finalized block at height N is a W-branch block (not L). */
+            /* Since 67062bbf6 ("tip_finalize: publish each block on arrival —
+             * kill the anchor +1 skip"), the reducer installs the FULL heavier
+             * W branch on first arrival, so the post-reorg active tip is N+1.
+             * (The retired +1-lattice held the served tip at N with N+1 pending;
+             * this assertion was a reader still calibrated to that convention —
+             * its sibling printf already expects RFP_N+1, and the byte-exact
+             * UTXO match below confirms the set reflects W through N+1.) Verify
+             * the active tip block at N+1 is the W head AND height N is also a W
+             * block — a full branch switch, not a partial splice. */
             struct block_index *fin_at_n =
                 active_chain_at(&ms.chain_active, RFP_N);
+            struct block_index *fin_at_tip =
+                active_chain_at(&ms.chain_active, RFP_N + 1);
             bool tip_is_w = fin_at_n && fin_at_n->phashBlock &&
                             uint256_eq(fin_at_n->phashBlock,
-                                       &whash[W_LEN - 2]); /* W height N */
-            RFP_CHECK("PART2: finalized tip switched to the heavier W branch "
-                      "(authority at N is a W block; N+1 is its pending "
-                      "lookahead)",
-                      reorg_tip == RFP_N && tip_is_w);
+                                       &whash[W_LEN - 2]) && /* W height N */
+                            fin_at_tip && fin_at_tip->phashBlock &&
+                            uint256_eq(fin_at_tip->phashBlock,
+                                       &whash[W_LEN - 1]);   /* W head, N+1 */
+            RFP_CHECK("PART2: active tip switched to the heavier W branch head "
+                      "(tip at N+1 is the W head; N is also a W block)",
+                      reorg_tip == RFP_N + 1 && tip_is_w);
 
             /* coins_kv is the authoritative store after the reorg unwind. */
             sqlite3 *pdb = progress_store_db();
