@@ -498,6 +498,11 @@ static int test_capsule_compress(void)
 
 int test_postmortem(void)
 {
+    /* monolith isolation: a prior group leaves the node fatal-signal handlers
+     * installed, which makes postmortem_install() refuse (it requires SIG_DFL)
+     * and the fork-and-raise children below _exit instead of dying from the
+     * signal. The shared reset restores SIG_DFL. See test_helpers.c. */
+    test_reset_shared_globals();
     printf("\n=== postmortem tests ===\n");
     int failures = 0;
 

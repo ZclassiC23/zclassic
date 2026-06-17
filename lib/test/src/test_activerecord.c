@@ -1808,5 +1808,12 @@ int test_activerecord(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* This group calls ar_callbacks_init() on the SHARED production wallet
+     * model callback structs to silence emits during validation tests, which
+     * wipes the before/after_save hooks process-wide. Restore them so later
+     * groups (wallet_projection) see the model save emits again. */
+    wallet_key_reset_hooks_for_testing();
+    wallet_tx_reset_hooks_for_testing();
+
     return failures;
 }

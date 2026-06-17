@@ -25,6 +25,8 @@ struct db_wallet_key {
 
 /* Callbacks and validation */
 struct ar_callbacks *db_wallet_key_callbacks(void);
+/* Test-only: re-arm the wallet_key before/after_save hooks (see .c). */
+void wallet_key_reset_hooks_for_testing(void);
 struct ar_callbacks *db_sapling_key_callbacks(void);
 struct ar_callbacks *db_wallet_script_callbacks(void);
 bool db_wallet_key_validate(const struct db_wallet_key *k,

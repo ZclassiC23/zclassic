@@ -386,6 +386,7 @@ static int cursor_value(sqlite3 *db, const char *name)
 int test_reducer_frontier_reconcile_light(void);
 int test_reducer_frontier_reconcile_light(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== reducer_frontier_reconcile_light tests ===\n");
     int failures = 0;
 

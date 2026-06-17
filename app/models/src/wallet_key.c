@@ -134,6 +134,22 @@ static void sapling_key_init_hooks(void)
     done = true;
 }
 
+/* Test-only: re-arm the wallet_key AND sapling_key model hooks after a group
+ * cleared the shared callback structs via ar_callbacks_init() (test_activerecord
+ * does this to silence emits, leaving them wiped for later groups). Mirrors the
+ * init_hooks pair but bypasses their one-shot `done` guards. */
+void wallet_key_reset_hooks_for_testing(void)
+{
+    struct ar_callbacks *wk = db_wallet_key_callbacks();
+    ar_callbacks_init(wk);
+    ar_register_before_save(wk, wallet_key_before_save);
+    ar_register_after_save(wk, wallet_key_after_save);
+    struct ar_callbacks *sk = db_sapling_key_callbacks();
+    ar_callbacks_init(sk);
+    ar_register_before_save(sk, sapling_key_before_save);
+    ar_register_after_save(sk, sapling_key_after_save);
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_wallet_key_validate(const struct db_wallet_key *k,

@@ -104,6 +104,8 @@ int tip_finalize_stage_drain(int max_steps);
 
 uint64_t tip_finalize_stage_cursor(void);
 int64_t  tip_finalize_stage_last_height(void);
+/* Test-only: reset the published served-tip height to -1 (see .c). */
+void     tip_finalize_stage_test_reset(void);
 uint64_t tip_finalize_stage_finalized_total(void);
 uint64_t tip_finalize_stage_upstream_failed_total(void);
 uint64_t tip_finalize_stage_reorg_detected_total(void);

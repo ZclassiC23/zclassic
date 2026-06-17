@@ -721,6 +721,7 @@ static int t_model_shadow_emits(void)
 
 int test_wallet_projection(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     int failures = 0;
     printf("\n=== Wallet Projection Tests ===\n");
     failures += t_wallet_event_ids();

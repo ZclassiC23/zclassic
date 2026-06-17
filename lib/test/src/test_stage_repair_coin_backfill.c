@@ -2191,6 +2191,7 @@ static int cb_case_gate_not_masked_by_lower_internal_error(void)
 int test_stage_repair_coin_backfill(void);
 int test_stage_repair_coin_backfill(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== stage_repair_coin_backfill tests ===\n");
     int failures = 0;
 

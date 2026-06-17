@@ -56,6 +56,7 @@ static struct block_index *clc_insert(struct main_state *ms,
 
 int test_chain_linkage_check(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== chain_linkage_check tests ===\n");
     int failures = 0;
 

@@ -162,6 +162,7 @@ static int mkdir_p_re(const char *p)
 int test_reindex_epilogue(void);
 int test_reindex_epilogue(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== reindex_epilogue tests ===\n");
     int failures = 0;
     /* Tip ABOVE the compiled SHA3 finality anchor so H* == tip is meaningful

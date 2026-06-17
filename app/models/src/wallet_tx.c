@@ -165,6 +165,21 @@ static void wallet_utxo_init_hooks(void)
     done = true;
 }
 
+/* Test-only: re-arm the wallet_tx and wallet_utxo model hooks after a group
+ * cleared the shared callback structs via ar_callbacks_init() (test_activerecord).
+ * Mirrors the init_hooks pair but bypasses their one-shot `done` guards. */
+void wallet_tx_reset_hooks_for_testing(void)
+{
+    struct ar_callbacks *tx = db_wallet_tx_callbacks();
+    ar_callbacks_init(tx);
+    ar_register_before_save(tx, wallet_tx_before_save);
+    ar_register_after_save(tx, wallet_tx_after_save);
+    struct ar_callbacks *utxo = db_wallet_utxo_callbacks();
+    ar_callbacks_init(utxo);
+    ar_register_before_save(utxo, wallet_utxo_before_save);
+    ar_register_after_save(utxo, wallet_utxo_after_save);
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_wallet_tx_validate(const struct db_wallet_tx *t, struct ar_errors *errors)

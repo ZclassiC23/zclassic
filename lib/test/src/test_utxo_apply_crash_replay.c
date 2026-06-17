@@ -507,6 +507,20 @@ int test_utxo_apply_crash_replay(void)
     int64_t cursor = 0;
     int n_killed = 0, n_clean = 0;
 
+    /* monolith isolation: a prior group's alerts_init() installs SA_NOCLDWAIT
+     * on SIGCHLD (auto-reap), so the waitpid() in ucr_one_cycle returns ECHILD
+     * and no child is ever observed killed (n_killed stays 0). Restore default
+     * SIGCHLD for the fork+kill cycles. Mirrors test_body_fetch_stage.c. */
+    struct sigaction ucr_old_chld, ucr_dfl_chld;
+    int ucr_restore_chld = 0;
+    memset(&ucr_old_chld, 0, sizeof(ucr_old_chld));
+    memset(&ucr_dfl_chld, 0, sizeof(ucr_dfl_chld));
+    ucr_dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&ucr_dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &ucr_old_chld) == 0 &&
+        sigaction(SIGCHLD, &ucr_dfl_chld, NULL) == 0)
+        ucr_restore_chld = 1;
+
     for (int i = 0; i < UCR_KILL_CYCLES && !failures; i++) {
         long delay_us = 500 + (long)(rand_r(&rng) % 40000);
         int kr = ucr_one_cycle(dir, i, delay_us);
@@ -531,6 +545,8 @@ int test_utxo_apply_crash_replay(void)
         UCR_CHECK("final cursor == all blocks applied",
                   cursor == UCR_BLOCKS);
     }
+
+    if (ucr_restore_chld) (void)sigaction(SIGCHLD, &ucr_old_chld, NULL);
 
     int elapsed = (int)(platform_time_wall_time_t() - t0);
     UCR_CHECK("runtime within budget", elapsed <= UCR_BUDGET_SECS);

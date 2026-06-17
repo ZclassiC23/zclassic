@@ -221,6 +221,11 @@ void test_projection_paths(const char *dir, const char *name,
                            char *elog, size_t elog_n,
                            char *proj, size_t proj_n);
 
+/* Reset process-global singletons that leak across groups in the
+ * single-process monolith (test_zcl). Call at the TOP of any group whose
+ * assertions read shared global state. See test_helpers.c for the rationale. */
+void test_reset_shared_globals(void);
+
 /* Test group functions — each returns failure count */
 int test_crypto(void);
 int test_crypto_registry(void);

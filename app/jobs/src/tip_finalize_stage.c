@@ -732,6 +732,10 @@ void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *us
 
 uint64_t tip_finalize_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
 int64_t tip_finalize_stage_last_height(void) { return atomic_load(&g_last_advance_height); }
+
+/* Test-only: reset the published served-tip height to -1 (a stale high value
+ * from a prior group without shutdown() poisons later active_chain_tip reads). */
+void tip_finalize_stage_test_reset(void) { atomic_store(&g_last_advance_height, (int64_t)-1); }
 uint64_t tip_finalize_stage_finalized_total(void) { return atomic_load(&g_finalized_total); }
 uint64_t tip_finalize_stage_upstream_failed_total(void) { return atomic_load(&g_upstream_failed_total); }
 uint64_t tip_finalize_stage_reorg_detected_total(void) { return atomic_load(&g_reorg_detected_total); }

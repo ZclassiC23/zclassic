@@ -2,6 +2,49 @@
  * Shared test helper functions. */
 
 #include "test/test_helpers.h"
+#include "validation/chain_linkage_check.h"
+#include "jobs/tip_finalize_stage.h"
+#include <signal.h>
+
+/* Reset the process-global singletons that leak across groups in the
+ * single-process monolith (test_zcl). The forked runner (test_parallel)
+ * gets fresh globals per group, so it never sees this; the monolith shares
+ * one address space, so a group that arms a global — e.g.
+ * tip_finalize_stage_init() registers an active-chain authority bound to
+ * its local main_state, which dangles once that group returns — pollutes
+ * every later group that reads it. Call this at the TOP of any group whose
+ * assertions consult a shared global. Idempotent and safe to call anytime;
+ * it only clears to the clean baseline the forked runner starts from. */
+void test_reset_shared_globals(void)
+{
+    /* active_chain_tip() consults this authority + its block_map; a leaked
+     * pair points into a freed main_state -> dangling reads / SIGSEGV. */
+    active_chain_register_authority(&(struct active_chain_authority){0});
+    active_chain_register_block_map(NULL);
+    /* the served-tip height backing that authority (a separate file-static;
+     * resetting the authority struct alone leaves it stale -> NULL tip reads). */
+    tip_finalize_stage_test_reset();
+    /* chain-linkage HOLD / refuse-from cursor (survives until a witnessed
+     * success otherwise). */
+    chain_linkage_reset_for_testing();
+    /* fatal-signal disposition: a prior group that installed the node crash
+     * handlers leaves SIGABRT/SIGSEGV/SIGBUS/SIGFPE armed, which makes
+     * postmortem_install() refuse (it requires SIG_DFL) and breaks the
+     * fork-and-raise crash tests. Restore the baseline the forked runner has. */
+    signal(SIGABRT, SIG_DFL);
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGBUS, SIG_DFL);
+    signal(SIGFPE, SIG_DFL);
+    /* SIGCHLD: a prior alerts_init() installs SA_NOCLDWAIT (the kernel
+     * auto-reaps children), so waitpid() in fork-based tests returns ECHILD.
+     * Restore default disposition with flags cleared (sigaction, not signal(),
+     * because the SA_NOCLDWAIT *flag* must be cleared, not just the handler). */
+    struct sigaction chld_dfl;
+    memset(&chld_dfl, 0, sizeof(chld_dfl));
+    chld_dfl.sa_handler = SIG_DFL;
+    sigemptyset(&chld_dfl.sa_mask);
+    sigaction(SIGCHLD, &chld_dfl, NULL);
+}
 
 int check_hex(const unsigned char *data, size_t len, const char *expected)
 {

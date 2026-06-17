@@ -273,6 +273,7 @@ static int64_t stig_coins_applied(sqlite3 *db)
 
 int test_seed_torn_import_gate(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== seed_torn_import_gate tests ===\n");
     int failures = 0;
 

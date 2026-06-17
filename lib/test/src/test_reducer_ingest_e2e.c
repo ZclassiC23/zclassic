@@ -554,7 +554,8 @@ static struct block_index *install_branch(struct rie_env *e,
 int test_reducer_ingest_e2e(void);
 int test_reducer_ingest_e2e(void)
 {
-    printf("\n=== reducer-ingest end-to-end test "
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
+    printf("\n=== reducer-ingest end-to-end test"
            "(authoritative path, real consensus) ===\n");
     int failures = 0;
 

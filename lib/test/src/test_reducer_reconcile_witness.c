@@ -396,6 +396,7 @@ static void bump_tipfin_record(void)
 int test_reducer_reconcile_witness(void);
 int test_reducer_reconcile_witness(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== reducer_reconcile_witness (FIX-5) tests ===\n");
     int failures = 0;
 

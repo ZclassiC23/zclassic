@@ -291,6 +291,8 @@ bool db_sapling_note_key(struct node_db *ndb, const struct db_sapling_note *n,
 
 /* Callbacks for wallet UTXO and sapling note */
 struct ar_callbacks *db_wallet_utxo_callbacks(void);
+/* Test-only: re-arm the wallet_tx + wallet_utxo before/after_save hooks (see .c). */
+void wallet_tx_reset_hooks_for_testing(void);
 struct ar_callbacks *db_sapling_note_callbacks(void);
 
 #endif

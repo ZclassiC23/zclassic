@@ -47,7 +47,7 @@
 #define BIR_CHECK(name, expr) do { \
     printf("block_index_rebuild: %s... ", (name)); \
     if ((expr)) printf("OK\n"); \
-    else { printf("FAIL\n"); failures++; } \
+    else { printf("FAIL\n"); (*failures)++; } \
 } while (0)
 
 /* Deterministic per-height block hash. Distinct from the all-zero
@@ -237,7 +237,12 @@ static int run_rebuild_n_headers(int *failures)
     bool rebuilt = load_block_index_from_projection(&ms, params, bip, pk);
     BIR_CHECK("n: rebuild returns true", rebuilt);
 
-    BIR_CHECK("n: map size == N", ms.map_block_index.size == (size_t)N);
+    /* N folded headers + the bare genesis node the loader inserts so block
+     * 1's pprev resolves (the synthetic height-0 hash != params genesis, so
+     * the loader's genesis-ensure at block_index_loader_rebuild.c:345 adds
+     * one). In production the height-0 block IS genesis, so no extra node. */
+    BIR_CHECK("n: map size == N (+1 loader genesis)",
+              ms.map_block_index.size == (size_t)(N + 1));
 
     /* Every height present, heights match. */
     bool heights_ok = true;
@@ -399,10 +404,11 @@ static int run_rebuild_competing_fork(int *failures)
     BIR_CHECK("fork: rebuild returns true", rebuilt);
 
     /* Both the canonical block AND the fork are in the map (N canonical +
-     * 1 fork = N+1 entries). The fold keeps every header; only the tip
-     * selection must be canonical. */
-    BIR_CHECK("fork: map holds canonical + fork (N+1)",
-              ms.map_block_index.size == (size_t)(N + 1));
+     * 1 fork), plus the bare genesis node the loader inserts (see above) =
+     * N+2 entries. The fold keeps every header; only the tip selection must
+     * be canonical. */
+    BIR_CHECK("fork: map holds canonical + fork (+1 loader genesis)",
+              ms.map_block_index.size == (size_t)(N + 2));
 
     struct uint256 fork_hash = bir_fork_hash_at(FORK_AT);
     struct block_index *fork_bi = block_map_find(&ms.map_block_index, &fork_hash);
@@ -431,6 +437,7 @@ done:
 
 int test_block_index_rebuild(void)
 {
+    test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== block_index_rebuild tests ===\n");
     int failures = 0;
 
