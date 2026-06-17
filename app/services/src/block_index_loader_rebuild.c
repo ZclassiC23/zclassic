@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
 #include "services/chain_tip.h"
+#include "services/chain_restore_repair.h"
 #include "services/utxo_recovery_service.h"
 #include "chain/chain.h"
 #include "validation/chainstate.h"
@@ -177,12 +178,6 @@ static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
                  tip_height, r.message);
 }
 
-/* Max forward gap this seed will adopt in one shot. The finalized frontier
- * is normally a handful of blocks ahead of the established tip; a larger gap
- * means the current active chain is not yet at the coins/UTXO frontier (the
- * full-restore loaders' job), so we no-op instead of walking the whole chain. */
-#define BLOCK_INDEX_LOADER_SEED_MAX_GAP 50000
-
 /* Public, FORWARD-ONLY finalized-tip seed for the NORMAL boot path.
  *
  * rebuild_seed_tip() (above) directly publishes the tip on the
@@ -204,12 +199,13 @@ static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
  *
  * Returns 1 = seeded forward, 0 = no-op, -1 = error. */
 int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
+                                               const struct chain_params *params,
                                                sqlite3 *progress_db)
 {
     if (!ms)
         LOG_ERR("block_index",
                 "seed_tip_from_finalized: null main_state");
-    if (!progress_db)
+    if (!params || !progress_db)
         return 0;
 
     /* Self-consistent resolve: the returned height OWNS the returned hash
@@ -220,25 +216,8 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     if (!tip_finalize_stage_resolve_durable_tip(progress_db, &tip_height,
                                                 tip_hash))
         return 0;
-
-    int cur_h = active_chain_height(&ms->chain_active);
-
-    /* (a) Forward-only: never rewind or sidestep the current tip. */
-    if (tip_height <= cur_h)
+    if (tip_height < 0)
         return 0;
-
-    /* (a2) Bounded: this is for a SMALL forward extension (the durable
-     * finalized frontier is typically a handful of blocks ahead of the
-     * established tip). A large gap means the current tip is not the
-     * coins/UTXO frontier yet (e.g. a cold/genesis active chain) — that is
-     * the full-restore loaders' job, not this seed. Refuse rather than walk
-     * millions of pprev links on the boot/liveness path. */
-    if ((int64_t)tip_height - (int64_t)cur_h > BLOCK_INDEX_LOADER_SEED_MAX_GAP)
-        return 0;
-
-    struct block_index *cur_tip = active_chain_tip(&ms->chain_active);
-    if (!cur_tip)
-        return 0;  /* no current tip to extend from — leave it to the loaders */
 
     struct uint256 th;
     memcpy(th.data, tip_hash, 32);
@@ -246,13 +225,51 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     if (!tip)
         return 0;
 
-    /* (b) Contiguity guard: walk pprev from the finalized block down to the
-     * current tip's height. Every intermediate block must be a have-data,
-     * script-valid, failure-free link (block_index_is_valid already rejects
-     * any failure), and the walk MUST land pointer-equal on the current
-     * active tip — a pure forward extension of the live chain, never a fork. */
+    /* R3: branch selection is STRUCTURAL — active_chain_tip()==NULL ONLY.
+     * Never trust active_chain_height/cur_h to mean "no tip": its SQL
+     * fallback (MAX(height) FROM tip_finalize_log WHERE ok=1) returns a
+     * positive value even when active_chain_tip() is NULL. */
+    struct block_index *cur_tip = active_chain_tip(&ms->chain_active);
+    int cur_h = active_chain_height(&ms->chain_active);
+
+    /* R1: ONE effective_floor drives BOTH the bound check and the walk.
+     *   - extend-live-chain branch (cur_tip != NULL) : floor = cur_h
+     *   - genesis-root branch       (cur_tip == NULL) : floor = 0 */
+    int effective_floor = cur_tip ? cur_h : 0;
+
+    /* Forward-only: never rewind or sidestep. */
+    if (cur_tip && tip_height <= effective_floor)
+        return 0;
+    if (!cur_tip && tip_height <= 0)
+        return 0;  /* genesis-only chain: nothing to seed */
+
+    /* R1: bound the ACTUAL walk against effective_floor (NOT cur_h). On a
+     * pathological NULL-tip mainnet boot floor=0 and tip_height≈3.1M, so
+     * 3.1M > 50000 REFUSES here — this is the load-bearing mainnet refusal. */
+    if ((int64_t)tip_height - (int64_t)effective_floor >
+        BLOCK_INDEX_LOADER_SEED_MAX_GAP)
+        return 0;
+
+    /* Hardening A: finalized<=coins as a RUNTIME precondition. Install only
+     * when coins have been applied through the tip we are about to publish —
+     * never publish a height with no coins behind it. True no-op on a synced
+     * mainnet boot (one indexed read). */
+    int32_t applied = -1; bool found = false;
+    if (!coins_kv_get_applied_height(progress_db, &applied, &found))
+        return 0;
+    if (!found || applied < tip_height) {
+        LOG_WARN("block_index",
+                 "seed_tip_from_finalized: refuse install h=%d coins_applied=%d "
+                 "found=%d (finalized>coins)", tip_height,
+                 found ? applied : -1, (int)found);
+        return 0;
+    }
+
+    /* Contiguity walk down to effective_floor. R4: block_index_is_valid
+     * already rejects any BLOCK_FAILED_ANY_MASK failure (incl. TRANSIENT),
+     * so the explicit BLOCK_FAILED_MASK check is GONE. */
     struct block_index *node = tip;
-    for (int h = tip_height; h > cur_h; h--) {
+    for (int h = tip_height; h > effective_floor; h--) {
         if (!node || node->nHeight != h)
             return 0;
         if (!(node->nStatus & BLOCK_HAVE_DATA))
@@ -261,11 +278,30 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
             return 0;
         node = node->pprev;
     }
-    if (node != cur_tip)
-        return 0;  /* not a contiguous extension of the current chain */
 
-    /* (c) Safe: adopt the durable finalized tip forward-only. */
-    tip_finalize_stage_set_authoritative_tip(tip_height, tip_hash);
+    if (cur_tip) {
+        /* UNCHANGED extend-live-chain branch: walk must land pointer-equal
+         * on the current tip — a pure forward extension, never a fork. */
+        if (node != cur_tip)
+            return 0;
+    } else {
+        /* GENESIS-ROOT branch. The walk consumed [tip_height..1]; `node`
+         * is now the height-0 terminus. Require height-0 + HAVE_DATA +
+         * VALID_SCRIPTS AND R2: the canonical genesis hash. */
+        if (!node || node->nHeight != 0)
+            return 0;
+        if (!(node->nStatus & BLOCK_HAVE_DATA))
+            return 0;
+        if (!block_index_is_valid(node, BLOCK_VALID_SCRIPTS))
+            return 0;
+        if (!node->phashBlock ||
+            memcmp(node->phashBlock->data,
+                   params->consensus.hashGenesisBlock.data, 32) != 0)
+            return 0;  /* terminus is not the canonical genesis — refuse */
+    }
+
+    /* Install forward-only. C3: chain_set_active_tip publishes the authority
+     * itself (chain_tip.c:147-149) — no explicit set_authoritative_tip. */
     struct zcl_result r = chain_set_active_tip(ms, tip, TIP_FROM_RESTORE,
                                                "loader_seed_from_finalized");
     if (!r.ok)
@@ -273,8 +309,18 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
                    "seed_tip_from_finalized: chain_set_active_tip failed at "
                    "h=%d: %s", tip_height, r.message);
 
-    printf("[boot] active tip seeded forward from durable finalized cursor: "
-           "h=%d (was %d)\n", tip_height, cur_h);
+    if (!cur_tip) {
+        /* Densify the [0..tip] active_chain window so RPC/walkers see the
+         * full chain, not just the tip slot. */
+        (void)chain_restore_rebuild_active_chain(ms, tip, NULL);
+        /* C1/B: the genesis-root marker the copy-prove must observe. */
+        printf("[boot] active tip seeded from durable finalized cursor "
+               "(root=genesis): h=%d coins_applied=%d\n", tip_height, applied);
+    } else {
+        printf("[boot] active tip seeded forward from durable finalized "
+               "cursor: h=%d (was %d) coins_applied=%d\n",
+               tip_height, cur_h, applied);
+    }
     return 1;
 }
 

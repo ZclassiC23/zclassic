@@ -1466,7 +1466,7 @@ bool app_init_services(struct app_context *ctx,
      * forks, or deletes log rows. See block_index_loader.h for each contract. */
     {
         int seeded = block_index_loader_seed_tip_from_finalized(
-            svc->state, progress_store_db());
+            svc->state, params, progress_store_db());
         (void)seeded;  /* logs its own success line; benign no-op otherwise */
         (void)block_index_loader_seed_stages_from_cold_import(
             svc->state, boot_node_db(svc), progress_store_db());

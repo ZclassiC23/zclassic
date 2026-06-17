@@ -7,11 +7,18 @@
 #include "test/test_helpers.h"
 #include "services/block_index_loader.h"
 #include "services/block_index_integrity.h"
+#include "services/chain_tip.h"
 #include "storage/sha3_sidecar_io.h"
+#include "storage/progress_store.h"
+#include "storage/coins_kv.h"
+#include "jobs/tip_finalize_stage.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
+#include "chain/chainparamsbase.h"
 #include "chain/pow.h"
+#include "core/arith_uint256.h"
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -684,6 +691,238 @@ int test_block_index_loader(void)
         rmdir(tmpdir);
         block_map_free(&ms.map_block_index);
         block_map_free(&ms2.map_block_index);
+    }
+
+    /* ── 14. seed_tip_from_finalized: genesis-root install + REFUSE cases ──
+     *
+     * Regression guard for the kill-9-at-genesis recovery (2026-06-17). A
+     * fresh regtest node mined N blocks, was kill-9'd, and rebooted to a NULL
+     * active tip while the durable tip_finalize cursor + coins were at N. The
+     * genesis-root branch of block_index_loader_seed_tip_from_finalized must
+     * INSTALL the tip at N (rooted at the canonical genesis) yet REFUSE every
+     * unsafe variant: an oversized walk (mainnet floor cap), a link missing
+     * HAVE_DATA/VALID_SCRIPTS, a non-canonical genesis terminus, and
+     * coins_applied < tip_height. It also must still cleanly extend an
+     * existing live tip (cur_tip != NULL, the unchanged branch). */
+    {
+        chain_params_select(CHAIN_REGTEST);
+        const struct chain_params *cp = chain_params_get();
+        const struct uint256 gen = cp->consensus.hashGenesisBlock;
+
+        char dir[256];
+        mkdir("./test-tmp", 0755);
+        test_fmt_tmpdir(dir, sizeof(dir), "bil_seedfin", "main");
+        mkdir(dir, 0755);
+
+        progress_store_close();
+        bool store_ok = progress_store_open(dir);
+        sqlite3 *db = store_ok ? progress_store_db() : NULL;
+        BIL_CHECK("bil/seedfin: progress_store opens", store_ok && db);
+
+        /* Build a synthetic regtest chain 0..N whose GENESIS hash is the real
+         * params genesis (so the canonical-terminus check can pass), with the
+         * rest of the chain HAVE_DATA + VALID_SCRIPTS + contiguous pprev. */
+        const int N = 5;
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+
+        struct uint256 hashes[16];
+        for (int h = 0; h <= N; h++) {
+            if (h == 0) {
+                hashes[0] = gen;
+            } else {
+                memset(&hashes[h], 0, sizeof(hashes[h]));
+                hashes[h].data[0] = (uint8_t)(h & 0xFF);
+                hashes[h].data[31] = 0xC2; /* distinct from genesis */
+            }
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            if (pi) {
+                pi->nHeight = h;
+                pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+                pi->nTx = 1;
+                pi->nBits = 0x200f0f0f;
+                if (h > 0) {
+                    struct block_index *prev = block_map_find(
+                        &ms.map_block_index, &hashes[h - 1]);
+                    pi->pprev = prev;
+                    if (prev) {
+                        struct arith_uint256 proof = GetBlockProof(pi);
+                        arith_uint256_add(&pi->nChainWork, &prev->nChainWork,
+                                          &proof);
+                        pi->nChainTx = prev->nChainTx + pi->nTx;
+                    }
+                } else {
+                    pi->nChainWork = GetBlockProof(pi);
+                    pi->nChainTx = 1;
+                }
+            }
+        }
+        /* phashBlock must point at per-node storage (the canonical-terminus
+         * memcmp reads node->phashBlock->data). */
+        {
+            size_t it = 0; struct block_index *pi; const struct uint256 *hp;
+            while (block_map_next(&ms.map_block_index, &it, &hp, &pi)) {
+                if (pi && hp) { pi->hashBlock = *hp; pi->phashBlock = &pi->hashBlock; }
+            }
+        }
+        struct block_index *tipN = block_map_find(&ms.map_block_index, &hashes[N]);
+
+        /* Register the tip_finalize stage so seed_anchor can stamp the
+         * served-tip cursor (the value resolve_durable_tip reads). Without
+         * tip_finalize_stage_handle() the cursor stamp is skipped and the
+         * durable tip never resolves. */
+        bool tf_init = tip_finalize_stage_init(&ms);
+        BIL_CHECK("bil/seedfin: tip_finalize stage init", tf_init);
+
+        /* Seed the durable finalized anchor at N (cursor -> N, own-hash). */
+        bool anchor_ok = db && tf_init &&
+            tip_finalize_stage_seed_anchor(N, hashes[N].data, true);
+        BIL_CHECK("bil/seedfin: durable anchor seeded at N", anchor_ok);
+
+        /* Helper: set coins_kv applied_height directly (utxo_apply convention
+         * stores applied-through height; the gate compares applied >= N). */
+        #define BIL_SET_APPLIED(H) do {                                       \
+            if (db) {                                                         \
+                sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);        \
+                coins_kv_set_applied_height_in_tx(db, (H));                   \
+                sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);                 \
+            }                                                                 \
+        } while (0)
+
+        /* (iv-pre) coins_applied ABSENT → refuse (cur_tip NULL, no install). */
+        int r_no_coins = db ? block_index_loader_seed_tip_from_finalized(
+                                  &ms, cp, db) : 1;
+        BIL_CHECK("bil/seedfin: REFUSE when coins_applied absent (<N)",
+                  r_no_coins == 0 && active_chain_tip(&ms.chain_active) == NULL);
+
+        /* (iv) coins_applied = N-1 (< N) → refuse (finalized>coins). */
+        BIL_SET_APPLIED(N - 1);
+        int r_low_coins = db ? block_index_loader_seed_tip_from_finalized(
+                                   &ms, cp, db) : 1;
+        BIL_CHECK("bil/seedfin: REFUSE when coins_applied < tip_height",
+                  r_low_coins == 0 && active_chain_tip(&ms.chain_active) == NULL);
+
+        /* Raise coins to N for the install + remaining structural cases. */
+        BIL_SET_APPLIED(N);
+
+        /* (ii) a mid-chain link missing HAVE_DATA → refuse. Clear it, test,
+         * restore it. */
+        struct block_index *mid = block_map_find(&ms.map_block_index, &hashes[3]);
+        uint32_t saved_status = mid ? mid->nStatus : 0;
+        if (mid) mid->nStatus &= ~(uint32_t)BLOCK_HAVE_DATA;
+        int r_nodata = db ? block_index_loader_seed_tip_from_finalized(
+                                &ms, cp, db) : 1;
+        BIL_CHECK("bil/seedfin: REFUSE when a mid link lacks HAVE_DATA",
+                  r_nodata == 0 && active_chain_tip(&ms.chain_active) == NULL);
+        if (mid) mid->nStatus = saved_status;
+
+        /* (iii) non-canonical genesis terminus → refuse. Re-point genesis's
+         * stored hash to a NON-params value (height stays 0, HAVE_DATA set),
+         * so the terminus memcmp fails. Restore after. */
+        struct block_index *g0 = block_map_find(&ms.map_block_index, &hashes[0]);
+        struct uint256 saved_g0 = g0 ? g0->hashBlock : gen;
+        if (g0) {
+            struct uint256 fake = gen; fake.data[0] ^= 0xFF;
+            g0->hashBlock = fake;
+            g0->phashBlock = &g0->hashBlock;
+        }
+        int r_nongen = db ? block_index_loader_seed_tip_from_finalized(
+                                &ms, cp, db) : 1;
+        BIL_CHECK("bil/seedfin: REFUSE when terminus is non-canonical genesis",
+                  r_nongen == 0 && active_chain_tip(&ms.chain_active) == NULL);
+        if (g0) { g0->hashBlock = saved_g0; g0->phashBlock = &g0->hashBlock; }
+
+        /* (v) ALL preconditions hold → INSTALL h=N, cur_tip was NULL,
+         * active_chain_tip() == tipN afterward. */
+        int r_install = db ? block_index_loader_seed_tip_from_finalized(
+                                 &ms, cp, db) : 0;
+        BIL_CHECK("bil/seedfin: INSTALL genesis-root h=N (cur_tip NULL)",
+                  r_install == 1 &&
+                  active_chain_tip(&ms.chain_active) == tipN &&
+                  active_chain_height(&ms.chain_active) == N);
+
+        /* (vi) extend-live-chain branch (cur_tip != NULL) still returns 1 and
+         * lands pointer-equal. Reset the active tip DOWN to a live tip at N-2
+         * (a forward-only rewind is allowed for repair installs), then the
+         * seed's walk N..N-1 must land on the N-2 tip and re-install N. The
+         * durable cursor is still at N from the install above. */
+        {
+            struct block_index *live = block_map_find(&ms.map_block_index,
+                                                      &hashes[N - 2]);
+            (void)chain_set_active_tip(&ms, live, TIP_FROM_RESTORE,
+                                       "bil_seedfin_extend_setup");
+            BIL_SET_APPLIED(N);
+            int r_ext = (db && live)
+                ? block_index_loader_seed_tip_from_finalized(&ms, cp, db) : 0;
+            BIL_CHECK("bil/seedfin: extend-live-chain branch installs h=N",
+                      r_ext == 1 &&
+                      active_chain_tip(&ms.chain_active) == tipN &&
+                      active_chain_height(&ms.chain_active) == N);
+        }
+
+        #undef BIL_SET_APPLIED
+
+        /* Done with the shared cursor/stage; tear it down before the isolated
+         * oversized-walk case opens its OWN progress store + stage so the
+         * big_h anchor cannot clobber the cases above. */
+        tip_finalize_stage_shutdown();
+        progress_store_close();
+        block_map_free(&ms.map_block_index);
+        test_cleanup_tmpdir(dir);
+
+        /* (i) oversized walk (tip_height - 0 > MAX_GAP) → refuse. Isolated
+         * store + stage, fresh ms, cur_tip NULL, a single tip node at a height
+         * beyond the cap with a durable anchor there. The MAX_GAP bound check
+         * fires BEFORE the walk — the load-bearing mainnet refusal. */
+        {
+            char dir2[256];
+            test_fmt_tmpdir(dir2, sizeof(dir2), "bil_seedfin_big", "main");
+            mkdir(dir2, 0755);
+            progress_store_close();
+            bool s2 = progress_store_open(dir2);
+            sqlite3 *db2 = s2 ? progress_store_db() : NULL;
+
+            struct main_state ms2;
+            memset(&ms2, 0, sizeof(ms2));
+            block_map_init(&ms2.map_block_index);
+            active_chain_init(&ms2.chain_active);
+            bool tf2 = tip_finalize_stage_init(&ms2);
+
+            int big_h = BLOCK_INDEX_LOADER_SEED_MAX_GAP + 10000; /* 60000 */
+            struct uint256 bh;
+            memset(&bh, 0, sizeof(bh));
+            bh.data[0] = 0x77; bh.data[1] = 0xEE; bh.data[31] = 0xC2;
+            struct block_index *bn = chainstate_insert_block_index(
+                (struct chainstate *)&ms2, &bh);
+            if (bn) {
+                bn->nHeight = big_h;
+                bn->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+                bn->hashBlock = bh; bn->phashBlock = &bn->hashBlock;
+            }
+            /* coins_applied = big_h so ONLY the MAX_GAP cap can be the refuser
+             * (the precondition would otherwise also refuse). */
+            if (db2) {
+                sqlite3_exec(db2, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+                coins_kv_set_applied_height_in_tx(db2, big_h);
+                sqlite3_exec(db2, "COMMIT", NULL, NULL, NULL);
+            }
+            bool anchor2 = db2 && tf2 &&
+                tip_finalize_stage_seed_anchor(big_h, bh.data, true);
+            int r_big = (db2 && anchor2)
+                ? block_index_loader_seed_tip_from_finalized(&ms2, cp, db2) : 1;
+            BIL_CHECK("bil/seedfin: REFUSE oversized walk (tip-0 > MAX_GAP)",
+                      r_big == 0 && active_chain_tip(&ms2.chain_active) == NULL);
+
+            tip_finalize_stage_shutdown();
+            progress_store_close();
+            block_map_free(&ms2.map_block_index);
+            test_cleanup_tmpdir(dir2);
+        }
+
+        chain_params_select(CHAIN_MAIN);
     }
 
     printf("=== block index loader: %d failures ===\n", failures);

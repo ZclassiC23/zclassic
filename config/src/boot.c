@@ -24,6 +24,7 @@
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "jobs/tip_finalize_stage.h"
 #include "storage/utxo_reimport_flag.h"
 #include "config/boot_crashonly.h"
 #include "services/header_probe.h"
@@ -2703,6 +2704,7 @@ bool app_init(struct app_context *ctx)
              * valid historical UTXOs look stale and triggers destructive
              * recovery paths. */
             if (!active_chain_tip(&g_state.chain_active)) {
+                int durable_h = -1; uint8_t durable_hash[32];
                 if (boot_restored_authority_tip) {
                     fprintf(stderr,
                         "[boot] skipped genesis_init: restored authority "
@@ -2712,6 +2714,15 @@ bool app_init(struct app_context *ctx)
                     event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                                 "skip_genesis_init restored_authority_tip=%d",
                                 boot_restored_authority_height);
+                } else if (tip_finalize_stage_resolve_durable_tip(
+                               progress_store_db(), &durable_h, durable_hash) &&
+                           durable_h > 0) {
+                    /* Defensive belt (kill-9-at-genesis): durable finalized
+                     * tip > 0 but coins never installed an active tip. Skip
+                     * genesis_init (transient tip + misleading rollback_auth);
+                     * the genesis-root forward-seed installs the real tip. */
+                    fprintf(stderr, "[boot] skipped genesis_init: durable "
+                        "finalized tip h=%d pending forward-seed\n", durable_h);
                 } else if (boot_promote_tip_via_csr(genesis, "genesis_init",
                                                     false)) {
                     printf("Chain tip: initialized to genesis (height 0)\n");

@@ -128,16 +128,42 @@ bool load_block_index_from_projection(struct main_state *ms,
                                       struct block_index_projection *bip,
                                       struct sqlite3 *progress_db);
 
+/* Max forward gap the finalized-tip seed will adopt in one shot, measured
+ * against the SAME effective_floor that drives the walk (cur_h for the
+ * extend branch, 0 for the genesis-root branch). A larger gap means the
+ * active chain is not yet at the coins/UTXO frontier (the full-restore
+ * loaders' job), so the seed no-ops instead of walking the whole chain —
+ * this is the load-bearing mainnet refusal (≈3.1M > 50000). */
+#define BLOCK_INDEX_LOADER_SEED_MAX_GAP 50000
+
 /* FORWARD-ONLY finalized-tip seed for the NORMAL boot path.
  *
  * After the normal loaders establish the active tip from the coins/UTXO
- * authority, this adopts the durable tip_finalize frontier (cursor-1) ONLY
- * when it is a strictly-higher, CONTIGUOUS forward extension of the current
- * chain — every intermediate block HAVE_DATA + script-valid + failure-free,
- * with the pprev walk landing pointer-equal on the current active tip.
- * Otherwise it is a no-op. It never rewinds the tip, never swaps a fork, and
- * never mutates the tip_finalize_log or any cursor (read only), so a
- * sparse/header-only frontier yields a no-op rather than a hole.
+ * authority, this adopts the durable tip_finalize frontier ONLY when it is a
+ * strictly-higher, CONTIGUOUS forward extension — every intermediate block
+ * HAVE_DATA + script-valid + failure-free.
+ *
+ * TWO structural branches, selected SOLELY on active_chain_tip()==NULL:
+ *   - cur_tip != NULL (extend-live-chain): the pprev walk down to the current
+ *     tip's height MUST land pointer-equal on the current active tip — a pure
+ *     forward extension, never a fork.
+ *   - cur_tip == NULL (genesis-root): the durable finalized tip exists but the
+ *     coins authority never installed a tip (the kill-9-at-genesis class). Walk
+ *     pprev all the way to height 0, requiring the terminus to be the CANONICAL
+ *     genesis (params->consensus.hashGenesisBlock), then install + densify the
+ *     [0..tip] window. This is the load-bearing recovery for a fresh node that
+ *     mined N blocks, was kill-9'd, and rebooted to a NULL active tip.
+ *
+ * Both branches are bounded by BLOCK_INDEX_LOADER_SEED_MAX_GAP against the
+ * SAME effective_floor that drives the walk (cur_h for extend, 0 for
+ * genesis-root) — so a pathological NULL-tip mainnet boot (tip≈3.1M, floor=0)
+ * REFUSES rather than walking millions of pprev links. A runtime
+ * finalized<=coins precondition (coins_kv_get_applied_height >= tip_height)
+ * gates install so a height with no coins behind it is never published.
+ *
+ * It never rewinds the tip, never swaps a fork, and never mutates the
+ * tip_finalize_log or any cursor (read only), so a sparse/header-only frontier
+ * yields a no-op rather than a hole.
  *
  * Returns 1 = seeded forward, 0 = no-op, -1 = error.
  *
@@ -150,6 +176,7 @@ bool load_block_index_from_projection(struct main_state *ms,
  * frontier is a small, strictly-higher, contiguous have-data + script-valid
  * extension landing on the current tip. */
 int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
+                                               const struct chain_params *params,
                                                struct sqlite3 *progress_db);
 
 /* DURABLE, crash-recoverable cold-import staged-sync seed.
