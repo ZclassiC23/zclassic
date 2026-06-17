@@ -255,4 +255,42 @@ bool block_index_projection_topup_with(struct block_index_projection *bip,
 bool block_index_projection_topup(struct main_state *ms,
                                   const char *datadir);
 
+/* node.db forward-extent top-up — cold-import restart-fragility fix.
+ *
+ * A node that cold-imported a UTXO snapshot (seed anchor at H_seed) and
+ * forward-synced past it has, after a flat-index reload, the contiguous
+ * chain up to ~H_seed in the map PLUS the seed anchor as a DETACHED
+ * non-genesis root (its pprev chain to genesis is legitimately absent —
+ * a UTXO-snapshot base is not P2P-downloaded). coins_best (the coins
+ * authority) is the forward tip; the window (H_seed, coins_best] is
+ * body-backed/connected (status>=3) in node.db `blocks` but is NOT
+ * linked into the in-memory block index, so the seed anchor stays an
+ * orphan tip and the coins-best restore refuses → tip drops to genesis.
+ *
+ * This folds ONLY that prev-linked, body-backed window [H_seed+1 ..
+ * coins_best] from node.db `blocks` into ms->map_block_index RAISE-ONLY:
+ * it inserts entries the loaders never saw (with pprev link + bounded
+ * chainwork), applies HAVE_DATA + nFile/nDataPos an entry lacks, and
+ * raises nTx + the BLOCK_VALID level. It NEVER lowers a field, never
+ * copies FAILED bits, refuses (logs) any height conflict, and bounds the
+ * scan to the window (hundreds of rows — never a full chain scan).
+ *
+ * STRICT NO-OP when there is no durable cold-import seed anchor (any
+ * normal / P2P-origin datadir), when the window is empty, or when the
+ * seed anchor block is not held in the map at exactly H_seed.
+ *
+ * Call AT THE SAME boot point as block_index_projection_topup (after the
+ * legacy loaders, before the nChainTx propagation pass). `ndb` is the
+ * open node.db (the seed-anchor provenance + `blocks` source); a NULL or
+ * closed `ndb` makes it a no-op true. `progress_db` is the coins
+ * authority (coins_best = coins_applied_height - 1); a NULL `progress_db`
+ * makes it a no-op true. Returns false only on a hard alloc error. */
+bool block_index_node_db_topup_with(struct main_state *ms,
+                                    struct node_db *ndb,
+                                    struct sqlite3 *progress_db,
+                                    const char *datadir);
+bool block_index_node_db_topup(struct main_state *ms,
+                               struct node_db *ndb,
+                               const char *datadir);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_LOADER_H */

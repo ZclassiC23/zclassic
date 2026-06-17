@@ -509,6 +509,7 @@ int test_utxo_projection(void);
 int test_block_index_projection(void);
 int test_block_index_rebuild(void);
 int test_block_index_topup(void);
+int test_block_index_node_db_topup(void);
 int test_projection_replay_invariant(void);
 int test_header_admit_stage(void);
 int test_header_probe_poll(void);

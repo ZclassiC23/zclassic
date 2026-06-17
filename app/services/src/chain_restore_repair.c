@@ -396,17 +396,47 @@ bool chain_restore_block_is_consensus_backed(
     return true;
 }
 
-bool chain_restore_block_is_consensus_backed_on_disk(
+/* Is `tip` the provenance-matched cold-import seed anchor? True ONLY when the
+ * caller supplied a non-NULL hash + non-negative height AND the candidate is
+ * that exact (hash, height). A torn/orphan root whose hash != the persisted
+ * seed anchor (or whose height differs) is NOT a match, so it keeps facing the
+ * full pprev/prev-hash gates. */
+static bool chain_restore_is_seed_anchor(
     const struct block_index *tip,
-    const char *datadir)
+    const struct uint256 *seed_anchor_hash,
+    int seed_anchor_height)
+{
+    if (!seed_anchor_hash || seed_anchor_height < 0)
+        return false;
+    if (!tip || !tip->phashBlock)
+        return false;
+    if (tip->nHeight != seed_anchor_height)
+        return false;
+    return uint256_cmp(tip->phashBlock, seed_anchor_hash) == 0;
+}
+
+bool chain_restore_block_is_consensus_backed_on_disk_seeded(
+    const struct block_index *tip,
+    const char *datadir,
+    const struct uint256 *seed_anchor_hash,
+    int seed_anchor_height)
 {
     if (!tip || !tip->phashBlock)
         return false;
+
+    const bool is_seed = chain_restore_is_seed_anchor(tip, seed_anchor_hash,
+                                                      seed_anchor_height);
+
     if (tip->nStatus & BLOCK_FAILED_MASK)
         return false;
     if (!(tip->nStatus & BLOCK_HAVE_DATA))
         return false;
-    if (tip->nHeight > 0 && (!tip->pprev || !tip->pprev->phashBlock))
+    /* The cold-import seed anchor legitimately has a null pprev (no chain to
+     * genesis — it was a UTXO-snapshot base). SKIP the pprev-presence gate
+     * ONLY for the provenance-matched anchor; every non-matching non-genesis
+     * root still requires its pprev. */
+    if (!is_seed &&
+        tip->nHeight > 0 && (!tip->pprev || !tip->pprev->phashBlock))
         return false;
     if (tip->nHeight > 0 && (tip->nFile < 0 || tip->nDataPos == 0))
         return false;
@@ -431,7 +461,12 @@ bool chain_restore_block_is_consensus_backed_on_disk(
         ok = false;
     }
 
-    if (ok && tip->nHeight > 0) {
+    /* The seed anchor's on-disk prev-hash points at a block we do not hold
+     * (the snapshot base's parent), so SKIP the disk prev-hash comparison for
+     * the provenance-matched anchor only. The self-hash match above already
+     * binds the on-disk bytes to this exact block; the merkle + nBits gates
+     * below still run. */
+    if (ok && !is_seed && tip->nHeight > 0) {
         if (!tip->pprev || !tip->pprev->phashBlock ||
             uint256_cmp(&blk.header.hashPrevBlock,
                         tip->pprev->phashBlock) != 0) {
@@ -464,6 +499,15 @@ bool chain_restore_block_is_consensus_backed_on_disk(
     return ok;
 }
 
+/* Original signature — identical behaviour (no seed-anchor provenance). */
+bool chain_restore_block_is_consensus_backed_on_disk(
+    const struct block_index *tip,
+    const char *datadir)
+{
+    return chain_restore_block_is_consensus_backed_on_disk_seeded(
+        tip, datadir, NULL, -1);
+}
+
 struct block_index *chain_restore_nearest_consensus_backed_ancestor(
     struct block_index *tip)
 {
@@ -474,13 +518,16 @@ struct block_index *chain_restore_nearest_consensus_backed_ancestor(
     return NULL;
 }
 
-struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
+struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk_seeded(
     struct block_index *tip,
-    const char *datadir)
+    const char *datadir,
+    const struct uint256 *seed_anchor_hash,
+    int seed_anchor_height)
 {
     int checked = 0;
     for (struct block_index *walk = tip; walk; walk = walk->pprev) {
-        if (chain_restore_block_is_consensus_backed_on_disk(walk, datadir))
+        if (chain_restore_block_is_consensus_backed_on_disk_seeded(
+                walk, datadir, seed_anchor_hash, seed_anchor_height))
             return walk;
         checked++;
         if (checked >= 4096) {
@@ -489,6 +536,14 @@ struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
         }
     }
     return NULL;
+}
+
+struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
+    struct block_index *tip,
+    const char *datadir)
+{
+    return chain_restore_nearest_consensus_backed_ancestor_on_disk_seeded(
+        tip, datadir, NULL, -1);
 }
 
 static bool chain_restore_served_floor(int *out)

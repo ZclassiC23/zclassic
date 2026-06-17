@@ -631,11 +631,24 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         }
     }
 
+    /* Cold-import seed-anchor provenance (PART B). The snapshot base is a
+     * legitimate null-pprev root; the _seeded backed check below accepts it
+     * as consensus-backed DESPITE the null pprev when it provenance-matches,
+     * so a restart past the seed restores to the base, not genesis. Absent on
+     * every normal / P2P datadir → seed_anchor_hash_p stays NULL (identical). */
+    struct uint256 seed_anchor_hash;
+    int seed_anchor_h = -1;
+    const struct uint256 *seed_anchor_hash_p = NULL;
+    if (ctx->ndb && ctx->ndb->open &&
+        utxo_recovery_read_cold_import_seed(ctx->ndb, &seed_anchor_h,
+                                            &seed_anchor_hash))
+        seed_anchor_hash_p = &seed_anchor_hash;
+
     if (best) {
         struct block_index *restore_tip = best;
         bool best_backed =
-            chain_restore_block_is_consensus_backed_on_disk(best,
-                                                            ctx->datadir);
+            chain_restore_block_is_consensus_backed_on_disk_seeded(
+                best, ctx->datadir, seed_anchor_hash_p, seed_anchor_h);
         {
             char best_hex[65] = {0};
             char prev_hex[65] = {0};
@@ -647,8 +660,8 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             LOG_INFO("boot", "[boot] coins_best_block validation h=%d hash=%s " "status=%u file=%d pos=%u tx=%u chaintx=%lld bits=%u " "pprev_h=%d pprev=%s merkle_null=%d disk_backed=%d", best->nHeight, best_hex[0] ? best_hex : "<null>", best->nStatus, best->nFile, best->nDataPos, best->nTx, (long long)best->nChainTx, best->nBits, best->pprev ? best->pprev->nHeight : -1, prev_hex[0] ? prev_hex : "<null>", merkle_null ? 1 : 0, best_backed ? 1 : 0);
         }
         if (!best_backed) {
-            restore_tip = chain_restore_nearest_consensus_backed_ancestor_on_disk(
-                best, ctx->datadir);
+            restore_tip = chain_restore_nearest_consensus_backed_ancestor_on_disk_seeded(
+                best, ctx->datadir, seed_anchor_hash_p, seed_anchor_h);
             if (restore_tip && restore_tip->phashBlock) {
                 char bad_hex[65], good_hex[65];
                 uint256_get_hex(&best_hash, bad_hex);
@@ -669,6 +682,16 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         if (!restore_tip) {
             LOG_INFO("boot", "[boot] coins_best_block found in index but no " "consensus-backed ancestor is available; waiting for P2P");
             return res;
+        }
+
+        /* PART B success path: the restore target IS the provenance-matched
+         * cold-import seed anchor — name it loudly for a copy-prove. */
+        if (seed_anchor_hash_p && restore_tip->phashBlock &&
+            restore_tip->nHeight == seed_anchor_h &&
+            uint256_cmp(restore_tip->phashBlock, seed_anchor_hash_p) == 0) {
+            char sa_hex[65] = {0};
+            uint256_get_hex(restore_tip->phashBlock, sa_hex);
+            LOG_INFO("boot", "[boot] restoring to provenance-matched cold-import seed anchor h=%d hash=%s", restore_tip->nHeight, sa_hex);
         }
 
         struct block_index *committed = restore_tip;

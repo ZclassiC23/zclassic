@@ -27,6 +27,8 @@
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 
+#include <stdint.h>
+
 #include "utxo_recovery_internal.h"
 
 /* DURABLE cold-import seed anchor. Writes the keys the consumer
@@ -61,6 +63,29 @@ void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
             (void)node_db_state_set_int(ndb,
                 "cold_import_seed_coins_kv_count", ck);
     }
+}
+
+/* Read the durable cold-import seed anchor identity. See the contract in
+ * utxo_recovery_internal.h. Strict: both keys present, height in range, hash
+ * exactly 32 bytes — otherwise a clean false (caller behaves as "no seed"). */
+bool utxo_recovery_read_cold_import_seed(struct node_db *ndb,
+                                         int *out_height,
+                                         struct uint256 *out_hash)
+{
+    if (!ndb || !out_height || !out_hash)
+        return false;
+    int64_t h = 0;
+    if (!node_db_state_get_int(ndb, "cold_import_seed_anchor_height", &h))
+        return false;
+    if (h <= 0 || h > INT32_MAX)
+        return false;
+    size_t hn = 0;
+    if (!node_db_state_get(ndb, "cold_import_seed_anchor_hash",
+                           out_hash->data, sizeof(out_hash->data), &hn) ||
+        hn != sizeof(out_hash->data))
+        return false;
+    *out_height = (int)h;
+    return true;
 }
 
 /* Clear all durable cold-import seed keys. Called from every UTXO wipe /

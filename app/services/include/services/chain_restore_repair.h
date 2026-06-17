@@ -11,6 +11,7 @@
 
 struct main_state;
 struct block_index;
+struct uint256;
 
 /* After an anchor-restore / snapshot-restore / block-file-scan path
  * completes, repair the two state shapes that the normal validation path
@@ -37,12 +38,44 @@ bool chain_restore_block_is_consensus_backed_on_disk(
     const struct block_index *tip,
     const char *datadir);
 
+/* Cold-import-seed-anchor-aware variant of the on-disk backed check.
+ *
+ * A cold-import UTXO-snapshot seed anchor is a legitimate non-genesis root:
+ * its pprev chain to genesis is absent because it was a snapshot base, not
+ * a P2P-downloaded block. The plain backed check rejects it at the
+ * pprev-presence test, so the coins-best restore refuses and the tip drops
+ * to genesis on a restart that forward-synced past the seed.
+ *
+ * When `seed_anchor_hash`/`seed_anchor_height` identify a block AND the
+ * candidate IS that exact (hash, height), this SKIPS ONLY the
+ * pprev-presence check and the disk prev-hash comparison; EVERY other gate
+ * (not-FAILED, HAVE_DATA, file/pos present, on-disk self-hash match, merkle
+ * match, nBits match) is kept verbatim. Pass `seed_anchor_hash=NULL` /
+ * `seed_anchor_height < 0` for the identical behaviour of the non-variant
+ * function — a torn/orphan root whose hash != the persisted seed anchor is
+ * STILL refused. */
+bool chain_restore_block_is_consensus_backed_on_disk_seeded(
+    const struct block_index *tip,
+    const char *datadir,
+    const struct uint256 *seed_anchor_hash,
+    int seed_anchor_height);
+
 struct block_index *chain_restore_nearest_consensus_backed_ancestor(
     struct block_index *tip);
 
 struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
     struct block_index *tip,
     const char *datadir);
+
+/* Seed-anchor-aware nearest-ancestor walk — same contract as
+ * chain_restore_nearest_consensus_backed_ancestor_on_disk, but the
+ * provenance-matched cold-import seed anchor qualifies as backed (see the
+ * _seeded predicate above). Pass NULL/-1 for identical behaviour. */
+struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk_seeded(
+    struct block_index *tip,
+    const char *datadir,
+    const struct uint256 *seed_anchor_hash,
+    int seed_anchor_height);
 
 struct zcl_result chain_restore_finalize(struct main_state *ms, const char *datadir);
 

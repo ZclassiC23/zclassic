@@ -39,11 +39,16 @@
 #include "primitives/block.h"
 #include "storage/block_index_db.h"
 #include "storage/block_index_projection.h"
+#include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "jobs/block_header_emit.h"
+#include "models/database.h"
+#include "models/block.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -352,4 +357,266 @@ bool block_index_projection_topup(struct main_state *ms, const char *datadir)
 {
     return block_index_projection_topup_with(
         block_index_projection_singleton(), ms, datadir);
+}
+
+/* ── node.db forward-extent top-up (cold-import restart-fragility) ──────── */
+
+/* Hard ceiling on the per-boot window the node.db top-up will fold. One
+ * forward-sync window above a cold-import seed anchor is hundreds of blocks;
+ * this is two orders of magnitude above that. The scan is ALWAYS bounded to
+ * [H_seed+1 .. coins_best] — this only guards against an absurd
+ * coins_best/seed pair (which is logged, not silently truncated). */
+#define NODE_DB_TOPUP_WINDOW_MAX 200000
+
+/* Copy the durable, body-backed db_block fields into a freshly-inserted
+ * block_index entry, RAISE-ONLY. db_block_find_by_height already filtered to
+ * status>=3 (connected / body-backed), so a returned row is a real, prev-linked
+ * window block. FAILED bits are never copied (boot clears them anyway). pprev
+ * is NOT set here — the caller links it after the whole window is in the map. */
+static void node_db_topup_fill_new(struct block_index *bi,
+                                   const struct db_block *blk,
+                                   int height)
+{
+    bi->nHeight        = height;
+    bi->nFile          = blk->file_num;
+    bi->nDataPos       = (unsigned int)blk->data_pos;
+    bi->nUndoPos       = (unsigned int)blk->undo_pos;
+    bi->nVersion       = blk->version;
+    memcpy(bi->hashMerkleRoot.data, blk->merkle_root, 32);
+    memcpy(bi->hashFinalSaplingRoot.data, blk->sapling_root, 32);
+    bi->nTime          = blk->time;
+    bi->nBits          = blk->bits;
+    memcpy(bi->nNonce.data, blk->nonce, 32);
+    bi->nSolution      = NULL;  /* not retained in RAM */
+    bi->nSolutionSize  = 0;
+    /* status>=3 == connected; carry VALID bits + data availability, never a
+     * FAILED bit. The block is body-backed on disk (file_num/data_pos), so
+     * HAVE_DATA is asserted explicitly rather than trusted from the stored
+     * status (which on some legacy rows omits the bit). */
+    bi->nStatus        = (unsigned int)(blk->status & ~BLOCK_FAILED_MASK);
+    if (blk->file_num >= 0)
+        bi->nStatus |= BLOCK_HAVE_DATA;
+    if (blk->num_tx > 0)
+        bi->nTx = (unsigned int)blk->num_tx;
+    bi->nSaplingValue  = blk->sapling_value;
+    if (blk->sprout_value != 0) {
+        bi->nSproutValue = blk->sprout_value;
+        bi->has_sprout_value = true;
+    }
+}
+
+bool block_index_node_db_topup_with(struct main_state *ms,
+                                    struct node_db *ndb,
+                                    struct sqlite3 *progress_db,
+                                    const char *datadir)
+{
+    if (!ms)
+        LOG_FAIL("block_index", "node.db topup: null main_state");
+    if (!ndb || !ndb->open)
+        return true;   /* no node.db this datadir — nothing to fold */
+    if (!progress_db)
+        return true;   /* no coins authority handle — cannot bound the window */
+
+    /* (1) Durable cold-import seed anchor present? Absent on EVERY normal /
+     *     P2P-origin datadir (the producer only writes it in the ldb_import
+     *     accepted branch). Strict no-op when missing/empty. */
+    int64_t anchor_h = 0;
+    if (!node_db_state_get_int(ndb, "cold_import_seed_anchor_height",
+                               &anchor_h))
+        return true;                          /* never cold-imported here */
+    if (anchor_h <= 0 || anchor_h > INT32_MAX)
+        return true;
+    uint8_t anchor_hash[32];
+    size_t hn = 0;
+    if (!node_db_state_get(ndb, "cold_import_seed_anchor_hash",
+                           anchor_hash, sizeof(anchor_hash), &hn) ||
+        hn != sizeof(anchor_hash))
+        return true;
+    const int H_seed = (int)anchor_h;
+
+    /* INTEGRITY: the seed anchor block must be held in the map at exactly
+     * H_seed — the same provenance binding block_index_loader_rebuild.c uses.
+     * If we don't hold the anchor we don't trust the window above it. */
+    struct uint256 ah;
+    memcpy(ah.data, anchor_hash, 32);
+    struct block_index *anchor = block_map_find(&ms->map_block_index, &ah);
+    if (!anchor || anchor->nHeight != H_seed) {
+        LOG_WARN("block_index",
+                 "node.db topup: cold-import seed anchor not held at H=%d "
+                 "(found=%d); skipping forward-extent fold",
+                 H_seed, anchor ? anchor->nHeight : -1);
+        return true;
+    }
+
+    /* (2) coins_best height == coins_applied_height - 1 (the utxo_apply
+     *     cursor convention). This is the durable forward tip the window
+     *     must reach. Absent on a fresh datadir → no-op. */
+    int32_t applied = 0;
+    bool applied_found = false;
+    if (!coins_kv_get_applied_height(progress_db, &applied, &applied_found)) {
+        LOG_WARN("block_index",
+                 "node.db topup: coins applied-height read failed; "
+                 "skipping forward-extent fold");
+        return true;
+    }
+    if (!applied_found)
+        return true;                          /* no coins frontier yet */
+    const int coins_best = (int)applied - 1;
+    if (coins_best <= H_seed)
+        return true;                          /* nothing forward of the seed */
+
+    int window = coins_best - H_seed;
+    if (window > NODE_DB_TOPUP_WINDOW_MAX) {
+        LOG_WARN("block_index",
+                 "node.db topup: forward window %d..%d (=%d blocks) exceeds "
+                 "the %d cap; folding only the top %d — a larger gap means "
+                 "the active chain is not at the coins frontier",
+                 H_seed + 1, coins_best, window, NODE_DB_TOPUP_WINDOW_MAX,
+                 NODE_DB_TOPUP_WINDOW_MAX);
+        window = NODE_DB_TOPUP_WINDOW_MAX;
+    }
+    const int lo = coins_best - window + 1;    /* == H_seed+1 (uncapped) */
+
+    /* (3) Fold [lo .. coins_best] from node.db `blocks` raise-only. Insert
+     *     missing entries (pprev linked in a second pass once the whole
+     *     window is present), apply HAVE_DATA + positions an entry lacks,
+     *     raise nTx + the BLOCK_VALID level. db_block_find_by_height filters
+     *     status>=3 so a row is body-backed/connected; a missing/non-connected
+     *     height is skipped (the window simply has a hole there). */
+    size_t inserted = 0, data_applied = 0, ntx_applied = 0, valid_raised = 0;
+    size_t height_conflicts = 0, missing_rows = 0;
+
+    /* Inserted entries, height-ASC by construction (we iterate ascending),
+     * collected for the bounded chainwork + skip pass. */
+    struct block_index **new_entries = NULL;
+    size_t new_count = 0, new_cap = 0;
+
+    for (int h = lo; h <= coins_best; h++) {
+        struct db_block blk;
+        if (!db_block_find_by_height(ndb, h, &blk)) {
+            missing_rows++;
+            continue;
+        }
+        struct uint256 hh;
+        memcpy(hh.data, blk.hash, 32);
+
+        struct block_index *bi = block_map_find(&ms->map_block_index, &hh);
+        if (!bi) {
+            bi = chainstate_insert_block_index((struct chainstate *)ms, &hh);
+            if (!bi) {
+                free(new_entries);
+                LOG_FAIL("block_index",
+                         "node.db topup: insert failed at h=%d", h);
+            }
+            node_db_topup_fill_new(bi, &blk, h);
+            inserted++;
+            if (new_count == new_cap) {
+                size_t cap = new_cap ? new_cap * 2 : 256;
+                struct block_index **grown = zcl_realloc(
+                    new_entries, cap * sizeof(*grown),
+                    "node_db_topup.new_entries");
+                if (!grown) {
+                    free(new_entries);
+                    LOG_FAIL("block_index",
+                             "node.db topup: realloc failed at %zu entries",
+                             new_count);
+                }
+                new_entries = grown;
+                new_cap = cap;
+            }
+            new_entries[new_count++] = bi;
+            continue;
+        }
+
+        /* Same hash at a different recorded height: a label conflict. The
+         * loaded entry wins; surface it, never merge. */
+        if (bi->nHeight != h) {
+            if (height_conflicts < 3)
+                LOG_WARN("block_index",
+                         "node.db topup: blocks row height %d != loaded "
+                         "entry height %d for the same hash — refusing merge",
+                         h, bi->nHeight);
+            height_conflicts++;
+            continue;
+        }
+
+        /* Data availability: apply HAVE_DATA + positions the entry lacks. */
+        if (blk.file_num >= 0 && !(bi->nStatus & BLOCK_HAVE_DATA)) {
+            bi->nFile = blk.file_num;
+            bi->nDataPos = (unsigned int)blk.data_pos;
+            bi->nStatus |= BLOCK_HAVE_DATA;
+            if (blk.undo_pos > 0) {
+                bi->nUndoPos = (unsigned int)blk.undo_pos;
+                bi->nStatus |= BLOCK_HAVE_UNDO;
+            }
+            data_applied++;
+        }
+        /* nTx: raise from zero only. */
+        if (bi->nTx == 0 && blk.num_tx > 0) {
+            bi->nTx = (unsigned int)blk.num_tx;
+            ntx_applied++;
+        }
+        /* Validity level: raise-only, FAILED never copied. */
+        {
+            unsigned int cur_lvl = bi->nStatus & BLOCK_VALID_MASK;
+            unsigned int row_lvl =
+                (unsigned int)blk.status & BLOCK_VALID_MASK;
+            if (row_lvl > cur_lvl) {
+                bi->nStatus = (bi->nStatus & ~BLOCK_VALID_MASK) | row_lvl;
+                valid_raised++;
+            }
+        }
+    }
+
+    /* (4) Second pass: link pprev for inserted entries (height ASC, so a
+     *     parent inserted this run is already in the map), then compute
+     *     chainwork + skip on top of the resolved parent. The seed anchor
+     *     and the contiguous chain below it are already in the map, so the
+     *     bottom of the window links onto the seed anchor — which is exactly
+     *     what stops the seed anchor being an orphan tip. */
+    size_t linked = 0;
+    for (size_t i = 0; i < new_count; i++) {
+        struct block_index *bi = new_entries[i];
+        if (!bi->pprev) {
+            /* prev_hash from the durable row — re-read once (cheap; bounded
+             * to the inserted set). */
+            struct db_block blk;
+            if (db_block_find_by_height(ndb, bi->nHeight, &blk)) {
+                struct uint256 ph;
+                memcpy(ph.data, blk.prev_hash, 32);
+                struct block_index *pprev =
+                    block_map_find(&ms->map_block_index, &ph);
+                if (pprev) {
+                    bi->pprev = pprev;
+                    linked++;
+                }
+            }
+        }
+        struct arith_uint256 proof = GetBlockProof(bi);
+        if (bi->pprev)
+            arith_uint256_add(&bi->nChainWork, &bi->pprev->nChainWork, &proof);
+        else
+            bi->nChainWork = proof;
+        block_index_build_skip(bi);
+    }
+    free(new_entries);
+
+    if (inserted || data_applied || ntx_applied || valid_raised ||
+        height_conflicts) {
+        printf("[boot] block index node.db top-up: window=%d..%d "
+               "inserted=%zu linked=%zu data_applied=%zu ntx_applied=%zu "
+               "valid_raised=%zu height_conflicts=%zu missing_rows=%zu\n",
+               lo, coins_best, inserted, linked, data_applied, ntx_applied,
+               valid_raised, height_conflicts, missing_rows);
+    }
+    (void)datadir;  /* reserved for a future on-disk re-verify pass */
+    return true;
+}
+
+bool block_index_node_db_topup(struct main_state *ms,
+                               struct node_db *ndb,
+                               const char *datadir)
+{
+    return block_index_node_db_topup_with(ms, ndb, progress_store_db(),
+                                          datadir);
 }

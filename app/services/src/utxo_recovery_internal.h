@@ -138,6 +138,15 @@ void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
                                           int64_t utxo_count);
 void utxo_recovery_clear_cold_import_seed(struct node_db *ndb);
 
+/* Read the durable cold-import seed anchor identity (height + 32B hash).
+ * Returns true and fills *out_height / *out_hash ONLY when both keys are
+ * present and the hash is exactly 32 bytes (the legitimate snapshot base);
+ * false on any normal / P2P-origin datadir (no keys), so the caller treats
+ * the result as "no seed anchor" and behaves identically to before. */
+bool utxo_recovery_read_cold_import_seed(struct node_db *ndb,
+                                         int *out_height,
+                                         struct uint256 *out_hash);
+
 /* ── Mirror-walk helpers (utxo_recovery_mirror_walk.c) ────────────────
  * Legacy fallbacks below the wave-2 derived coins-best: MAX(height) over
  * the rebuildable utxos mirror, and the newest mirror tip that is

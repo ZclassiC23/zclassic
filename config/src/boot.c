@@ -2277,27 +2277,27 @@ bool app_init(struct app_context *ctx)
                 printf("Linked %d block files from zclassicd\n", linked);
         }
 
-        /* Projection top-up: the loaders above only
-         * know what was persisted at the LAST boot-time save — every block
-         * connected since then (reducer ingest sets HAVE_DATA + positions +
-         * nTx in memory only) exists durably ONLY in the event log →
-         * block_index_projection. Fold it over the loaded map raise-only so
-         * a restart keeps the connected extent instead of dropping to the
-         * stale flat-file floor and re-chasing the window. Must run BEFORE
-         * the nChainTx propagation below, which turns the topped-up nTx
-         * into the connected chain the boot scan keys on. Skipped on the
-         * -rebuildfromlog path (the map IS the projection there). */
+        /* Projection top-up: fold the event-log block_index_projection over
+         * the loaded map raise-only so a restart keeps the connected extent
+         * instead of dropping to the stale flat floor. Runs BEFORE the
+         * nChainTx propagation below; skipped on -rebuildfromlog. Non-fatal
+         * (re-synced from peers), but a silent false drops to the flat floor.
+         * Full contract: block_index_loader_topup.c. */
         if (!rebuilt_from_log &&
-            !block_index_projection_topup(&g_state, ctx->datadir)) {
-            /* Non-fatal by design (the node re-syncs the lost window from
-             * peers), but a silent false here drops the restart to the stale
-             * flat-file floor. Say so. */
+            !block_index_projection_topup(&g_state, ctx->datadir))
             LOG_WARN("boot",
                      "[boot] block_index projection top-up FAILED — the "
                      "connected extent may regress to the last flat-file "
-                     "save; expect a window re-chase (see node.log lines "
-                     "above for the failing fold step)");
-        }
+                     "save; expect a window re-chase (see node.log above)");
+
+        /* node.db forward-extent top-up (cold-import restart fragility): folds
+         * the body-backed window above a cold-import seed anchor into the map
+         * so the anchor stops being a DETACHED orphan tip and the tip does not
+         * drop to genesis. Contract + STRICT no-op: block_index_loader_topup.c. */
+        if (!rebuilt_from_log &&
+            !block_index_node_db_topup(&g_state, &g_node_db, ctx->datadir))
+            LOG_WARN("boot", "[boot] block_index node.db forward-extent top-up "
+                     "FAILED — a cold-import restart may regress (node.log above)");
 
         /* Propagate nChainTx for all blocks in the index.
          * The flat file and LevelDB don't always store correct nChainTx.

@@ -1020,6 +1020,7 @@ int main(void)
     failures += test_block_index_projection();
     failures += test_block_index_rebuild();
     failures += test_block_index_topup();
+    failures += test_block_index_node_db_topup();
     failures += test_projection_replay_invariant();
     failures += test_header_admit_stage();
     failures += test_header_probe_poll();
