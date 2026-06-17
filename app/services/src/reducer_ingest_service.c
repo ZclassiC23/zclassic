@@ -376,6 +376,29 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
                                              anchor_tip->phashBlock->data,
                                              false /* runtime re-seed */);
 
+    /* Regtest on-demand bootstrap: a FRESH genesis-only node (no import /
+     * snapshot / reindex ever ran tip_finalize_stage_seed_anchor) has no
+     * genesis anchor row, so the staged cursors are stuck at 0 and the first
+     * `generate` records no utxo_apply row (utx=-1) -> tip never finalizes
+     * ("block-not-finalized-by-reducer"). Import/snapshot/reindex paths all
+     * seed genesis; for a fresh on-demand node nothing does. The runtime
+     * re-seed above cannot reach this case (tip at genesis => nHeight 0 =>
+     * `cursor < 0` is always false). Seed the genesis anchor ONCE, exactly as
+     * the passing `generate 1` model in test_reducer_step_drain_harness.c does.
+     * Gated on fMineBlocksOnDemand so it is a no-op on main/testnet (the bool is
+     * the FIRST condition; byte-identical there). Doubly inert off-regtest: it
+     * only fires for a node whose tip IS genesis with an unseeded cursor, a
+     * state a synced node is never in. Idempotent: seed_anchor is INSERT-OR-
+     * IGNORE and runs the full seed_integrity_gate; the nHeight==0 && cursor==0
+     * guard self-disables after the first block. */
+    if (ctl->params && ctl->params->fMineBlocksOnDemand &&
+        anchor_tip && anchor_tip->phashBlock &&
+        anchor_tip->nHeight == 0 &&
+        tip_finalize_stage_cursor() == 0)
+        (void)tip_finalize_stage_seed_anchor(0,
+                                             anchor_tip->phashBlock->data,
+                                             false /* runtime re-seed */);
+
     /* Body-INDEPENDENT prefix drain: run ONLY header_admit + validate_headers
      * to convergence so the block_index is created and the header is validated
      * BEFORE the body is persisted below. Draining the full pipeline here

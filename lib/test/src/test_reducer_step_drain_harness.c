@@ -427,3 +427,161 @@ int test_reducer_step_drain_harness(void)
     printf("=== reducer step-drain harness: %d failures ===\n", failures);
     return failures;
 }
+
+/* ── Regression guard: regtest on-demand GENESIS SELF-SEED ────────────────────
+ * The sibling harness above MANUALLY seeds the genesis anchor (the line the
+ * import/snapshot/reindex paths run), so it cannot catch the regression where a
+ * FRESH genesis-only regtest node fails to self-seed. Before the
+ * fMineBlocksOnDemand-gated genesis-seed in reducer_ingest_block
+ * (app/services/src/reducer_ingest_service.c), the first `generate` on such a
+ * node left utxo_apply unseeded (utx=-1) so the block never finalized
+ * ("block-not-finalized-by-reducer", tip stuck at 0). This drives the REAL
+ * reducer_ingest_block front door on an UNSEEDED genesis node (NO manual seed)
+ * and asserts the ingest SELF-SEEDS genesis + advances the tip 0->1. If the fix
+ * regresses, reducer_ingest_block(block 1) leaves the tip at 0 and this FAILS
+ * loudly — the durable guard the 2026-06-06 fix lacked (it silently regressed).
+ * Hermetic in-process mirror of the 2026-06-17 live copy-prove (generate 5 -> 5,
+ * rejects=0). */
+int test_reducer_ondemand_genesis_seed(void);
+int test_reducer_ondemand_genesis_seed(void)
+{
+    int failures = 0;
+
+    blocker_module_init();
+    chain_params_select(CHAIN_REGTEST);
+    const struct chain_params *cp = chain_params_get();
+    SD_CHECK("regtest mines on demand (fMineBlocksOnDemand)",
+             cp->fMineBlocksOnDemand);
+
+    char dir[256];
+    sd_mkdir_p("./test-tmp");
+    test_fmt_tmpdir(dir, sizeof(dir), "reducer_ondemand_genesis_seed", "main");
+    sd_mkdir_p(dir);
+    SetDataDir(dir);
+    ClearDataDirCache();
+    char netdir[512];
+    GetDataDir(true, netdir, sizeof(netdir));
+    sd_mkdir_p(netdir);
+    char blocksdir[640];
+    snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
+    sd_mkdir_p(blocksdir);
+
+    char log_path[512], proj_path[512];
+    snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
+    snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
+
+    progress_store_close();
+    bool store_ok = progress_store_open(dir);
+    SD_CHECK("progress_store opens", store_ok);
+    event_log_t *lg = store_ok ? event_log_open(log_path) : NULL;
+    SD_CHECK("event log opens", lg != NULL);
+    utxo_projection_t *proj = lg ? utxo_projection_open(proj_path, lg) : NULL;
+    SD_CHECK("UTXO projection opens", proj != NULL);
+
+    if (!store_ok || !lg || !proj) {
+        if (proj) utxo_projection_close(proj);
+        if (lg) event_log_close(lg);
+        progress_store_close();
+        SetDataDir(""); ClearDataDirCache();
+        chain_params_select(CHAIN_MAIN);
+        printf("=== reducer on-demand genesis-seed: %d failures (setup) ===\n",
+               failures);
+        return failures;
+    }
+
+    utxo_projection_set_event_log(lg);
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+
+    struct main_state ms;
+    main_state_init(&ms);
+
+    struct uint256 genesis_hash = cp->consensus.hashGenesisBlock;
+    struct block_index *genesis = chainstate_insert_block_index(
+        (struct chainstate *)&ms, &genesis_hash);
+    SD_CHECK("genesis block_index inserted", genesis != NULL);
+    if (genesis) {
+        genesis->nHeight = 0;
+        genesis->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        genesis->nTx = 1;
+        genesis->nChainTx = 1;
+        genesis->nChainWork = GetBlockProof(genesis);
+        active_chain_move_window_tip(&ms.chain_active, genesis);
+        ms.pindex_best_header = genesis;
+    }
+
+    bool stages_ok =
+        header_admit_stage_init(&ms) &&
+        validate_headers_stage_init(&ms) &&
+        body_fetch_stage_init(&ms) &&
+        body_persist_stage_init(&ms) &&
+        script_validate_stage_init(&ms) &&
+        proof_validate_stage_init(&ms) &&
+        utxo_apply_stage_init(&ms) &&
+        tip_finalize_stage_init(&ms);
+    SD_CHECK("all eight reducer stages init", stages_ok);
+
+    /* THE PRECONDITION that makes this a real guard: NOTHING seeded the genesis
+     * anchor (no sd_seed_genesis_utxo_apply_row, no tip_finalize_stage_seed_anchor
+     * — unlike the sibling harness). The cursor MUST be unseeded at genesis;
+     * the fix is what seeds it from inside reducer_ingest_block. */
+    SD_CHECK("precondition: tip is genesis (height 0)",
+             active_chain_height(&ms.chain_active) == 0);
+    SD_CHECK("precondition: tip_finalize cursor UNSEEDED (0)",
+             tip_finalize_stage_cursor() == 0);
+
+    if (stages_ok) {
+        struct block blk1;
+        int64_t cb_val = 0;
+        bool built = sd_build_regtest_block(&blk1, 1, &genesis_hash, cp, &cb_val) &&
+                     mine_block_pow(&blk1, 1, cp, 0);
+        SD_CHECK("block 1 built + Equihash-mined", built);
+
+        if (built) {
+            struct chain_activation_controller ctl;
+            activation_controller_init(&ctl, &ms, NULL, cp, netdir);
+            struct validation_state out;
+            validation_state_init(&out);
+
+            int h_before = active_chain_height(&ms.chain_active);
+            bool acc = reducer_ingest_block(&ctl, &blk1, REDUCER_SRC_MINED,
+                                            true, &out);
+            int h_after = active_chain_height(&ms.chain_active);
+
+            SD_CHECK("reducer_ingest_block(block 1) accepted on UNSEEDED genesis",
+                     acc);
+            SD_CHECK("tip SELF-SEEDED + advanced 0 -> 1 (the fix; was utx=-1)",
+                     h_after == 1);
+            SD_CHECK("utxo_apply succeeded at height 1 (no utx=-1 reject)",
+                     utxo_apply_stage_succeeded_at(1));
+            SD_CHECK("tip_finalize cursor advanced past the genesis seed",
+                     tip_finalize_stage_cursor() >= 1);
+            if (!acc || h_after != 1)
+                printf("  >> ondemand-seed: acc=%d h %d->%d reject=%s\n",
+                       (int)acc, h_before, h_after,
+                       out.reject_reason[0] ? out.reject_reason : "(none)");
+
+            activation_controller_destroy(&ctl);
+            block_free(&blk1);
+        }
+    }
+
+    tip_finalize_stage_shutdown();
+    utxo_apply_stage_shutdown();
+    proof_validate_stage_shutdown();
+    script_validate_stage_shutdown();
+    body_persist_stage_shutdown();
+    body_fetch_stage_shutdown();
+    validate_headers_stage_shutdown();
+    header_admit_stage_shutdown();
+    utxo_projection_close(proj);
+    event_log_close(lg);
+    progress_store_close();
+    test_cleanup_tmpdir(blocksdir);
+    test_cleanup_tmpdir(netdir);
+    test_cleanup_tmpdir(dir);
+    SetDataDir(""); ClearDataDirCache();
+    chain_params_select(CHAIN_MAIN);
+
+    printf("=== reducer on-demand genesis-seed: %d failures ===\n", failures);
+    return failures;
+}

@@ -411,6 +411,7 @@ int test_coins_applied_frontier(void);
 int test_utxo_apply_value_balance(void);
 int test_reducer_ingest_e2e(void);
 int test_reducer_step_drain_harness(void);
+int test_reducer_ondemand_genesis_seed(void);
 int test_stage_reducer_unwedge(void);
 int test_stage_repair_coin_backfill(void);
 int test_reducer_frontier_reconcile_light(void);
