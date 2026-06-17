@@ -869,6 +869,28 @@ mvp-onion-local: test_zcl
 	 echo "mvp-onion-local: Tor egress present — running the real timed onion bootstrap"; \
 	 ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion $(TEST_ZCL_BIN)'
 
+# ── mvp-coldstart-local (C3 real snapshot-first cold boot, fixture-gated) ─
+#
+# The FULL C3 claim (a fresh node cold-syncs to tip in <10min) needs a second
+# serving node + real wall-clock and cannot be hermetic. The nearest REAL proof
+# is the snapshot-first import boot (ci-coldstart -> cold_start_test.sh): boot a
+# fresh /tmp datadir from a COPY of consensus_snapshot.db and assert >1M UTXOs
+# in <90s. ci-coldstart was orphaned (referenced nowhere), so the only real
+# cold-boot proof could silently rot. This wraps it for mvp-verify with the
+# same SKIP-not-FAIL discipline as mvp-onion-local: cold_start_test.sh exits 2
+# when the snapshot/binaries are absent, which we map to a clean SKIP (exit 0)
+# so a fixture-less host never false-FAILs. Locally-verified; NOT a hermetic-✅.
+.PHONY: mvp-coldstart-local
+mvp-coldstart-local: zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 echo "══ MVP C3 (real): snapshot-first cold boot >1M UTXOs <90s (fixture-gated) ══"; \
+	 $(MAKE) --no-print-directory ci-coldstart; rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then \
+	     echo "mvp-coldstart-local: SKIP (no consensus_snapshot.db / binaries — run on a host with the fixture)"; \
+	     exit 0; \
+	 fi; \
+	 exit $$rc'
+
 # ── mvp-verify: ONE-COMMAND local verification of the real MVP claims ──
 #
 # The operator's local counterpart to the hermetic `make ci` gate. It runs the
@@ -879,18 +901,23 @@ mvp-onion-local: test_zcl
 # does not stop the run), then exits non-zero if any member failed — an HONEST
 # local diagnostic, not a rubber stamp.
 #
-# Known live gap (2026-06-17): the full-binary `generate`-RPC path does not yet
-# advance a spawned node's tip, so test-two-node-peer-tip FAILS and
-# test-crash-bootstrap soft-passes as KNOWN-BLOCKED. The in-process reducer
-# mining engine itself is green (make mvp-it-works). C7 full-binary teeth wait
-# on the owner-gated generate->reducer forward-progress wiring. See MVP.md #7.
+# Live status (2026-06-17): the full-binary `generate`-RPC forward-progress
+# path is FIXED (f83101b81 — a fresh on-demand node self-seeds the genesis
+# anchor), so test-two-node-peer-tip now PASSES end-to-end. test-crash-bootstrap
+# seeds 30 but still soft-passes KNOWN-BLOCKED for a narrower reason: regtest
+# mined blocks are not yet durable across a kill-9/restart (the owner-gated
+# restart-durability keystone, FORWARD_PLAN §B). See MVP.md #7.
 #
 # Membership (all already exist; mvp-verify only composes them):
 #   ci-install             C1 — install both binaries to a throwaway /tmp
 #                               prefix + spawn one isolated regtest node
 #   test-crash-bootstrap   C7 — single-node full-binary kill-9 boot recovery
 #   test-two-node-peer-tip C7 — two-node native-P2P peer-tip kill-9 recovery
+#   mvp-coldstart-local    C3 — real snapshot-first cold boot (>1M UTXOs <90s,
+#                               fixture-gated, SKIPs cleanly when absent)
 #   mvp-shielded-receive   C4 — params-free receive half (note→ivk→z-balance)
+#   test-shielded-payment  C4 — FULL Groth16 t→z send + wallet decrypt
+#                               (params-gated, SKIPs cleanly without params)
 #   mvp-onion-local        C2 — real <60s onion bootstrap (Tor-egress-gated,
 #                               SKIPs cleanly when egress is unavailable)
 #
@@ -913,24 +940,28 @@ mvp-verify: zclassic23 zcl-rpc test_zcl
 	   [2]="C7 single-node kill-9 boot recovery (test-crash-bootstrap)" \
 	   [3]="C7 two-node peer-tip kill-9 recovery (test-two-node-peer-tip)" \
 	   [4]="C4 shielded receive, params-free (mvp-shielded-receive)" \
-	   [5]="C2 real onion bootstrap, Tor-egress-gated (mvp-onion-local)" ); \
+	   [5]="C4 full shielded send+receive, params-gated (test-shielded-payment)" \
+	   [6]="C3 real snapshot cold boot, fixture-gated (mvp-coldstart-local)" \
+	   [7]="C2 real onion bootstrap, Tor-egress-gated (mvp-onion-local)" ); \
 	 declare -A TGT=( [1]=ci-install [2]=test-crash-bootstrap \
-	   [3]=test-two-node-peer-tip [4]=mvp-shielded-receive [5]=mvp-onion-local ); \
+	   [3]=test-two-node-peer-tip [4]=mvp-shielded-receive \
+	   [5]=test-shielded-payment [6]=mvp-coldstart-local [7]=mvp-onion-local ); \
 	 declare -A ST; fails=0; \
-	 for i in 1 2 3 4 5; do \
-	   echo ""; echo "── mvp-verify [$$i/5]: $${NAME[$$i]} ──"; \
+	 for i in 1 2 3 4 5 6 7; do \
+	   echo ""; echo "── mvp-verify [$$i/7]: $${NAME[$$i]} ──"; \
 	   if $(MAKE) $${TGT[$$i]}; then ST[$$i]="PASS"; else ST[$$i]="FAIL"; fails=$$((fails+1)); fi; \
 	 done; \
 	 echo ""; echo "══ mvp-verify SUMMARY (local, NOT a ◐→✅ promotion) ══"; \
-	 for i in 1 2 3 4 5; do printf "  [%s] %-58s %s\n" "$$i" "$${NAME[$$i]}" "$${ST[$$i]}"; done; \
+	 for i in 1 2 3 4 5 6 7; do printf "  [%s] %-68s %s\n" "$$i" "$${NAME[$$i]}" "$${ST[$$i]}"; done; \
 	 echo ""; \
 	 if [ "$$fails" -eq 0 ]; then \
 	   echo "  ALL LOCAL FULL-SCOPE PROOFS PASSED (or SKIPped cleanly)."; \
 	 else \
-	   echo "  $$fails member(s) FAILED. Known live gap: the full-binary regtest"; \
-	   echo "  generate-RPC path does not advance a spawned node tip yet (C7 teeth"; \
-	   echo "  blocked on the owner-gated generate->reducer wiring; the in-process"; \
-	   echo "  reducer engine itself is green via make mvp-it-works). See MVP.md #7."; \
+	   echo "  $$fails member(s) FAILED. Known C7 gap: single-node regtest-mined"; \
+	   echo "  blocks are not yet durable across a kill-9/restart (the owner-gated"; \
+	   echo "  restart-durability keystone, FORWARD_PLAN §B) — test-crash-bootstrap"; \
+	   echo "  soft-passes KNOWN-BLOCKED. generate-RPC forward progress is FIXED"; \
+	   echo "  (f83101b81); test-two-node-peer-tip passes. See MVP.md #7."; \
 	 fi; \
 	 exit $$fails'
 

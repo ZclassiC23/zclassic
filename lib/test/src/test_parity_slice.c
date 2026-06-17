@@ -23,6 +23,17 @@
  * SHA3), not a synthetic hash edit, so a MATCH that counted a mismatch, or a
  * changed set that counted none, fails the gate.
  *
+ * (A)/(B) exercise the EXACT reference branch. The PRODUCTION zclassicd oracle
+ * is exact=false (gettxoutsetinfo attests height only), so the live C8 claim
+ * runs through the COARSE branch (utxo_audit_service.c:158-173), which had no
+ * hermetic coverage. (C1)-(C3) close that:
+ *
+ *   (C1) COARSE same-height  → MATCH, EMPTY remote SHA3, bucketed in
+ *                              coarse_checks (never matches/mismatches), no drift.
+ *   (C2) COARSE height-skew  → LOCAL_ONLY, never a DRIFT, never counted.
+ *   (C3) COARSE confirmation → CLEARS a prior exact DRIFT flag, so a height-only
+ *                              attestation cannot let a stale byte-drift page forever.
+ *
  * Process-global singletons (g_parity, the condition engine, event observers)
  * are driven here, so the body is OPT-IN behind ZCL_STRESS_TESTS and runs for
  * real in a fresh process via `make mvp-parity-slice`
@@ -230,6 +241,168 @@ static int slice_case_injected_mismatch_detected(void)
     return failures;
 }
 
+/* (C1) COARSE source, heights agree. The PRODUCTION zclassicd oracle is
+ * exact=false (gettxoutsetinfo attests height only, no UTXO SHA3), so the
+ * live C8 claim runs through the coarse branch (utxo_audit_service.c:158-173),
+ * NOT the exact branch (A)/(B) exercise. The contract: a coarse same-height
+ * confirmation is a MATCH with an EMPTY remote SHA3 (it cannot prove bytes),
+ * never a DRIFT, and is bucketed in coarse_checks — never matches/mismatches. */
+static int slice_case_coarse_match_no_drift(void)
+{
+    int failures = 0;
+    TEST("parity_slice (C1): coarse same-height -> MATCH, empty ref, no drift") {
+        char path[] = "/tmp/zcl23-parity-slice-coarse-ok-XXXXXX";
+        int fd = mkstemp(path);
+        ASSERT(fd >= 0);
+        close(fd);
+
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, path));
+        ASSERT(slice_insert_utxo(&ndb, 0x10));
+        ASSERT(slice_insert_utxo(&ndb, 0x20));
+
+        /* exact=false coarse reference: empty hex, SAME height as local. */
+        struct utxo_reference_source src;
+        struct utxo_reference_source_fixture fx;
+        utxo_reference_source_fixture_init(&src, &fx, "slice-coarse-ok",
+                                           "", PARITY_SLICE_HEIGHT, false);
+        slice_wire(&ndb, &src);
+
+        struct utxo_audit_result res;
+        ASSERT(utxo_parity_check_height(PARITY_SLICE_HEIGHT, &res).ok);
+        ASSERT(res.status == UTXO_AUDIT_MATCH);
+        ASSERT(res.drift_detected == false);
+        ASSERT(res.remote_sha3[0] == '\0');   /* coarse cannot attest bytes */
+
+        /* Coarse checks are bucketed SEPARATELY: never a match or a mismatch,
+         * so a coarse confirmation can never masquerade as a byte-MATCH. */
+        ASSERT(slice_parity_stat("coarse_checks") == 1);
+        ASSERT(slice_parity_stat("matches") == 0);
+        ASSERT(slice_parity_stat("mismatches") == 0);
+
+        int64_t drift = -1;
+        ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
+        ASSERT(drift == 0);
+
+        utxo_parity_reset_for_test();
+        node_db_close(&ndb);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* (C2) COARSE source, height SKEW. A coarse reference ahead of/behind the
+ * applied set is LOCAL_ONLY — never a DRIFT, never counted in either bucket,
+ * and never sets the paging flag. This is what keeps a coarse oracle during
+ * catch-up from looking like either a confirmed match or a false drift. */
+static int slice_case_coarse_skew_local_only(void)
+{
+    int failures = 0;
+    TEST("parity_slice (C2): coarse height-skew -> LOCAL_ONLY, never drift") {
+        char path[] = "/tmp/zcl23-parity-slice-coarse-skew-XXXXXX";
+        int fd = mkstemp(path);
+        ASSERT(fd >= 0);
+        close(fd);
+
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, path));
+        ASSERT(slice_insert_utxo(&ndb, 0x10));
+        ASSERT(slice_insert_utxo(&ndb, 0x20));
+
+        /* Coarse reference one height AHEAD of the local applied height. */
+        struct utxo_reference_source src;
+        struct utxo_reference_source_fixture fx;
+        utxo_reference_source_fixture_init(&src, &fx, "slice-coarse-skew",
+                                           "", PARITY_SLICE_HEIGHT + 1, false);
+        slice_wire(&ndb, &src);
+
+        struct utxo_audit_result res;
+        ASSERT(utxo_parity_check_height(PARITY_SLICE_HEIGHT, &res).ok);
+        ASSERT(res.status == UTXO_AUDIT_LOCAL_ONLY);
+        ASSERT(res.drift_detected == false);
+
+        ASSERT(slice_parity_stat("coarse_checks") == 1);
+        ASSERT(slice_parity_stat("matches") == 0);
+        ASSERT(slice_parity_stat("mismatches") == 0);
+
+        int64_t drift = -1;
+        ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
+        ASSERT(drift == 0);
+
+        utxo_parity_reset_for_test();
+        node_db_close(&ndb);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* (C3) A coarse confirmation CLEARS a prior exact DRIFT flag. A height-only
+ * attestation must not let a stale byte-drift keep paging forever
+ * (utxo_audit_service.c:160-172). Drive a REAL exact DRIFT first (the paging
+ * flag latches), then a coarse same-height check, and assert the flag clears. */
+static int slice_case_coarse_clears_prior_exact_drift(void)
+{
+    int failures = 0;
+    TEST("parity_slice (C3): coarse confirmation clears a prior exact drift") {
+        char path[] = "/tmp/zcl23-parity-slice-coarse-clear-XXXXXX";
+        int fd = mkstemp(path);
+        ASSERT(fd >= 0);
+        close(fd);
+
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, path));
+
+        /* Reference = two outpoints; capture its SHA3 as the trusted exact ref. */
+        ASSERT(slice_insert_utxo(&ndb, 0x10));
+        ASSERT(slice_insert_utxo(&ndb, 0x20));
+        char ref_hex[65];
+        slice_local_commitment(&ndb, ref_hex);
+
+        /* Inject a real divergence so the EXACT comparison genuinely drifts. */
+        ASSERT(slice_insert_utxo(&ndb, 0x30));
+
+        /* (1) Exact DRIFT: the paging flag latches to 1. */
+        struct utxo_reference_source esrc;
+        struct utxo_reference_source_fixture efx;
+        utxo_reference_source_fixture_init(&esrc, &efx, "slice-c3-exact",
+                                           ref_hex, PARITY_SLICE_HEIGHT, true);
+        slice_wire(&ndb, &esrc);
+
+        struct utxo_audit_result res;
+        ASSERT(utxo_parity_check_height(PARITY_SLICE_HEIGHT, &res).ok);
+        ASSERT(res.status == UTXO_AUDIT_DRIFT);
+        int64_t drift = 0;
+        ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
+        ASSERT(drift == 1);   /* the Condition is now paging */
+
+        /* (2) Coarse same-height confirmation must CLEAR the latched flag.
+         * slice_wire resets the g_parity counters but NOT the node.db state
+         * row, so the flag we assert cleared is the one (1) actually set. */
+        struct utxo_reference_source csrc;
+        struct utxo_reference_source_fixture cfx;
+        utxo_reference_source_fixture_init(&csrc, &cfx, "slice-c3-coarse",
+                                           "", PARITY_SLICE_HEIGHT, false);
+        slice_wire(&ndb, &csrc);
+
+        ASSERT(utxo_parity_check_height(PARITY_SLICE_HEIGHT, &res).ok);
+        ASSERT(res.status == UTXO_AUDIT_MATCH);
+        ASSERT(res.drift_detected == false);
+        ASSERT(slice_parity_stat("coarse_checks") == 1);
+
+        drift = -1;
+        ASSERT(node_db_state_get_int(&ndb, "utxo_drift_detected", &drift));
+        ASSERT(drift == 0);   /* CLEARED — the stale exact drift stops paging */
+
+        utxo_parity_reset_for_test();
+        node_db_close(&ndb);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_parity_slice(void);
 int test_parity_slice(void)
 {
@@ -248,8 +421,15 @@ int test_parity_slice(void)
         return 0;
     }
 
+    /* (A)/(B): the EXACT branch (a byte-faithful reference) — match + drift. */
     failures += slice_case_consistent_zero_mismatch();   /* (A) 0 mismatches  */
     failures += slice_case_injected_mismatch_detected();  /* (B) detects drift */
+    /* (C1)-(C3): the COARSE (exact=false) branch the PRODUCTION zclassicd
+     * oracle actually hits — height-only attestation that never declares a
+     * byte DRIFT and clears a stale exact drift. Previously untested. */
+    failures += slice_case_coarse_match_no_drift();          /* (C1) coarse MATCH */
+    failures += slice_case_coarse_skew_local_only();         /* (C2) coarse skew  */
+    failures += slice_case_coarse_clears_prior_exact_drift();/* (C3) coarse clears*/
 
     printf("=== parity slice: %d failure(s) ===\n", failures);
     return failures;

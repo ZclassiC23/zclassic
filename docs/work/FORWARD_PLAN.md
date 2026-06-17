@@ -52,6 +52,13 @@ must not jump the queue.
       with full-scope tests (real sync / real shielded buy / full-binary
       restart-to-peer-tip) and add net-new CI jobs for #1 (clean-container
       install) and #8 (parity). Only then does the CI-verified MRS move.
+      Regression-armor landed 2026-06-17 (raises the floor, NOT a ✅ promotion):
+      C8 `test_parity_slice.c` now also covers the COARSE `exact=false` production
+      branch the live `zclassicd` oracle hits (C1 match / C2 skip-on-skew / C3
+      clears a stale exact drift); the real snapshot cold-boot proof (C3
+      `ci-coldstart`) and the full Groth16 send+receive (C4 `test-shielded-payment`)
+      are de-orphaned into `make mvp-verify`. Audit of record: the 8-criterion
+      gap scoreboard (workflow `mvp8-gap-audit-and-close`, 2026-06-17).
 - [x] **Consensus-parity-diff service (C8)** — exists at
       `app/services/src/utxo_parity_service.c` (wired at boot via
       `config/src/boot_utxo_parity.c`), default-ON when a zclassicd oracle
