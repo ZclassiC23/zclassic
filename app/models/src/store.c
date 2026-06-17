@@ -465,3 +465,47 @@ int64_t db_store_received_payment(struct node_db *ndb, const char *pay_addr,
         "AND block_height IS NOT NULL AND block_height <= ?",
         (AR_BIND_TEXT(s, 1, pay_addr), AR_BIND_INT(s, 2, max_height)));
 }
+
+int64_t db_store_received_payment_for_memo(struct node_db *ndb,
+                                           const char *pay_addr,
+                                           int64_t order_id,
+                                           int64_t max_height)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t total = 0;
+    char tok[64];
+    int toklen;
+
+    if (!ndb || !ndb->open || !pay_addr || !pay_addr[0] || order_id < 0)
+        return 0;
+
+    /* The order-binding token a payer must place at the head of the memo. */
+    toklen = snprintf(tok, sizeof(tok), "ZCL23ORDER:%lld", (long long)order_id);
+    if (toklen <= 0 || (size_t)toklen >= sizeof(tok))
+        return 0;
+
+    /* Row-scan (memo decode happens in C, not SQL) — same confirmed/unspent
+     * filter as db_store_received_payment, then a memo-prefix test per row. */
+    AR_PREPARE_RET(ndb, s,
+        "SELECT value, memo FROM wallet_sapling_notes "
+        "WHERE spent_txid IS NULL AND address = ? "
+        "AND block_height IS NOT NULL AND block_height <= ?",
+        0);
+    AR_BIND_TEXT(s, 1, pay_addr);
+    AR_BIND_INT(s, 2, max_height);
+
+    while (AR_STEP_ROW(s)) {
+        int64_t value = AR_COL_INT(s, 0);
+        int memo_len = AR_COL_BYTES(s, 1);
+        const unsigned char *memo = sqlite3_column_blob(s, 1);
+        /* Match the order token at the memo head, terminated by NUL (the
+         * 512-byte memo's zero padding) or an explicit ';' delimiter — so
+         * order 1 can never be satisfied by order 12's memo. */
+        if (memo && memo_len >= toklen &&
+            memcmp(memo, tok, (size_t)toklen) == 0 &&
+            (memo_len == toklen || memo[toklen] == '\0' || memo[toklen] == ';'))
+            total += value;
+    }
+    AR_FINALIZE(s);
+    return total;
+}

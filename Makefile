@@ -756,6 +756,7 @@ endef
 ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP gate 3: cold-start sync FSM (hermetic),cold_start,=== Cold-start subset complete:)
 	$(call mvp_gate,MVP gate 5: store end-to-end (hermetic),store_e2e,=== store e2e subset complete:)
+	$(call mvp_gate,MVP gate 5b: store SHIELDED real ivk-decrypt + memo-bound (hermetic),store_e2e_shielded,=== store e2e shielded subset complete:)
 	$(call mvp_gate,MVP gate 7: kill -9 recovery (hermetic),kill9,=== kill9 subset complete:)
 	$(call mvp_gate,MVP support: chain-advance atomicity (hermetic),chain_advance_atomicity,=== chain_advance_atomicity subset complete:)
 	$(call mvp_gate,MVP "it works": mined block -> reducer front door -> tip+1 (hermetic),reducer_ingest,=== reducer-ingest subset complete:)

@@ -130,4 +130,19 @@ int64_t db_store_chain_tip_height(struct node_db *ndb);
 int64_t db_store_received_payment(struct node_db *ndb, const char *pay_addr,
                                   int64_t max_height);
 
+/* Memo-bound variant of db_store_received_payment: sums only the confirmed,
+ * unspent notes at `pay_addr` whose recovered Sapling memo binds them to this
+ * `order_id` (memo prefix "ZCL23ORDER:<order_id>" terminated by NUL or ';').
+ * The memo is recovered by the wallet's ivk-decrypt of the paying output
+ * (wallet.c memcpy(note.memo, plaintext+52, 512)), so a payment whose memo
+ * names a DIFFERENT order — or a fabricated note that never ivk-decrypted —
+ * cannot be credited to this order. This closes the "an unrelated same-amount
+ * payment to the same address could satisfy the order" hole that the
+ * address+amount-only db_store_received_payment leaves open. Returns 0 on any
+ * error / no matching row. App-layer only (no consensus path). */
+int64_t db_store_received_payment_for_memo(struct node_db *ndb,
+                                           const char *pay_addr,
+                                           int64_t order_id,
+                                           int64_t max_height);
+
 #endif

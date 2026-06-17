@@ -136,6 +136,15 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "store_e2e_shielded") == 0) {
+        printf("[test] ZCL_TEST_ONLY=store_e2e_shielded — "
+               "running store e2e SHIELDED gate only\n");
+        { extern int test_store_e2e_shielded(void);
+          failures += test_store_e2e_shielded(); }
+        printf("\n=== store e2e shielded subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "parity_diff") == 0) {
         printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
         failures += test_reorg_parity();
@@ -736,6 +745,8 @@ int main(void)
       failures += test_shielded_payment_gate(); }
     { extern int test_store_e2e_gate(void);
       failures += test_store_e2e_gate(); }
+    { extern int test_store_e2e_shielded(void);
+      failures += test_store_e2e_shielded(); }
     { extern int test_soak_harness(void);
       failures += test_soak_harness(); }
     /* Consensus edge-case coverage (boundary / overflow / known-CVE patterns) */
