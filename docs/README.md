@@ -18,6 +18,7 @@ One line per doc. Start with the entry points, in order.
 ## Operations
 
 - [`RUNBOOK.md`](./RUNBOOK.md) — symptom-driven operator troubleshooting.
+- [`TENACITY.md`](./TENACITY.md) — recovery invariants (copy-prove, never live surgery).
 - [`SYNC.md`](./SYNC.md) — how a fresh node reaches chain tip; legacy bootstrap paths.
 - [`work/fast-path.md`](./work/fast-path.md) — the diagnosis algorithm: repro on a datadir COPY, never live.
 - [`work/README.md`](./work/README.md) — parallel-worktree workflow (orchestrator + wt2/wt3 workers).
@@ -39,6 +40,7 @@ One line per doc. Start with the entry points, in order.
 
 - [`../CLAUDE.md`](../CLAUDE.md) — project instructions for AI agents; MCP setup; build/run quick reference.
 - [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md) — mandatory coding standards, enforced by `make lint`.
+- [`ATTRIBUTIONS.md`](./ATTRIBUTIONS.md) — concept/code attributions (companion to the root `NOTICE`).
 - [`BOOT_INVARIANTS.md`](./BOOT_INVARIANTS.md) — boot stage ordering invariants (`enum boot_stage`).
 - [`LEGACY_LIFECYCLE.md`](./LEGACY_LIFECYCLE.md) — which `legacy_*` paths are active vs deprecated.
 - [`../README.md`](../README.md) — public-facing project README.

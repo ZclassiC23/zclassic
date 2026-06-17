@@ -329,7 +329,7 @@ HTLC contract scaffolding: swap initiation and participation with redeem script 
 - Script: OP_IF/OP_SHA256/OP_CLTV with shared OP_CHECKSIG
 - Secret extraction / redeem + refund scriptSig builders exist as library primitives (`script/htlc.*`, tested), not yet wired to a node-broadcast/settlement path
 - RPC: `swap_chains`, `swap_initiate`, `swap_participate`, `swap_list`
-- Reference: `vendor/dcrdex/` (Blue Oak License 1.0.0)
+- Reference: dcrdex HTLC script format (Blue Oak License 1.0.0), reimplemented in `script/htlc.*`
 
 ### Background Validation
 

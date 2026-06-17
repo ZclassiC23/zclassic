@@ -112,7 +112,8 @@ Copyright (c) The Decred Developers
 
 Upstream:   https://github.com/decred/dcrdex
 License:    https://blueoakcouncil.org/license/1.0.0
-Vendored:   vendor/dcrdex/
+Reimplemented from the dcrdex design in lib/script/ (script/htlc.*);
+no dcrdex source is vendored in this tree.
 
 ================================================================================
 

@@ -6,8 +6,9 @@
 - Vendored static libraries under `vendor/lib/` (LevelDB, SQLite, libevent,
   OpenSSL, zlib, Tor). Only `libsecp256k1.a` is tracked in-tree today; the
   remaining archives must currently be built locally and dropped into
-  `vendor/lib/`. Expect friction building outside the maintainer's
-  environment for now — this is a known gap.
+  `vendor/lib/` — a fresh clone will not link until they are present. See
+  [`docs/BUILD.md`](../docs/BUILD.md) for each one's source, version, and build
+  command. This is a known gap (`make vendor` automation is on the roadmap).
 
 ## Build and test
 
@@ -69,6 +70,18 @@ not on GitHub Actions; maintainers run the full gate on every PR before
 merging, so a PR that fails lint or tests will not merge. Keep commits
 honest about what is proven versus scaffolding — the project documents
 incomplete subsystems as incomplete, and PRs are expected to do the same.
+
+## Consensus parity is inviolable
+
+zclassic23 stays bit-for-bit consensus-compatible with `zclassicd`. A PR that
+changes consensus (Equihash params, activation heights, block/tx validity) is
+**declined on principle** — even if framed as opt-in, miner-signaled, or a
+"sidegrade" — because a consensus change must never ship to zclassic23 first. We
+will thank you, credit the idea, and decline the change (we may reimplement the
+*non-consensus* part ourselves). Non-consensus PRs are judged purely on merit.
+Enforced by the `check-consensus-parity` lint gate + the `test_consensus_parity`
+golden values; full policy in
+[`docs/CONSENSUS_PARITY_DOCTRINE.md`](../docs/CONSENSUS_PARITY_DOCTRINE.md).
 
 ## Licensing of contributions
 

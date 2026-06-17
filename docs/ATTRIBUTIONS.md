@@ -71,13 +71,15 @@ shielded-pool accounting rules.
 Chain history, checkpoint schedule, network magic, and the reference
 behavior used by the zclassic23 parity-diff service.
 
-## dcrdex — Blue Oak Model License 1.0.0
+## dcrdex — Blue Oak Model License 1.0.0 (concept reference)
 
-**Vendored path:** `vendor/dcrdex/`
+**Upstream:** https://github.com/decred/dcrdex
 **License:** https://blueoakcouncil.org/license/1.0.0
 
-Cross-chain atomic swap HTLC script format (P2SH-wrapped, 97-byte
-contract). Used by ZCL atomic swap protocol (ZSWP).
+The cross-chain atomic-swap HTLC script format (P2SH-wrapped, 97-byte contract)
+used by the ZCL atomic-swap protocol (ZSWP) was **reimplemented** from dcrdex's
+design in `lib/script/` (`script/htlc.*`) — no dcrdex source is vendored in this
+tree. Credited here for the script-format concept.
 
 ## SQLite — Public Domain
 
