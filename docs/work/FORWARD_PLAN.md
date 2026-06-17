@@ -69,10 +69,21 @@ must not jump the queue.
       and `make test-crash-bootstrap` soft-passes as "KNOWN BLOCKED (owner-gated
       reducer boot-init)". The earlier "works end-to-end / both pass" claim
       (`801832692`/`4e7fc176f`/`f135abb5f`) is STALE for the full-binary path.
-      **Next concrete C7/C3/C6 target:** wire `generate`→reducer-finalize on a
-      live spawned node so the tip durably advances (owner-gated; engine is fine,
-      it's the live RPC→reducer wiring). Run `make mvp-verify` for the current
-      per-member status.
+      **Exact signature** (isolated regtest node, `generate 5`, 2026-06-17):
+      `[ondemand-reject] h=1: val=1 bod=1 bod=1 scr=1 pro=1 utx=-1 tip=-1` →
+      `REJECTED by reducer: block-not-finalized-by-reducer`; `generate` returns
+      `[]`, tip stays 0 for 30s. The mined block clears validate/body/script/proof
+      but **`utxo_apply` fails (`utx=-1`)** so `tip_finalize` never fires. This is
+      the documented "WALL" (`utxo_apply` resolves a successor-less self-mined
+      block via the raw finalized-window accessor → NULL above the finalized tip;
+      only `validate_headers` has the `vh_resolve_bi` above-window fallback) — and
+      it is a **REGRESSION**: [[project_mvp_regtest_mining_rootcause_2026-06-05]]
+      records it SOLVED 2026-06-06 (`bcd44e68e`, "generate 3 → getblockcount 0→3,
+      rejects=0"). **Next concrete C7/C3/C6 target:** give `utxo_apply` (and the
+      body/script/proof stages) the above-window resolver `validate_headers` uses,
+      OR hold the active-chain window across the on-demand drain — `fMineBlocksOnDemand`-
+      gated so mainnet/testnet stay byte-identical (network-safe by construction);
+      copy-prove before any deploy. Run `make mvp-verify` for current per-member status.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
