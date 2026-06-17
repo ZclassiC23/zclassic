@@ -83,18 +83,31 @@ must not jump the queue.
       (E13 + `test_consensus_parity` green). **`make test-two-node-peer-tip` now
       PASSES** (A mines 10 → B syncs → kill-9 B → A +5 → B recovers to peer-tip 15
       via P2P re-sync). Both opt-in (spawn real nodes) → hermetic-CI promotion remains.
-- [ ] **Regtest kill-9 RESTART-DURABILITY (the next C7 single-node blocker)** —
-      surfaced once `generate` was fixed: `make test-crash-bootstrap` now seeds 30
-      successfully, but the restarted node boots `h=-1` ("mined blocks not durable
-      across restart"), so the single-node kill/restart recovery teeth still can't
-      be asserted (it soft-passes KNOWN-BLOCKED). This is the coins/block-index
-      **restart-durability keystone** (owner-gated, §B "Coins-commitment-persist
-      keystone"), DISTINCT from the now-fixed forward-progress. Run `make mvp-verify`
-      for current per-member status.
+- [x] **Regtest kill-9 RESTART-DURABILITY (the C7 single-node blocker)** — FIXED
+      2026-06-17 (`341020c05`, owner-gated, copy-proven). Root cause: on the kill-9
+      fallback the block_index is rebuilt with publish_tip=false and coins-restore
+      does not install, so active_chain_tip()==NULL; genesis_init then tries to
+      promote genesis (h=0) which CSR correctly rejects as rollback_auth/genesis_init,
+      stranding the node at `h=-1` while coins/block_index are durable at N. FIX:
+      generalize `block_index_loader_seed_tip_from_finalized` with a genesis-root
+      branch — walk pprev from the durable finalized tip to the CANONICAL genesis
+      (every link HAVE_DATA+VALID_SCRIPTS, terminus = `params->consensus.hashGenesisBlock`),
+      bounded by one `effective_floor` (=0) so a NULL-tip mainnet boot REFUSES
+      (3.1M>50000), gated by a `coins_applied>=tip` precondition; + a defensive
+      genesis_init skip in boot.c. 3-lens consensus review converged after closing
+      two blockers (gap-cap-vs-floor, canonical-terminus). Proven: `make lint` clean
+      (E13), `make test_parallel` 0/427 + 10 new `bil/seedfin` cases, own kill-9
+      copy-prove (generate 5 → kill-9 → restart → getblockcount==5, `(root=genesis)`
+      log), and **`make test-crash-bootstrap` PASSES (`height_regress: 0`)**.
+      **Live deploy owner-gated** (new binary on the live datadir = wipe+cold-import).
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
 ### B. OWNER-GATED (consensus-critical; explicit owner go + repro-on-copy)
+> NOTE (2026-06-17): the C7 **restart-durability** blocker is now handled by the
+> §A forward-seed keystone (`341020c05`). The coins-commitment-persist item below
+> is a SEPARATE self-heal hardening (a durable SHA3 anchor for stale-coins
+> reconciliation), no longer C7-blocking.
 - [ ] **Coins-commitment-persist keystone** — write the 76-byte anchored
       `utxo_sha3` record inside `coins_view_sqlite_batch_write_ex`'s txn
       (`lib/storage/src/coins_view_sqlite.c`), table-derived height/count,
