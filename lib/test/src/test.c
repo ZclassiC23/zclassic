@@ -1095,6 +1095,9 @@ int main(void)
     { extern int test_soak_attestation(void); failures += test_soak_attestation(); }
     { extern int test_replay_canary_verdict(void); failures += test_replay_canary_verdict(); }
     { extern int test_canary_sentinel_watch(void); failures += test_canary_sentinel_watch(); }
+    failures += test_shielded_spend_slice();
+    failures += test_atomic_commit_ordering();
+    failures += test_coldimport_restart_fragility();
 
     /* Spec-based user story tests */
     failures += spec_wallet_dashboard();

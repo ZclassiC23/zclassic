@@ -567,6 +567,9 @@ int test_wallet_view_port(void);
 int test_bg_hash_verify_store_port(void);
 int test_bg_validation_store_port(void);
 int test_zslp_store_port(void);
+int test_atomic_commit_ordering(void);
+int test_shielded_spend_slice(void);
+int test_coldimport_restart_fragility(void);
 
 /* Spec-based user story tests (one per feature area) */
 int spec_wallet_dashboard(void);

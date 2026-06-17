@@ -7,6 +7,7 @@
 #include "test/test_helpers.h"
 #include "services/chain_state_validator.h"
 #include "validation/main_state.h"
+#include "validation/chainstate.h"
 #include "validation/chain_linkage_check.h"
 #include "storage/progress_store.h"
 #include "jobs/tip_finalize_stage.h"
@@ -72,6 +73,22 @@ int test_chain_state_validator(void)
      * is unaffected (fresh globals per group) — this is a test_zcl-only leak
      * that kept `make ci` red, so the pre-push gate could never be armed. */
     chain_linkage_reset_for_testing();
+
+    /* The HOLD reset alone is INSUFFICIENT in the monolith. active_chain_tip()
+     * also consults a SECOND pair of process-global pointers — the active-chain
+     * authority (active_chain_register_authority) and its block_map
+     * (active_chain_register_block_map). An earlier group leaves these armed
+     * with NO unregister API: tip_finalize_stage_init registers an authority
+     * whose is_authoritative()==true permanently (see the comment in test 6
+     * below), and test_process_headers_adversarial only restores them on its
+     * success path. When armed, active_chain_tip() takes the authority branch,
+     * looks the tip hash up in the LEAKED (now main_state_free'd) block_map, and
+     * returns a dangling block_index* — so csv_build_chain's success-path
+     * `tip->phashBlock` derefs freed memory -> SIGSEGV. Disarm both here (the
+     * missing unregister) so this group's active_chain_tip() reads only its own
+     * local window. Production never calls these with a zeroed authority. */
+    active_chain_register_authority(&(struct active_chain_authority){0});
+    active_chain_register_block_map(NULL);
 
     /* ── 1. Coins and chain agree → BOOT_OK ──────────── */
 
