@@ -644,6 +644,14 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                                             &seed_anchor_hash))
         seed_anchor_hash_p = &seed_anchor_hash;
 
+    /* PART C: register the seed anchor as a trust-root terminus for the
+     * Invariant A frontier gate (utxo_recovery_block_ancestry_break), so the
+     * commit below treats coins_best as derivable from a trust root instead of
+     * a detached island. This is the BINDING gate on a cold-import restart —
+     * coins_best is above the compiled SHA3 anchor and only hash-linked down to
+     * the snapshot base. NULL/-1 (every normal datadir) clears it = identical. */
+    utxo_recovery_set_cold_import_trust_anchor(seed_anchor_hash_p, seed_anchor_h);
+
     if (best) {
         struct block_index *restore_tip = best;
         bool best_backed =

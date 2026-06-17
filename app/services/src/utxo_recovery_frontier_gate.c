@@ -113,6 +113,30 @@ bool utxo_recovery_header_frontier(int32_t *out_h)
                                          "validate_headers", out_h);
 }
 
+/* PART C — provenance-matched cold-import seed-anchor trust root. The operator
+ * cold-imported a SHA3-attested UTXO snapshot whose base sits ABOVE the
+ * compiled SHA3 anchor; that base is a legitimate trust-root terminus, but
+ * ancestry_break only knows the compiled anchor. Cache the (hash,height) so
+ * the walk can terminate cleanly there. Set once at boot before background
+ * consumers run; read lock-free below (a benign stale read can only WITHHOLD
+ * the relaxation, never grant it to a wrong block — the hash must match). */
+static struct uint256 g_cold_import_anchor_hash;
+static int32_t        g_cold_import_anchor_h = -1;
+static bool           g_cold_import_anchor_set = false;
+
+void utxo_recovery_set_cold_import_trust_anchor(const struct uint256 *hash,
+                                                int32_t height)
+{
+    if (hash && height > 0) {
+        g_cold_import_anchor_hash = *hash;
+        g_cold_import_anchor_h    = height;
+        g_cold_import_anchor_set  = true;
+    } else {
+        g_cold_import_anchor_set  = false;
+        g_cold_import_anchor_h    = -1;
+    }
+}
+
 const struct block_index *utxo_recovery_block_ancestry_break(
     const struct block_index *bi)
 {
@@ -142,6 +166,15 @@ const struct block_index *utxo_recovery_block_ancestry_break(
      * root exactly there). A root strictly above anchor+1 is a detached
      * island — not derivable state. */
     if (p->nHeight == 0 || p->nHeight <= anchor + 1)
+        return NULL;
+    /* PART C: the operator's cold-import UTXO-snapshot seed anchor is a
+     * SHA3-attested trust root above the compiled anchor — terminate cleanly
+     * at it ONLY when the reached root provenance-matches (exact hash+height).
+     * A non-matching detached island still returns p and is refused, so the
+     * detached-island guard is intact for every torn/orphan-seeded root. */
+    if (g_cold_import_anchor_set && p->phashBlock &&
+        p->nHeight == g_cold_import_anchor_h &&
+        uint256_cmp(p->phashBlock, &g_cold_import_anchor_hash) == 0)
         return NULL;
     return p;
 }
