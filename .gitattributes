@@ -9,7 +9,12 @@
 # language stats" (the files are KEPT — most are load-bearing tooling).
 # linguist-language=C = "count this as C" (for C source with an odd extension).
 
-# C source carried with a non-.c extension — count it as C, never hide it.
+# Count C sources as C. Headers (*.h) are the important one: with no .cpp in
+# the tree, GitHub otherwise leaves *.h ambiguous and guesses C++ — forcing
+# linguist-language=C ASSIGNS them to C (it does NOT hide them), which removes
+# the phantom "C++" slice. *.inc is C source carried with an odd extension.
+*.c          linguist-language=C
+*.h          linguist-language=C
 *.inc        linguist-language=C
 
 # Docs / prose.
