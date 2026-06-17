@@ -47,3 +47,6 @@ TAGS
 .antigravitycli/
 .gemini/
 .aider*
+
+# Claude Code scratch space — never track
+.claude/tmp/

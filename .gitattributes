@@ -1,0 +1,47 @@
+# ── GitHub Linguist: report this repo as ~100% C ─────────────────────────
+# The shipped product is ONE C binary (1000+ .c + 500+ .h). Everything else
+# in the tree — build/test/deploy scripts, docs, view templates, config, and
+# fixtures — is support material, not the artifact. These rules affect ONLY
+# GitHub's language bar; the build, lint, and CI never read .gitattributes,
+# so nothing here can change how the node compiles or behaves.
+#
+# linguist-vendored / -generated / -documentation = "don't count toward the
+# language stats" (the files are KEPT — most are load-bearing tooling).
+# linguist-language=C = "count this as C" (for C source with an odd extension).
+
+# C source carried with a non-.c extension — count it as C, never hide it.
+*.inc        linguist-language=C
+
+# Docs / prose.
+*.md         linguist-documentation
+*.txt        linguist-documentation
+*.example    linguist-documentation
+LICENSE      linguist-documentation
+COPYING      linguist-documentation
+NOTICE       linguist-documentation
+
+# Build / test / deploy / ops tooling — load-bearing, kept, not the product.
+*.sh         linguist-vendored
+*.py         linguist-vendored
+tools/**     linguist-vendored
+deploy/**    linguist-vendored
+vendor/**    linguist-vendored
+.claude/**   linguist-vendored
+
+# Non-C assets (view templates, styles, config, fixtures, data).
+*.chtml      linguist-generated
+*.ccss       linguist-generated
+*.css        linguist-generated
+*.js         linguist-generated
+*.html       linguist-generated
+*.sql        linguist-generated
+*.json       linguist-generated
+*.yml        linguist-generated
+*.yaml       linguist-generated
+*.cfg        linguist-generated
+*.csv        linguist-generated
+*.supp       linguist-generated
+*.service    linguist-generated
+*.timer      linguist-generated
+*.scenario   linguist-generated
+*.fixture    linguist-generated
