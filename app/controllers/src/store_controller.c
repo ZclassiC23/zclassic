@@ -89,6 +89,12 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         "<button class='btn' style='font-size:12px;padding:6px 12px;cursor:pointer;border:none' "
         "onclick=\"navigator.clipboard?navigator.clipboard.writeText('%s'):void(0);"
         "this.textContent='Copied!'\">Copy Address</button>"
+        "<p><strong>You must include this memo</strong> so your payment is "
+        "matched to this order:</p>"
+        "<div class='addr'>ZCL23ORDER:%lld</div>"
+        "<button class='btn' style='font-size:12px;padding:6px 12px;cursor:pointer;border:none' "
+        "onclick=\"navigator.clipboard?navigator.clipboard.writeText('ZCL23ORDER:%lld'):void(0);"
+        "this.textContent='Copied!'\">Copy Memo</button>"
         "<p>After payment confirms, tokens will be sent to:</p>"
         "<div class='addr'>%s</div>"
         "<p><a href='/store/orders/%lld'>Check payment status</a></p>"
@@ -99,6 +105,8 @@ static size_t serve_create_order(sqlite3 *db, int64_t product_id,
         order_price,
         safe_pay,
         safe_pay,
+        (long long)order_id,
+        (long long)order_id,
         safe_cust,
         (long long)order_id);
     if (n > 0) off += (size_t)n;
@@ -534,20 +542,19 @@ void store_process_payments(const char *datadir)
         if (!pay_addr[0] || !cust_addr[0] || !token_id[0])
             continue;
 
-        /* Check if payment received at the order's z-address.
-         * Primary: match notes by address (works with real z-addresses).
-         * Fallback: match by exact amount (for placeholder z-addresses). */
-        /* Require minimum 3 confirmations to prevent reorg-based
-         * double-spend: payment reversed but tokens already minted. */
+        /* Credit only payments whose recovered Sapling memo binds them to
+         * THIS order (prefix "ZCL23ORDER:<order_id>", which the payment page
+         * instructs the buyer to include). This closes the hole that an
+         * unrelated same-amount note at the same one-time address could
+         * satisfy the order: the legacy address-only finder counts any note
+         * at the address, the memo-bound finder counts only this order's.
+         * Require minimum 3 confirmations to prevent reorg-based double-spend
+         * (payment reversed but tokens already minted). */
         int64_t tip_height = db_store_chain_tip_height(&ndb);
         int64_t min_height = tip_height - 3; /* 3 confirmations */
 
-        /* Primary: per-address query with confirmation depth */
-        int64_t received = db_store_received_payment(&ndb, pay_addr, min_height);
-
-        /* Only match by z-address — never fall back to amount matching.
-         * Amount-only matching is dangerous: could match unrelated
-         * payments with the same value, minting tokens for wrong orders. */
+        int64_t received = db_store_received_payment_for_memo(&ndb, pay_addr,
+                                                              order_id, min_height);
 
         if (received >= expected) {
             /* Payment confirmed — mint tokens FIRST, then update status.

@@ -128,6 +128,7 @@ static bool p11_5_seed_tip_block(struct node_db *ndb, int height)
 
 static bool p11_5_seed_confirmed_note(struct node_db *ndb,
                                       const char *address,
+                                      int64_t order_id,
                                       int64_t value,
                                       int block_height)
 {
@@ -145,6 +146,14 @@ static bool p11_5_seed_confirmed_note(struct node_db *ndb,
     note.value = value;
     note.block_height = block_height;
     snprintf(note.address, sizeof(note.address), "%s", address);
+    /* Carry the order-binding memo a real payer is now instructed to place
+     * (store payment page) — so this gate exercises the LIVE memo-bound
+     * reconcile (db_store_received_payment_for_memo), not the legacy
+     * address-only finder. A 512-byte zero-padded memo with the token at
+     * the head, mirroring a recovered Sapling note. */
+    snprintf((char *)note.memo, sizeof(note.memo),
+             "ZCL23ORDER:%lld", (long long)order_id);
+    note.memo_len = ZC_MEMO_SIZE;
     return db_sapling_note_save(ndb, &note);
 }
 
@@ -213,6 +222,7 @@ int test_store_e2e_gate(void)
             ok = ok && p11_5_seed_tip_block(&ndb, 100);
             if (ok) fail_step = "seed confirmed note";
             ok = ok && p11_5_seed_confirmed_note(&ndb, order.payment_addr,
+                                                 summaries[0].id,
                                                  order.amount_zatoshi, 97);
             /* Attach the real file payload to product #1 (the seeded
              * ZCL23ACCESS product the order purchased) so the token-gated
