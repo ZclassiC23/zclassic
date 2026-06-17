@@ -1,37 +1,34 @@
 # Power-Node Architecture Contract
 
-This spec is the stable contract for a ZClassic23 power node: one C23
-process that serves chain state, application services, onion-hosted user
-surfaces, ZClassicDNS name resolution, and MCP tools. It is a contract
-for architecture and observability, not a new implementation plan.
+The stable architecture and observability contract for a ZClassic23 power
+node: one C23 process serving chain state, application services, onion-hosted
+surfaces, ZClassicDNS name resolution, and MCP tools. A contract, not an
+implementation plan.
 
 ## Scope
 
 Authoritative references:
 
-- `CLAUDE.md` defines the current power-node feature set: full chain node,
-  embedded Tor hidden service, fast sync, MVC web framework, ZSLP, Sapling,
-  games, store, and MCP server.
-- `app/services/README.md` defines the service-layer boundary.
-- `lib/event/include/event/event.h` defines the event taxonomy.
-- `tools/mcp/controllers/app_controller.c` defines the app MCP surface for
-  names, messaging, market, and swaps.
-- `tools/mcp/controllers/ops_controller.c`, `chain_controller.c`,
-  `net_controller.c`, and `wallet_controller.c` define the remaining MCP
+- `CLAUDE.md` — current power-node feature set (full chain node, embedded Tor
+  hidden service, fast sync, MVC web framework, ZSLP, Sapling, games, store,
+  MCP server).
+- `app/services/README.md` — service-layer boundary.
+- `lib/event/include/event/event.h` — event taxonomy.
+- `tools/mcp/controllers/app_controller.c` — app MCP surface (names,
+  messaging, market, swaps).
+- `tools/mcp/controllers/{ops,chain,net,wallet}_controller.c` — remaining MCP
   domains.
 
-The power node must keep consensus, P2P wire parsing, rendering, and
-application orchestration separated. Services may coordinate work and expose
-status, but they must not define consensus rules, parse raw P2P messages,
-render HTML/JSON, or dispatch routes.
+Consensus, P2P wire parsing, rendering, and application orchestration stay
+separated. Services may coordinate work and expose status, but must not define
+consensus rules, parse raw P2P messages, render HTML/JSON, or dispatch routes.
 
 ## node_state_api
 
 `node_state_api` is the process-wide persisted state contract backed by the
-SQLite `node_state(key, value)` table. It is used for durable node cursors and
-small binary checkpoints, including schema version, best-block pointers,
-wallet scan cursors, UTXO commitments, MMR/MMB state, snapshot metadata, and
-Sapling tree state.
+SQLite `node_state(key, value)` table: durable node cursors and small binary
+checkpoints — schema version, best-block pointers, wallet scan cursors, UTXO
+commitments, MMR/MMB state, snapshot metadata, Sapling tree state.
 
 Invariants:
 
@@ -55,9 +52,9 @@ Concrete files: `db/schema.sql`, `app/models/src/database.c`,
 ## service_registry
 
 `service_registry` is the boot-time ownership contract for services under
-`app/services`. Services are long-lived orchestration units for sync workflows,
-snapshot lifecycle, wallet indexing/rescan orchestration, health/status
-aggregation, explorer query aggregation, and peer policy.
+`app/services`. Services are long-lived orchestration units: sync workflows,
+snapshot lifecycle, wallet indexing/rescan, health/status aggregation,
+explorer query aggregation, peer policy.
 
 Invariants:
 
@@ -79,9 +76,9 @@ Concrete files: `app/services/README.md`, `config/include/config/runtime.h`,
 
 ## Onion Gateway
 
-The onion gateway is the Tor-hidden-service ingress path for the same user and
-app surfaces served locally. With `-tor`, the embedded Tor runtime publishes an
-ephemeral `.onion` service and routes requests through dynhost into the normal
+The onion gateway is the Tor-hidden-service ingress for the same surfaces
+served locally. With `-tor`, the embedded Tor runtime publishes an ephemeral
+`.onion` service and routes requests through dynhost into the normal
 controller stack.
 
 Invariants:
@@ -102,10 +99,11 @@ Concrete files: `lib/net/src/onion_service.c`,
 
 ## ZClassicDNS
 
-`ZClassicDNS` is the human-readable naming contract built on ZCL Names (ZNAM).
-Names are on-chain records that can resolve to `.onion`, shielded, transparent,
-or related text/content targets. The DNS-like behavior is name resolution and
-routing convenience; the authoritative registry remains chain data.
+`ZClassicDNS` is the human-readable naming contract built on ZCL Names (ZNAM)
+— see `CLAUDE.md` ZNAM for the feature surface. Names are on-chain records
+resolving to `.onion`, shielded, transparent, or text/content targets. The
+DNS-like layer is resolution/routing convenience; the authoritative registry
+is chain data.
 
 Invariants:
 
@@ -128,10 +126,8 @@ Concrete files: `lib/znam/include/znam/znam.h`,
 
 ## MCP Surface
 
-The MCP surface is the typed AI-agent API. It is divided by domain and
-registered through controller route tables. The app domain includes names,
-messaging, ZSLP tokens, file market, and swaps; ops/chain/net/wallet/meta
-domains expose status, diagnostics, chain, peer, and wallet tools.
+The MCP surface is the typed AI-agent API, divided by domain (see Scope) and
+registered through controller route tables.
 
 Invariants:
 
@@ -156,10 +152,10 @@ Concrete files: `tools/mcp/router.c`, `tools/mcp/middleware.c`,
 
 ## Permissions
 
-`permissions` are enforced by endpoint, controller, middleware, and filesystem
+`permissions` are enforced at endpoint, controller, middleware, and filesystem
 boundaries. The power node exposes local, onion, RPC, and MCP surfaces, so
-permission checks must be close to each ingress and repeated before destructive
-state changes.
+checks must sit close to each ingress and repeat before destructive state
+changes.
 
 Invariants:
 
@@ -186,7 +182,8 @@ Concrete files: `tools/mcp/middleware.c`,
 `event expectations` are the observability contract. The event log is the
 shared explanation surface for networking, sync, validation, chain, boot,
 database, model lifecycle, recovery, MCP, wallet backup, disk, mempool, and
-integrity behavior.
+integrity behavior. The event/projection model is canonical in
+`docs/FRAMEWORK.md`.
 
 Invariants:
 
@@ -205,8 +202,6 @@ Invariants:
 Concrete files: `lib/event/include/event/event.h`,
 `lib/event/src/event.c`, `tools/mcp/router.c`, `tools/mcp/metrics.c`,
 `tools/mcp/controllers/ops_controller.c`.
-
-The event/projection model is canonical in `docs/FRAMEWORK.md`.
 
 ## Change Control
 

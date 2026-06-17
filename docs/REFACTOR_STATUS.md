@@ -38,61 +38,36 @@ Mapping to FINISH_CHECKLIST: Wave B = §5.3 (line 186, split the 8 files at the
 `*_service`). Waves A/D/E are deeper REFACTOR_STATUS items not yet enumerated as
 FINISH_CHECKLIST checkboxes.
 
-**Wave A — DONE (`41174e498`).** base58 + bech32 lib wrappers collapsed into the
-domain core: all callers migrated to `domain_encoding_*`, the 4 wrapper files
-deleted, obsolete wrapper-parity sub-tests dropped from the seal tests. Build +
-test_parallel 0/290 + lint 33 gates green. The 3rd "duplicate" — `upgrades.c` —
-was investigated and **correctly KEPT** (verdict: not a duplicate; `lib/consensus/
-upgrades.c` is the sole definition of the consensus data tables
-NetworkUpgradeInfo/SPROUT_BRANCH_ID/EquihashUpgradeInfo, `domain/consensus/
-upgrades.c` holds the pure activation-height arithmetic that reads them — a correct
-layering, no symbol collision). `lib/keys/*` + `lib/consensus/params.c` remain a
-future scoping item (not duplicated today). Rank 3 now: 2 of 3 collapsed, 1 kept
-by design.
+**Landed waves (historical):**
 
-**Wave D / Rank 1 — STEP 2 done (`02d184c6d`).** First increment of the boot
-monolith decomposition. The 5 process_block tip-publication hooks + the gap-fill
-kick were pure adapters (all input by parameter, no shared boot statics) → moved
-verbatim to a new `config/src/boot_tip_hooks.c`, wired via one seam
-`boot_register_process_block_hooks(svc)`; the NULL teardown stays inline.
-`boot_services.c` 4100 → **3926**. Build + test_parallel 0/290 (incl. the
-`test_make_lint_gates` wiring self-test, updated for the new split) + lint green;
-**boot smoke-test on a datadir copy confirmed behavior-neutral** — the node boots
-past the hook registration, restores chain state to tip 3,132,741, and starts
-runtime services with no crash (the repro INCONCLUSIVE verdict was the pre-existing
-header-sync stall + slow mmb_register boot, not the refactor). STEP 1 (service-kernel
-adapters, ~720 lines) is **deferred**: a read-only analysis found it blocked by
-category-3B shared statics (`boot_profile_has_*`, `svc_clock_ms`) + cross-TU
-static-call seams — it needs a real seam design, not a pure move. Remaining boot
-units (projection storage, background workers, shutdown phases) are queued as
-future increments, each boot-validated on a copy.
+- **Wave A (`41174e498`)** — base58 + bech32 lib wrappers collapsed into the domain
+  core (callers → `domain_encoding_*`, 4 wrapper files deleted). The 3rd "duplicate"
+  `upgrades.c` is **correctly KEPT**: `lib/consensus/upgrades.c` is the sole definition
+  of NetworkUpgradeInfo/SPROUT_BRANCH_ID/EquihashUpgradeInfo, `domain/consensus/
+  upgrades.c` holds the pure activation-height arithmetic that reads them (correct
+  layering, no collision). Rank 3 = 2 of 3 collapsed, 1 kept by design. `lib/keys/*` +
+  `lib/consensus/params.c` are a future scoping item (not duplicated today).
+- **Wave D / Rank 1 STEP 2 (`02d184c6d`)** — 5 process_block tip-publication hooks +
+  gap-fill kick (pure adapters) moved verbatim to `config/src/boot_tip_hooks.c`, wired
+  via `boot_register_process_block_hooks(svc)`. boot_services.c 4100 → 3926. Boot
+  smoke-test on a datadir copy = behavior-neutral.
+- **Wave D / Rank 1 STEP 3 (`08cb86586`)** — event_log + 10 per-domain reducer
+  projections + open/close lifecycle moved verbatim to `config/src/boot_projections.c`
+  (proven ZERO shared statics). Anchor-seed `node_db` now passed by parameter.
+  boot_services.c 3926 → **3517** (4100 → 3517 cumulative). Boot smoke-test =
+  behavior-neutral. Remaining boot units ranked: shutdown-phases (3 shared statics, low),
+  msg-callbacks (1 shared, 26 fns), background-workers (3 shared, medium, 28 fns).
+  STEP 1 (service-kernel adapters, ~720 lines) **deferred** — blocked by shared statics
+  (`boot_profile_has_*`, `svc_clock_ms`) + cross-TU static-call seams; needs a seam
+  design, not a pure move.
 
-**Wave D / Rank 1 — STEP 3 done (`08cb86586`).** Projection storage extracted: the
-event_log + 10 per-domain reducer projections (utxo/mempool/peers/block_index/znam/
-wallet/contacts/onion/hodl) + their open/close lifecycle (4 functions) moved verbatim
-to `config/src/boot_projections.c`. A 4-unit read-only static-sharing workflow proved
-projection-storage had **ZERO category-3B shared statics** (all 10 `g_phase4_*` handles
-unit-only). One clean seam: `boot_start_projection_storage` took the anchor-seed
-`node_db` from the boot-local static `boot_node_db()` (used by 36 stayers) → now passed
-by **parameter** (caller passes `boot_node_db()`), matching the step-2 by-param
-discipline. `boot_services.c` **3926 → 3517** (4100 → 3517 cumulative). Build +
-test_parallel 0/290 + lint green; **boot smoke-test confirmed the extraction is
-behavior-neutral** — all 10 projections opened + caught up, the anchor-seed seam worked
-(`anchor-seed refused: already seeded`), boot proceeded to runtime header-sync. The
-4-unit workflow ranked the remaining units: shutdown-phases (3 shared statics, low),
-msg-callbacks (1 shared, 26 fns), background-workers (3 shared, medium, 28 fns).
-
-**SURFACED P0 (pre-existing, NOT this refactor) — SIGSEGV in `push_getheaders_from`.**
-The step-3 boot smoke-test crashed (signal 11) in the P2P header-sync path —
-`push_getheaders_from` ← `process_headers` ← `msg_process_messages`
-(`lib/net/src/msg_headers.c`, untouched by Wave D). Mechanism: the exponential-locator
-branch (msg_headers.c:746-767) walks the `pprev` chain dereferencing `walk->phashBlock`
-/ `walk->pprev`; on a **corrupted block index** ("Block index heights may be corrupted")
-a garbage `pprev` is non-null but invalid → segfault. This is a §3-cluster symptom
-(block-index integrity), not a clean null-guard. Captured for the §3 work; it also means
-future Wave-D boot smoke-tests will hit this crash on the wedged datadir — distinguish
-via the backtrace (a Wave-D regression would crash in `config/boot_*`, not `lib/net`).
-NOTE: the live node has since advanced **3,132,687 → 3,133,966** (real forward progress).
+The STEP-3 boot smoke surfaced a **pre-existing P0 SIGSEGV** in
+`push_getheaders_from` (`lib/net/src/msg_headers.c`, untouched by Wave D) — a corrupted
+block index yields a garbage non-null `pprev`/`phashBlock` that the locator walk
+dereferences. This is a §3-cluster (block-index integrity) symptom; now captured in
+MEMORY + the `test_block_map_grow_phashblock` regression test. Wave-D boot smokes on a
+wedged datadir will hit it — a Wave-D regression would crash in `config/boot_*`, not
+`lib/net`.
 
 ## Objective
 

@@ -1,8 +1,9 @@
 # ZClassic23 Validation Audit Matrix
 
-This document records EXACTLY what cryptographic validation is performed at
-each stage of block processing. "Trust nothing" — every hash, every signature,
-every proof is verified by one of these layers.
+Exactly what cryptographic validation happens at each stage of block
+processing. Trust nothing — every hash, signature, and proof is verified by one
+of these layers. Operator-facing sync/recovery is in [`SYNC.md`](../SYNC.md);
+this doc is the validation/format reference.
 
 ## Validation Stages
 
@@ -68,75 +69,21 @@ ZClassic uses Equihash(200,9) with solution size 1344 bytes.
 - Personalization: `"ZcashPoW"` + LE32(N) + LE32(K)
 - Input: serialized header (version through nNonce, excluding solution)
 
-## Sync Methods
+## Sync & Self-Healing Source Map
 
-(See [`SYNC.md`](../SYNC.md) for the operator guide.)
+Sync methods and self-healing recovery are documented operator-side in
+[`SYNC.md`](../SYNC.md). The implementing files, for validation review:
 
-**Method 1 — LDB Snapshot Import (~20 seconds):**
-- Copy `zclassicd chainstate/` → `zclassic-c23/chainstate/`
-- Clear `leveldb_utxo_migrated` flag in `node_state`
-- Boot detects `chainstate/` + no flag → parallel decode pipeline:
-  LevelDB snapshot iterator → 30 decoder threads → SQLite writer
-- Reads `'c'+txid` keys, decodes compressed CCoins (varint+bitmap)
-- Writes 1.35M UTXOs in ~9.7s, rebuilds indexes in 16ms
-- Sets `coins_best_block` from LevelDB best block hash
-- SHA3-256 verification against hardcoded checkpoint
-- Loads `block_index.bin` flat file (~8s for 6M entries)
-- Connects remaining blocks via P2P (~2s)
-- File: `config/src/boot.c`
-- File: `app/controllers/src/sync_controller.c`
-
-**Method 2 — P2P Fast Sync (~60 seconds):**
-- Connect to NODE_ZCL23 peer → receive UTXO chunk manifest
-- Download chunks in parallel (swarm protocol with rarest-first)
-- Verify each chunk hash, write to SQLite
-- FlyClient MMR proof binds UTXO set to PoW chain
-- File: `lib/net/src/fast_sync.c`
-
-**Method 3 — Full P2P Sync (~7 hours):**
-- Headers → blocks → reducer stage pipeline → `connect_block`
-  (sequential UTXO build inside validation stages)
-- Scripts/sigs skipped below deferred proof validation (h=3,054,000)
-- Full validation above deferred proof validation
-- File: `app/services/src/chain_activation_controller.c`
-- File: `app/jobs/src/*_stage.c`
-- File: `lib/validation/src/connect_block.c`
-
-## Self-Healing Mechanisms
-
-**1. Reducer validation failure (missing UTXO):**
-- Detect missing txid:vout from `validation_state`
-- Look up source block via tx index (LevelDB `'t'+txid` key)
-- Read block from disk, extract output, inject into coins cache
-- Retry `connect_block` (up to 100 retries per block)
-- File: `lib/validation/src/process_block_self_heal.c`
-- File: `lib/validation/src/process_block_self_heal_sqlite_tx_index.c`
-- File: `lib/validation/src/process_block_self_heal_chain_scan.c`
-- File: `lib/validation/src/process_block_self_heal_inject.c`
-
-**2. Reducer reorg unwind:**
-- Detect branch divergence from the active-chain cursor and stage logs
-- Emit inverse UTXO deltas for the stale branch
-- Delete stale log/delta rows and rewind stage cursors to the fork boundary
-- File: `app/jobs/src/utxo_apply_delta.c`
-- File: `app/jobs/src/utxo_apply_stage.c`
-
-**3. Wrong block on disk (hash mismatch):**
-- Clear `BLOCK_HAVE_DATA` flag on the `block_index` entry
-- Block gets re-requested from P2P download manager
-- File: `lib/validation/src/process_block_tip_child.c`
-- File: `app/conditions/src/have_data_unreadable.c`
-
-**4. Stale `coins_best_block` after OOM kill:**
-- Boot detects chain at genesis but `coins_best_block` non-null
-- Triggers `BOOT_RECOVER_WIPE_WAIT` → resets to clean state
-- File: `config/src/boot_index.c` (`validate_coins_chain_agreement`)
-
-**5. Download stall (no blocks arriving):**
-- Scans 10-height window above chain tip for gaps
-- Requests missing blocks from alternate peers
-- Clears `BLOCK_FAILED` flags if all heights exhausted
-- File: `app/services/src/block_sync_service.c`
+| Mechanism | Files |
+|-----------|-------|
+| Method 1 — LDB snapshot import (decode `'c'+txid` CCoins → SQLite, SHA3-verify) | `config/src/boot.c`, `app/controllers/src/sync_controller.c` |
+| Method 2 — P2P fast sync (NODE_ZCL23 chunks, FlyClient MMR binding) | `lib/net/src/fast_sync.c` |
+| Method 3 — full P2P sync (headers → `connect_block`) | `app/services/src/chain_activation_controller.c`, `app/jobs/src/*_stage.c`, `lib/validation/src/connect_block.c` |
+| Heal: missing UTXO (look up via tx index, inject, retry `connect_block` ≤100×) | `lib/validation/src/process_block_self_heal{,_sqlite_tx_index,_chain_scan,_inject}.c` |
+| Heal: reorg unwind (inverse deltas, rewind cursors to fork) | `app/jobs/src/utxo_apply_delta.c`, `app/jobs/src/utxo_apply_stage.c` |
+| Heal: wrong block on disk (clear `BLOCK_HAVE_DATA`, re-request) | `lib/validation/src/process_block_tip_child.c`, `app/conditions/src/have_data_unreadable.c` |
+| Heal: stale `coins_best_block` (`BOOT_RECOVER_WIPE_WAIT`) | `config/src/boot_index.c` (`validate_coins_chain_agreement`) |
+| Heal: download stall (scan 10-height window, alt peers) | `app/services/src/block_sync_service.c` |
 
 ## Data Formats
 

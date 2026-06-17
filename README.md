@@ -1,6 +1,9 @@
 # ZClassic23
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![language](https://img.shields.io/badge/language-C23-00599C.svg)](#)
+[![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
+[![CI](https://img.shields.io/badge/CI-local%20make%20ci%20(37%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
 
 One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
@@ -11,15 +14,16 @@ operate the node through ~100 typed tools.
 
 ## Status
 
-Live and stable on ZClassic mainnet — holds the tip hash-identical to a local
-`zclassicd` reference, publishes blocks as they arrive, and keeps the connected
-chain across restarts.
+**Pre-v1 — not yet production-ready.** Zero of the eight v1 acceptance criteria
+in [`docs/MVP.md`](docs/MVP.md) are end-to-end CI-verified (MRS 0/8), so don't
+rely on it as your only mainnet node yet.
 
-**Not yet production-ready.** The v1 criteria in [`docs/MVP.md`](docs/MVP.md)
-aren't CI-enforced and the soak window is still accumulating. The known soft
-spots are stated plainly here and in [`docs/MVP.md`](docs/MVP.md) (e.g. cold-start
-bootstrap is fragile; off-chain ZMSG is plaintext on the wire). Don't rely on it
-as your only mainnet node yet.
+It runs on ZClassic mainnet and holds the tip hash-identical to a local
+`zclassicd` reference, publishing blocks as they arrive. It was recovered on
+2026-06-16 from a multi-day cold-import outage and is now accumulating fresh
+soak time. The known soft spots are stated plainly here and in
+[`docs/MVP.md`](docs/MVP.md): **cold-start bootstrap is slow + fragile**, and
+**off-chain ZMSG is plaintext on the wire**.
 
 It is operator-owned full-node infrastructure: embedded Tor publishes *your* onion
 service, wallet state stays in your datadir, MCP is a typed *local* operator
@@ -28,32 +32,32 @@ interface. Safety boundary and integrity checks:
 
 ## What's on board
 
-A complete rewrite of zclassicd in pure C23. Every node is at once:
+A complete rewrite of zclassicd in pure C23. One binary is at once a full node
+(Equihash PoW, ECDSA scripts, Sprout/Sapling zk-SNARKs, history validates
+identically to zclassicd), a fast-sync server (FlyClient MMB + SHA3 UTXO
+snapshot, operational tip in ~a minute), an in-process Tor hidden service
+(`-tor`), a block explorer (`/api`), a shielded wallet (transparent + Sapling),
+and an MCP server. Full subsystem catalog in [`CLAUDE.md`](CLAUDE.md).
 
-- **A full node** — headers, block validation (Equihash PoW, ECDSA scripts,
-  Sprout/Sapling zk-SNARKs), tx relay, P2P (port 8033). History validates
-  identically to zclassicd; a consensus-parity audit tracks the forward edge.
-- **A fast-sync server** — FlyClient MMB proofs + SHA3-committed UTXO snapshots
-  reach an operational tip in ~a minute, with optional background re-validation.
-- **A Tor hidden service** — Tor is compiled in; `-tor` serves the explorer + API
-  over a `.onion` via in-process calls (no SOCKS, no exposed ports).
-- **A block explorer** — charts, HODL waves, ZSLP scanner, JSON REST at `/api`.
-- **A shielded wallet** — transparent + Sapling, over RPC and MCP.
-- **An MCP server** — Claude operates the node as a first-class operator.
-
-Also aboard, honestly labeled: **ZNAM** on-chain name registry (working);
-**ZMSG** messaging (on-chain shielded; off-chain P2P is plaintext on the wire);
-**ZCL Market** + **ZSWP** atomic swaps (scaffolding — no settlement yet);
-**P2P games** (latency ping + TicTacToe).
+Honestly labeled: **ZNAM** name registry (working); **ZMSG** messaging (on-chain
+shielded; off-chain P2P is plaintext on the wire); **ZCL Market** + **ZSWP**
+atomic swaps (scaffolding — no settlement yet); **P2P games** (ping +
+TicTacToe).
 
 ## Quick start
 
-**Prerequisites:** gcc 14+ (or clang with `-std=c23`) and GNU make. Vendored
-static libs live in `vendor/lib/`; only `libsecp256k1.a` is tracked today, so
-building outside the maintainer's environment has friction (a known gap).
+**Prerequisites:** gcc 14+ (or clang with `-std=c23`) and GNU make.
+
+> **Build note (known gap):** `vendor/lib/` tracks only `libsecp256k1.a`. The
+> other 10 static archives (OpenSSL, libevent ×3, leveldb, SQLite, zlib, the Tor
+> stub) are not yet in the repo, so a fresh clone **will not link**
+> `make zclassic23` until you supply them. [`docs/BUILD.md`](docs/BUILD.md) lists
+> each one's source, version, and build command; `make vendor` automation is on
+> the roadmap.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
+# see docs/BUILD.md first — vendored libs are required to link
 make zclassic23     # main binary -> build/bin/zclassic23
 make test           # full suite (~423 parallel groups)
 make lint           # defensive-coding gates
@@ -68,7 +72,10 @@ build/bin/zclassic23 --importblockindex ~/.zclassic   # fast header import from
                                                       # (opt out: -nolegacyimport)
 ```
 
-Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Ports: P2P `8033`, RPC `18232`.
+Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
+`18232`. To run alongside a local `zclassicd` (which holds `8033`), use
+`-port=8023` — the shipped service does. The authoritative lane/port table is in
+[`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## Claude integration (MCP)
 
@@ -80,20 +87,11 @@ spelunking.
 claude mcp add zcl23 -- build/bin/zclassic23 -mcp
 ```
 
-Restart Claude Code and the tools appear. Daily drivers:
-
-| Tool | What it does |
-|------|--------------|
-| `zcl_status` | Height, peers, sync, onion, health — one call |
-| `zcl_state` | State dump of any subsystem (supervisor, boot, …) |
-| `zcl_node_log` | Server-side regex tail of `node.log` |
-| `zcl_sql` | SELECT-only SQL over the node DB (rate-gated) |
-| `zcl_rpc` | Escape hatch into 85+ raw JSON-RPC methods |
-| `zcl_tools_list` | The full live tool catalog (~100 tools) |
-
-Wallet, mining, ZNAM, ZMSG, swaps, and admin are typed tools too — see
-[`CLAUDE.md`](CLAUDE.md). MCP is an operator interface (stdio, local client);
-don't expose RPC/MCP to untrusted clients.
+Restart Claude Code and the tools appear. Start with `zcl_status` (height,
+peers, sync, onion, health in one call); `zcl_tools_list` enumerates the full
+~100-tool catalog. The daily-driver reference is in [`CLAUDE.md`](CLAUDE.md).
+MCP is an operator interface (stdio, local client) — don't expose RPC/MCP to
+untrusted clients.
 
 ## Architecture
 
@@ -167,6 +165,13 @@ Operator flags (`-externalip`, `-addnode`) go in `~/.config/zclassic23/env` (cop
 - [`docs/SYNC.md`](docs/SYNC.md) · [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — sync + troubleshooting
 - [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md) · [`.github/SECURITY.md`](.github/SECURITY.md) — security
 - [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) — build prereqs + contribution contract
+- [`docs/BUILD.md`](docs/BUILD.md) — vendored-library sources, versions, build steps
+- [`CHANGELOG.md`](CHANGELOG.md) — notable changes (pre-v1)
+
+**Issues & changes:** file bugs and features via GitHub Issues (templates
+provided); security reports follow [`.github/SECURITY.md`](.github/SECURITY.md).
+Consensus changes are declined on principle — see
+[`docs/CONSENSUS_PARITY_DOCTRINE.md`](docs/CONSENSUS_PARITY_DOCTRINE.md).
 
 ## License
 

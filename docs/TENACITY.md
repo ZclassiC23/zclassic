@@ -101,15 +101,9 @@ the divergence unwritable, or be declined.
 
 **I4 — Verify against the chain, not text.** The canonical chain is the only
 ground truth for consensus; reference source code is a lossy proxy. Precedence:
-**chain > deployed zclassicd behavior > zclassicd source text**. Proof it
-matters: `lib/consensus/include/consensus/consensus.h:23-29` copied
-`MAX_TX_SIZE_AFTER_SAPLING=102000` from zclassicd text; the real chain has a
-125,811-byte tx at h=478544 — the first of 413 oversize txs through h=1968856,
-max 1,922,197 B (mined under the 2 MB rule; zclassicd tightened without
-grandfathering and cannot resync its own chain). Result: genesis replay FATAL +
-forward reducer stall. Fix: empirical {txid,size} allowlist, block context only,
-mempool stays strict (`ccc7fbbfa`, merged `b0c0b4f9a`; proven by full genesis
-replay through the grandfather range, zero rejects).
+**chain > deployed zclassicd behavior > zclassicd source text**. The proof — the
+125,811-byte tx at h=478544 that the text-copied 102,000 cap false-rejects — and
+the grandfather fix are documented in `docs/CONSENSUS_PARITY_DOCTRINE.md`.
 
 **I5 — Crash-only.** Every derived state is rebuildable from the source; every
 recovery is bounded, automatic, and terminates in SERVING. The process may die
@@ -152,26 +146,12 @@ plan steps make each duplicate zero-callers — never out of order.**
 ## The sync-speed floor
 
 Trusted bootstrap's information floor is *headers + UTXO snapshot*. We measure
-at the floor today; remaining work is recipe-safety, not throughput.
-
-Measured (2026-06-11, verified hash-identical vs zclassicd at multiple heights,
-warm-reboot-proven):
-
-| Step | Measured |
-|---|---|
-| `--importblockindex` (headers from RUNNING zclassicd) | 3.14M headers in **60–74 s** |
-| then `-cold-import` boot (UTXO set + delta) | hash-identical tip in **~25 min** |
-| Trustless alternative: FlyClient sampling | ~60 s, ≥150-bit vs minority adversary |
-
-**The proven recipe (the ONLY recipe): `--importblockindex` FIRST, then
-`-cold-import` boot.** `-cold-import` alone is a footgun: it leaves a 3.1M header
-hole (headers=960) and pins forever. The footgun must be removed or
-auto-composed in code, not documented around.
-
-Ports (live-verified 2026-06-11): zclassicd RPC **8232**, P2P **8033**;
-zclassic23 RPC **18232**, live P2P **8023** via the unit's `-port=8023` (the
-binary's compiled default is 8033, which the sibling zclassicd owns on this box
-— never run both on it).
+at the floor today; remaining work is recipe-safety, not throughput. The proven
+two-step cold-sync recipe, its measured timings, and the port table are in
+`docs/SYNC.md` — the canonical source. The recipe's `--importblockindex`-FIRST
+order is load-bearing: skipping it leaves a 3.1M header hole (headers=960) and
+pins forever, so the footgun must be removed or auto-composed in code, not
+documented around.
 
 **Targets:** (a) one-command recipe, hole unrepresentable; (b) post-import
 completeness invariant (gate G4) so a fast sync can never be a silently

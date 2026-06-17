@@ -2,33 +2,15 @@
 
 **Date:** 2026-06-11 · **Status:** in implementation · **Net LOC:** ≈ −2,800 to −3,100
 
-The owner mandate: *"the node must always strongly stay synced to tip; multiple
-layers of redundancy; do it the strongest way; simulator + real data, no guessing;
-**don't add more repair code — make it canonical and DRY**; commit + push."*
+Owner mandate: *"the node must always strongly stay synced to tip; multiple layers
+of redundancy; do it the strongest way; simulator + real data, no guessing; **don't
+add more repair code — make it canonical and DRY**; commit + push."* Net-subtractive:
+two small gates added, nine repair modules deleted.
 
-It is **net-subtractive**: two small gates added, nine repair modules deleted.
-
-## The one defect, two faces
-
-Both live wedge classes are the **same** architectural defect: **state INSTALLED
-instead of DERIVED from the log**, surfacing at two chokepoints.
-
-### Wedge A — restore installs a tip above the header frontier (boot crash-loop)
-`utxo_recovery_restore_chain_tip` commits a tip via the single chokepoint
-`csr_validate_locked` (`chain_state_service.c:236-363`), which checks the tip against
-block_map / SQLite / UTXO-count but **never against the durable header frontier**
-(`validate_headers_log` contiguous ok=1 prefix). It then **slams**
-`pindex_best_header` forward to the installed tip (`csr_commit_tip:723-729`). So a tip
-lands at 3143175 while headers were validated only to 3141533 → a 1267-block hole
-window that `chain_integrity_check_post_restore` then FATALs on.
-
-### Wedge B — false coin-tear dead-ending at the unimplemented L2
-`utxo_apply` (stage 6) gates on `proof_validate`; `tip_finalize` (stage 7) gates on
-`utxo_apply` **plus** an extra `have_data` precondition. When bodies are missing-for-
-finalize but proofs passed (the post-reimport state), `utxo_apply` leads, `coins_applied`
-reaches `hstar+2`, and `read_frontier_snapshot` (`stage_repair_reducer_frontier.c:277`)
-flags `coins_applied > hstar+1` as `refused_coin_tear` — terminal, because L2
-(`reducer_frontier_reconcile_deep`) was **never implemented**.
+Both live wedge classes are one defect — **state INSTALLED instead of DERIVED from
+the log** — surfacing at two chokepoints (the "two faces of one defect" framing and
+the wedge narratives live in `docs/work/tenacity-roadmap.md`; this doc is the
+design-of-record for the gates and the deletion order).
 
 ## Canonical invariants (enforced by construction at one chokepoint each)
 
@@ -53,15 +35,9 @@ flags `coins_applied > hstar+1` as `refused_coin_tear` — terminal, because L2
 
 ## Ordered steps (each independently buildable + gated build+lint+test_parallel green)
 
-1. **Export the frontier reader** (DRY primitive, no behavior change) —
-   `reducer_frontier_header_frontier()` over `log_contiguous_prefix`; name
-   `PIPELINE_DEPTH_UTXO_OVER_FINALIZE`.
-2. **Invariant B** (no consensus surface, ships first to de-risk) — utxo_apply
-   self-clamp to finality (floored at trusted anchor); depth-aware tear test.
-3. **Invariant A** — frontier gate in `csr_validate_locked` (after the rollback-auth +
-   forward-from-active-tip carve-outs) + replace the slam at 723-729 with derive-to-
-   `min(new_tip, frontier)`. Pass `header_frontier_hint` via the commit struct; fail-open.
-4. **Collapse restore tip-selection** to derive-from-frontier (clamp candidate before commit).
+Steps 1–4 (frontier reader, Invariant B, **Invariant A**, restore tip-selection) are
+**landed** — Invariant A on `a2da7e107`.
+
 5. **Re-point SHA3 / fast-sync serve readers to coins_kv** (parity-gated, utxos still present).
 6. **Derive `coins_best_block` from `coins_applied_height`** (kills the two-name drift).
    *Status: landed on `refactor/derive-coins-best-demote-mirror`

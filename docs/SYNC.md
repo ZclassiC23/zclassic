@@ -1,10 +1,8 @@
 # ZClassic23 Sync Guide
 
-**zclassic23** is the next-generation ZClassic power node. This guide covers how
-a fresh node reaches chain tip, plus the one legacy-bootstrap path that exists
-only while the zclassic23 peer network is still small.
-
-Primary = zclassic23-native. Legacy = pulling data from the old C++ `zclassicd`.
+How a fresh zclassic23 node reaches chain tip, plus the one legacy-bootstrap
+path that exists only while the native peer network is still small. Primary =
+zclassic23-native; legacy = pulling data from the old C++ `zclassicd`.
 
 ## Canonical Authority Model
 
@@ -22,22 +20,20 @@ evidence gate:
 - `legacy_mirror_sync_service` may fetch candidate data from `zclassicd` and
   request work, but it cannot make `zclassicd` a consensus authority.
 
-`zclassicd` may accelerate bootstrap while the native peer network is small.
-It is removable advisory infrastructure: matching `zclassicd` is not proof of
-canonical state, and diverging from `zclassicd` is not by itself a reason to
-rewind or publish a tip. Health/status surfaces must keep
+`zclassicd` is removable advisory infrastructure that may accelerate bootstrap.
+Matching it is not proof of canonical state; diverging from it is not by itself
+a reason to rewind or publish a tip. Health/status surfaces must keep
 `consensus_authority=local_consensus_validation`; `candidate_*` fields describe
-source and trust class only. Any `unsafe_overrides_total > 0` is unhealthy and
-should be treated as a fail-loud condition.
+source and trust class only. Any `unsafe_overrides_total > 0` is fail-loud.
 
 ---
 
 ## Method 1 (native): P2P Fast Sync (~60 s)
 
-The zclassic23-native path. A fresh node downloads a verified UTXO snapshot
-from another zclassic23 peer, then catches up the tail via standard P2P.
-Activation is automatic — any peer advertising service bit `NODE_ZCL23`
-(`lib/net/include/net/fast_sync.h`) becomes a snapshot candidate.
+A fresh node downloads a verified UTXO snapshot from another zclassic23 peer,
+then catches up the tail via standard P2P. Activation is automatic — any peer
+advertising service bit `NODE_ZCL23` (`lib/net/include/net/fast_sync.h`)
+becomes a snapshot candidate.
 
 ```bash
 build/bin/zclassic23 -addnode=<zclassic23_peer>
@@ -55,18 +51,16 @@ What happens:
 6. Activate only an anchor at least 10 blocks behind the serving peer's tip,
    then delta-sync the finality window to tip by normal block validation.
 
-**Use this for any fresh zclassic23 deployment where at least one other
-zclassic23 peer exists.** Once the network is established this becomes the
-default and only user-facing path.
+**Use this for any fresh deployment where at least one other zclassic23 peer
+exists.** Once the network is established it is the default, only user-facing path.
 
 ### zclassic-only serving profile
 
-Use `-profile=zclassic-only` for power nodes whose job is to sync other
-zclassic23 nodes quickly. It keeps consensus state, P2P, RPC, snapshot offer
-construction, FlyClient/MMB proof serving, and normal block relay, and does not
-start explorer cache prewarming, store/market services, onion hosting (unless
-`-tor` is explicitly set), or file-service snapshot export and chunk/block-piece
-manifests.
+`-profile=zclassic-only` is for power nodes whose job is to sync other nodes
+quickly. It keeps consensus state, P2P, RPC, snapshot offer construction,
+FlyClient/MMB proof serving, and normal block relay; it does not start explorer
+cache prewarming, store/market services, onion hosting (unless `-tor` is set), or
+file-service snapshot export and chunk/block-piece manifests.
 
 Full, onion-node, and legacy-compat profiles keep the broader app surfaces. The
 explorer profile keeps explorer APIs and cache prewarming but still avoids store
@@ -82,52 +76,55 @@ Trustless sync from genesis over the standard P2P protocol. No snapshot.
 build/bin/zclassic23 -addnode=<any_peer>
 ```
 
-Headers → blocks → connect. Scripts/signatures below deferred proof validation height
-(h=3,054,000) are accepted; full validation runs above that. Background
+Headers → blocks → connect. Scripts/signatures below deferred proof validation
+height (h=3,054,000) are accepted; full validation runs above that. Background
 services then re-verify every hash, signature, and proof end to end.
 
-Use when no snapshot source is available (or when you want to validate from
-scratch).
+Use when no snapshot source is available, or to validate from scratch.
 
 ---
 
 ## Method 3 (legacy bootstrap, development only): Import from zclassicd
 
-**This path exists because the zclassic23 peer network is still small on
-mainnet.** We temporarily read data from a synced legacy `zclassicd` (C++)
-node on the same machine to get developer workstations to tip fast. Its block
-files, UTXO snapshots, and height/hash answers seed candidates only — tip
-publication still requires the local activation/evidence path (see the Canonical
-Authority Model above). Once the zclassic23 peer network is healthy, this path
-goes away.
+**This path exists because the native peer network is still small on mainnet.**
+It reads data from a synced legacy `zclassicd` (C++) on the same machine to get
+developer workstations to tip fast. Its block files, UTXO snapshots, and
+height/hash answers seed candidates only — tip publication still requires the
+local activation/evidence path (see Canonical Authority Model above). It goes
+away once the native peer network is healthy.
 
-Requirements: a local synced legacy `zclassicd` with `~/.zclassic/`.
+Requirements: a local synced legacy `zclassicd` with `~/.zclassic/` (leave it
+running — P2P 8033 / RPC 8232).
 
-Two one-liners, both safe on an empty datadir:
+This is the canonical home for the recipe — **two steps, in this order**:
 
 ```bash
-# Preferred: empty-datadir → tip in ~60 s. Hardlinks blk*.dat, bulk-copies
-# block_index LevelDB, bulk-imports chainstate at legacy current tip,
-# skips per-block reducer intake entirely.
-build/bin/zclassic23 -cold-import=~/.zclassic
+# 1. Headers FIRST — imports ~3.1M headers in ~60-74 s from the legacy datadir.
+build/bin/zclassic23 --importblockindex $HOME/.zclassic
 
-# Alternate: streaming legacy reader. Reads block_index LevelDB + mmaps
-# blk*.dat directly (no zclassicd RPC), per-block I/O deferred via
-# g_body_pull_active. Auto wallet rescan at end.
-build/bin/zclassic23 -fastimport=~/.zclassic
+# 2. Then a NORMAL boot — legacy import is on by default; it auto-reads/links
+#    ~/.zclassic and reaches tip. Opt out with -nolegacyimport.
+build/bin/zclassic23
 ```
 
-Implementation: `app/services/src/legacy_bootstrap_importer.c`
-(`LEGACY_BOOTSTRAP_IMPORT_COLD` / `LEGACY_BOOTSTRAP_IMPORT_DIRECT` /
-`LEGACY_BOOTSTRAP_IMPORT_ATTACH`).
+Skipping step 1 is a footgun: importing UTXOs without the header import leaves a
+~3.1M-header hole (headers=960) and the node pins. The old single-flag forms
+(`-cold-import=`/`-fastimport=`) no longer exist — the argv loop ignores unknown
+flags, so passing them silently no-ops.
+
+**Caveat:** cold import is still slow + fragile (a ~12k-block header band
+backfills over P2P, and the first boot can latch a transient freeze that needs a
+restart). The robust path for a known-good datadir is to copy one onto the target
+lane; the durable fix is tracked as C1/C2/O2 in
+`work/stability-improvements-2026-06-16.md`.
 
 Rules:
-- The import flags **only run on an empty datadir** (or a datadir below the
-  legacy tip). They refuse if our active tip already meets/exceeds legacy.
+- The import flags **only run on an empty datadir** (or one below the legacy
+  tip). They refuse if our active tip already meets/exceeds legacy.
 - Legacy data is acceleration only. It must match compiled SHA3 windows,
   runtime windows, local consensus checks, or zclassic23 quorum before it
   elevates trust.
-- To force reimport after it's been run once:
+- Force reimport after a first run:
   `build/bin/zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
 
 The legacy peer ships as the `zclassicd-rhett` systemd user service (see CLAUDE.md "Services").
@@ -161,17 +158,10 @@ after sync completes:
 
 See [`validation/VALIDATION_MATRIX.md`](validation/VALIDATION_MATRIX.md) for the full matrix.
 
----
-
-## Self-Healing
-
-| Problem | Recovery |
-|---------|----------|
-| Missing UTXO during connect_block | Look up source tx via tx index, extract output, retry |
-| Missing undo data during disconnect | Reconstruct from tx index + source blocks |
-| Wrong block on disk (hash mismatch) | Clear `BLOCK_HAVE_DATA`, re-download from P2P |
-| Stale `coins_best_block` after crash | Boot detects mismatch, resets to a consistent state |
-| Download stall | Scan 10-height window for gaps, request from alternate peers |
+Self-healing recovery mechanisms (missing UTXO, reorg unwind, wrong block on
+disk, stale `coins_best_block`, download stall) are documented in
+[`validation/VALIDATION_MATRIX.md`](validation/VALIDATION_MATRIX.md) → "Self-Healing
+Mechanisms".
 
 ---
 
@@ -195,8 +185,9 @@ See [`validation/VALIDATION_MATRIX.md`](validation/VALIDATION_MATRIX.md) for the
 └── node.log                 Structured event log
 ```
 
-Key `node_state` keys: `coins_best_block`, `tip_height`, `leveldb_utxo_migrated`,
-`bg_validation_height`, `bg_hash_verification_height`.
+`node_state` SQLite keys are documented in
+[`validation/VALIDATION_MATRIX.md`](validation/VALIDATION_MATRIX.md) → "SQLite
+`node_state` keys".
 
 Finality policy: `ZCL_FINALITY_DEPTH=10`. Heights `<= tip - 10` are treated as
 immutable for reorg refusal, snapshot eligibility, rolling SHA3 anchors,
@@ -214,10 +205,10 @@ or stale schemas are rejected. Legacy/non-v2 data may still be used locally
 for bootstrap acceleration, but it is not trusted P2P snapshot sync.
 
 Quorum model: votes are grouped by source class — local zclassic23, local
-zclassicd, and remote zclassic23 peers. Remote votes are keyed by unique peer
-and expire by TTL; rolling-anchor commits require a matching source-class quorum
-when multiple source classes are available. Splits halt anchor extension and are
-visible through the quorum/oracle dumpstate surface.
+zclassicd, remote zclassic23 peers. Remote votes are keyed by unique peer and
+expire by TTL; rolling-anchor commits require a matching source-class quorum when
+multiple classes are available. Splits halt anchor extension and are visible
+through the quorum/oracle dumpstate surface.
 
 Rolling anchors: runtime SHA3 windows are persisted only for fully immutable
 windows with local block bytes present, normal oracle policy, and quorum
@@ -229,11 +220,11 @@ continuity-checked against compiled anchors; failures discard the runtime file.
 ## Operator Runbook
 
 ### Check sync status
-Use MCP: `zcl_status`, `zcl_kpi`, `zcl_syncstate`, `zcl_validationstatus`.
-(Or the `zcl-rpc` escape hatch if MCP is unavailable: `build/bin/zcl-rpc getblockchaininfo`.)
-Status/dumpstate surfaces include sync phase, local/header/peer heights,
-immutable height, snapshot anchor, UTXO root, chainwork/quorum verdict,
-watchdog state, last recovery, and active acceleration source where available.
+MCP: `zcl_status`, `zcl_kpi`, `zcl_syncstate`, `zcl_validationstatus`. Or the
+`zcl-rpc` escape hatch: `build/bin/zcl-rpc getblockchaininfo`. Status/dumpstate
+surfaces include sync phase, local/header/peer heights, immutable height,
+snapshot anchor, UTXO root, chainwork/quorum verdict, watchdog state, last
+recovery, and active acceleration source where available.
 
 ### Recovery from OOM kill
 Just restart — the node detects stale state and resets to a consistent point.

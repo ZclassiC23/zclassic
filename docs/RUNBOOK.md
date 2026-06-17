@@ -2,54 +2,12 @@
 
 Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how to fix.
 
-Current truth (2026-06-16): the live node is healthy at tip; the multi-day wedge is CLEARED. Program of record: `docs/work/rock-solid-program-2026-06-16.md` + `docs/work/stability-improvements-2026-06-16.md`.
+## Soak / chaos harnesses
 
----
-
-## Running the soak / chaos harnesses safely
-
-Two opt-in harnesses spawn a **real** node. Both are fully isolated and never
-touch the live node. Hard rails enforced by `tools/scripts/isolated_node_env.sh`:
-
-- Throwaway `/tmp/zcl23-*` datadir + 39xxx ports only. **Refuse** to start if a
-  chosen port is already `LISTEN`ing or in the live set, or if the datadir would
-  resolve under `~/.zclassic-c23*`.
-- Never `-tor`; always `-nobgvalidation -nolegacyimport`; `-connect` a dead sink
-  (0 peers, cannot dial `zclassicd`).
-- Spawned node killed by **process group**; datadir `rm -rf`'d on exit (success,
-  failure, or Ctrl-C).
-- **NOT** in `make ci` (CI stays hermetic). Run them explicitly.
-
-```bash
-# C7 full-binary kill-9 self-test: spawn an isolated regtest node,
-# mine a seed, run kill/restart cycles, assert recovery invariants.
-make test-crash-bootstrap
-
-# C6 bounded compressed-soak PROXY: spawn an isolated regtest node,
-# drive ~180s of synthetic generate-load, assert SOAK_OK.
-make soak-ci
-```
-
-**Reading the output:**
-- Crash harness prints `passes / height_regress / utxo_decrease /
-  commitment_drift / utxo_above_tip / harness_errors`. Any non-zero failure
-  column → exit 1. `over=-1` = "not-applicable" (no UTXO set, e.g. genesis-only).
-- Soak runner writes a TSV log (`# ts<TAB>alive<TAB>height<TAB>rss_bytes`) and a
-  trailer (`# ended=… verdict=… tip_hwm=… rss_max=… rss_baseline=…`). Exit status
-  = verdict ordinal (`0 = SOAK_OK`); `make soak-ci` greps `verdict=OK` as a
-  false-green guard.
-
-**Build caveat:** regtest `generate` does not solve Equihash, so a self-spawned
-chain stays at genesis. The crash harness reports `DEGRADED genesis-only recovery
-mode` (still validates boot recovery); the soak proxy reports `FAIL_TIP_STALL`
-with `tip_hwm=0`, noting the **node miner** (not the harness) is the cause.
-`make soak-ci` stays red until a working regtest miner lands — honest, not a defect.
-
-**Long / operational forms (OPERATOR actions, not hermetic):**
-- **`make soak-7day`** — real 168 h MVP #6 soak against the *installed live node*
-  under real tx load. Needs 7 days wall time. CI proxy is a signal, not acceptance.
-- **C7 `--with-peer`** — two-node resync-to-peer-tip, the operational form of MVP
-  #7 ("caught up to peer-tip within 2 min"); timing-sensitive, opt-in.
+Run `make test-crash-bootstrap` (C7 kill-9) and `make soak-ci` (C6 soak proxy)
+to exercise a real but fully isolated node. For the isolation contract, build
+caveat, output/verdict reading, and the operational forms (`make soak-7day` =
+MVP #6, C7 `--with-peer` = MVP #7), see [`CHAOS_HARNESS.md`](./CHAOS_HARNESS.md).
 
 ---
 
@@ -58,10 +16,10 @@ with `tip_hwm=0`, noting the **node miner** (not the harness) is the cause.
 On a node holding tip and finalizing forward, these patterns look alarming but
 are **expected**. Mental model: the served tip and every derived projection
 (headers, bodies, scripts, proofs, coins) converge a few seconds *after* each
-block lands; most "noise" is one stage briefly observing a frontier another stage
-hasn't caught up to yet. At tip this self-resolves next tick — sustained firing
-across many consecutive blocks is the actual signal. Do **not** restart or
-intervene until a pattern crosses its **real-alarm** threshold.
+block lands; most "noise" is one stage briefly observing a frontier another
+hasn't caught up to. This self-resolves next tick — sustained firing across many
+consecutive blocks is the real signal. Do **not** restart until a pattern
+crosses its **real-alarm** threshold.
 
 | Pattern | Meaning (emitted by) | Benign? | Real alarm if |
 |---------|----------------------|---------|---------------|
@@ -165,52 +123,15 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
 
 **Symptoms:** synced but public P2P looks weak: peers stay `connecting`, no completed MagicBean or ZClassic-C23 handshakes, or watchdog repeats `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
 
-**Diagnose:**
+**Diagnose:** four read-only dumps cover the P2P/advance picture (pipe each
+through `jq` for the fields named in the Fix steps below):
 ```bash
-build/bin/zcl-rpc getnetworkinfo | jq '{
-  connections, inbound_connections, outbound_connections,
-  handshaked_connections, inbound_handshaked_connections,
-  outbound_handshaked_connections, inbound_handshake_seen,
-  remote_handshake_seen, magicbean_peers, zclassic_c23_peers,
-  localservices, localaddresses, listening,
-  peer_lifecycle
-}'
-
-build/bin/zcl-rpc getpeerinfo | jq '.[] | {
-  id, addr, state, inbound, subver, magicbean, zclassic_c23,
-  startingheight, lifecycle
-}'
-
-build/bin/zcl-rpc dumpstate peer_lifecycle | jq '{
-  summary: .state.summary,
-  sources: [.state.sources[] | {
-    source, attempted, connected, handshake_complete,
-    active, disconnected, timeout, rejected,
-    magicbean_handshakes, zclassic_c23_handshakes
-  }]
-}'
-build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'
-build/bin/zcl-rpc dumpstate chain_advance_coordinator | jq '{
-  initialized, has_connman, has_main_state, has_node_db,
-  authority, decision, selected_source, activation_allowed,
-  mirror_fallback_allowed, local_height, target_height, reason,
-  blocker, sources: [.sources[] | {
-    source, trust, available, healthy, blocked, selectable,
-    selection_blocker, score, state,
-    score_base, score_health, score_height, score_authorized,
-    score_target_lag_penalty, score_failure_penalty,
-    score_mirror_gate_penalty,
-    addnode_tcp_failures, addnode_protocol_failures,
-    reason, blocker
-  }]
-}'
-build/bin/zcl-rpc dumpstate legacy_mirror | jq '{
-  state, lag, activation_blocker, last_blocker_code,
-  stuck_reason, stuck_height, stalls_total,
-  consensus_authority, candidate_source, candidate_trust, candidate_lag,
-  candidate_blocker, overrides_total, unsafe_overrides_total,
-  blockers_total, last_override_safe, last_override_scope, last_error
-}'
+build/bin/zcl-rpc getnetworkinfo    # connections, *_handshaked_connections, inbound_handshake_seen, magicbean_peers, zclassic_c23_peers, localaddresses, listening
+build/bin/zcl-rpc getpeerinfo       # per-peer state, inbound, magicbean, zclassic_c23, startingheight, lifecycle
+build/bin/zcl-rpc healthcheck       # .checks.chain_advance
+build/bin/zcl-rpc dumpstate peer_lifecycle              # .state.summary + per-source attempted/connected/handshake_complete/timeout/rejected
+build/bin/zcl-rpc dumpstate chain_advance_coordinator   # initialized, has_*, authority, decision, selected_source, activation_allowed, sources[] trust/score/blocker
+build/bin/zcl-rpc dumpstate legacy_mirror               # state, lag, candidate_*, unsafe_overrides_total, last_override_*, last_error
 ```
 
 **Fix:**
@@ -218,8 +139,7 @@ build/bin/zcl-rpc dumpstate legacy_mirror | jq '{
    ```bash
    ss -tlnp | grep 8033
    build/bin/zcl-rpc addnode "IP:8033" "onetry"
-   build/bin/zcl-rpc dumpstate peer_lifecycle | jq '.state.sources[] | select(.timeout>0 or .rejected>0 or .handshake_complete==0)'
-   build/bin/zcl-rpc dumpstate peer_lifecycle | jq '.state.peers[] | select(.timeout>0 or .rejected>0)'
+   # peer_lifecycle: select sources/peers with timeout>0, rejected>0, or handshake_complete==0
    ```
 2. **External IP missing or wrong:** set `-externalip=<public-ip>` in the service environment and verify it appears in `getnetworkinfo.localaddresses`. For public reachability, `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is stronger evidence than outbound-only handshakes.
 3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures concentrate in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).

@@ -1,24 +1,10 @@
 # Plan: persist the `utxo_sha3` commitment so the §3 self-heal auto-fires
 
-> ## ✅ DURABILITY KEYSTONE — Option A landed 2026-06-06 (`801832692`)
-> A 3-lens consensus-safety panel (`wf_8ea5ab58-84d`, GO_WITH_FIXES) found the
-> minimal safe fix for reducer-mined-block durability is **NOT** a coins.db write
-> (Options B & C were REJECTED — the reducer writing coins.db would corrupt the
-> mainnet boot integrity gate and hit the wrong-table commitment hole). The
-> reducer's durable state (`tip_finalize_log.tip_hash` + cursor, `utxo_projection`)
-> is already crash-safe and boot already runs the forward-only seed
-> `block_index_loader_seed_tip_from_finalized`. The only gap: the block_index map
-> was never persisted on a small chain (`size > 1000` gate). **Fix: lower the
-> shutdown persist gate to `> 1`** (boot_services.c). VERIFIED: regtest
-> `generate 5` → clean restart → `getblockcount=5`. Mainnet byte-identical
-> (always >>1000). coins.db stays the untouched stale anchor (boot.c:1743
-> unchanged). REMAINING: under SIGKILL the reducer tip is rewound toward the
-> stale coins.db anchor — that is the single-engine cutover proper (reducer tip
-> vs coins.db), still owner-gated. The `utxo_sha3` commitment-persist below
-> remains the OPTIONAL hardening for the §3 self-heal (must compute over the
-> PROJECTION, not the stale coins.db `utxos`).
->
-> ---
+> **DURABILITY KEYSTONE — Option A landed 2026-06-06 (`801832692`):** shutdown
+> block_index persist gate lowered `> 1000` → `> 1` (boot_services.c) so small
+> chains persist; coins.db untouched. The `utxo_sha3` commitment-persist below
+> remains the OPTIONAL §3 self-heal hardening (compute over the PROJECTION, not
+> the stale coins.db `utxos`).
 
 ## Context
 
@@ -29,10 +15,10 @@ The shipped boot self-heal `coins_reconcile_stale_anchor`
 written only at snapshot-import + one RPC path, so a long-running node never
 has a fresh one — the self-heal can't fire on a *recurring* §3 wedge. This
 closes that gap by persisting the commitment at a consistent boundary.
-(`-reindex-chainstate` reachability — commit `50b33285d` — is the operator
-fallback; this makes the *automatic* path real.) An original paper plan named
-the wrong persist boundary and was rejected (DO_NOT_APPLY, 3-lens panel
-2026-06-03, `wf_c80cf28e-371`); the corrected design below is the live spec.
+`-reindex-chainstate` reachability (commit `50b33285d`) is the operator
+fallback; this makes the *automatic* path real. The original paper plan named
+the wrong boundary and was rejected (DO_NOT_APPLY, 3-lens panel 2026-06-03,
+`wf_c80cf28e-371`); the corrected design below is the live spec.
 
 ## CORRECTED DESIGN (adversarial review 2026-06-03) — read this first
 

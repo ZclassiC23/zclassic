@@ -63,142 +63,79 @@ Then **execute the assignment's Tasks section in order**.
 
 ## Per-task discipline
 
-Each Task in an assignment has:
-
-- A **scope** — exact files to create/edit
-- An **acceptance test** — concrete check that proves done
-
-For each task:
+Each Task has a **scope** (exact files) and an **acceptance test** (concrete
+check that proves done). For each task:
 
 1. `git pull --rebase origin main` to stay current.
 2. Implement.
-3. Run the acceptance test (`make test_parallel`, build, lint, etc.).
-4. **If green:** `git add` the specific files, `git commit -m "<task description>"`.
-5. **If red:** debug. Do NOT commit a broken state. If stuck > 30 min, append a `BLOCKED` note to the assignment.
-6. `git push origin main` after EACH committed task (see "Push discipline").
+3. Run the acceptance test (`make test_parallel`, build, lint).
+4. **Green:** `git add` the specific files, commit, `git push origin main`.
+5. **Red:** debug; never commit a broken state. Stuck > 30 min → append a
+   `BLOCKED` note to the assignment.
+
+One commit per task — no megacommits.
 
 ---
 
 ## Commit discipline
 
-- **Small commits.** Each task is its own commit. No 5-task megacommits.
-- **Subject line < 70 chars.** Imperative mood: "add CONDITION macro", not "added".
-- **Body** explains the *why*. The *what* is in the diff.
-- **Co-author trailer:** every commit ends with
-  ```
-  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-  ```
-- **No `--no-verify`.** Pre-commit hooks exist for a reason.
-- **No `--amend`** after push. Always create new commits.
+- **Subject < 70 chars, imperative:** "add CONDITION macro", not "added".
+- **Body** explains the *why*; the *what* is in the diff.
+- **Co-author trailer** per the convention in `CLAUDE.md` (current model).
+- **No `--no-verify`** (hooks are load-bearing). **No `--amend` after push** —
+  always new commits.
 
 ---
 
 ## Push discipline — DIRECTLY TO MAIN
 
-Push directly to `origin/main` after **every committed task**.
+Push to `origin/main` after every committed task. On non-fast-forward
+(another worker pushed first):
 
 ```bash
-git push origin main
-```
-
-If push fails due to non-fast-forward (another worker pushed first):
-
-```bash
-git pull --rebase origin main      # rebase your commits on top of theirs
-# resolve any conflicts (probably none — workers own different scopes)
+git pull --rebase origin main      # rebase on top of theirs
 git push origin main               # retry
 ```
 
-If the rebase has conflicts you can't resolve in <10 minutes:
+Conflicts are unlikely (workers own different scopes). If a rebase conflict
+takes > 10 min, `git rebase --abort`, stash, `git pull --ff-only`, re-read the
+file the other worker changed, stash pop, resolve, commit, push.
 
-```bash
-git rebase --abort
-git stash                          # save your work
-git pull --ff-only origin main     # get the new state
-# re-read the file you were touching; the other worker may have changed it
-git stash pop                      # apply your work, resolve conflicts manually
-# commit + push
-```
-
-**Never** `git push --force` to main. **Never** `git push --force-with-lease`
-either. If you've made a mistake, write a NEW commit that fixes it; let the
-orchestrator clean up history if needed.
+**Never `git push --force` or `--force-with-lease` to any branch.** Fix
+mistakes with a NEW commit; let the orchestrator clean up history.
 
 ---
 
 ## Completion ritual
 
-When all tasks pass and acceptance criteria are met:
+When all tasks pass:
 
-1. **Run the full test suite** one more time:
-   ```bash
-   make test_parallel    # fork-based runner, ~1-2 min
-   make lint             # all 20+ gates
-   ```
-   All green = ready. Any red = back to debugging.
+1. **Run the full suite once more:** `make test_parallel` + `make lint`. All
+   green = ready.
 
-   **⚠️ A GREEN TEST SUITE IS NOT A HEALTHY NODE (RESILIENCE DOCTRINE #1).**
-   **If your change touches sync, validation, header/block admit, a
-   cutover, or anything on the chain-advance path, forward progress on the
-   LIVE node is a required gate, not optional:**
+   **⚠️ A GREEN SUITE IS NOT A HEALTHY NODE (RESILIENCE DOCTRINE #1).** If your
+   change touches sync, validation, header/block admit, a cutover, or anything
+   on the chain-advance path, live forward progress is a required gate:
    ```bash
-   # the C health gate reads live chain_advance state:
    build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'
-   # for benchmark rows:
-   build/bin/zclassic23 -bench-kill9
+   build/bin/zclassic23 -bench-kill9       # benchmark rows
    ```
-   If you cannot show the live tip advancing past your change
-   (e.g. past the cutover height), it is NOT done — report it, don't ship it.
+   If you can't show the live tip advancing past your change, it is NOT done —
+   report it, don't ship it.
 
-2. **Update the assignment doc** — append a Completion section AND change Status:
+2. **Update the assignment doc:** set Status to
+   `✅ DONE — pushed YYYY-MM-DD` (with commit sha), and append a `## Completion
+   (wt<N>, YYYY-MM-DD)` section covering: summary, which TOP 10 BENCHMARK
+   (REFACTOR_STATUS.md) it moved and by how much (or what it unblocks),
+   commits, files added/modified, acceptance verification (incl. the live
+   check), and any surprises/follow-ups.
 
-   ```markdown
-   ## Status
+3. **Push:** `git commit -m "wt<N>: complete <slug>"`, `git push origin main`.
 
-   **✅ DONE — pushed 2026-MM-DD** to main as commit `<sha>`.
+4. **Report to the user:** completed `<slug>`, pushed to main.
 
-   ## Completion (wt<N>, YYYY-MM-DD)
-
-   ### Summary
-   <1-3 sentence summary of what shipped>
-
-   ### Benchmark moved
-   <which of the TOP 10 BENCHMARKS (REFACTOR_STATUS.md) this advances, and by
-    how much if measurable — e.g. "#2 warm restart 33s→29s" or "#3 RSS: removed
-    a 1,410-LOC module, expect ~80MB". If purely enabling, say which it unblocks.>
-
-   ### Commits
-   - <sha> <subject>
-   - <sha> <subject>
-   - ...
-
-   ### Files added/modified
-   - app/conditions/block_failed_mask_at_tip.c   (NEW, 48 LOC)
-   - lib/framework/condition.h                    (NEW, 102 LOC)
-   - ...
-
-   ### Acceptance verification
-   - [x] Test 1: <description> — PASS
-   - [x] Test 2: <description> — PASS
-   - [x] Live check: <description> — PASS
-
-   ### Surprises / follow-ups
-   <anything orchestrator should know — found bug elsewhere, scope change, etc.>
-   ```
-
-3. **Push the completion update**:
-   ```bash
-   git add docs/work/<file>
-   git commit -m "wt<N>: complete <slug>"
-   git push origin main
-   ```
-
-4. **Report to the user**:
-   > Completed assignment `<slug>`. Pushed directly to main.
-
-5. **The orchestrator does NOT need to merge anything** — your commits are
-   already on main. The orchestrator only writes new assignments, updates
-   `REFACTOR_STATUS.md`, and curates the work pipeline.
+The orchestrator does NOT merge — your commits are already on main. It only
+writes assignments, updates `REFACTOR_STATUS.md`, and curates the pipeline.
 
 ---
 

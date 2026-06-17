@@ -61,54 +61,13 @@ ContextualCheckBlock(block, state, pindex->pprev)` (main.cpp:4203), which runs *
 
 ## Reference implementation (as landed)
 
-### `contextual_check_block` — add `is_ibd`, gate only the per-tx call
-```c
-bool contextual_check_block(const struct block *block, struct validation_state *state,
-                            const struct chain_params *params,
-                            const struct block_index *pindex_prev, bool is_ibd)
-{
-    int nHeight = pindex_prev == NULL ? 0 : pindex_prev->nHeight + 1;
-    for (size_t i = 0; i < block->num_vtx; i++) {
-        if (!is_ibd) {                       /* zclassicd main.cpp:941 IBD short-circuit */
-            if (!contextual_check_transaction(&block->vtx[i], state,
-                                              &params->consensus, nHeight, 100))
-                LOG_FAIL("check_block", "contextual_check_transaction tx[%zu] h=%d", i, nHeight);
-        }
-        /* finality cutoff = header time (already FR-2); runs ALWAYS, incl. IBD */
-        int64_t cutoff = block_header_get_time(&block->header);
-        REJECT_UNLESS(is_final_tx(&block->vtx[i], nHeight, cutoff), state, 10, "bad-txns-nonfinal");
-    }
-    if (nHeight > 0)
-        REJECT_UNLESS(bip34_check_coinbase_height(&block->vtx[0], nHeight), state, 100, "bad-cb-height");
-    return true;
-}
-```
-Callers pass `is_ibd=false` (the live caller set is in the tree; the audit found zero
-*production* callers — reindex uses `connect_block`, not this).
-
-### `script_validate_stage.c step_validate` — the 3-part gate, before script verify
-```c
-const struct chain_params *cp = chain_params_get();
-bool ibd = is_initial_block_download(ms);
-int  tip_h = tip_finalize_stage_last_height();        /* finalized tip */
-const int CTX_TIP_WINDOW = 16;                         /* >= max legit pipeline depth */
-if (cp && bi->pprev && next_h >= tip_h - CTX_TIP_WINDOW &&
-    !process_block_should_skip_contextual_header(ms, bi->pprev, &cp->consensus)) {
-    struct validation_state cstate; validation_state_init(&cstate);
-    if (!contextual_check_block(&blk, &cstate, cp, bi->pprev, ibd)) {
-        const char *reason = cstate.reject_reason[0] ? cstate.reject_reason : "contextual-invalid";
-        block_free(&blk);
-        atomic_fetch_add(&g_contextual_reject_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0, "script_validate contextual_invalid h=%d reason=%s", next_h, reason);
-        /* hash-stamped ok=0 row -> proof_validate ok=0 -> utxo_apply JOB_BLOCKED:
-         * coins never mutate, tip_finalize stays IDLE. Reorg-safe via phashBlock. */
-        if (!script_validate_log_insert(db, next_h, reason, false, 0, 0, NULL, -1,
-                                        SCRIPT_ERR_OK, bi->phashBlock)) return JOB_FATAL;
-        c->cursor_out = c->cursor_in + 1;
-        return JOB_ADVANCED;
-    }
-}
-```
+The source is `app/jobs/src/script_validate_contextual.c` (`contextual_check_block`
+takes `is_ibd` and gates only the per-tx call) and the 3-part gate in
+`script_validate_stage.c step_validate` (after body read, before script verify:
+`next_h >= tip_h - CTX_TIP_WINDOW` with `CTX_TIP_WINDOW=16 >=` max legit pipeline
+depth; on reject, hash-stamped `ok=0` row + cursor advance + `JOB_ADVANCED`,
+touching no coins). The audit found zero *production* callers of the old path —
+reindex uses `connect_block`, not this.
 
 ## Rule → zclassicd map (all verified against main.cpp)
 
