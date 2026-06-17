@@ -108,6 +108,14 @@ must not jump the queue.
       copy-prove (generate 5 → kill-9 → restart → getblockcount==5, `(root=genesis)`
       log), and **`make test-crash-bootstrap` PASSES (`height_regress: 0`)**.
       **Live deploy owner-gated** (new binary on the live datadir = wipe+cold-import).
+- [ ] **C5 store gate → real ivk-decrypt purchase (Slice 1, additive+hermetic)** —
+      replace the fabricated placeholder-ivk note + address-string match with a
+      genuine `wallet_try_sapling_decrypt` + memo-bound reconcile (params-free,
+      reuses `test_shielded_receive_slice`), as a NEW `store_e2e_shielded`
+      selector that leaves the old `store_e2e` gate untouched. Design of record
+      (vetted, by-hand-reviewed against the code):
+      [`c5-real-shielded-purchase-plan.md`](./c5-real-shielded-purchase-plan.md).
+      No live behavior change; teeth-verified by `make test_zcl`.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
@@ -137,6 +145,14 @@ must not jump the queue.
       `chain_active` UAF, same class as the fixed phashBlock bug).
 - [ ] MVP feature e2e proofs: C4 (receive shielded) + C5 (store sell) on a
       funded test wallet.
+- [ ] **C5 store gate Slice 2 (live behavior change)** — switch the live
+      `store_process_payments` reconcile (`store_controller.c:546`) from the
+      amount/address finder to the new memo-bound finder, AND remove the
+      `zs1_pay_<time>` placeholder fallback in `zslp_payment_generate_address`
+      (`zslp_service.c:359`) so an order can never bind to an undecryptable
+      address (a real prod gameability hole found 2026-06-17). App-layer, no
+      consensus, but it changes live payment matching → copy-prove on a fixture
+      first. Design of record: [`c5-real-shielded-purchase-plan.md`](./c5-real-shielded-purchase-plan.md).
 
 ### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
 - [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — a second zcl23 node
