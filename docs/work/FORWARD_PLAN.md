@@ -60,30 +60,30 @@ must not jump the queue.
       mismatch. Hermetic `mvp-parity-slice` gate (`test_parity_slice.c`, in
       `make ci-mvp-gates`) proves MATCH/DRIFT with a negative control.
       REMAINING ◐→✅: 0 mismatches over the 7-day soak + an exact byte reference.
-- [~] **Regtest on-demand mining `generate N`** — PARTIAL. The in-process
-      reducer mining engine is green (`make mvp-it-works`: real regtest block,
-      tip 0→1, finalized by `tip_finalize`). But the **full-binary `generate`-RPC
-      path does not advance a spawned node's tip** (verified 2026-06-17 via the
-      new `make mvp-verify`): a fresh regtest node boots correctly to genesis,
-      yet `generate N` leaves tip=0, so **`make test-two-node-peer-tip` FAILS**
-      and `make test-crash-bootstrap` soft-passes as "KNOWN BLOCKED (owner-gated
-      reducer boot-init)". The earlier "works end-to-end / both pass" claim
-      (`801832692`/`4e7fc176f`/`f135abb5f`) is STALE for the full-binary path.
-      **Exact signature** (isolated regtest node, `generate 5`, 2026-06-17):
-      `[ondemand-reject] h=1: val=1 bod=1 bod=1 scr=1 pro=1 utx=-1 tip=-1` →
-      `REJECTED by reducer: block-not-finalized-by-reducer`; `generate` returns
-      `[]`, tip stays 0 for 30s. The mined block clears validate/body/script/proof
-      but **`utxo_apply` fails (`utx=-1`)** so `tip_finalize` never fires. This is
-      the documented "WALL" (`utxo_apply` resolves a successor-less self-mined
-      block via the raw finalized-window accessor → NULL above the finalized tip;
-      only `validate_headers` has the `vh_resolve_bi` above-window fallback) — and
-      it is a **REGRESSION**: [[project_mvp_regtest_mining_rootcause_2026-06-05]]
-      records it SOLVED 2026-06-06 (`bcd44e68e`, "generate 3 → getblockcount 0→3,
-      rejects=0"). **Next concrete C7/C3/C6 target:** give `utxo_apply` (and the
-      body/script/proof stages) the above-window resolver `validate_headers` uses,
-      OR hold the active-chain window across the on-demand drain — `fMineBlocksOnDemand`-
-      gated so mainnet/testnet stay byte-identical (network-safe by construction);
-      copy-prove before any deploy. Run `make mvp-verify` for current per-member status.
+- [x] **Regtest on-demand mining `generate N`** — FIXED 2026-06-17 (`f83101b81`).
+      Root cause was NOT the "utxo_apply WALL" the first investigation guessed
+      (refuted: `proof_validate` uses the same raw `active_chain_at` and passes at
+      the same height; g_author defaults to UTXO_AUTHOR_STAGE so utxo_apply DOES
+      extend the window). REAL cause: a FRESH genesis-only regtest node never seeds
+      the genesis anchor (every `tip_finalize_stage_seed_anchor` caller is an
+      import/snapshot/reindex path; the runtime re-seed can't reach genesis since
+      `cursor < nHeight=0` is never true), so staged cursors stuck at 0 → the first
+      block recorded no utxo_apply row (`utx=-1` → `block-not-finalized-by-reducer`).
+      FIX = seed the genesis anchor once inside `reducer_ingest_block`,
+      `fMineBlocksOnDemand`-gated (mainnet/testnet byte-identical) + only at an
+      unseeded genesis tip. Copy-proven `generate 5` → tip 5, rejects=0; durable
+      guard `test_reducer_ondemand_genesis_seed`; test_parallel 0/427, lint clean
+      (E13 + `test_consensus_parity` green). **`make test-two-node-peer-tip` now
+      PASSES** (A mines 10 → B syncs → kill-9 B → A +5 → B recovers to peer-tip 15
+      via P2P re-sync). Both opt-in (spawn real nodes) → hermetic-CI promotion remains.
+- [ ] **Regtest kill-9 RESTART-DURABILITY (the next C7 single-node blocker)** —
+      surfaced once `generate` was fixed: `make test-crash-bootstrap` now seeds 30
+      successfully, but the restarted node boots `h=-1` ("mined blocks not durable
+      across restart"), so the single-node kill/restart recovery teeth still can't
+      be asserted (it soft-passes KNOWN-BLOCKED). This is the coins/block-index
+      **restart-durability keystone** (owner-gated, §B "Coins-commitment-persist
+      keystone"), DISTINCT from the now-fixed forward-progress. Run `make mvp-verify`
+      for current per-member status.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
