@@ -237,11 +237,12 @@ size_t serve_tokens(uint8_t *r, size_t max)
         memcpy(r, g_tokens_cache, copy);
         return copy;
     }
-    if (!g_tokens_computing) {
-        g_tokens_computing = 1;
-        explorer_start_once(&g_tokens_computing, tokens_compute_thread,
-                            "tokens_compute");
-    }
+    /* Trigger the background compute. Call explorer_start_once directly —
+     * do NOT pre-set g_tokens_computing=1 first, or its compare_exchange(0→1)
+     * fails and the thread never starts, wedging the page on "Loading" forever
+     * (a request landing inside the boot prewarm window used to trip this). */
+    explorer_start_once(&g_tokens_computing, tokens_compute_thread,
+                        "tokens_compute");
     return explorer_view_tokens_loading(r, max);
 }
 
