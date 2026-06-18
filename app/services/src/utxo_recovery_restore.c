@@ -362,15 +362,10 @@ struct utxo_import_result utxo_recovery_import_ldb(
                          "failed to persist leveldb_utxo_migrated stamp; "
                          "re-import retried next boot");
 
-            /* Seed coins_kv from the ACCEPTED import — the projection-based
-             * boot rebuild ran pre-import (empty, no-op); without this the
-             * prevout resolver has no pre-anchor coins. Must run only after
-             * the verification gate above: the seed stamps a one-way
-             * migration key on SQL success (including a 0-row copy), and
-             * both seed paths short-circuit forever on that stamp — seeding
-             * a partial import that the gate then wipes-for-retry would
-             * strand coins_kv permanently against the next boot's good
-             * reimport. */
+            /* Seed coins_kv from the ACCEPTED import (prevout resolver needs
+             * pre-anchor coins). MUST run only after the verification gate: the
+             * seed stamps a one-way migration key on SQL success, so seeding a
+             * gate-wiped partial import strands coins_kv vs the next reimport. */
             if (!coins_kv_seed_from_node_db(progress_store_db(),
                     sqlite3_db_filename(ctx->ndb->db, "main")))
                 LOG_WARN("utxo_recovery", "coins_kv import seed failed");
@@ -644,12 +639,9 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                                             &seed_anchor_hash))
         seed_anchor_hash_p = &seed_anchor_hash;
 
-    /* PART C: register the seed anchor as a trust-root terminus for the
-     * Invariant A frontier gate (utxo_recovery_block_ancestry_break), so the
-     * commit below treats coins_best as derivable from a trust root instead of
-     * a detached island. This is the BINDING gate on a cold-import restart —
-     * coins_best is above the compiled SHA3 anchor and only hash-linked down to
-     * the snapshot base. NULL/-1 (every normal datadir) clears it = identical. */
+    /* PART C: register the seed anchor as the Invariant A trust-root terminus
+     * (utxo_recovery_block_ancestry_break) so the commit treats coins_best as
+     * trust-rooted, not a detached island. NULL/-1 on normal datadirs = no-op. */
     utxo_recovery_set_cold_import_trust_anchor(seed_anchor_hash_p, seed_anchor_h);
 
     if (best) {
