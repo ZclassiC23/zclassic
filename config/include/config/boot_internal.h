@@ -283,6 +283,17 @@ void boot_bg_hash_verify_stop(void *ctx);
 bool boot_sd_watchdog_start(void *ctx);   /* arm WATCHDOG=1 heartbeat ring */
 void boot_sd_watchdog_stop(void *ctx);
 
+/* ── utxo_mirror_sync (boot_runtime_sync_services.c) ────────────
+ * Keep node.db's explorer `utxos` mirror synced to the authoritative
+ * coins_kv set (process_block_flush_coins, its only forward writer, is dead
+ * code, so the mirror otherwise freezes at the cold-import seed height). The
+ * service is additive + node.db-only — never touches the consensus coins_kv
+ * write path. Registered into the runtime kernel by
+ * boot_utxo_mirror_sync_register() (called from boot_register_runtime_services). */
+bool boot_utxo_mirror_sync_register(struct boot_svc_ctx *svc);
+bool boot_utxo_mirror_sync_start(void *ctx);
+void boot_utxo_mirror_sync_stop(void *ctx);
+
 /* ── boot_node_utilities.c ──────────────────────────────────────
  * Async observer that logs sync-pipeline transitions; wired by
  * app_init_services (boot_services.c) via event_observe_async(). The public

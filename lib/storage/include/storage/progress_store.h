@@ -46,6 +46,15 @@ bool progress_store_open(const char *datadir);
 /* Singleton handle. NULL if not yet opened or already closed. */
 sqlite3 *progress_store_db(void);
 
+/* Max length of the progress.kv path (sizing buffers for progress_store_path). */
+#define PROGRESS_STORE_PATH_MAX 1024
+
+/* Snapshot the open progress.kv file path into out[cap] (false + out[0]='\0'
+ * when not open or it would not fit). For a reader that needs its OWN
+ * connection — e.g. a bulk scan that must NOT hold progress_store_tx_lock for
+ * its whole duration (which would stall the reducer drive on that lock). */
+bool progress_store_path(char *out, size_t cap);
+
 /* Serialize operations on the singleton progress.kv handle. SQLite
  * connections cannot run more than one statement/transaction safely across
  * threads unless the caller serializes them. This lock is recursive so a

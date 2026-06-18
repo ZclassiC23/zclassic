@@ -26,7 +26,7 @@
 #include <time.h>
 
 #define PROGRESS_STORE_FILENAME  "progress.kv"
-#define PROGRESS_STORE_PATH_MAX  1024
+/* PROGRESS_STORE_PATH_MAX comes from storage/progress_store.h. */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_tx_lock;
@@ -133,6 +133,19 @@ bool progress_store_open(const char *datadir)
 sqlite3 *progress_store_db(void)
 {
     return atomic_load_explicit(&g_db, memory_order_acquire);
+}
+
+bool progress_store_path(char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    /* g_path is set once under g_lock in progress_store_open and only cleared
+     * on close; a brief lock gives a torn-free snapshot. Empty => not open. */
+    pthread_mutex_lock(&g_lock);
+    bool ok = g_path[0] != '\0' && strlen(g_path) < cap;
+    if (ok) snprintf(out, cap, "%s", g_path);
+    else    out[0] = '\0';
+    pthread_mutex_unlock(&g_lock);
+    return ok;
 }
 
 void progress_store_tx_lock(void)

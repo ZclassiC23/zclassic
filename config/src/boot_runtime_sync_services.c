@@ -29,6 +29,7 @@
 #include "services/gap_fill_service.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/rolling_anchor_service.h"
+#include "services/utxo_mirror_sync_service.h"
 #include "net/download.h"
 #include <stdio.h>
 
@@ -152,4 +153,59 @@ void boot_rolling_anchor_stop(void *ctx)
 {
     (void)ctx;
     rolling_anchor_stop();
+}
+
+/* Start the explorer-mirror feeder that keeps node.db's `utxos` table synced
+ * to the authoritative coins_kv set (runtime svc). Owns a file-static service
+ * instance (the kernel calls start/stop once each); g_utxo_mirror_sync points
+ * at it for diagnostics. node.db-only — never touches the consensus path. */
+static struct utxo_mirror_sync_service g_boot_utxo_mirror;
+
+bool boot_utxo_mirror_sync_start(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc)
+        return false;
+    struct node_db *ndb = boot_node_db(svc);
+    if (!ndb || !ndb->open) {
+        /* No mirror to feed (e.g. store-less runtime profile) — skip cleanly.
+         * OPTIONAL service, so returning false only logs a non-fatal warning. */
+        return false;
+    }
+    utxo_mirror_sync_init(&g_boot_utxo_mirror, ndb);
+    g_utxo_mirror_sync = &g_boot_utxo_mirror;
+    struct zcl_result r = utxo_mirror_sync_start(&g_boot_utxo_mirror);
+    if (r.ok) {
+        printf("[utxo_mirror] explorer-mirror feeder started\n");
+        return true;
+    }
+    fprintf(stderr, "WARNING: utxo_mirror_sync_start failed: %s:%d code=%d %s\n",
+            r.source_file, r.source_line, r.code, r.message);
+    g_utxo_mirror_sync = NULL;
+    return false;
+}
+
+/* Stop the explorer-mirror feeder. */
+void boot_utxo_mirror_sync_stop(void *ctx)
+{
+    (void)ctx;
+    utxo_mirror_sync_stop(&g_boot_utxo_mirror);
+    g_utxo_mirror_sync = NULL;
+}
+
+/* Register the explorer-mirror feeder into the runtime service kernel (the
+ * boot_utxo_parity_register pattern — keeps boot_services.c's spec table
+ * unchanged). Called from boot_register_runtime_services(). */
+bool boot_utxo_mirror_sync_register(struct boot_svc_ctx *svc)
+{
+    if (!svc)
+        return false;
+    const struct zcl_service_spec spec = {
+        .name = "utxo_mirror_sync",
+        .start = boot_utxo_mirror_sync_start,
+        .stop = boot_utxo_mirror_sync_stop,
+        .ctx = svc,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
+    return zcl_service_kernel_register(&svc->runtime_kernel, &spec);
 }

@@ -1030,6 +1030,8 @@ int main(void)
     failures += test_coins_kv();
     { extern int test_coins_kv_reset_for_reseed(void);
       failures += test_coins_kv_reset_for_reseed(); }
+    { extern int test_utxo_mirror_sync(void);
+      failures += test_utxo_mirror_sync(); }
     failures += test_seal_kv();
     failures += test_seal_ratify();
     failures += test_nullifier_kv();
