@@ -25,22 +25,24 @@
 #       systemctl --user enable --now zcl-portfwd
 #       systemctl --user {start,stop,restart,status} zcl-portfwd
 #
-# ── The 8080 collision note ────────────────────────────────────────────────────
-# The dead nginx-era `zcl-supply` stats backend may still LISTEN on 127.0.0.1:8080
-# (the node's HTTP-redirect target). Forwarding 80->8080 is only correct once that
-# process is retired. See docs/BLOCK_EXPLORER_HOSTING.md §B for the one-time cleanup.
+# ── 443-only by design (KEEP zcl-supply on 8080) ───────────────────────────────
+# We forward ONLY 443->127.0.0.1:8443 (the explorer's HTTPS). Port 8080 is owned by
+# the `zcl-supply` stats service and is left ALONE — we do NOT forward 80->8080 and
+# do NOT retire zcl-supply. The clearnet explorer is HTTPS-only (no plain-HTTP
+# redirect), which is the safer posture anyway. To also redirect 80, give the node a
+# redirect port that does not collide with zcl-supply first (separate change).
 
 [Unit]
-Description=zclassic23 clearnet port forward (443->127.0.0.1:8443, 80->127.0.0.1:8080)
+Description=zclassic23 clearnet port forward (443->127.0.0.1:8443; 8080 left to zcl-supply)
 Documentation=file:%h/github/zclassic23/docs/BLOCK_EXPLORER_HOSTING.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Default pairs (443:8443, 80:8080) are built into the binary; pass explicit
-# LISTEN:TARGET args here only to override (e.g. a custom https/http port).
-ExecStart=%h/.local/bin/zcl-portfwd
+# 443-only: forward HTTPS to the node, leave 8080 to zcl-supply. (The binary also
+# supports a built-in 80:8080 pair, but we deliberately do NOT use it here.)
+ExecStart=%h/.local/bin/zcl-portfwd 443:127.0.0.1:8443
 # Start even if the node isn't up yet, and keep trying forever. The forwarder
 # itself tolerates a down upstream (it drops the client and the next retries);
 # Restart=always covers a crash or a transient bind failure.

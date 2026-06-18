@@ -61,17 +61,13 @@ sudo -u rhett XDG_RUNTIME_DIR=/run/user/$(id -u rhett) systemctl --user restart 
 HOOK
 sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/zclassic23-explorer.sh
 
-# 3. Retire the old 8080 squatter FIRST (the dead nginx-era stats backend).
-#    The node's HTTP-redirect target is 127.0.0.1:8080; if `zcl-supply` still
-#    listens there, forwarding 80→8080 would hit the wrong backend. Check + stop:
-ss -ltnp | grep '127.0.0.1:8080'           # who's on 8080? must be the NODE
-systemctl --user stop zcl-supply 2>/dev/null || pkill -f zcl-supply || true
-sudo systemctl disable --now zcl-supply 2>/dev/null || true   # if it was a system unit
-
-# 4. Forward public 443→8443 and 80→8080 with the linger forwarder.
-#    This builds a tiny project-owned forwarder, installs a user-linger service,
-#    and (its ONLY privileged action) sets ONE file capability on the forwarder.
-#    Run this ONE command — after it, the agent manages the service with no sudo:
+# 3. Forward public 443→8443 with the linger forwarder. 443-ONLY by design:
+#    port 8080 belongs to the `zcl-supply` stats service — we leave it ALONE and do
+#    NOT retire it. The clearnet explorer is HTTPS-only (no plain-HTTP redirect),
+#    which is the safer posture anyway. This builds a tiny project-owned forwarder,
+#    installs a user-linger service, and (its ONLY privileged action) sets ONE file
+#    capability on it. Run this ONE command — after it, the agent manages the
+#    service with no sudo, ever:
 sudo bash /home/rhett/github/zclassic23/tools/scripts/zcl-portfwd-setup.sh
 ```
 
@@ -130,9 +126,10 @@ Same shape — substitute your domain and datadir.
 4. **Install the cert** into `<datadir>/ssl/fullchain.pem` + `privkey.pem`, owned by the
    node's user (mode 644 / 600). Wire the certbot `renewal-hooks/deploy` script from §B.2
    with your domain + datadir so renewals stay in sync.
-5. **Make sure nothing else holds 8080** (the node's HTTP-redirect target):
-   `ss -ltnp | grep 127.0.0.1:8080` should show the NODE. Stop any leftover
-   `zcl-supply` or other squatter first.
+5. **443-only by default — leave 8080 alone.** The forwarder ships forwarding only
+   `443→8443` (HTTPS). If you run other services on 8080 (e.g. `zcl-supply`), they
+   are untouched. The clearnet explorer is HTTPS-only; to also redirect plain HTTP,
+   first give the node a redirect port that doesn't collide, then add an `80:…` pair.
 6. **Forward 443→8443 and 80→8080** — run the one setup command, then the agent
    owns it:
    ```bash
