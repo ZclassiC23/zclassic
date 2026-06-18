@@ -18,8 +18,12 @@
 #include "views/format_helpers.h"
 
 #define ZCL_EXPLORER_GENESIS_TIME 1478403829LL
+/* INTERNAL == byte-reverse(DISPLAY): the little-endian value the `blocks`
+ * table stores and the genesis-hash gate strcmp's against. The prior constant
+ * was hand-corrupted (11/32 bytes off) and escaped notice only because the
+ * missing-heights gate fires first. Guarded by a unit test (reverse(DISPLAY)). */
 #define ZCL_EXPLORER_GENESIS_HASH_INTERNAL_HEX \
-    "020626013483f855df2dc2ebb7eb8098d4e4c99dc3efc3197942a2cd4c100700"
+    "0206260143838b5ff52dc2eb7b4b8099d4e4c99dc3ef19794289a2cd4c100700"
 #define ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX \
     "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602"
 

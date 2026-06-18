@@ -307,7 +307,11 @@ static size_t explorer_stats_build_verified_summary(uint8_t *r, size_t max,
                                                     sqlite3 *db)
 {
     size_t off = 0;
-    int64_t chain_height = stats_q_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    /* Current Height = the chain tip (blocks projection tracks it), NOT the
+     * UTXO-mirror max — the mirror can lag/freeze (cold-import restart), and
+     * labeling its stale height as "Current Height" mis-states the chain and
+     * mis-computes Consensus Supply (zcl_total_supply_zatoshi below). */
+    int64_t chain_height = stats_q_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
     int64_t block_rows = stats_q_i64(db, "SELECT count(*) FROM blocks");
     int64_t tx_rows = stats_q_i64(db, "SELECT count(*) FROM transactions");
     int64_t utxo_count = stats_q_i64(db, "SELECT count(*) FROM utxos");

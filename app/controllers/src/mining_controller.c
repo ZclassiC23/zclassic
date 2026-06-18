@@ -98,15 +98,12 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "currentblocktx",
                       (int64_t)ctx->main_state->nLastBlockTx);
 
-    double difficulty = 0.0;
-    if (tip) {
-        int shift = (tip->nBits >> 24) & 0xff;
-        double diff = (double)(0x0000ff & (tip->nBits >> 16));
-        while (shift < 29) { diff *= 256.0; shift++; }
-        while (shift > 29) { diff /= 256.0; shift--; }
-        if (diff != 0.0)
-            difficulty = (double)0x00ffff / diff;
-    }
+    /* Use the centralized ZCL difficulty helper (pow.h). The inline Bitcoin
+     * mantissa math here used the wrong 0x00ffff baseline AND truncated the
+     * 3-byte mantissa to its top byte — yielding ~599177 vs the canonical
+     * ~71.6 and freezing across retargets (top byte 0x1c is shared). pow.h
+     * is the single source of truth every other RPC/explorer surface uses. */
+    double difficulty = tip ? difficulty_from_index(tip) : 0.0;
     json_push_kv_real(result, "difficulty", difficulty);
 
     json_push_kv_str(result, "chain", cp->strNetworkID);
