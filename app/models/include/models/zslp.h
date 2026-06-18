@@ -11,7 +11,10 @@
 
 enum {
     ZSLP_TOKEN_KEY_MAX = 64,
-    ZSLP_TICKER_MAX = 10,
+    /* On-chain SLP tickers are unbounded; the longest real ZClassic ticker is
+     * 32 bytes. 32 lets the indexer store every on-chain token (the create
+     * RPC keeps its own stricter 10-char cap on user input). */
+    ZSLP_TICKER_MAX = 32,
     ZSLP_NAME_MAX = 64,
     ZSLP_DOC_URL_MAX = 256,
     ZSLP_ADDRESS_MAX = 128,

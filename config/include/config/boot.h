@@ -46,6 +46,11 @@ struct app_context {
                                  * (INSERT OR REPLACE). node.db only; never
                                  * touches coins_kv/progress.kv/consensus. */
     bool reimport_utxos;
+    bool backfill_zslp;        /* -backfill-zslp : fast one-shot — clear the
+                                 * zslp_* tables and re-derive tokens+transfers
+                                 * from the existing op_returns(is_slp=1) rows
+                                 * (no full reindex), then exit. node.db only;
+                                 * never touches coins_kv/progress.kv/consensus. */
     bool tor;
     const char *defer_proof_validation_below;  /* block hash: defer Groth16 at/below this height */
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */

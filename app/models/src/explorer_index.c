@@ -325,6 +325,7 @@ bool db_explorer_index_truncate(struct node_db *ndb)
         "sapling_spends", "sapling_outputs", "joinsplits",
         "sprout_nullifiers", "view_integrity",
         "znam_names", "znam_text_records", "znam_addr_records",
+        "zslp_tokens", "zslp_transfers", "zslp_balances",
     };
     for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
         char sql[64];
@@ -459,9 +460,10 @@ static void apply_znam(struct node_db *ndb, const struct transaction *tx,
 /* ── op_return dispatch ────────────────────────────────────────────── */
 
 /* Persist the generic op_returns row (one per tx) and dispatch to the two
- * on-chain OP_RETURN protocols: ZSLP (slp_parse → is_slp flag) and ZNAM
- * (znam_parse → apply_znam). Called only for the FIRST OP_RETURN output of
- * the tx (op_returns PK is txid). */
+ * on-chain OP_RETURN protocols: ZSLP (slp_parse → is_slp flag, then
+ * explorer_index_apply_slp in explorer_index_zslp.c) and ZNAM (znam_parse →
+ * apply_znam). Called only for the FIRST OP_RETURN
+ * output of the tx (op_returns PK is txid). */
 static void index_op_return(struct node_db *ndb, const struct transaction *tx,
                             const struct tx_out *out, int height)
 {
@@ -474,6 +476,9 @@ static void index_op_return(struct node_db *ndb, const struct transaction *tx,
     if (!db_op_return_save(ndb, tx->hash.data, height, script, len, is_slp))
         LOG_WARN("explorer", "index_op_return: op_returns save failed at h=%d",
                  height);
+
+    if (is_slp)
+        explorer_index_apply_slp(ndb, tx, &slpmsg, height);
 
     struct znam_message zm;
     if (znam_parse(script, len, &zm))

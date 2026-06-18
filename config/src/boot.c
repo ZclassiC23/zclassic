@@ -3535,6 +3535,13 @@ sapling_tree_boot_check_done:
     if (ctx->reindex_explorer && g_node_db.open)
         boot_reindex_explorer(&g_node_db);
 
+    /* -backfill-zslp: one-shot re-derive of zslp_* from op_returns (no full
+     * block re-walk), then exit before services. The helper guards db-open. */
+    if (ctx->backfill_zslp) {
+        boot_backfill_zslp(&g_node_db);
+        return true;
+    }
+
     boot_step_backfill_shielded_if_needed(ctx, tip);
 
     /* Skip services if no_services flag is set (speedrun / benchmarking) */

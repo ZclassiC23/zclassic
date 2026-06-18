@@ -35,6 +35,7 @@ struct spend_description;
 struct output_description;
 struct js_description;
 struct ar_errors;
+struct slp_message;
 
 /* Index every projection for one already-validated block: per-tx outputs,
  * inputs, op_returns (+ ZSLP flag / ZNAM apply), sapling spends/outputs,
@@ -113,5 +114,21 @@ bool db_tx_output_addr(struct node_db *ndb, const uint8_t txid[32],
  * TRANSFER are not partial-replay safe, so they MUST be cleared too).
  * node.db only. Returns false (logged) on the first DELETE failure. */
 bool db_explorer_index_truncate(struct node_db *ndb);
+
+/* Apply one parsed SLP Type-1 message (GENESIS/MINT/SEND) to the zslp_tokens
+ * + zslp_transfers projection, given the live block's full transaction.
+ * Implemented in explorer_index_zslp.c; called from index_op_return on the
+ * forward-sync and -reindex-explorer paths. node.db only; never gates a
+ * block. zslp_balances is intentionally not written. */
+void explorer_index_apply_slp(struct node_db *ndb, const struct transaction *tx,
+                              const struct slp_message *m, int height);
+
+/* Fast one-shot ZSLP backfill: re-derive zslp_tokens + zslp_transfers from
+ * the existing op_returns rows (is_slp=1), resolving each transfer's
+ * recipient from tx_outputs — WITHOUT a full genesis..tip block re-walk.
+ * Clears stale zslp_* rows first. zslp_balances is left empty (a credit-only
+ * ledger cannot debit SEND inputs). node.db only. Returns the number of SLP
+ * op_returns processed (>= 0), or -1 on a fatal error (logged). */
+int64_t db_zslp_backfill(struct node_db *ndb);
 
 #endif

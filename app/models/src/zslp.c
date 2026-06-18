@@ -73,7 +73,7 @@ bool db_zslp_token_validate_record(const struct zslp_token_record *rec,
 {
     ar_errors_clear(errors);
     validates_presence_of(errors, rec, token_id);
-    validates_range(errors, rec, decimals, 0, 8);
+    validates_range(errors, rec, decimals, 0, 9);
     validates_non_negative(errors, rec, genesis_height);
     validates_non_negative(errors, rec, initial_quantity);
     return !ar_errors_any(errors);
@@ -94,7 +94,7 @@ bool db_zslp_token_key_validate_record(const struct zslp_token_key_record *rec,
         model_string_is_alnum(rec->token_id) ||
         (strlen(rec->token_id) == 64 && model_string_is_hex(rec->token_id)),
         "token_id", "must be alphanumeric or 64-char hex");
-    validates_range(errors, rec, decimals, 0, 8);
+    validates_range(errors, rec, decimals, 0, 9);
     validates_non_negative(errors, rec, genesis_height);
     validates_non_negative(errors, rec, initial_quantity);
     return !ar_errors_any(errors);
@@ -175,7 +175,10 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
     rec.genesis_height = genesis_height;
     rec.initial_quantity = initial_quantity;
     struct ar_callbacks *cbs = db_zslp_token_callbacks();
-    if (!ticker || ticker[0] == '\0' || strlen(ticker) > ZSLP_TICKER_MAX) {
+    /* Indexer path: accept an empty ticker (legal on-chain — ~22% of real
+     * ZClassic SLP tokens carry none; the view renders them "(unnamed)") so
+     * every GENESIS gets a row. Reject only NULL or an over-long ticker. */
+    if (!ticker || strlen(ticker) > ZSLP_TICKER_MAX) {
         fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
         return false;
     }
@@ -309,6 +312,8 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     if (ok)
         ar_run_after_save(cbs, &rec);
     else
+        // obs-ok:caller-logs — callers (explorer_index_zslp.c) LOG_WARN the
+        // false return with height+vout+type, so the failure is observable.
         fprintf(stderr, "zslp_transfer save failed: %s\n", sqlite3_errmsg(ndb->db));
     return ok;
 }

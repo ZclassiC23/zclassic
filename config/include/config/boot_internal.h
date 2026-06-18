@@ -69,6 +69,11 @@ bool boot_index_clear_coins_state(struct node_db *ndb);
  * explorer table, never a divergence. Logs and continues on error. */
 bool boot_reindex_explorer(struct node_db *ndb);
 
+/* -backfill-zslp one-shot: re-derive the zslp_* tables from the existing
+ * op_returns(is_slp=1) rows, resolving recipients from tx_outputs — no full
+ * genesis..tip re-walk. node.db ONLY. Logs and continues on error. */
+bool boot_backfill_zslp(struct node_db *ndb);
+
 /* CSR-gated boot tip promotion (defined in boot.c; shared with
  * boot_index.c). Commits `tip` as the active tip + coins-best through the
  * chain_state_repository under a boot-repair rollback authorization. */

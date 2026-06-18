@@ -1699,6 +1699,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;
+        else if (strcmp(argv[i], "-backfill-zslp") == 0) ctx.backfill_zslp = true;
         else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
         else if (strcmp(argv[i], "-allow-degraded") == 0) ctx.allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
@@ -1783,6 +1784,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "Initialization failed.\n");
         return 1;
     }
+
+    /* -backfill-zslp is a one-shot: app_init re-derived the zslp_* tables and
+     * returned before any service started. Exit now — running the peer-wiring
+     * below would call app_add_node() against a NULL connman. The backfill
+     * committed through SQLite WAL, so the data is durable without a shutdown. */
+    if (ctx.backfill_zslp)
+        return 0;
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-addnode=", 9) == 0)

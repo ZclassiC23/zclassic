@@ -221,6 +221,20 @@ bool boot_reindex_explorer(struct node_db *ndb)
     return ok;
 }
 
+bool boot_backfill_zslp(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("boot", "backfill_zslp: ndb invalid (ndb=%p)", (void *)ndb);
+    printf("Backfill ZSLP: re-deriving tokens+transfers from op_returns "
+           "(is_slp=1) — no full reindex...\n");
+    int64_t n = db_zslp_backfill(ndb);
+    if (n < 0) {
+        LOG_WARN("boot", "backfill_zslp: backfill failed");
+        return false;
+    }
+    return true;
+}
+
 bool reindex_chainstate(struct main_state *ms,
                           struct coins_view_sqlite *cvs,
                           struct coins_view_cache *cvtip,

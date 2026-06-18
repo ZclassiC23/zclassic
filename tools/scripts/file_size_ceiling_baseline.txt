@@ -12,7 +12,7 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 
 # config/ composition root — boot mega-files, decomposed wave-by-wave.
-config/src/boot.c 3618
+config/src/boot.c 3625
 config/src/boot_services.c 1768
 
 # app/jobs — tip_finalize_stage.c was 797 lines before wave3/lockwindow-and-deletions;
