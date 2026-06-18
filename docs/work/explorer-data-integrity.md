@@ -68,9 +68,14 @@ historian (`explorer_internal.h:434-437`).
   the suppression reason. /explorer/stats is the one that was wrong (fixed above).
 - **`addresses` table** — a faithful in-sync `GROUP BY` of the mirror; self-heals
   once A lands. (6110 ZCL "gap" = the 245 NULL-address UTXOs, reconciles exactly.)
-- **ZSLP token tables empty** — ZCL has no minted ZSLP tokens; empty is the TRUE
-  state. The defect is the missing chain-scanner (C), not the empty result. Do
-  not fabricate tokens; do wire the scanner so a real broadcast would appear.
+- **ZSLP token tables empty — this IS a real bug (corrected 2026-06-18).** A raw
+  scan of the on-disk block files for the `OP_RETURN 6a 04 "SLP\0"` lokad finds
+  **4,302 real ZSLP operations on-chain** — the blank page is missing real data
+  because the OP_RETURN/`slp_parse` scanner never ran (op_returns = 0 rows). The
+  full per-block indexer + reindex surfaces all 4,302. (Earlier "correctly empty"
+  was wrong — it read the empty table, not the chain.) **ZNAM is genuinely empty**
+  (raw scan for `6a 04 "ZNAM"` = 0 — no names ever registered), so znam_names
+  staying empty after reindex is correct.
 
 ## Order
 A (mirror feeder) → C-demote-gates + genesis (re-green historian) →
