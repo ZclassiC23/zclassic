@@ -42,23 +42,19 @@ Wants=network-online.target
 Type=simple
 # 443-only: forward HTTPS to the node, leave 8080 to zcl-supply. (The binary also
 # supports a built-in 80:8080 pair, but we deliberately do NOT use it here.)
-ExecStart=%h/.local/bin/zcl-portfwd 443:127.0.0.1:8443
+ExecStart=%h/.local/bin/zcl-portfwd 443:8443
 # Start even if the node isn't up yet, and keep trying forever. The forwarder
 # itself tolerates a down upstream (it drops the client and the next retries);
 # Restart=always covers a crash or a transient bind failure.
 Restart=always
 RestartSec=2
-# Light hardening — the forwarder needs only sockets, no files, no privileges
-# beyond the file capability granted by the one-time setcap.
-NoNewPrivileges=false
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
-ProtectControlGroups=true
-ProtectKernelModules=true
-RestrictAddressFamilies=AF_INET AF_INET6
-RestrictNamespaces=true
-LockPersonality=true
+# Minimal by necessity: a systemd --user service binding a low port relies on the
+# FILE capability (setcap cap_net_bind_service on the forwarder). Sandboxing
+# directives like ProtectSystem=strict / RestrictNamespaces / ProtectKernelModules
+# imply NoNewPrivileges and/or need privileges the user manager lacks — they make
+# the unit fail at setup with status=218/CAPABILITIES and the bind never happens.
+# The forwarder is a dumb byte pipe (no files, TLS terminates in the node), so the
+# file cap alone is the whole privilege surface. Keep this stanza minimal.
 
 [Install]
 WantedBy=default.target
