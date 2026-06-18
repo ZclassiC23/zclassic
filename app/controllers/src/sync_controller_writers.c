@@ -560,3 +560,21 @@ bool node_db_sync_set_tip(struct node_db *ndb,
     ctx.height = height;
     return sync_run_write(ndb, node_db_sync_set_tip_write, &ctx) && ctx.ok;
 }
+
+static bool node_db_sync_reset_tip_write(struct node_db *ndb, void *ctx)
+{
+    bool *ok = ctx;
+    /* Height sentinel -1 → get_tip_height returns -1 → catchup start = 0
+     * (re-walk from genesis). The stale hash blob is harmless; the height
+     * key is the authority the catchup driver reads. */
+    *ok = node_db_state_set_int(ndb, SYNC_PROJECTION_TIP_HEIGHT_KEY, -1);
+    return *ok;
+}
+
+bool node_db_sync_reset_tip(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("sync", "sync_reset_tip: ndb invalid (ndb=%p)", (void *)ndb);
+    bool ok = false;
+    return sync_run_write(ndb, node_db_sync_reset_tip_write, &ok) && ok;
+}

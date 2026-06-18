@@ -224,6 +224,72 @@ static const char *SCHEMA[] = {
     "is_zcl23 INTEGER DEFAULT 1,"
     "UNIQUE(ip,port))",
 
+    /* Explorer projection tables — the full per-block indexer (node.db
+     * only). Mirrors the migration DDL (database_migrate.c v7 op_returns +
+     * v9 tx_outputs/inputs/sapling/joinsplits/sprout/view_integrity) so a
+     * FRESH db has them at prepare_statements() time (the explorer-index
+     * cached statements are prepared before migrations run). The migration
+     * blocks stay for upgrading pre-v9 databases; CREATE TABLE IF NOT EXISTS
+     * is idempotent so there is no conflict. */
+    "CREATE TABLE IF NOT EXISTS op_returns ("
+    "txid BLOB PRIMARY KEY,"
+    "block_height INTEGER NOT NULL,"
+    "script BLOB NOT NULL,"
+    "is_slp INTEGER NOT NULL DEFAULT 0)",
+    "CREATE INDEX IF NOT EXISTS idx_opret_height ON op_returns(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_opret_slp"
+    " ON op_returns(is_slp) WHERE is_slp = 1",
+
+    "CREATE TABLE IF NOT EXISTS tx_outputs ("
+    "txid BLOB NOT NULL, vout INTEGER NOT NULL,"
+    "value INTEGER NOT NULL, script_type INTEGER NOT NULL DEFAULT 0,"
+    "address_hash BLOB, block_height INTEGER NOT NULL,"
+    "PRIMARY KEY (txid, vout))",
+    "CREATE INDEX IF NOT EXISTS idx_txo_addr"
+    " ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_txo_height ON tx_outputs(block_height)",
+
+    "CREATE TABLE IF NOT EXISTS tx_inputs ("
+    "txid BLOB NOT NULL, vin_index INTEGER NOT NULL,"
+    "prev_txid BLOB NOT NULL, prev_vout INTEGER NOT NULL,"
+    "block_height INTEGER NOT NULL,"
+    "PRIMARY KEY (txid, vin_index))",
+    "CREATE INDEX IF NOT EXISTS idx_txi_prev ON tx_inputs(prev_txid, prev_vout)",
+    "CREATE INDEX IF NOT EXISTS idx_txi_height ON tx_inputs(block_height)",
+
+    "CREATE TABLE IF NOT EXISTS sapling_spends ("
+    "txid BLOB NOT NULL, spend_index INTEGER NOT NULL,"
+    "cv BLOB NOT NULL, anchor BLOB NOT NULL,"
+    "nullifier BLOB NOT NULL, rk BLOB NOT NULL,"
+    "block_height INTEGER NOT NULL,"
+    "PRIMARY KEY (txid, spend_index))",
+    "CREATE INDEX IF NOT EXISTS idx_ss_nf ON sapling_spends(nullifier)",
+    "CREATE INDEX IF NOT EXISTS idx_ss_height ON sapling_spends(block_height)",
+
+    "CREATE TABLE IF NOT EXISTS sapling_outputs ("
+    "txid BLOB NOT NULL, output_index INTEGER NOT NULL,"
+    "cv BLOB NOT NULL, cm BLOB NOT NULL,"
+    "ephemeral_key BLOB NOT NULL, block_height INTEGER NOT NULL,"
+    "PRIMARY KEY (txid, output_index))",
+    "CREATE INDEX IF NOT EXISTS idx_so_height ON sapling_outputs(block_height)",
+
+    "CREATE TABLE IF NOT EXISTS joinsplits ("
+    "txid BLOB NOT NULL, js_index INTEGER NOT NULL,"
+    "vpub_old INTEGER NOT NULL, vpub_new INTEGER NOT NULL,"
+    "anchor BLOB NOT NULL, block_height INTEGER NOT NULL,"
+    "PRIMARY KEY (txid, js_index))",
+    "CREATE INDEX IF NOT EXISTS idx_js_height ON joinsplits(block_height)",
+
+    "CREATE TABLE IF NOT EXISTS sprout_nullifiers ("
+    "nullifier BLOB PRIMARY KEY,"
+    "txid BLOB NOT NULL, block_height INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_spnf_height"
+    " ON sprout_nullifiers(block_height)",
+
+    "CREATE TABLE IF NOT EXISTS view_integrity ("
+    "height INTEGER PRIMARY KEY,"
+    "sha3_hash BLOB NOT NULL)",
+
     /* Node state */
     "CREATE TABLE IF NOT EXISTS node_state ("
     "key TEXT PRIMARY KEY,value BLOB)",

@@ -64,6 +64,19 @@ static const char *const DB_DROP_INDEXES[] = {
     "DROP INDEX IF EXISTS idx_utxo_height_value",
     "DROP INDEX IF EXISTS idx_tx_block",
     "DROP INDEX IF EXISTS idx_tx_height",
+    /* Explorer projection secondary indexes — deferred during the bulk
+     * per-block reindex (PKs stay to enforce idempotent overwrite). */
+    "DROP INDEX IF EXISTS idx_txo_addr",
+    "DROP INDEX IF EXISTS idx_txo_height",
+    "DROP INDEX IF EXISTS idx_txi_prev",
+    "DROP INDEX IF EXISTS idx_txi_height",
+    "DROP INDEX IF EXISTS idx_ss_nf",
+    "DROP INDEX IF EXISTS idx_ss_height",
+    "DROP INDEX IF EXISTS idx_so_height",
+    "DROP INDEX IF EXISTS idx_js_height",
+    "DROP INDEX IF EXISTS idx_spnf_height",
+    "DROP INDEX IF EXISTS idx_opret_height",
+    "DROP INDEX IF EXISTS idx_opret_slp",
 };
 static const char *const DB_CREATE_INDEXES[] = {
     "CREATE INDEX IF NOT EXISTS idx_utxo_address"
@@ -78,6 +91,29 @@ static const char *const DB_CREATE_INDEXES[] = {
         " ON transactions(block_hash)",
     "CREATE INDEX IF NOT EXISTS idx_tx_height"
         " ON transactions(block_height)",
+    /* Explorer projection secondary indexes (mirror database_migrate.c v9). */
+    "CREATE INDEX IF NOT EXISTS idx_txo_addr"
+        " ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_txo_height"
+        " ON tx_outputs(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_txi_prev"
+        " ON tx_inputs(prev_txid, prev_vout)",
+    "CREATE INDEX IF NOT EXISTS idx_txi_height"
+        " ON tx_inputs(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_ss_nf"
+        " ON sapling_spends(nullifier)",
+    "CREATE INDEX IF NOT EXISTS idx_ss_height"
+        " ON sapling_spends(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_so_height"
+        " ON sapling_outputs(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_js_height"
+        " ON joinsplits(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_spnf_height"
+        " ON sprout_nullifiers(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_opret_height"
+        " ON op_returns(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_opret_slp"
+        " ON op_returns(is_slp) WHERE is_slp = 1",
 };
 #define NUM_DB_INDEXES (sizeof(DB_DROP_INDEXES) / sizeof(DB_DROP_INDEXES[0]))
 

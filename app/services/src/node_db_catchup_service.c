@@ -34,6 +34,7 @@
 #include "models/db_txn.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
+#include "models/explorer_index.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "chain/chain.h"
@@ -111,12 +112,26 @@ uint8_t *sync_controller_mmap_block_file(const char *datadir,
                                          int file_num,
                                          size_t *out_size);
 
-/* Lean index: block header + txid index only.
- * No UTXO tracking, no nullifiers, no solution blob.
- * ~5x fewer SQLite ops than sync_block_inner. */
+/* Lean index: block header + txid index + the full explorer projections.
+ *
+ * Per-block write order: stamp the txid index rows (transactions table),
+ * run the single per-block explorer hook (explorer_index_block, which
+ * writes tx_outputs/inputs/op_returns/sapling/joinsplits/sprout_nullifiers
+ * + the chained view_integrity receipt and returns the shielded value
+ * accumulators), backfill blk.sprout_value/sapling_value from those
+ * accumulators, THEN db_block_save — so the blocks row and the integrity
+ * receipt agree. prev_receipt carries the previous height's receipt
+ * forward across the ascending catchup walk (NULL/zeros at genesis);
+ * out_receipt receives this height's receipt for the next iteration.
+ *
+ * The explorer hook never gates this path: it touches node.db only and a
+ * projection save failure is a degraded explorer row, logged and skipped,
+ * never an abort. */
 static bool sync_block_lean(struct node_db *ndb,
                             const struct block *blk,
-                            const struct block_index *pindex)
+                            const struct block_index *pindex,
+                            const uint8_t prev_receipt[32],
+                            uint8_t out_receipt[32])
 {
     if (!ndb || !ndb->open || !blk || !pindex)
         LOG_FAIL("sync", "sync_block_lean: invalid args (ndb=%p, blk=%p, pindex=%p)",
@@ -147,10 +162,6 @@ static bool sync_block_lean(struct node_db *ndb,
     db_blk.data_pos = (int)pindex->nDataPos;
     db_blk.num_tx = (int)blk->num_vtx;
 
-    if (!db_block_save(ndb, &db_blk))
-        LOG_FAIL("sync", "sync_block_lean: db_block_save failed at height %d",
-                 pindex->nHeight);
-
     for (size_t i = 0; i < blk->num_vtx; i++) {
         const struct transaction *tx = &blk->vtx[i];
 
@@ -168,7 +179,50 @@ static bool sync_block_lean(struct node_db *ndb,
                      pindex->nHeight, i);
     }
 
+    /* Full per-block explorer projections + chained integrity receipt.
+     * Read-derived, node.db-only; returns the shielded value accumulators
+     * so the blocks row agrees with the receipt it just wrote. */
+    int64_t sprout_val = 0, sapling_val = 0;
+    if (!explorer_index_block(ndb, blk, pindex, prev_receipt, out_receipt,
+                              &sprout_val, &sapling_val))
+        LOG_WARN("catchup", "sync_block_lean: explorer projections failed at "
+                 "height %d (continuing — degraded explorer row, not fatal)",
+                 pindex->nHeight);
+    db_blk.sprout_value = sprout_val;
+    db_blk.sapling_value = sapling_val;
+
+    if (!db_block_save(ndb, &db_blk))
+        LOG_FAIL("sync", "sync_block_lean: db_block_save failed at height %d",
+                 pindex->nHeight);
+
     return true;
+}
+
+/* Seed the integrity-receipt chain: read the sha3_hash receipt recorded
+ * for height h (the block just below the catchup start). Fills `out` with
+ * the 32-byte receipt and returns true, or leaves `out` untouched and
+ * returns false when no row exists (genesis start → caller uses zeros). */
+static bool catchup_read_prev_receipt(struct node_db *ndb, int h,
+                                      uint8_t out[32])
+{
+    if (!ndb || !ndb->open || h < 0)
+        return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT sha3_hash FROM view_integrity WHERE height=?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_int64(s, 1, h);
+    bool found = false;
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(s, 0);
+        if (blob && sqlite3_column_bytes(s, 0) >= 32) {
+            memcpy(out, blob, 32);
+            found = true;
+        }
+    }
+    sqlite3_finalize(s);
+    return found;
 }
 
 /* Try-decrypt Sapling outputs in a transaction and save to SQLite.
@@ -401,6 +455,14 @@ int node_db_catchup_service_run(struct node_db *ndb,
     int first_hole_h = -1;
     int skip_file = -1;
 
+    /* Integrity-receipt chain carry. Seed from the receipt at start-1
+     * (zeros at a genesis start). Updated after each indexed block and
+     * threaded into sync_block_lean so the per-height SHA3 receipt chains
+     * across the whole ascending walk without a per-block SELECT. */
+    uint8_t prev_receipt[32] = {0};
+    if (start > 0)
+        catchup_read_prev_receipt(ndb, start - 1, prev_receipt);
+
     for (int h = start; h <= chain_tip; h++) {
         if (g_shutdown_requested) {
             interrupted = true;
@@ -476,13 +538,15 @@ int node_db_catchup_service_run(struct node_db *ndb,
             }
         }
 
-        /* Lean index: block header + txid index */
-        if (!sync_block_lean(ndb, &blk, pindex)) {
+        /* Lean index: block header + txid index + explorer projections */
+        uint8_t this_receipt[32];
+        if (!sync_block_lean(ndb, &blk, pindex, prev_receipt, this_receipt)) {
             LOG_WARN("catchup", "catchup: lean index failed at height %d (sqlite=%s)", h, sqlite3_errmsg(ndb->db));
             block_free(&blk);
             failed = true;
             break;
         }
+        memcpy(prev_receipt, this_receipt, 32);
 
         /* Wallet scan */
         if (w) {

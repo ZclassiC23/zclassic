@@ -25,6 +25,8 @@
 #include "coins/coins_view.h"
 #include "storage/coins_view_sqlite.h"
 #include "models/database.h"
+#include "models/explorer_index.h"
+#include "controllers/sync_controller.h"
 #include "net/snapshot_sync_contract.h"
 #include "jobs/reducer_frontier.h"
 #include "services/reindex_epilogue.h"
@@ -195,6 +197,27 @@ bool boot_index_clear_coins_state(struct node_db *ndb)
             "DELETE FROM node_state WHERE key IN "
             "('coins_best_block','utxo_commitment','utxo_sha3')"))
         ok = false;
+    return ok;
+}
+
+bool boot_reindex_explorer(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("boot", "reindex_explorer: ndb invalid (ndb=%p)",
+                 (void *)ndb);
+    printf("Reindex explorer: truncating projection + ZNAM tables, "
+           "rewinding catchup tip to genesis\n");
+    bool ok = true;
+    if (!db_explorer_index_truncate(ndb)) {
+        LOG_WARN("boot", "reindex_explorer: projection truncate had errors "
+                 "(continuing)");
+        ok = false;
+    }
+    if (!node_db_sync_reset_tip(ndb)) {
+        LOG_WARN("boot", "reindex_explorer: failed to rewind catchup tip "
+                 "(reindex may not re-walk)");
+        ok = false;
+    }
     return ok;
 }
 

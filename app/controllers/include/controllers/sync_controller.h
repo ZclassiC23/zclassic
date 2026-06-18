@@ -174,6 +174,12 @@ bool node_db_sync_get_tip_hash(struct node_db *ndb, uint8_t hash_out[32]);
 bool node_db_sync_set_tip(struct node_db *ndb,
                           const uint8_t hash[32], int height);
 
+/* Reset the SQLite sync projection cursor to the "no tip" sentinel (-1) so
+ * the next catchup re-walks from genesis (start = tip+1 = 0). Used by the
+ * -reindex-explorer driver after truncating the projection tables. node.db
+ * only; touches no consensus state. */
+bool node_db_sync_reset_tip(struct node_db *ndb);
+
 /* Catch up SQLite from existing chain data on disk.
  * Reads blocks from (sqlite_tip+1) to chain_tip and indexes them.
  * Also scans for wallet transactions if wallet is provided.

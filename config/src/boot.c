@@ -714,9 +714,8 @@ static void boot_step_finalize_chain_state(void)
     if (tip && tip->phashBlock) {
         if (g_node_db.open &&
             !node_db_sync_set_tip(&g_node_db, tip->phashBlock->data,
-                                  tip->nHeight)) {
+                                  tip->nHeight))
             fprintf(stderr, "boot: failed to persist final chain tip\n");
-        }
         char hex[65];
         uint256_get_hex(tip->phashBlock, hex);
         printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
@@ -1581,7 +1580,6 @@ bool app_init(struct app_context *ctx)
          * ownership of background jobs, so shutdown can join it cleanly. */
     }
 
-
     /* Open block index database.
      * Remove stale LOCK files — left behind by unclean legacy import exit. */
     char blocktree_path[1024];
@@ -1708,17 +1706,14 @@ bool app_init(struct app_context *ctx)
                 struct stat cs_st;
                 bool has_chainstate = (stat(cs_path, &cs_st) == 0 &&
                                         S_ISDIR(cs_st.st_mode));
-                if (has_chainstate) {
+                int64_t utxo_count = node_db_utxo_count(&g_node_db);
+                if (has_chainstate)
                     printf("[boot] chainstate/ exists — skipping "
                            "coins_best_block seed (LDB import will set it)\n");
-                } else {
-                    int64_t utxo_count = node_db_utxo_count(&g_node_db);
-                    if (utxo_count > 0) {
-                        printf("[boot] coins_best_block is unset with %lld "
-                               "UTXOs; refusing to seed it from sync "
-                               "projection\n", (long long)utxo_count);
-                    }
-                }
+                else if (utxo_count > 0)
+                    printf("[boot] coins_best_block is unset with %lld "
+                           "UTXOs; refusing to seed it from sync "
+                           "projection\n", (long long)utxo_count);
             }
         }
 
@@ -3534,6 +3529,11 @@ sapling_tree_boot_check_done:
 
     boot_step_finalize_chain_state();
     struct block_index *tip = active_chain_tip(&g_state.chain_active);
+
+    /* -reindex-explorer: truncate + rewind AFTER finalize re-stamped the tip
+     * so the backfill re-walks genesis..tip (node.db only, boot_index.c). */
+    if (ctx->reindex_explorer && g_node_db.open)
+        boot_reindex_explorer(&g_node_db);
 
     boot_step_backfill_shielded_if_needed(ctx, tip);
 

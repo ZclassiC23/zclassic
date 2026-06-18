@@ -61,6 +61,14 @@ bool reindex_chainstate(struct main_state *ms,
  * FATAL boot before -reindex-chainstate can run). Idempotent. */
 bool boot_index_clear_coins_state(struct node_db *ndb);
 
+/* -reindex-explorer driver: truncate every explorer projection + on-chain
+ * ZNAM table and rewind the shared node.db catchup tip to the "no tip"
+ * sentinel so the existing 0..tip backfill walk re-emits every projection
+ * row (all INSERT OR REPLACE). node.db ONLY — touches no coins_kv /
+ * progress.kv / block-index / consensus state; worst case is an incomplete
+ * explorer table, never a divergence. Logs and continues on error. */
+bool boot_reindex_explorer(struct node_db *ndb);
+
 /* CSR-gated boot tip promotion (defined in boot.c; shared with
  * boot_index.c). Commits `tip` as the active tip + coins-best through the
  * chain_state_repository under a boot-repair rollback authorization. */

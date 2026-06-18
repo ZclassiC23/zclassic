@@ -39,6 +39,12 @@ struct app_context {
     bool sapling_scan;
     const char *snapshot_dir;
     bool reindex_chainstate;
+    bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
+                                 * projection + on-chain ZNAM tables and rewind
+                                 * the shared node.db catchup tip to genesis so
+                                 * the 0..tip walk re-emits every projection row
+                                 * (INSERT OR REPLACE). node.db only; never
+                                 * touches coins_kv/progress.kv/consensus. */
     bool reimport_utxos;
     bool tor;
     const char *defer_proof_validation_below;  /* block hash: defer Groth16 at/below this height */

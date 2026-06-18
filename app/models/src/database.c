@@ -256,6 +256,47 @@ static bool prepare_statements(struct node_db *ndb)
          "SELECT ip, port, p2p_port, last_seen, is_zcl23"
          " FROM file_services WHERE ip=? AND port=?");
 
+    /* Explorer projection inserts (full per-block indexer). All
+     * INSERT OR REPLACE keyed on their natural PK so a reindex / restart
+     * re-walk overwrites the row, never double-inserts. node.db only —
+     * none of these touch coins_kv / progress.kv / consensus. */
+    PREP(stmt_txo_insert,
+         "INSERT OR REPLACE INTO tx_outputs"
+         "(txid,vout,value,script_type,address_hash,block_height)"
+         " VALUES(?,?,?,?,?,?)");
+
+    PREP(stmt_txi_insert,
+         "INSERT OR REPLACE INTO tx_inputs"
+         "(txid,vin_index,prev_txid,prev_vout,block_height)"
+         " VALUES(?,?,?,?,?)");
+
+    PREP(stmt_opret_insert,
+         "INSERT OR REPLACE INTO op_returns"
+         "(txid,block_height,script,is_slp) VALUES(?,?,?,?)");
+
+    PREP(stmt_sspend_insert,
+         "INSERT OR REPLACE INTO sapling_spends"
+         "(txid,spend_index,cv,anchor,nullifier,rk,block_height)"
+         " VALUES(?,?,?,?,?,?,?)");
+
+    PREP(stmt_soutput_insert,
+         "INSERT OR REPLACE INTO sapling_outputs"
+         "(txid,output_index,cv,cm,ephemeral_key,block_height)"
+         " VALUES(?,?,?,?,?,?)");
+
+    PREP(stmt_js_insert,
+         "INSERT OR REPLACE INTO joinsplits"
+         "(txid,js_index,vpub_old,vpub_new,anchor,block_height)"
+         " VALUES(?,?,?,?,?,?)");
+
+    PREP(stmt_spnf_insert,
+         "INSERT OR REPLACE INTO sprout_nullifiers"
+         "(nullifier,txid,block_height) VALUES(?,?,?)");
+
+    PREP(stmt_vint_insert,
+         "INSERT OR REPLACE INTO view_integrity"
+         "(height,sha3_hash) VALUES(?,?)");
+
 #undef PREP
     return true;
 }
@@ -385,6 +426,14 @@ static void finalize_statements(struct node_db *ndb)
     sqlite3_finalize(ndb->stmt_peer_count);
     sqlite3_finalize(ndb->stmt_file_service_save);
     sqlite3_finalize(ndb->stmt_file_service_find);
+    sqlite3_finalize(ndb->stmt_txo_insert);
+    sqlite3_finalize(ndb->stmt_txi_insert);
+    sqlite3_finalize(ndb->stmt_opret_insert);
+    sqlite3_finalize(ndb->stmt_sspend_insert);
+    sqlite3_finalize(ndb->stmt_soutput_insert);
+    sqlite3_finalize(ndb->stmt_js_insert);
+    sqlite3_finalize(ndb->stmt_spnf_insert);
+    sqlite3_finalize(ndb->stmt_vint_insert);
 }
 
 bool node_db_open(struct node_db *ndb, const char *path)

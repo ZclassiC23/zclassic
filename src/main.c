@@ -1698,6 +1698,7 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-snapshot=", 10) == 0) ctx.snapshot_dir = argv[i]+10;
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
+        else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;
         else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
         else if (strcmp(argv[i], "-allow-degraded") == 0) ctx.allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;

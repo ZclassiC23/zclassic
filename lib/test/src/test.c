@@ -592,6 +592,7 @@ int main(void)
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
+        failures += test_explorer_index();
         printf("\n=== explorer subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -732,6 +733,7 @@ int main(void)
     failures += test_blog();
     failures += test_api();
     failures += test_explorer();
+    failures += test_explorer_index();
     failures += test_mining();
     failures += test_regtest_generate();
     failures += test_utxo_commitment();

@@ -56,6 +56,17 @@ struct node_db {
     sqlite3_stmt *stmt_file_service_save;
     sqlite3_stmt *stmt_file_service_find;
 
+    /* Explorer projection model (full per-block indexer) — cached for
+     * the per-tx hot path in sync_block_lean. See explorer_index.c. */
+    sqlite3_stmt *stmt_txo_insert;
+    sqlite3_stmt *stmt_txi_insert;
+    sqlite3_stmt *stmt_opret_insert;
+    sqlite3_stmt *stmt_sspend_insert;
+    sqlite3_stmt *stmt_soutput_insert;
+    sqlite3_stmt *stmt_js_insert;
+    sqlite3_stmt *stmt_spnf_insert;
+    sqlite3_stmt *stmt_vint_insert;
+
     /* Batch sync: accumulate N blocks before COMMIT for throughput.
      * batch_size=1 is the safe default (per-block COMMIT).
      * During IBD, set batch_size=100+ for 10-50x SQLite throughput. */
