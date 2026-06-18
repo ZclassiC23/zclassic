@@ -321,6 +321,17 @@ $(ZCL_RPC_BIN): tools/zcl-rpc.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
+# zcl-portfwd: tiny self-contained userspace TCP forwarder that maps public
+# 443/80 -> the node's unprivileged high ports (8443/8080). It is the ONE file
+# that gets cap_net_bind_service (via tools/scripts/zcl-portfwd-setup.sh), so
+# the node binary stays uncapped across redeploys. No node deps. See
+# docs/BLOCK_EXPLORER_HOSTING.md.
+.PHONY: zcl-portfwd
+zcl-portfwd: $(BIN_DIR)/zcl-portfwd
+$(BIN_DIR)/zcl-portfwd: tools/zcl_portfwd.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
+
 # gen_sha3_windows: one-shot tool that queries a fully-synced reference
 # node and overwrites lib/chain/{include/chain,src}/sha3_windows.{h,c}
 # with SHA3-256 commitments over 1000-block windows. Standalone build:

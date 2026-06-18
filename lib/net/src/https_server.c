@@ -4,9 +4,10 @@
  * Uses OpenSSL for TLS. HTTP port redirects to HTTPS.
  * Bounded worker pool prevents unbounded detached thread growth.
  *
- * Listens on high ports (8443/8080) to avoid needing root or setcap.
- * Use iptables NAT redirect (80→8080, 443→8443) for public access.
- * See deploy/zcl-portfwd.service. */
+ * Listens on high ports (8443/8080) to avoid needing root or setcap on the node.
+ * For public 443/80 access, a tiny capped userspace forwarder maps the ports
+ * (the node stays unprivileged). See tools/zcl_portfwd.c,
+ * deploy/systemd/zcl-portfwd.service, and docs/BLOCK_EXPLORER_HOSTING.md. */
 
 #include "net/https_server.h"
 #include <openssl/ssl.h>

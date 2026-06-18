@@ -26,7 +26,9 @@ At boot, `config/src/boot_frontend_services.c:boot_https_explorer_start()`:
    "zclnet.net", 8443, 8080)`. (During IBD it defers and auto-starts near tip.)
 
 The node binds the high ports (8443/8080) **unprivileged**. Public **443/80** reach it
-via a small root-only **port forward** (below) — the node itself never binds 443.
+via a tiny **linger port-forward service** (below) — the node itself never binds 443.
+The forward is a ~40-line project-owned forwarder that gets ONE file capability via
+a single `sudo setcap`, after which an AI agent / operator runs it with no sudo, ever.
 
 > Note: the TLS servername is currently hardcoded to `"zclnet.net"`
 > (`boot_frontend_services.c:178`). With a single cert the server presents that cert
@@ -59,45 +61,48 @@ sudo -u rhett XDG_RUNTIME_DIR=/run/user/$(id -u rhett) systemctl --user restart 
 HOOK
 sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/zclassic23-explorer.sh
 
-# 3. Forward public 443→8443 and 80→8080 (the node stays unprivileged on the high ports).
-#    Persisted as a user-linger oneshot so it survives reboot; root via a scoped sudoers rule.
-sudo tee /etc/sudoers.d/zcl-portfwd >/dev/null <<'SUDO'
-rhett ALL=(root) NOPASSWD: /usr/sbin/iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 8443
-rhett ALL=(root) NOPASSWD: /usr/sbin/iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080
-rhett ALL=(root) NOPASSWD: /usr/sbin/iptables -t nat -C PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 8443
-rhett ALL=(root) NOPASSWD: /usr/sbin/iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080
-SUDO
-sudo chmod 440 /etc/sudoers.d/zcl-portfwd
+# 3. Retire the old 8080 squatter FIRST (the dead nginx-era stats backend).
+#    The node's HTTP-redirect target is 127.0.0.1:8080; if `zcl-supply` still
+#    listens there, forwarding 80→8080 would hit the wrong backend. Check + stop:
+ss -ltnp | grep '127.0.0.1:8080'           # who's on 8080? must be the NODE
+systemctl --user stop zcl-supply 2>/dev/null || pkill -f zcl-supply || true
+sudo systemctl disable --now zcl-supply 2>/dev/null || true   # if it was a system unit
+
+# 4. Forward public 443→8443 and 80→8080 with the linger forwarder.
+#    This builds a tiny project-owned forwarder, installs a user-linger service,
+#    and (its ONLY privileged action) sets ONE file capability on the forwarder.
+#    Run this ONE command — after it, the agent manages the service with no sudo:
+sudo bash /home/rhett/github/zclassic23/tools/scripts/zcl-portfwd-setup.sh
 ```
 
-Then, as the `rhett` user (no password needed thanks to the scoped sudoers rule),
-install the linger forward unit:
+That single command:
+- builds `~/.local/bin/zcl-portfwd` (the forwarder),
+- installs `~/.config/systemd/user/zcl-portfwd.service`,
+- runs `setcap 'cap_net_bind_service=+ep' ~/.local/bin/zcl-portfwd` (the **one** privileged line),
+- enables + starts the service under linger (survives reboot).
+
+From then on the agent (or you) manage it with **no sudo, ever**:
 
 ```bash
-cat > ~/.config/systemd/user/zcl-portfwd.service <<'UNIT'
-[Unit]
-Description=zclassic23 clearnet port forward 443->8443, 80->8080 (node owns high ports)
-After=network-online.target
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-# Add rules only if absent (-C check), idempotent across restarts.
-ExecStart=/bin/sh -c 'sudo -n /usr/sbin/iptables -t nat -C PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 8443 2>/dev/null || sudo -n /usr/sbin/iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 8443'
-ExecStart=/bin/sh -c 'sudo -n /usr/sbin/iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080 2>/dev/null || sudo -n /usr/sbin/iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8080'
-[Install]
-WantedBy=default.target
-UNIT
-systemctl --user daemon-reload
-systemctl --user enable --now zcl-portfwd.service
+systemctl --user start   zcl-portfwd     # or stop / restart
+systemctl --user status  zcl-portfwd
+bash tools/scripts/zcl-portfwd-setup.sh --status      # forwarder/cap/unit/service health
+bash tools/scripts/zcl-portfwd-setup.sh --uninstall   # tear it all down (no sudo)
 ```
 
+**Why a capped forwarder, not setcap on the node or system socat?** The capability
+lives on the forwarder file, so it **survives `make deploy`** (which rebuilds the
+node binary and would otherwise drop the cap). It's scoped to one ~40-line file —
+not the whole node, not system-wide socat. TLS still terminates inside the node;
+the forwarder is a dumb byte pipe.
+
 ```bash
-# 4. Restart the node so boot starts the HTTPS server with the new cert.
+# 5. Restart the node so boot starts the HTTPS server with the new cert.
 #    (Do this AFTER the restart-durability fix is deployed — a cold-import node must
 #    not be restarted casually; see docs/TENACITY.md.)
 systemctl --user restart zclassic23
 
-# 5. Verify.
+# 6. Verify.
 sleep 20
 curl -sS -o /dev/null -w "HTTPS %{http_code}\n" https://zclnet.net/explorer
 curl -sS -o /dev/null -w "HTTP→ %{http_code} %{redirect_url}\n" http://zclnet.net/
@@ -125,11 +130,24 @@ Same shape — substitute your domain and datadir.
 4. **Install the cert** into `<datadir>/ssl/fullchain.pem` + `privkey.pem`, owned by the
    node's user (mode 644 / 600). Wire the certbot `renewal-hooks/deploy` script from §B.2
    with your domain + datadir so renewals stay in sync.
-5. **Forward 443→8443 and 80→8080** with the linger unit + scoped sudoers rule from §B.3.
-   (Alternatives if you prefer: `setcap 'cap_net_bind_service=+ep' <binary>` and run the
-   node directly on 443/80, or `authbind`. The forward keeps the binary unprivileged,
-   which is the recommended posture.)
-6. **Restart the node**, then `curl https://yourdomain/explorer`.
+5. **Make sure nothing else holds 8080** (the node's HTTP-redirect target):
+   `ss -ltnp | grep 127.0.0.1:8080` should show the NODE. Stop any leftover
+   `zcl-supply` or other squatter first.
+6. **Forward 443→8443 and 80→8080** — run the one setup command, then the agent
+   owns it:
+   ```bash
+   # ONE privileged command (its only sudo line is a single setcap):
+   sudo bash tools/scripts/zcl-portfwd-setup.sh
+   # afterwards, no sudo ever — manage with:
+   systemctl --user enable --now zcl-portfwd
+   systemctl --user status zcl-portfwd
+   ```
+   The capability sits on `~/.local/bin/zcl-portfwd`, so it survives node
+   redeploys; the node binary stays unprivileged. (If you'd rather, the classic
+   alternatives still work — `setcap` on the node itself, `authbind`, or an
+   iptables/nftables REDIRECT — but the capped forwarder is the recommended,
+   redeploy-proof, no-runtime-root posture.)
+7. **Restart the node**, then `curl https://yourdomain/explorer`.
 
 Pages available: `/explorer` (dashboard), `/explorer/block/<hash>`, `/explorer/tx/<txid>`,
 `/explorer/address/<addr>`, `/explorer/stats`, `/explorer/factoids`, `/explorer/hodl`
