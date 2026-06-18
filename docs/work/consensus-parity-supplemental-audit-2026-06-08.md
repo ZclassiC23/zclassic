@@ -5,7 +5,7 @@
 > (refuted candidates — do not re-investigate) and section 4 (111 sub-rules
 > verified decision-identical).
 
-Source of truth: zclassicd reference at `/home/rhett/zclassic-cpp` (origin
+Source of truth: zclassicd reference at a local `zclassic-cpp` checkout (origin
 `ZclassicCommunity/zclassic`). c23 audited at the post-fix state of branch
 `consensus/zclassicd-parity-2026-06-08` (FR-1 expiry, FR-2 finality, FR-3
 tx-size, miner cap already landed). Method: 8 consensus surfaces read against

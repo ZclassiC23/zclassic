@@ -869,7 +869,6 @@ bool app_init_services(struct app_context *ctx,
              * zclassic23-to-zclassic23 sync silently downloads from public
              * file-service seeds before P2P snapshot has a chance to run. */
             const char *file_seeds[] = {
-                "74.50.74.102",
                 "205.209.104.118",
                 "140.174.189.3",
                 NULL

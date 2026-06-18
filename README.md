@@ -154,8 +154,8 @@ Operator flags (`-externalip`, `-addnode`) go in `~/.config/zclassic23/env` (cop
 `deploy/zclassic23.env.example`), not the tracked unit. `zcl-rpc` honors
 `ZCL_RPCPORT` (default 18232) and `ZCL_DATADIR` (for the `.cookie`).
 
-**Bootstrap:** DNS seeds `dnsseed.zclnet.net`, `dnsseed.zslp.org`,
-`mainnet.zclassic.org` (prefer DNS — hardcoded IP seeds rot).
+**Bootstrap:** DNS seeds `dnsseed.zslp.org`, `mainnet.zclassic.org`
+(prefer DNS — hardcoded IP seeds rot).
 
 ## Documentation
 

@@ -1,19 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Regression test for no hardcoded `/home/rhett` in deployed
+ * Regression test for no hardcoded build-user home directory in deployed
  * binaries, and the path helpers respect $HOME.
  *
  * Part 1: scan every built binary under build/bin (test_zcl itself,
  * zclassic23, export_snapshot, zcl-nodectl, zcl-rpc, zclassic-cli) for
- * the literal byte string "/home/rhett". Expected: zero matches in
- * every binary. A hit means a contributor has hardcoded Rhett's home
- * directory again, and the binary will either misbehave or fail to
- * start on another operator's machine.
+ * the building user's literal $HOME byte string. Expected: zero matches in
+ * every binary. A hit means a contributor has hardcoded the build machine's
+ * home directory, and the binary will either misbehave or fail to start on
+ * another operator's machine. The needle is the runtime $HOME so the test is
+ * operator-agnostic — it catches anyone's home, not one specific user's.
  *
  * Part 2: exercise the extracted zcl-nodectl default-path helper with
- * a non-/home/rhett HOME. Confirms the runtime behavior — setting
+ * an arbitrary HOME. Confirms the runtime behavior — setting
  * HOME=/tmp/alt-home produces `/tmp/alt-home/.zclassic-c23/...` paths,
- * not the compile-time default and not `/home/rhett/...`.
+ * not the compile-time default and not the build user's home.
  */
 
 #include <stdio.h>
@@ -61,12 +62,12 @@ static int scan_file_for_needle(const char *path, const char *needle, int *match
 
 int test_no_hardcoded_home(void)
 {
-    printf("\n=== no hardcoded /home/rhett ===\n");
+    printf("\n=== no hardcoded build-user home ===\n");
     int failures = 0;
 
     /* Scan deployed binaries. test_zcl itself is deliberately excluded:
-     * this source file contains the search needle as a literal and is
-     * compiled into test_zcl, so test_zcl will always match itself. The
+     * the runtime needle below is the building user's $HOME, which test_zcl
+     * legitimately references via getenv(), so it would match itself. The
      * production binaries below are what operators actually ship. */
     static const char *binaries[] = {
         "build/bin/zclassic23",
@@ -77,29 +78,33 @@ int test_no_hardcoded_home(void)
         NULL,
     };
 
-    /* Assemble the search needle at runtime from fragments so that the
-     * compiler does not emit the string "/home/rhett" into test_zcl's
-     * .rodata section. Fragments are interned separately and the
-     * concatenation is only built in stack memory. */
-    char needle[16];
-    snprintf(needle, sizeof(needle), "%s%c%s", "/home", '/', "rhett");
+    /* The needle is the build user's actual home directory at runtime —
+     * operator-agnostic. If $HOME is unset/short, skip the binary scan (the
+     * Part 2 runtime-path checks still run). */
+    const char *home = getenv("HOME");
+    if (home && strncmp(home, "/home/", 6) == 0 && strlen(home) > 6) {
+        char needle[512];
+        snprintf(needle, sizeof(needle), "%s", home);
 
-    for (size_t i = 0; binaries[i]; i++) {
-        const char *path = binaries[i];
-        struct stat st;
-        if (stat(path, &st) != 0) {
-            printf("%s: not built — SKIPPING\n", path);
-            continue;
+        for (size_t i = 0; binaries[i]; i++) {
+            const char *path = binaries[i];
+            struct stat st;
+            if (stat(path, &st) != 0) {
+                printf("%s: not built — SKIPPING\n", path);
+                continue;
+            }
+            int matches = -1;
+            int rc = scan_file_for_needle(path, needle, &matches);
+            char label[640];
+            snprintf(label, sizeof(label),
+                     "binary has zero '%s' strings: %s", needle, path);
+            NHH_CHECK(label, rc == 0 && matches == 0);
+            if (rc == 0 && matches > 0) {
+                printf("  (found %d occurrence(s))\n", matches);
+            }
         }
-        int matches = -1;
-        int rc = scan_file_for_needle(path, needle, &matches);
-        char label[256];
-        snprintf(label, sizeof(label),
-                 "binary has zero %s strings: %s", needle, path);
-        NHH_CHECK(label, rc == 0 && matches == 0);
-        if (rc == 0 && matches > 0) {
-            printf("  (found %d occurrence(s))\n", matches);
-        }
+    } else {
+        printf("HOME unset or not under /home — skipping binary scan\n");
     }
 
     /* Part 2 — exercise the extracted default-path helper with a
@@ -131,7 +136,7 @@ int test_no_hardcoded_home(void)
               strcmp(c23_cookie, "/tmp/alt-zcl-home/.zclassic-c23/.cookie") == 0);
 
     /* NULL / empty HOME falls back to "." (CWD-relative) — never to a
-     * hardcoded /home/rhett. */
+     * hardcoded build-user home. */
     zcl_nodectl_build_default_paths(
         NULL,
         legacy_dd, sizeof(legacy_dd),
@@ -142,9 +147,9 @@ int test_no_hardcoded_home(void)
         c23_cookie, sizeof(c23_cookie));
     NHH_CHECK("NULL HOME → cwd-relative c23_dd",
               strcmp(c23_dd, "./.zclassic-c23") == 0);
-    NHH_CHECK("NULL HOME → no /home/rhett substring leaked",
-              strstr(c23_dd, "/home/rhett") == NULL &&
-              strstr(legacy_dd, "/home/rhett") == NULL);
+    NHH_CHECK("NULL HOME → no absolute /home leaked",
+              strstr(c23_dd, "/home/") == NULL &&
+              strstr(legacy_dd, "/home/") == NULL);
 
     zcl_nodectl_build_default_paths(
         "",
@@ -158,8 +163,8 @@ int test_no_hardcoded_home(void)
               strcmp(c23_dd, "./.zclassic-c23") == 0);
 
     if (failures == 0)
-        printf("no hardcoded /home/rhett: PASS\n");
+        printf("no hardcoded build-user home: PASS\n");
     else
-        printf("no hardcoded /home/rhett: FAIL (%d failures)\n", failures);
+        printf("no hardcoded build-user home: FAIL (%d failures)\n", failures);
     return failures;
 }

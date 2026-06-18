@@ -4,7 +4,7 @@
 
 zclassic23 is an independent C23 reimplementation of a ZClassic full node. It
 shares one live chain with the canonical C++ daemon **zclassicd** (reference
-source: `/home/rhett/zclassic-cpp`; live oracle node: `~/.zclassic`, RPC 8232).
+source: a local `zclassic-cpp` checkout; live oracle node: `~/.zclassic`, RPC 8232).
 For that to be safe, the two implementations must agree, **bit for bit**, on
 which blocks and transactions are valid.
 

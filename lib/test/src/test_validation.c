@@ -1552,7 +1552,7 @@ int test_validation(void)
     {
         /* Exceeds the standardness MAX_P2SH_SIGOPS=15 cap — but this is
          * POLICY, not consensus.  The raw counter must still return 16.
-         * Re-check once Rhett decides whether the 15-cap becomes consensus
+         * Re-check if the 15-cap ever becomes consensus
          * (brief regression test 2 implies yes, but zclassicd consensus
          * does not cap per-input; see Agent-3 notes). */
         struct script spk, ssig;

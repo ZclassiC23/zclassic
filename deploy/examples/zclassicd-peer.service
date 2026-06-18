@@ -11,8 +11,8 @@ Wants=network-online.target
 #
 # Operator recovery when this trips:
 #   kill <manual-pid>
-#   systemctl --user reset-failed zclassicd-rhett
-#   systemctl --user start zclassicd-rhett
+#   systemctl --user reset-failed zclassicd-peer
+#   systemctl --user start zclassicd-peer
 StartLimitIntervalSec=300
 StartLimitBurst=3
 

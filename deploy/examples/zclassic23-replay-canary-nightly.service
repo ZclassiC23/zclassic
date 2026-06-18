@@ -4,7 +4,7 @@ Description=ZClassic23 Replay Canary — nightly from-anchor
 # mainnet node and only READS the co-located zclassicd (RPC 8232) for the
 # cross-node coarse-stats assert. NO Requires=zclassic23.service.
 # zclassicd must be up for that read, hence After= it.
-After=zclassicd-rhett.service
+After=zclassicd-peer.service
 # OnFailure (a [Unit] key): on a non-zero harness exit, page via the
 # templated notifier. The AUTHORITATIVE verdict remains the sentinel FILE;
 # this is the systemd half of "how the timer reports red".

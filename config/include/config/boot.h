@@ -54,6 +54,11 @@ struct app_context {
                                  * zclassicd-LDB, and UTXO importer. Opt-in;
                                  * default false so the live boot is unchanged. */
     const char *external_ip;   /* -externalip=IP : advertise this address to peers */
+    const char *https_domain;  /* -httpsdomain=DOMAIN : TLS servername / redirect host
+                                 * for the clearnet explorer. Optional; with a single
+                                 * cert the server presents that cert regardless of SNI,
+                                 * so NULL is fine (HTTP→HTTPS redirect then falls back
+                                 * to the request's Host header). */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
                                  * (default false → boot FATALs on broken chain state). */
 };

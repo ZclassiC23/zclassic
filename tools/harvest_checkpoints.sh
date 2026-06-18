@@ -11,8 +11,8 @@
 # Usage: tools/harvest_checkpoints.sh
 set -euo pipefail
 
-RPC_USER="${RPC_USER:-zclrhett}"
-RPC_PASS="${RPC_PASS:-zclrhettpass2026}"
+RPC_USER="${RPC_USER:-zcluser}"
+RPC_PASS="${RPC_PASS:-zclpass}"
 RPC_PORT="${RPC_PORT:-8232}"
 STEP="${STEP:-50000}"
 OUT_DECL="${OUT_DECL:-/tmp/checkpoints_decl.c}"

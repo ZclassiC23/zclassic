@@ -20,12 +20,12 @@ int test_protocols(void)
     {
         uint8_t buf[512];
         size_t len = znam_build_register(buf, sizeof(buf),
-            "rhett", ZNAM_TYPE_ONION,
+            "alice", ZNAM_TYPE_ONION,
             "oaejwtr7wd6ah6csxz4vy4iro6l5cxc2flbmxkhgybgafuu25fg7nkid.onion");
         struct znam_message msg;
         bool ok = len > 0 && znam_parse(buf, len, &msg);
         ok = ok && msg.command == ZNAM_CMD_REGISTER;
-        ok = ok && strcmp(msg.name, "rhett") == 0;
+        ok = ok && strcmp(msg.name, "alice") == 0;
         ok = ok && msg.target_type == ZNAM_TYPE_ONION;
         ok = ok && strstr(msg.target_value, ".onion") != NULL;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
@@ -73,7 +73,7 @@ int test_protocols(void)
     {
         uint8_t buf[512];
         size_t len = znam_build_set_record(buf, sizeof(buf),
-            "rhett", ZNAM_TYPE_BTC, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+            "alice", ZNAM_TYPE_BTC, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
         struct znam_message msg;
         bool ok = len > 0 && znam_parse(buf, len, &msg);
         ok = ok && msg.command == ZNAM_CMD_SET_RECORD;
@@ -86,13 +86,13 @@ int test_protocols(void)
     {
         uint8_t buf[512];
         size_t len = znam_build_set_text(buf, sizeof(buf),
-            "rhett", "email", "rhett@zclassic.org");
+            "alice", "email", "alice@example.org");
         struct znam_message msg;
         bool ok = len > 0 && znam_parse(buf, len, &msg);
         ok = ok && msg.command == ZNAM_CMD_SET_TEXT;
-        ok = ok && strcmp(msg.name, "rhett") == 0;
+        ok = ok && strcmp(msg.name, "alice") == 0;
         ok = ok && strcmp(msg.text_key, "email") == 0;
-        ok = ok && strcmp(msg.text_value, "rhett@zclassic.org") == 0;
+        ok = ok && strcmp(msg.text_value, "alice@example.org") == 0;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "zcl23": {
-      "command": "/home/rhett/zclassic23/zclassic23",
+      "command": "./build/bin/zclassic23",
       "args": [
         "-mcp"
       ]

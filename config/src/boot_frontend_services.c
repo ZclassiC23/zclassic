@@ -174,8 +174,11 @@ static bool boot_https_explorer_start(void *ctx)
         svc->state->pindex_best_header->nHeight : chain_tip_h;
     bool near_tip = (best_header - chain_tip_h < 1000) &&
                     (chain_tip_h > g_deferred_proof_validation_below_height - 10000);
+    /* Optional TLS servername (-httpsdomain=). NULL is fine: with a single
+     * cert the server presents that cert regardless of SNI. */
+    const char *https_domain = svc->app_ctx->https_domain;
     if (near_tip) {
-        https_server_start_on_port(cert_path, key_path, "zclnet.net",
+        https_server_start_on_port(cert_path, key_path, https_domain,
                                    svc->app_ctx->https_port,
                                    svc->app_ctx->https_port - 363);
     } else {
@@ -185,7 +188,7 @@ static bool boot_https_explorer_start(void *ctx)
         static char s_cert[1024], s_key[1024];
         strncpy(s_cert, cert_path, sizeof(s_cert) - 1);
         strncpy(s_key, key_path, sizeof(s_key) - 1);
-        https_deferred_set(s_cert, s_key);
+        https_deferred_set(s_cert, s_key, https_domain);
     }
     return true;
 }

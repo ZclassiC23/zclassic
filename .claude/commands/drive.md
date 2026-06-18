@@ -2,18 +2,18 @@
 description: Coordinator drive-loop — sync, preserve worker WIP, manage agents, deploy if green, report
 ---
 
-You are the coordinator for **zclassic23**. Goal: node STICKY + STRONG + ROBUST, live tip in sync with zclassicd. Rhett is coordinator-only; Agent-2 (`~/zclassic23-2`) and Agent-3 (`~/zclassic23-3`) write the code. This command is re-invocable; each turn does ONE cycle.
+You are the coordinator for **zclassic23**. Goal: node STICKY + STRONG + ROBUST, live tip in sync with zclassicd. The operator is coordinator-only; Agent-2 (`~/zclassic23-2`) and Agent-3 (`~/zclassic23-3`) write the code. This command is re-invocable; each turn does ONE cycle.
 
 Use parallel tool calls where independent. Never run destructive git in worker worktrees without preserving WIP first.
 
 ## 1. Sync
 
 Parallel:
-- `git -C /home/rhett/zclassic23 fetch origin && git -C /home/rhett/zclassic23 pull --ff-only`
-- `git -C /home/rhett/zclassic23-2 fetch origin && git -C /home/rhett/zclassic23-2 log --oneline origin/main..HEAD` (unpushed Agent-2 commits)
-- `git -C /home/rhett/zclassic23-3 fetch origin && git -C /home/rhett/zclassic23-3 log --oneline origin/main..HEAD` (unpushed Agent-3 commits)
-- `git -C /home/rhett/zclassic23-2 status --porcelain` (WIP state)
-- `git -C /home/rhett/zclassic23-3 status --porcelain` (WIP state)
+- `git -C ~/github/zclassic23 fetch origin && git -C ~/github/zclassic23 pull --ff-only`
+- `git -C ~/github/zclassic23-2 fetch origin && git -C ~/github/zclassic23-2 log --oneline origin/main..HEAD` (unpushed Agent-2 commits)
+- `git -C ~/github/zclassic23-3 fetch origin && git -C ~/github/zclassic23-3 log --oneline origin/main..HEAD` (unpushed Agent-3 commits)
+- `git -C ~/github/zclassic23-2 status --porcelain` (WIP state)
+- `git -C ~/github/zclassic23-3 status --porcelain` (WIP state)
 - `ls -la ~/.codex/logs_?.sqlite` (Codex activity timestamps)
 
 ## 2. Preserve at-risk WIP
@@ -35,7 +35,7 @@ Note: the live node may be stuck (P24.18 stall at h=3,078,014 until Agent-2 land
 ## 4. If agents landed green commits — canary + deploy
 
 If `git log` shows a worker commit matching `P\d+[a-z]?:?\s*(GREEN|done|landed)`:
-1. `make -j$(nproc) test_zcl` in `/home/rhett/zclassic23`
+1. `make -j$(nproc) test_zcl` in `~/github/zclassic23`
 2. `build/bin/test_zcl 2>&1 | grep -E "FAIL|ALL TESTS|SOME TESTS"` — verify green
 3. If touches live-node paths (lib/validation, app/services, app/controllers): `make deploy`
 4. Arm a Monitor (`until curl -sf ... 18232`) to await RPC-up; the 30s deploy_verify timeout is known-bad (fixed by P24.19).
@@ -86,9 +86,9 @@ If user said "keep working" or "autonomous" → `ScheduleWakeup` at 900-1800s pa
 
 ## Worktree layout
 
-- `/home/rhett/zclassic23` — coordinator, never worker commits (except my rebased rescue pushes).
-- `/home/rhett/zclassic23-2` — Agent-2 (wallet / storage / app-layer / net / validation).
-- `/home/rhett/zclassic23-3` — Agent-3 (crypto / sapling / consensus-crypto / tests).
+- `~/github/zclassic23` — coordinator, never worker commits (except my rebased rescue pushes).
+- `~/github/zclassic23-2` — Agent-2 (wallet / storage / app-layer / net / validation).
+- `~/github/zclassic23-3` — Agent-3 (crypto / sapling / consensus-crypto / tests).
 
 ## Available MCP tools
 

@@ -6,7 +6,8 @@ all served by the single binary's built-in HTTPS server (`lib/net/src/https_serv
 binary is the entire serving surface.
 
 This guide covers: (A) the architecture, (B) the exact runbook to bring up
-`https://zclnet.net`, and (C) how anyone can host the explorer on their own domain.
+`https://yourdomain.example`, and (C) how anyone can host the explorer on their
+own domain.
 
 ---
 
@@ -23,52 +24,45 @@ At boot, `config/src/boot_frontend_services.c:boot_https_explorer_start()`:
    (datadir-relative; replace `~/.zclassic-c23` with your `-datadir`).
 2. If absent → logs `HTTPS: no cert … not on clearnet` and stays onion-only.
 3. If present and the node is near tip → `https_server_start_on_port(cert, key,
-   "zclnet.net", 8443, 8080)`. (During IBD it defers and auto-starts near tip.)
+   <httpsdomain>, 8443, 8080)`. (During IBD it defers and auto-starts near tip.)
 
 The node binds the high ports (8443/8080) **unprivileged**. Public **443/80** reach it
 via a tiny **linger port-forward service** (below) — the node itself never binds 443.
 The forward is a ~40-line project-owned forwarder that gets ONE file capability via
 a single `sudo setcap`, after which an AI agent / operator runs it with no sudo, ever.
 
-> Note: the TLS servername is currently hardcoded to `"zclnet.net"`
-> (`boot_frontend_services.c:178`). With a single cert the server presents that cert
-> regardless of SNI, so other domains still work — but making this a `-httpsdomain`
-> flag is a tracked follow-up for clean multi-domain support.
+> Note: the TLS servername is optional. Pass `-httpsdomain=yourdomain.example` to
+> set it explicitly; otherwise it is left unset (`boot_frontend_services.c`) and the
+> HTTP→HTTPS redirect falls back to the request's own `Host` header. With a single
+> cert the server presents that cert regardless of SNI, so any domain works.
 
 ---
 
-## B. Runbook — bring up `https://zclnet.net`
+## B. Runbook — bring up `https://yourdomain.example`
 
-Prereqs already satisfied on this host: DNS `zclnet.net → 74.50.74.102` ✅, a Let's
-Encrypt cert for `zclnet.net` exists and auto-renews (`certbot.timer`) ✅, the node
-runs the explorer profile ✅. Remaining steps need **root** (run these in a sudo shell):
+Prereqs: DNS `yourdomain.example → your.server.ip` ✅, a Let's Encrypt cert for
+`yourdomain.example` exists and auto-renews (`certbot.timer`) ✅, the node runs the
+explorer profile ✅. Two privileged commands, both auto-detect your user / datadir /
+domain (override with `ZCL_EXPLORER_USER` / `ZCL_EXPLORER_DATADIR` /
+`ZCL_EXPLORER_DOMAIN` if needed):
 
 ```bash
-# 1. Install the cert where the node reads it (datadir/ssl). Copy, don't move —
-#    certbot owns the originals. Make them readable by the node's user (rhett).
-sudo install -d -o rhett -g rhett /home/rhett/.zclassic-c23/ssl
-sudo install -o rhett -g rhett -m 644 /etc/letsencrypt/live/zclnet.net/fullchain.pem /home/rhett/.zclassic-c23/ssl/fullchain.pem
-sudo install -o rhett -g rhett -m 600 /etc/letsencrypt/live/zclnet.net/privkey.pem   /home/rhett/.zclassic-c23/ssl/privkey.pem
+# 1. Install the cert where the node reads it (<datadir>/ssl) and wire a
+#    certbot renewal deploy-hook so it stays fresh. Auto-detects the operator
+#    (from sudo), the datadir, and the cert domain (the sole cert under
+#    /etc/letsencrypt/live/). The ONLY privileged action for the cert.
+sudo bash tools/scripts/zcl-explorer-cert.sh
+#    Multiple certs? Name the one to use:
+#    ZCL_EXPLORER_DOMAIN=yourdomain.example sudo -E bash tools/scripts/zcl-explorer-cert.sh
 
-# 2. Keep it fresh across renewals: a certbot deploy-hook re-installs + nudges the node.
-sudo tee /etc/letsencrypt/renewal-hooks/deploy/zclassic23-explorer.sh >/dev/null <<'HOOK'
-#!/bin/bash
-D=/home/rhett/.zclassic-c23/ssl
-install -o rhett -g rhett -m 644 /etc/letsencrypt/live/zclnet.net/fullchain.pem "$D/fullchain.pem"
-install -o rhett -g rhett -m 600 /etc/letsencrypt/live/zclnet.net/privkey.pem   "$D/privkey.pem"
-# hot-reload without a full restart if supported, else the node picks it up next boot
-sudo -u rhett XDG_RUNTIME_DIR=/run/user/$(id -u rhett) systemctl --user restart zclassic23 || true
-HOOK
-sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/zclassic23-explorer.sh
-
-# 3. Forward public 443→8443 with the linger forwarder. 443-ONLY by design:
+# 2. Forward public 443→8443 with the linger forwarder. 443-ONLY by design:
 #    port 8080 belongs to the `zcl-supply` stats service — we leave it ALONE and do
 #    NOT retire it. The clearnet explorer is HTTPS-only (no plain-HTTP redirect),
 #    which is the safer posture anyway. This builds a tiny project-owned forwarder,
 #    installs a user-linger service, and (its ONLY privileged action) sets ONE file
 #    capability on it. Run this ONE command — after it, the agent manages the
 #    service with no sudo, ever:
-sudo bash /home/rhett/github/zclassic23/tools/scripts/zcl-portfwd-setup.sh
+sudo bash tools/scripts/zcl-portfwd-setup.sh
 ```
 
 That single command:
@@ -93,15 +87,15 @@ not the whole node, not system-wide socat. TLS still terminates inside the node;
 the forwarder is a dumb byte pipe.
 
 ```bash
-# 5. Restart the node so boot starts the HTTPS server with the new cert.
+# 3. Restart the node so boot starts the HTTPS server with the new cert.
 #    (Do this AFTER the restart-durability fix is deployed — a cold-import node must
 #    not be restarted casually; see docs/TENACITY.md.)
 systemctl --user restart zclassic23
 
-# 6. Verify.
+# 4. Verify (substitute your domain).
 sleep 20
-curl -sS -o /dev/null -w "HTTPS %{http_code}\n" https://zclnet.net/explorer
-curl -sS -o /dev/null -w "HTTP→ %{http_code} %{redirect_url}\n" http://zclnet.net/
+curl -sS -o /dev/null -w "HTTPS %{http_code}\n" https://yourdomain.example/explorer
+curl -sS -o /dev/null -w "HTTP→ %{http_code} %{redirect_url}\n" http://yourdomain.example/
 ```
 
 Expected: `HTTPS 200` on `/explorer`, and `http://` redirecting to `https://`.

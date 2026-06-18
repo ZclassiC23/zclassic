@@ -153,15 +153,13 @@ static void init_main_params(void)
     uint256_set_hex(&p->consensus.hashGenesisBlock,
         "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602");
 
-    p->vSeeds[0] = (struct dns_seed){ "zclnet.net", "dnsseed.zclnet.net" };
-    p->vSeeds[1] = (struct dns_seed){ "zslp.org", "dnsseed.zslp.org" };
-    p->vSeeds[2] = (struct dns_seed){ "zclassic.org", "mainnet.zclassic.org" };
-    p->nSeeds = 3;
+    p->vSeeds[0] = (struct dns_seed){ "zslp.org", "dnsseed.zslp.org" };
+    p->vSeeds[1] = (struct dns_seed){ "zclassic.org", "mainnet.zclassic.org" };
+    p->nSeeds = 2;
 
     /* Hardcoded seed nodes — known-good as of 2026-04 */
     p->nFixedSeeds = 0;
     static const uint8_t fixed_ip4[][4] = {
-        { 74, 50, 74,102},  /* rhett.dev */
         {205,209,104,118},  /* MagicBean */
         {140,174,189,  3},  /* MagicBean */
         {140,174,189, 17},  /* MagicBean */

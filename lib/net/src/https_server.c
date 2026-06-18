@@ -362,9 +362,17 @@ static void handle_http_client_fd(int fd)
     char method[16] = "", path[2048] = "";
     sscanf(line, "%15s %2047s", method, path);
 
-    /* Drain headers */
-    while (plain_read_line(fd, line, sizeof(line)))
+    /* Drain headers, capturing the request Host for a generic redirect. */
+    char req_host[256] = "";
+    while (plain_read_line(fd, line, sizeof(line))) {
         if (line[0] == '\0') break;
+        if (req_host[0] == '\0' &&
+            strncasecmp(line, "Host:", 5) == 0) {
+            const char *v = line + 5;
+            while (*v == ' ' || *v == '\t') v++;
+            snprintf(req_host, sizeof(req_host), "%s", v);
+        }
+    }
 
     /* ACME challenge passthrough for cert renewal */
     if (strncmp(path, "/.well-known/acme-challenge/", 28) == 0) {
@@ -391,13 +399,26 @@ static void handle_http_client_fd(int fd)
         }
     }
 
-    /* Redirect everything to HTTPS */
+    /* Redirect everything to HTTPS. Prefer the operator-configured servername
+     * (-httpsdomain); else echo the request's own Host header so the redirect
+     * works on any domain without a hardcoded host. */
+    const char *redir_host = g_hostname[0] ? g_hostname :
+                             (req_host[0] ? req_host : NULL);
     char resp[4096];
-    int n = snprintf(resp, sizeof(resp),
-        "HTTP/1.1 301 Moved Permanently\r\n"
-        "Location: https://%s%s\r\n"
-        "Connection: close\r\n\r\n",
-        g_hostname[0] ? g_hostname : "zclnet.net", path);
+    int n;
+    if (redir_host)
+        n = snprintf(resp, sizeof(resp),
+            "HTTP/1.1 301 Moved Permanently\r\n"
+            "Location: https://%s%s\r\n"
+            "Connection: close\r\n\r\n",
+            redir_host, path);
+    else
+        /* No host known: relative redirect keeps the browser's authority. */
+        n = snprintf(resp, sizeof(resp),
+            "HTTP/1.1 301 Moved Permanently\r\n"
+            "Location: %s\r\n"
+            "Connection: close\r\n\r\n",
+            path);
     (void)write(fd, resp, (size_t)n);
     close(fd);
 }
@@ -692,12 +713,17 @@ void https_server_stop(void)
 
 static char g_deferred_cert[1024];
 static char g_deferred_key[1024];
+static char g_deferred_host[256];
 static _Atomic bool g_deferred_pending = false;
 
-void https_deferred_set(const char *cert, const char *key)
+void https_deferred_set(const char *cert, const char *key, const char *hostname)
 {
     strncpy(g_deferred_cert, cert, sizeof(g_deferred_cert) - 1);
     strncpy(g_deferred_key, key, sizeof(g_deferred_key) - 1);
+    if (hostname && hostname[0])
+        snprintf(g_deferred_host, sizeof(g_deferred_host), "%s", hostname);
+    else
+        g_deferred_host[0] = '\0';
     atomic_store(&g_deferred_pending, true);
     printf("HTTPS: deferred start queued (will start when synced)\n");
 }
@@ -707,6 +733,9 @@ void https_deferred_check(void)
     if (atomic_load(&g_deferred_pending) && !g_running) {
         atomic_store(&g_deferred_pending, false);
         printf("HTTPS: starting deferred server (node synced)\n");
-        https_server_start(g_deferred_cert, g_deferred_key, "zclnet.net");
+        /* hostname NULL when the operator did not set -httpsdomain; with a
+         * single cert the presented cert is the same regardless of SNI. */
+        https_server_start(g_deferred_cert, g_deferred_key,
+                           g_deferred_host[0] ? g_deferred_host : NULL);
     }
 }

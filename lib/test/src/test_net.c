@@ -3721,7 +3721,7 @@ skip_parallel_tests:
         memset(&p, 0, sizeof(p));
         p.has_public_ip = true;
         enum peer_transport t = peer_strategy_select(
-            &p, "74.50.74.102:8033");
+            &p, "198.51.100.7:8033");
         bool ok = (t == TRANSPORT_CLEARNET);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

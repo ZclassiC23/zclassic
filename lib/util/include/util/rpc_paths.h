@@ -11,7 +11,7 @@
  * .c file in isolation, so an external .c dependency would require
  * extra plumbing just to share six lines of snprintf.
  *
- * Replaces the previous hardcoded `/home/rhett` defaults with
+ * Replaces previous hardcoded home-directory defaults with
  * $HOME-derived paths.
  */
 #ifndef ZCL_UTIL_RPC_PATHS_H

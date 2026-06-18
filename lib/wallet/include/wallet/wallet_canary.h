@@ -9,7 +9,7 @@
  * on a datadir that already has wallet_keys rows — the node would
  * fall through to "generate fresh keypool", overwrite the user's
  * in-memory state, and on next flush mask the real keys. That
- * failure mode made 0.4 ZCL unspendable in rhett's 2026-04-10
+ * failure mode made 0.4 ZCL unspendable in an operator's 2026-04-10
  * incident. The canary runs BEFORE any RPC handler accepts a
  * request, so if the write path is broken the daemon aborts instead
  * of silently regenerating.

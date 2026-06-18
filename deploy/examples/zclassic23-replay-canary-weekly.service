@@ -5,7 +5,7 @@ Description=ZClassic23 Replay Canary — weekly from-genesis
 # the co-located zclassicd P2P (127.0.0.1:8033) via -addnode to fetch bodies
 # for the genesis->tip replay — the ONE place a real peer is dialed, and it
 # is the read-only co-located zclassicd, never a public peer.
-After=zclassicd-rhett.service
+After=zclassicd-peer.service
 # OnFailure (a [Unit] key): page on a non-zero harness exit; the sentinel
 # FILE remains the authoritative verdict.
 OnFailure=zclassic23-replay-canary-onfailure@%n.service

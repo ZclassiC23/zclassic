@@ -716,6 +716,9 @@ static void print_usage(const char *prog)
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
+    printf("  -httpsdomain=<dom>  TLS servername / HTTPS-redirect host for the\n");
+    printf("                      clearnet explorer (optional; defaults to the\n");
+    printf("                      request Host header with a single cert)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
@@ -1730,6 +1733,7 @@ int main(int argc, char **argv)
             setenv("ZCL_LEVELDB_NO_VERIFY_CHECKSUMS", "1", 1);
         }
         else if (strncmp(argv[i], "-externalip=", 12) == 0) ctx.external_ip = argv[i] + 12;
+        else if (strncmp(argv[i], "-httpsdomain=", 13) == 0) ctx.https_domain = argv[i] + 13;
         else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;

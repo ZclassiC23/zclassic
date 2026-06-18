@@ -14,7 +14,7 @@ and every worker rebases on top of it before pushing.
 
 ```
 1. Identify yourself
-   $ pwd                                  # e.g., /home/rhett/github/zclassic23-2
+   $ pwd                                  # e.g., ~/github/zclassic23-2
    → worktree ID = "wt2"  (extract suffix after "zclassic23-")
    → if no suffix → you are the orchestrator; read the orchestrator section
                     of REFACTOR_STATUS.md, NOT a worker assignment

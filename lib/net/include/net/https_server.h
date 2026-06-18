@@ -15,7 +15,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
                                 const char *hostname, int https_port, int http_port);
 void https_server_stop(void);
 
-void https_deferred_set(const char *cert, const char *key);
+void https_deferred_set(const char *cert, const char *key, const char *hostname);
 void https_deferred_check(void);
 
 #endif

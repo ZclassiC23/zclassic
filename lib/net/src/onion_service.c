@@ -296,7 +296,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<div class='site'>"
         "<a href='http://zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion/'>"
         "zc23kenf...jnad.onion</a>"
-        "<div class='desc'>rhett.dev — ZClassic23 seed node</div></div>"
+        "<div class='desc'>ZClassic23 seed node</div></div>"
         "<h2>Host Your Site</h2>"
         "<div class='site'>"
         "<div class='desc'>Every zclassic23 node is a .onion web server.<br>"
