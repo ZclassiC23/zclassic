@@ -132,6 +132,46 @@ repair / trust-brain / mirror accretion that exists only to cover for an unprove
 foundation. Fast + never-lies + never-stuck become the *same* property — the node
 only ever records facts it computed.
 
+## 1b. The principle — fold the frozen part ONCE, then verify/locate/repair cheap
+
+The mental model future agents must internalize (it makes the cure both fast AND
+correct, and it is *why* replaying the chain is the lazy solve):
+
+The chain is **immutable below `tip − ZCL_FINALITY_DEPTH` (=10)** —
+`zcl_immutable_height()` (`sync_evidence_policy.c:11`); reorgs deeper than 10 are
+refused `below_finality_depth` (IBD relaxes to 1000). Information theory on that: a
+fact over the frozen part **never changes**, so compute its fingerprint **once** and
+thereafter **verify by O(1) comparison, locate any divergence by O(log n) bisect,
+repair only the bounded mutable window.** Work is proportional to the ~10-block tip
+window + log(n) hash checks — **never the chain.** Replaying genesis→tip (or even
+checkpoint→tip) to *check* or *fix* state is recomputing frozen facts: the slow solve.
+
+**Keystone diagnosis (verified 2026-06-19, workflow `wf_b01bc4b0-504`) — the node
+fingerprints the WRONG thing per height.** It commits to AND checks a per-height
+**block hash** — `validate_headers_log.hash`, `script_validate_log.block_hash`, and
+`reducer_frontier.c:422` (`apply_hash_agreement`) already bisects the first block-hash
+split. But **no folded log stores a per-height UTXO-set fingerprint** — `utxo_apply_log`
+holds only `spent/added_count` + `total_value_delta`; `tip_finalize_log` holds
+`utxo_size_after` (a COUNT, not a hash). So a divergence that is **height-correct (block
+hash agrees) but state-wrong (a wrong-fork coin)** is **invisible to every per-height
+check** — which is *exactly* the live wedge (one wrong-fork coinbase at h=3,151,306,
+block hash correct). You cannot bisect or bounded-repair a fault you never fingerprint.
+
+**The pieces already exist — compose them, don't rebuild:**
+- Finality window: `ZCL_FINALITY_DEPTH 10` (`main_constants.h:33`), `zcl_immutable_height` (`sync_evidence_policy.c:11`).
+- ONE canonical (script-inclusive, zclassicd-verified) SHA3 UTXO fingerprint, single rung: `checkpoints.c:86` (h=3,056,758); the runtime stamp is a single `node_state 'utxo_sha3'` (INSERT OR REPLACE — at most one stored).
+- The correctly-shaped per-100-block ladder is **DEFINED but DEAD**: the Commitment MMR, leaf `{height, block_hash, utxo_root, data_root}` (`mmr.h:120,122-126`), appended by `rpc_blockchain_maybe_commit` (`blockchain_controller.c:243`) — which has **zero callers on the connect path** (`tip_finalize_post_step.c:184-197` appends only the block-hash MMR + the MMB header leaf), so the ladder is never populated. Its `utxo_root` is the **XOR accumulator** (`blockchain_controller.c:266`), which omits scriptPubKey → **not byte-comparable** to the canonical SHA3.
+- MMB/FlyClient is a **header/PoW ladder only** — leaf binds `{block_hash,height,nBits,sapling_root,chain_work}`, **no utxo_root** (`mmb.h:41-48`). This is B1's keystone gap.
+- A working **binary-search locator** already exists (`mirror_divergence_locator.c:168-193`) — but it bisects against the **external zclassicd** over block hashes, not a self-committed ladder, not UTXO state.
+- Bounded-window **repair** already clamps to `tip−10` (`utxo_apply_delta_reorg.c`).
+
+**Composition (this is B1+B2+B5 stated as one loop):** on the connect path, fold each
+finalized block once and record a per-height **canonical** UTXO fingerprint (revive the
+Commitment MMR with the SHA3 root, bound to PoW per B1); point the bisect at the
+**self-committed** ladder (not zclassicd); trigger the existing bounded-window repair.
+Then verify/locate/repair are **self-contained and O(log n + window)** — fast,
+never-lies, never-stuck, the same property.
+
 ## 2. Invariants (true by construction)
 
 - **I1** No coin enters state except by `utxo_apply` folding a verified block, OR a
