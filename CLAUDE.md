@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels, on-chain via Sapling encrypted memo field), cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible byte-identical builds with optional GPG signing (sign optional, can be waived with --unsigned). **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels, on-chain via Sapling encrypted memo field), cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -273,7 +273,7 @@ This enables fully decentralized peer discovery even when DNS seeds are unavaila
 
 ### Fast Sync (FlyClient + MMB + SHA3)
 
-A fresh node syncs 3M+ blocks in ~60 seconds:
+A fresh node is *designed* to sync 3M+ blocks in ~60 seconds (design target — the stack below is built but not yet the proven cold-start; today's proven cold-sync is the two-step `--importblockindex` + boot, ~25 min, see the Tenacity section and `docs/HANDOFF.md`):
 
 1. **FlyClient** — 50 random block samples with MMB (Merkle Mountain Belt) inclusion proofs. Each sample verified for PoW. Security: ≥150 bits against any minority adversary.
 
@@ -281,7 +281,7 @@ A fresh node syncs 3M+ blocks in ~60 seconds:
 
 3. **Delta sync** — Headers + blocks from snapshot height to tip via standard P2P.
 
-The node is fully operational after step 2 (~60s). Background validation optionally re-verifies every historical signature and proof.
+The node is designed to be fully operational after step 2 (~60s target). Background validation optionally re-verifies every historical signature and proof.
 
 Key MCP tools: `zcl_mmb`, `zcl_utxocommitment`, `zcl_syncstate`, `zcl_validationstatus`
 
@@ -308,7 +308,7 @@ Human-readable names registered on-chain via OP_RETURN. Inspired by ENS (Ethereu
 - Names: 1-63 chars, lowercase alphanumeric + hyphens, first-come-first-served
 - **Multi-coin resolution**: a single name can have addresses for ZCL, BTC, LTC, DOGE
 - **Text records**: arbitrary key-value metadata (email, url, avatar) — ENS TextResolver pattern
-- **Content hash**: link names to file market content
+- **Content hash** *(planned)*: link names to file market content — no `SET_CONTENT` opcode exists yet (commands are REGISTER/UPDATE/TRANSFER/RENEW/SET_RECORD/SET_TEXT)
 - Commands: REGISTER, UPDATE, TRANSFER, RENEW, SET_RECORD, SET_TEXT
 - RPC: `name_register`, `name_resolve`, `name_list`
 
@@ -323,7 +323,7 @@ Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded)
 
 ### ZCL Market — Crypto-Incentivized File Sharing
 
-File marketplace scaffolding: offer gossip with price metadata, proof-of-possession challenges. File transfer and payment settlement not yet implemented.
+File marketplace: offer gossip with price metadata, proof-of-possession challenges, and a working file service that streams chunk bytes (`file_service.c` → `fs_send_chunk_fast`) with chunk unlock gated on a mempool-verified payment txid (`handle_zfilepay`, `msgprocessor.c`). On-chain payment settlement and the buy/offer RPC-to-transfer glue are not yet wired end-to-end.
 
 - P2P gossip of file offers with price per MB
 - Chunk challenges for sybil resistance (prove you have the data)

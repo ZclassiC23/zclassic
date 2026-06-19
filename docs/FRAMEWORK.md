@@ -50,9 +50,16 @@ critical path**, and its write must land in the *same durable transaction* as
 the cursor advance, or the two-store ordering hazard we are killing comes back.
 State this precisely or the model misleads.
 
+A second honesty: the node does not yet stand on its own proof end-to-end. Above
+genesis, its UTXO trust root is *borrowed* — copied from a co-located `zclassicd`
+and crypto-checked at exactly one height (the compiled SHA3 checkpoint,
+`lib/chain/src/checkpoints.c`), then stamped forward. The fold is genuinely pure
+*above* that anchor; making the anchor self-derived (fold from genesis, or a peer
+snapshot verified by FlyClient/MMB) is the destination, not the proven present.
+
 The four promises this buys the operator:
 
-- **⚡ Fast** — cold-sync to tip in seconds (FlyClient + SHA3 snapshot), stay current.
+- **⚡ Fast** — cold-sync to tip in seconds (FlyClient + SHA3 snapshot) is the *design target*; the FlyClient/snapshot stack is built but inert today, and the proven cold-start is the ~25-min `--importblockindex` + boot. Then stay current.
 - **🪶 Lean** — one static binary, bounded RAM, no runtime it doesn't ship itself.
 - **💪 Unbreakable** — cannot halt *silently*; a stall is always a named blocker or a growing `log_head` gap, and it pages a human before it gives up.
 - **🔬 Honest** — forward progress on the live tip is the only acceptance bar. Green tests are not a healthy node.
