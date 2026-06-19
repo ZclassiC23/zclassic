@@ -78,7 +78,7 @@ if [[ -d "$COND_DIR" ]]; then
         scanned=$((scanned + 1))
 
         # The witness function body (opener line through column-0 `}`).
-        body=$(awk -v fn="static bool $witness_name(" '
+        body=$(awk -v fn="bool $witness_name(" '
             index($0, fn) { flag = 1 }
             flag { print }
             flag && /^}$/ { exit }
@@ -126,9 +126,21 @@ if [[ -d "$COND_DIR" ]]; then
         fi
         violations=$((violations + 1))
         echo "$file: $witness_name: $reason" >&2
-    done < <(grep -oE '^static bool witness_[A-Za-z0-9_]+' "$file" \
-             | sed -E 's/^static bool //')
+    done < <(grep -oE '^static (inline )?bool +witness_[A-Za-z0-9_]+' "$file" \
+             | grep -oE 'witness_[A-Za-z0-9_]+')
   done < <(find "$COND_DIR" -type f -name '*.c' | sort)
+fi
+
+# Fail-loud if the producer found NOTHING while condition sources exist. A
+# silent "scanned 0 -> 0 violations -> clean" is the fail-silent hole this
+# never-lie gate must not have: a witness-signature convention change (e.g.
+# adding a qualifier the producer doesn't match) would otherwise skip every
+# witness with CI green. (The producer now tolerates `static [inline] bool`.)
+if [[ -d "$COND_DIR" ]] && compgen -G "$COND_DIR/*.c" >/dev/null && (( scanned == 0 )); then
+    echo "[check_honest_witness] BROKEN — 0 witnesses found in $COND_DIR despite .c" >&2
+    echo "  files present; the producer/anchor is likely stale (witness signature" >&2
+    echo "  convention changed?). Refusing to report clean off an empty scan." >&2
+    exit 2
 fi
 
 echo "[check_honest_witness] scanned $scanned witness(es) in $COND_DIR"

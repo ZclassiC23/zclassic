@@ -16,7 +16,7 @@ for f in app/controllers/src/*.c app/services/src/*.c tools/mcp/controllers/*.c;
     awk -v file="$f" -v limit="$LIMIT" '
       /^[a-zA-Z_].*\(.*\)/ && !/;/ && !/^\s/ { sig=$0; start=NR; long_ok=0 }
       sig && /\/\/ *long-function-ok:[A-Za-z][A-Za-z0-9_-]*/ { long_ok=1 }
-      /^\}$/ && start {
+      /^\}[[:space:]]*(\/\/.*|\/\*.*)?$/ && start {
         len=NR-start;
         if (len > limit && !long_ok) {
           printf "FAIL: %s:%d  function spans %d lines (cap %d): %s\n", file, start, len, limit, substr(sig,1,80);
