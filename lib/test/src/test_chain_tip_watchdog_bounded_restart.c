@@ -371,6 +371,146 @@ int test_chain_tip_watchdog_bounded_restart(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ── (f) escalation LADDER over the supervisor tick: 1 -> 3, reserved inert
+     *
+     * Blocks (a)-(e) drive only the restart-DECISION seam
+     * (chain_tip_watchdog_test_escalate_*). They never exercise the wall-clock
+     * escalation LADDER inside the supervisor tick. This block drives that SAME
+     * ladder via chain_tip_watchdog_test_tick() — the production tick body,
+     * extracted to wd_apply_tick(), with an injected height and injected
+     * monotonic clock, so it is hermetic (no live chain, no real clock, no
+     * supervisor thread).
+     *
+     * Invariant under lock:
+     *   - level 1 (mirror) fires once age >= thr_mirror, exactly once;
+     *   - level JUMPS straight to 3 (restart) once age >= thr_restart;
+     *   - the reserved level-2 rung (g_fires_reserved) is declared but NEVER
+     *     wired by the ladder — it must read 0 forever. A mutation that fires
+     *     the reserved rung (escalation==2 / fires_reserved++) is caught here.
+     *
+     * Timeline note: the first tick ADVANCES the tip (0 -> LADDER_H), which
+     * seeds g_last_advance_us. It MUST seed a NON-ZERO timestamp, because
+     * wd_apply_tick treats last_advance_us==0 as "unseeded" and re-seeds on the
+     * next tick. So every now_us is based at T0 > 0 and age is measured as
+     * (T0 + age) - T0. */
+    {
+        char dir[256];
+        wd_tmpdir(dir, sizeof(dir), "ladder");
+        wd_mkdir_p(dir);
+        WD_CHECK("open progress.kv (ladder)", progress_store_open(dir));
+
+        /* Capture the boot-default thresholds so we can restore them after
+         * this block overrides them (reset_runtime does NOT touch thresholds,
+         * and the test_zcl monolith runs groups sequentially in one process). */
+        struct chain_tip_watchdog_stats def;
+        chain_tip_watchdog_get_stats(&def);
+
+        chain_tip_watchdog_test_reset_runtime();   /* fresh in-memory ladder */
+
+        /* Tight thresholds: mirror@100s, restart@200s. reserved@150s is SET
+         * but the ladder never reads it — proving it stays inert even when
+         * configured. */
+        chain_tip_watchdog_test_set_thresholds(/*mirror=*/100,
+                                               /*reserved=*/150,
+                                               /*restart=*/200);
+
+        const int64_t LADDER_H = 5000000;   /* a fixed stuck height */
+        const int64_t US = 1000000;         /* microseconds per second */
+        const int64_t T0 = 1000 * US;       /* non-zero monotonic base */
+
+        /* Tick 1 @ T0: the tip advances (h > prev=0), seeding a NON-ZERO
+         * last_advance_us. No escalation yet. */
+        chain_tip_watchdog_test_tick(LADDER_H, T0, /*do_shutdown=*/false);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("seed tick: level 0", s.escalation_level == 0);
+            WD_CHECK("seed tick: no mirror fire", s.fires_mirror == 0);
+            WD_CHECK("seed tick: reserved inert", s.fires_reserved == 0);
+            WD_CHECK("seed tick: no restart fire", s.fires_restart == 0);
+        }
+
+        /* Tick 2 @ T0+99s: same height, age 99s < mirror(100). Nothing yet —
+         * proves we don't escalate one tick early. */
+        chain_tip_watchdog_test_tick(LADDER_H, T0 + 99 * US, false);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("pre-mirror tick: still level 0", s.escalation_level == 0);
+            WD_CHECK("pre-mirror tick: no mirror fire", s.fires_mirror == 0);
+            WD_CHECK("pre-mirror tick: reserved inert", s.fires_reserved == 0);
+        }
+
+        /* Tick 3 @ T0+150s: age 150s >= mirror(100), < restart(200). Level 1
+         * fires EXACTLY once. 150s == thr_reserved: the reserved rung MUST
+         * stay inert (level==1, fires_reserved==0). */
+        chain_tip_watchdog_test_tick(LADDER_H, T0 + 150 * US, false);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("mirror tick: level == 1", s.escalation_level == 1);
+            WD_CHECK("mirror tick: mirror fired once", s.fires_mirror == 1);
+            WD_CHECK("mirror tick: reserved STILL inert at thr_reserved",
+                     s.fires_reserved == 0);
+            WD_CHECK("mirror tick: no restart yet", s.fires_restart == 0);
+        }
+
+        /* Tick 4 @ T0+180s: still in [mirror,restart). Level holds 1; mirror
+         * does NOT re-fire (the one-shot `level < 1` guard). */
+        chain_tip_watchdog_test_tick(LADDER_H, T0 + 180 * US, false);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("hold tick: level holds at 1", s.escalation_level == 1);
+            WD_CHECK("hold tick: mirror does not re-fire", s.fires_mirror == 1);
+            WD_CHECK("hold tick: reserved inert", s.fires_reserved == 0);
+        }
+
+        /* Tick 5 @ T0+205s: age 205s >= restart(200). Level JUMPS to 3 and the
+         * bounded-restart decision fires. We never set a TF_BLOCKED reason in
+         * this process, so tip_finalize_stage_last_blocked_reason()=="" ->
+         * deterministic=false -> the genuine bounded-restart path (fires_restart,
+         * not the operator page). do_shutdown=false keeps the test alive. */
+        chain_tip_watchdog_test_tick(LADDER_H, T0 + 205 * US, false);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("restart tick: level JUMPS to 3", s.escalation_level == 3);
+            WD_CHECK("restart tick: NEVER passed through level 2",
+                     s.escalation_level != 2);
+            WD_CHECK("restart tick: restart decision fired once",
+                     s.fires_restart == 1);
+            WD_CHECK("restart tick: reserved STILL inert after restart",
+                     s.fires_reserved == 0);
+            WD_CHECK("restart tick: bounded counter incremented",
+                     s.no_progress_restarts == 1);
+            WD_CHECK("restart tick: anchored at the stuck height",
+                     s.persisted_stuck_height == LADDER_H);
+        }
+
+        /* Tick 6 @ T0+240s: past restart, still stuck. Level holds 3; restart
+         * does NOT re-fire (one-shot `level < 3` guard). reserved inert. */
+        chain_tip_watchdog_test_tick(LADDER_H, T0 + 240 * US, false);
+        {
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("post-restart tick: level holds at 3", s.escalation_level == 3);
+            WD_CHECK("post-restart tick: restart does not re-fire",
+                     s.fires_restart == 1);
+            WD_CHECK("post-restart tick: reserved inert to the end",
+                     s.fires_reserved == 0);
+        }
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+
+        /* Restore the boot-default thresholds captured above (reset_runtime
+         * does not, and the monolith reuses this process for later groups). */
+        chain_tip_watchdog_test_set_thresholds(def.threshold_mirror_secs,
+                                               def.threshold_reserved_secs,
+                                               def.threshold_restart_secs);
+    }
+
     /* Leave global state clean for the next test. */
     chain_tip_watchdog_test_reset_runtime();
     event_clear_all_observers();

@@ -226,13 +226,13 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
 
 /* ── Supervisor tick ───────────────────────────────────────────────── */
 
-static void chain_tip_wd_tick(struct liveness_contract *c)
+/* The advance-or-escalate body, factored out so the supervisor tick and the
+ * ZCL_TESTING seam share ONE code path. The production tick passes the live
+ * chain height, the real monotonic clock, and do_shutdown=true; the test seam
+ * injects a height + monotonic timestamp and do_shutdown=false. For the
+ * production call this is byte-identical to the previous inline tick body. */
+static void wd_apply_tick(int64_t h, int64_t now_us, bool do_shutdown)
 {
-    (void)c;
-    if (!g_ms) return;
-
-    int64_t h = (int64_t)active_chain_height(&g_ms->chain_active);
-    int64_t now_us = mono_us_now();
     int64_t prev = atomic_load(&g_highest_tip);
 
     if (h > prev) {
@@ -286,13 +286,22 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
         /* Bounded path: increments the persisted no-progress counter and
          * requests shutdown; once the cap is hit it pages an operator and
          * stays up instead of power-cycling forever (see wd_decide_restart). */
-        wd_decide_restart(h, age_s, /*do_shutdown=*/true, deterministic);
+        wd_decide_restart(h, age_s, do_shutdown, deterministic);
     }
 
     /* Keep the supervisor's progress timer happy: we ARE ticking, just
      * not making chain progress. The escalation logic above is the
      * authoritative path; supervisor stall would be redundant noise. */
     supervisor_progress(atomic_load(&g_id), h);
+}
+
+static void chain_tip_wd_tick(struct liveness_contract *c)
+{
+    (void)c;
+    if (!g_ms) return;
+    /* Production: live chain height, real monotonic clock, real shutdown. */
+    wd_apply_tick((int64_t)active_chain_height(&g_ms->chain_active),
+                  mono_us_now(), /*do_shutdown=*/true);
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */
@@ -414,5 +423,25 @@ bool chain_tip_watchdog_test_escalate_deterministic(int64_t h)
 void chain_tip_watchdog_test_observe_advance(int64_t h)
 {
     wd_note_advance(h);
+}
+
+/* Override the escalation thresholds (seconds) so a unit test can cross the
+ * mirror/restart boundaries with small injected ages. */
+void chain_tip_watchdog_test_set_thresholds(int64_t mirror_secs,
+                                            int64_t reserved_secs,
+                                            int64_t restart_secs)
+{
+    atomic_store(&g_thr_mirror, mirror_secs);
+    atomic_store(&g_thr_reserved, reserved_secs);
+    atomic_store(&g_thr_restart, restart_secs);
+}
+
+/* Drive ONE supervisor tick with an injected stuck height `h` and an injected
+ * monotonic timestamp `now_us`, running the REAL escalation ladder
+ * (wd_apply_tick). do_shutdown=false suppresses the actual shutdown syscall so
+ * the test process survives. */
+void chain_tip_watchdog_test_tick(int64_t h, int64_t now_us, bool do_shutdown)
+{
+    wd_apply_tick(h, now_us, do_shutdown);
 }
 #endif

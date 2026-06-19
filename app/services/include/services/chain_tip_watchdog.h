@@ -134,6 +134,16 @@ bool chain_tip_watchdog_test_escalate_deterministic(int64_t h);
  * CHAIN_TIP_WD_EPISODE_CLEAR blocks past the episode anchor.
  * Mirrors the advance branch of the supervisor tick. */
 void chain_tip_watchdog_test_observe_advance(int64_t h);
+
+/* Override the escalation thresholds (seconds) for deterministic ladder tests. */
+void chain_tip_watchdog_test_set_thresholds(int64_t mirror_secs,
+                                            int64_t reserved_secs,
+                                            int64_t restart_secs);
+
+/* Drive ONE supervisor tick with an injected stuck height `h` and an injected
+ * monotonic timestamp `now_us`, running the real escalation ladder.
+ * do_shutdown=false suppresses the shutdown syscall. */
+void chain_tip_watchdog_test_tick(int64_t h, int64_t now_us, bool do_shutdown);
 #endif
 
 #endif
