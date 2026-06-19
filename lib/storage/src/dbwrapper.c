@@ -354,14 +354,24 @@ void db_iter_init(struct db_iterator *it, struct db_wrapper *w)
     it->deobf_cap = 0;
 }
 
-void db_iter_check_error(struct db_iterator *it)
+/* Returns true if the iterator finished cleanly (no LevelDB error), false if
+ * leveldb_iter_get_error reported a status (a block-level CRC mismatch, a
+ * missing/torn SST, or any I/O error surfaced mid-iteration). A caller that
+ * treats the iterated range as a COMPLETE set MUST abort on false — swallowing
+ * the error yields a silently TRUNCATED set (see the UTXO import reader loop in
+ * node_db_import_service.c). */
+bool db_iter_check_error(struct db_iterator *it)
 {
+    if (!it || !it->iter)
+        return false;
     char *err = NULL;
     leveldb_iter_get_error(it->iter, &err);
     if (err) {
         LogPrintf("LevelDB iterator error: %s\n", err);
         leveldb_free(err);
+        return false;
     }
+    return true;
 }
 
 void db_iter_free(struct db_iterator *it)

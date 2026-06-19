@@ -44,7 +44,8 @@
 #include <signal.h>
 #include <unistd.h>
 
-extern void db_iter_check_error(struct db_iterator *it);
+/* db_iter_check_error is declared in storage/dbwrapper.h (included above) and
+ * now returns bool (true = clean scan, false = LevelDB iterator error). */
 
 /* ── Controller-private symbols this Service forward-declares ──────────
  * The job-status setters + turbo-mode scope are external-linkage functions
@@ -376,8 +377,19 @@ struct zcl_result node_db_import_service_run(struct node_db *ndb,
             break;
     }
 reader_done:
-    /* Checksum failures can end iteration early, dropping entries. */
-    db_iter_check_error(&it);
+    /* Checksum failures (block-level CRC), a missing/torn SST, or any I/O
+     * error can end iteration early, dropping entries — silently truncating
+     * the UTXO set. Surface the iterator status and, on error, record it +
+     * request stop so the writer/decoders wind down. We do NOT accept the
+     * imported prefix: the post-join gate below converts this to a hard
+     * ZCL_ERR return instead of a silently-short "complete" set. */
+    if (!db_iter_check_error(&it)) {
+        LOG_WARN("sync", "UTXO import: LevelDB iterator error mid-scan after "
+                 "%d txids — set is TRUNCATED, rejecting import",
+                 total_entries);
+        atomic_store(&ctx->iter_error, true);
+        import_ctx_request_stop(ctx);
+    }
     db_iter_free(&it);
     db_wrapper_snapshot_end(&cvdb->db);
     atomic_store(&ctx->reader_done, true);
@@ -448,6 +460,32 @@ reader_done:
                      (ts_write.tv_nsec - ts_start.tv_nsec) / 1e6;
     printf("UTXO import: %d rows written in %.0fms\n", total_rows, pipe_ms);
     fflush(stdout);
+
+    /* HARD-HALT on a torn/short read: if the reader hit a LevelDB iterator
+     * error mid-scan, the iterated range is truncated and the imported rows
+     * are NOT a complete UTXO set. Reject the import outright — never let a
+     * silently-short prefix be accepted as authoritative. This gate precedes
+     * the generic should_stop gate so the failure is named precisely (the
+     * reader also requested stop, so should_stop would otherwise fire with a
+     * misleading "aborted on shutdown" message). */
+    if (atomic_load(&ctx->iter_error)) {
+        /* LOG_WARN (not LOG_FAIL) — LOG_FAIL would `return false`, but this
+         * function returns struct zcl_result and must clean up first. The
+         * named ZCL_ERR below carries the failure context to the caller. */
+        LOG_WARN("sync", "UTXO import: REJECTED — LevelDB iterator error left a "
+                 "TRUNCATED set (%d txids, %d rows read before the error); "
+                 "refusing to accept a partial UTXO set", total_entries,
+                 total_rows);
+        if (!sync_db_turbo_scope_end(&turbo_mode))
+            LOG_WARN("sync", "UTXO import: failed to restore normal mode after iterator-error reject");
+        restore_ok = false;
+        import_context_release_chunks(ctx);
+        free(ctx);
+        sync_job_import_finish(total_rows);
+        return ZCL_ERR(-10, "import: REJECTED — LevelDB iterator error left a "
+                       "truncated UTXO set (%d txids read before error)",
+                       total_entries);
+    }
 
     if (import_ctx_should_stop(ctx)) {
         LOG_WARN("sync", "UTXO import: aborted%s", g_shutdown_requested ? " on shutdown" : "");

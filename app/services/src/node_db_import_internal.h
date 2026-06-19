@@ -59,6 +59,11 @@ struct import_context {
     _Atomic bool cancel_requested;
     _Atomic bool reader_done;
     _Atomic bool decoders_done;
+    /* Set true by the reader if db_iter_check_error reports a LevelDB
+     * iterator error (CRC / missing SST / mid-scan I/O). A set flag means the
+     * iterated range is TRUNCATED, so the whole import MUST be rejected —
+     * never accepted as a complete UTXO set. */
+    _Atomic bool iter_error;
     _Atomic int chunks_produced;  /* total chunks filled by reader */
     _Atomic int chunks_consumed;  /* total chunks written by writer */
     /* LevelDB reader state (single-threaded) */
