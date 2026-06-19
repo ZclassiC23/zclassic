@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
+#include "util/signal_handler.h"
 
 static _Atomic int g_async_observer_calls = 0;
 
@@ -678,9 +679,13 @@ static int test_crash_handler_stderr_survives_exit(void)
     TEST("crash_handler: header + ≥3 backtrace frames reach stderr") {
         mkdir("./test-tmp", 0700);
         char path[256];
+        char path2[256];
         snprintf(path, sizeof(path),
                  "./test-tmp/crash_stderr_%d.log", (int)getpid());
+        snprintf(path2, sizeof(path2),
+                 "./test-tmp/crash_durable_%d.log", (int)getpid());
         unlink(path);
+        unlink(path2);
 
         /* Drain any pending stdio in the parent so the post-fork child
          * doesn't double-emit its inherited buffer. */
@@ -710,6 +715,10 @@ static int test_crash_handler_stderr_survives_exit(void)
              * _exit path. */
             event_log_init();
             event_install_crash_handler();
+            /* Arm the durable, stderr-INDEPENDENT crash log. Its fd is
+             * NEVER dup2'd onto stderr, so the parent's assertion on
+             * path2 proves the fix that survives swallowed stderr. */
+            signal_handler_set_crash_log(path2);
 
             /* Trigger.  Handler does its write(2) + fprintf + _exit. */
             raise(SIGABRT);
@@ -752,8 +761,36 @@ static int test_crash_handler_stderr_survives_exit(void)
         }
         ASSERT(hex_hits >= 3);
 
+        /* Acceptance 3 (DURABLE path): the stderr-INDEPENDENT, fsync'd
+         * crash log armed via signal_handler_set_crash_log() — the actual
+         * fix for the swallowed-backtrace incident — must hold the SAME
+         * header + frames.  The child wrote crash_durable_<pid>.log via the
+         * durable fd (event.c:733-737), a fd never dup2'd onto stderr, so
+         * this proves forensics survive even if the stderr redirect is lost. */
+        FILE *f2 = fopen(path2, "r");
+        ASSERT(f2 != NULL);
+        fseek(f2, 0, SEEK_END);
+        long sz2 = ftell(f2);
+        fseek(f2, 0, SEEK_SET);
+        ASSERT(sz2 > 0);
+        char *buf2 = zcl_malloc((size_t)sz2 + 1, "crash_durable_slurp");
+        ASSERT(buf2 != NULL);
+        size_t got2 = fread(buf2, 1, (size_t)sz2, f2);
+        buf2[got2] = '\0';
+        fclose(f2);
+
+        ASSERT(strstr(buf2, "FATAL SIGNAL 6") != NULL);
+        int hex2 = 0;
+        for (const char *p = buf2; (p = strstr(p, "0x")) != NULL; ) {
+            hex2++;
+            p += 2;
+        }
+        ASSERT(hex2 >= 3);
+        free(buf2);
+
         free(buf);
         unlink(path);
+        unlink(path2);
         PASS();
     } _test_next:;
 

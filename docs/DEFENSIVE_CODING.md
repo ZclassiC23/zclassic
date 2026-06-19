@@ -375,6 +375,7 @@ add/remove a gate.
 - `check-doc-no-false-deleted`
 - `check-stage-log-reorg-unsafe`
 - `check-zclassicd-reach-allowlist`
+- `check-no-csr-lock-on-finalize-drive`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
