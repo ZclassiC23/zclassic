@@ -31,6 +31,23 @@ cd "$(dirname "$0")/../.."
 # defensively without being a real mechanism.
 PATHS=(lib/consensus lib/validation lib/chain lib/mining app/jobs domain/consensus)
 
+# FAIL-LOUD preflight (never report "clean" off a silently-empty scan).
+# If a consensus dir was renamed/moved/deleted, grep would scan a SMALLER
+# surface and still exit 0 — a forbidden mechanism in the drifted dir would
+# escape the single most sacred gate. So every PATHS entry MUST exist; a
+# missing one means the consensus surface drifted and PATHS must be updated
+# DELIBERATELY (and the parity boundary re-verified). A NEW consensus dir not
+# in PATHS is likewise unscanned — when you add one, add it here.
+for p in "${PATHS[@]}"; do
+    if [ ! -d "$p" ]; then
+        echo "check_consensus_parity: FATAL — consensus path '$p' is missing." >&2
+        echo "  The consensus source surface drifted. Update PATHS in this gate" >&2
+        echo "  deliberately and re-verify the zclassicd parity boundary before" >&2
+        echo "  re-greening. Refusing to report 'clean' off a partial scan." >&2
+        exit 2
+    fi
+done
+
 # Forbidden mechanism tokens. Each denotes a miner-signaled / versionbits /
 # dynamic Equihash-override apparatus that zclassicd does NOT have. The
 # legitimate static getters chain_params_equihash_n / chain_params_equihash_k
@@ -38,8 +55,25 @@ PATHS=(lib/consensus lib/validation lib/chain lib/mining app/jobs domain/consens
 # height-keyed epoch lookup are the CORRECT parity mechanism and stay allowed.
 FORBIDDEN='versionbits|VersionBitsState|ComputeBlockVersion|ehUpgrade|eh_upgrade|nSignalBit|vbits_|equihash_n_at|equihash_k_at|BIP9|BIP8'
 
-hits=$(grep -rnE "$FORBIDDEN" "${PATHS[@]}" --include='*.c' --include='*.h' 2>/dev/null \
-    | grep -vE '(//|/\*) ?consensus-parity-ok:[A-Za-z][A-Za-z0-9_-]+' || true)
+# Run the scan and check grep's exit EXPLICITLY: 0=match, 1=no-match,
+# >=2=real error (bad flag, unreadable file). The old `2>/dev/null || true`
+# masked a >=2 error as an empty result and reported "clean" — a fail-silent
+# hole. Only 0/1 are valid; >=2 fails the gate LOUD.
+set +e
+raw=$(grep -rnE "$FORBIDDEN" "${PATHS[@]}" --include='*.c' --include='*.h')
+grc=$?
+set -e
+if [ "$grc" -ge 2 ]; then
+    echo "check_consensus_parity: FATAL — scan grep failed (exit $grc) over the" >&2
+    echo "  consensus surface; refusing to report 'clean' off a broken scan." >&2
+    exit 2
+fi
+
+hits=""
+if [ -n "$raw" ]; then
+    hits=$(printf '%s\n' "$raw" \
+        | grep -vE '(//|/\*) ?consensus-parity-ok:[A-Za-z][A-Za-z0-9_-]+' || true)
+fi
 
 if [ -n "$hits" ]; then
     echo "$hits"
