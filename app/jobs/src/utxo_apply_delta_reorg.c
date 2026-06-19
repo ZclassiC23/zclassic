@@ -439,8 +439,24 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * projection is seed-only. Only
      * the configured UTXO author unwinds. The in-memory s->cursor is reloaded
      * from this DB row at the top of the next stage_run_once (cursor_read). */
+    /* This unwind is ONE atomic unit (inverse deltas + row deletes + cursor
+     * rewind + applied-height rewind commit or roll back together). When the
+     * drain has an outer batch txn open (stage_batch_begin), a nested
+     * BEGIN IMMEDIATE would error, so open a SAVEPOINT instead: the unwind
+     * stays atomic relative to that savepoint and its writes enrol in the
+     * batch (committed once by stage_batch_end). Pure I/O txn-boundary
+     * change — identical writes, identical atomicity, fewer fsyncs. */
+    const bool ua_batched = stage_batch_active();
+    const char *ua_open   = ua_batched ? "SAVEPOINT utxo_apply_unwind"
+                                       : "BEGIN IMMEDIATE";
+    const char *ua_undo   = ua_batched
+        ? "ROLLBACK TO SAVEPOINT utxo_apply_unwind; "
+          "RELEASE SAVEPOINT utxo_apply_unwind"
+        : "ROLLBACK";
+    const char *ua_done   = ua_batched ? "RELEASE SAVEPOINT utxo_apply_unwind"
+                                       : "COMMIT";
     char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, ua_open, NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("utxo_apply", "[utxo_apply] unwind BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
@@ -448,17 +464,17 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     if (utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         for (int h = C - 1; h >= fork_plus1; h--) {
             if (!utxo_apply_emit_inverse_delta(db, h)) {
-                sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+                sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
                 return false;
             }
         }
     }
     if (!utxo_apply_delete_rows_above(db, fork_plus1, C - 1)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
         return false;
     }
     if (!utxo_apply_unwind_write_cursor(db, (uint64_t)fork_plus1)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
         return false;
     }
     /* Pull the contiguous applied frontier BACK to fork_plus1 in THIS unwind
@@ -469,13 +485,13 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      * the self-heal would wrongly trust). Co-committed with the inverse delta +
      * cursor; ROLLBACK on failure like the surrounding writes. */
     if (!coins_kv_set_applied_height_in_tx(db, fork_plus1)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
         return false;
     }
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, ua_done, NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("utxo_apply", "[utxo_apply] unwind COMMIT failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
         return false;
     }
 

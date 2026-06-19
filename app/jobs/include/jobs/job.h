@@ -43,15 +43,35 @@ typedef enum {
  * non-JOB_ADVANCED result, returning the count of advances. This macro
  * defines `<prefix>_stage_drain(int)` calling `<prefix>_stage_step_once()`.
  * The prototype still lives in each stage header; only the .c body becomes
- * this invocation. */
+ * this invocation.
+ *
+ * One COMMIT per drain, not per block: the loop runs inside a single batch
+ * transaction (stage_batch_begin/end) held under progress_store_tx_lock, so
+ * up to `max_steps` advancing blocks flush together. Each step still wraps
+ * its own work in a SAVEPOINT inside that batch (stage_run_once), so the
+ * per-block co-commit invariant (coin write + stage cursor + *_log row in
+ * one atomic unit) is unchanged — only the fsync cadence drops from once
+ * per block to once per batch. If the batch fails to open, fall back to the
+ * unbatched per-block path so a stage never silently stops advancing. */
 #define STAGE_DRAIN_IMPL(prefix)                                  \
     int prefix##_stage_drain(int max_steps) {                     \
         if (max_steps <= 0) return 0;                             \
+        sqlite3 *batch_db = progress_store_db();                  \
+        bool batched = false;                                     \
+        if (batch_db) {                                           \
+            progress_store_tx_lock();                             \
+            batched = stage_batch_begin(batch_db);                \
+            if (!batched) progress_store_tx_unlock();             \
+        }                                                         \
         int advanced = 0;                                         \
         for (int i = 0; i < max_steps; i++) {                     \
             job_result_t r = prefix##_stage_step_once();          \
             if (r != JOB_ADVANCED) break;                         \
             advanced++;                                           \
+        }                                                         \
+        if (batched) {                                            \
+            stage_batch_end(batch_db, advanced > 0);             \
+            progress_store_tx_unlock();                           \
         }                                                         \
         return advanced;                                         \
     }

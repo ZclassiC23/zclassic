@@ -159,6 +159,35 @@ void progress_store_tx_unlock(void)
     pthread_mutex_unlock(&g_tx_lock);
 }
 
+bool progress_store_set_sync_mode(bool ibd)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db) return false;
+
+    /* OFF during IBD (cursor commits don't fsync → the from-blocks fold is
+     * not fsync-bound); NORMAL at-tip (the safe default applied at open).
+     * This is a pure durability/flush-timing control — it changes nothing
+     * about WHAT is written or committed, only when the OS flushes it. */
+    const char *pragma = ibd ? "PRAGMA synchronous=OFF"
+                             : "PRAGMA synchronous=NORMAL";
+
+    progress_store_tx_lock();
+    char *err = NULL;
+    int rc = sqlite3_exec(db, pragma, NULL, NULL, &err);
+    progress_store_tx_unlock();
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:progress-store-lifecycle
+                "[progress_store] set_sync_mode(%s) failed: %s\n",
+                pragma, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    if (err) sqlite3_free(err);
+    fprintf(stderr,  // obs-ok:progress-store-lifecycle
+            "[progress_store] %s (%s)\n", pragma, ibd ? "IBD" : "at-tip");
+    return true;
+}
+
 void progress_store_close(void)
 {
     pthread_mutex_lock(&g_lock);

@@ -134,6 +134,40 @@ bool stage_table_ensure(sqlite3 *db);
  * Returns the step's result code. JOB_FATAL if persistence fails. */
 job_result_t stage_run_once(stage_t *s, sqlite3 *db);
 
+/* ── Batched drain (one COMMIT per batch of steps, not one per step) ────
+ *
+ * Each stage_run_once normally wraps its step in its own BEGIN IMMEDIATE /
+ * COMMIT, so a drain of N blocks issues N commits (N fsync points in the
+ * worst case). A drain driver may instead open ONE outer transaction around
+ * a bounded batch of steps and commit it once:
+ *
+ *     progress_store_tx_lock();
+ *     stage_batch_begin(db);
+ *     for (i = 0; i < cap; i++) {
+ *         if (stage_run_once(s, db) != JOB_ADVANCED) break;
+ *     }
+ *     stage_batch_end(db, advanced > 0);   // COMMIT if any step advanced
+ *     progress_store_tx_unlock();
+ *
+ * While a batch is open, each stage_run_once uses a per-step SAVEPOINT
+ * instead of BEGIN/COMMIT: an advancing step RELEASEs (its coin write +
+ * cursor + *_log row stay atomic, exactly as before), and a non-advancing
+ * step ROLLBACK-TOs its savepoint (discarding only that block's partial
+ * work, leaving earlier advanced blocks in the open batch intact). This
+ * changes ONLY when bytes are flushed (one COMMIT per batch) — never WHAT
+ * is computed, written, or accepted, and never the per-block atomicity.
+ *
+ * The batch flag is process-global and guarded by progress_store_tx_lock
+ * (a recursive mutex that already serializes every progress.kv txn), so at
+ * most one batch is open at a time. The caller MUST hold that lock across
+ * begin..end and MUST pair every begin with exactly one end.
+ *
+ * stage_batch_active() reports whether a batch txn is currently open on the
+ * calling path (for assertions / tests). */
+bool stage_batch_begin(sqlite3 *db);
+bool stage_batch_end(sqlite3 *db, bool commit);
+bool stage_batch_active(void);
+
 /* Boot-time restore: explicitly set the cursor. Persists immediately.
  * Intended for replaying a known-good cursor on import. */
 bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value);

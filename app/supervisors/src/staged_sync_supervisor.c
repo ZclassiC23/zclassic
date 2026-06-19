@@ -20,6 +20,8 @@
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
 #include "supervisors/domains.h"
+#include "storage/progress_store.h"
+#include "validation/main_logic.h"
 
 #include "util/supervisor.h"
 #include "jobs/header_admit_stage.h"
@@ -166,6 +168,28 @@ static struct staged_stage_desc g_stages[] = {
 
 #define STAGED_STAGE_COUNT (sizeof(g_stages) / sizeof(g_stages[0]))
 
+/* progress.kv durability gate. During IBD / the bodies-only refold the
+ * stage cursor commits do not need to fsync (a crash just replays from the
+ * last durable cursor, idempotently), so synchronous=OFF removes the
+ * per-block fsync from the fold's critical path. Once at-tip it MUST revert
+ * to NORMAL so the live tip is not left in a wider crash-durability window.
+ *
+ * This is a pure I/O control — it never changes WHAT a stage computes or
+ * commits, only when those bytes reach disk. We gate on the existing
+ * is_initial_block_download() signal and issue the PRAGMA only on a
+ * transition (tracked in g_progress_sync_ibd). -1 = not yet applied. */
+static _Atomic int g_progress_sync_ibd = -1;
+
+static void staged_sync_apply_progress_durability(struct main_state *ms)
+{
+    if (!ms) return;
+    int want = is_initial_block_download(ms) ? 1 : 0;
+    int have = atomic_load(&g_progress_sync_ibd);
+    if (have == want) return;  /* no transition — skip the PRAGMA */
+    if (progress_store_set_sync_mode(want != 0))
+        atomic_store(&g_progress_sync_ibd, want);
+}
+
 /* Generic per-stage tick: drain a bounded batch each tick — keeps
  * progress.kv churn low and avoids starving other supervisor children —
  * then publish the cursor and heartbeat. Recovers its stage from the
@@ -174,6 +198,10 @@ static void staged_stage_tick(struct liveness_contract *c)
 {
     struct staged_stage_desc *d = (struct staged_stage_desc *)c->ctx;
     if (!d || !d->ms) return;
+
+    /* Keep progress.kv's durability mode tracking the IBD/at-tip signal.
+     * Cheap: only flips the PRAGMA on an actual IBD<->at-tip transition. */
+    staged_sync_apply_progress_durability(d->ms);
     /* Yield to an in-flight SYNCHRONOUS reducer drive (reducer_ingest_block on
      * the mining/submitblock/rebuild thread). The stages share the active-chain
      * window, which is not under the per-stage progress.kv lock, so draining a

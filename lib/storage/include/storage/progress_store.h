@@ -62,6 +62,23 @@ bool progress_store_path(char *out, size_t cap);
 void progress_store_tx_lock(void);
 void progress_store_tx_unlock(void);
 
+/* Switch the durability PRAGMA on the open progress.kv handle.
+ *
+ * Pure I/O performance control — changes ONLY when bytes are flushed to
+ * disk, never WHAT is computed, written, or accepted:
+ *   - ibd == true  → `PRAGMA synchronous=OFF`  (initial block download /
+ *                    bodies-only refold: cursor commits do not fsync, so
+ *                    the from-blocks fold is not fsync-bound).
+ *   - ibd == false → `PRAGMA synchronous=NORMAL` (the safe at-tip default;
+ *                    identical to the mode applied at open).
+ *
+ * MUST be reverted to NORMAL once at-tip — leaving OFF permanently widens
+ * the crash-durability window for the live tip. The caller gates this on
+ * the existing IBD/at-tip signal (is_initial_block_download) and only
+ * issues the PRAGMA on a transition. No-op (returns false) if the store is
+ * not open. Takes progress_store_tx_lock internally. */
+bool progress_store_set_sync_mode(bool ibd);
+
 /* Graceful close: PRAGMA wal_checkpoint(TRUNCATE), sqlite3_close. Safe
  * to call repeatedly and from shutdown paths. */
 void progress_store_close(void);

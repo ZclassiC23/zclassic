@@ -275,6 +275,96 @@ uint64_t stage_idle_count(const stage_t *s)
 uint64_t stage_error_count(const stage_t *s)
 { return s ? atomic_load(&s->error_count) : 0u; }
 
+/* ── Batched drain (one COMMIT per batch, not one per step) ─────────────
+ *
+ * When a drain driver opens a batch txn (stage_batch_begin), the per-step
+ * BEGIN/COMMIT in stage_run_once is replaced by a per-step SAVEPOINT so the
+ * whole batch commits once. The flag is process-global because
+ * progress_store_tx_lock (recursive) already serializes every progress.kv
+ * txn — at most one batch can be open at a time. The caller holds that lock
+ * across begin..end (see util/stage.h). */
+#define STAGE_SAVEPOINT_NAME "stage_step"
+static _Atomic bool g_batch_open = false;
+
+bool stage_batch_active(void)
+{
+    return atomic_load(&g_batch_open);
+}
+
+bool stage_batch_begin(sqlite3 *db)
+{
+    if (!db) return false;
+    if (atomic_load(&g_batch_open)) {
+        /* Nested begin without an end is a caller bug; refuse rather than
+         * silently mask it (a stray COMMIT would defeat the co-commit
+         * invariant). */
+        fprintf(stderr, "[stage] batch_begin: a batch is already open\n");  // obs-ok:stage-begin-failure
+        return false;
+    }
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[stage] batch BEGIN: %s\n",  // obs-ok:stage-begin-failure
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    atomic_store(&g_batch_open, true);
+    return true;
+}
+
+bool stage_batch_end(sqlite3 *db, bool commit)
+{
+    if (!db) return false;
+    if (!atomic_load(&g_batch_open)) {
+        /* No batch open — nothing to finish. Treat as benign no-op. */
+        return true;
+    }
+    char *err = NULL;
+    const char *fini = commit ? "COMMIT" : "ROLLBACK";
+    int rc = sqlite3_exec(db, fini, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[stage] batch %s: %s\n",  // obs-ok:stage-commit-failure
+                fini, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        /* The outer txn may still be open; force it closed so the next
+         * batch can BEGIN cleanly. */
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        atomic_store(&g_batch_open, false);
+        return false;
+    }
+    if (err) sqlite3_free(err);
+    atomic_store(&g_batch_open, false);
+    return true;
+}
+
+/* Commit this step's work. Batched: RELEASE the savepoint (the step's
+ * writes stay enrolled in the still-open outer batch txn, to be COMMITted
+ * once by stage_batch_end). Unbatched: COMMIT the step's own txn. Returns
+ * the sqlite rc; *err set on failure (caller frees). */
+static int stage_step_commit(sqlite3 *db, bool batched, char **err)
+{
+    return sqlite3_exec(db,
+        batched ? "RELEASE SAVEPOINT " STAGE_SAVEPOINT_NAME : "COMMIT",
+        NULL, NULL, err);
+}
+
+/* Discard this step's work. Batched: ROLLBACK TO the savepoint (undo only
+ * this block's partial writes) then RELEASE it (so the savepoint name is
+ * free for the next step), leaving the outer batch txn — and every earlier
+ * advanced block in it — open and intact. Unbatched: ROLLBACK the step's
+ * own txn. Best-effort (matches the pre-batch ROLLBACK call sites). */
+static void stage_step_rollback(sqlite3 *db, bool batched)
+{
+    if (batched) {
+        sqlite3_exec(db, "ROLLBACK TO SAVEPOINT " STAGE_SAVEPOINT_NAME,
+                     NULL, NULL, NULL);
+        sqlite3_exec(db, "RELEASE SAVEPOINT " STAGE_SAVEPOINT_NAME,
+                     NULL, NULL, NULL);
+    } else {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+}
+
 /* ── Run one step ──────────────────────────────────────────────────── */
 
 job_result_t stage_run_once(stage_t *s, sqlite3 *db)
@@ -311,9 +401,19 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
     /* Begin an explicit transaction so the step's writes + our cursor
      * UPSERT land atomically. If the step itself wants to do bulk I/O
      * outside the transaction it must roll its own; the contract here
-     * is "cursor advance and step output are atomic." */
+     * is "cursor advance and step output are atomic."
+     *
+     * Batched drain: when a drain driver has an outer batch txn open
+     * (stage_batch_begin), open a SAVEPOINT instead of a new BEGIN — the
+     * per-block atomicity is preserved (the savepoint isolates this block's
+     * coin write + cursor + *_log row), but the whole batch commits ONCE.
+     * `batched` is sampled once and used for every open/finish call below so
+     * the txn shape is internally consistent for this step. */
+    const bool batched = atomic_load(&g_batch_open);
+    const char *txn_open  = batched ? "SAVEPOINT " STAGE_SAVEPOINT_NAME
+                                    : "BEGIN IMMEDIATE";
     char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, txn_open, NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] BEGIN: %s\n",  // obs-ok:stage-begin-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
@@ -333,22 +433,22 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
                 s->name,
                 (unsigned long long)ctx.cursor_out,
                 (unsigned long long)cur);
-            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            stage_step_rollback(db, batched);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
             return stage_note_fatal(s, "ADVANCED but cursor did not move");
         }
         if (!cursor_write_locked(db, s->name, ctx.cursor_out)) {
-            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            stage_step_rollback(db, batched);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
             return stage_note_fatal(s, "cursor_write failed (sqlite)");
         }
-        if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        if (stage_step_commit(db, batched, &err) != SQLITE_OK) {
             fprintf(stderr, "[stage] COMMIT: %s\n",  // obs-ok:stage-commit-failure
                     err ? err : "(no message)");
             if (err) sqlite3_free(err);
-            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            stage_step_rollback(db, batched);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
             return stage_note_fatal(s, "COMMIT failed");
@@ -360,9 +460,10 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
         return JOB_ADVANCED;
     }
 
-    /* Non-advancing outcomes: roll back the txn (the step may have
-     * touched scratch state) and surface the result. */
-    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    /* Non-advancing outcomes: roll back this step's work (the step may have
+     * touched scratch state) and surface the result. Batched: undo only this
+     * block's savepoint, leaving earlier advanced blocks in the open batch. */
+    stage_step_rollback(db, batched);
     progress_store_tx_unlock();
     pthread_mutex_unlock(&s->lock);
 
@@ -400,13 +501,45 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
 
 /* ── Boot-time restore ─────────────────────────────────────────────── */
 
+/* Batch-aware transaction verbs for the standalone cursor writers below
+ * (stage_set_cursor, stage_set_named_cursor_if_behind). These run on their
+ * own when unbatched, but a drain batch (stage_batch_begin) may already hold
+ * an outer BEGIN IMMEDIATE open when a stage's step body calls them on its
+ * pre-step path — e.g. tip_finalize's rewind_cursor_if_active_chain_reorged
+ * calls stage_set_cursor before opening its own per-step savepoint. SQLite
+ * rejects a nested BEGIN ("cannot start a transaction within a transaction"),
+ * so when a batch is open these must nest as a named SAVEPOINT instead. The
+ * savepoint name is distinct from STAGE_SAVEPOINT_NAME so it never collides.
+ * progress_store_tx_lock is recursive, so re-acquiring inside a batch is safe. */
+#define STAGE_CURSOR_SP "stage_cursor_write"
+static int cursor_txn_begin(sqlite3 *db, bool batched, char **err)
+{
+    return sqlite3_exec(db,
+        batched ? "SAVEPOINT " STAGE_CURSOR_SP : "BEGIN IMMEDIATE", NULL, NULL, err);
+}
+static int cursor_txn_commit(sqlite3 *db, bool batched, char **err)
+{
+    return sqlite3_exec(db,
+        batched ? "RELEASE SAVEPOINT " STAGE_CURSOR_SP : "COMMIT", NULL, NULL, err);
+}
+static void cursor_txn_rollback(sqlite3 *db, bool batched)
+{
+    if (batched) {
+        sqlite3_exec(db, "ROLLBACK TO SAVEPOINT " STAGE_CURSOR_SP, NULL, NULL, NULL);
+        sqlite3_exec(db, "RELEASE SAVEPOINT " STAGE_CURSOR_SP, NULL, NULL, NULL);
+    } else {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+}
+
 bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
 {
     if (!s || !db) LOG_FAIL("stage", "set_cursor: null arg");
     pthread_mutex_lock(&s->lock);
     progress_store_tx_lock();
+    bool batched = stage_batch_active();
     char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    if (cursor_txn_begin(db, batched, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] set_cursor BEGIN: %s\n",  // obs-ok:stage-begin-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
@@ -415,16 +548,16 @@ bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
         return false;
     }
     if (!cursor_write_locked(db, s->name, value)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return false;
     }
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+    if (cursor_txn_commit(db, batched, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] set_cursor COMMIT: %s\n",  // obs-ok:stage-commit-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return false;
@@ -446,8 +579,9 @@ bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
         return false;
 
     progress_store_tx_lock();
+    bool batched = stage_batch_active();
     char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    if (cursor_txn_begin(db, batched, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] set_named_cursor BEGIN: %s\n",  // obs-ok:stage-begin-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
@@ -457,26 +591,26 @@ bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
 
     uint64_t current = 0;
     if (!cursor_read(db, name, &current)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         return false;
     }
     if (current >= value) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         return true;
     }
 
     if (!cursor_write_locked(db, name, value)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         return false;
     }
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+    if (cursor_txn_commit(db, batched, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] set_named_cursor COMMIT: %s\n",  // obs-ok:stage-commit-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        cursor_txn_rollback(db, batched);
         progress_store_tx_unlock();
         return false;
     }
