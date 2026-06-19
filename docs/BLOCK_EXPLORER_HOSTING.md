@@ -124,7 +124,8 @@ Same shape — substitute your domain and datadir.
    `443→8443` (HTTPS). If you run other services on 8080 (e.g. `zcl-supply`), they
    are untouched. The clearnet explorer is HTTPS-only; to also redirect plain HTTP,
    first give the node a redirect port that doesn't collide, then add an `80:…` pair.
-6. **Forward 443→8443 and 80→8080** — run the one setup command, then the agent
+6. **Forward 443→8443** — run the one setup command (443-only by design; port 80
+   is not forwarded), then the agent
    owns it:
    ```bash
    # ONE privileged command (its only sudo line is a single setcap):

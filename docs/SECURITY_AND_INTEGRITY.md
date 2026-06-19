@@ -58,9 +58,11 @@ isolated fixtures, or consenting peers.
   detailed contract is [`DEFENSIVE_CODING.md`](./DEFENSIVE_CODING.md).
 - **Local integration gate:** `make ci` runs lint before tests, then the test
   harness, benchmark regression, hermetic MVP slice gates, crash tests, and
-  fuzz smoke tests where the toolchain is available. This checkout does not
-  contain a GitHub Actions workflow file; do not treat hosted push/PR automation
-  as present unless a workflow is added.
+  fuzz smoke tests where the toolchain is available. This checkout contains two
+  GitHub Actions workflows under `.github/workflows/` (`pr-security-review.yml`,
+  `pr-security-comment.yml`) that run an automated, fork-safe security
+  review/comment on pull requests; there is no hosted build/test CI workflow
+  (CI runs locally via `make ci`).
 - **MCP middleware:** tool routes carry destructive flags, destructive tools
   are rate-limited separately, tool calls emit events, and `ZCL_MCP_BEARER_TOKEN`
   can require bearer auth where a transport supports it. The default `-mcp`

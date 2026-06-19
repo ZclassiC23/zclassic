@@ -10,18 +10,23 @@
 The live-tip reducer (`body_persist → script_validate → proof_validate →
 utxo_apply → tip_finalize`) **never calls `connect_block`**
 (`lib/validation/src/connect_block.c`), the only site with shielded-consensus
-enforcement. `coins_view_cache_have_joinsplit_requirements`
-(`lib/coins/src/coins_view.c:477-483`) is a hardcoded `return true;` called from
-`connect_block.c:406`, which the reducer never reaches.
+enforcement. The `connect_block.c` stub
+`coins_view_cache_have_joinsplit_requirements`
+(`lib/coins/src/coins_view.c:485`) is still a hardcoded `return true;`, but that
+no longer matters for the reducer: nullifier double-spend enforcement (Part A
+below) already lives on the reducer path — `utxo_apply_check_and_insert_nullifiers`
+(`app/jobs/src/utxo_apply_nullifiers.c:83`), called from `utxo_apply_stage.c:418`.
 `proof_validate_stage.c` only verifies the zk-SNARK against the anchor the tx
-*claims* (`sd->anchor` at :230, `js->anchor` at :273/:284) — it never checks:
+*claims* (`sd->anchor` at :161, `js->anchor` at :204/:215) — what the reducer
+still does NOT check:
 
-- **(a) nullifier double-spend** (Sapling `sd->nullifier`, Sprout `js->nullifiers[0..1]`),
-- **(b) anchor membership** (is the claimed treestate root real?),
-- **(c) ZIP-209 turnstile** (`nChainSproutValue`/`nChainSaplingValue` must never go negative).
+- **(a) nullifier double-spend** (Sapling `sd->nullifier`, Sprout `js->nullifiers[0..1]`) — **DONE** on the reducer path (`utxo_apply_nullifiers.c:83`),
+- **(b) anchor membership** (is the claimed treestate root real?) — still unbuilt,
+- **(c) ZIP-209 turnstile** (`nChainSproutValue`/`nChainSaplingValue` must never go negative) — still unbuilt.
 
-So a forward-path block that double-spends a shielded nullifier, proves against
-a fabricated anchor, or drives a pool negative **is finalized → inflation**.
+So a forward-path block that proves against a fabricated anchor or drives a
+pool negative **is finalized → inflation** (a double-spent shielded nullifier
+is now rejected on the reducer path — see (a) above).
 
 ## 2. Load-bearing atomicity fact
 

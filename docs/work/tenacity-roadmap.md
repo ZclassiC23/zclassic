@@ -6,7 +6,7 @@
 
 ## The lens
 
-The three principles every item anchors to (state-duplication → divergence; verification must sample the real distribution not reference text; sync has an information floor) are TENACITY doctrine — see [`docs/TENACITY.md`](../TENACITY.md). Floor is already measured: `--importblockindex` 3.14M headers in 60–74 s, then `-cold-import` → hash-identical tip in ~25 min; remaining work is making the floor the *only* path and never letting "fast" mean "silently incomplete".
+The three principles every item anchors to (state-duplication → divergence; verification must sample the real distribution not reference text; sync has an information floor) are TENACITY doctrine — see [`docs/TENACITY.md`](../TENACITY.md). Floor is already measured: `--importblockindex` 3.14M headers in 60–74 s, then a normal boot (auto-reads ~/.zclassic) → hash-identical tip in ~25 min; remaining work is making the floor the *only* path and never letting "fast" mean "silently incomplete".
 
 **Standing rule (doctrine, enforced on every PR):** a new wedge gets a new *write-time invariant at a chokepoint*, never a new repair module.
 
@@ -20,7 +20,7 @@ Makes Wedge A (restore installs a tip above the validated header frontier → po
 ### 2. Oversize grandfather fix + full genesis replay *(LANDED — `ccc7fbbfa`, merged `b0c0b4f9a`)*
 The canonical chain must replay from genesis with zero consensus rejects. FR-3's text-copied `MAX_TX_SIZE_AFTER_SAPLING=102000` false-rejected real history (mined when the rule was 2 MB). A complete scan (every height 0..3143532, oracle-compared) found **413** oversize txs (h=478544..1968856, max 1,922,197 B at h=685036); each is excused via a txid-keyed grandfather allowlist in `domain/consensus/src/tx_structural.c`, **BLOCK context only** — mempool and fresh blocks stay strict 102000 (= zclassicd live behavior). The standing-nightly-replay institution (commitment == zclassicd `gettxoutsetinfo` every run) is item 5.
 
-### 3. Reindex epilogue derivation — recovery must not manufacture the next wedge *(OPEN)*
+### 3. Reindex epilogue derivation — recovery must not manufacture the next wedge *(LANDED — reindex_epilogue.c wired at config/src/boot_index.c:402; test_reindex_epilogue.c)*
 - **Problem:** `-reindex-chainstate` (the crash-only auto-recovery path, `706a7c00a`) ends torn; with the never-give-up unit (`0b45e93a5`) it can degrade into an infinite reindex loop. Confirmed gaps at `config/src/boot_index.c:160–297` and `config/src/boot.c:3321–3344`: `boot_index_clear_coins_state` **deletes** `coins_best_block`/`utxo_commitment`/`utxo_sha3` but the epilogue never **recomputes** them; `coins_kv` is never reseeded; the `utxo_apply`/`coins_applied` cursors keep stale pre-reindex values — recovery manufactures the `coins_applied > hstar` wedge shape.
 - **Fix:** the epilogue derives in one ordered commit: reseed coins_kv from the replayed set, recompute (not delete) the SHA3 commitment, clamp the reducer cursors to the replayed tip. Derived, never installed-stale.
 - **Acceptance:** (a) regtest reindex smoke (~50 blocks, `-reindex-chainstate`, assert tip + row-count parity + recomputed==served commitment + SERVING) — gates every push, ~3 min; (b) mainnet copy reindex ends with cursors == replayed tip, no `coins_applied > hstar`; (c) kill -9 mid-reindex then reboot converges (feeds item 7).
@@ -117,7 +117,7 @@ Rule of thumb: **anomaly above S ⇒ rebuild; anomaly at/below S ⇒ page.** Not
 - **Size:** ~250 LOC harness + timer unit; 1 session.
 
 ### 8. One-command tenacious bootstrap — make the proven recipe the only path *(OPEN)*
-- **Goal:** kill the cold-sync footgun. The two-step recipe (`--importblockindex` then `-cold-import`; zclassicd P2P=8033) is in CLAUDE.md "Tenacity & recovery"; `-cold-import` alone leaves a 3.1M-header hole (headers=960) and pins forever. A docs-only recipe rots — fold it into the binary.
+- **Goal:** kill the cold-sync footgun. The two-step recipe (`--importblockindex` then a normal boot; zclassicd P2P=8033) is in CLAUDE.md "Tenacity & recovery"; `-cold-import` alone leaves a 3.1M-header hole (headers=960) and pins forever. A docs-only recipe rots — fold it into the binary.
 - **Mechanism:** wrap the two steps in the binary. Preferred: `-cold-import` boot **auto-detects** the header hole (header count ≪ source index extent) and runs the block-index import itself before applying the snapshot. Optionally alias as `-tenacious-sync=<sourcedir>`. Post-import completeness invariant always-on: contiguity genesis..tip, zero nBits==0, per-keyspace counts vs source LevelDB (the 1,561-record silent-tail-drop precedent bans row-count plausibility) — refuses to mark the sync complete otherwise.
 - **Acceptance:** single command from an EMPTY datadir → SERVING at a hash-identical tip vs zclassicd in ~25 min; weekly cold-sync canary (~30 min) runs exactly this command forever; the old partial-recipe path either composes or refuses loudly (no silent pin).
 - **Size:** ~200 LOC boot wiring + invariant + canary unit; 1 session.

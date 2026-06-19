@@ -20,12 +20,14 @@ design-of-record for the gates and the deletion order).
   existing `forward_from_active_tip` carve-out. `pindex_best_header` is a **projection** of
   that prefix, never slammed forward. Chokepoint: `csr_validate_locked`.
 - **INVARIANT B (coins bounded by finality).** `utxo_apply` may not advance
-  `coins_applied_height` past `tip_finalize`'s finalized frontier by more than
-  `PIPELINE_DEPTH_UTXO_OVER_FINALIZE = 1`. Chokepoint: `utxo_apply` `step_apply`
+  `coins_applied_height` past `tip_finalize`'s finalized frontier by more than a
+  one-block pipeline depth (the tear check compares coins_applied against
+  utxo_apply_log's own contiguous ok=1 prefix + 1; no named constant).
+  Chokepoint: `utxo_apply` `step_apply`
   precondition. The tear test compares `coins_applied` against `utxo_apply_log`'s **own**
   contiguous prefix + depth, not the `tip_finalize`-pinned global MIN H*.
 - **Derived-state corollary.** One shared frontier reader
-  (`reducer_frontier_header_frontier`, wrapping the existing static
+  (`reducer_frontier_log_frontier`, wrapping the existing static
   `log_contiguous_prefix`); `coins_best_block` derived from `coins_applied_height`; the
   node.db `utxos` table loses all read authority (SHA3 commitment + fast-sync serve
   re-pointed to `coins_kv` via the **same** encoder → byte-identical commitment).

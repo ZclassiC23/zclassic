@@ -21,7 +21,7 @@ Per-pass checklist:
 
 - `config/src/*.c` is wildcard-built (no Makefile edit).
 - Add the new file to the scaffold-label `files[]` at
-  `lib/test/src/test_make_lint_gates.c:2252`.
+  `lib/test/src/test_make_lint_gates.c:2625`.
 - Boot-validate on a copy: `tools/repro_on_copy.sh <tag> --port=18299
   --p2p-port=18933 --deadline=480 -- -nobgvalidation` (deadline ≥480 to clear
   the ~328s `mmb_register` boot cost). Confirm tip restores, no crash.

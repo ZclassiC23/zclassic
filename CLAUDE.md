@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels, on-chain via Sapling encrypted memo field), cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in 30 seconds via FlyClient + SHA3 UTXO snapshots. Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible byte-identical builds with optional GPG signing (sign optional, can be waived with --unsigned). **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels, on-chain via Sapling encrypted memo field), cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible byte-identical builds with optional GPG signing (sign optional, can be waived with --unsigned). **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -62,6 +62,13 @@ FIRES on the copy, then deploy. `test_parallel` green is a regression
 floor, not a liveness proof.
 
 ## Current focus — **Ship v1 (MVP 8/8)**
+
+> **Before treating MVP/soak as the active mission, check the live node.** The
+> cold-import bootstrap can wedge during sync; when it does, the node halts
+> honestly (`operator_needed`) and no soak time accrues — so MVP/soak progress is
+> gated on that wedge class being fixed. Verify live state with `zcl_status` /
+> [`docs/HANDOFF.md`](./docs/HANDOFF.md) — never assume "synced" from a doc.
+> Wedge-class root fix: [`docs/work/never-stuck-plan.md`](./docs/work/never-stuck-plan.md).
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
 **THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: CI-enforce the MVP criteria and accumulate soak time.**
@@ -175,10 +182,11 @@ runtime state, follow the convention:
 3. Register the dump function in the dispatcher table at
    `app/controllers/src/diagnostics_registry.c:g_dumpers`. One line.
 
-4. Add the subsystem name to the MCP `zcl_state` enum at
-   `tools/mcp/controllers/diagnostics_controller.c:p_state[].enum_csv` and to
-   the `enum_csv` in `lib/test/src/test_mcp_controllers.c` if it
-   asserts the list.
+4. No edit to `diagnostics_controller.c` is needed — `p_state[0].enum_csv`
+   is auto-populated at runtime from the diagnostics registry via
+   `diagnostics_subsystems_csv()` / `g_state_subsystems_csv`
+   (`diagnostics_controller.c:574`). Only update the `enum_csv` assertion
+   in `lib/test/src/test_mcp_controllers.c` if it asserts the list.
 
 That's it — no new RPC handler, no new MCP route, no new schema.
 Every future subsystem becomes introspectable via `zcl_state` with
@@ -309,7 +317,7 @@ Human-readable names registered on-chain via OP_RETURN. Inspired by ENS (Ethereu
 Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded).
 
 - **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes — **plaintext on the wire** (transport encryption not yet implemented)
-- **On-chain**: structured data in the Sapling 512-byte encrypted memo field (shielded)
+- **On-chain**: structured data in the Sapling 512-byte encrypted memo field (shielded) — **not yet implemented**: no send path sets the on-chain channel (`messaging_controller.c` hardcodes P2P)
 - Messages stored in SQLite, delivery acknowledgment
 - RPC: `msg_send`, `msg_inbox`, `msg_read`
 
@@ -359,7 +367,7 @@ make deploy         # Build + setcap + restart service
 Note on `-j`: each binary is ONE whole-program `cc` over ~660–1400 `.c` files
 (LTO), so `-j$(nproc)` only overlaps the 2–3 separate binaries + the LTO link,
 NOT the per-binary front-end compile. For a fast compile-check inner loop use
-`make build-only` (476 `cc -c` genuinely parallel under `-j`); header edits are
+`make build-only` (664 `cc -c` genuinely parallel under `-j`); header edits are
 now tracked via depfiles, so it no longer false-greens on a header change.
 Default build targets `-march=x86-64-v3` (portable: AVX2/FMA/BMI2); pass
 `ZCL_NATIVE=1` to build for the host CPU only.

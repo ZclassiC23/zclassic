@@ -30,7 +30,7 @@ a spawned test node can never touch the live node, datadir, or ports:
 - **Throwaway datadir** under `/tmp` (`mktemp -d /tmp/zcl23-<kind>-XXXXXX`);
   refuses if the path resolves under `~/.zclassic-c23*`.
 - **39xxx port quad** (`-port/-rpcport/-fsport/-httpsport` = base+0..3,
-  default base 39030/39040) plus a dead `-connect=127.0.0.1:39999` sink.
+  default base 39030 (quad 39030/39031/39032/39033)) plus a dead `-connect=127.0.0.1:39999` sink.
   Refuses if any chosen port is in the live refuse-set
   (`8023 8033 8034 … 18034 18232 …`).
 - **ss(8) LISTEN preflight** — the *authoritative* collision guard:
@@ -58,11 +58,10 @@ mines `--seed-blocks` blocks via `generate`, then runs the kill/restart
 loop.
 
 > **Build caveat:** the regtest `generate` RPC does not solve Equihash, so
-> the seed stays at genesis. The harness detects this and prints a loud
-> `DEGRADED genesis-only recovery mode` warning rather than silently
-> claiming a UTXO seed. The kill/restart loop still validates real boot
-> recovery; the UTXO-above-tip overshoot window reports `over=-1`
-> (not-applicable) until a working regtest miner lands.
+> the seed stays at genesis. On a genesis/short seed the harness prints a
+> loud `KNOWN BLOCKED (owner-gated reducer boot-init)` witness and refuses
+> to run the (vacuous) kill/restart loop, returning 0 by default (HARD FAIL
+> with `ZCL_CRASH_REQUIRE_TEETH=1`).
 
 ### Recovery assertions
 
@@ -85,10 +84,12 @@ same shape the in-process SQLite slice proves:
 ### Operational variant (NOT in default CI)
 
 MVP #7's literal "caught up to **peer**-tip within 2 min" needs a second
-node. The `--with-peer` two-node resync variant (spawn a 2nd isolated
+node. A `--with-peer` two-node resync variant (spawn a 2nd isolated
 regtest node, mine on B, kill A, assert A resyncs to B's tip within 120 s)
-ships opt-in/operational — regtest two-node P2P sync is timing-sensitive —
-and is **not** in `make ci` or the default self-test. See `docs/RUNBOOK.md`.
+is **PLANNED — not yet implemented** (no such flag exists in
+`crash_recovery_test.c` today); regtest two-node P2P sync is
+timing-sensitive, so it would ship opt-in/operational and **not** in
+`make ci` or the default self-test. See `docs/RUNBOOK.md`.
 
 ---
 

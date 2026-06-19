@@ -78,8 +78,8 @@ Sync methods and self-healing recovery are documented operator-side in
 |-----------|-------|
 | Method 1 — LDB snapshot import (decode `'c'+txid` CCoins → SQLite, SHA3-verify) | `config/src/boot.c`, `app/controllers/src/sync_controller.c` |
 | Method 2 — P2P fast sync (NODE_ZCL23 chunks, FlyClient MMR binding) | `lib/net/src/fast_sync.c` |
-| Method 3 — full P2P sync (headers → `connect_block`) | `app/services/src/chain_activation_controller.c`, `app/jobs/src/*_stage.c`, `lib/validation/src/connect_block.c` |
-| Heal: missing UTXO (look up via tx index, inject, retry `connect_block` ≤100×) | `lib/validation/src/process_block_self_heal{,_sqlite_tx_index,_chain_scan,_inject}.c` |
+| Method 3 — full P2P sync (headers → `connect_block`) | `app/services/src/chain_activation_service.c`, `app/jobs/src/*_stage.c`, `lib/validation/src/connect_block.c` |
+| Heal: missing UTXO (look up via tx index, inject, retry `connect_block` ≤100×) | `lib/validation/src/process_block_self_heal{,_hot_loop,_scan_state}.c` |
 | Heal: reorg unwind (inverse deltas, rewind cursors to fork) | `app/jobs/src/utxo_apply_delta.c`, `app/jobs/src/utxo_apply_stage.c` |
 | Heal: wrong block on disk (clear `BLOCK_HAVE_DATA`, re-request) | `lib/validation/src/process_block_tip_child.c`, `app/conditions/src/have_data_unreadable.c` |
 | Heal: stale `coins_best_block` (`BOOT_RECOVER_WIPE_WAIT`) | `config/src/boot_index.c` (`validate_coins_chain_agreement`) |
@@ -126,10 +126,9 @@ Sync methods and self-healing recovery are documented operator-side in
 - `leveldb_utxo_migrated` — flag: LDB import done (prevents re-import)
 - `bg_validation_height` — last bg-validated block height
 - `bg_hash_verification_height` — last hash-verified block height
-- `utxo_commitment_xor` — XOR accumulator checkpoint (40 bytes)
+- `utxo_commitment` — XOR accumulator checkpoint (40 bytes)
 - `commitment_mmr_state` — serialized MMR (peaks + leaf count)
 - `sapling_tree` — incremental Sapling commitment tree
-- `snapshot_mmr_root` — deferred MMR verification root
 - `snapshot_mmr_height` — deferred MMR verification height
 - `schema_version` — database schema version (int32 LE)
 

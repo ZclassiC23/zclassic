@@ -19,7 +19,7 @@ Adopt the **AI-Integrated Personal Sovereignty Stack** vision and the layer-cake
 Concretely:
 
 1. **Target architecture** = the L1–L7 layer cake. North star: *the database is the only truth; chain progress is a stage cursor on disk.*
-2. **Positioning** = one 26 MB statically-linked C23 binary on a $200 SBC providing bank + identity + inbox + market + swap + web host + games + AI co-pilot, all behind Tor.
+2. **Positioning** = one ~16 MB dynamically-linked C23 binary on a $200 SBC providing bank + identity + inbox + market + swap + web host + games + AI co-pilot, all behind Tor.
 3. **Mode** = build forward. Recent work is bedrock for the destination, not cruft to be torn out. Pure deletions are bounded at ~2,500 LOC (Wave F-1, five dead helpers + dormant mirror-consensus machinery + three deprecated import-orchestrator files).
 4. **Roadmap** = six waves (F, S, M, Z, T, R) in `~/.claude/plans/zclassic23-plan.md`. The wedge dissolves naturally at the Wave S cutover; no targeted patch ships before then.
 
@@ -27,7 +27,7 @@ Concretely:
 
 **Positive:**
 
-- Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`, `mutator/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), 93 MCP tools — stays as bedrock. Months of work retain their value.
+- Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), 99 MCP tools — stays as bedrock. Months of work retain their value.
 - The wedge stops being a recurring crisis; it becomes the first regression scenario for the Wave T simulator.
 
 **Negative / Risk:**

@@ -13,12 +13,18 @@
 
 ## #1 PRIORITY — CI-enforce the MVP criteria + accumulate soak/canary/seal evidence
 
-> The recurring cold-import wedge was recovered 2026-06-16; the node is healthy
-> at the chain tip and hardening + cleanup are merged to main. Cold-import
-> bootstrap robustness is the remaining open item — program of record
+> **The cold-import wedge class is NOT resolved — it recurred.** The bootstrap
+> seeds a borrowed UTXO snapshot and stamps stage cursors forward past the
+> validated checkpoint; the honest fold engine then refuses to advance and the
+> node pins (`operator_needed`, no destructive path). Verify live state with
+> `zcl_status` — do not assume the node holds tip. ROOT FIX = fold real block
+> bodies forward from the verified checkpoint:
+> [`never-stuck-plan.md`](./never-stuck-plan.md) (the cold-sync recipe is a
+> stopgap crutch, not the cure). Hardening program of record:
 > [`rock-solid-program-2026-06-16.md`](./rock-solid-program-2026-06-16.md) +
 > [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md).
-> Coin-tear fixture `~/.zclassic-c23-cointear-fixture-20260612` (KEEP).
+> Frozen wedge fixture for copy-prove:
+> `~/.zclassic-c23-postrestore-wedge-20260611` (KEEP).
 
 **The #1 work now:** promote ◐ slice-gates to full ✅ CI gates and accumulate
 soak/canary/seal evidence (first seal ratification expected at grid 3,146,000,
@@ -39,8 +45,8 @@ Summary: ~2/8 met by hand, 0/8 CI-verified full.
 
 ## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-Ordering principle: **the node holds tip → make v1 measurable in CI → prove
-features → soak.** Refactor debt does not block a working sovereign node and
+Ordering principle: **un-wedge the live node (fold-forward root fix) → make v1
+measurable in CI → prove features → soak.** Refactor debt does not block a working sovereign node and
 must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
@@ -143,14 +149,16 @@ must not jump the queue.
       `chain_active` UAF, same class as the fixed phashBlock bug).
 - [ ] MVP feature e2e proofs: C4 (receive shielded) + C5 (store sell) on a
       funded test wallet.
-- [ ] **C5 store gate Slice 2 (live behavior change)** — switch the live
-      `store_process_payments` reconcile (`store_controller.c:546`) from the
-      amount/address finder to the new memo-bound finder, AND remove the
-      `zs1_pay_<time>` placeholder fallback in `zslp_payment_generate_address`
-      (`zslp_service.c:359`) so an order can never bind to an undecryptable
-      address (a real prod gameability hole found 2026-06-17). App-layer, no
-      consensus, but it changes live payment matching → copy-prove on a fixture
-      first. Design of record: [`c5-real-shielded-purchase-plan.md`](./c5-real-shielded-purchase-plan.md).
+- [x] **C5 store gate Slice 2 (memo-bound reconcile) — LANDED** — the live
+      `store_process_payments` reconcile (`store_controller.c:556`) already
+      calls the memo-bound finder `db_store_received_payment_for_memo`; the old
+      amount/address finder `db_store_received_payment` has no app callers.
+      REMAINING open sub-task: remove the `zs1_pay_<time>` placeholder fallback
+      in `zslp_payment_generate_address` (`zslp_service.c:359`) so an order can
+      never bind to an undecryptable address (a real prod gameability hole found
+      2026-06-17). App-layer, no consensus, but it changes live payment matching
+      → copy-prove on a fixture first. Design of record:
+      [`c5-real-shielded-purchase-plan.md`](./c5-real-shielded-purchase-plan.md).
 
 ### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
 - [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — a second zcl23 node
@@ -172,9 +180,11 @@ must not jump the queue.
       proves it; remaining = hermetic-CI promotion). Operator coverage:
       [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** the node holds tip (recovered 2026-06-16) → C3/C6/C8 are
-unblocked for live forward progress; CI promotion (A) gates honest measurement;
-the boot refactor gates nothing v1.
+**Gating summary:** the live node is WEDGED at the cold-import working face
+(`operator_needed`, no destructive path) → C3/C6/C8 are BLOCKED on live forward
+progress until the fold-forward root fix lands
+([`never-stuck-plan.md`](./never-stuck-plan.md)); CI promotion (A) gates honest
+measurement; the boot refactor gates nothing v1.
 
 ---
 

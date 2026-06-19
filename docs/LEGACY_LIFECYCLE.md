@@ -21,21 +21,20 @@ Cross-references: `CLAUDE.md` (top-level architecture),
 
 ## CLI flag map
 
+The cold-start path is `build/bin/zclassic23 --importblockindex <datadir>`
+(headers from a sibling `zclassicd` datadir) followed by a normal boot,
+which auto-reads/links `~/.zclassic` unless `-nolegacyimport` is passed.
+
 | Flag | Module | Status | What it does |
 |------|--------|--------|--------------|
-| `-cold-import[=DIR]` | `legacy_bootstrap_importer.c` (`LEGACY_BOOTSTRAP_IMPORT_COLD`) | **Active** (recommended cold start) | Hardlinks `blk*.dat`, bulk-copies block_index LevelDB, bulk-imports chainstate at the legacy tip. Empty datadir → tip in ~60s. Skips `process_new_block` entirely. |
-| `-fastimport[=DIR]` | `legacy_bootstrap_importer.c` (`LEGACY_BOOTSTRAP_IMPORT_DIRECT`) | **Active** | Reads blocks LevelDB + mmaps `blk*.dat`, runs the normal block-ingest path with deferred per-block I/O. Slower than `-cold-import` but exercises the full validation pipeline; auto-triggers a wallet rescan at end. |
-| `-legacy-attach[=DIR]` | `legacy_bootstrap_importer.c` (`LEGACY_BOOTSTRAP_IMPORT_ATTACH`) | **Active** | Snapshots a locally running `zclassicd`, imports block index + chainstate, stamps Wave S stage cursors to `legacy_tip+1`, and lets normal live sync resume above the imported tip. |
 | `-nolegacyimport` | (no module — disables) | **Active** | Disable any auto-detection of `~/.zclassic` on boot. Use when you explicitly do not want legacy interaction. Default is to auto-detect. |
 
-There is no `-importfromlegacy`, `-legacy-auto-import`, or
-`-bodypull-from-legacy` CLI flag in the current tree. `-nolegacyimport`
-is still parsed because boot may auto-detect a sibling `~/.zclassic`
-through the legacy anchor path unless disabled.
+There is no `-cold-import`, `-fastimport`, `-legacy-attach`,
+`-importfromlegacy`, `-legacy-auto-import`, or `-bodypull-from-legacy`
+CLI flag in the current tree. `-nolegacyimport` is still parsed because
+boot may auto-detect a sibling `~/.zclassic` through the legacy anchor
+path unless disabled.
 
-`legacy_body_pull` is not a boot CLI path, but it is still runtime-active:
-`legacy_mirror_sync_service` calls `legacy_body_pull_range_incremental()`
-to catch up local bodies from a legacy node when mirror lag is detected.
 The old boot-time body-pull path was removed after the body-pull
 pathology was diagnosed: it pre-populated
 `block_index` with `BLOCK_HAVE_DATA` but never activated those blocks,
@@ -49,9 +48,7 @@ leaving `find_most_work_chain` stuck.
 
 | File | Status | Role |
 |------|--------|------|
-| `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns the public `-cold-import`, `-fastimport`, and `-legacy-attach` wrapper contracts plus the shared mode implementation. |
-| `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (body-pull pathology). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
-| `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status`. |
+| `legacy_mirror_sync_service.c` + `.h` | **Active (observe-only)** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. It no longer applies blocks — it only observes lag against a sibling `zclassicd`. Powers `zcl_mirror_status`. |
 | `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |
 
 ### RPC clients (`lib/rpc/src/`)
@@ -65,8 +62,8 @@ leaving `find_most_work_chain` stuck.
 
 | File | Status | Role |
 |------|--------|------|
-| `blocks_index_legacy_reader.c` | **Active** | Reads `zclassicd`'s block_index LevelDB into our schema. Used by `-cold-import` and `-fastimport`. |
-| `chainstate_legacy_reader.c` | **Active** | Reads `zclassicd`'s chainstate LevelDB (compressed UTXOs) into our `coins_db`. Used by `-cold-import`. |
+| `blocks_index_legacy_reader.c` | **Active** | Reads `zclassicd`'s block_index LevelDB into our schema. Used by the `--importblockindex` cold-start path. |
+| `chainstate_legacy_reader.c` | **Active** | Reads `zclassicd`'s chainstate LevelDB (compressed UTXOs) into our `coins_db`. Used by the cold-start import path. |
 
 ### Self-heal recovery (`lib/validation/src/`)
 
@@ -96,14 +93,9 @@ island files stay absent.
 ## Removal candidates
 
 Nothing in the table above is scheduled for removal in the near term —
-the bootstrap path is still the fastest way to spin up a fresh
-`zclassic23` against a working `zclassicd`, and drift detection has
-caught real bugs.
-
-The narrowest cleanup target is the `legacy_body_pull` API: keep the
-runtime incremental catch-up entrypoint used by `legacy_mirror_sync_service`,
-and shrink or relocate the SHA3 spotcheck helpers so the removed boot import
-shape cannot re-grow.
+the `--importblockindex` cold-start path is still the fastest way to
+spin up a fresh `zclassic23` against a working `zclassicd`, and drift
+detection has caught real bugs.
 
 ---
 

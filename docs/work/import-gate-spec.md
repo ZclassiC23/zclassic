@@ -37,7 +37,7 @@ tip) spends it. The honest machinery then does exactly what it should:
    txid `31a1019d…` vin 9).
 2. `coin_backfill` refuses to fabricate the coin (live: `refused_unprovable`,
    `refuse_reason=txindex_miss tx=60fc6f43a630b5b7`).
-3. `reducer_anchor_candidate_ok` (`app/jobs/src/reducer_frontier.c:209-236`)
+3. `reducer_anchor_candidate_ok` (`app/jobs/src/reducer_frontier.c:242`)
    rejects the durable trusted base because the first row above it is not `ok=1`.
 4. H* collapses to the compiled checkpoint 3,056,758; the MIN-fold reads the
    log-less import region as an 88k hole.
@@ -204,9 +204,10 @@ rather than being re-discovered by forward validation each boot.
   `seed_integrity_stamp_utxo_sha3` call (`:378-380`) on the compiled-checkpoint
   match only.
 - The `seed.torn_import` blocker is **cleared** on the clean-reimport path in
-  `app/services/src/utxo_recovery_seed_provenance.c:68-78`, next to
-  `utxo_recovery_clear_cold_import_seed`, so a clean re-import is not permanently
-  blocked.
+  `app/services/src/utxo_recovery_seed_provenance.c`: the
+  `blocker_clear("seed.torn_import")` is at `:110`, next to
+  `utxo_recovery_clear_cold_import_seed` (`:94`), so a clean re-import is not
+  permanently blocked.
 
 Tested by `lib/test/src/test_seed_torn_import_gate.c`: torn fixture →
 `block_index_loader_seed_stages_from_cold_import` returns 0, blocker

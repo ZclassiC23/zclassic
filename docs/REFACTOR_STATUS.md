@@ -18,16 +18,18 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 **Verified-clean facts:**
 - 4 layers, dependency direction proven clean: `domain/` #includes `app/`+`lib/` **0×**
   (pure core); `app/` depends inward on `domain|ports|application` **18×**.
-- All 11 lint baselines = **0 entries** (shape/size/result-type/sqlite/supervisor/
-  blocker/layering gates pass with zero grandfathered exceptions) — but scoped to
-  `app/` only. `app/` largest file = exactly 800 (at the ceiling, tightly held).
+- 10 of 11 lint baselines = **0 entries**; the size baseline carries 3 grandfathered entries (shape/result-type/sqlite/supervisor/
+  blocker/layering gates pass with zero grandfathered exceptions) — but the
+  file-size baseline is NOT empty: it carries 3 grandfathered entries
+  (`config/src/boot.c`, `config/src/boot_services.c`, `app/jobs/src/tip_finalize_stage.c`).
+  `app/` largest file = `app/jobs/src/tip_finalize_stage.c` at 809 (over the 800 ceiling, baselined).
 
 **Remaining debt, ranked (tracked as session Waves A–E):**
 
 | Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
 |------|------|--------------|-------------------------------|------|
-| 1 | `config/` boot monolith | boot_services.c **3517** (was 4100; `boot_tip_hooks.c`+`boot_projections.c` extracted), boot.c **3607**, boot_index.c **1524** — UNGATED (E1 scopes app/ only) | pure verbatim extraction **EXHAUSTED** (prove-first, 5-agent audit: 0 of 6 remaining units cleanly movable — all blocked by the shared `S` static or a cross-TU call-seam). Next = `S`-into-handle seam redesign, then unit moves. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
-| 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 15 ports + 12 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), same reserved-empty-by-design posture as `app/events/` (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
+| 1 | `config/` boot monolith | boot_services.c **1766** (was 4100; `boot_tip_hooks.c`+`boot_projections.c` extracted), boot.c **3625**, boot_index.c **701** — GATED (E1 covers app/ AND config/; these files are grandfathered in `file_size_ceiling_baseline.txt` so they can only shrink) | pure verbatim extraction **EXHAUSTED** (prove-first, 5-agent audit: 0 of 6 remaining units cleanly movable — all blocked by the shared `S` static or a cross-TU call-seam). Next = `S`-into-handle seam redesign, then unit moves. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
+| 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 13 ports + 13 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), same reserved-empty-by-design posture as `app/events/` (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
 | 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | **RESOLVED — keep reserved-and-empty by design** (audit: no misplaced Event code; concept owned by `lib/event/` + `lib/storage/event_log` + projections; lone app subscriber is a Service). README + FRAMEWORK §3 row 7 document the keep-empty rule; `events` now in Makefile `APP_DIRS` for build/lint symmetry. | — |
@@ -81,7 +83,11 @@ node soak.
 
 - The reducer/staged pipeline is the authoritative chain-advance architecture.
 - The public cutover/projection-diff MCP/RPC apparatus has been removed.
-- The old legacy block-connect engine files are gone.
+- The legacy block-connect engine (`lib/validation/src/connect_block.c`, 806
+  LOC) still ships and is live-called on the reindex/recovery path
+  (`config/src/boot_index.c:334`). The staged reducer is the authoritative
+  chain-advance engine; deleting the legacy `connect_block` path is tracked
+  cleanup, not done (FRAMEWORK.md §2 states the same).
 - Production C/H surfaces no longer describe active reducer read-model paths as
   shadow/cutover/projection-diff infrastructure, and they no longer use the
   deleted single-engine block-connection names for current reducer behavior;
@@ -117,8 +123,11 @@ node soak.
 
 ### E1 Oversized App Files
 
-`tools/scripts/file_size_ceiling_baseline.txt` is empty. There are no
-grandfathered oversized app `.c` files; keep this gate at zero.
+`tools/scripts/file_size_ceiling_baseline.txt` has 3 grandfathered entries:
+`config/src/boot.c` (3625), `config/src/boot_services.c` (1768), and
+`app/jobs/src/tip_finalize_stage.c` (809). The first two are config/ boot
+mega-files; the third is an app/ job file 9 lines over the 800 ceiling. Shrink
+them to drive this gate to zero.
 
 ### E2 Service Result Debt
 

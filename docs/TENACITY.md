@@ -11,9 +11,14 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).
 
-The multi-day live wedge is **CLEARED** (2026-06-16): the node is healthy at
-the chain tip; hardening + cleanup merged to main. Do not describe it as an
-active blocker.
+The cold-import wedge **class is not resolved** — a 2026-06-16 instance was
+cleared but the same class recurred. The node seeds from a borrowed UTXO
+snapshot whose stage cursors are stamped past the validated checkpoint, and the
+honest fold engine then refuses to advance (it pins with `operator_needed`, no
+destructive path — honest, not corrupting). Treat it as an ACTIVE blocker until
+the live node actually advances; the root fix is
+`docs/work/never-stuck-plan.md`. Verify live state from `zcl_status`, never from
+this doc.
 
 ---
 
@@ -87,7 +92,7 @@ forward path realigns them).
 
 **I2 — Derive views, never install state.** Everything that is not the source is
 a projection, recomputed from the source, never written independently. H* is the
-model: pure-derived, read-only (`app/jobs/include/jobs/reducer_frontier.h:56`).
+model: pure-derived, read-only (`app/jobs/include/jobs/reducer_frontier.h:73-76`).
 Invariant B applied this to the coin-tear — derived from utxo_apply's OWN
 co-committed log, not the lagging frontier (`c8018a388`).
 
@@ -113,7 +118,7 @@ unit (`StartLimitIntervalSec=0`, stepped backoff, `0b45e93a5`).
 
 **I6 — Measure the real distribution.** test_parallel green is a regression
 floor, not a liveness proof. 0 of the 2026-06-11 session's 4 live failures were
-catchable by any gate as configured (`0/409 green` coexisted with `node down
+catchable by any gate as configured (`0/430 green` coexisted with `node down
 6+ hours`). Gates must sample real crash/import/repair histories and real chain
 content — see the G1–G5 gate program in `docs/work/tenacity-roadmap.md`.
 
@@ -187,7 +192,7 @@ canary, G2 chain-derived golden extremals, G3 crash-boot soak, G4 recipe smokes,
 G5 push-time execution) and its land status are in
 `docs/work/tenacity-roadmap.md`.
 
-**What exists today (honest):** 36 lint gates (source-text greps), 409 hermetic
+**What exists today (honest):** 36 lint gates (source-text greps), 430 hermetic
 test_parallel groups (synthetic regtest 48,5 fixtures), `make ci`
 (policy-forbidden from starting a node), test-crash (guaranteed-SKIP —
 `ZCL_CRASH_DATADIR` unset). All valuable as a regression floor; none sample the

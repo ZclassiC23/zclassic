@@ -162,8 +162,10 @@ every advance is a stage returning `ADVANCED` or a typed `BLOCKED`, then
 `network_tip − log_head` growing) or a named blocker at a known height. There is
 no third state. That is strictly stronger than detectors watching proxies.
 
-The staged reducer is the authoritative chain-advance architecture; the legacy
-block-connect engine has been deleted. Cleanup remains — the checklist tracks it.
+The staged reducer is the authoritative chain-advance architecture, but the
+legacy block-connect engine still ships and is live-called on the recovery path
+(`connect_block` at `boot_index.c:334`; `lib/validation` ≈ 7.5k LOC, still
+linked). Cleanup remains — the checklist tracks it.
 
 ---
 
@@ -176,12 +178,12 @@ know the shape.
 |---|-------|--------|----------------|--------|----------|
 | 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | partial; E1 is empty, but import/sync controllers still carry legacy orchestration and raw-SQL debt is ratcheted | `chain_projection.c` |
 | 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; file-level E2 and typed-blocker baselines are empty, but legacy bool compatibility APIs remain | `replay_verify_service.c` |
-| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (26 models, E3+E4+model-validation HARD) | `block.c` |
+| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (19 models, E3+E4+model-validation HARD) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
-| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (24 conditions live) | `block_failed_mask_at_tip.c` |
+| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (28 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-empty **by design** — owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c`; see `app/events/README.md` | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 15 ports + 12 sqlite impls; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 15 ports + 10 sqlite impls (13 persistence adapters total); `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, the projection/state-dump registry, and
 the Storage Adapter (outbound-only by design) are real and enforced; Supervisor is
@@ -248,14 +250,14 @@ lib/
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (outbound-only by design: 15 ports + 12 sqlite impls for writes; reads owned by Models per Law 5)
+adapters/ ports/  hexagonal seam (outbound-only by design: 15 ports + 10 sqlite impls for writes; reads owned by Models per Law 5)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
 ```
 
 **Rule:** every new `.c` under `app/` lives in exactly one shape folder. The
-`check-framework-shape` gate enforces it (WARN today → RATCHET → HARD).
+`check-framework-shape` gate enforces it (RATCHET today → HARD).
 
 ---
 
@@ -326,7 +328,7 @@ next routing, all without the domain moving.
 Honest status: the domain core is **real but partial** — `domain/` (top-level)
 holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is **outbound-only by design**: 15 ports + 12 sqlite impls carry
+test. The adapter tree is **outbound-only by design**: 15 ports + 10 sqlite impls carry
 writes out through swappable ports (Law 2); reads are owned by the Models (Law 5),
 so no inbound "repository" port fronts them — the same reserved-empty-by-design
 posture as `app/events/`. App sites that call `lib/storage/*_sqlite.c` directly are
@@ -341,7 +343,7 @@ populated, it should contain domain-level consensus state predicates and
 use-case invariants that cross multiple models/services — checks that express
 business rules of the chain itself before they migrate to the pure `domain/`
 core. This keeps `application/` as the staged consensus-logic tier between
-orchestration (app/services, 77 files) and pure consensus (domain/, 21 modules).
+orchestration (app/services, 98 files) and pure consensus (domain/, 21 modules).
 
 ---
 

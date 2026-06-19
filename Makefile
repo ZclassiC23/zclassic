@@ -1734,6 +1734,21 @@ check-no-new-repair-rung:
 	@echo "══ LINT: no new repair rung (TENACITY I3) ══"
 	@./tools/scripts/check_no_new_repair_rung.sh
 
+# Antipoison ratchets (2026-06-18) — keep the docs honest + the node standing
+# alone + reorgs safe. Each PASSES on the current tree and only fails on a
+# regression. See docs/HANDOFF.md for why these exist.
+check-doc-no-false-deleted:
+	@echo "══ LINT: doc no-false-deleted ══"
+	@./tools/lint/gate_doc_no_false_deleted.sh .
+
+check-zclassicd-reach-allowlist:
+	@echo "══ LINT: zclassicd reach allowlist (node stands alone) ══"
+	@./tools/lint/gate_zclassicd_reach_allowlist.sh .
+
+check-stage-log-reorg-unsafe:
+	@echo "══ LINT: stage-log reorg-unsafe ratchet ══"
+	@./tools/scripts/gate_stage_log_reorg_unsafe_ratchet.sh
+
 # Gate E1 — file-size ceiling for app/ .c files (RATCHET). Mega-modules
 # cannot hide behind <500-LOC functions; baseline at
 # tools/scripts/file_size_ceiling_baseline.txt may only shrink.
@@ -1834,7 +1849,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

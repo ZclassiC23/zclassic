@@ -261,9 +261,8 @@ assert green).
   every periodic check silently dead; registered children fire `on_tick` /
   edge-trigger `on_stall` independently. Round-5 children:
   `sync.watchdog`, `net.outbound_floor`, `chain.coord_escalation`. Baseline
-  `tools/scripts/supervisor_baseline.txt` (9 entries; Track C-3 drains them;
-  highest blast-radius: `block_sync_service`, `header_sync_service`,
-  `legacy_mirror_sync_service`). Impl:
+  `tools/scripts/supervisor_baseline.txt` (drained to 0 entries; Track C-3
+  complete). Impl:
   `tools/scripts/check_supervisor_registration.sh`.
 
 - **Gate #17: `check-typed-blocker`** — any code raising a `block_id` must use a
@@ -324,7 +323,7 @@ current green tree.
 | **E4: `check-projections-pure`** | HARD | A projection (`lib/storage/src/*_projection.c`) is a pure fold: no `#include` from `app/services/`-`app/controllers/`, and no AR save path (`AR_*_SAVE`, which would fire another model's hooks). Override `// projection-cache-ok:<tag>` (memoize a derived value into the projection's own table). |
 | **E6: `check-one-write-path`** | RATCHET | New chain-state write surfaces forbidden unless they route through the reducer/log authority. Scans for legacy writers (`active_chain_set_tip`, `coins_view_*` flush/write, `process_new_block`, `connect_tip`, `disconnect_tip`, `utxo_projection_set_author`) vs `one_write_path_baseline.txt`. Override `// one-write-path-ok:<tag>` (compat wrapper, not a second consensus writer). |
 | **E7: `check-no-authoritative-ram-state`** | RATCHET | No direct `active_chain` internals access / new global-static `struct active_chain`. Derived RAM indexes only via accessors; consensus authority is the log/projection/cursor surface. Baseline `no_authoritative_ram_state_baseline.txt` (empty). Override `// ram-state-ok:<tag>` (documented derived cache). |
-| **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_controller.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the 2026-05-26 silent-ready hole (READY "behind_peers" while +950 behind). Override `// no-silent-ready-ok:<tag>`. |
+| **E8: `check-no-silent-ready`** | HARD | The block-connection authority (`app/services/src/chain_activation_service.c`) must advance-the-tip OR name a typed blocker every tick (FRAMEWORK.md Prime Directive). Any `activation_set_state(…, ACTIVATION_READY, …)` must also route a typed blocker via `blocker_set(` (or `activation_set_behind_blocker(`). Closes the 2026-05-26 silent-ready hole (READY "behind_peers" while +950 behind). Override `// no-silent-ready-ok:<tag>`. |
 | **E9: `check-operator-needed-sink`** | HARD | `EV_OPERATOR_NEEDED` ("auto-healing gave up, page a human") is emitted in production AND has a registered subscriber in `lib/util/src/alerts.c` (rule with `.trigger = EV_OPERATOR_NEEDED` via `event_observe(`). Prevents the silent-halt class where the loud signal reaches no sink. No override. |
 | **E11: `check-doc-accuracy`** | HARD | The canonical gate block below matches the `check-*` prerequisites of the Makefile `lint:` target by count AND name set. On mismatch, fix the doc block — the Makefile is authoritative. No override. |
 | **E12: `check-honest-witness`** | FAIL | Law 7 ("heal in the open, page when stuck"): a Condition's `witness_<name>()` must observe the symptom MOVE, not a constant, the pure inverse of `detect`, or an FSM/poison-flag the remedy itself set. Fails if TRIVIAL (every return a bare `true`/`false`), PURE-INVERSE (`return !detect_x()`), or NO-OBSERVABLE (references none of `active_chain_height`, block_map iteration, a durable `SELECT`, a peer/inflight/staged/received progress counter). Exemplar: `app/conditions/src/block_failed_mask_at_tip.c`. Baseline `tools/lint/honest_witness_baseline.txt` (empty). Override `// honest-witness-ok:<reason>` (witness whose remedy returns `COND_REMEDY_FAILED` or re-verifies real structural state). |
@@ -373,6 +372,9 @@ add/remove a gate.
 - `check-supervisor-domain`
 - `check-supervisor-registration`
 - `check-typed-blocker`
+- `check-doc-no-false-deleted`
+- `check-stage-log-reorg-unsafe`
+- `check-zclassicd-reach-allowlist`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
@@ -447,7 +449,7 @@ name a genuinely unique structural property
 Implementation: `tools/check_observability_pairing.c`,
 `tools/scripts/check_raw_sqlite.sh`, `tools/scripts/check_raw_malloc.sh`,
 `tools/scripts/check_long_functions.sh`, and the inline `check-silent-errors*`
-recipes in `Makefile:654+`.
+recipes in `Makefile:1481+`.
 
 ---
 

@@ -273,6 +273,82 @@ int test_invalidateblock(void)
         main_state_free(&ms);
     }
 
+    /* ── 7. Canonical tip FLOOR: refuse a below-tip higher-work fork ──
+     *
+     * The exact never-stuck wound (process_block_core.c:106-120): a
+     * stale-import fork tip at a LOWER height but HIGHER nChainWork (bad
+     * work accounting from old LDB data) must NOT trigger a backwards
+     * reorg. find_most_work_chain returns the active TIP instead — else
+     * the chain reorgs backward, the staged activation finality guard
+     * logs below_finality_depth forever, and the node wedges. The floor
+     * is DIRECTIONAL: a higher-work fork ABOVE the tip is still selected
+     * (a legitimate forward reorg). Both directions are asserted so a
+     * regression to either a blanket refusal or no floor at all fails.
+     */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+
+        /* Active chain to tip A4 (height 4, work 40). */
+        struct block_index *g  = mk_idx(&ms, 0, 1,  0x00, NULL);
+        struct block_index *a1 = mk_idx(&ms, 1, 10, 0x0A, g);
+        struct block_index *a2 = mk_idx(&ms, 2, 20, 0x0B, a1);
+        struct block_index *a3 = mk_idx(&ms, 3, 30, 0x0C, a2);
+        struct block_index *a4 = mk_idx(&ms, 4, 40, 0x0D, a3);
+        /* Stale-import fork tip: height 1 (BELOW tip h=4) but work 99
+         * (ABOVE tip work 40) — the pathological backwards candidate. */
+        struct block_index *s1 = mk_idx(&ms, 1, 99, 0x5A, g);
+
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, a1);
+        active_chain_move_window_tip(&ms.chain_active, a2);
+        active_chain_move_window_tip(&ms.chain_active, a3);
+        active_chain_move_window_tip(&ms.chain_active, a4);
+        ms.pindex_best_header = s1; /* the import thinks s1 is "best" */
+
+        /* s1 has the max nChainWork, so without the floor the selector
+         * would pick it and reorg backward 3 blocks. The floor must
+         * return the tip a4 instead. */
+        IB_CHECK("floor: below-tip higher-work fork → selector returns TIP",
+                 find_most_work_chain(&ms) == a4);
+        IB_CHECK("floor: below-tip fork s1 is NOT selected",
+                 find_most_work_chain(&ms) != s1);
+
+        free_idx(g); free_idx(a1); free_idx(a2);
+        free_idx(a3); free_idx(a4); free_idx(s1);
+        main_state_free(&ms);
+    }
+    {
+        /* Directional check: a higher-work fork ABOVE the tip IS selected
+         * (the floor only blocks BACKWARD reorgs, not forward ones).
+         *   genesis → A1 → A2                 [active tip A2, h=2]
+         *          ↘ D1 → D2 → D3             [fork, h=3, more work]
+         */
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+
+        struct block_index *g  = mk_idx(&ms, 0, 1,  0x00, NULL);
+        struct block_index *a1 = mk_idx(&ms, 1, 10, 0x0A, g);
+        struct block_index *a2 = mk_idx(&ms, 2, 20, 0x0B, a1);
+        struct block_index *d1 = mk_idx(&ms, 1, 11, 0x2A, g);
+        struct block_index *d2 = mk_idx(&ms, 2, 21, 0x2B, d1);
+        struct block_index *d3 = mk_idx(&ms, 3, 31, 0x2C, d2);
+
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, a1);
+        active_chain_move_window_tip(&ms.chain_active, a2);
+        ms.pindex_best_header = d3;
+
+        IB_CHECK("floor: above-tip higher-work fork IS selected (forward reorg)",
+                 find_most_work_chain(&ms) == d3);
+
+        free_idx(g); free_idx(a1); free_idx(a2);
+        free_idx(d1); free_idx(d2); free_idx(d3);
+        main_state_free(&ms);
+    }
+
     printf("invalidateblock: %d failures\n", failures);
     return failures;
 }

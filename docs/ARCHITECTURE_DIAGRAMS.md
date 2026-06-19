@@ -13,7 +13,7 @@ flowchart TD
     START([zclassic23 start]) --> PARSE[Parse CLI flags<br/>-datadir, -port, -tor, etc.]
     PARSE --> ACTIVATION[Activation Controller<br/>state = BOOT_PENDING]
 
-    ACTIVATION --> DB_OPEN[Open SQLite databases<br/>node.db, consensus_snapshot.db]
+    ACTIVATION --> DB_OPEN[Open SQLite databases<br/>node.db, coins.db]
     DB_OPEN -->|EV_BOOT_DB_OPEN| COINS[Initialize coins layer<br/>coins_view_sqlite + cache]
     COINS -->|EV_BOOT_COINS_OPEN| UTXO_CHECK{UTXO snapshot<br/>available?}
 
@@ -116,7 +116,7 @@ flowchart TD
     end
 
     subgraph Scoring["Peer Scoring"]
-        MISBEHAVE[Misbehavior detected] -->|EV_PEER_MISBEHAVE| SCORE{Score > 100?}
+        MISBEHAVE[Misbehavior detected] -->|EV_PEER_MISBEHAVE| SCORE{Score >= 100?}
         SCORE -->|yes| BAN[Ban peer<br/>EV_PEER_BANNED]
         SCORE -->|no| CONTINUE[Continue]
     end
@@ -163,7 +163,7 @@ flowchart TD
 
     subgraph Connection["connect_block"]
         CONNECT[EV_BLOCK_CONNECT_START] --> INPUTS[Check inputs exist<br/>in UTXO set]
-        INPUTS -->|EV_TX_INPUTS_CHECKED| SCRIPTS[Verify scripts<br/>ECDSA, Schnorr]
+        INPUTS -->|EV_TX_INPUTS_CHECKED| SCRIPTS[Verify scripts<br/>ECDSA secp256k1]
         SCRIPTS -->|EV_SCRIPT_VERIFIED| SAPLING{Sapling<br/>txs?}
         SAPLING -->|yes| GROTH16[Verify Groth16<br/>spend + output proofs]
         SAPLING -->|no| TURNSTILE
@@ -246,7 +246,7 @@ flowchart TD
     PARSE -->|tools/call| MIDDLEWARE
 
     subgraph Middleware["MCP Middleware"]
-        MIDDLEWARE[mcp_middleware_check] --> AUTH{Bearer token<br/>required?}
+        MIDDLEWARE[mcp_middleware_dispatch] --> AUTH{Bearer token<br/>required?}
         AUTH -->|yes, missing| AUTH_DENY([MCP_ERR_AUTH_REQUIRED])
         AUTH -->|ok or disabled| RATE_GLOBAL{Global rate<br/>limit ok?}
         RATE_GLOBAL -->|no| RATE_DENY([MCP_ERR_RATE_LIMITED])
@@ -319,13 +319,13 @@ flowchart TD
     DYNHOST --> HANDLE[onion_service_handle_request]
     HANDLE --> ROUTE_HTTP{Route request}
 
-    ROUTE_HTTP -->|/api/*| REST[REST API controllers<br/>same as HTTPS]
+    ROUTE_HTTP -->|/status| STATUS[Node status JSON<br/>serve_status]
     ROUTE_HTTP -->|/explorer/*| EXPLORER[Block explorer<br/>HTML + charts]
     ROUTE_HTTP -->|/directory.json| DIRECTORY[Peer directory<br/>.onion + clearnet IP + height]
-    ROUTE_HTTP -->|/events| WS[WebSocket upgrade<br/>event stream]
-    ROUTE_HTTP -->|/metrics| METRICS[Prometheus metrics]
+    ROUTE_HTTP -->|/store| STORE[ZSLP token store<br/>store_handle_request]
+    ROUTE_HTTP -->|/blog| BLOG[Static blog files<br/>from datadir]
 
-    REST --> CONTROLLERS[C function call<br/>no HTTP overhead]
+    STATUS --> CONTROLLERS[C function call<br/>no HTTP overhead]
     EXPLORER --> CONTROLLERS
     CONTROLLERS --> NODE[Node state<br/>chain, wallet, mempool]
 

@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![language](https://img.shields.io/badge/language-C23-00599C.svg)](#)
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
-[![CI](https://img.shields.io/badge/CI-local%20make%20ci%20(37%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
+[![CI](https://img.shields.io/badge/CI-local%20make%20ci%20(40%2B%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
 
 One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
@@ -14,16 +14,20 @@ operate the node through ~100 typed tools.
 
 ## Status
 
-**Pre-v1 — not yet production-ready.** Zero of the eight v1 acceptance criteria
-in [`docs/MVP.md`](docs/MVP.md) are end-to-end CI-verified (MRS 0/8), so don't
-rely on it as your only mainnet node yet.
+**Pre-v1 — not yet production-ready.** Of the eight v1 acceptance criteria in
+[`docs/MVP.md`](docs/MVP.md), four pass their local operator proof (MRS 4/8);
+none are yet end-to-end CI-verified across a live soak. Don't rely on it as your
+only mainnet node yet.
 
-It runs on ZClassic mainnet and holds the tip hash-identical to a local
-`zclassicd` reference, publishing blocks as they arrive. It was recovered on
-2026-06-16 from a multi-day cold-import outage and is now accumulating fresh
-soak time. The known soft spots are stated plainly here and in
-[`docs/MVP.md`](docs/MVP.md): **cold-start bootstrap is slow + fragile**, and
-**off-chain ZMSG is plaintext on the wire**.
+It runs on ZClassic mainnet on the `zclassicd` consensus floor. The cold-start
+bootstrap is **slow and not yet robust**: it seeds from a borrowed UTXO snapshot,
+and that path can wedge during sync — at which point the node **halts honestly**
+(it reports `operator_needed` and pins rather than serving an unvalidated tip; it
+does not corrupt). For current live state, ask the running node (`zcl_status`) or
+read [`docs/HANDOFF.md`](docs/HANDOFF.md) — this file does not track it. The root
+fix (fold real block bodies forward from the verified checkpoint) is in
+[`docs/work/never-stuck-plan.md`](docs/work/never-stuck-plan.md). The other known
+soft spot: **off-chain ZMSG is plaintext on the wire**.
 
 It is operator-owned full-node infrastructure: embedded Tor publishes *your* onion
 service, wallet state stays in your datadir, MCP is a typed *local* operator
@@ -59,7 +63,7 @@ TicTacToe).
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 # see docs/BUILD.md first — vendored libs are required to link
 make zclassic23     # main binary -> build/bin/zclassic23
-make test           # full suite (~423 parallel groups)
+make test           # full suite (~430 parallel groups)
 make lint           # defensive-coding gates
 ```
 
@@ -166,7 +170,6 @@ Operator flags (`-externalip`, `-addnode`) go in `~/.config/zclassic23/env` (cop
 - [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md) · [`.github/SECURITY.md`](.github/SECURITY.md) — security
 - [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) — build prereqs + contribution contract
 - [`docs/BUILD.md`](docs/BUILD.md) — vendored-library sources, versions, build steps
-- [`CHANGELOG.md`](CHANGELOG.md) — notable changes (pre-v1)
 
 **Issues & changes:** file bugs and features via GitHub Issues (templates
 provided); security reports follow [`.github/SECURITY.md`](.github/SECURITY.md).

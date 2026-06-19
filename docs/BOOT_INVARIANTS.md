@@ -10,8 +10,9 @@ and `lib/util/src/boot_phase.c` (`boot_stage_advance_to()`).
 
 Cross-references: `CLAUDE.md` (top-level architecture),
 `DEFENSIVE_CODING.md` (rules that boot steps must follow),
-`LEGACY_LIFECYCLE.md` (what `-cold-import` / `-fastimport` do
-during boot).
+`LEGACY_LIFECYCLE.md` (legacy import / drift detection — the
+cold-start path is now the `--importblockindex` + a normal boot
+two-step).
 
 ---
 

@@ -155,7 +155,7 @@ In this priority order:
 1. Re-read `docs/FRAMEWORK.md` for the architectural shape.
 2. Re-read your assignment doc — it has a Tasks section in order.
 3. Re-read `docs/REFACTOR_STATUS.md` to see where you fit in the bigger picture.
-4. Check the existing codebase for examples (e.g., for Job shape, look at `app/services/src/header_admit_stage.c` — the canonical stage adopter).
+4. Check the existing codebase for examples (e.g., for Job shape, look at `app/jobs/src/header_admit_stage.c` — the canonical stage adopter).
 5. If still stuck > 30 min: append `BLOCKED: <reason>` to your assignment, push, report to user. Do NOT guess and ship questionable code.
 
 ---

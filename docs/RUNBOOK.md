@@ -196,14 +196,14 @@ build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced
      ```bash
      build/bin/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
      ```
-3. If stuck on a dead fork (no peers agree), see the nuclear option below — invalidateblock / reconsiderblock RPCs are not currently exposed.
+3. If stuck on a dead fork (no peers agree), see the nuclear option below — invalidateblock / reconsiderblock RPCs are exposed (also as MCP tools zcl_invalidateblock / zcl_reconsiderblock) — use them to drop a stale fork.
 4. Nuclear option (last resort): stop node, delete state, resync:
    ```bash
    systemctl --user stop zclassic23
    rm -f ~/.zclassic-c23/node.db ~/.zclassic-c23/node.db-{wal,shm}
    rm -f ~/.zclassic-c23/block_index.bin{,.sha3}
    systemctl --user start zclassic23
-   # Node will rebuild from block files, snapshot sync, or -cold-import.
+   # Node will rebuild from block files or snapshot sync (cold bootstrap is now --importblockindex then a normal boot).
    ```
 
 **Prevention:** Run background validation (`-nobgvalidation` NOT set). Monitor `zcl_chain_height` derivative — alert if zero for >10 minutes while peers show higher heights.

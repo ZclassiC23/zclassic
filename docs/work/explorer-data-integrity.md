@@ -35,7 +35,7 @@ miner's balance, and the mirror does NOT rewind across a restart.
 
 ### B. `blocks` projection hole (P1 — gates the factoids/stats historian)
 13,383 missing heights (3137533–3150899, the pre-restore window). Validator trips
-at `explorer_internal.h:408` (`block_rows != max_height+1`). Catchup
+at `explorer_internal.h:412` (`block_rows != max_height+1`). Catchup
 (`app/services/src/node_db_catchup_service.c:303-404`) is forward-only and never
 revisits below its cursor. **Caveat:** a cold-import node lacks bodies for that
 band — backfill needs a P2P re-fetch of the range, not just a re-index.

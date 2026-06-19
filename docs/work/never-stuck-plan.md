@@ -1,0 +1,276 @@
+# THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
+
+Status: PLAN (owner-review). Verified 2026-06-18 by a 12-agent pass (4 deep gating
+questions + 7 lighter-model LOC census). Supersedes earlier framings.
+
+## 0. 2026-06-19 LIVE RE-VERIFICATION (4 workflows, cross-checked by hand)
+
+Ran against the RUNNING wedged node (`wk80speni` root-cause, `wyrtafl1h` never-stuck
+sweep / 24 agents, `wzfdxe34f` repair-vs-reality, + a breadth agent), every
+load-bearing claim re-queried by hand. Net: the thesis HOLDS; three refinements.
+
+- **CONFIRMED — two facets, the engine is honest.** Reducer H\* = **3,056,759**
+  (node.log `L1 refused: coins_applied_height=3151412 > hstar_cursor=3056759`,
+  1,186+ reps): it refuses the coin-tear at the rowless gap. The SERVED tip_finalize
+  cursor = 3,151,411 is the stamp. `utxo_apply_log` real ok=1 rows exist ONLY in
+  [3,150,900..3,151,411]; the gap [3,056,759..3,150,899] (~94k) is ROWLESS. So the
+  surface stall (tip_finalize JOB_IDLE, 32,614 idle ticks, finalized_total=0) sits
+  ATOP the deep lie.
+- **REFINED — B7 is NOT an independent second root; it is the borrowed foundation at
+  the working face.** The 4 false-rejects (3151412/621/965/3152130, all
+  `prevout_unresolved`) are SYMPTOMS, not a genuine forward false-reject. Two sub-
+  flavors, both traced: (A) **wrong-fork import** — at h=3,151,306 the committed
+  block D7F76F30's coinbase 7E7894BF (in node.db tx_outputs, NEVER spent, what 3151412
+  spends) is ABSENT from coins/utxos/snapshot, which hold the stale-fork sibling
+  E1BF3809's coinbase 02663FF1. The breadth agent bounded this at **EXACTLY 1
+  wrong-fork coin** in the whole UTXO set (two methods). (B) **above-tip** —
+  3151965/3152130 spend coins born 3151826/3152013, absent everywhere because the
+  fold is stuck behind (A). The repair family ENGAGES (refused_coin_tear=TRUE; coin-
+  backfill works the hole) but TERMINALLY REFUSES (`coin_backfill.refused.3151412…=
+  txindex_miss`) because node.db txindex tops at 3,151,411 — so it pages, never
+  remedies. ⇒ B7's "build a sound ok=0 re-derive path" is real, but the cure for the
+  LIVE wedge is still B2 (fold the gap), which dissolves all four.
+- **ADDED — never-stuck hardening map (8 confirmed + 1 critic-found), the durable
+  artifact for future agents.** P0: (1) `script_validate_stage.c:519-526` advance-
+  past `prevout_unresolved` ok=0 [LIVE root]; (2) `tip_finalize_stage.c:425-431`
+  deadlock on a not_script_valid successor [LIVE]; (3) `tip_finalize_anchor.c:214-221`
+  stamps `reducer_trusted_base_height` over the 94k logless region, and the guard
+  `reducer_anchor_candidate_ok` (reducer_frontier.c:242-269) only checks the SINGLE
+  row at H+1 — the guard itself is too shallow; (4) **NEW/most-reachable**
+  `proof_validate_stage.c:397-423` has the SAME advance-past-failure bug but its
+  trigger `params_not_loaded` is a guaranteed async-boot transient → can manufacture a
+  permanent false-reject on ANY cold/fast boot, not just this datadir. P1: (5)
+  `block_index_loader_rebuild.c:500-532,723-729` stamps coins_applied_height=H+1 on a
+  borrowed count-check. P2: (6) `chain_tip_watchdog.c:270-276` burns its full 3-restart
+  budget on a deterministic stall (cause-blind, age-only escalation) — already
+  saturated live, now inert/paging-only, NO destructive path; (7) **`validation_pack`
+  window_sweep HOLD** (`chain_linkage_check.c:262-279`) latched at refuse_from=3,056,759
+  — a SECOND tip-deadlock layer that **survives any cure of the script reject**; the
+  cure MUST also fill the fold-gap to release it; (8) `mirror_divergence` hold
+  (halt_on_recoverable) — not armed today (zclassicd unreachable), the B8 risk; (9)
+  `utxo_apply_delta_reorg.c:382-429` JOB_FATAL spin on a >FINALITY_DEPTH reorg.
+- **SAFE vs GATED.** The ONLY autonomous-safe item is (6) — give the watchdog a cause
+  probe so it skips restarts on a deterministic stage disagreement (pure operational
+  resilience, no consensus surface). Everything else — making transient misses
+  retryable (1/4), tightening the anchor guard (3), and the fold-the-gap verb (B2) —
+  touches a validation verdict's TIMING or the import authorities, so per the h=478544
+  doctrine it is consensus-ADJACENT: owner go + copy-prove on the frozen wedge fixture
+  + full-history replay before live. A 1-coin targeted backfill (the bounded wrong-fork
+  coin) is a viable LIVENESS band-aid but leaves the deep lie (H\*=3,056,759) intact —
+  not the cure.
+
+Full evidence + every file:line is in the north-star memory
+`project_frontier_wedge_real_rootcause_2026-06-18` (re-corrected 2026-06-19) and the
+carve-manifest's live-verified correction header.
+
+## 0b. CURE RESOLVED 2026-06-19 (workflow `wl5j9piiu`, adversarially verified — `partial`)
+
+The one open question — *are the coins at the checkpoint or stamped forward?* — is
+RESOLVED by on-disk evidence: **`coins_verdict = STAMPED_FORWARD_3151412`.** The
+coins table is at the contaminated TIP, not the checkpoint, so **subtraction-only is
+INSUFFICIENT.** The cure is a one-shot **forward bodies-only REFOLD**:
+
+1. Re-materialize the checkpoint UTXO set at H=3,056,758 by folding LOCAL block
+   bodies (no cached 1,354,771-row table exists — it must be COMPUTED) and HARD-ASSERT
+   `utxo_count==1,354,771` + SHA3 root vs `checkpoints.c:86-104`.
+2. Clear coins/created_outputs/nullifiers + forward `*_log` rows above the checkpoint.
+3. Fold the 94,653 committed bodies 3,056,759..tip with real script+proof validation,
+   re-deriving every coin from the committed block. Fixes fork-divergence AND above-tip
+   by construction. (Rewind-from-tip is UNSAFE — the tip set is already contaminated,
+   can't reproduce the SHA3 root.)
+
+**TWO load-bearing gates the skeptic caught (do not skip):**
+- **Read BLOCK BODIES, never the mirror.** The refold MUST source coins from committed
+  block bodies (`blocks.file_num/data_pos`), NEVER node.db `utxos`/`tx_outputs` — that
+  mirror is ITSELF wrong-fork (02663FF1 present / 7E7894BF absent at h=3,151,306,
+  verified). The existing `-reindex-chainstate` epilogue (`reindex_epilogue.c:95-101`)
+  reseeds coins from that mirror → a stock reindex would **reproduce** the divergence.
+- **Guard the seed stamp, don't delete it.** The seed_exempt stamp
+  (`stage_anchor.c:153-154` + `block_index_loader_rebuild.c:728/743`) lies ONLY for the
+  borrowed-snapshot import; `reindex_epilogue.c:120-148` LEGITIMATELY uses the same
+  stamp to finalize a TRUSTWORTHY replay (delete globally → reindex finalizer breaks,
+  H\* never climbs). Gate it on provenance.
+
+**Fold cost — measured-but-thin:** forward leg ~5–25 min on the Ryzen 9 7950X3D
+(sparse: ~103k tx, ~109k ECDSA, ~11k Groth16, ~89k coinbase-only) but extrapolated
+from a single 1-second 28-blk/s burst → confirm empirically. SEPARATE + UNCOSTED: the
+genesis→checkpoint re-materialization (~3.06M-block fold, ~32× the leg) if no
+known-good earlier UTXO state seeds it; if the recompute ≠ 1,354,771/SHA3 root the
+premise is WRONG → fall back to a fresh trustless cold-import.
+
+**Copy-prove procedure (all on a COPY; never live, never touch `~/.zclassic`):**
+0. `cp -a /home/rhett/.zclassic-c23 …-refold-fixture-COPY` (ext fs has no reflink; ~6.8G).
+1. Pre-state fingerprint FROM THE COPY (it is a moving target while live runs): coins
+   count, MAX(height), coins_applied_height, and the wrong-fork witnesses (02663FF1
+   present / 7E7894BF absent at h=3,151,306).
+2. BUILD the refold binary (does not exist yet): guarded seed + the one-shot refold
+   driver above.
+3. RUN against the COPY datadir.
+4. **DECISIVE GATE:** tip advances 3,151,411→3,151,412 with a REAL `utxo_apply_log` ok=1
+   row at 3,151,412, and `reducer_frontier_compute_hstar >= 3,151,412` (no rowless gap).
+5. **CORRECTNESS GATE:** coins now contains 7E7894BF and NOT 02663FF1 at h=3,151,306;
+   re-assert the SHA3 checkpoint.
+6. **PARITY GATE:** zero ok=0 across the band; tip hash-identical to zclassicd at the
+   same heights — *currently UNRUNNABLE* (zclassicd reindexing, RPC "Loading block
+   index", mirror rpc-unreachable). Wait for it before authorizing.
+7. Present go/no-go to the owner. **Owner decides the LIVE deploy** (rewrites consensus
+   state, irreversible) — copy-prove is autonomous; the live cutover is not.
+
+**go/no-go RIGHT NOW = NO** for an autonomous run: the refold binary does not exist,
+and the decisive parity gate can't run while zclassicd reindexes. Autonomous-safe NOW =
+read-only COPY + pre-state fingerprint only. Residual risks: checkpoint
+re-materialization cost/correctness; node.db is the trust root for "committed" bodies
+(cross-checked only by zclassicd parity, currently down); the seed-guard change touches
+the in-tree reindex finalizer and needs a fresh-cold-import regression test.
+
+## 1. Thesis
+
+Wire the self-sufficient proof (`snapshot_verify`) into the cold-import door, kill
+the row-count heuristic and the cursor-stamp lie so every stage cursor is *derived*
+from a folded log instead of *installed*, then delete ~13,500–15,500 LOC of
+repair / trust-brain / mirror accretion that exists only to cover for an unproven
+foundation. Fast + never-lies + never-stuck become the *same* property — the node
+only ever records facts it computed.
+
+## 2. Invariants (true by construction)
+
+- **I1** No coin enters state except by `utxo_apply` folding a verified block, OR a
+  snapshot whose UTXO root is bound to a PoW-proven chain. No row-count acceptance.
+  *Lint* `check-no-rowcount-install`; *test* `test_cold_import_requires_proof`.
+- **I2** No stage cursor stamped forward without a real per-stage log row. Delete the
+  `seed_exempt` bypass. *Lint* `check-no-seed-exempt-stamp`; assert H*==MIN(real cursors).
+- **I3** H* is derived, never installed — `reducer_frontier.c` stays the only authority,
+  refuses + names the missing height. (Already true — protect it.)
+- **I4** Logs append-only, keyed `(height, block_hash)`, readers pick the active-hash row.
+  *Lint* forbid `INSERT OR REPLACE` on the 7 stage logs; `test_log_append_only_reorg`.
+- **I5** Consensus parity inviolable — a canonical block is NEVER marked invalid; every
+  predicate tightening replayed against real history first (h=478544 lesson). E13 + goldens.
+- **I6** Node stands alone — zero runtime dependence on zclassicd. *Lint* `check-no-zclassicd-runtime`.
+
+## 3. Step 0 — immediate live recovery (no new code, copy-prove first)
+
+Live: tip pinned 3,151,411, `degraded_reason: utxo_apply log hole, first hole h=3056759`,
+P2P healthy. The honest engine refusing the borrowed foundation. Recover with the proven
+two-step on a COPY first (`cp -a`, `--importblockindex` then normal boot), verify
+tip==network + healthy + hash-match vs zclassicd at ≥2 heights, then deploy to live.
+`rm -f build/bin/zclassic23` + verify build_commit. Band-aid to unblock soak, NOT the cure.
+
+## 4. The build (ordered, each copy-proven + replayed before live)
+
+- **B1 — Bind the UTXO set to PoW (keystone, senior).** Q2 found the **fatal gap**
+  (`mmb.h:10`): the MMB leaf is `block_hash||height||timestamp||nBits||sapling_root||
+  chain_work` — **no UTXO commitment**, and `chain_work`/`nBits` are attacker-chosen.
+  SHA3 only proves bytes hash to the root the *peer claimed*. Add a UTXO commitment to the
+  proof + reconcile sampled work against the offered chain_work. Pure-additive (no validity
+  change) but consensus-sensitive + HIGH risk → own ADR + adversarial negative test (forged
+  set with matching self-root must REJECT). **Gates everything.**
+- **B2 — Wire `snapsync_verify_flyclient` into the cold-import door** (today reachable only
+  from `msgprocessor_snapshot.c:1093`). Precondition: B1 landed.
+- **B3 — Delete the row-count heuristic (`utxo_recovery_restore.c:323`) + the `seed_exempt`
+  stamp (`stage_anchor.c:257`).** The wound itself. After B2 the only seed is a proven snapshot.
+- **B4 — Logs truly append-only / reorg-correct** — re-key the 7 stage logs to
+  `(height, block_hash)`, readers select active-hash. Schema change touching consensus reads
+  → replay real reorg history first. MEDIUM-HIGH risk.
+- **B5 — Confirm fold is cheap** — still UNMEASURED, and **cannot be measured with any
+  existing verb** (verified 2026-06-18, workflow `wz32ptvlr`). `rebuild_recent 3056758` is
+  invalid on two grounds: it caps at 10,000 blocks (`REBUILD_RECENT_MAX_RANGE`) and fetches
+  every block from zclassicd RPC. `-reindex-chainstate` replays from GENESIS and self-refuses
+  on this cold-import datadir (no genesis-side bodies). `poison_rewind` is frontier-only +
+  ok=1-floor-guarded, so it can't target the checkpoint. The forward fold engine over on-disk
+  bodies EXISTS (`body_fetch`→`utxo_apply`, network-free) but there is **no operator verb to
+  rewind utxo_apply to a chosen height and re-drain forward**. So B5 *is* B2: the measurement
+  and the fix are the same work — once the snapshot-seed-then-fold trigger lands, it measures
+  itself. Don't assume "coinbase-only / <1 min": `script_validate_log` + `proof_validate_log`
+  have ZERO gap rows, so the fold re-runs full script+proof validation for ~94k real blocks
+  (e.g. block 3,151,412 carries a tx with vin=17). Parallelize `script_validate` only if the
+  first real measurement demands.
+- **B6 — Honest cold-sync = verify snapshot (B1+B2) → apply at proven height → fold to tip (B5).**
+  No zclassicd anywhere. Must beat MVP C3 (<10 min).
+- **B7 — Honest recovery from a FORWARD false-reject (the SECOND wedge root).** Verified
+  2026-06-18 (workflow `w78oa8h3o`): the wedge is NOT single-rooted. One structural pin (H*
+  honestly refusing a non-contiguous log) has TWO independent causes — the borrowed-import
+  hole (B1–B3) AND a genuine forward false-reject: `script_validate`/`proof_validate` write an
+  `ok=0` row and STILL advance their cursor, pinning H* with **no in-stage auto-recheck** (grep
+  for recheck/quorum in those stages = empty). The ONLY things that clear an `ok=0` today are
+  the operator `reconsiderblock` path and the very `stage_repair` ladder slated for deletion.
+  Build a sound, non-lie-cover way for an `ok=0` to be re-derived and (on genuine validity)
+  cleared — e.g. re-run the predicate at a parity-checked height with a peer-quorum witness.
+  **Gates the D5 repair-ladder deletion** (deleting it without B7 removes the only escape from
+  a forward false-reject). Pairs with the two known latent parity holes (the all-zeros-only
+  `hashFinalSaplingRoot` reject `connect_block.c:638`; the h=478544 tx-size lesson).
+- **B8 — Demote the `oracle_policy` halt path to evidence-only (a never-stuck risk).**
+  Traced to ground 2026-06-18: it IS production-wired, not just telemetry. Feeders
+  `oracle_policy_record_disagreement()` fire from the four zclassicd comparators
+  (`quorum_oracle_service.c:334`, `mirror_divergence_locator.c:282`,
+  `legacy_mirror_sync_service.c:274/303`, `zclassicd_oracle_service.c:203`); enough distinct
+  disagreement heights → `OP_HALTED` (`oracle_policy.c:168`) → `oracle_policy_chain_extension_
+  allowed()` returns false (`:205`) → consumed at `rolling_anchor_service.c:403,433`. So a
+  zclassicd that is merely WRONG/behind can stop the rolling-anchor extension — a comparator
+  gating liveness, against the "stands alone / cannot get stuck" property. (One open trace: the
+  exact blast radius — whole-chain advance vs only the rolling-anchor service — confirm before
+  the cut.) Fix = record divergence as evidence, never gate extension on it. Low risk, high
+  principle. NOTE: this episode is itself the doctrine — the deep-read synth asserted this as
+  "verified", a first skeptical grep made it look like dead telemetry, and only tracing the
+  `_allowed()` wrapper to its `rolling_anchor` callers settled it. Trust neither the story nor
+  the first grep; trace to ground.
+
+## 5. The deletions (LAST, each gated on its replacement)
+
+Net **~13,500–15,500 LOC** removed, zero features lost. Bottom-up:
+
+| Order | Cluster | LOC | Gated on | Preserve |
+|------|---------|-----|----------|----------|
+| D1 | coin_backfill | ~4,400 | B3 | torn-import verdict folded into a transition check |
+| D2 | legacy_mirror + zclassicd_oracle + quorum/policy/divergence | ~4,600 | I6/B6 | `chain_linkage` fork-HOLD KEPT; oracle reads stubbed |
+| D3 | utxo_parity vs zclassicd + parity_poll | ~1,300 | I6 | C8 parity canary re-sourced to peer quorum |
+| D4 | cold-import LDB cluster | ~3,500 | B2+B3 | KEEP frontier_gate, projection_topup, importblockindex header read, snapshot_apply, reindex_epilogue |
+| D5 | reducer_frontier reconcile ladder | ~3,700 | B3+B4 | KEEP rewind (reorg), body_fetch, header_solution, boot clamp |
+| D6 | stage_anchor seed_exempt + condition siblings | ~800 | B3,D2 | all reorg/disk/peer conditions preserved |
+| D7 | purge verb | ~340 | **B4 ONLY** | reorg-residue now structural |
+
+**Ordering rule:** D7 is LAST and strictly gated on B4 — it is currently the only thing
+keeping the height-keyed logs reorg-correct.
+
+## 6. Scale / many-eyes
+
+Lighter-model fan-out: per-file deletions + include/registry/boot-spec edits, condition
+de-registration, `INSERT OR REPLACE`→`INSERT` sweeps, the new grep lint gates.
+Senior care: B1 (PoW binding), B4 (active-hash reader), B2/B3 (the flip), every
+real-history replay, D2's fork-HOLD stub edits.
+
+## 7. Honest residuals (measure before irreversible cuts)
+
+1. **Fold wall-clock is estimated, not measured — AND not measurable today** (verified
+   2026-06-18, workflow `wz32ptvlr`, cross-checked against `progress.kv`). No existing verb
+   re-folds utxo_apply from the checkpoint over on-disk bodies (`rebuild_recent` caps at 10k +
+   needs zclassicd; `-reindex-chainstate` is genesis-wide + self-refuses here; `poison_rewind`
+   is frontier-only). The fold rate can only be measured *after* the B2 from-checkpoint fold
+   trigger exists — so resolve this residual *inside* B2/B5, not before D1. Sharper truth: the
+   gap 3,056,759..3,150,899 has ZERO rows in EVERY stage log (header_admit, validate_headers,
+   body_fetch, body_persist, script_validate, proof_validate, utxo_apply, tip_finalize) — no
+   stage folded it; cold import stamped cursors/`coins_applied_height` to 3,151,412. The
+   concrete blocker is a real spend at h=3,151,412 (tx 4e9565…, vin=17) of a coin born in the
+   unfolded gap → absent from the snapshot-seeded `coins_kv` → `coin_backfill` latched
+   `REFUSED_SPENT` (durable, survives reboot). On-disk UNDO is also missing for the top ~14k
+   blocks (present only checkpoint..~3,137,000), so a forward re-fold (bodies-only) is the
+   viable path; rewind-from-undo is not.
+2. **B1 is design work, not wiring** — where the UTXO commitment binds is unresolved +
+   consensus-sensitive → ADR + adversarial review before code.
+3. **Restart-durability after cold re-import** is a separate root cause; confirm whether B6
+   inherently fixes it.
+4. **`utxo_mirror_sync` (node.db utxos)** — KEEP pending proof it's a pure rebuildable cache.
+5. **`state_window_inconsistent`** — decide at D6, may be reusable for commitment-audit.
+6. **B4 migration cost** on live 110 MB progress.kv / 8.8 GB node.db — measure on a copy.
+
+## 8. First concrete step
+
+(a) `cp -a ~/.zclassic-c23 ~/.zclassic-c23-step0-copy-…` and run the proven recovery to
+unblock the live node (still valid as the band-aid). (b) ~~`rebuild_recent 3056758` to time
+the fold~~ — **invalid; deleted** (verified 2026-06-18). There is no offline from-checkpoint
+fold verb, so the fold can't be timed yet (see Residual #1). The real first build step is
+therefore **B2**: wire a snapshot-seed-then-fold trigger that rewinds the reducer to the
+checkpoint and re-drains forward over the on-disk bodies — that trigger *is* the missing
+measurement instrument and the cure at once. Safe isolated copy-node boot recipe (verified,
+ready for when B2 lands): `build/bin/zclassic23 -datadir=<COPY> -port=8073 -rpcport=18272
+-fsport=18074 -httpsport=8473 -connect=127.0.0.1:1 -nolegacyimport -nobgvalidation`, plus
+`rm -rf <COPY>/onion-keys <COPY>/ssl` (no flag disables Tor/clearnet; deleting the keys does).
