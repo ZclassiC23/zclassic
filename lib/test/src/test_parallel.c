@@ -148,7 +148,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_advance_coordinator) \
     X(chain_advance_atomicity) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
-    X(supervisor_domains) X(condition_engine) X(utxo_activation_paused) \
+    X(supervisor_domains) X(supervisor_production_tree) \
+    X(condition_engine) X(utxo_activation_paused) \
     X(sync_watchdog_conditions) X(peer_snapshot_conditions) \
     X(snapshot_receive_stalled_condition) \
     X(snapshot_negotiation_stalled_condition) X(snapshot_failed_reset_condition) \

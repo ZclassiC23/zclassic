@@ -123,6 +123,12 @@ void chain_tip_watchdog_test_load_persisted(void);
  * performed in test builds. */
 bool chain_tip_watchdog_test_escalate_restart(int64_t h);
 
+/* Like the above but drives the DETERMINISTIC-stall cause-probe path: the
+ * watchdog pages an operator immediately (no restart, no counter increment)
+ * because a restart cannot clear a byte-identical on-disk wedge. Returns
+ * false (no shutdown requested). */
+bool chain_tip_watchdog_test_escalate_deterministic(int64_t h);
+
 /* Record that the tip advanced to height `h`: resets the no-progress
  * counter (in memory + persisted) if `h` is at least
  * CHAIN_TIP_WD_EPISODE_CLEAR blocks past the episode anchor.

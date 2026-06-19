@@ -334,6 +334,43 @@ int test_chain_tip_watchdog_bounded_restart(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ── (e) deterministic stall: page on the FIRST escalation, 0 restarts ─
+     *
+     * A successor pinned on a deterministic precondition (the live tick reads
+     * tip_finalize's TF_BLOCKED_SUCCESSOR_PENDING class — a persisted ok=0
+     * script row) is byte-identical every boot, so a restart cannot clear it.
+     * The cause-probe must page immediately and burn ZERO restarts, instead
+     * of power-cycling the full CAP first (the live 2026-06-19 wedge spent 3
+     * restarts on exactly this deterministic condition before paging). */
+    {
+        char dir[256];
+        wd_tmpdir(dir, sizeof(dir), "deterministic");
+        wd_mkdir_p(dir);
+        WD_CHECK("open progress.kv (deterministic)", progress_store_open(dir));
+        atomic_store(&g_operator_events, 0);
+
+        const int64_t STUCK_H = 3151411;  /* the live deterministic wedge */
+        wd_sim_boot();
+        bool requested = chain_tip_watchdog_test_escalate_deterministic(STUCK_H);
+
+        struct chain_tip_watchdog_stats s;
+        chain_tip_watchdog_get_stats(&s);
+        WD_CHECK("deterministic stall does NOT request shutdown", !requested);
+        WD_CHECK("deterministic stall pages operator on first escalation",
+                 s.operator_needed);
+        WD_CHECK("deterministic stall burns ZERO restarts",
+                 s.no_progress_restarts == 0);
+        WD_CHECK("deterministic stall fired exactly one page",
+                 s.fires_operator_needed == 1);
+        WD_CHECK("deterministic stall requested no shutdown (0 restart fires)",
+                 s.fires_restart == 0);
+        WD_CHECK("deterministic EV_OPERATOR_NEEDED emitted once",
+                 atomic_load(&g_operator_events) == 1);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     /* Leave global state clean for the next test. */
     chain_tip_watchdog_test_reset_runtime();
     event_clear_all_observers();

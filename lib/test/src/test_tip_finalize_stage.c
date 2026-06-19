@@ -759,6 +759,21 @@ int test_tip_finalize_stage(void)
                  tip_finalize_stage_drain(100) == 1);
         TF_CHECK("script_log_ok0: cursor held at 1",
                  tip_finalize_stage_cursor() == 1);
+        /* NEVER-LIE keystone: the SERVED tip is never published past the
+         * cursor's advance over a non-finalizable height. update_last_advance
+         * is called ONLY on the ok=1 finalized-publish path (tip_finalize_stage.c
+         * ~471-494); the script-fail HOLD here takes JOB_IDLE and never publishes.
+         * The last legitimately-served tip is the restored seed (blocks[3], h=3),
+         * which init published; h=0 finalized but the publish guard
+         * (published_before=3, 1>=3 false) kept it off the served tip, and h=1
+         * holds. So the served tip MUST stay at 3 (the last ok=1 state) and MUST
+         * NOT track the cursor (which holds at 1). Exact-equality, mutation-
+         * sensitive: any publish from the ok=0 / hold path would drop it to <=1. */
+        TF_CHECK("script_log_ok0: served tip stays at last ok=1 finalize (h=3)",
+                 tip_finalize_stage_last_height() == 3);
+        TF_CHECK("script_log_ok0: served tip not bumped to the held cursor",
+                 tip_finalize_stage_last_height() !=
+                     (int64_t)tip_finalize_stage_cursor());
         tf_teardown(dir, &ms, &sc);
     }
 

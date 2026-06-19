@@ -16,6 +16,9 @@
 #include "util/boot_phase.h"
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 #define BP_CHECK(name, expr) do { \
     printf("boot_phase: %s... ", (name)); \
@@ -105,6 +108,66 @@ int test_boot_phase(void)
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
     BP_CHECK("advance SHUTDOWN_REQUESTED -> SHUTDOWN_COMPLETE",
         boot_stage_current() == BOOT_STAGE_SHUTDOWN_COMPLETE);
+
+    /* ── illegal transitions abort() (fork-isolated) ─────────────────
+     * boot_stage_advance_to() calls abort() on a BACKWARD move and on an
+     * OUT-OF-RANGE target (lib/util/src/boot_phase.c:112-118 and
+     * :140-147). abort() raises SIGABRT with no handler installed in the
+     * test process, so it would kill the runner. We fork a child, have it
+     * perform the illegal advance, and assert the child is *terminated by
+     * SIGABRT* (WIFSIGNALED && WTERMSIG==SIGABRT). The child redirects its
+     * own stderr to /dev/null so the abort's diagnostic fprintf does not
+     * pollute the test log, and falls through to a distinct _exit() code
+     * if abort() did NOT fire — a real regression then surfaces as a clean
+     * exit instead of a signal. Mirrors the fork+SIGABRT idiom in
+     * lib/test/src/test_postmortem.c:104-121. */
+
+    /* (a) BACKWARD move: DB_OPEN -> INIT must abort. */
+    fflush(stdout);
+    fflush(stderr);
+    {
+        pid_t pid = fork();
+        if (pid == 0) {
+            int dn = open("/dev/null", O_WRONLY);
+            if (dn >= 0) { dup2(dn, STDERR_FILENO); close(dn); }
+            boot_stage_reset_for_testing();           /* -> INIT */
+            boot_stage_advance_to(BOOT_STAGE_DB_OPEN); /* legal forward jump */
+            boot_stage_advance_to(BOOT_STAGE_INIT);    /* illegal: backward */
+            _exit(99); /* reached only if the abort() did NOT fire */
+        }
+        BP_CHECK("fork backward-move child", pid > 0);
+        if (pid > 0) {
+            int status = 0;
+            pid_t got = waitpid(pid, &status, 0);
+            BP_CHECK("wait backward-move child", got == pid);
+            BP_CHECK("backward move (DB_OPEN -> INIT) aborts via SIGABRT",
+                     got == pid && WIFSIGNALED(status) &&
+                     WTERMSIG(status) == SIGABRT);
+        }
+    }
+
+    /* (b) OUT-OF-RANGE target: BOOT_STAGE__MAX must abort. */
+    fflush(stdout);
+    fflush(stderr);
+    {
+        pid_t pid = fork();
+        if (pid == 0) {
+            int dn = open("/dev/null", O_WRONLY);
+            if (dn >= 0) { dup2(dn, STDERR_FILENO); close(dn); }
+            boot_stage_reset_for_testing();              /* -> INIT */
+            boot_stage_advance_to(BOOT_STAGE__MAX);       /* illegal: >= MAX */
+            _exit(99); /* reached only if the abort() did NOT fire */
+        }
+        BP_CHECK("fork out-of-range child", pid > 0);
+        if (pid > 0) {
+            int status = 0;
+            pid_t got = waitpid(pid, &status, 0);
+            BP_CHECK("wait out-of-range child", got == pid);
+            BP_CHECK("out-of-range target (__MAX) aborts via SIGABRT",
+                     got == pid && WIFSIGNALED(status) &&
+                     WTERMSIG(status) == SIGABRT);
+        }
+    }
 
     /* Restore for any subsequent tests in this process. */
     boot_stage_reset_for_testing();

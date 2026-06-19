@@ -26,6 +26,7 @@
 #include "supervisors/domains.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "jobs/tip_finalize_stage.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "util/log_macros.h"
@@ -170,7 +171,8 @@ static void wd_note_advance(int64_t h)
  * and the test seam share ONE code path. Returns true if shutdown was
  * (or would be) requested; false if the cap was hit and we paged a human
  * instead. `do_shutdown` lets test builds suppress the real syscall. */
-static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown)
+static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
+                              bool deterministic_stall)
 {
     /* Episode keying: a stuck height inside [anchor, anchor+margin] is
      * the SAME wedge creeping forward — carry the count and KEEP the
@@ -187,16 +189,19 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown)
 
     int restarts = atomic_load(&g_no_progress_restarts);
 
-    if (restarts >= CHAIN_TIP_WD_MAX_RESTARTS) {
-        /* Restarting has demonstrably NOT cured this wedge. A remedy that
-         * doesn't resolve the symptom must not be repeated — stop the
-         * power-cycle, stay up (degraded), and page a human/MCP. */
+    if (restarts >= CHAIN_TIP_WD_MAX_RESTARTS || deterministic_stall) {
+        /* Don't power-cycle when a restart cannot help: either restarting
+         * already failed CHAIN_TIP_WD_MAX_RESTARTS times, OR the stall is a
+         * DETERMINISTIC on-disk condition (a successor pinned on a persisted
+         * ok=0 precondition) that is byte-identical every boot. Either way a
+         * remedy that can't resolve the symptom must not be repeated — stop
+         * the power-cycle, stay up (degraded), and page a human/MCP. */
         atomic_store(&g_operator_needed, true);
         atomic_fetch_add(&g_fires_operator_needed, 1u);
-        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] OPERATOR NEEDED: tip wedged at h=%lld " "for %llds; %d restarts did not help — NOT restarting again, " "staying up degraded for manual intervention", (long long)h, (long long)age_s, restarts);
+        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] OPERATOR NEEDED: tip wedged at h=%lld " "for %llds; %s — NOT restarting, staying up degraded for " "manual intervention", (long long)h, (long long)age_s, deterministic_stall ? "deterministic stall, a restart cannot clear it" : "restarts did not help");
         event_emitf(EV_OPERATOR_NEEDED, 0,
-            "condition=chain_tip_wedged height=%lld attempts=%d age_s=%lld",
-            (long long)h, restarts, (long long)age_s);
+            "condition=chain_tip_wedged height=%lld attempts=%d age_s=%lld deterministic=%d",
+            (long long)h, restarts, (long long)age_s, deterministic_stall ? 1 : 0);
         return false;
     }
 
@@ -269,10 +274,19 @@ static void chain_tip_wd_tick(struct liveness_contract *c)
 
     if (level < 3 && thr_restart > 0 && age_s >= thr_restart) {
         atomic_store(&g_escalation, 3);
-        /* Bounded: increments the persisted no-progress counter and
+        /* Cause-probe: a stall whose successor is present but pinned on a
+         * deterministic precondition (TF_BLOCKED_SUCCESSOR_PENDING — e.g. a
+         * persisted ok=0 script_validate row) is byte-identical every boot,
+         * so a process restart cannot clear it. Page immediately and skip the
+         * restart power-cycle; transient/data-missing stalls (other blocked
+         * classes) still get the bounded restart. The accessor returns a
+         * process-lifetime string literal (race-safe to read off-thread). */
+        const char *br = tip_finalize_stage_last_blocked_reason();
+        bool deterministic = br && strcmp(br, "successor_pending") == 0;
+        /* Bounded path: increments the persisted no-progress counter and
          * requests shutdown; once the cap is hit it pages an operator and
          * stays up instead of power-cycling forever (see wd_decide_restart). */
-        wd_decide_restart(h, age_s, /*do_shutdown=*/true);
+        wd_decide_restart(h, age_s, /*do_shutdown=*/true, deterministic);
     }
 
     /* Keep the supervisor's progress timer happy: we ARE ticking, just
@@ -385,7 +399,16 @@ void chain_tip_watchdog_test_load_persisted(void)
 bool chain_tip_watchdog_test_escalate_restart(int64_t h)
 {
     /* do_shutdown=false: never actually kill the test process. */
-    return wd_decide_restart(h, /*age_s=*/1200, /*do_shutdown=*/false);
+    return wd_decide_restart(h, /*age_s=*/1200, /*do_shutdown=*/false,
+                             /*deterministic_stall=*/false);
+}
+
+bool chain_tip_watchdog_test_escalate_deterministic(int64_t h)
+{
+    /* Drive the cause-probe path: a deterministic on-disk stall pages an
+     * operator immediately instead of requesting a restart. do_shutdown=false. */
+    return wd_decide_restart(h, /*age_s=*/1200, /*do_shutdown=*/false,
+                             /*deterministic_stall=*/true);
 }
 
 void chain_tip_watchdog_test_observe_advance(int64_t h)
