@@ -17,7 +17,7 @@
 # The check
 # ---------
 # The single block-connection authority is
-#   app/services/src/chain_activation_controller.c
+#   app/services/src/chain_activation_service.c
 # It owns the transition to ACTIVATION_READY. Any file that performs an
 #   activation_set_state(..., ACTIVATION_READY, ...)
 # on a non-progress path MUST also route a typed blocker through the blocker
@@ -44,6 +44,28 @@ cd "$(dirname "$0")/../.."
 # is ever split or relocated within app/services/.
 mapfile -t files < <(grep -rlE 'activation_set_state[[:space:]]*\([^;]*ACTIVATION_READY' \
                         app/services/src --include='*.c' 2>/dev/null | sort || true)
+
+# FAIL-LOUD preflight (never report "clean" off an empty discovery). The
+# producer finds the READY authority by grepping for the setter + the enum. If
+# `activation_set_state` or `ACTIVATION_READY` is renamed (a plausible refactor
+# that keeps the build green), the grep matches 0 files, the loop below runs
+# zero times, and the gate would silently pass while the silent-ready hole is
+# wide open. So: the discovery must be non-empty AND must still contain the
+# known block-connection authority. A legitimate rename/split forces a
+# deliberate update here (and a re-verify of the silent-ready boundary).
+EXPECTED_AUTHORITY="app/services/src/chain_activation_service.c"
+if (( ${#files[@]} == 0 )); then
+    echo "check_no_silent_ready: BROKEN — found 0 ACTIVATION_READY authorities." >&2
+    echo "  The setter (activation_set_state) or enum (ACTIVATION_READY) was likely" >&2
+    echo "  renamed; update the producer grep in this gate. Refusing to report clean." >&2
+    exit 2
+fi
+if ! printf '%s\n' "${files[@]}" | grep -qxF "$EXPECTED_AUTHORITY"; then
+    echo "check_no_silent_ready: BROKEN — the known authority ($EXPECTED_AUTHORITY)" >&2
+    echo "  is not in the discovered set; the authority moved or the setter/enum was" >&2
+    echo "  renamed. Update EXPECTED_AUTHORITY/producer in this gate deliberately." >&2
+    exit 2
+fi
 
 fail=0
 violations=()

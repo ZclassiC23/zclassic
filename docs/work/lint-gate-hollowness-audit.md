@@ -42,32 +42,29 @@ substitution — its nonzero exit does not abort the parent shell.
 
 ## Status
 
-### FIXED (this commit, inject-verified)
-- **`check_consensus_parity.sh` (E13, the most sacred gate).** Added a fail-loud
-  preflight (every `PATHS` dir must exist → else `exit 2`) and explicit `grep`
-  exit handling (≥2 → `exit 2`), so it can never report "clean" off a partial or
-  broken scan. Verified: clean tree passes; a real `equihash_n_at` in a `PATHS`
-  dir still fires (exit 1); a missing `PATHS` entry now fails LOUD (exit 2) where
-  it used to silently pass. Does NOT broaden the surface (broadening the parity
-  gate risks false positives) — a NEW consensus dir still must be added to
-  `PATHS` deliberately; that requirement is now documented in the gate.
+### FIXED (inject-verified: clean passes, real violation fires, breakage fails loud)
+- **`check_consensus_parity.sh` (E13, the most sacred gate).** Fail-loud preflight
+  (every `PATHS` dir must exist → `exit 2`) + explicit `grep` exit handling (≥2 →
+  `exit 2`). Zero-broadening; a NEW consensus dir still must be added to `PATHS`
+  deliberately (now documented in the gate). Commit `6c4e08a6b`.
+- **`check_long_functions.sh`.** End-anchor `/^\}$/` → `/^\}[[:space:]]*(\/\/.*|\/\*.*)?$/`
+  so a `}`-with-trailing-whitespace/comment close (`}\t`, `} // end`) no longer
+  evades the length check; still rejects `};` / `} while`. Commit `b5ae38dc4`.
+- **`check_honest_witness.sh` (Law 7, never-lie).** Producer + awk anchor made
+  qualifier-tolerant (`static (inline )?bool witness_`) so an inline witness is
+  scanned (and its body extracted, not emptied) + a fail-loud "scanned 0 → exit 2"
+  floor. Commit `b5ae38dc4`.
+- **`check_no_silent_ready.sh` (E8, never-lie).** Fail-loud preflight: the READY
+  authority discovery must be non-empty AND contain the known authority
+  `chain_activation_service.c` (a setter/enum rename now fails loud, not silent);
+  fixed the stale comment that named the defunct `chain_activation_controller.c`.
 
 ### TODO — hollow under a GREEN build (genuine; fix carefully, inject-verify each)
 These go hollow via a refactor that *keeps the build compiling*, so CI would be
 green while the gate is blind. Highest priority.
-- `check_no_silent_ready.sh` — producer keys on `activation_set_state(`; rename
-  the setter → 0 files → pass. Fix: assert producer set non-empty + pin known
-  authority `chain_activation_service.c`. (Also fix stale comment naming the
-  defunct `chain_activation_controller.c`.) — *conservative preflight.*
-- `check_honest_witness.sh` — producer `^static bool witness_` misses
-  `static inline bool`. Fix: `^static (inline )?bool +witness_` and keep the awk
-  fn-anchor in sync; add a witness-count floor. (On-mission: honest-witness IS
-  the never-lie enforcement.) — *narrow widen, low risk.*
 - `check_one_write_path.sh` — `find app lib config tools` omits `domain/`, which
   holds consensus code; a chain-state writer there escapes. Fix: add `domain` to
   the find roots — *verify clean tree stays green first (broaden-surface).*
-- `check_long_functions.sh` — end-anchor `/^\}$/` misses `}` with trailing
-  whitespace/comment (`}\t`, `} // end`). Fix: `/^\}[[:space:]]*(\/\/|\/\*)?/`.
 - `check_no_secret_printf.sh` — non-GNU grep (busybox) rejects `--exclude-dir` /
   `\s`/`\b`, exits 2, swallowed → pass. Fix: treat grep ≥2 as fatal + a
   preflight self-test on an inline known-positive/negative fixture. (Local CI
