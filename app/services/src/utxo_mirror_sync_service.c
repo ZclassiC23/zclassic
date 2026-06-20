@@ -15,6 +15,7 @@
 
 #include "models/database.h"
 #include "models/utxo.h"
+#include "jobs/refold_progress.h"
 #include "script/script.h"
 #include "script/standard.h"
 #include "storage/coins_kv.h"
@@ -308,6 +309,15 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
 {
     if (!svc || !svc->ndb || !svc->ndb->open)
         LOG_RETURN(-1, "utxo_mirror", "run_once: node.db unavailable");
+
+    /* During a from-genesis refold the coins_kv frontier climbs every pass, so
+     * drift is true on every tick and this would DELETE+reinsert the ENTIRE
+     * mirror (O(total_coins)) every 5s — quadratic against fold progress. The
+     * mirror is a node.db read model (explorer/wallet), not consensus; skip it
+     * while refolding and let the first post-refold pass rebuild it once.
+     * See docs/work/refold-fold-rate-bottlenecks.md (#3). */
+    if (refold_in_progress())
+        return 0;
 
     int32_t frontier = -1;
     int64_t coins_count = -1;
