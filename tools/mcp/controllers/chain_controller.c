@@ -234,6 +234,9 @@ static int h_zcl_waitforheight(const struct mcp_request *req,
     mcp_params_init(&p);
     mcp_params_push_int(&p, json_get_int_or(req->args, "height", 0));
     mcp_params_push_int(&p, json_get_int_or(req->args, "timeout_ms", 30000));
+    /* provable=true tracks H* (the tip getblockcount serves), not the
+     * sync-window tip; default false preserves the historical behavior. */
+    mcp_params_push_bool(&p, json_get_bool_or(req->args, "provable", false));
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("waitforheight", params) : NULL;
     free(params);
@@ -312,11 +315,15 @@ static const struct mcp_param_spec p_replay_verify[] = {
 
 static const struct mcp_param_spec p_waitforheight[] = {
     { "height", MCP_PARAM_INT, true,
-      "Target active-chain height to wait for (returns once height >= this).",
+      "Target height to wait for (returns once height >= this).",
       0, 100000000, 0, 0, NULL, NULL },
     { "timeout_ms", MCP_PARAM_INT, false,
       "Max wait in ms (default 30000, internally capped at 9000).",
       0, 120000, 0, 0, NULL, "30000" },
+    { "provable", MCP_PARAM_BOOL, false,
+      "Track H* (the provable tip getblockcount serves) instead of the "
+      "active-chain sync-window tip. Default false (back-compat).",
+      0, 0, 0, 0, NULL, "false" },
 };
 
 static const struct mcp_param_spec p_waitfor_timeout[] = {
@@ -397,10 +404,12 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_replay_verify, 0,
       .self_test_args = "{\"start_height\":0,\"max_blocks\":4}" },
     { "zcl_waitforheight", "chain",
-      "Long-poll: block until the active chain height reaches `height`, "
-      "the timeout elapses, or the node shuts down. Returns "
-      "{target, height, reached, timed_out, shutdown}. Shutdown-aware and "
-      "bounded (internal 9000ms cap); always returns current state.",
+      "Long-poll: block until the chain height reaches `height`, the timeout "
+      "elapses, or the node shuts down. Returns "
+      "{target, height, provable, reached, timed_out, shutdown}. By default "
+      "tracks the active-chain sync-window tip; set provable=true to track H* "
+      "(the tip getblockcount serves). Shutdown-aware and bounded (internal "
+      "9000ms cap); always returns current state.",
       p_waitforheight, PARAM_COUNT(p_waitforheight), h_zcl_waitforheight, 0,
       .self_test_args = "{\"height\":0,\"timeout_ms\":0}" },
     { "zcl_waitforhalt", "chain",

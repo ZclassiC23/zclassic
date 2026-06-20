@@ -29,6 +29,7 @@
 #include "controllers/blockchain_controller.h"
 #include "blockchain_controller_internal.h"
 #include "controllers/strong_params.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "util/alerts.h"
 #include "util/blocker.h"
@@ -61,26 +62,55 @@ static int wait_clamp_timeout_ms(int64_t requested)
     return (int)ms;
 }
 
+/* Read the height this wait should compare against, fresh each loop iteration.
+ *
+ * Default (provable=false): active_chain_height — the INTERNAL sync-window /
+ * lookahead tip, which can sit ABOVE H* by the pipeline depth. This is the
+ * historical behavior every existing caller already depends on.
+ *
+ * provable=true: reducer_frontier_provable_tip_cached() — H*, the exact same
+ * cached atomic getblockcount and the P2P start_height serve externally. An
+ * operator long-polling "synced to height N" with provable=true therefore only
+ * sees a height the node will actually serve to getblockcount, never a window
+ * tip it would refuse to name. */
+static int wait_height_source(const struct blockchain_context *ctx,
+                              bool provable)
+{
+    if (provable)
+        return (int)reducer_frontier_provable_tip_cached();
+    return active_chain_height(&ctx->main_state->chain_active);
+}
+
 /* ── waitforheight ──────────────────────────────────────────────────
  *
- * Block until active chain height >= `height`, then return. On
- * timeout/shutdown returns the current height with reached=false. */
+ * Block until the chosen tip height >= `height`, then return. On
+ * timeout/shutdown returns the current height with reached=false.
+ *
+ * By DEFAULT it tracks the active-chain window tip (back-compat). Pass
+ * provable=true to instead track H* (reducer_frontier_provable_tip_cached) —
+ * the provable tip getblockcount / P2P start_height serve externally — so a
+ * long-poll observes only a height the node will actually serve. */
 bool rpc_waitforheight(const struct json_value *params, bool help,
                        struct json_value *result)
 {
     struct blockchain_context *ctx = blockchain_ctx();
     RPC_HELP(help, result,
-        "waitforheight height ( timeout_ms )\n"
-        "\nBlock until the active chain height reaches `height`, the\n"
-        "timeout (default 30000ms, capped at 9000ms) elapses, or the node\n"
-        "shuts down. Always returns a result object.\n"
-        "Result: { target, height, reached, timed_out, shutdown }");
+        "waitforheight height ( timeout_ms provable )\n"
+        "\nBlock until the chain height reaches `height`, the timeout\n"
+        "(default 30000ms, capped at 9000ms) elapses, or the node shuts\n"
+        "down. Always returns a result object.\n"
+        "\nBy default tracks the active-chain (sync-window) tip. Set\n"
+        "provable=true to track H* — the provable tip getblockcount and the\n"
+        "P2P start_height serve externally — so the wait only completes at a\n"
+        "height the node will actually serve to getblockcount.\n"
+        "Result: { target, height, provable, reached, timed_out, shutdown }");
 
     struct rpc_params p;
     rpc_params_init(&p, params);
-    rpc_params_expect(&p, 1, 2);
+    rpc_params_expect(&p, 1, 3);
     int target = (int)rpc_require_int(&p, 0, "height");
     int64_t timeout_ms = rpc_permit_int(&p, 1, "timeout_ms", WAIT_RPC_DEFAULT_MS);
+    bool provable = rpc_permit_bool(&p, 2, "provable", false);
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
         LOG_FAIL("blockchain", "waitforheight: invalid params");
@@ -96,10 +126,10 @@ bool rpc_waitforheight(const struct json_value *params, bool help,
     int64_t start = platform_time_monotonic_ms();
     bool shutdown = false;
     bool timed_out = false;
-    int height = active_chain_height(&ctx->main_state->chain_active);
+    int height = wait_height_source(ctx, provable);
 
     for (;;) {
-        height = active_chain_height(&ctx->main_state->chain_active);
+        height = wait_height_source(ctx, provable);
         if (height >= target)
             break;
         if (thread_registry_shutdown_requested()) {
@@ -116,6 +146,7 @@ bool rpc_waitforheight(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_int(result, "target", target);
     json_push_kv_int(result, "height", height);
+    json_push_kv_bool(result, "provable", provable);
     json_push_kv_bool(result, "reached", height >= target);
     json_push_kv_bool(result, "timed_out", timed_out);
     json_push_kv_bool(result, "shutdown", shutdown);

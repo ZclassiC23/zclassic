@@ -1058,6 +1058,7 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_tip_finalize_post_step();
     failures += test_reducer_frontier();
+    failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
