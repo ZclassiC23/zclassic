@@ -80,4 +80,10 @@ void db_iter_next(struct db_iterator *it);
 const char *db_iter_key(struct db_iterator *it, size_t *keylen);
 const char *db_iter_value(struct db_iterator *it, size_t *vallen);
 
+/* Surface any LevelDB iterator status (CRC / missing SST / I/O error) after a
+ * scan. Returns true if the iteration was clean, false if an error was
+ * reported. A caller treating the iterated range as a COMPLETE set MUST abort
+ * on false — see db_iter_check_error() in dbwrapper.c. */
+bool db_iter_check_error(struct db_iterator *it);
+
 #endif
