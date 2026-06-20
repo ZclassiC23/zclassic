@@ -252,6 +252,17 @@ assert green).
   remediated). Override `// lib-layer-ok:<tag>`. Impl:
   `tools/scripts/check_lib_layering.sh`.
 
+- **Gate #45: `check-domain-purity`** (HARD) — `domain/` is the innermost
+  layer. A `domain/**/*.c|.h` file (outside `*/test/*`) may only `#include` its
+  own `"domain/…"` headers, C/system `<…>` headers, bare domain-local sibling
+  files (a quoted include with no slash, e.g. `"reject_out.h"`), or one of the
+  12 allowed lib subsystems (`bloom chain coins consensus core crypto keys
+  primitives script support util validation`). Any include from an app/ shape
+  (`controllers/`, `models/`, `services/`, `views/`) or an unlisted lib/
+  subsystem (`storage/`, `ports/`, …) fails the build. No baseline (the tree is
+  already clean). Override `// domain-purity-ok:<tag>`. Impl:
+  `tools/scripts/check_domain_purity.sh`.
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -339,6 +350,7 @@ add/remove a gate.
 - `check-coins-lookup-nullcheck`
 - `check-consensus-parity`
 - `check-doc-accuracy`
+- `check-domain-purity`
 - `check-file-size-ceiling`
 - `check-framework-filename-suffix`
 - `check-framework-shape`
@@ -398,6 +410,7 @@ mechanically hold:
 | `// raw-alloc-ok:<tag>` | line with `malloc/calloc/realloc` outside the `zcl_*` wrappers | `check-raw-malloc` |
 | `// long-function-ok:<tag>` | signature line of a controller/service function whose body spans >500 lines | `check-long-functions` |
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
+| `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
 | `// one-result-type-ok:<tag>` | top of an `app/services/src/*.c` that owns no fallible service surface (pure table/registry helper) | `check-one-result-type` |
 | `// one-write-path-ok:<tag>` | chain-state compatibility wrapper that is not a second consensus writer | `check-one-write-path` |

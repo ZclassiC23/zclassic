@@ -11,9 +11,9 @@
 # no grandfathered lib/ → app/ includes left. This gate is now HARD: ANY
 # violation (new OR a re-added baseline entry) fails the build. The baseline
 # is asserted to stay empty; adding an entry to "grandfather" a new violation
-# is itself a failure. (NOTE: the related domain/ source-purity ratchet does
-# not exist as a script yet — it is enforced implicitly by build include-path
-# scoping — so there is no second gate to promote here.)
+# is itself a failure. (The related domain/ source-purity gate now exists as
+# tools/scripts/check_domain_purity.sh — gate #45, also HARD — so domain/ purity
+# is enforced explicitly there, not just by build include-path scoping.)
 #
 # Baseline file: tools/scripts/lib_layering_baseline.txt
 #   Format: one "<file>:<include-line>" entry per line.

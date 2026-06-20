@@ -849,6 +849,10 @@ static int run_gate_script_with_worker_files(const char *script_rel,
 #define E3_FIXTURE_DST   "app/conditions/src/_e3_shape_include_fixture_tmp.c"
 #define E4_SCRIPT_REL    "tools/scripts/check_projections_pure.sh"
 #define E4_FIXTURE_DST   "lib/storage/src/_e4_pure_fixture_projection.c"
+/* Gate #45 — domain/ source purity (HARD). The fixture is a domain/ src file
+ * carrying a forbidden include; clean tree → exit 0, fixture → exit != 0. */
+#define DOMAIN_PURITY_SCRIPT_REL  "tools/scripts/check_domain_purity.sh"
+#define DOMAIN_PURITY_FIXTURE_DST "domain/consensus/src/_domain_purity_fixture_tmp.c"
 #define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
 #define E5_FIXTURE_DST   "app/jobs/src/_e5_stage_fixture_tmp_stage.c"
 #define E6_SCRIPT_REL    "tools/scripts/check_one_write_path.sh"
@@ -1153,6 +1157,67 @@ static int t_e4_projections_pure(void)
     return failures;
 }
 
+/* Gate #45 — domain/ source purity HARD: a domain/ file that includes an
+ * app-layer (services/) header trips the gate (rule a); an unlisted lib/
+ * subsystem prefix also trips it (rule b); a bare domain-local sibling include
+ * stays clean. Removing the fixture restores green. */
+static int t_domain_purity(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+
+    unlink_rel(DOMAIN_PURITY_FIXTURE_DST);
+    int baseline_rc = run_gate_script(DOMAIN_PURITY_SCRIPT_REL, NULL);
+
+    /* Rule (a): an app-layer (services/) include must trip the gate. */
+    int planted_app = (repo_path(path, sizeof(path),
+                                 DOMAIN_PURITY_FIXTURE_DST) == 0 &&
+                       write_file(path,
+                           "#include \"services/foo.h\"\n"
+                           "int domain_purity_fixture;\n") == 0)
+                      ? 0 : -1;
+    int trip_app_rc = planted_app == 0
+                      ? run_gate_script(DOMAIN_PURITY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(DOMAIN_PURITY_FIXTURE_DST);
+
+    /* Rule (b): an unlisted lib/ subsystem prefix must also trip the gate. */
+    int planted_lib = (repo_path(path, sizeof(path),
+                                 DOMAIN_PURITY_FIXTURE_DST) == 0 &&
+                       write_file(path,
+                           "#include \"storage/foo.h\"\n"
+                           "int domain_purity_fixture;\n") == 0)
+                      ? 0 : -1;
+    int trip_lib_rc = planted_lib == 0
+                      ? run_gate_script(DOMAIN_PURITY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(DOMAIN_PURITY_FIXTURE_DST);
+
+    /* A bare domain-local sibling include (no slash) must NOT trip the gate. */
+    int planted_sib = (repo_path(path, sizeof(path),
+                                 DOMAIN_PURITY_FIXTURE_DST) == 0 &&
+                       write_file(path,
+                           "#include \"reject_out.h\"\n"
+                           "int domain_purity_fixture;\n") == 0)
+                      ? 0 : -1;
+    int sibling_rc = planted_sib == 0
+                     ? run_gate_script(DOMAIN_PURITY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(DOMAIN_PURITY_FIXTURE_DST);
+
+    int recover_rc = run_gate_script(DOMAIN_PURITY_SCRIPT_REL, NULL);
+
+    TEST("[lint-gate] #45 domain-purity HARD: clean, trips app+lib includes, allows sibling, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted_app == 0);
+        ASSERT(trip_app_rc != 0);
+        ASSERT(planted_lib == 0);
+        ASSERT(trip_lib_rc != 0);
+        ASSERT(planted_sib == 0);
+        ASSERT(sibling_rc == 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* E5 — stage-advances-or-blocks HARD: a Job step file that only ever returns
  * JOB_ADVANCED and references no cursor trips the gate; removing it restores
  * green. */
@@ -1350,6 +1415,7 @@ static void unlink_lint_fixtures(void)
         E2_FIXTURE_DST,
         E3_FIXTURE_DST,
         E4_FIXTURE_DST,
+        DOMAIN_PURITY_FIXTURE_DST,
         E5_FIXTURE_DST,
         E6_FIXTURE_DST,
         E7_FIXTURE_DST,
@@ -3093,6 +3159,7 @@ int test_make_lint_gates(void)
     failures += t_e2_one_result_type();
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();
+    failures += t_domain_purity();
     failures += t_e5_stage_advances_or_blocks();
     failures += t_e6_one_write_path();
     failures += t_e7_no_authoritative_ram_state();
