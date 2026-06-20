@@ -55,6 +55,17 @@ const clock_iface_t *clock_default(void);
 int64_t clock_now_monotonic_ns(void);
 int64_t clock_now_wall_ms(void);
 
+/* Per-thread CPU time in nanoseconds — only accrues while THIS thread is
+ * executing on a core, so it is immune to cross-process scheduler preemption.
+ * That is the correct clock for a constant-time work-ratio measurement: it
+ * counts the work the algorithm does, not the wall time the OS gave us. Falls
+ * back to the monotonic wall clock on platforms without a per-thread CPU clock.
+ *
+ * Deliberately not injectable — it measures real on-core work, which the
+ * simulator's virtual clock cannot meaningfully model. The single caller is
+ * the constant-time timing gate in the crypto tests. */
+int64_t clock_thread_cpu_ns(void);
+
 /* Swap the process-wide default. Intended for tests and the
  * deterministic simulator only — production code never calls this.
  *

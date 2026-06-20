@@ -96,6 +96,19 @@ int64_t clock_now_wall_ms(void)
     return p->now_wall_ms(p->self);
 }
 
+int64_t clock_thread_cpu_ns(void)
+{
+    struct timespec ts;
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+        return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+#endif
+    /* No per-thread CPU clock available — fall back to the monotonic wall
+     * clock. The work-ratio measurement is less preemption-robust on such a
+     * platform but still functions. */
+    return real_now_monotonic_ns(NULL);
+}
+
 void clock_set_default(const clock_iface_t *iface)
 {
     if (!iface) {

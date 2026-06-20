@@ -49,6 +49,7 @@
 #include "crypto/sha3.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_stage.h"     /* struct utxo_apply_lookup */
+#include "platform/clock.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
@@ -104,9 +105,8 @@ static void mp_tmpdir(char *buf, size_t n, const char *tag)
 
 static double mp_now_sec(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    /* Fold-rate measurement clock, routed through platform.clock. */
+    return (double)clock_now_monotonic_ns() / 1e9;
 }
 
 /* ── A tiny synthetic regtest chain (parts 1 & 2) ─────────────────────────

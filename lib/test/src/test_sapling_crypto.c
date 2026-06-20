@@ -32,27 +32,16 @@ static void jub_scalar_mul_naive(struct jub_point *r,
     *r = acc;
 }
 
-static uint64_t monotonic_ns_now(void)
-{
-    struct timespec ts;
-    platform_time_monotonic_timespec(&ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-/* Per-thread CPU time, in ns. Unlike wall-clock CLOCK_MONOTONIC this only
- * accrues while THIS thread is actually executing on a core, so it is immune
- * to cross-process scheduler preemption under a saturated fork-parallel run.
- * That is exactly the right clock for a constant-time work-ratio gate: it
- * measures the work the algorithm does, not the time the OS happened to give
- * us. Falls back to the wall clock if the per-thread clock is unavailable. */
+/* Per-thread CPU time, in ns. Routes through platform.clock so the raw
+ * per-thread-CPU syscall lives inside the platform boundary. Unlike wall-clock
+ * CLOCK_MONOTONIC this only accrues while THIS thread is actually executing on
+ * a core, so it is immune to cross-process scheduler preemption under a
+ * saturated fork-parallel run — exactly the right clock for a constant-time
+ * work-ratio gate: it measures the work the algorithm does, not the time the
+ * OS happened to give us. */
 static uint64_t thread_cpu_ns_now(void)
 {
-    struct timespec ts;
-#if defined(CLOCK_THREAD_CPUTIME_ID)
-    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
-        return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-#endif
-    return monotonic_ns_now();
+    return (uint64_t)clock_thread_cpu_ns();
 }
 
 /* Interleaved per-thread CPU-time work-ratio measurement.
