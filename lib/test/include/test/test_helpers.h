@@ -532,6 +532,7 @@ int test_utxo_apply_crash_replay(void);
 int test_tip_finalize_stage(void);
 int test_tip_finalize_post_step(void);
 int test_reducer_frontier(void);
+int test_refold_progress_floor(void);
 int test_chain_linkage_check(void);
 int test_invariant_sentinel(void);
 int test_seed_integrity_gate(void);

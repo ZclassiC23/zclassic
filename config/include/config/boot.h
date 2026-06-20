@@ -72,6 +72,15 @@ struct app_context {
                                  * to the request's Host header). */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
                                  * (default false → boot FATALs on broken chain state). */
+    bool refold_staged;        /* -refold-staged : reset the reducer cursors to
+                                 * genesis and mark refold_in_progress so the L0
+                                 * frontier floor drops to 0 and the below-anchor
+                                 * self-repair is suspended while the bodies-only
+                                 * fold re-walks the frozen prefix. Owner-gated;
+                                 * the fold engine itself is built separately. The
+                                 * mark is what this flag wires (the floor/repair
+                                 * enabler); progress.kv only — no consensus rule
+                                 * changes. */
 };
 
 void app_context_defaults(struct app_context *ctx);

@@ -4,6 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "framework/condition.h"
+#include "jobs/refold_progress.h"
 #include "jobs/stage_repair.h"
 #include "net/connman.h"
 #include "services/sync_monitor.h"
@@ -417,6 +418,30 @@ static void note_gate_suppressed(
 
 static bool detect_reducer_frontier_reconcile_light(void)
 {
+    /* SUSPENDED during a from-genesis staged refold (jobs/refold_progress.h):
+     * this self-repair drags below-anchor cursors back UP to the trusted
+     * anchor, which is exactly what a refold must NOT do — the fold is
+     * legitimately re-walking the frozen prefix from genesis. With the floor
+     * lowered to 0 the L0 frontier reports the true folded height; this gate
+     * stops L1 from fighting it. The condition is GATED, not deleted — a
+     * normal boot (refold_in_progress()==false) runs it byte-identically.
+     *
+     * This serial condition-engine tick is also the off-the-drive owner of the
+     * CLEAR edge: once the fold's utxo_apply cursor reaches/passes the trusted
+     * anchor, refold_progress_clear_if_crossed() drops the durable signal and
+     * the very next tick falls through to the normal self-repair. (The clear
+     * helper is a cheap no-op when not refolding or still below the anchor.) */
+    if (refold_in_progress()) {
+        sqlite3 *db = progress_store_db();
+        if (db) {
+            int ua = -1;
+            if (read_reducer_cursor(db, "utxo_apply", &ua) && ua >= 0)
+                (void)refold_progress_clear_if_crossed(db, (int32_t)ua);
+        }
+        if (refold_in_progress())
+            return false;
+    }
+
     int64_t tip_age = sync_monitor_tip_advance_age();
     if (tip_age >= 0 && tip_age < 60)
         return false;

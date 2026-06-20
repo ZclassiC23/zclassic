@@ -12,6 +12,7 @@
 
 #include "jobs/reducer_frontier.h"
 
+#include "jobs/refold_progress.h"
 #include "jobs/tip_finalize_stage.h"
 
 #include "chain/checkpoints.h"
@@ -58,6 +59,13 @@ static int32_t reducer_frontier_compiled_anchor(void)
 #endif
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     return cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+}
+
+/* The FLOOR H* and the L1 reconcile operate at — see reducer_frontier.h. 0
+ * during a refold, else the compiled anchor. Floor only, no rule change. */
+int32_t reducer_frontier_floor(void)
+{
+    return refold_in_progress() ? 0 : reducer_frontier_compiled_anchor();
 }
 
 /* Per-row reads return a tri-state so contiguity and discrimination can
@@ -448,14 +456,16 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     if (!hstar || !served_floor)
         LOG_FAIL("reducer", "compute_hstar: NULL out param(s)");
 
-    /* TRUSTED_ANCHOR: the SHA3-verified UTXO checkpoint height. Fall back to
-     * the compiled constant if the checkpoint table is somehow empty, so H*
-     * still has a hard floor. */
-    int32_t compiled_anchor = reducer_frontier_compiled_anchor();
+    /* TRUSTED_ANCHOR floor via reducer_frontier_floor(): the SHA3 checkpoint
+     * height on a NORMAL boot, 0 during a from-genesis refold so a refold's
+     * below-anchor folded prefix is REPORTED as H* (not clamped up). During a
+     * refold the cursors are reset to genesis, so reducer_trusted_anchor's
+     * candidate gate rejects any stored anchor above them and the floor stays
+     * 0; a normal boot is byte-identical to the compiled anchor read. */
+    int32_t compiled_anchor = reducer_frontier_floor();
     int32_t anchor = compiled_anchor;
     if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))
         LOG_FAIL("reducer", "trusted anchor read failed");
-
     *served_floor = 0;
     /* served_floor is independent of H* (C-served): report the deepest
      * finalized ok=1 even when it sits above the provable prefix. */
@@ -481,11 +491,12 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
          * expects — its rows run up to C (the anchor row included). */
         int64_t scan_cursor = frontier_next_cursor(&k_logs[i], raw_cursor);
 
-        /* C1 diagnostic: a cursor behind the anchor is a defect state the
-         * heal will fix; flag it but do not abort H* computation. The
-         * normalized cursor is compared so tip_finalize is not flagged for
-         * sitting exactly one below the upstream frame by convention. */
-        if (scan_cursor < (int64_t)anchor + 1)
+        /* C1 diagnostic: a cursor behind the anchor is a defect state the heal
+         * will fix; flag it but do not abort H*. The normalized cursor is
+         * compared so tip_finalize is not flagged for sitting one below the
+         * upstream frame by convention. SUPPRESSED during a refold: a
+         * below-anchor cursor is then EXPECTED (re-walking the prefix). */
+        if (scan_cursor < (int64_t)anchor + 1 && !refold_in_progress())
             LOG_WARN("reducer", "cursor below hstar: %s cursor=%lld anchor=%d",
                      k_logs[i].cursor_name, (long long)raw_cursor, anchor);
 
@@ -570,7 +581,9 @@ bool reducer_frontier_log_frontier(sqlite3 *progress_db,
     /* Recursive lock: safe whether or not the caller already holds it. */
     progress_store_tx_lock();
 
-    int32_t compiled_anchor = reducer_frontier_compiled_anchor();
+    /* Floor = 0 during a refold, else the compiled anchor (same scoping as
+     * compute_hstar) so the per-stage frontier tracks the true folded height. */
+    int32_t compiled_anchor = reducer_frontier_floor();
     int32_t anchor = compiled_anchor;
     int32_t h = anchor;
     int64_t cursor = 0;

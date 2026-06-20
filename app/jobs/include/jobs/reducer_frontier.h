@@ -38,6 +38,20 @@
  * regression test. */
 #define REDUCER_FRONTIER_TRUSTED_ANCHOR ((int32_t)3056758)
 
+/* The FLOOR H* and the L1 reconcile operate at. On a NORMAL boot this is the
+ * compiled SHA3 checkpoint anchor (REDUCER_FRONTIER_TRUSTED_ANCHOR via
+ * reducer_frontier_compiled_anchor() / the test override) — H* never rewinds
+ * across finality and a below-anchor cursor is a defect the heal fixes.
+ *
+ * EXCEPTION — a from-genesis staged refold (jobs/refold_progress.h): while
+ * refold_in_progress() is true the fold is legitimately re-walking the frozen
+ * prefix from genesis, so the floor drops to 0 — below-anchor H* is REPORTED
+ * (not clamped up) and a below-anchor cursor is NOT flagged as a defect. This
+ * changes only the H*-reporting floor + whether the self-repair runs; it
+ * changes NO validation rule. Returns 0 during a refold, else the compiled
+ * anchor. Cheap (atomic cache read + at most the compiled-anchor read). */
+int32_t reducer_frontier_floor(void);
+
 /* Durable trusted-base declaration (progress_meta, 8-byte LE height blob +
  * 32-byte hash blob — the coins_applied_height storage convention). Written
  * RAISE-ONLY by the cold-import/snapshot seed (tip_finalize_anchor.c);

@@ -23,6 +23,7 @@
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/refold_progress.h"
 #include "jobs/stage_repair.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/utxo_reimport_flag.h"
@@ -1474,19 +1475,18 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
 
-    /* Open the dedicated progress.kv SQLite file that hosts every
-     * staged-sync stage cursor. Independent of node.db so
-     * cursor commits stay off the hot path of larger transactions. */
+    /* Open the dedicated progress.kv SQLite file that hosts every staged-sync
+     * stage cursor — independent of node.db (commits off the hot path). */
     if (!progress_store_open(ctx->datadir)) {
         fprintf(stderr,
             "Warning: progress_store unavailable; staged-sync stages will "
             "not be able to persist cursors\n");
     } else {
-        /* Restore the prior operational mode for observability. Non-fatal;
-         * happens before any reducer stage so there is no race with stage
-         * cursor use. Boot overwrites this with the real post-restore mode
-         * (DEGRADED_SERVING / SYNCING) further down. */
+        /* Restore the prior operational mode (non-fatal; boot overwrites below). */
         (void)service_state_restore_from_progress_store();
+        /* refold_in_progress: cache the durable signal pre-reducer; -refold-
+         * staged SETs it. Absent on a normal boot => cache false => no change. */
+        (void)refold_progress_boot_init(progress_store_db(), ctx->refold_staged);
     }
 
     /* Snapshot-first: if a downloaded consensus_snapshot.db
