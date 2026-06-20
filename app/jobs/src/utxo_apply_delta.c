@@ -16,6 +16,7 @@
 #include "event/event.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "script/script.h"  /* script_is_unspendable — UTXO-set exclusion */
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -121,6 +122,26 @@ void utxo_apply_compute_block_delta(const struct block *blk,
         out->failure_kind = "missing_block";
         return;
     }
+
+    /* THE genesis block contributes NOTHING to the UTXO set. zclassicd
+     * ConnectBlock (zclassic-cpp/src/main.cpp:2515-2527) special-cases the
+     * genesis block — "skipping connection of its transactions (its coinbase is
+     * unspendable)" — it SetBestBlock + returns BEFORE the per-tx UpdateCoins
+     * loop (main.cpp:2657), so the genesis coinbase output NEVER enters
+     * pcoinsTip. Mirror that EXACTLY: zclassicd keys the exclusion on the BLOCK
+     * HASH (block.GetHash() == consensus.hashGenesisBlock), NOT on height. So
+     * the fold adds 0 outputs and spends 0 inputs for THE genesis block only
+     * (its computed hash equals the active params' genesis hash), keeping
+     * coins_kv matching zclassicd (count + coins_kv_commitment) rather than
+     * over-counting by +1 (the 1,354,772-vs-1,354,771 mint defect). An empty
+     * ok=true delta: spent/added stay NULL, counts 0, total_value_delta 0
+     * (delta_summary_init above). In production height 0 IS the real genesis so
+     * the mint is unchanged; a synthetic non-genesis block at height 0 (its hash
+     * != the params genesis hash) is folded normally, never wrongly dropped. */
+    struct uint256 this_hash;
+    block_get_hash(blk, &this_hash);
+    if (uint256_eq(&this_hash, &chain_params_get()->consensus.hashGenesisBlock))
+        return;
 
     size_t spend_cap = 0, add_cap = 0;
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
@@ -260,6 +281,23 @@ void utxo_apply_compute_block_delta(const struct block *blk,
             const struct tx_out *txo = &tx->vout[vo];
             if (tx_out_is_null(txo))
                 continue;
+            /* Provably-unspendable outputs (OP_RETURN, or a scriptPubKey over
+             * MAX_SCRIPT_SIZE) NEVER enter the UTXO set in zclassicd — Bitcoin
+             * Core's AddCoin() skips IsUnspendable() (the SAME predicate
+             * coins.c:86 applies on the seed path). Skip them here too, on the
+             * LIVE fold, so coins_kv (count + coins_kv_commitment) matches
+             * zclassicd exactly. Their value is still created-then-burned, but
+             * that is accounted for OUTSIDE total_value_delta: the no-inflation
+             * value-balance check below (line ~342) and the coinbase subsidy
+             * ceiling use transaction_get_value_out(), which sums EVERY output
+             * including OP_RETURN (transaction.c:186) — so excluding the burned
+             * value from the UTXO-set delta does NOT relax value-balance.
+             * total_value_delta is the UTXO-SET delta (no SELECT reader; it is
+             * an audit column + a MoneyRange sanity bound only — grep confirms),
+             * so the burned value MUST be excluded from it to stay consistent
+             * with added_count and the coins it represents. */
+            if (script_is_unspendable(&txo->script_pub_key))
+                continue;
             if (txo->value < 0 || txo->value > MAX_MONEY_ZAT) {
                 delta_fail(out, "value_overflow", "output_value",
                            &tx->hash, (uint32_t)vo);
@@ -366,9 +404,12 @@ void utxo_apply_compute_block_delta(const struct block *blk,
      * a coinbase minting MORE than that is "bad-cb-amount". The canonical C
      * port (connect_block.c:655-668) is dead (boot-reindex only), so the
      * reducer path a connected block takes must enforce it here — without it
-     * a miner could mint arbitrary coins. block_height > 0 mirrors
-     * zclassicd's genesis early-exit (main.cpp:2515-2527), which returns
-     * before any tx/reward checks. Status is "bad_cb_amount", deliberately
+     * a miner could mint arbitrary coins. THE genesis block already returned
+     * above (the hash-keyed early-exit), exactly as zclassicd's genesis
+     * early-exit (main.cpp:2515-2527) returns before any tx/reward checks; the
+     * block_height > 0 guard kept here is belt-and-suspenders for a height-0
+     * coinbase (the subsidy ramp yields a 0 ceiling at height 0, which the
+     * genesis coinbase is exempt from). Status is "bad_cb_amount", deliberately
      * NOT "value_overflow": the repair machinery keys on "value_overflow" as
      * a repairable-hole class (utxo_apply_delta_repair.c,
      * stage_repair_reducer_frontier_coin.c) and must never treat inflation

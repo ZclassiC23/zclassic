@@ -929,6 +929,7 @@ int main(void)
     failures += test_reorg_projection_parity();
     failures += test_stage_reorg_unwind_parity();
     failures += test_utxo_apply_value_balance();
+    failures += test_utxo_apply_unspendable();
     failures += test_coins_applied_frontier();
     failures += test_reducer_ingest_e2e();
     failures += test_reducer_step_drain_harness();
