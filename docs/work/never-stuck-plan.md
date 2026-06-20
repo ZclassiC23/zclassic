@@ -223,6 +223,34 @@ re-seed is a dead end on a contaminated datadir.
 **Live-node recovery TODAY: unchanged** — only the two-step cold-import crutch produces an internally
 consistent set (zclassicd's full chainstate at ITS tip). B2 cannot self-heal until the anchor mint exists.
 
+## 0e. 2026-06-20 MINT PARITY AUDIT — RANK-1 BLOCKER (verified): the fold over-counts unspendable outputs
+
+Read-only audit (workflow `w1fvale9d`) of whether a genesis→anchor full-validation fold reproduces
+zclassicd's UTXO set at h=3,056,758 (count 1,354,771 + SHA3 root). GOOD: the h=478544 tx-size lesson is
+already handled (413-entry grandfather allowlist `oversize_grandfather_table.inc`, full-scan +
+zclassicd-cross-checked); block caps, script-interp limits, locktime/finality, Equihash solution size,
+coinbase/BIP34/BIP30/maturity are all parity-safe; the all-zeros-only Sapling-root check is too lenient
+(a latent fork hole, separate) but NOT a false-reject so it won't abort the mint.
+
+**RANK-1 BLOCKER (verified in code, spot-checked — not just claimed):** the ACTIVE fold path
+`utxo_apply_delta.c:259-299` adds every non-null output to `coins` but does NOT exclude
+`script_is_unspendable()` outputs (OP_RETURN / provably-unspendable). `coins.c:82-90` has the correct
+exclusion ("They never enter the UTXO set in zclassicd") but is NOT the live path. So the live fold
+OVER-COUNTS vs zclassicd — its UTXO commitment can never match the checkpoint above the borrowed seed,
+and a genesis→anchor mint with today's fold would over-count and FATAL. FIX (one line, mirror
+`coins.c:86`): `if (script_is_unspendable(&txo->script_pub_key)) continue;` in the vout loop.
+CONSENSUS-critical (changes the committed UTXO set) → the decisive replay gate IS the mint: fold
+genesis→anchor WITH the fix and confirm count==1,354,771 + SHA3 match.
+
+Remaining ranked parity gates the mint must clear (all subsumed by actually running the genesis→anchor
+fold to a count+SHA3 match — a false-reject halts at a named height):
+- genesis-coinbase one-coin handling (does zclassicd's `gettxoutsetinfo` include the genesis coinbase?);
+- txid/vout commitment SORT-ORDER vs zclassicd's reference (`utxo_commitment.c:329` / `coins_kv.c:258`);
+- tx-parser COUNT CAPS (MAX_TX_INPUTS/OUTPUTS=65536, shielded=4096, joinsplits=4096) reject at parse,
+  tighter than zclassicd — scan genesis→anchor max per-tx counts < each cap;
+- value-balance / subsidy / coinbase-protect predicates (ports never replayed); BIP30 INSERT-OR-REPLACE;
+- P2SH|CLTV applied from genesis unconditionally (confirm no sub-anchor activation in zclassicd).
+
 ## 1. Thesis
 
 Wire the self-sufficient proof (`snapshot_verify`) into the cold-import door, kill
