@@ -94,7 +94,18 @@ struct sha3_utxo_checkpoint {
     int64_t  total_supply;      /* total transparent supply in zatoshi */
 };
 
-/* Returns the latest hardcoded SHA3 UTXO checkpoint, or NULL if none. */
+/* Returns the latest hardcoded SHA3 UTXO checkpoint, or NULL if none.
+ * In production this always returns the compiled-in g_sha3_checkpoint. */
 const struct sha3_utxo_checkpoint *get_sha3_utxo_checkpoint(void);
+
+/* Test-only seam: install a checkpoint that get_sha3_utxo_checkpoint()
+ * returns instead of the compiled-in one. Used by the snapshot-bind
+ * tests to assert the anchor-root gate at a scaled-down fixture height
+ * whose locally-computed commitment IS the override's sha3_hash by
+ * construction (the same utxo_commitment path that derived the real
+ * checkpoint). NULL = no override = production behavior. The pointer is
+ * borrowed (not copied); the caller keeps it valid until reset. */
+void checkpoints_set_sha3_override_for_test(const struct sha3_utxo_checkpoint *cp);
+void checkpoints_reset_sha3_override_for_test(void);
 
 #endif

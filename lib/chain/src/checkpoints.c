@@ -103,7 +103,22 @@ static const struct sha3_utxo_checkpoint g_sha3_checkpoint = {
     .total_supply = 1036413833747381LL,  /* 10364138.33747381 ZCL */
 };
 
+/* Test-only override (NULL in production). See checkpoints.h. */
+static const struct sha3_utxo_checkpoint *g_sha3_checkpoint_test_override = NULL;
+
 const struct sha3_utxo_checkpoint *get_sha3_utxo_checkpoint(void)
 {
+    if (g_sha3_checkpoint_test_override)
+        return g_sha3_checkpoint_test_override;
     return &g_sha3_checkpoint;
+}
+
+void checkpoints_set_sha3_override_for_test(const struct sha3_utxo_checkpoint *cp)
+{
+    g_sha3_checkpoint_test_override = cp;
+}
+
+void checkpoints_reset_sha3_override_for_test(void)
+{
+    g_sha3_checkpoint_test_override = NULL;
 }

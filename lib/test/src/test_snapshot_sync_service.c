@@ -12,6 +12,7 @@
 #include "net/net.h"
 #include "chain/mmb.h"
 #include "chain/mmr.h"
+#include "chain/checkpoints.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <pthread.h>
@@ -1484,6 +1485,173 @@ static int test_snapshot_local_recovery_manifest_builder(void)
     return failures;
 }
 
+/* Stage one UTXO chunk, commit it, and return the locally-computed SHA3
+ * commitment over the staging table — the same procedure that derives the
+ * in-binary checkpoint root, scaled to one coin. Leaves a write txn open so
+ * the caller can immediately finalize. */
+static bool stage_one_and_hash(struct snapshot_sync_service *svc,
+                               struct node_db *ndb,
+                               struct db_service *dbsvc,
+                               struct byte_stream *chunk,
+                               uint8_t local_root[32],
+                               uint64_t *local_count)
+{
+    snapsync_init(svc, ndb);
+    svc->state = SNAPSYNC_NEGOTIATING;
+    svc->start_time_us = 1;
+    svc->offered_count = 1;
+    svc->fc_verified = true;
+    svc->serving_peer_id = 21;
+    memset(svc->offered_block_hash, 0x44, sizeof(svc->offered_block_hash));
+
+    if (!snapsync_begin_receive(svc).ok)
+        return false;
+    build_snapshot_chunk(chunk);
+    if (snapsync_apply_chunk(svc, chunk->data, chunk->size) != 1)
+        return false;
+    if (!db_service_commit_write(dbsvc))
+        return false;
+    utxo_commitment_sha3_compute_table(ndb->db, "snapshot_staging_utxos",
+                                       local_root, local_count);
+    if (*local_count != 1)
+        return false;
+    return db_service_begin_write(dbsvc);
+}
+
+/* POSITIVE — no false-reject.
+ * At the anchor height, a genuine set whose locally-computed commitment IS the
+ * compiled checkpoint root must still be ACCEPTED. We install a test checkpoint
+ * whose sha3_hash equals the local_root of the staged set — i.e. the genuine
+ * anchor set by construction — and confirm finalize promotes it. */
+static int test_snapshot_anchor_bind_accepts_genuine_root(void)
+{
+    int failures = 0;
+
+    TEST("snapshot anchor bind accepts the genuine checkpoint root") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct byte_stream chunk;
+        struct sha3_utxo_checkpoint test_cp;
+        uint8_t local_root[32];
+        uint64_t local_count = 0;
+        const int32_t anchor_h = 3056758;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&runtime, 0, sizeof(runtime));
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        db_service_init(&dbsvc);
+        ASSERT(db_service_attach(&dbsvc, &ndb));
+        ASSERT(db_service_start(&dbsvc));
+        runtime.db_service = &dbsvc;
+        app_runtime_set_current(&runtime);
+
+        ASSERT(stage_one_and_hash(&svc, &ndb, &dbsvc, &chunk,
+                                  local_root, &local_count));
+
+        /* The genuine anchor set hashes to the compiled root by construction:
+         * install a checkpoint at the anchor height whose root == local_root. */
+        memset(&test_cp, 0, sizeof(test_cp));
+        test_cp.height = anchor_h;
+        memcpy(test_cp.sha3_hash, local_root, 32);
+        test_cp.utxo_count = local_count;
+        checkpoints_set_sha3_override_for_test(&test_cp);
+
+        /* Offer is at the anchor height; offered root is self-consistent. */
+        svc.offered_height = anchor_h;
+        memcpy(svc.offered_utxo_root, local_root, sizeof(local_root));
+
+        ASSERT(snapsync_finalize(&svc).ok);
+        ASSERT(svc.state == SNAPSYNC_COMPLETE);
+        ASSERT(count_table_rows(ndb.db, "utxos") == 1);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+
+        checkpoints_reset_sha3_override_for_test();
+        stream_free(&chunk);
+        app_runtime_set_current(NULL);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+/* NEGATIVE — no false-accept.
+ * At the anchor height, a FABRICATED set (local_root != compiled checkpoint
+ * root) must be REJECTED — even though it is self-consistent with the peer's
+ * offered root, which the OLD bare memcmp gate would have ACCEPTED. We prove
+ * both: (a) offered_utxo_root == local_root, so the legacy self-consistency
+ * check passes; (b) the compiled checkpoint root differs, so the anchor bind
+ * fires and the snapshot is rejected. */
+static int test_snapshot_anchor_bind_rejects_fabricated_root(void)
+{
+    int failures = 0;
+
+    TEST("snapshot anchor bind rejects a fabricated set the old memcmp accepted") {
+        struct snapshot_sync_service svc;
+        struct node_db ndb;
+        struct db_service dbsvc;
+        struct app_runtime_context runtime;
+        struct node_db_status st;
+        struct byte_stream chunk;
+        struct sha3_utxo_checkpoint test_cp;
+        uint8_t local_root[32];
+        uint8_t compiled_root[32];
+        uint64_t local_count = 0;
+        const int32_t anchor_h = 3056758;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&runtime, 0, sizeof(runtime));
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        db_service_init(&dbsvc);
+        ASSERT(db_service_attach(&dbsvc, &ndb));
+        ASSERT(db_service_start(&dbsvc));
+        runtime.db_service = &dbsvc;
+        app_runtime_set_current(&runtime);
+
+        ASSERT(stage_one_and_hash(&svc, &ndb, &dbsvc, &chunk,
+                                  local_root, &local_count));
+
+        /* The compiled checkpoint root differs from the staged set's root: this
+         * staged set is fabricated relative to the genuine anchor. */
+        memcpy(compiled_root, local_root, sizeof(compiled_root));
+        compiled_root[0] ^= 0xFF;
+        ASSERT(memcmp(compiled_root, local_root, 32) != 0);
+
+        memset(&test_cp, 0, sizeof(test_cp));
+        test_cp.height = anchor_h;
+        memcpy(test_cp.sha3_hash, compiled_root, 32);
+        test_cp.utxo_count = local_count;
+        checkpoints_set_sha3_override_for_test(&test_cp);
+
+        /* Offered root == local_root: the LEGACY self-consistency memcmp passes,
+         * so the old gate alone would have ACCEPTED this set. */
+        svc.offered_height = anchor_h;
+        memcpy(svc.offered_utxo_root, local_root, sizeof(local_root));
+        ASSERT(memcmp(svc.offered_utxo_root, local_root, 32) == 0);
+
+        /* Anchor bind fires: local_root != compiled checkpoint root -> REJECT. */
+        ASSERT(!snapsync_finalize(&svc).ok);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(!svc.turbo_active);
+        node_db_get_status(&ndb, &st);
+        ASSERT(!st.turbo_mode);
+        /* Staged set was NOT promoted to active. */
+        ASSERT(count_table_rows(ndb.db, "utxos") == 0);
+
+        checkpoints_reset_sha3_override_for_test();
+        stream_free(&chunk);
+        app_runtime_set_current(NULL);
+        db_service_stop(&dbsvc);
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_snapshot_blacklist_add_query(void)
 {
     int failures = 0;
@@ -1638,6 +1806,8 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_recovery_request_rejects_unverified_manifest();
     failures += test_snapshot_recovery_requires_flyclient_and_sha3();
     failures += test_snapshot_local_recovery_manifest_builder();
+    failures += test_snapshot_anchor_bind_accepts_genuine_root();
+    failures += test_snapshot_anchor_bind_rejects_fabricated_root();
     failures += test_snapshot_blacklist_add_query();
     failures += test_snapshot_blacklist_zero_peer();
     failures += test_snapshot_blacklist_refresh();

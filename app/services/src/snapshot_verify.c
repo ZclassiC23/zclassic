@@ -14,6 +14,7 @@
 #include "models/mmb_leaf_store.h"
 #include "chain/mmb.h"
 #include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
+#include "chain/checkpoints.h"          /* g_sha3_checkpoint anchor-root bind */
 #include "storage/coins_kv.h"           /* boundary utxo_root read */
 #include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "chain/pow.h"
@@ -132,9 +133,59 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
     if (!snapsync_set_staging_phase_internal(ndb, SNAPSYNC_PHASE_SNAPSHOT_VERIFY).ok)
         LOG_FAIL("snapshot_sync", "finalize_write: failed to set verify phase");
     snapsync_hash_staging_internal(ndb, local_root, &local_count);
+
+    /* Self-consistency: the offered set we staged must hash to the root the
+     * peer offered (kept exactly as before — never weakened). */
     sha3_ok = (memcmp(local_root, svc->offered_utxo_root, 32) == 0);
     if (local_count != svc->offered_count)
         sha3_ok = false;
+
+    /* Anchor bind (only-tightening): at the in-binary checkpoint height we do
+     * not trust the peer's offered root at all — we require our OWN locally
+     * computed commitment over the staged set to equal the compiled SHA3
+     * checkpoint root. local_root is the SHA3-256 over the staged UTXOs in the
+     * same canonical (txid,vout) order that derived g_sha3_checkpoint.sha3_hash
+     * (checkpoints.c). The genuine anchor set hashes to the compiled root by
+     * construction; a fabricated set that is merely self-consistent with the
+     * peer's offered root cannot match it. When NOT at the anchor height this
+     * branch is skipped, so the offered-root self-consistency check above is
+     * the sole gate, exactly as it has always been. The bind only ANDs in an
+     * extra requirement: sha3_ok can flip true->false here, never false->true. */
+    {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        bool at_anchor = (cp && svc->offered_height == cp->height);
+        if (at_anchor) {
+            bool root_ok  = (memcmp(local_root, cp->sha3_hash, 32) == 0);
+            bool count_ok = (cp->utxo_count == 0 ||
+                             local_count == cp->utxo_count);
+            if (!root_ok || !count_ok) {
+                char want[65], have[65];
+                HexStr(cp->sha3_hash, 32, false, want, sizeof(want));
+                HexStr(local_root, 32, false, have, sizeof(have));
+                /* Plain fprintf (not LOG_ERR/LOG_FAIL — those return, and we
+                 * must route through snapsync_finalize_fail_internal below so
+                 * staging is discarded and the FAILED event is emitted). */
+                fprintf(stderr,
+                        "[snapshot_sync] %s:%d %s(): anchor_root_mismatch height=%d "
+                        "compiled_root=%s local_root=%s compiled_count=%llu "
+                        "local_count=%llu root_ok=%d count_ok=%d\n",
+                        __FILE__, __LINE__, __func__, cp->height, want, have,
+                        (unsigned long long)cp->utxo_count,
+                        (unsigned long long)local_count, root_ok, count_ok);
+                sha3_ok = false;
+                if (!snapsync_exit_turbo_mode_internal(svc).ok)
+                    event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
+                                "snapshot=FAILED reason=turbo_exit_failed");
+                event_emitf(EV_UTXO_CHECKPOINT_FAIL, 0,
+                            "snapshot anchor-root MISMATCH height=%d compiled=%s local=%s",
+                            cp->height, want, have);
+                return snapsync_finalize_fail_internal(finalize, ndb, svc,
+                                                       serving_peer_id,
+                                                       "anchor_root_mismatch",
+                                                       "snapshot anchor root mismatch").ok;
+            }
+        }
+    }
 
     if (sha3_ok) {
         const struct chain_evidence_record snapshot_verified = {
