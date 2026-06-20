@@ -726,6 +726,14 @@ static void print_usage(const char *prog)
     printf("                      (default OFF: only all-zeros is rejected).\n");
     printf("                      DO NOT use on the live node until a full-history\n");
     printf("                      replay confirms zero false-rejects (h=478544).\n");
+    printf("  -enforce-coinbase-maturity  Reject a live-path spend of a coinbase\n");
+    printf("                      output younger than 100 blocks (default OFF).\n");
+    printf("                      DO NOT use on the live node until a full-history\n");
+    printf("                      replay confirms zero false-rejects (h=478544).\n");
+    printf("  -enforce-checkdatasig-sigops  Count OP_CHECKDATASIG toward the\n");
+    printf("                      per-block sigop ceiling in connect_block (default OFF).\n");
+    printf("                      DO NOT use on the live node until a full-history\n");
+    printf("                      replay confirms zero false-rejects (h=478544).\n");
     printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
     printf("                      projection (cold-start opt-in)\n");
     printf("  -bench              Run all five user benchmark probes\n");
@@ -1744,6 +1752,30 @@ int main(int argc, char **argv)
              * validation/connect_block.h). */
             extern _Atomic _Bool g_enforce_sapling_root;
             atomic_store(&g_enforce_sapling_root, true);
+        }
+        else if (strcmp(argv[i], "-enforce-coinbase-maturity") == 0) {
+            /* DEFAULT-OFF coinbase-maturity parity reject on the live reducer
+             * fold. Default behavior does NOT reject a spend of a coinbase
+             * output younger than COINBASE_MATURITY (100) on that path; this
+             * flag adds the reject, matching zclassicd CheckTxInputs
+             * (zclassic-cpp/src/main.cpp:2056-2060). ⚠ This is a tightening
+             * predicate — do NOT pass on the live node until a full-history
+             * replay confirms ZERO false-rejects (h=478544 lesson — see
+             * jobs/utxo_apply_delta.h). */
+            extern _Atomic _Bool g_enforce_coinbase_maturity;
+            atomic_store(&g_enforce_coinbase_maturity, true);
+        }
+        else if (strcmp(argv[i], "-enforce-checkdatasig-sigops") == 0) {
+            /* DEFAULT-OFF CHECKDATASIG_SIGOPS parity. Default connect_block
+             * flags are P2SH | CHECKLOCKTIMEVERIFY; this flag also ORs in
+             * SCRIPT_VERIFY_CHECKDATASIG_SIGOPS, matching zclassicd
+             * ConnectBlock (zclassic-cpp/src/main.cpp:2567), which counts
+             * OP_CHECKDATASIG[VERIFY] toward the per-block sigop ceiling.
+             * ⚠ Tightening predicate — do NOT pass on the live node until a
+             * full-history replay confirms ZERO false-rejects (h=478544
+             * lesson — see validation/connect_block.h). */
+            extern _Atomic _Bool g_enforce_checkdatasig_sigops;
+            atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;

@@ -1,0 +1,265 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_utxo_apply_coinbase_maturity - pins the DEFAULT-OFF coinbase-maturity
+ * parity reject on the LIVE fold path (utxo_apply_compute_block_delta).
+ *
+ * Background. zclassicd's Consensus::CheckTxInputs (zclassic-cpp/src/main.cpp
+ * :2056-2060) rejects "bad-txns-premature-spend-of-coinbase" when a tx spends
+ * a coinbase output whose creation height is within COINBASE_MATURITY (100) of
+ * the spending block's height (nSpendHeight - coins->nHeight <
+ * COINBASE_MATURITY, where nSpendHeight = pindexPrev->nHeight + 1 = the height
+ * of the block being connected). zclassic23 enforced this only in the
+ * boot-reindex connect_block.c path and the repair ladder; the LIVE reducer
+ * fold (utxo_apply_delta.c) did not. The fix adds the reject behind the
+ * DEFAULT-OFF runtime flag g_enforce_coinbase_maturity
+ * (-enforce-coinbase-maturity).
+ *
+ * This test pins both behaviors with hand-built blocks and a trivial in-test
+ * lookup that returns a COINBASE coin at a controllable creation height:
+ *
+ *   (a) Flag OFF (DEFAULT) + a premature coinbase spend (depth < 100)
+ *       -> ACCEPTS. The byte-identical-to-today guarantee: default behavior
+ *       does NOT reject on this path.
+ *   (b) Flag ON + the SAME premature spend (depth < 100) -> REJECTS with
+ *       failure_kind "bad-txns-premature-spend-of-coinbase".
+ *   (c) Flag ON + a MATURE coinbase spend (depth == 100) -> ACCEPTS.
+ *   (d) Flag ON + spending a NON-coinbase coin at depth 0 -> ACCEPTS
+ *       (the rule is coinbase-only; a normal coin is never premature).
+ *
+ * compute_block_delta is called DIRECTLY; no datadir or coins_kv is needed
+ * for the predicate cases. Case (b2) additionally proves the reject is durable
+ * through an isolated coins_kv apply attempt (the delta is never applied when
+ * ok==false). The global flag is restored to its default (off) at the end.
+ */
+
+#include "test/test_helpers.h"
+
+#include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/chainparamsbase.h"  /* enum chain_network */
+#include "core/uint256.h"
+#include "jobs/utxo_apply_delta.h"
+#include "jobs/utxo_apply_stage.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "script/script.h"
+#include "util/safe_alloc.h"
+#include "validation/main_constants.h"  /* COINBASE_MATURITY */
+
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+
+#define UCM_CHECK(name, expr) do {                          \
+    printf("utxo_apply_coinbase_maturity: %s... ", (name)); \
+    if ((expr)) printf("OK\n");                             \
+    else { printf("FAIL\n"); failures++; }                  \
+} while (0)
+
+/* The single external input coin the spend consumes, with the creation
+ * height + coinbase flag the lookup reports back to the reducer. */
+struct ucm_coin {
+    struct uint256 txid;
+    uint32_t vout;
+    int64_t value;
+    uint32_t height;
+    bool is_coinbase;
+};
+
+static bool ucm_lookup(const struct uint256 *txid, uint32_t vout,
+                       struct utxo_apply_lookup *out, void *user)
+{
+    const struct ucm_coin *c = user;
+    memset(out, 0, sizeof(*out));
+    if (c && c->vout == vout && uint256_eq(&c->txid, txid)) {
+        out->found = true;
+        out->value = c->value;
+        out->height = c->height;
+        out->is_coinbase = c->is_coinbase;
+        out->script_len = 0;
+    }
+    return true;
+}
+
+/* Coinbase vtx[0]: value irrelevant to the rule under test, distinct hash. */
+static void ucm_make_coinbase(struct transaction *tx, uint8_t tag)
+{
+    transaction_init(tx);
+    (void)transaction_alloc(tx, 1, 1);
+    outpoint_set_null(&tx->vin[0].prevout);
+    tx->vout[0].value = 1000000000LL;
+    uint8_t pk[3] = { 0x76, 0xa9, tag };
+    script_set(&tx->vout[0].script_pub_key, pk, 3);
+    uint256_set_null(&tx->hash);
+    tx->hash.data[0] = 0xC0;
+    tx->hash.data[1] = tag;
+}
+
+/* Set vout[i] to a distinct P2PKH-shaped (spendable) script. Using a SHIELDED
+ * (zero-vout) spend would dodge the coinbase-transparent-output protection
+ * rule; a transparent output is fine here because that protection rule is
+ * itself gated on chain_params fCoinbaseMustBeProtected, and on regtest (the
+ * test chain) that flag is false, so only the maturity rule under test fires. */
+static void ucm_set_normal_out(struct transaction *tx, size_t i, int64_t value,
+                               uint8_t marker)
+{
+    tx->vout[i].value = value;
+    uint8_t pk[4] = { 0x76, 0xa9, 0xBB, marker };
+    script_set(&tx->vout[i].script_pub_key, pk, 4);
+}
+
+/* Build a {coinbase, spend} block. The spend consumes `coin` and has one
+ * output the caller fills after this returns. */
+static bool ucm_build_block(struct block *b, uint8_t tag,
+                            const struct ucm_coin *coin)
+{
+    block_init(b);
+    b->num_vtx = 2;
+    b->vtx = zcl_calloc(b->num_vtx, sizeof(struct transaction), "ucm_vtx");
+    if (!b->vtx) return false;
+    ucm_make_coinbase(&b->vtx[0], tag);
+    transaction_init(&b->vtx[1]);
+    if (!transaction_alloc(&b->vtx[1], 1, 1)) return false;
+    b->vtx[1].vin[0].prevout.hash = coin->txid;
+    b->vtx[1].vin[0].prevout.n = coin->vout;
+    uint256_set_null(&b->vtx[1].hash);
+    b->vtx[1].hash.data[0] = 0x5E;
+    b->vtx[1].hash.data[1] = tag;
+    return true;
+}
+
+int test_utxo_apply_coinbase_maturity(void);
+int test_utxo_apply_coinbase_maturity(void)
+{
+    printf("\n=== utxo_apply coinbase-maturity parity (default-off) ===\n");
+    int failures = 0;
+
+    /* Run on regtest, where fCoinbaseMustBeProtected is false
+     * (chainparams.c:575). That keeps the separate
+     * coinbase-spend-has-transparent-outputs protection rule
+     * (utxo_apply_delta.c) from rejecting the transparent-output coinbase
+     * spends in the ACCEPT cases below, isolating the maturity rule under
+     * test. Restore the prior network at the end. */
+    enum chain_network saved_net = CHAIN_MAIN;
+    {
+        const char *id = chain_params_get()->strNetworkID;
+        if (strcmp(id, "test") == 0)        saved_net = CHAIN_TESTNET;
+        else if (strcmp(id, "regtest") == 0) saved_net = CHAIN_REGTEST;
+        else                                 saved_net = CHAIN_MAIN;
+    }
+    chain_params_select(CHAIN_REGTEST);
+
+    /* A coinbase coin created at height 10. The spending block height controls
+     * the depth: spend at height (10 + COINBASE_MATURITY - 1) is premature
+     * (depth 99 < 100); spend at height (10 + COINBASE_MATURITY) is mature
+     * (depth 100). */
+    struct ucm_coin cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.txid.data[0] = 0xE7;
+    cb.txid.data[1] = 0x0C;
+    cb.vout = 0;
+    cb.value = 1250000000LL;
+    cb.height = 10;
+    cb.is_coinbase = true;
+
+    const uint32_t premature_h = cb.height + COINBASE_MATURITY - 1; /* depth 99 */
+    const uint32_t mature_h    = cb.height + COINBASE_MATURITY;     /* depth 100 */
+
+    /* (a) DEFAULT (flag OFF) + premature coinbase spend -> ACCEPTS (unchanged).
+     * This is the byte-identical-to-today guarantee. */
+    {
+        atomic_store(&g_enforce_coinbase_maturity, false);
+        struct block b;
+        bool built = ucm_build_block(&b, 0xA1, &cb);
+        UCM_CHECK("(a) premature block builds", built);
+        if (built) {
+            ucm_set_normal_out(&b.vtx[1], 0, cb.value, 0x11);
+            struct delta_summary out;
+            utxo_apply_compute_block_delta(&b, premature_h, ucm_lookup, &cb,
+                                           &out);
+            UCM_CHECK("(a) flag OFF: premature spend ACCEPTS (byte-identical)",
+                      out.ok == true);
+            UCM_CHECK("(a) flag OFF: the coinbase input was spent",
+                      out.spent_count == 1);
+            free_delta(&out);
+        }
+        block_free(&b);
+    }
+
+    /* (b) Flag ON + premature coinbase spend -> REJECTS. */
+    {
+        atomic_store(&g_enforce_coinbase_maturity, true);
+        struct block b;
+        bool built = ucm_build_block(&b, 0xB2, &cb);
+        UCM_CHECK("(b) premature block builds", built);
+        if (built) {
+            ucm_set_normal_out(&b.vtx[1], 0, cb.value, 0x12);
+            struct delta_summary out;
+            utxo_apply_compute_block_delta(&b, premature_h, ucm_lookup, &cb,
+                                           &out);
+            UCM_CHECK("(b) flag ON: premature spend REJECTS", out.ok == false);
+            UCM_CHECK("(b) flag ON: reject is bad-txns-premature-spend-of-coinbase",
+                      out.failure_kind != NULL &&
+                      strcmp(out.failure_kind,
+                             "bad-txns-premature-spend-of-coinbase") == 0);
+            free_delta(&out);
+        }
+        block_free(&b);
+        atomic_store(&g_enforce_coinbase_maturity, false);
+    }
+
+    /* (c) Flag ON + MATURE coinbase spend (depth == 100) -> ACCEPTS. */
+    {
+        atomic_store(&g_enforce_coinbase_maturity, true);
+        struct block b;
+        bool built = ucm_build_block(&b, 0xC3, &cb);
+        UCM_CHECK("(c) mature block builds", built);
+        if (built) {
+            ucm_set_normal_out(&b.vtx[1], 0, cb.value, 0x13);
+            struct delta_summary out;
+            utxo_apply_compute_block_delta(&b, mature_h, ucm_lookup, &cb, &out);
+            UCM_CHECK("(c) flag ON: mature spend (depth 100) ACCEPTS",
+                      out.ok == true);
+            UCM_CHECK("(c) flag ON: the coinbase input was spent",
+                      out.spent_count == 1);
+            free_delta(&out);
+        }
+        block_free(&b);
+        atomic_store(&g_enforce_coinbase_maturity, false);
+    }
+
+    /* (d) Flag ON + spending a NON-coinbase coin at depth 0 -> ACCEPTS.
+     * The maturity rule is coinbase-only; a normal coin is never premature. */
+    {
+        atomic_store(&g_enforce_coinbase_maturity, true);
+        struct ucm_coin normal = cb;
+        normal.txid.data[0] = 0xE8;       /* distinct coin */
+        normal.is_coinbase = false;
+        normal.height = 12;
+        struct block b;
+        bool built = ucm_build_block(&b, 0xD4, &normal);
+        UCM_CHECK("(d) non-coinbase block builds", built);
+        if (built) {
+            ucm_set_normal_out(&b.vtx[1], 0, normal.value, 0x14);
+            struct delta_summary out;
+            /* Spend at height 12 (depth 0) — would be premature IF coinbase. */
+            utxo_apply_compute_block_delta(&b, 12, ucm_lookup, &normal, &out);
+            UCM_CHECK("(d) flag ON: non-coinbase coin at depth 0 ACCEPTS",
+                      out.ok == true);
+            UCM_CHECK("(d) flag ON: the non-coinbase input was spent",
+                      out.spent_count == 1);
+            free_delta(&out);
+        }
+        block_free(&b);
+        atomic_store(&g_enforce_coinbase_maturity, false);
+    }
+
+    /* Leave the global in its default (off) state for any later group. */
+    atomic_store(&g_enforce_coinbase_maturity, false);
+    /* Restore the network selection the caller (or a prior group) had. */
+    chain_params_select(saved_net);
+
+    printf("=== utxo_apply coinbase-maturity parity: %d failures ===\n",
+           failures);
+    return failures;
+}

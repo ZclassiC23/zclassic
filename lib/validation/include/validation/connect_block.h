@@ -47,6 +47,26 @@ void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree);
  * without a lock. */
 extern _Atomic _Bool g_enforce_sapling_root;
 
+/* DEFAULT-OFF CHECKDATASIG_SIGOPS parity flag.
+ * When true, connect_block ORs SCRIPT_VERIFY_CHECKDATASIG_SIGOPS into its
+ * script verification flags, matching zclassicd ConnectBlock
+ * (zclassic-cpp/src/main.cpp:2567). That bit makes OP_CHECKDATASIG /
+ * OP_CHECKDATASIGVERIFY count toward the per-block MAX_BLOCK_SIGOPS ceiling.
+ * Default false ⇒ connect_block's flags are byte-identical to today
+ * (P2SH | CHECKLOCKTIMEVERIFY only).
+ *
+ * ⚠ This is a tightening (reject) predicate: setting the bit can only RAISE
+ *   a block's counted sigop total, so a previously-accepted block could now
+ *   exceed the cap. Do NOT flip the default or pass -enforce-checkdatasig-sigops
+ *   on the live node until a FULL-HISTORY REPLAY against the real chain
+ *   confirms ZERO false-rejects (the h=478544 lesson — see the
+ *   g_enforce_sapling_root warning above).
+ *
+ * Set by the node from the -enforce-checkdatasig-sigops argv flag
+ * (src/main.c). Default false. _Atomic so a background validation thread can
+ * read it without a lock. */
+extern _Atomic _Bool g_enforce_checkdatasig_sigops;
+
 /* PURE recompute predicate. Given `pre_block_tree` — the Sapling
  * commitment-tree frontier as it stood AFTER the parent block and BEFORE
  * `block` — recompute the tree root that `block` should commit to (by

@@ -96,6 +96,35 @@ void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree)
  * to today (still ONLY the all-zeros reject below). */
 _Atomic _Bool g_enforce_sapling_root = false;
 
+/* ── CHECKDATASIG_SIGOPS parity enforcement (DEFAULT-OFF) ───────────────
+ * zclassicd ConnectBlock (zclassic-cpp/src/main.cpp:2567) builds its script
+ * verification flags as
+ *   SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
+ *   SCRIPT_VERIFY_CHECKDATASIG_SIGOPS.
+ * The CHECKDATASIG_SIGOPS bit makes OP_CHECKDATASIG / OP_CHECKDATASIGVERIFY
+ * count toward the per-block sigop total (script.c:117), so it tightens the
+ * MAX_BLOCK_SIGOPS ceiling. connect_block.c below omits that bit. When this
+ * flag is true, connect_block ORs it into the verification flags, matching
+ * zclassicd exactly.
+ *
+ * Default false ⇒ connect_block's flags are byte-identical to today
+ * (P2SH | CHECKLOCKTIMEVERIFY only), so the sigop accounting is unchanged.
+ * Setting this bit can only RAISE a block's counted sigop total, so enabling
+ * it is a tightening (reject) predicate: a real block that was previously
+ * under the cap could now exceed it. It MUST stay default-off until a
+ * FULL-HISTORY REPLAY against the real chain confirms ZERO false-rejects
+ * first (h=478544 lesson — CLAUDE.md "validate against the CHAIN, not the
+ * reference text"). zclassicd already applied this bit when it mined and
+ * connected the chain, so the real history should never exceed the cap with
+ * it on — but that must be PROVEN by replay before flipping the default or
+ * passing the flag on the live node.
+ *
+ * Set by the node from the -enforce-checkdatasig-sigops argv flag
+ * (src/main.c). _Atomic so a background validation thread reads it lock-free.
+ * Note: connect_block.c is the boot-reindex path; the live reducer fold does
+ * its own sigop accounting and is unaffected by this flag. */
+_Atomic _Bool g_enforce_checkdatasig_sigops = false;
+
 /* PURE recompute predicate — no DB, no globals, no input mutation.
  * Copies the pre-block frontier by value (incremental_merkle_tree is POD:
  * inline arrays + static function pointers, so a value-copy is a true deep
@@ -321,6 +350,15 @@ bool connect_block(const struct block *block,
     }
 
     uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+    /* DEFAULT-OFF parity (-enforce-checkdatasig-sigops). zclassicd ORs
+     * SCRIPT_VERIFY_CHECKDATASIG_SIGOPS into ConnectBlock's flags
+     * (main.cpp:2567), which counts OP_CHECKDATASIG[VERIFY] toward the
+     * per-block sigop ceiling. Default false ⇒ flags unchanged from today.
+     * Enabling this tightening bit requires a full-history replay confirming
+     * ZERO false-rejects first (see g_enforce_checkdatasig_sigops above). */
+    if (atomic_load_explicit(&g_enforce_checkdatasig_sigops,
+                             memory_order_relaxed))
+        flags |= SCRIPT_VERIFY_CHECKDATASIG_SIGOPS;
 
     struct block_undo blockundo;
     block_undo_init(&blockundo);

@@ -32,6 +32,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ── Coinbase-maturity parity enforcement (DEFAULT-OFF) ────────────────
+ * zclassicd's Consensus::CheckTxInputs (zclassic-cpp/src/main.cpp:2056-2060)
+ * rejects "bad-txns-premature-spend-of-coinbase" when a tx spends a coinbase
+ * output whose creation height is within COINBASE_MATURITY (100) of the
+ * spending block's height (nSpendHeight - coins->nHeight < COINBASE_MATURITY,
+ * where nSpendHeight = pindexPrev->nHeight + 1 = the height of the block being
+ * connected). zclassic23 enforces this in the boot-reindex connect_block.c
+ * path and the repair ladder, but the LIVE reducer fold below historically did
+ * NOT. This flag adds the missing reject on the live path.
+ *
+ * Default false ⇒ the reducer fold makes the same accept/reject decision it
+ * makes now: it does NOT reject a premature coinbase spend until the operator
+ * opts in. This is a
+ * tightening (reject) predicate, so it MUST stay default-off until a
+ * FULL-HISTORY REPLAY against the real chain confirms ZERO false-rejects
+ * first. That is the h=478544 lesson (CLAUDE.md "Consensus rule: validate
+ * against the CHAIN, not the reference text"): a bounded predicate that looks
+ * tighter-is-better can false-reject a real, already-mined block and halt
+ * forward sync. zclassicd already rejected any premature coinbase spend, so
+ * the real chain should contain none — but that must be PROVEN by replay
+ * before flipping the default or passing the flag on the live node.
+ *
+ * Set by the node from the -enforce-coinbase-maturity argv flag (src/main.c).
+ * _Atomic so background reducer/validation threads read it without a lock. */
+_Atomic _Bool g_enforce_coinbase_maturity = false;
+
 /* ── Delta-array lifetime ──────────────────────────────────────────── */
 
 void free_delta_arr(struct delta_entry *arr, size_t n)
@@ -237,6 +263,32 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                 se->is_coinbase = restore_coinbase;
                 if (restore_coinbase)
                     tx_spends_coinbase = true;
+                /* Coinbase maturity (DEFAULT-OFF, -enforce-coinbase-maturity).
+                 * zclassicd CheckTxInputs (main.cpp:2056-2060) rejects a spend
+                 * of a coinbase output younger than COINBASE_MATURITY (100):
+                 * nSpendHeight - coins->nHeight < COINBASE_MATURITY. Here
+                 * block_height is the spending block's height (== nSpendHeight)
+                 * and restore_height is the spent coin's creation height
+                 * (== coins->nHeight). Gated default-off: until enabled, the
+                 * fold does NOT reject — same accept/reject decision as now.
+                 * Enabling it
+                 * requires a full-history replay confirming ZERO false-rejects
+                 * first (see the g_enforce_coinbase_maturity contract above and
+                 * the h=478544 doctrine). Guard against an underflow if a
+                 * malformed pre-image ever reports a creation height above the
+                 * spending height (treat as immature, never wrap to a huge
+                 * unsigned depth). */
+                if (atomic_load_explicit(&g_enforce_coinbase_maturity,
+                                         memory_order_relaxed) &&
+                    restore_coinbase &&
+                    (block_height < restore_height ||
+                     block_height - restore_height < COINBASE_MATURITY)) {
+                    delta_fail(out, "coinbase_immature",
+                               "bad-txns-premature-spend-of-coinbase",
+                               &op->hash, op->n);
+                    free_delta(out);
+                    return;
+                }
                 /* Own a copy of the restore script: the lookup buffer is
                  * stack-scoped and the intra-block add aliases the live
                  * block, both gone by disconnect time. */

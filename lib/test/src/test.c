@@ -936,6 +936,8 @@ int main(void)
     failures += test_reducer_ondemand_genesis_seed();
     failures += test_connect_block_self_write();
     failures += test_connect_block_sapling_root();
+    failures += test_connect_block_checkdatasig_sigops();
+    failures += test_utxo_apply_coinbase_maturity();
     failures += test_key_scrub();
     failures += test_block_index_loader();
     failures += test_chain_state_validator();

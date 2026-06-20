@@ -71,6 +71,18 @@ void free_delta_arr(struct delta_entry *arr, size_t n);
 /* Free both arrays of a summary (spent/added) up to their counts. */
 void free_delta(struct delta_summary *s);
 
+/* DEFAULT-OFF coinbase-maturity parity reject on the live reducer fold.
+ * When true, utxo_apply_compute_block_delta rejects a spend of a coinbase
+ * output younger than COINBASE_MATURITY (100) with failure_kind
+ * "bad-txns-premature-spend-of-coinbase", matching zclassicd CheckTxInputs
+ * (zclassic-cpp/src/main.cpp:2056-2060). Default false ⇒ the fold makes the
+ * same accept/reject decision it makes now (no such reject). ⚠ Enabling this is a tightening
+ * predicate: do NOT flip the default or pass -enforce-coinbase-maturity on
+ * the live node until a FULL-HISTORY REPLAY confirms ZERO false-rejects
+ * (h=478544 lesson). Set by the node from the -enforce-coinbase-maturity
+ * argv flag (src/main.c). _Atomic so background threads read it lock-free. */
+extern _Atomic _Bool g_enforce_coinbase_maturity;
+
 /* Compute the transparent UTXO delta of one block, capturing the full
  * pre-image of each spent coin (value/height/is_coinbase/script) so a
  * later disconnect can emit a correct restore-ADD. Unresolved prevouts
