@@ -84,6 +84,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(block_map_grow_phashblock) \
     X(block_successor) \
     X(verify_engine) \
+    X(verify_engine_equiv) \
     X(key_hostile_wif) \
     X(block_locator_bounds) X(block_map_grow_collision) \
     X(connect_node_locked) X(stream_read_no_overflow) \
