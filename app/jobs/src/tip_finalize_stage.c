@@ -4,6 +4,7 @@
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/refold_progress.h"
 #include "jobs/block_header_emit.h"
 #include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_post_step.h"
@@ -471,8 +472,20 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     int64_t published_before = atomic_load(&g_last_advance_height);
     bool publish = published_before < 0 || new_tip->nHeight >= (int)published_before;
 
-    /* Durable row first; then move the local chain[] cache/window. */
-    if (!active_chain_move_window_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
+    /* Durable row first; then move the local chain[] cache/window — EXCEPT
+     * during a from-genesis refold. There the stage extend already widened the
+     * window to best_header, so retracting it to next_h+1 here forces the next
+     * stage step to re-walk ~3.1M pprev nodes (active_chain_fill_window) — the
+     * dominant cold-refold cost (~3 blk/s, CPU cache-bound). The served-tip
+     * AUTHORITY is g_last_advance_height (published by update_last_advance
+     * below), NOT c->height, so leaving the window wide keeps active_chain_height
+     * / getblockcount correct; only active_chain_at visibility stays wide, which
+     * is safe during a refold — the stages read at/below the fold frontier and
+     * the watchdog/reconcile are suspended (refold_in_progress()). Normal sync
+     * keeps the retraction (the window must track the finalized frontier). See
+     * docs/work/refold-fold-rate-bottlenecks.md (#1). */
+    if (!refold_in_progress() &&
+        !active_chain_move_window_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
         LOG_WARN("tip_finalize", "[tip_finalize] chain_active set_tip failed height=%d", next_h);
         return JOB_FATAL;
     }
