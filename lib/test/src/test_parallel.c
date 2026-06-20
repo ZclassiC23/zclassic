@@ -64,6 +64,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
     X(explorer) X(explorer_index) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
+    X(keystone_utxo_binding) \
     X(flyclient) X(flyclient_chainwork_floor) X(scan_util) X(tor) \
     X(onion_bootstrap) X(cold_start_sync) X(kill9_recovery) \
     X(shielded_payment_gate) X(store_e2e_gate) X(store_e2e_shielded) X(soak_harness) \

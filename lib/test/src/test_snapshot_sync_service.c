@@ -1391,7 +1391,7 @@ static void persist_test_roots(struct node_db *ndb,
 
     mmb_init(&mmb);
     mmb_leaf_from_block(&leaf, block_hash, 1, 1234567890, 0x1d00ffff,
-                        block_hash, chain_work);
+                        block_hash, chain_work, NULL);
     mmb_append(&mmb, &leaf);
     len = mmb_serialize(&mmb, buf, sizeof(buf));
     node_db_state_set(ndb, "mmb_state", buf, len);

@@ -21,8 +21,11 @@
 #include "controllers/sync_controller.h"
 #include "core/uint256.h"
 #include "models/database.h"            /* struct node_db */
+#include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "storage/coins_kv.h"           /* coins_kv_commitment + boundary root */
+#include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "services/block_source_policy.h" /* projection-deferred diagnostic */
 #include "services/chain_evidence_authority_service.h" /* live evidence follow */
 #include "util/util.h"                  /* GetDataDir */
@@ -185,14 +188,55 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
     if (pindex_new->phashBlock)
         rpc_blockchain_mmr_append(pindex_new->phashBlock->data);
 
-    /* Append rich leaf to Merkle Mountain Belt (O(1) per block) */
+    /* Append rich leaf to Merkle Mountain Belt (O(1) per block).
+     *
+     * Keystone: at a 100-block boundary, the leaf carries the SHA3 root of the
+     * full UTXO set as it stands AFTER this block (coins_kv_commitment — the
+     * one canonical encoder). This is the only path that observes the live
+     * coins set at the exact moment it equals height H, so it computes the
+     * boundary root ONCE here and records it under the per-height key; catch-up
+     * and leaf-store rebuild read that recorded value so every leaf hash is
+     * byte-identical regardless of which path built it. The O(N) SHA3 fold runs
+     * only once per 100 blocks and only at the live tip — never on a
+     * latency-critical path. It is gated OFF during deferred-proof-validation
+     * IBD (the same guard the MMR commit uses): re-folding the full set every
+     * 100 blocks while replaying millions of blocks is wasteful, and the
+     * boundary roots are back-filled on the catch-up pass once the tip is live. */
     if (pindex_new->phashBlock) {
+        uint8_t utxo_root[32] = {0};
+        if (pindex_new->nHeight > 0 &&
+            pindex_new->nHeight % MMR_COMMITMENT_INTERVAL == 0) {
+            extern _Atomic int g_deferred_proof_validation_below_height;
+            int defer_below = atomic_load(&g_deferred_proof_validation_below_height);
+            bool ibd_defer = (defer_below >= 0 &&
+                              pindex_new->nHeight <= defer_below);
+            if (!ibd_defer) {
+                sqlite3 *pdb = progress_store_db();
+                if (pdb && coins_kv_commitment(pdb, utxo_root) == 0) {
+                    /* Persist before the leaf so a crash between append and
+                     * save still lets the next catch-up reproduce this hash. */
+                    if (!coins_kv_boundary_root_set(pdb, pindex_new->nHeight,
+                                                    utxo_root))
+                        LOG_WARN("tip_finalize",
+                                 "boundary utxo_root persist failed h=%d "
+                                 "(leaf still carries the computed root)",
+                                 pindex_new->nHeight);
+                } else {
+                    memset(utxo_root, 0, 32);
+                    LOG_WARN("tip_finalize",
+                             "coins_kv_commitment failed h=%d; leaf carries "
+                             "zero utxo_root sentinel", pindex_new->nHeight);
+                }
+            }
+        }
+
         struct mmb_leaf leaf;
         mmb_leaf_from_block(&leaf,
             pindex_new->phashBlock->data,
             pindex_new->nHeight, pindex_new->nTime, pindex_new->nBits,
             pindex_new->hashFinalSaplingRoot.data,
-            (const uint8_t *)pindex_new->nChainWork.pn);
+            (const uint8_t *)pindex_new->nChainWork.pn,
+            utxo_root);
         rpc_blockchain_mmb_append(&leaf);
     }
 

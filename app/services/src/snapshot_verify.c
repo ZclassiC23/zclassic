@@ -13,6 +13,9 @@
 #include "models/db_txn.h"
 #include "models/mmb_leaf_store.h"
 #include "chain/mmb.h"
+#include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
+#include "storage/coins_kv.h"           /* boundary utxo_root read */
+#include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "chain/pow.h"
 #include "chain/chainparams.h"
 #include "chain/chain.h"
@@ -348,11 +351,26 @@ struct zcl_result snapsync_build_fc_response(struct fc_response *resp,
         bool have_leaf = false;
 
         if (bi && bi->phashBlock) {
+            /* Reproduce the boundary utxo_root so this prover-side leaf hashes
+             * identically to the stored leaf hash mmb_prove returned (the leaf
+             * store keeps only the hash, so the root must come from the
+             * persisted boundary table). Missing → zero sentinel. */
+            uint8_t utxo_root[32] = {0};
+            if (bi->nHeight > 0 &&
+                bi->nHeight % MMR_COMMITMENT_INTERVAL == 0) {
+                sqlite3 *pdb = progress_store_db();
+                bool found = false;
+                if (pdb)
+                    coins_kv_boundary_root_get(pdb, bi->nHeight, utxo_root,
+                                               &found);
+                if (!found) memset(utxo_root, 0, 32);
+            }
             mmb_leaf_from_block(&sample->leaf,
                                 bi->phashBlock->data,
                                 bi->nHeight, bi->nTime, bi->nBits,
                                 bi->hashFinalSaplingRoot.data,
-                                (const uint8_t *)bi->nChainWork.pn);
+                                (const uint8_t *)bi->nChainWork.pn,
+                                utxo_root);
             have_leaf = true;
         }
         if (!have_leaf && legacy_chain_rpc_get_mmb_leaf(h, &sample->leaf))

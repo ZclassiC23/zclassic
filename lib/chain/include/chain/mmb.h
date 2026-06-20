@@ -7,7 +7,7 @@
  * Based on: "The Merkle Mountain Belt" (Cevallos, Hambrock, Stewart 2025)
  *
  * Uses SHA3-256 with domain separation:
- *   Leaf:     SHA3-256(0x10 || block_hash || height || timestamp || nBits || sapling_root || chain_work)
+ *   Leaf:     SHA3-256(0x10 || block_hash || height || timestamp || nBits || sapling_root || chain_work || utxo_root)
  *   Internal: SHA3-256(0x11 || left || right)
  *   Root:     SHA3-256(0x14 || peak_0 || peak_1 || ... || peak_k)
  *
@@ -45,17 +45,30 @@ struct mmb_leaf {
     uint32_t nBits;              /* compact difficulty target */
     uint8_t  sapling_root[32];   /* hashFinalSaplingRoot */
     uint8_t  chain_work[32];     /* cumulative PoW (arith_uint256 LE) */
+    /* SHA3-256 root of the full UTXO set as it stood after this block
+     * (coins_kv_commitment — the single canonical encoder, byte-identical to
+     * zclassicd's gettxoutsetinfo set). Carried ONLY at boundary heights
+     * (height % MMR_COMMITMENT_INTERVAL == 0); zero sentinel on the other 99
+     * heights. Because the leaf is the FlyClient-sampled, PoW-proven object,
+     * binding utxo_root here cryptographically ties the UTXO set to high-work
+     * chain state — a verifier that forces a boundary leaf as a mandatory
+     * sample can assert leaf.utxo_root == its own coins_kv_commitment of the
+     * offered set, collapsing the circular "trust the peer's offered root". */
+    uint8_t  utxo_root[32];
 };
 
-#define MMB_LEAF_PREIMAGE_SIZE (32 + 4 + 4 + 4 + 32 + 32)  /* 108 bytes */
+#define MMB_LEAF_PREIMAGE_SIZE (32 + 4 + 4 + 4 + 32 + 32 + 32)  /* 140 bytes */
 
-/* Build a leaf from block_index fields */
+/* Build a leaf from block_index fields. `utxo_root` is the per-height UTXO
+ * commitment (32 bytes); pass NULL or all-zeros at non-boundary heights or
+ * where the boundary root is not yet known (the sentinel). */
 void mmb_leaf_from_block(struct mmb_leaf *leaf,
                          const uint8_t block_hash[32],
                          int32_t height, uint32_t timestamp,
                          uint32_t nBits,
                          const uint8_t sapling_root[32],
-                         const uint8_t chain_work[32]);
+                         const uint8_t chain_work[32],
+                         const uint8_t utxo_root[32]);
 
 /* ── Mountain (complete binary tree) ──────────────────────── */
 

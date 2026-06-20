@@ -600,6 +600,8 @@ int main(void)
     if (only && strcmp(only, "mmb") == 0) {
         printf("[test] ZCL_TEST_ONLY=mmb - running MMB subset\n");
         failures += test_mmb();
+        { extern int test_keystone_utxo_binding(void);
+          failures += test_keystone_utxo_binding(); }
         printf("\n=== mmb subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
@@ -739,6 +741,8 @@ int main(void)
     failures += test_utxo_commitment();
     failures += test_mmr();
     failures += test_mmb();
+    { extern int test_keystone_utxo_binding(void);
+      failures += test_keystone_utxo_binding(); }
     { extern int test_sha3_windows(void);
       failures += test_sha3_windows(); }
     failures += test_flyclient();

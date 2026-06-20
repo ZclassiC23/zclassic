@@ -291,6 +291,48 @@ int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
     return 0;
 }
 
+/* ── Per-boundary UTXO root table (keystone reproducibility anchor) ──────
+ *
+ * Stored under a per-height key "mmb_utxo_root:<height>" as a raw 32-byte
+ * blob. progress_meta is the right home: it is the same handle every leaf
+ * builder already reaches (progress_store_db()), so catch-up and rebuild can
+ * read the boundary root the live connect path stamped without re-folding the
+ * historical UTXO set. The blob is the literal coins_kv_commitment output —
+ * no integer encoding to drift across hosts. */
+
+static void coins_kv_boundary_root_key(int32_t height, char *buf, size_t cap)
+{
+    snprintf(buf, cap, "mmb_utxo_root:%d", (int)height);
+}
+
+bool coins_kv_boundary_root_set(sqlite3 *db, int32_t height,
+                                const uint8_t utxo_root[32])
+{
+    if (!db || !utxo_root || height < 0) return false;
+    char key[40];
+    coins_kv_boundary_root_key(height, key, sizeof(key));
+    return progress_meta_set(db, key, utxo_root, 32);
+}
+
+bool coins_kv_boundary_root_get(sqlite3 *db, int32_t height,
+                                uint8_t out_utxo_root[32], bool *found)
+{
+    if (found) *found = false;
+    if (!db || !out_utxo_root || height < 0) return false;
+    char key[40];
+    coins_kv_boundary_root_key(height, key, sizeof(key));
+    uint8_t blob[32] = {0};
+    size_t n = 0;
+    bool f = false;
+    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, &f))
+        return false;
+    if (f && n == 32) {
+        memcpy(out_utxo_root, blob, 32);
+        if (found) *found = true;
+    }
+    return true;
+}
+
 /* ── coins_applied_height — contiguous applied-frontier counter ──────────
  *
  * Stored as a stable 8-byte little-endian int64 blob under

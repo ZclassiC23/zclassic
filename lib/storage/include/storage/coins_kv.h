@@ -77,6 +77,30 @@ bool coins_kv_setinfo(struct sqlite3 *db, int64_t *num_txs,
  * success, -1 on error. */
 int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
 
+/* ── Per-boundary UTXO root table (the keystone's reproducibility anchor) ──
+ *
+ * The MMB leaf carries a per-height utxo_root, but ONLY at boundary heights
+ * (height % MMR_COMMITMENT_INTERVAL == 0). Three independent paths build the
+ * same leaf — the live connect path (tip_finalize_post_step), the catch-up
+ * path (rpc_blockchain_mmb_catchup), and the leaf-store rebuild
+ * (mmb_leaf_store_rebuild) — and all three MUST stamp the IDENTICAL boundary
+ * utxo_root or their leaf hashes diverge and every prior FlyClient proof
+ * breaks. The leaf store persists only 32-byte leaf HASHES, so the boundary
+ * root is not recoverable from it. The live connect path computes
+ * coins_kv_commitment ONCE at each boundary and records it here; catch-up and
+ * rebuild READ it back, so no path has to re-fold the historical UTXO set.
+ *
+ * Keyed per height under "mmb_utxo_root:<height>" in progress_meta (opaque
+ * 32-byte blob). _set writes inside the caller's own implicit txn (own-BEGIN);
+ * _get returns false in *found when the boundary root has not been recorded
+ * yet, in which case the caller uses the zero sentinel (the leaf hash is then
+ * the pre-keystone value for that height and is back-filled on the next pass).
+ */
+bool coins_kv_boundary_root_set(struct sqlite3 *db, int32_t height,
+                                const uint8_t utxo_root[32]);
+bool coins_kv_boundary_root_get(struct sqlite3 *db, int32_t height,
+                                uint8_t out_utxo_root[32], bool *found);
+
 /* One-shot idempotent boot migration: if coins_kv is empty AND the projection
  * holds the live set, bulk-copy the projection's UTXOs into coins_kv (atomic)
  * so the read-flip has data on existing / snapshot-seeded datadirs. No-op (and

@@ -722,20 +722,69 @@ static int test_mmb_leaf_from_block(void)
 {
     int failures = 0;
     TEST("mmb: mmb_leaf_from_block builds correct leaf") {
-        uint8_t hash[32], sapling[32], work[32];
+        uint8_t hash[32], sapling[32], work[32], uroot[32];
         memset(hash, 0xAA, 32);
         memset(sapling, 0xBB, 32);
         memset(work, 0xCC, 32);
+        memset(uroot, 0xDD, 32);
 
         struct mmb_leaf leaf;
         mmb_leaf_from_block(&leaf, hash, 100, 1600000000, 0x1d00ffff,
-                            sapling, work);
+                            sapling, work, uroot);
         ASSERT(memcmp(leaf.block_hash, hash, 32) == 0);
         ASSERT(leaf.height == 100);
         ASSERT(leaf.timestamp == 1600000000);
         ASSERT(leaf.nBits == 0x1d00ffff);
         ASSERT(memcmp(leaf.sapling_root, sapling, 32) == 0);
         ASSERT(memcmp(leaf.chain_work, work, 32) == 0);
+        ASSERT(memcmp(leaf.utxo_root, uroot, 32) == 0);
+
+        /* NULL utxo_root → zero sentinel (the non-boundary case). */
+        struct mmb_leaf leaf2;
+        mmb_leaf_from_block(&leaf2, hash, 100, 1600000000, 0x1d00ffff,
+                            sapling, work, NULL);
+        uint8_t zeros[32] = {0};
+        ASSERT(memcmp(leaf2.utxo_root, zeros, 32) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The keystone field MUST be folded into the leaf preimage — a leaf that
+ * differs ONLY in utxo_root must hash differently, or the binding is inert. */
+static int test_mmb_leaf_utxo_root_sensitive(void)
+{
+    int failures = 0;
+    TEST("mmb: leaf hash changes with utxo_root (keystone binding)") {
+        struct mmb_leaf l1, l2;
+        make_test_leaf(&l1, 100);
+        memset(l1.utxo_root, 0, 32);
+        l2 = l1;
+        l2.utxo_root[0] = 0x01;
+        uint8_t h1[32], h2[32];
+        mmb_hash_leaf(&l1, h1);
+        mmb_hash_leaf(&l2, h2);
+        ASSERT(memcmp(h1, h2, 32) != 0);
+
+        /* Flip a different byte → still distinct from both. */
+        struct mmb_leaf l3 = l1;
+        l3.utxo_root[31] = 0xFF;
+        uint8_t h3[32];
+        mmb_hash_leaf(&l3, h3);
+        ASSERT(memcmp(h3, h1, 32) != 0);
+        ASSERT(memcmp(h3, h2, 32) != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* The preimage is exactly 140 bytes (108 metadata + 32 utxo_root). Lock it
+ * so a future field add cannot silently change every persisted leaf hash. */
+static int test_mmb_leaf_preimage_size(void)
+{
+    int failures = 0;
+    TEST("mmb: leaf preimage is 140 bytes (utxo_root included)") {
+        ASSERT(MMB_LEAF_PREIMAGE_SIZE == 140);
         PASS();
     } _test_next:;
     return failures;
@@ -766,6 +815,8 @@ int test_mmb(void)
     failures += test_mmb_leaf_work_sensitive();
     failures += test_mmb_domain_separation();
     failures += test_mmb_leaf_from_block();
+    failures += test_mmb_leaf_utxo_root_sensitive();
+    failures += test_mmb_leaf_preimage_size();
 
     /* Proofs */
     failures += test_mmb_prove_verify_first();

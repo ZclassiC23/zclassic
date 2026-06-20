@@ -6,6 +6,9 @@
  * 3M blocks × 32 bytes = 96 MB on disk, mmap'd for O(1) access. */
 
 #include "models/mmb_leaf_store.h"
+#include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
+#include "storage/coins_kv.h"           /* boundary utxo_root read */
+#include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include <string.h>
@@ -171,16 +174,31 @@ uint64_t mmb_leaf_store_rebuild(struct mmb_leaf_store *store,
     { struct timeval tv; gettimeofday(&tv, NULL);
       t0 = (int64_t)tv.tv_sec; }
 
+    sqlite3 *pdb = progress_store_db();
     for (int h = 0; h <= height; h++) {
         const struct block_index *bi = active_chain_at(chain, h);
         if (!bi || !bi->phashBlock) continue;
+
+        /* Reproduce the boundary utxo_root the live connect path recorded so a
+         * rebuilt leaf hash is byte-identical to it (the store keeps only the
+         * 32-byte hash, not the root). A missing boundary entry → zero
+         * sentinel: that height's hash matches what the live path produced
+         * before it had a root, never a forged binding. */
+        uint8_t utxo_root[32] = {0};
+        if (pdb && bi->nHeight > 0 &&
+            bi->nHeight % MMR_COMMITMENT_INTERVAL == 0) {
+            bool found = false;
+            coins_kv_boundary_root_get(pdb, bi->nHeight, utxo_root, &found);
+            if (!found) memset(utxo_root, 0, 32);
+        }
 
         struct mmb_leaf leaf;
         mmb_leaf_from_block(&leaf,
             bi->phashBlock->data,
             bi->nHeight, bi->nTime, bi->nBits,
             bi->hashFinalSaplingRoot.data,
-            (const uint8_t *)bi->nChainWork.pn);
+            (const uint8_t *)bi->nChainWork.pn,
+            utxo_root);
 
         uint8_t hash[32];
         mmb_hash_leaf(&leaf, hash);

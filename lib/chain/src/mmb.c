@@ -8,6 +8,13 @@
 #include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
+#include <assert.h>
+
+/* The leaf preimage carries the per-height utxo_root as its last 32 bytes.
+ * If this assertion fails, mmb_hash_leaf's absorb loop and the binding test
+ * have drifted out of sync — every persisted leaf hash would change. */
+_Static_assert(MMB_LEAF_PREIMAGE_SIZE == 140,
+               "MMB leaf preimage must be 140 bytes (108 metadata + 32 utxo_root)");
 
 /* ── Leaf construction ────────────────────────────────────── */
 
@@ -16,7 +23,8 @@ void mmb_leaf_from_block(struct mmb_leaf *leaf,
                          int32_t height, uint32_t timestamp,
                          uint32_t nBits,
                          const uint8_t sapling_root[32],
-                         const uint8_t chain_work[32])
+                         const uint8_t chain_work[32],
+                         const uint8_t utxo_root[32])
 {
     memcpy(leaf->block_hash, block_hash, 32);
     leaf->height = (uint32_t)height;
@@ -30,6 +38,10 @@ void mmb_leaf_from_block(struct mmb_leaf *leaf,
         memcpy(leaf->chain_work, chain_work, 32);
     else
         memset(leaf->chain_work, 0, 32);
+    if (utxo_root)
+        memcpy(leaf->utxo_root, utxo_root, 32);
+    else
+        memset(leaf->utxo_root, 0, 32);
 }
 
 /* ── Hashing with domain separation ──────────────────────── */
@@ -37,8 +49,11 @@ void mmb_leaf_from_block(struct mmb_leaf *leaf,
 void mmb_hash_leaf(const struct mmb_leaf *leaf, uint8_t out[32])
 {
     /* SHA3-256(0x10 || block_hash || height_LE || timestamp_LE ||
-     *          nBits_LE || sapling_root || chain_work)
-     * Total preimage: 1 + 108 = 109 bytes */
+     *          nBits_LE || sapling_root || chain_work || utxo_root)
+     * Total preimage: 1 + 140 = 141 bytes. utxo_root is folded LAST so the
+     * absorb order matches the documented field layout and the round-trip
+     * binding test (a height-H boundary leaf's utxo_root == the committed
+     * coins_kv set at H) checks the exact bytes that go into the leaf hash. */
     uint8_t buf[1 + MMB_LEAF_PREIMAGE_SIZE];
     buf[0] = MMB_TAG_LEAF;
     size_t pos = 1;
@@ -63,6 +78,7 @@ void mmb_hash_leaf(const struct mmb_leaf *leaf, uint8_t out[32])
 
     memcpy(buf + pos, leaf->sapling_root, 32); pos += 32;
     memcpy(buf + pos, leaf->chain_work, 32);   pos += 32;
+    memcpy(buf + pos, leaf->utxo_root, 32);    pos += 32;
 
     sha3_256(buf, 1 + MMB_LEAF_PREIMAGE_SIZE, out);
 }

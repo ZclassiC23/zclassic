@@ -23,6 +23,8 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "primitives/block.h"
+#include "storage/coins_kv.h"           /* boundary utxo_root read */
+#include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "util/log_macros.h"
 #include "validation/main_state.h"
 
@@ -168,15 +170,32 @@ void rpc_blockchain_mmb_catchup(struct main_state *ms)
 
     int start = mmb_height + 1;
     int64_t t0 = (int64_t)platform_time_wall_time_t();
+    sqlite3 *pdb = progress_store_db();
     for (int h = start; h <= chain_height; h++) {
         const struct block_index *bi = active_chain_at(&ms->chain_active, h);
         if (bi && bi->phashBlock) {
+            /* At a 100-block boundary, read the utxo_root the live connect path
+             * recorded so the catch-up leaf hash is byte-identical to it. The
+             * boundary root is NOT recoverable from the leaf store (it keeps
+             * only 32-byte hashes), so it MUST come from the persisted table; a
+             * missing entry falls back to the zero sentinel — that height's
+             * leaf is then the pre-keystone hash until a forward pass stamps it
+             * (the keystone binding for that boundary is simply absent, never
+             * forged). */
+            uint8_t utxo_root[32] = {0};
+            if (pdb && bi->nHeight > 0 &&
+                bi->nHeight % MMR_COMMITMENT_INTERVAL == 0) {
+                bool found = false;
+                coins_kv_boundary_root_get(pdb, bi->nHeight, utxo_root, &found);
+                if (!found) memset(utxo_root, 0, 32);
+            }
             struct mmb_leaf leaf;
             mmb_leaf_from_block(&leaf,
                 bi->phashBlock->data,
                 bi->nHeight, bi->nTime, bi->nBits,
                 bi->hashFinalSaplingRoot.data,
-                (const uint8_t *)bi->nChainWork.pn);
+                (const uint8_t *)bi->nChainWork.pn,
+                utxo_root);
             mmb_append(&g_mmb, &leaf);
         }
     }

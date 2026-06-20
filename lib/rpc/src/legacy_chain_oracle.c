@@ -3,9 +3,12 @@
 #include "rpc/legacy_chain_oracle.h"
 
 #include "chain/mmb.h"
+#include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
 #include "core/uint256.h"
 #include "json/json.h"
 #include "rpc/legacy_rpc_client.h"
+#include "storage/coins_kv.h"           /* boundary utxo_root read */
+#include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "validation/sync_evidence_policy.h"
 
 #include <stdio.h>
@@ -115,11 +118,24 @@ bool legacy_chain_rpc_get_mmb_leaf(int height, struct mmb_leaf *leaf)
             if (jsapling && jsapling->type == JSON_STR)
                 uint256_set_hex(&sapling, json_get_str(jsapling));
             uint256_set_hex(&chainwork, json_get_str(jchainwork));
+            /* zclassicd does not carry the MMB utxo_root (it never speaks the
+             * MMB). At a boundary height, reconstruct the same leaf hash the
+             * live path produced by reading the persisted boundary root;
+             * otherwise the zero sentinel. */
+            int32_t bheight = (int32_t)json_get_int(jheight);
+            uint8_t utxo_root[32] = {0};
+            if (bheight > 0 && bheight % MMR_COMMITMENT_INTERVAL == 0) {
+                sqlite3 *pdb = progress_store_db();
+                bool found = false;
+                if (pdb)
+                    coins_kv_boundary_root_get(pdb, bheight, utxo_root, &found);
+                if (!found) memset(utxo_root, 0, 32);
+            }
             mmb_leaf_from_block(leaf, bh.data,
-                                (uint32_t)json_get_int(jheight),
+                                (uint32_t)bheight,
                                 (uint32_t)json_get_int(jtime),
                                 (uint32_t)strtoul(json_get_str(jbits), NULL, 16),
-                                sapling.data, chainwork.data);
+                                sapling.data, chainwork.data, utxo_root);
         }
     }
     json_free(&root);
