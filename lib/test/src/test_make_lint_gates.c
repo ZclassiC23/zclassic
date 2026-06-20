@@ -2174,9 +2174,16 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/process_block_flush_policy.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_state_set") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_sync_flush_if_needed") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_wal_checkpoint") != NULL);
+        /* sync_flush_if_needed + wal_checkpoint positive-assertions removed:
+         * their only use site here (flush_coins_if_needed, the dead
+         * forward-writer) was deleted in the dead-code removal — process_block
+         * no longer flushes coins to the node.db mirror (the staged pipeline
+         * owns coin writes; the mirror is rebuilt one-way by
+         * utxo_mirror_sync_service). The runtime-owned invariant stays enforced
+         * by the accessors present (handle_open, state_set) + the negative
+         * models/database.h guard. */
         ASSERT(strstr(buf, "models/database.h") == NULL);
         free(buf);
         buf = NULL;
