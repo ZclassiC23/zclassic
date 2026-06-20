@@ -15,7 +15,7 @@
  * Every function operates on the passed progress.kv handle and therefore
  * participates in whatever transaction the caller already holds open. Schema +
  * serialisation mirror utxo_projection's `utxo` table column-for-column so the
- * SHA3 UTXO commitment is byte-identical.
+ * SHA3 UTXO commitment matches utxo_projection's.
  *
  * Callers may invoke from any thread: every function prepares and finalizes
  * its statement within the call (no shared statement state). See coins_kv.c
@@ -51,7 +51,8 @@ bool coins_kv_exists(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout);
  * If `script_cap` is smaller than the stored script length the script is
  * truncated to `script_cap` bytes, but `*script_len_out` always reports the
  * true length. Mirrors utxo_projection_get exactly so script_validate's prevout
- * resolver is a verbatim swap. A spent or absent output returns false. */
+ * resolver returns the same result against either store. A spent or absent
+ * output returns false. */
 bool coins_kv_get(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t *value_out, uint8_t *script_out, size_t script_cap,
                   size_t *script_len_out);
@@ -71,7 +72,7 @@ bool coins_kv_setinfo(struct sqlite3 *db, int64_t *num_txs,
                       int64_t *num_txouts, int64_t *total_amount);
 
 /* SHA3-256 UTXO commitment over the coins set in canonical (txid,vout) order.
- * BYTE-IDENTICAL serialisation to utxo_projection_commitment (the read-flip
+ * The serialisation equals utxo_projection_commitment's (the read-flip
  * relies on this matching the oracle gettxoutsetinfo commitment). Returns 0 on
  * success, -1 on error. */
 int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
@@ -186,5 +187,34 @@ bool coins_kv_backfill_applied_height_if_absent(struct sqlite3 *db);
  * a no-op delete + absent-key clears). Returns false on error so the caller
  * aborts the epilogue and leaves the reindex sentinel pending for a retry. */
 bool coins_kv_reset_for_reseed(struct sqlite3 *db);
+
+/* ── ANCHOR-SET MINT writer (lib/storage/src/coins_kv_snapshot_write.c) ──
+ *
+ * Stream the LIVE coins_kv set to a UTXO snapshot sidecar in the exact
+ * on-disk format the loader (lib/chain/src/utxo_snapshot_loader.c) reads and
+ * the `--gen-utxo-snapshot` tool writes:
+ *
+ *   Header (104 bytes, little-endian): magic="ZCLUTXO\0", version u32=1,
+ *     reserved u32, height u32, reserved u32, count u64, total_supply i64,
+ *     anchor_block_hash[32], sha3_hash[32] (SHA3-256 over the body).
+ *   Body: `count` records in canonical (txid,vout) order, each
+ *     txid[32], vout u32, value i64, script_len u32, script[*], height u32,
+ *     is_coinbase u8.
+ *
+ * The per-record encoding is the SAME single encoder as coins_kv_commitment
+ * (utxo_commitment_sha3_write_record), so the body SHA3 written here equals
+ * coins_kv_commitment(db) — and therefore comparable to the
+ * compiled checkpoint root. The caller (the `-mint-anchor` driver) HARD-ASSERTS
+ * the written header's sha3_hash + count against checkpoints.c before trusting
+ * the artifact.
+ *
+ * Writes to `out_path` atomically (out_path.tmp then rename). `height` and
+ * `anchor_block_hash` are stamped into the header for the loader's bind check.
+ * On success fills *out_sha3 (32 bytes) and *out_count with what was written.
+ * Returns true on success, false (and removes the temp file) on any error. */
+bool coins_kv_snapshot_write(struct sqlite3 *db, const char *out_path,
+                             int32_t height, const uint8_t anchor_block_hash[32],
+                             uint8_t out_sha3[32], uint64_t *out_count,
+                             int64_t *out_total_supply);
 
 #endif /* STORAGE_COINS_KV_H */

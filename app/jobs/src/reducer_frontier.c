@@ -88,7 +88,7 @@ int32_t reducer_frontier_provable_tip_cached(void)
 
 void reducer_frontier_provable_tip_set(int32_t hstar)
 {
-    /* Store verbatim: the caller passes a value already produced by
+    /* Store the value as given: the caller passes a value already produced by
      * reducer_frontier_compute_hstar, whose HARD GUARD clamps it >= the
      * finality anchor on a normal boot (and legitimately below it only during
      * a from-genesis refold, where reporting the folded prefix is correct).
@@ -494,7 +494,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
      * below-anchor folded prefix is REPORTED as H* (not clamped up). During a
      * refold the cursors are reset to genesis, so reducer_trusted_anchor's
      * candidate gate rejects any stored anchor above them and the floor stays
-     * 0; a normal boot is byte-identical to the compiled anchor read. */
+     * 0; a normal boot returns the compiled anchor read. */
     int32_t compiled_anchor = reducer_frontier_floor();
     int32_t anchor = compiled_anchor;
     if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))

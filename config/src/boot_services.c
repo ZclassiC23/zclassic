@@ -1471,10 +1471,9 @@ bool app_init_services(struct app_context *ctx,
         /* B2 1c — when -refold-from-anchor is set, try the torn-import AUTO-ARM
          * FIRST. If it arms (or a refold is already in progress), SKIP the
          * cold-import seed: the from-anchor refold owns the fold forward from the
-         * proven anchor. Gated on ctx->refold_from_anchor so a normal boot is
-         * byte-identical — it never calls arm_if_torn and runs the seed path
-         * exactly as today (whose torn-import gate remains the operator-page
-         * fallback). */
+         * proven anchor. Gated on ctx->refold_from_anchor: a normal boot never
+         * calls arm_if_torn and takes the seed path (whose torn-import gate
+         * remains the operator-page fallback). */
         bool armed_from_anchor =
             ctx->refold_from_anchor &&
             boot_refold_from_anchor_arm_if_torn(

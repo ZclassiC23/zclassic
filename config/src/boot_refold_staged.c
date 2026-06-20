@@ -1,7 +1,7 @@
-/* boot_refold_staged.c — the -refold-staged reset, extracted from boot.c to
- * hold the E1 file-size ceiling. Resets the staged reducer's durable derived
- * state to genesis so the staged pipeline re-folds forward over on-disk block
- * BODIES. Contract declared in config/boot.h. */
+/* boot_refold_staged.c — the -refold-staged reset, in its own file separate
+ * from boot.c so each file keeps one focused responsibility. Resets the staged
+ * reducer's durable derived state to genesis so the staged pipeline re-folds
+ * forward over on-disk block BODIES. Contract declared in config/boot.h. */
 #include "config/boot.h"
 
 #include <stdbool.h>
@@ -21,10 +21,13 @@
                                           * REDUCER_FRONTIER_TRUSTED_ANCHOR,
                                           * progress_store_tx_lock/unlock */
 #include "jobs/stage_repair_internal.h"  /* stage_repair_force_stage_cursor */
+#include "jobs/mint_fold_ceiling.h"      /* mint_fold_ceiling_set (-mint-anchor) */
 #include "jobs/refold_progress.h"        /* refold_progress_boot_init,
+                                          * refold_progress_mark_started,
                                           * refold_progress_mark_started_from_anchor */
 #include "jobs/tip_finalize_stage.h"     /* tip_finalize_stage_seed_anchor */
 #include "chain/checkpoints.h"           /* get_sha3_utxo_checkpoint */
+#include "chain/utxo_snapshot_loader.h"  /* uss_open/uss_iter/uss_close (mint) */
 #include "event/event.h"                 /* event_emitf, EV_BOOT_VALIDATION_FAILED */
 #include "services/block_index_loader.h" /* block_index_loader_torn_import_detect (B2 1c) */
 #include "validation/main_state.h"       /* struct main_state */
@@ -126,11 +129,131 @@ void boot_refold_staged_reset(struct node_db *ndb)
             refold_ok ? "OK" : "FAILED");
 }
 
+/* ── B2 anchor-SET SOURCE: the minted snapshot ──────────────────────────────
+ *
+ * Derive the anchor-snapshot path the SAME way the -mint-anchor driver wrote it
+ * (boot_mint_anchor.c): $ZCL_MINT_ANCHOR_OUT, else <datadir>/utxo-anchor.snapshot,
+ * where <datadir> is node.db's directory. */
+static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
+{
+    const char *env_out = getenv("ZCL_MINT_ANCHOR_OUT");
+    if (env_out && env_out[0]) {
+        int n = snprintf(buf, cap, "%s", env_out);
+        return n > 0 && (size_t)n < cap;
+    }
+    const char *dbpath = sqlite3_db_filename(ndb->db, "main");
+    if (!dbpath || !dbpath[0]) return false;
+    /* Strip the trailing "/node.db" to get the datadir. */
+    char dir[1024];
+    int n = snprintf(dir, sizeof(dir), "%s", dbpath);
+    if (n <= 0 || (size_t)n >= sizeof(dir)) return false;
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0'; else snprintf(dir, sizeof(dir), ".");
+    int m = snprintf(buf, cap, "%s/utxo-anchor.snapshot", dir);
+    return m > 0 && (size_t)m < cap;
+}
+
+/* uss_iter callback: insert one snapshot record into coins_kv. The caller holds
+ * the progress.kv handle in an open BEGIN IMMEDIATE so every coins_kv_add
+ * commits atomically with the rest. Stops the iteration (returns false) on a
+ * coins_kv_add failure so the caller can ROLLBACK. */
+struct mint_load_ctx {
+    sqlite3 *pdb;
+    uint64_t inserted;
+    bool     failed;
+};
+static bool mint_load_record_cb(const struct uss_record *r, void *vctx)
+{
+    struct mint_load_ctx *c = vctx;
+    if (!coins_kv_add(c->pdb, r->txid, r->vout, r->value,
+                      (int32_t)r->height, r->is_coinbase != 0,
+                      r->script, (size_t)r->script_len)) {
+        c->failed = true;
+        return false;
+    }
+    c->inserted++;
+    return true;
+}
+
+/* Re-seed coins_kv from the MINTED, SHA3-committed anchor snapshot (the artifact
+ * the -mint-anchor ceremony produced). uss_open verifies the body SHA3 AND binds
+ * it to the compiled checkpoint root (expected_sha3 = cp->sha3_hash), so a loaded
+ * set is ALREADY proven against the checkpoint before a single coin lands.
+ * Returns true iff the snapshot was present, verified, and fully loaded into
+ * coins_kv; false (with *present telling whether a file existed at all) when no
+ * snapshot is available or it failed verification — the caller then falls back to
+ * the node.db re-seed (which the hard-assert still guards). */
+static bool boot_anchor_seed_from_snapshot(struct node_db *ndb, sqlite3 *rpdb,
+                                           const struct sha3_utxo_checkpoint *cp,
+                                           bool *present)
+{
+    if (present) *present = false;
+    char path[1100];
+    if (!mint_snapshot_path(ndb, path, sizeof(path)))
+        return false;
+
+    char err[256] = {0};
+    struct uss_header hdr;
+    struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
+                                    cp->sha3_hash, &hdr, err, sizeof(err));
+    if (!h)
+        return false;  /* absent or failed verify → fall back to node.db reseed */
+    if (present) *present = true;
+
+    if (hdr.count != cp->utxo_count) {
+        LOG_WARN("boot", "[boot] -refold-from-anchor: snapshot %s count=%llu != "
+                 "checkpoint %llu — ignoring the artifact", path,
+                 (unsigned long long)hdr.count,
+                 (unsigned long long)cp->utxo_count);
+        uss_close(h);
+        return false;
+    }
+
+    /* Bulk-load under ONE transaction so a crash mid-load rolls back cleanly. */
+    if (!coins_kv_reset_for_reseed(rpdb)) {
+        uss_close(h);
+        return false;
+    }
+    char *terr = NULL;
+    if (sqlite3_exec(rpdb, "BEGIN IMMEDIATE", NULL, NULL, &terr) != SQLITE_OK) {
+        if (terr) sqlite3_free(terr);
+        uss_close(h);
+        return false;
+    }
+    struct mint_load_ctx lc = { .pdb = rpdb };
+    int64_t emitted = uss_iter(h, mint_load_record_cb, &lc);
+    bool ok = !lc.failed && emitted == (int64_t)hdr.count;
+    /* Stamp the migration-complete key inside the SAME txn (parity with the
+     * node.db reseed path): coins_kv provably holds the live anchor set. */
+    if (ok) {
+        uint8_t one = 1;
+        if (!progress_meta_set_in_tx(rpdb, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                     &one, 1))
+            ok = false;
+    }
+    if (ok && sqlite3_exec(rpdb, "COMMIT", NULL, NULL, &terr) != SQLITE_OK)
+        ok = false;
+    if (!ok)
+        sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
+    if (terr) sqlite3_free(terr);
+    uss_close(h);
+
+    if (ok)
+        fprintf(stderr,
+                "[boot] -refold-from-anchor: loaded %llu coins from the MINTED "
+                "snapshot %s (SHA3 verified vs the compiled checkpoint)\n",
+                (unsigned long long)lc.inserted, path);
+    return ok;
+}
+
 /* B2 — the -refold-from-anchor reset (config/boot.h). Sibling of
  * boot_refold_staged_reset EXCEPT:
  *   (i)   coins_kv is FULL-reset (coins_kv_reset_for_reseed) — a height-bounded
  *         DELETE cannot restore spent-below-anchor coins, so we re-seed the
- *         WHOLE SHA3-verified anchor set from node.db's `utxos` mirror.
+ *         WHOLE SHA3-verified anchor set. The source is the MINTED snapshot
+ *         artifact when present (verified vs the compiled checkpoint by the
+ *         loader); otherwise the existing node.db `utxos` re-seed fallback (the
+ *         operator-paged path — the hard-assert below still guards it).
  *   (ii)  HARD-ASSERT the re-seeded set: coins_kv_commitment == the compiled
  *         checkpoint sha3_hash AND coins_kv_count == checkpoint utxo_count.
  *         On mismatch this FATALs (rolls back the cursor txn, pages
@@ -173,14 +296,29 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
     (void)node_db_state_set(ndb, "leveldb_utxo_migrated", NULL, 0);
 
     /* Phase 1 (own transactions): FULL coins_kv reset, then RE-SEED the anchor
-     * set from node.db's `utxos` mirror (the SHA3-verified cold-import set).
-     * coins_kv_reset_for_reseed clears the migration stamp so the seed copies
-     * fresh. Clear the node.db mirror commitment keys + header_admit_log +
+     * set. PREFERRED SOURCE = the MINTED snapshot artifact (the -mint-anchor
+     * ceremony's verified anchor UTXO set): the loader SHA3-verifies it AND
+     * binds it to the compiled checkpoint before any coin lands, so it
+     * reproduces the anchor exactly even on a contaminated datadir (§0d: the
+     * node.db `utxos` mirror is the contaminated TIP, NOT the anchor — re-seeding
+     * from it yields 1,344,574 ≠ 1,354,771). FALLBACK (no snapshot present) =
+     * the existing node.db `utxos` re-seed, which the hard-assert below still
+     * guards (FATALs if it doesn't reproduce the checkpoint — the operator-paged
+     * path). Clear the node.db mirror commitment keys + header_admit_log +
      * sapling tree exactly like the from-genesis reset. */
-    bool reseed_ok = coins_kv_reset_for_reseed(rpdb);
-    if (reseed_ok)
-        reseed_ok = coins_kv_seed_from_node_db(
-            rpdb, sqlite3_db_filename(ndb->db, "main"));
+    bool snap_present = false;
+    bool reseed_ok =
+        boot_anchor_seed_from_snapshot(ndb, rpdb, cp, &snap_present);
+    if (!reseed_ok) {
+        if (snap_present)
+            LOG_WARN("boot", "[boot] -refold-from-anchor: minted snapshot "
+                     "present but unusable — falling back to the node.db reseed "
+                     "(hard-assert will FATAL if it is the contaminated tip)");
+        reseed_ok = coins_kv_reset_for_reseed(rpdb);
+        if (reseed_ok)
+            reseed_ok = coins_kv_seed_from_node_db(
+                rpdb, sqlite3_db_filename(ndb->db, "main"));
+    }
     (void)boot_index_clear_coins_state(ndb);
     (void)node_db_exec(ndb, "DELETE FROM header_admit_log");
     (void)node_db_state_set(ndb, "sapling_tree", NULL, 0);
@@ -316,7 +454,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
  * BLOCKER_PERMANENT fallback.
  *
  * NORMAL-BOOT INVARIANT: gated at the call site on ctx->refold_from_anchor; a
- * normal boot never calls this, so it is byte-identical to today. */
+ * normal boot never calls this and runs the normal seed path. */
 bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
                                          struct node_db *ndb,
                                          struct sqlite3 *progress_db)
@@ -355,4 +493,47 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
     int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
     (void)refold_progress_mark_started_from_anchor(progress_db, resume_target);
     return true;
+}
+
+/* -mint-anchor (config/boot.h). The ANCHOR-SET MINT boot-time reset:
+ *   (1) reset the staged reducer to GENESIS exactly like -refold-staged
+ *       (boot_refold_staged_reset truncates coins_kv, forces the 8 cursors to
+ *       0, clears the *_log rows + node.db mirror commitment keys) so the fold
+ *       re-derives every coin from the on-disk BODIES, never the borrowed
+ *       node.db `utxos` mirror;
+ *   (2) cap the fold at the compiled SHA3 UTXO checkpoint anchor — header_admit
+ *       refuses to admit above the ceiling, so the eight-stage pipeline
+ *       converges AT the anchor instead of folding to the tip;
+ *   (3) mark refold_in_progress (progress.kv) so the L0 frontier floor drops to
+ *       0 and the below-anchor self-repair is suspended while the fold re-walks
+ *       the frozen prefix (the from-genesis refold semantics).
+ * The driver boot_mint_anchor_run() (config/src/boot_mint_anchor.c) then drives
+ * the fold to the anchor and writes + hard-asserts the snapshot. */
+void boot_mint_anchor_reset(struct node_db *ndb)
+{
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp) {
+        fprintf(stderr, "FATAL: -mint-anchor: no compiled SHA3 UTXO checkpoint "
+                "— nothing to mint toward\n");
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "mint_anchor no_compiled_checkpoint");
+        _exit(EXIT_FAILURE);
+    }
+
+    /* (1) genesis reset — identical machinery to -refold-staged. */
+    boot_refold_staged_reset(ndb);
+
+    /* (2) cap the fold AT the anchor (inclusive). header_admit stops here. */
+    mint_fold_ceiling_set(cp->height);
+
+    /* (3) suspend the below-anchor self-repair while the frozen prefix re-folds
+     * (the from-genesis refold L0 floor = 0). */
+    (void)refold_progress_mark_started(progress_store_db());
+
+    fprintf(stderr,
+            "[boot] -mint-anchor: reset to genesis; fold CAPPED at the SHA3 "
+            "checkpoint anchor h=%d (want count=%llu); the staged pipeline folds "
+            "genesis..anchor over on-disk bodies, then the mint writes + asserts "
+            "the snapshot\n",
+            cp->height, (unsigned long long)cp->utxo_count);
 }

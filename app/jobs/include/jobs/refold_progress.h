@@ -21,9 +21,9 @@
  *
  * SCOPING IS THE WHOLE POINT: on a NORMAL boot the key is absent, so
  * refold_in_progress() returns false, reducer_frontier_floor() returns the
- * compiled anchor, and the reconcile condition runs fully — byte-identical to
- * today. Only a -refold-staged datadir flips the floor to 0 and suspends the
- * self-repair.
+ * compiled anchor, and the reconcile condition runs fully — the same path a
+ * node takes today. Only a -refold-staged datadir flips the floor to 0 and
+ * suspends the self-repair.
  *
  * This module changes NO validation rule. It changes only the FLOOR used for
  * H* reporting + whether the below-anchor self-repair runs — never what a
@@ -81,7 +81,7 @@ void refold_progress_boot_init(sqlite3 *db, bool mark_started);
  * the anchor. Returns false on a DB read/write error. */
 bool refold_progress_clear_if_crossed(sqlite3 *db, int32_t utxo_apply_cursor);
 
-/* ── B2: FROM-ANCHOR refold (-refold-from-anchor) ───────────────────────────
+/* ── FROM-ANCHOR refold (-refold-from-anchor) ───────────────────────────────
  *
  * Cheap hot-path reader: true iff the from-ANCHOR refold sub-mode is active
  * (REFOLD_FROM_ANCHOR_KEY set). Distinct from refold_in_progress(): a from-anchor

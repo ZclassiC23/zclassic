@@ -71,6 +71,19 @@ struct app_context {
                                  * does) and the below-anchor self-repair is
                                  * suspended until utxo_apply reaches the resume
                                  * target. Requires -nolegacyimport. */
+    bool mint_anchor;          /* -mint-anchor : the ANCHOR-SET MINT. Reset the
+                                 * staged reducer to GENESIS (like -refold-staged),
+                                 * cap the fold at the compiled SHA3 UTXO checkpoint
+                                 * anchor (h=3,056,758) via mint_fold_ceiling, fold
+                                 * genesis..anchor over on-disk BODIES through the
+                                 * REAL script/proof/utxo_apply/tip_finalize stages,
+                                 * then write the resulting coins_kv set to a
+                                 * SHA3-committed snapshot artifact (the loader's USS
+                                 * format) and HARD-ASSERT its commitment+count ==
+                                 * the compiled checkpoint (FATAL on mismatch). One-
+                                 * shot: exits after writing. Requires
+                                 * -nolegacyimport. Default false → never set on a
+                                 * normal boot (no clamp). */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -147,6 +160,28 @@ void boot_refold_staged_reset(struct node_db *ndb);
  * the resume target. */
 void boot_refold_from_anchor_reset(struct node_db *ndb);
 
+/* -mint-anchor (impl in config/src/boot_refold_staged.c): the ANCHOR-SET MINT
+ * boot-time reset. Resets the staged reducer to GENESIS (delegates to
+ * boot_refold_staged_reset) AND caps the fold at the compiled SHA3 UTXO
+ * checkpoint anchor (mint_fold_ceiling_set), so the staged pipeline re-folds
+ * genesis..anchor over on-disk BODIES and then converges AT the anchor. Marks
+ * refold_in_progress (progress.kv) so the L0 floor drops to 0 while the fold
+ * re-walks the frozen prefix. Gated at the call site on ctx->mint_anchor —
+ * a normal boot never calls it (no reset, no clamp). */
+void boot_mint_anchor_reset(struct node_db *ndb);
+
+/* -mint-anchor driver (impl in config/src/boot_mint_anchor.c): after app_init
+ * has reset to genesis + capped the fold at the anchor, this DRIVES the staged
+ * reducer synchronously (reducer_kick) until the utxo_apply frontier reaches the
+ * anchor, then writes the resulting coins_kv set to a SHA3-committed snapshot
+ * (default <datadir>/utxo-anchor.snapshot, or $ZCL_MINT_ANCHOR_OUT) and
+ * HARD-ASSERTS the written commitment+count == the compiled checkpoint (FATAL +
+ * _exit on mismatch — the h=478544 class: page, never proceed). Returns true on
+ * a verified mint, false on a non-fatal driver problem (e.g. the fold did not
+ * reach the anchor — bodies missing). Owner-gated; reads on-disk bodies +
+ * coins_kv only. `datadir` is the active data directory. */
+bool boot_mint_anchor_run(const char *datadir);
+
 /* B2 1c — boot torn-import AUTO-ARM (impl in config/src/boot_refold_staged.c).
  * Consults the pure detect predicate block_index_loader_torn_import_detect (no
  * side-effects); on a detected tear it ARMS a from-anchor refold
@@ -157,7 +192,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb);
  * SHA3/count assert. Returns false when no tear is detected → the caller runs the
  * normal seed path, whose torn-import gate stays the EV_OPERATOR_NEEDED fallback.
  * Gated at the call site on ctx->refold_from_anchor so a normal boot never calls
- * it (byte-identical to today). */
+ * it (no reset, runs the normal seed path). */
 struct main_state;
 struct sqlite3;
 bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,

@@ -15,6 +15,7 @@
 #include "event/event.h"
 #include "json/json.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/mint_fold_ceiling.h"
 #include "models/header_admit_log.h"
 #include "platform/time_compat.h"
 #include "services/header_admit_inbox.h"
@@ -378,6 +379,15 @@ static job_result_t step_admit(struct stage_step_ctx *c)
 
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
+
+    /* ANCHOR-SET MINT bound: the `-mint-anchor` driver caps the fold at the
+     * SHA3 checkpoint anchor so the resulting coins_kv set IS the anchor set.
+     * Default ceiling is MINT_FOLD_NO_CEILING (INT32_MAX) → never fires on a
+     * normal boot (no clamp applied). Refusing to admit above the ceiling makes
+     * the whole pipeline converge AT it (every downstream stage gates on this
+     * cursor). */
+    if (next_h > mint_fold_ceiling_get())
+        return JOB_IDLE;
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !bi->phashBlock) {

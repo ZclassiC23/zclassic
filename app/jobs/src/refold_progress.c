@@ -130,7 +130,7 @@ bool refold_progress_clear_if_crossed(sqlite3 *db, int32_t utxo_apply_cursor)
     return true;
 }
 
-/* ── B2: from-ANCHOR refold ─────────────────────────────────────────────── */
+/* ── from-ANCHOR refold ─────────────────────────────────────────────────── */
 
 bool refold_progress_mark_started_from_anchor(sqlite3 *db, int32_t resume_target)
 {

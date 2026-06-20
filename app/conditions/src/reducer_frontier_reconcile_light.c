@@ -424,7 +424,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
      * legitimately re-walking the frozen prefix from genesis. With the floor
      * lowered to 0 the L0 frontier reports the true folded height; this gate
      * stops L1 from fighting it. The condition is GATED, not deleted — a
-     * normal boot (refold_in_progress()==false) runs it byte-identically.
+     * normal boot (refold_in_progress()==false) runs the standard L1 path.
      *
      * This serial condition-engine tick is also the off-the-drive owner of the
      * CLEAR edge: once the fold's utxo_apply cursor reaches/passes the clear

@@ -1701,6 +1701,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
         else if (strcmp(argv[i], "-refold-staged") == 0) ctx.refold_staged = true;
         else if (strcmp(argv[i], "-refold-from-anchor") == 0) ctx.refold_from_anchor = true;
+        else if (strcmp(argv[i], "-mint-anchor") == 0) ctx.mint_anchor = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;
         else if (strcmp(argv[i], "-backfill-zslp") == 0) ctx.backfill_zslp = true;
         else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
@@ -1794,6 +1795,18 @@ int main(int argc, char **argv)
      * committed through SQLite WAL, so the data is durable without a shutdown. */
     if (ctx.backfill_zslp)
         return 0;
+
+    /* -mint-anchor is a one-shot ceremony: app_init reset the staged reducer to
+     * genesis and capped the fold at the SHA3 checkpoint anchor. Drive the fold
+     * to the anchor, write + HARD-ASSERT the snapshot artifact, then exit. The
+     * driver _exit()s FATAL on a checkpoint mismatch; a clean return means a
+     * verified mint (true) or an incomplete fold (false → exit non-zero so the
+     * operator knows the bodies were missing). Never starts P2P/RPC. */
+    if (ctx.mint_anchor) {
+        bool minted = boot_mint_anchor_run(ctx.datadir);
+        app_shutdown();
+        return minted ? 0 : 1;
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-addnode=", 9) == 0)
