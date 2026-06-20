@@ -1004,6 +1004,32 @@ mvp-verify: zclassic23 zcl-rpc test_zcl
 	 fi; \
 	 exit $$fails'
 
+# ── mvp: the HONEST MVP 8/8 scoreboard ────────────────────────
+#
+# CLAUDE.md #1 priority — CI-enforce the MVP criteria. `make mvp` is the
+# single per-criterion reporter: for each of the 8 docs/MVP.md acceptance
+# criteria it runs the ONE mechanically-runnable check that proves it (a
+# hermetic test_zcl slice, the symbol-floor gate, the soak-evidence judge,
+# or a live-node probe) and prints a verdict line PASS / FAIL / BLOCKED(reason).
+#
+# THE CONTRACT (cannot false-green): PASS is earned ONLY when the criterion's
+# check actually RAN and PASSED at the full operator-claim level. The three
+# SYNCED-NODE-dependent criteria — C3 (cold-start to tip), C6 (168h soak),
+# C8 (parity over the soak window) — CANNOT pass while the live node is
+# stopped/wedged below tip, so they report BLOCKED(needs synced node) — never
+# silently skipped-as-pass, never green. A criterion whose full claim needs
+# Tor egress / ~/.zcash-params / a live oracle reports BLOCKED(reason) when
+# that resource is absent. A hermetic slice that regresses prints FAIL.
+#
+# It needs test_zcl (the slice gates) + the node/RPC binaries (symbol-floor +
+# the live probe). It is a STATUS REPORTER, not a build gate: it exits 0 even
+# with BLOCKED criteria (the honest state of a stopped node), so it can be a
+# VISIBLE report inside `make ci` without breaking the build. Real
+# hermetic-slice FAILs are printed loudly in the summary.
+.PHONY: mvp
+mvp: test_zcl zclassic23 zcl-rpc
+	@TEST_ZCL_BIN=$(TEST_ZCL_BIN) ZCL_RPC_BIN=$(ZCL_RPC_BIN) bash tools/scripts/mvp_scoreboard.sh
+
 # ── libFuzzer harnesses ───────────────────────────────────────
 #
 # Fuzz targets use clang + libFuzzer + ASan + UBSan. They compile
@@ -1929,6 +1955,16 @@ ci: lint bench-regress zclassic23 test_parallel
 	else \
 		echo "══ CI: coverage (SKIPPED — SKIP_COV=1) ══"; \
 	fi
+	@echo ""
+	@# MVP scoreboard — VISIBLE per-criterion status report (CLAUDE.md #1).
+	@# Non-fatal: the synced-node-dependent criteria (C3 cold-start-to-tip,
+	@# C6 168h soak, C8 parity-over-soak) are legitimately BLOCKED while the
+	@# live node is stopped/wedged below tip, so this must NOT fail the build.
+	@# A real hermetic-slice regression prints FAIL in the scoreboard and is
+	@# the signal to investigate (the underlying slice ALSO fails in the
+	@# build-fatal ci-mvp-gates stage above, so a regression still breaks CI).
+	@echo "══ CI: mvp scoreboard (honest 8/8 status — non-fatal report) ══"
+	$(MAKE) mvp
 	@echo ""
 	@echo "══ CI: ALL STAGES PASSED ══"
 
