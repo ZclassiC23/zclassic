@@ -222,6 +222,20 @@ bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
                                                struct sqlite3 *progress_db,
                                                int32_t H, int32_t checkpoint);
 
+/* PURE detect predicate (B2 1c) — the SAME three-condition durability guard as
+ * block_index_loader_torn_import_gate_fires, but with NO event/blocker
+ * side-effects. Returns true iff a genuinely-unrecoverable tear is present;
+ * *out_hole_h / *out_ceiling (nullable) receive the load-bearing coordinates.
+ * The boot from-anchor auto-arm consults this so it can decide to REPAIR (refold
+ * from the anchor) instead of paging an operator; the gate-fires verdict above
+ * remains the FATAL fallback when arming is impossible. Read-only on
+ * progress.kv. */
+bool block_index_loader_torn_import_detect(struct main_state *ms,
+                                           struct sqlite3 *progress_db,
+                                           int32_t checkpoint,
+                                           int32_t *out_hole_h,
+                                           int32_t *out_ceiling);
+
 /* Shared projection-rebuild front door for boot (see the .c for contract).
  * Folds block_index_projection into ms's map, accepts iff the folded map has
  * > min_entries nodes. `publish_tip`=true publishes the cursor tip (the

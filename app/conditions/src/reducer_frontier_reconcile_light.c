@@ -427,16 +427,25 @@ static bool detect_reducer_frontier_reconcile_light(void)
      * normal boot (refold_in_progress()==false) runs it byte-identically.
      *
      * This serial condition-engine tick is also the off-the-drive owner of the
-     * CLEAR edge: once the fold's utxo_apply cursor reaches/passes the trusted
-     * anchor, refold_progress_clear_if_crossed() drops the durable signal and
-     * the very next tick falls through to the normal self-repair. (The clear
-     * helper is a cheap no-op when not refolding or still below the anchor.) */
+     * CLEAR edge: once the fold's utxo_apply cursor reaches/passes the clear
+     * target, the matching clear helper drops the durable signal and the very
+     * next tick falls through to the normal self-repair. (Both clear helpers are
+     * cheap no-ops when not refolding or still below their target.)
+     *
+     * B2 — a from-ANCHOR refold (refold_from_anchor_active()) clears when the
+     * fold's utxo_apply cursor reaches the durable RESUME TARGET (the tip it is
+     * climbing to), NOT the trusted anchor (the fold STARTS at the anchor). A
+     * from-genesis refold keeps the original anchor-crossing clear edge. */
     if (refold_in_progress()) {
         sqlite3 *db = progress_store_db();
         if (db) {
             int ua = -1;
-            if (read_reducer_cursor(db, "utxo_apply", &ua) && ua >= 0)
-                (void)refold_progress_clear_if_crossed(db, (int32_t)ua);
+            if (read_reducer_cursor(db, "utxo_apply", &ua) && ua >= 0) {
+                if (refold_from_anchor_active())
+                    (void)refold_progress_clear_if_reached(db, (int32_t)ua, -1);
+                else
+                    (void)refold_progress_clear_if_crossed(db, (int32_t)ua);
+            }
         }
         if (refold_in_progress())
             return false;

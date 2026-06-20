@@ -113,10 +113,19 @@ bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
 bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
                                 bool *present);
 
-bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
-                                               struct sqlite3 *progress_db,
-                                               int32_t H, int32_t checkpoint)
+/* PURE detect predicate (B2 1c): runs the EXACT three-condition durability
+ * guard of the verdict below but with NO event/blocker side-effects, so the
+ * boot from-anchor auto-arm can consult the SAME tear decision without paging
+ * an operator. Contract in services/block_index_loader.h. Read-only on
+ * progress.kv. */
+bool block_index_loader_torn_import_detect(struct main_state *ms,
+                                           struct sqlite3 *progress_db,
+                                           int32_t checkpoint,
+                                           int32_t *out_hole_h,
+                                           int32_t *out_ceiling)
 {
+    if (out_hole_h)  *out_hole_h  = -1;
+    if (out_ceiling) *out_ceiling = -1;
     if (!ms || !progress_db)
         return false;
 
@@ -178,8 +187,24 @@ bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
     bool hole_is_tear =
         hole_found && strcmp(hole_status, "prevout_unresolved") == 0;
 
-    if (!(hole_is_tear && backfill_refused &&
-          hole_h > checkpoint && hole_h <= (int)ceiling))
+    bool fires = hole_is_tear && backfill_refused &&
+                 hole_h > checkpoint && hole_h <= (int)ceiling;
+    if (out_hole_h)  *out_hole_h  = fires ? hole_h : -1;
+    if (out_ceiling) *out_ceiling = ceiling;
+    return fires;
+}
+
+bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
+                                               struct sqlite3 *progress_db,
+                                               int32_t H, int32_t checkpoint)
+{
+    if (!ms || !progress_db)
+        return false;
+
+    int32_t hole_h = -1;
+    int32_t ceiling = -1;
+    if (!block_index_loader_torn_import_detect(ms, progress_db, checkpoint,
+                                               &hole_h, &ceiling))
         return false;
 
     /* Self-contained reason < BLOCKER_REASON_MAX (256): the load-bearing

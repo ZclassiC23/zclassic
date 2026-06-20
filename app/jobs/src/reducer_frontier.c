@@ -62,9 +62,14 @@ static int32_t reducer_frontier_compiled_anchor(void)
 }
 
 /* The FLOOR H* and the L1 reconcile operate at — see reducer_frontier.h. 0
- * during a refold, else the compiled anchor. Floor only, no rule change. */
+ * during a from-GENESIS refold; the compiled anchor on a normal boot AND during
+ * a from-ANCHOR refold (B2) — the from-anchor fold legitimately starts AT the
+ * anchor and never re-walks below it, so the floor must stay at the anchor even
+ * though refold_in_progress() is true. Floor only, no rule change. */
 int32_t reducer_frontier_floor(void)
 {
+    if (refold_from_anchor_active())
+        return reducer_frontier_compiled_anchor();
     return refold_in_progress() ? 0 : reducer_frontier_compiled_anchor();
 }
 

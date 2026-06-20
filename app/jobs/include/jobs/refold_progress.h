@@ -40,6 +40,21 @@
 /* The durable progress.kv key. 1-byte blob {0x01} when set; absent otherwise. */
 #define REFOLD_IN_PROGRESS_KEY "refold_in_progress"
 
+/* B2 — the FROM-ANCHOR refold sub-mode. A from-ANCHOR refold (-refold-from-anchor)
+ * re-seeds the SHA3-verified anchor coin set, forces the 8 stage cursors to the
+ * anchor (NOT genesis), and folds forward from the anchor reading block BODIES.
+ * It ALSO sets REFOLD_IN_PROGRESS_KEY (so refold_in_progress() and the mirror-sync
+ * guard at utxo_mirror_sync_service.c hold), but this distinct atomic lets the L0
+ * frontier keep its floor at the COMPILED ANCHOR (the fold legitimately starts AT
+ * the anchor, never below it) instead of dropping to 0 as the from-genesis refold
+ * does. Cleared once the fold's utxo_apply cursor reaches the resume target. */
+#define REFOLD_FROM_ANCHOR_KEY "refold_from_anchor"
+
+/* The durable resume target (the active-chain tip the from-anchor fold climbs to).
+ * Stored as a little-endian int32 blob; absent on a normal boot. Read by the CLEAR
+ * edge so a mid-fold restart resumes against the same target. */
+#define REFOLD_FROM_ANCHOR_TARGET_KEY "refold_from_anchor_target"
+
 /* Cheap hot-path reader: returns the cached atomic, refreshed at boot
  * (refold_progress_refresh) and on every mark/clear. No DB read, no lock —
  * safe to call from the reducer frontier and condition detect paths. */
@@ -65,6 +80,31 @@ void refold_progress_boot_init(sqlite3 *db, bool mark_started);
  * A no-op (returns true) when the key is absent or the cursor is still below
  * the anchor. Returns false on a DB read/write error. */
 bool refold_progress_clear_if_crossed(sqlite3 *db, int32_t utxo_apply_cursor);
+
+/* ── B2: FROM-ANCHOR refold (-refold-from-anchor) ───────────────────────────
+ *
+ * Cheap hot-path reader: true iff the from-ANCHOR refold sub-mode is active
+ * (REFOLD_FROM_ANCHOR_KEY set). Distinct from refold_in_progress(): a from-anchor
+ * refold sets BOTH keys, but this one tells reducer_frontier_floor() to keep the
+ * floor at the COMPILED ANCHOR (the fold starts AT the anchor) instead of dropping
+ * to 0. Cached atomic, refreshed by refold_progress_refresh(). */
+bool refold_from_anchor_active(void);
+
+/* SET both REFOLD_IN_PROGRESS_KEY and REFOLD_FROM_ANCHOR_KEY on `db` plus the
+ * durable resume target, AND update both caches. Idempotent. Call when
+ * -refold-from-anchor (or the boot torn-import auto-arm) has re-seeded the anchor
+ * coin set and forced the 8 stage cursors to the anchor. `resume_target` is the
+ * active-chain tip the fold climbs to (the CLEAR edge keys on it). Returns false
+ * on a DB write error. */
+bool refold_progress_mark_started_from_anchor(sqlite3 *db, int32_t resume_target);
+
+/* If the from-anchor key is set AND `utxo_apply_cursor` has reached/passed
+ * `target`, DELETE both durable keys (+ the target) and clear both caches. A
+ * no-op (returns true) when the from-anchor key is absent or the cursor is still
+ * below the target. Returns false on a DB read/write error. The off-the-drive
+ * reconcile tick owns this CLEAR edge. */
+bool refold_progress_clear_if_reached(sqlite3 *db, int32_t utxo_apply_cursor,
+                                      int32_t target);
 
 #ifdef ZCL_TESTING
 /* Test-only: force the cached atomic without touching any DB. Lets a unit

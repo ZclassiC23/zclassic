@@ -55,6 +55,22 @@ struct app_context {
                                  * while the fold re-walks the frozen prefix; the
                                  * mark clears once utxo_apply crosses the anchor.
                                  * Requires -nolegacyimport. */
+    bool refold_from_anchor;   /* -refold-from-anchor (B2) : like -refold-staged
+                                 * EXCEPT the staged reducer is reset to the SHA3
+                                 * UTXO checkpoint ANCHOR (3,056,758), not genesis.
+                                 * FULL-resets coins_kv, re-seeds the anchor set
+                                 * from node.db's `utxos` mirror, HARD-ASSERTS the
+                                 * set against the compiled checkpoint
+                                 * (sha3_hash + count; FATAL on mismatch), forces
+                                 * the 8 stage cursors to the anchor, and folds
+                                 * forward over on-disk BODIES from the anchor to
+                                 * the active tip running the REAL
+                                 * script/proof/utxo_apply/tip_finalize stages.
+                                 * Marks refold_from_anchor (progress.kv) so the L0
+                                 * floor HOLDS at the anchor (not 0 as -refold-staged
+                                 * does) and the below-anchor self-repair is
+                                 * suspended until utxo_apply reaches the resume
+                                 * target. Requires -nolegacyimport. */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -117,6 +133,36 @@ void app_shutdown(void);
 struct node_db;
 void boot_refold_staged_init(bool refold_staged);
 void boot_refold_staged_reset(struct node_db *ndb);
+
+/* -refold-from-anchor (B2; impl in config/src/boot_refold_staged.c): sibling of
+ * boot_refold_staged_reset that FULL-resets coins_kv, RE-SEEDS the SHA3-verified
+ * anchor coin set from node.db's `utxos` mirror, HARD-ASSERTS it against the
+ * compiled checkpoint (commitment + count; FATAL + _exit on mismatch), forces the
+ * 8 stage cursors to the ANCHOR (not genesis), sets coins_applied_height =
+ * anchor+1, and seeds the tip_finalize anchor — so the staged pipeline re-folds
+ * forward over on-disk BODIES FROM the anchor running the REAL stages. Owner-gated
+ * (-refold-from-anchor); progress.kv + node.db mirror only. Marks
+ * refold_from_anchor in progress.kv (refold_progress.h) so the L0 floor holds at
+ * the anchor and the below-anchor self-repair is suspended until the fold reaches
+ * the resume target. */
+void boot_refold_from_anchor_reset(struct node_db *ndb);
+
+/* B2 1c — boot torn-import AUTO-ARM (impl in config/src/boot_refold_staged.c).
+ * Consults the pure detect predicate block_index_loader_torn_import_detect (no
+ * side-effects); on a detected tear it ARMS a from-anchor refold
+ * (boot_refold_from_anchor_reset + refold_progress_mark_started_from_anchor) and
+ * returns true so the caller SKIPS block_index_loader_seed_stages_from_cold_import.
+ * Idempotent (returns true without re-resetting when a from-anchor refold is
+ * already armed). FATALs inside the reset if the re-seeded anchor set fails the
+ * SHA3/count assert. Returns false when no tear is detected → the caller runs the
+ * normal seed path, whose torn-import gate stays the EV_OPERATOR_NEEDED fallback.
+ * Gated at the call site on ctx->refold_from_anchor so a normal boot never calls
+ * it (byte-identical to today). */
+struct main_state;
+struct sqlite3;
+bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
+                                         struct node_db *ndb,
+                                         struct sqlite3 *progress_db);
 
 bool app_is_running(void);
 void app_add_node(const char *host, int port);

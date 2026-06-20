@@ -1468,8 +1468,20 @@ bool app_init_services(struct app_context *ctx,
         int seeded = block_index_loader_seed_tip_from_finalized(
             svc->state, params, progress_store_db());
         (void)seeded;  /* logs its own success line; benign no-op otherwise */
-        (void)block_index_loader_seed_stages_from_cold_import(
-            svc->state, boot_node_db(svc), progress_store_db());
+        /* B2 1c — when -refold-from-anchor is set, try the torn-import AUTO-ARM
+         * FIRST. If it arms (or a refold is already in progress), SKIP the
+         * cold-import seed: the from-anchor refold owns the fold forward from the
+         * proven anchor. Gated on ctx->refold_from_anchor so a normal boot is
+         * byte-identical — it never calls arm_if_torn and runs the seed path
+         * exactly as today (whose torn-import gate remains the operator-page
+         * fallback). */
+        bool armed_from_anchor =
+            ctx->refold_from_anchor &&
+            boot_refold_from_anchor_arm_if_torn(
+                svc->state, boot_node_db(svc), progress_store_db());
+        if (!armed_from_anchor)
+            (void)block_index_loader_seed_stages_from_cold_import(
+                svc->state, boot_node_db(svc), progress_store_db());
     }
 
     /* De-fatal: all runtime specs (bg_validation, gap_fill, legacy_mirror,

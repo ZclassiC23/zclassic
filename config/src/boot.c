@@ -23,6 +23,7 @@
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/refold_progress.h"  /* refold_progress_mark_started_from_anchor (B2) */
 #include "jobs/stage_repair.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/utxo_reimport_flag.h"
@@ -1484,7 +1485,12 @@ bool app_init(struct app_context *ctx)
     } else {
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
         (void)service_state_restore_from_progress_store();
-        boot_refold_staged_init(ctx->refold_staged);  /* cache refold_in_progress */
+        /* Refresh BOTH refold caches (refold_in_progress + refold_from_anchor,
+         * B2) from the durable progress.kv keys — a mid-fold restart resumes the
+         * correct floor without re-running the reset. mark_started here is the
+         * from-GENESIS arm only (refold_staged); the from-ANCHOR mark is set
+         * inside boot_refold_from_anchor_reset below. */
+        boot_refold_staged_init(ctx->refold_staged);  /* cache refold_in_progress + refold_from_anchor */
     }
 
     /* Snapshot-first: if a downloaded consensus_snapshot.db
@@ -3284,6 +3290,17 @@ sapling_tree_boot_check_done:
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
 
     if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
+    if (ctx->refold_from_anchor) {
+        /* B2 — reset the staged reducer to the SHA3 anchor (FULL coins_kv reset +
+         * re-seed + HARD-ASSERT; FATALs inside on a mismatch), then mark the
+         * from-anchor signal so the L0 floor holds at the anchor and the
+         * self-repair is suspended until utxo_apply reaches the resume target
+         * (the active tip we are about to fold up to). */
+        boot_refold_from_anchor_reset(&g_node_db);
+        int32_t resume_target = (int32_t)active_chain_height(&g_state.chain_active);
+        (void)refold_progress_mark_started_from_anchor(progress_store_db(),
+                                                       resume_target);
+    }
 
     {
         /* SINGLE SOURCE OF TRUTH (docs/work/tip-durability-collapse.md):
