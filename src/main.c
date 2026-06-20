@@ -1695,6 +1695,7 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-connect=", 9) == 0) { ctx.connect_only = true; /* after init */ }
         else if (strncmp(argv[i], "-mineraddress=", 14) == 0) ctx.miner_address = argv[i]+14;
         else if (strncmp(argv[i], "-genproclimit=", 14) == 0) ctx.gen_threads = atoi(argv[i]+14);
+        else if (strncmp(argv[i], "-par=", 5) == 0) ctx.par_workers = atoi(argv[i]+5);
         else if (strncmp(argv[i], "-snapshot=", 10) == 0) ctx.snapshot_dir = argv[i]+10;
         else if (strcmp(argv[i], "-saplingscan") == 0) ctx.sapling_scan = true;
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;

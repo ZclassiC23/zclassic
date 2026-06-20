@@ -425,6 +425,7 @@ void app_context_defaults(struct app_context *ctx)
     ctx->listen = true;   /* accept inbound by default — be a good peer */
     ctx->checkpoints_enabled = true;
     ctx->runtime_profile = ZCL_RUNTIME_FULL;
+    ctx->par_workers = 0;   /* 0 => verify engine sizes to GetNumCores()-1 */
 }
 
 const char *app_runtime_profile_name(enum zcl_runtime_profile profile)
