@@ -123,6 +123,72 @@ re-materialization cost/correctness; node.db is the trust root for "committed" b
 (cross-checked only by zclassicd parity, currently down); the seed-guard change touches
 the in-tree reindex finalizer and needs a fresh-cold-import regression test.
 
+## 0c. 2026-06-20 GROUNDED RE-VERIFICATION (workflow `wf_b3a254cd-696`, 4 lenses + adversarial verify)
+
+Re-ran the cure against the tree after a host OOM KILLed the `user@1000` systemd manager
+(2026-06-19 17:02 — node + zclassicd both died; rebuilt `build/bin/zclassic23` @ ec06586a1,
+restored under linger; the node booted back to the SAME pre-existing wedge at 3,151,411,
+honest `operator_needed`). The thesis HOLDS; record these NEW verified corrections so no
+future agent re-derives them or trusts the stale roadmap text:
+
+- **The cure does NOT need LB-1 (the parallel verify engine).** VERIFIED: `verify_queue`/
+  `thread_pool` have ZERO non-test callers; the from-anchor refold drives the EXISTING serial
+  pipeline (`reducer_drain_to_convergence`, `reducer_ingest_service.c:79`). The pool is a
+  throughput nicety (~94k bodies in minutes vs ~8h) and a genuine prerequisite ONLY for the
+  full-genesis self-mint (LB-2). So B2 (fold the gap) is INDEPENDENT of parallelism — never
+  block it on LB-1.
+
+- **`refold_driver_main` is VAPOR.** `architecture-execution-plan.md` item 1.5 cites
+  `refold_driver_main` at `reducer_ingest_service.c:142` as if present; grep is EMPTY across
+  the committed tree (it lives only in an uncommitted stash). The real drain entry is
+  `reducer_drain_to_convergence` (`reducer_ingest_service.c:79`, called from
+  `chain_activation_service.c:447`). Any step that "promotes `refold_driver_main`" references
+  nothing — the from-anchor driver must be BUILT (this IS B2/B5). *Fix the execution-plan line.*
+
+- **FIX-1 "wire H\* to served APIs" is DONE** (shipped this session, commit e75b5c62c).
+  `getblockcount` serves `reducer_frontier_provable_tip_cached` (`blockchain_controller_blocks.c:45`)
+  AND P2P `start_height` serves H\* (`msg_version.c:155`, with the comment that only the OUTWARD
+  claim switches to H\* while internal window readers stay on `active_chain_height`). The
+  roadmap's "last unwired surface" is closed — scope FIX-1 to zero. *Fix the roadmap/plan text.*
+
+- **The `coins_kv` slice CANNOT be salvaged by `DELETE WHERE height > anchor`** — this sharpens
+  §0b with the mechanism proof. VERIFIED: `coins_kv` stores `height` = coin CREATION height
+  (`coins_kv.c:63-77`) and a spend is a row DELETE (`coins_kv.c:93-98`); `apply_coins_kv` spends
+  prevouts by txid/vout regardless of creation height. So the contaminated above-anchor
+  application already DELETED below-anchor coin rows that above-anchor blocks spent — a
+  height-bounded DELETE removes above-anchor CREATIONS but cannot RESTORE those wrongly-spent
+  below-anchor coins. Post-DELETE the slice is missing coins → its SHA3 ≠ the checkpoint root →
+  any "re-use the slice after a hard assert" shortcut FATALs on the live wedge. The cure MUST
+  fully reset (`coins_kv_reset_for_reseed`, `coins_kv.c:466`) + re-materialize the anchor set
+  from a trusted source bounded to `height<=anchor` + hard-assert `SHA3==checkpoints.c root` &
+  `count==1,354,771`. (Exactly §0b's "re-materialize / it must be COMPUTED", now with the proof.)
+
+- **Ordering knot (acknowledge it):** re-materializing the anchor has NO in-tree trustless
+  source today — `utxo_snapshot_loader.c` has zero production callers; the snapshot WRITER
+  (`--gen-utxo-snapshot`) is not in a production main. So the only rebuild source RIGHT NOW is a
+  re-copy of zclassicd's chainstate BOUNDED to `height<=anchor` — the very D3/D4 copy path the
+  plan deletes. Clean sequence: bound the cold-import copy to `<=anchor` (keeps a trustworthy
+  anchor source) → fold bodies above (B2) → LATER replace even the anchor copy with a
+  self-minted / snapshot-loaded anchor (LB-2). Do NOT delete the anchor-copy source before the
+  self-mint or snapshot-loader source exists.
+
+- **The duplicate mirror does NOT fight the refold today** (corrects Residual #4 framing):
+  `utxo_mirror_sync_service.c:319-320` ALREADY guards `if (refold_in_progress()) return 0;`,
+  skipping its 5s full DELETE+reinsert during a refold — provided the from-anchor verb sets
+  `refold_in_progress`. Deleting the mirror is still a valid North-Star simplification (D2), but
+  it is NOT a refold-time correctness hazard; the KEEP-pending-proof stance in Residual #4 stands.
+
+- **Liveness vs structural-impossibility are DISTINCT** (label honestly): the from-anchor refold
+  verb (B2) delivers LIVENESS — bounded auto-repair instead of the permanent `operator_needed`
+  latch. It does NOT by itself make the tear class impossible; only deleting the unbounded
+  above-anchor `INSERT...SELECT FROM coinssrc.utxos` (`coins_kv_boot_rebuild.c:158-163`, B3)
+  makes it structurally impossible. Both are needed; B2 gates B3.
+
+Net: no change to the build order (B1..B8) or the deletions table — this section corrects the
+execution-plan's two stale claims (`refold_driver_main`, FIX-1), records the `coins_kv`-reset
+mechanism, and names the anchor-source ordering knot so the B2/B3 implementer never ships the
+unsound DELETE-and-reuse shortcut.
+
 ## 1. Thesis
 
 Wire the self-sufficient proof (`snapshot_verify`) into the cold-import door, kill
