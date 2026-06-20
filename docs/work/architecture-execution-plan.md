@@ -83,6 +83,17 @@ consensus-compatible with zclassicd (INVIOLABLE)**; operated by AI via typed MCP
 
 ## CHECKLIST
 
+> **SHIPPED 2026-06-20 (parallel-worktree workflow batch, all gated build + test_parallel 434/434):**
+> 0.2+0.2b provable-tip H* → external readers + catchup refold-guard (`e75b5c62c`);
+> 0.3+0.5 E1 file-size cap → WARN + lib-layering ratchet→HARD (`9a56188a6`);
+> 0.4 consensus-dedup INVESTIGATED → no-op, not collapsible (`7fbf8eeb2`);
+> 0.5 new HARD domain-purity lint gate (`098605865`);
+> 0.6 shutdown-aware wait RPCs waitforheight/halt/blocker (`a1ace9df3`);
+> 1.1 parallel verify engine thread_pool+verify_queue behind -par, +determinism test, NOT wired (`9c5357930`).
+> REMAINING Phase-0: only 0.1 (refold-driver cleanup, experimental WIP). NEXT BIG STEP = LB-1 wiring
+> (1.2–1.6) — OWNER-GATED: it touches the consensus hot path and needs the full-history replay + the
+> concurrency invariants before any push. Do not auto-ship it.
+
 ### Phase 0 — independent, ship now (no LB dependency, can't regress consensus)
 - [ ] **0.1 Finish + merge the refold work-in-flight.** Strip/repair the TEMP instrumentation in
   `reducer_ingest_service.c` (`reducer_drain_all_stages` per-stage trace + `refold_driver_main` per-pass
