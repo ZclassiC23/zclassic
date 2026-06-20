@@ -25,4 +25,12 @@
  * helper does NOT lock. Returns the total number of stage advances. */
 int reducer_drain_to_convergence(void);
 
+/* Same staged-Job drain, but with NO latency budget: loop until a no-advance
+ * pass (convergence) or the round hard cap. The CALLER must hold the
+ * chain_activation_controller mutex — this helper does NOT lock. Used only by
+ * the -mint-anchor tight driver (via reducer_kick_unbudgeted) so the
+ * genesis..anchor fold drains back-to-back instead of in 2s slices. Returns
+ * the total number of stage advances. */
+int reducer_drain_to_convergence_unbudgeted(void);
+
 #endif /* ZCL_REDUCER_INGEST_SERVICE_H */

@@ -72,31 +72,36 @@ static int reducer_drain_all_stages(int max_steps_per_stage)
     return advanced;
 }
 
-/* Loop reducer_drain_all_stages to convergence within a bounded latency
- * budget. A no-advance pass is convergence UNLESS a stage went FATAL this
- * pass (fatal_generation moved) — a wedged stage masquerading as idle, so
- * we page EV_OPERATOR_NEEDED before breaking. */
-int reducer_drain_to_convergence(void)
+/* Shared drain core. `budget_us <= 0` means NO latency budget: keep draining
+ * until convergence (a no-advance pass) or the round hard cap, whichever first.
+ * The supervisor/FSM path passes a 2s budget so it yields its 2s stage ticks;
+ * the dedicated mint driver passes 0 to drain the staged pipeline back-to-back
+ * (see reducer_drain_to_convergence_unbudgeted). `per_stage_batch` sets how
+ * many blocks each stage folds under ONE batch transaction (one COMMIT, one
+ * fsync, one ext4 journal barrier per stage per round — see STAGE_DRAIN_IMPL).
+ * A larger batch drops the fsync/journal-commit cadence, which is the genesis
+ * fold's dominant wait (the drive thread blocks in jbd2_log_wait_commit). Full
+ * validation is identical for any batch size — only the commit cadence and the
+ * call's latency differ, never WHAT a stage checks. */
+static int reducer_drain_core(int64_t budget_us, int hard_cap, int per_stage_batch)
 {
-    const int64_t drain_budget_us = 2000 * 1000; /* 2s, same as legacy */
-    const int     drain_hard_cap  = 4096;
-    const int     per_stage_batch = 100;
-    int64_t       start_us        = GetTimeMicros();
-    uint64_t      fatal_gen0      = stage_fatal_generation();
-    int           total           = 0;
-    for (int round = 0; round < drain_hard_cap; round++) {
+    int64_t   start_us        = GetTimeMicros();
+    uint64_t  fatal_gen0      = stage_fatal_generation();
+    int       total           = 0;
+    if (per_stage_batch <= 0) per_stage_batch = 100;
+    for (int round = 0; round < hard_cap; round++) {
         int adv = reducer_drain_all_stages(per_stage_batch);
         total += adv;
         if (adv == 0)
             break;
-        if (GetTimeMicros() - start_us > drain_budget_us)
+        if (budget_us > 0 && GetTimeMicros() - start_us > budget_us)
             break;
     }
     /* Page the operator on a FATAL latched during this drain regardless of
-     * which exit fired — convergence (adv==0) OR the 2s budget timeout. A
-     * stage can return JOB_FATAL every pass while another keeps advancing,
-     * so total>0 and the loop exits on the budget, not on adv==0; gating the
-     * page on the adv==0 break alone let that masked-FATAL recur unpaged. */
+     * which exit fired — convergence (adv==0) OR the budget timeout. A stage
+     * can return JOB_FATAL every pass while another keeps advancing, so
+     * total>0 and the loop exits on the budget, not on adv==0; gating the page
+     * on the adv==0 break alone let that masked-FATAL recur unpaged. */
     {
         char st[STAGE_NAME_MAX] = {0}, why[128] = {0};
         if (stage_fatal_generation() != fatal_gen0 &&
@@ -106,6 +111,36 @@ int reducer_drain_to_convergence(void)
                         st, why);
     }
     return total;
+}
+
+int reducer_drain_to_convergence(void)
+{
+    const int64_t drain_budget_us = 2000 * 1000; /* 2s, same as legacy */
+    const int     drain_hard_cap  = 4096;
+    const int     per_stage_batch = 100;          /* legacy cadence, unchanged */
+    return reducer_drain_core(drain_budget_us, drain_hard_cap, per_stage_batch);
+}
+
+int reducer_drain_to_convergence_unbudgeted(void)
+{
+    /* No 2s latency budget: drain back-to-back, not in 2s slices. Each slice
+     * under the budgeted path re-acquired the mutex, re-read the frontier, and
+     * raced the supervisor's own 2s stage ticks; here the drain just keeps
+     * folding. The round cap is generous (folds tens of thousands of blocks per
+     * call) yet still returns periodically so the -mint-anchor driver loop can
+     * log applied-through progress and run its no-progress stall guard — it is
+     * a chunk size, NOT a 2s wall-clock chop. A larger per-stage batch (one
+     * COMMIT/fsync per this many blocks per stage) also drops the ext4
+     * journal-commit cadence that otherwise pins the drive thread in
+     * jbd2_log_wait_commit. */
+    const int drain_hard_cap   = 64;      /* up to 64 * batch blocks per call */
+    const int per_stage_batch  = 1000;    /* one fsync per ~1k blocks/stage:
+                                           * ~10x fewer journal barriers than
+                                           * the 100-block legacy cadence, while
+                                           * still committing often enough that
+                                           * progress stays visible and the open
+                                           * transaction (+ WAL) stays bounded. */
+    return reducer_drain_core(/*budget_us=*/0, drain_hard_cap, per_stage_batch);
 }
 
 bool reducer_is_authoritative(void)
@@ -119,6 +154,24 @@ int reducer_kick(struct chain_activation_controller *ctl)
         return 0;
     zcl_mutex_lock(&ctl->mutex);
     int advanced = reducer_drain_to_convergence();
+    zcl_mutex_unlock(&ctl->mutex);
+    return advanced;
+}
+
+int reducer_kick_unbudgeted(struct chain_activation_controller *ctl)
+{
+    if (!ctl)
+        return 0;
+    /* The dedicated -mint-anchor driver's tight drain: same locking + drive
+     * marking as reducer_kick, but the inner drain has no 2s budget so one
+     * call folds the staged pipeline back-to-back until convergence. Held
+     * under ctl->mutex for the whole drain — the same serialization point the
+     * supervisor takes — so no concurrent supervisor drain races the
+     * active-chain window. Full validation is unchanged. */
+    zcl_mutex_lock(&ctl->mutex);
+    reducer_drive_enter();
+    int advanced = reducer_drain_to_convergence_unbudgeted();
+    reducer_drive_exit();
     zcl_mutex_unlock(&ctl->mutex);
     return advanced;
 }

@@ -227,6 +227,17 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
  */
 int reducer_kick(struct chain_activation_controller *ctl);
 
+/* reducer_kick_unbudgeted — the dedicated -mint-anchor driver's tight kick.
+ * Same locking + drive marking as reducer_kick, but the inner drain has NO 2s
+ * latency budget, so one call folds the staged pipeline back-to-back until
+ * convergence (a no-advance pass) instead of stopping every 2s and returning
+ * to the driver loop. Only config/src/boot_mint_anchor.c (the synchronous
+ * genesis..anchor mint) calls this; the normal cursor-driven catch-up keeps
+ * using the budgeted reducer_kick so it yields the 2s supervisor ticks. Full
+ * validation is identical. Returns the number of stage advances this kick
+ * produced. */
+int reducer_kick_unbudgeted(struct chain_activation_controller *ctl);
+
 /* ── UTXO Wipe Protection ──────────────────────────────────────── */
 
 struct utxo_wipe_decision {

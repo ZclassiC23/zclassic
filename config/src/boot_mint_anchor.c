@@ -71,14 +71,19 @@ bool boot_mint_anchor_run(const char *datadir)
         _exit(EXIT_FAILURE);
     }
 
-    /* (1) Drive the fold to the anchor. reducer_kick drives the same eight-stage
-     * drain the supervisor uses, under the activation mutex (no race with the
-     * background ticks). The header_admit ceiling (boot_mint_anchor_reset) caps
-     * the fold AT the anchor, so the pipeline converges there and the kick
-     * returns 0 advances. We loop until the utxo_apply frontier reaches the
-     * anchor; we also break on a no-progress plateau so a bodies-missing datadir
-     * cannot spin forever (the caller then reports the mint as incomplete, not a
-     * false anchor). */
+    /* (1) Drive the fold to the anchor. reducer_kick_unbudgeted drains the same
+     * eight-stage pipeline the supervisor uses, under the activation mutex (no
+     * race with the background ticks) AND with the reducer-drive guard held so
+     * the supervisor yields its 2s stage ticks for the whole drain. Unlike the
+     * budgeted reducer_kick, each call folds back-to-back until convergence
+     * instead of stopping every 2s and returning here to re-read the frontier —
+     * so the genesis..anchor fold is not chopped into 2s slices. The
+     * header_admit ceiling (boot_mint_anchor_reset) caps the fold AT the anchor,
+     * so the pipeline converges there and the kick returns 0 advances. We loop
+     * until the utxo_apply frontier reaches the anchor; we also break on a
+     * no-progress plateau so a bodies-missing datadir cannot spin forever (the
+     * caller then reports the mint as incomplete, not a false anchor). Full
+     * crypto validation stays ON — the budget only changed, never the stages. */
     int32_t last_through = mint_applied_through(pdb);
     int stall_kicks = 0;
     const int kStallLimit = 64;   /* consecutive no-progress kicks → bodies gap */
@@ -91,7 +96,7 @@ bool boot_mint_anchor_run(const char *datadir)
         if (through >= anchor)
             break;
 
-        (void)reducer_kick(ctl);   /* one bounded drain pass (≤2s / ≤4096 rounds) */
+        (void)reducer_kick_unbudgeted(ctl);   /* tight back-to-back drain to convergence */
 
         int32_t now = mint_applied_through(pdb);
         if (now > last_through) {

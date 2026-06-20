@@ -31,6 +31,9 @@
 #include "services/chain_state_service.h"
 #include "services/hodl_history_service.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/refold_progress.h"  /* refold_in_progress — suppress projection
+                                    * backfill while a mint/refold discards the
+                                    * upper tip (see the guard below). */
 #include "chain/chainparams.h"
 #include "core/uint256.h"
 #include "coins/coins_view.h"
@@ -365,6 +368,28 @@ static void *projection_backfill_service_thread(void *arg)
         int projection_block_tip = -1;
 
         boot_reap_catchup_service(svc);
+
+        /* A from-genesis mint/refold (-mint-anchor / -refold-staged) RESETS the
+         * reducer to genesis and is rebuilding the upper active chain that this
+         * thread's cursor-rewind + catchup-start logic publishes. While that
+         * fold runs, the active chain still names the (to-be-discarded) upper
+         * torn tip, so node_db_sync_set_tip(rewind) below re-publishes it every
+         * ~5 s; the sync-projection authority pair-self-check then resolves that
+         * tip to a different height and refuses the write — hammering the
+         * progress.kv lock against the fold for no benefit (the catchup itself
+         * already short-circuits on the same signal in
+         * node_db_catchup_service_run). Skip the whole backfill pass while a
+         * refold is in progress; the first post-refold pass resumes it once
+         * refold_in_progress() clears. Mirrors the proven guards in
+         * node_db_catchup_service.c and utxo_mirror_sync_service.c. A normal
+         * boot never sets the signal, so this branch is unchanged there. */
+        if (refold_in_progress()) {
+            for (int i = 0; i < 5 &&
+                 !svc->projection_backfill_thread_stop &&
+                 boot_running(svc); i++)
+                sleep(1);
+            continue;
+        }
 
         if (ndb && ndb->open && chain_tip >= 0 &&
             !node_db_sync_catchup_job_is_started(&svc->catchup_job)) {
