@@ -3434,6 +3434,28 @@ sapling_tree_boot_check_done:
         boot_phase_end(&bp_fin);
         int  tip_h = active_chain_height(&g_state.chain_active);
 
+        /* Mint/refold flags reset the staged reducer to genesis (or the SHA3
+         * anchor) and re-fold over on-disk bodies — boot_*_reset above ALREADY
+         * discarded the upper active chain these flags exist to rebuild. So the
+         * post-restore integrity of that upper chain is moot: failing it here
+         * would abort init (crash-only -reindex-chainstate request) BEFORE the
+         * fold ever runs, on damage the fold replaces. Downgrade the failure to
+         * a logged warning and skip the abort/degraded gate so boot proceeds to
+         * the reset+fold. A normal boot (no flag) is unchanged: the gate below
+         * stays fatal on UNRECOVERABLE integrity. */
+        bool mint_or_refold =
+            ctx->mint_anchor || ctx->refold_from_anchor || ctx->refold_staged;
+        if (mint_or_refold && !finalize_ok) {
+            fprintf(stderr,
+                "[boot] mint/refold flag set: skipping the chain_restore_finalize "
+                "integrity abort at tip_h=%d — the reset above already discarded "
+                "the upper chain; the genesis->anchor fold rebuilds it.\n",
+                tip_h);
+            event_emitf(EV_BOOT_ACTIVATE, 0,
+                "finalize_integrity_skipped_for_refold tip=%d", tip_h);
+            finalize_ok = true;  /* take the clean-integrity branch below */
+        }
+
         /* Classify the post-restore integrity result on its structured
          * breakdown — the finalize bool discards it. A RECONCILABLE
          * divergence (active_chain window holes, with no zero-nbits and
