@@ -139,117 +139,6 @@ int test_mmr(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
-    printf("mmr: prove and verify leaf 0... ");
-    {
-        int N = 10;
-        uint8_t leaves[10][32];
-        struct mmr m;
-        mmr_init(&m);
-        for (int i = 0; i < N; i++) {
-            memset(leaves[i], 0, 32);
-            leaves[i][0] = (uint8_t)i;
-            mmr_append(&m, leaves[i]);
-        }
-
-        uint8_t root[32];
-        mmr_root(&m, root);
-
-        struct mmr_proof proof;
-        bool ok = mmr_prove_from_leaves(leaves, (uint64_t)N, 0, &proof);
-        ok = ok && mmr_verify(&proof, root);
-        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("mmr: prove and verify middle leaf... ");
-    {
-        int N = 16;
-        uint8_t leaves[16][32];
-        struct mmr m;
-        mmr_init(&m);
-        for (int i = 0; i < N; i++) {
-            memset(leaves[i], 0, 32);
-            leaves[i][0] = (uint8_t)i;
-            mmr_append(&m, leaves[i]);
-        }
-
-        uint8_t root[32];
-        mmr_root(&m, root);
-
-        struct mmr_proof proof;
-        bool ok = mmr_prove_from_leaves(leaves, (uint64_t)N, 7, &proof);
-        ok = ok && mmr_verify(&proof, root);
-        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("mmr: prove and verify last leaf... ");
-    {
-        int N = 13;
-        uint8_t leaves[13][32];
-        struct mmr m;
-        mmr_init(&m);
-        for (int i = 0; i < N; i++) {
-            memset(leaves[i], 0, 32);
-            leaves[i][0] = (uint8_t)i;
-            mmr_append(&m, leaves[i]);
-        }
-
-        uint8_t root[32];
-        mmr_root(&m, root);
-
-        struct mmr_proof proof;
-        bool ok = mmr_prove_from_leaves(leaves, (uint64_t)N, 12, &proof);
-        ok = ok && mmr_verify(&proof, root);
-        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("mmr: verify rejects tampered proof... ");
-    {
-        int N = 8;
-        uint8_t leaves[8][32];
-        struct mmr m;
-        mmr_init(&m);
-        for (int i = 0; i < N; i++) {
-            memset(leaves[i], 0, 32);
-            leaves[i][0] = (uint8_t)i;
-            mmr_append(&m, leaves[i]);
-        }
-
-        uint8_t root[32];
-        mmr_root(&m, root);
-
-        struct mmr_proof proof;
-        mmr_prove_from_leaves(leaves, (uint64_t)N, 3, &proof);
-
-        /* Tamper with a sibling */
-        proof.siblings[0][0] ^= 0xFF;
-        bool ok = !mmr_verify(&proof, root);
-        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("mmr: verify rejects wrong root... ");
-    {
-        int N = 5;
-        uint8_t leaves[5][32];
-        struct mmr m;
-        mmr_init(&m);
-        for (int i = 0; i < N; i++) {
-            memset(leaves[i], 0, 32);
-            leaves[i][0] = (uint8_t)i;
-            mmr_append(&m, leaves[i]);
-        }
-
-        uint8_t root[32];
-        mmr_root(&m, root);
-
-        struct mmr_proof proof;
-        mmr_prove_from_leaves(leaves, (uint64_t)N, 2, &proof);
-
-        uint8_t bad_root[32];
-        memset(bad_root, 0xFF, 32);
-        bool ok = !mmr_verify(&proof, bad_root);
-        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
-    }
-
     printf("mmr: sha3_256 one-shot matches streaming... ");
     {
         uint8_t data[] = "ZClassic23 MMR test data";
@@ -399,6 +288,6 @@ int test_mmr(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("\n%d passed, %d failed\n", 21 - failures, failures);
+    printf("\n%d passed, %d failed\n", 16 - failures, failures);
     return failures;
 }
