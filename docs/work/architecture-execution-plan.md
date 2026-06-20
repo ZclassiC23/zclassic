@@ -120,14 +120,24 @@ consensus-compatible with zclassicd (INVIOLABLE)**; operated by AI via typed MCP
   (`CEILING=800`) + baseline. Drop the hard cap → WARN; KEEP `check-long-functions` (≤500 LOC/fn) and
   apply uniformly to lib/+domain/. **Verify:** `make lint` green; the cap no longer blocks edits.
   Remove the `*_accessors.c` shared-static splinter headers created only to dodge the cap (separate commit).
-- [ ] **0.4 FIX-6: collapse duplicate consensus defs — PER RULE, not blanket (REVIEW #7).** ⚠ NOT all are
-  pairs: **equihash** is 3 DISTINCT layers (`domain/consensus/src/equihash.c` pure verifier →
-  `lib/crypto/src/equihash.c` the `equihash_is_valid_solution` primitive the domain calls via the crypto
-  port → `lib/chain/src/equihash.c` a thin legacy bool shim) — keep the crypto primitive + the domain
-  verifier, delete ONLY the `lib/chain` shim IF no caller needs the legacy signature (check first).
-  **base58/bech32** already live ONLY in `domain/encoding/` — no lib wrapper to delete; drop from the list.
-  **upgrades** is the one real domain+lib pair → merge. **Gate:** diff each merged def against its originals
-  (byte-equivalent); `test_consensus_parity` green.
+- [x] **0.4 FIX-6: collapse duplicate consensus defs — INVESTIGATED 2026-06-20 → NO-OP (correct).** A
+  workflow (parallel recon + adversarial verify, `consensus_parity` green) proved NONE of the candidates is
+  a behaviour-preserving collapse, so the right action is to make **no edit** — recorded here so it is not
+  re-attempted:
+  - **upgrades** is a LAYERED pair, not duplicate defs. `domain/consensus/src/upgrades.c` exports the pure
+    `domain_consensus_*` (`zcl_result`) verifiers; `lib/consensus/src/upgrades.c` exports DIFFERENT symbols —
+    the 3 const tables (`NetworkUpgradeInfo`/`SPROUT_BRANCH_ID`/`EquihashUpgradeInfo`) + 8 legacy `consensus_*`
+    bool/int wrappers that add `assert()`+`LOG_FAIL`/`LOG_ERR` side-effects the domain funcs lack (and the
+    domain TU link-depends on the lib table). Merging changes signatures, logging, and the table home →
+    observable behaviour change. NOT a collapse.
+  - **equihash** is 3 genuinely distinct layers (header→state verifier; the Wagner-tree primitive; the legacy
+    bool shim), not 3 copies. The only removal candidate, the `lib/chain` shim `check_equihash_solution`, has
+    TWO production callers needing its legacy `bool(header, params)` signature — `lib/mining/src/gen.c:90`
+    and `app/jobs/src/validate_headers_validator.c:393` (plus 3 parity-seal tests). Removal = a real
+    caller-migration refactor with a full-history replay gate, NOT behaviour-preserving. Out of scope here.
+  - **base58/bech32** already single-homed in `domain/encoding/`; no lib wrapper exists. Nothing to do.
+  - **Lesson for the plan:** "duplicate-name" ≠ "duplicate definition". The earlier review (#7) and roadmap
+    FIX-6 over-counted; consensus de-dup here would have been a fork risk, not a tidy. Leave as-is.
 - [ ] **0.5 Promote domain-purity + lib-layering lint from RATCHET to HARD** (`check_lib_layering.sh`,
   the domain-purity gate). **Verify:** `make lint` green; an injected app-include into domain/ trips it.
 - [ ] **0.6 FIX-3 (reads): add `zcl_wait_*` long-poll RPCs** (waitforheight/waitforhalt/waitforblocker,
