@@ -320,6 +320,52 @@ static int test_fc_indices_dedup(void)
     return failures;
 }
 
+/* Soundness invariant: when chain_length > count, every sample MUST land
+ * on a distinct, in-range block — otherwise FlyClient verifies the same
+ * block twice and the probabilistic guarantee weakens.  The 255-retry
+ * rehash budget can be exhausted on short chains (observed ~2% of seeds
+ * at chain_length=100), so this swept a FIXED seed-set deterministically
+ * to exercise the exhaustion path and assert uniqueness every run.
+ * Deterministic: seeds are derived from a counter, NOT from the RNG, so
+ * this test cannot flake. */
+static int test_fc_indices_unique_seed_sweep(void)
+{
+    int failures = 0;
+    TEST("fc: generate_indices yields unique in-range indices for all seeds") {
+        /* Chain lengths that span the collision regime: 100 (exhaustion
+         * observed here) and 200 (no exhaustion). */
+        const uint64_t chain_lens[] = {100, 200};
+        const uint32_t num_seeds = 2000;
+
+        for (size_t cl = 0; cl < sizeof(chain_lens) / sizeof(chain_lens[0]); cl++) {
+            uint64_t chain_length = chain_lens[cl];
+
+            for (uint32_t s = 0; s < num_seeds; s++) {
+                /* Deterministic seed = SHA3 of the counter (no RNG). */
+                uint8_t seed[32];
+                sha3_256((const uint8_t *)&s, sizeof(s), seed);
+
+                uint64_t indices[FC_MAX_SAMPLES];
+                uint32_t count = 0;
+                fc_generate_indices(seed, chain_length, indices, &count);
+
+                ASSERT(count == FC_NUM_SAMPLES);
+
+                for (uint32_t i = 0; i < count; i++) {
+                    /* In range */
+                    ASSERT(indices[i] < chain_length);
+                    /* Distinct from every prior sample */
+                    for (uint32_t j = 0; j < i; j++) {
+                        ASSERT(indices[i] != indices[j]);
+                    }
+                }
+            }
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────── */
 
 int test_flyclient(void)
@@ -331,6 +377,7 @@ int test_flyclient(void)
     failures += test_fc_indices_recent_bias();
     failures += test_fc_indices_deterministic();
     failures += test_fc_indices_dedup();
+    failures += test_fc_indices_unique_seed_sweep();
 
     /* Sample verification */
     failures += test_fc_verify_valid_sample();

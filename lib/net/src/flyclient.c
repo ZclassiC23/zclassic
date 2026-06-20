@@ -119,6 +119,27 @@ void fc_generate_indices(const uint8_t seed[32], uint64_t chain_length,
                 }
                 if (!dup) break;
             }
+            /* Retry budget can be exhausted (observed for short chains,
+             * e.g. ~2% of seeds at chain_length=100): all 255 rehashes
+             * may collide with already-chosen recent-biased indices.
+             * Storing a duplicate here would silently verify the same
+             * block twice and weaken the soundness guarantee (each of
+             * the `count` samples must cover a DISTINCT block).  Since
+             * chain_length > count, a free slot is guaranteed to exist:
+             * linear-probe forward (wrapping) from the colliding index
+             * until we land on an unused one. */
+            if (dup) {
+                uint64_t probe = idx;
+                for (uint64_t step = 0; step < chain_length; step++) {
+                    bool taken = false;
+                    for (uint32_t j = 0; j < i; j++) {
+                        if (indices[j] == probe) { taken = true; break; }
+                    }
+                    if (!taken) { idx = probe; break; }
+                    probe++;
+                    if (probe >= chain_length) probe = 0;
+                }
+            }
         }
 
         indices[i] = idx;
@@ -227,6 +248,8 @@ bool fc_verify_response(const struct fc_response *resp,
                             "sample=%u h=%u valid=false pow_failed "
                             "nBits=%08x",
                             i, s->leaf.height, s->leaf.nBits);
+                // obs-ok:fc-pow-fail — fact already emitted structurally by
+                // the EV_FC_SAMPLE_VERIFIED event above; this is the echo.
                 fprintf(stderr, "FlyClient: sample %u (h=%u) FAILED PoW "
                         "check (nBits=0x%08x)\n",
                         i, s->leaf.height, s->leaf.nBits);
@@ -252,6 +275,8 @@ bool fc_verify_response(const struct fc_response *resp,
                valid_count, resp->num_samples,
                (unsigned long long)challenge->chain_length);
     } else {
+        // obs-ok:fc-chain-fail — fact already emitted structurally by the
+        // EV_FC_CHAIN_VERIFIED event above (all_valid=false); this is the echo.
         fprintf(stderr, "FlyClient: chain verification FAILED "
                 "(%u/%u samples valid)\n",
                 valid_count, resp->num_samples);
