@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint gate #14 — lib/ layer purity (regression ratchet).
+# Lint gate #14 — lib/ layer purity (HARD).
 #
 # Files under lib/ should not #include from app/controllers/, app/models/,
 # app/services/, or app/views/. lib/ is the foundation; app/ is the
@@ -7,15 +7,17 @@
 # doing something that belongs in app/, or relying on a struct/function
 # that should live in lib/.
 #
-# Deployment strategy: this codebase has many pre-existing violations
-# (architectural debt from earlier development). Rather than block CI
-# until every one is cleaned, the gate uses a baseline file that lists
-# accepted pre-existing violations. Any NEW violation not in the
-# baseline fails the build, ratcheting the count downward over time.
+# Promotion (architecture audit): the baseline has reached zero — there are
+# no grandfathered lib/ → app/ includes left. This gate is now HARD: ANY
+# violation (new OR a re-added baseline entry) fails the build. The baseline
+# is asserted to stay empty; adding an entry to "grandfather" a new violation
+# is itself a failure. (NOTE: the related domain/ source-purity ratchet does
+# not exist as a script yet — it is enforced implicitly by build include-path
+# scoping — so there is no second gate to promote here.)
 #
 # Baseline file: tools/scripts/lib_layering_baseline.txt
 #   Format: one "<file>:<include-line>" entry per line.
-#   Blank lines and # comments are ignored.
+#   Blank lines and # comments are ignored. MUST stay empty (HARD gate).
 #
 # Override on a specific line (preferred when you understand the trade-off
 # and want to keep the include): add `// lib-layer-ok:<tag>` after the
@@ -38,6 +40,17 @@ while IFS= read -r line; do
     baseline["$line"]=1
     baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
+
+# HARD gate: the baseline has reached zero and must stay empty. A non-empty
+# baseline would silently re-grandfather a lib/ → app/ include, so any entry
+# is itself a failure.
+if [ "$baseline_count" -ne 0 ]; then
+    echo ""
+    echo "check_lib_layering: $BASELINE must stay EMPTY (HARD gate) — found"
+    echo "  ${baseline_count} grandfathered entr(y/ies). Fix the lib/ include and"
+    echo "  delete the line instead of baselining it."
+    exit 1
+fi
 
 fail=0
 new_violations=()
@@ -65,7 +78,7 @@ while IFS= read -r f; do
 done < <(find lib -type f \( -name '*.c' -o -name '*.h' \) ! -path '*/test/*')
 
 if [ "$fail" = "0" ]; then
-    echo "check_lib_layering: clean — ${baseline_count} grandfathered violation(s), no new ones"
+    echo "check_lib_layering: clean — empty baseline (HARD), no lib/ → app/ includes"
     exit 0
 fi
 
@@ -76,10 +89,10 @@ for v in "${new_violations[@]}"; do
     echo "  $v"
 done
 echo ""
-echo "Fix options (preferred → fallback):"
+echo "Fix options (this is a HARD gate — baselining is NOT an option):"
 echo "  1. Delete the include if it's unused (the symbol may already come from elsewhere)."
 echo "  2. Replace with a forward declaration (struct fwd + extern fn decl)."
 echo "  3. Move the symbol down into lib/ where it can be referenced cleanly."
-echo "  4. Add an override marker '// lib-layer-ok:<tag>' to the include line."
-echo "  5. As last resort, add the file:include entry to $BASELINE (with a comment explaining)."
+echo "  4. As a deliberate, reviewed exception only, add an override marker"
+echo "     '// lib-layer-ok:<tag>' to the include line."
 exit 1

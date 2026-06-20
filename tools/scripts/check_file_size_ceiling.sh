@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Lint gate E1 — file-size ceiling for app/ and config/ .c files (RATCHET).
+# Lint gate E1 — file-size ceiling for app/ and config/ .c files (ADVISORY WARN).
+#
+# Per the architecture audit, E1 is now an advisory WARN, not a hard FAIL:
+# whole-file size is a cohesion SMELL, not a correctness rule. The hard
+# correctness gate is check_long_functions.sh (<=500 lines per function),
+# which STAYS enforced and fails the build. File-size signals here are
+# advisory — they still PRINT (prefixed "WARN:") but always exit 0, so a
+# big-but-cohesive file does not block CI while per-function size remains
+# enforced. To make file size blocking again, restore the `exit 1` below.
 #
 # Mega-modules cannot hide behind a wall of <500-LOC functions: even if
 # every function passes check-long-functions, a 1,900-line file is still
@@ -73,20 +81,25 @@ if [ "$fail" = "0" ]; then
 fi
 
 echo ""
-echo "check_file_size_ceiling: file-size ceiling violations"
+echo "WARN: check_file_size_ceiling: file-size ceiling violations (ADVISORY — non-blocking)"
 echo ""
 for v in "${new_violations[@]}"; do
-    echo "  NEW oversized file: $v"
+    echo "  WARN: NEW oversized file: $v"
 done
 for v in "${grown_violations[@]}"; do
-    echo "  REGRESSION: $v"
+    echo "  WARN: REGRESSION: $v"
 done
 echo ""
-echo "Fix options (preferred → fallback):"
+echo "Advisory only — this WARN does not fail the build. File size is a"
+echo "cohesion smell; the hard gate is check_long_functions.sh (<=500"
+echo "lines/function). Fix options (preferred → fallback):"
 echo "  1. Split the file along its seams (per-section helpers, separate"
 echo "     shape files) so each piece stays under $CEILING lines."
 echo "  2. For a baselined file that grew, shrink it back at or below its"
 echo "     recorded baseline LOC."
 echo "  3. As last resort, record the file in $BASELINE"
 echo "     (a reviewable line; the baseline must only shrink over time)."
-exit 1
+# E1 is an advisory WARN: report above is printed, but we exit 0 so a
+# large-but-cohesive file does not block CI. Per-function size stays HARD
+# (check_long_functions.sh). Restore `exit 1` to make file size blocking.
+exit 0

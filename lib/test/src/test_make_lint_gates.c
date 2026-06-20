@@ -900,8 +900,10 @@ static void unlink_rel(const char *rel)
         (void)unlink(path);
 }
 
-/* E1 — file-size ceiling: a NEW (non-baselined) app/.c file over the
- * 800-line ceiling trips the gate; removing it restores green. */
+/* E1 — file-size ceiling is now an ADVISORY WARN (not a hard FAIL): a NEW
+ * (non-baselined) app/.c file over the 800-line ceiling WARNS (still prints
+ * the report, but exits 0); removing it returns to a clean WARN-free run.
+ * The hard correctness gate is check_long_functions.sh (<=500/function). */
 static int t_e1_file_size_ceiling(void)
 {
     int failures = 0;
@@ -909,15 +911,31 @@ static int t_e1_file_size_ceiling(void)
     int baseline_rc = run_gate_script(E1_SCRIPT_REL, NULL);
     int planted = plant_oversized_file(E1_FIXTURE_DST, 900);
     int trip_rc = planted == 0 ? run_gate_script(E1_SCRIPT_REL, NULL) : -1;
+    /* Capture the WARN run's stdout so we can prove the report still PRINTS
+     * (the advisory must remain visible even though it no longer blocks). */
+    char *warn_out = NULL;
+    char warn_path[PATH_MAX];
+    int warn_read = (planted == 0 &&
+                     repo_path(warn_path, sizeof(warn_path),
+                               "test-tmp/zcl_gate_lint.out") == 0)
+                        ? read_entire_file(warn_path, &warn_out)
+                        : -1;
     unlink_rel(E1_FIXTURE_DST);
     int recover_rc = run_gate_script(E1_SCRIPT_REL, NULL);
-    TEST("[lint-gate] E1 file-size ceiling: clean, trips on oversized, recovers") {
+    TEST("[lint-gate] E1 file-size ceiling: clean, WARNS (exit 0) on oversized, recovers") {
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
-        ASSERT(trip_rc != 0);
+        /* WARN, not FAIL: oversized file now exits 0 (advisory). */
+        ASSERT(trip_rc == 0);
+        /* ...but the advisory report must still be printed. */
+        ASSERT(warn_read == 0);
+        ASSERT(warn_out != NULL && strstr(warn_out, "WARN:") != NULL);
+        ASSERT(warn_out != NULL &&
+               strstr(warn_out, "NEW oversized file") != NULL);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
+    free(warn_out);
     return failures;
 }
 
