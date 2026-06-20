@@ -398,9 +398,28 @@ static int count_skip_markers(const char *path)
     return n;
 }
 
+/* test_make_lint_gates plants real *.c fixture files into the live source
+ * tree at fixed paths (app/jobs/src/, domain/consensus/src/, ...) and then
+ * unlink()s them. Two of those paths sit INSIDE other groups' lint scan
+ * surfaces (the E5 fixture under app/jobs, the domain-purity fixture under
+ * domain/consensus), so if any other group's gate script greps/finds the
+ * tree concurrently it can readdir a fixture and then have open() race the
+ * unlink — grep exits 2, the gate treats >=2 as FATAL. The cure is to run
+ * this group ALONE (run_group_exclusive, a synchronous pre-pass) before the
+ * parallel pool dispatches anything, so no concurrent scanner can ever
+ * observe a transient fixture.
+ *
+ * The group's stored name carries the ROW_TEST "test_" prefix
+ * ("test_make_lint_gates"), so compare on the SUFFIX after that prefix —
+ * a bare strcmp against "make_lint_gates" silently never matched and left
+ * the guard dead (the group ran in the 32-worker pool and flaked the
+ * suite). Stripping the prefix here keeps the predicate matching whether
+ * the caller passes the stored name or the bare group name. */
 static bool group_requires_exclusive_repo(const char *name)
 {
-    return name && strcmp(name, "make_lint_gates") == 0;
+    if (!name) return false;
+    if (strncmp(name, "test_", 5) == 0) name += 5;
+    return strcmp(name, "make_lint_gates") == 0;
 }
 
 static void run_group_exclusive(size_t idx, pid_t parent_pid,
