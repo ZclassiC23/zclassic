@@ -20,6 +20,7 @@
 #include "util/timedata.h"
 #include "event/event.h"
 #include "util/log_macros.h"
+#include "jobs/reducer_frontier.h"  // lib-layer-ok:provable-tip-served-to-peers
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -145,7 +146,13 @@ void msg_version_build(struct version_message *ver,
 void push_version(struct msg_processor *mp, struct p2p_node *node)
 {
     struct version_message ver;
-    int start_height = active_chain_height(&mp->main_state->chain_active);
+    /* Advertise the PROVABLE tip (H*), not the sync-window/lookahead tip:
+     * start_height is an external claim to peers about where our chain ends,
+     * so it must be the height we can prove, never one that can rewind under a
+     * reorg. Lock-free cached atomic — see reducer_frontier_provable_tip_cached.
+     * (void) the window arg's owner intentionally: internal window readers stay
+     * on active_chain_height; only this OUTWARD claim switches to H*.) */
+    int start_height = reducer_frontier_provable_tip_cached();
     msg_version_build(&ver, mp, node, start_height);
 
     struct byte_stream s;

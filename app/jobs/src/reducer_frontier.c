@@ -68,6 +68,34 @@ int32_t reducer_frontier_floor(void)
     return refold_in_progress() ? 0 : reducer_frontier_compiled_anchor();
 }
 
+/* The PROVABLE TIP cache (H*) served to external consumers. Init to the
+ * irreversible finality anchor so a read before the first finalize advance
+ * returns a sane >= anchor floor (never -1 / never a stale high). Refreshed
+ * by reducer_frontier_provable_tip_set at the finalize-advance and reorg-rewind
+ * chokepoints (both under progress_store_tx_lock); read lock-free by the
+ * external accessors. See reducer_frontier.h. */
+static _Atomic int_least32_t g_provable_tip = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+
+int32_t reducer_frontier_provable_tip_cached(void)
+{
+    return (int32_t)atomic_load(&g_provable_tip);
+}
+
+void reducer_frontier_provable_tip_set(int32_t hstar)
+{
+    /* Store verbatim: the caller passes a value already produced by
+     * reducer_frontier_compute_hstar, whose HARD GUARD clamps it >= the
+     * finality anchor on a normal boot (and legitimately below it only during
+     * a from-genesis refold, where reporting the folded prefix is correct).
+     * Re-clamping here would mask a refold's true (below-anchor) H*. */
+    atomic_store(&g_provable_tip, (int_least32_t)hstar);
+}
+
+void reducer_frontier_provable_tip_reset(void)
+{
+    atomic_store(&g_provable_tip, (int_least32_t)REDUCER_FRONTIER_TRUSTED_ANCHOR);
+}
+
 /* Per-row reads return a tri-state so contiguity and discrimination can
  * tell "no row" apart from "ok=0 row". */
 enum log_row_state {

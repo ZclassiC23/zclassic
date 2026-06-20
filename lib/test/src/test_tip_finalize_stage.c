@@ -6,6 +6,7 @@
 #include "chain/chain.h"
 #include "json/json.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/reducer_frontier.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -26,6 +27,12 @@
     if ((expr)) printf("OK\n"); \
     else { printf("FAIL\n"); failures++; } \
 } while (0)
+
+/* Test-only override of the compiled SHA3-checkpoint floor — lets H* track the
+ * synthetic sub-checkpoint heights instead of clamping up to the mainnet
+ * anchor (3,056,758). Forward-declared (defined ZCL_TESTING-only in
+ * reducer_frontier.c); the same pattern test_refold_progress_floor.c uses. */
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 enum tf_fail_kind {
     TF_FAIL_NONE = 0,
@@ -194,6 +201,118 @@ static bool seed_script_log(sqlite3 *db, int height, int ok,
     bool done = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return done;
+}
+
+/* Seed a stage_cursor row to `cursor` for `name`. */
+static bool seed_cursor_tf(sqlite3 *db, const char *name, int cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+        "VALUES(?, ?, 1)", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, cursor);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Seed a simple (height, status, ok) *_log for h in [0, n) at ok=1, plus its
+ * cursor at n. body_persist_log uses (height, source, ok); the others use
+ * (height, status, ok). Mirrors the per-stage schema the reducer reads. */
+static bool seed_simple_log_tf(sqlite3 *db, const char *table,
+                               const char *cursor_name, int n)
+{
+    char ddl[256];
+    bool body = strcmp(table, "body_persist_log") == 0;
+    snprintf(ddl, sizeof(ddl),
+        "CREATE TABLE IF NOT EXISTS %s ("
+        "  height INTEGER PRIMARY KEY, %s TEXT, ok INTEGER NOT NULL)",
+        table, body ? "source" : "status");
+    if (!exec_sql(db, ddl))
+        return false;
+    char ins[256];
+    snprintf(ins, sizeof(ins),
+        "INSERT OR REPLACE INTO %s(height, %s, ok) VALUES(?, %s, 1)",
+        table, body ? "source" : "status",
+        body ? "'fixture'" : "'verified'");
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, ins, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    for (int h = 0; h < n; h++) {
+        sqlite3_bind_int(st, 1, h);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return false;
+        }
+        sqlite3_reset(st);
+    }
+    sqlite3_finalize(st);
+    return seed_cursor_tf(db, cursor_name, n);
+}
+
+/* Seed validate_headers_log (height, hash, ok) for h in [0, n) at ok=1 with
+ * the synthetic chain hash, plus its cursor at n. The reducer reads .hash for
+ * the C3 hash-agreement check. */
+static bool seed_validate_headers_tf(sqlite3 *db, struct synth_chain_tf *sc,
+                                     int n)
+{
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "  fail_reason TEXT, validated_at INTEGER)"))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO validate_headers_log"
+        "(height, hash, ok, validated_at) VALUES(?, ?, 1, 1)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    for (int h = 0; h < n; h++) {
+        sqlite3_bind_int(st, 1, h);
+        sqlite3_bind_blob(st, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return false;
+        }
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+    }
+    sqlite3_finalize(st);
+    return seed_cursor_tf(db, "validate_headers", n);
+}
+
+/* Seed ALL upstream reducer logs (validate_headers, script_validate,
+ * body_persist, proof_validate) ok=1 for h in [0, n), so the MIN-fold in
+ * reducer_frontier_compute_hstar can actually reach the synthetic frontier
+ * instead of being pinned to the anchor by an unseeded cursor=0 log. The
+ * harness's tf_setup already seeds utxo_apply + the tip_finalize stage; this
+ * fills the remaining four logs (with matching synthetic hashes, so the C3
+ * hash-agreement check between validate_headers and script_validate passes).
+ * H* then equals MIN over all six contiguous ok=1 prefixes. */
+static bool seed_upstream_logs_tf(sqlite3 *db, struct synth_chain_tf *sc, int n)
+{
+    if (!seed_validate_headers_tf(db, sc, n))
+        return false;
+    for (int h = 0; h < n; h++)
+        if (!seed_script_log(db, h, 1, &sc->hashes[h]))
+            return false;
+    if (!seed_cursor_tf(db, "script_validate", n))
+        return false;
+    return seed_simple_log_tf(db, "body_persist_log", "body_persist", n) &&
+           seed_simple_log_tf(db, "proof_validate_log", "proof_validate", n);
+}
+
+/* Re-derive H* directly from the durable state, under the progress lock the
+ * reducer requires — the value the cache MUST mirror at steady state. */
+static int32_t compute_hstar_now(sqlite3 *db)
+{
+    int32_t hs = -999, sf = 0;
+    progress_store_tx_lock();
+    bool ok = reducer_frontier_compute_hstar(db, &hs, &sf);
+    progress_store_tx_unlock();
+    return ok ? hs : -999;
 }
 
 static bool log_row_at(sqlite3 *db, int height, int *out_ok,
@@ -645,6 +764,93 @@ int test_tip_finalize_stage(void)
                  log_tip_hash_at(progress_store_db(), 1, &logged) &&
                  uint256_eq(&logged, sc.blocks[2].phashBlock));
         tf_teardown(dir, &ms, &sc);
+    }
+
+    /* Phase 0.2 — the EXTERNAL provable-tip cache (H*) MIRRORS compute_hstar at
+     * steady state and is LOWERED at the reorg-rewind chokepoint. Lower the
+     * compiled-anchor floor so H* reflects the synthetic heights (without the
+     * override compute_hstar clamps the cache up to the mainnet checkpoint).
+     *
+     * tf_setup only seeds utxo_apply; reducer_frontier_compute_hstar MIN-folds
+     * over SIX logs (validate_headers, script_validate, body_persist,
+     * proof_validate, utxo_apply, tip_finalize), so the other four must be
+     * seeded too or H* = MIN(...) stays pinned to the anchor (0) by their
+     * unseeded cursor=0 logs (the original RED assertion's defect). We seed all
+     * four ok=1 with matching synthetic hashes so the C3 hash-agreement check
+     * passes and H* can reach the real synthetic frontier. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        reducer_frontier_test_set_compiled_anchor(0);
+        TF_CHECK("provable_tip: setup",
+                 tf_setup("provable_tip", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("provable_tip: seed upstream reducer logs to the frontier",
+                 seed_upstream_logs_tf(progress_store_db(), &sc, 3));
+
+        /* Drain the clean prefix: every upstream log + tip_finalize now reaches
+         * a contiguous ok=1 prefix of 2 (rows at heights 1 and 2 above the
+         * anchor 0), so H* = MIN over all six = 2. The cache must equal it. */
+        TF_CHECK("provable_tip: initial drain",
+                 tip_finalize_stage_drain(100) == 3);
+        int32_t hstar_real = compute_hstar_now(progress_store_db());
+        TF_CHECK("provable_tip: real H* reaches the synthetic frontier",
+                 hstar_real == 2);
+        TF_CHECK("provable_tip: cache mirrors compute_hstar exactly",
+                 reducer_frontier_provable_tip_cached() == hstar_real);
+
+        /* Capture the proven pre-reorg tip (== the real H* == 2). */
+        int32_t pre_reorg = reducer_frontier_provable_tip_cached();
+        TF_CHECK("provable_tip: pre-reorg cache equals the real tip",
+                 pre_reorg == 2);
+
+        /* Pin a deterministic frontier floor BELOW the old tip: utxo_apply's
+         * row at height 2 becomes ok=0, so its contiguous ok=1 prefix caps at 1.
+         * This makes the post-rewind H* (and the recompute) settle at 1
+         * regardless of any same-step re-advance — the rewind LOWERING is then
+         * observable and stable, not transient. */
+        TF_CHECK("provable_tip: cap utxo_apply frontier at height 1",
+                 exec_sql(progress_store_db(),
+                    "UPDATE utxo_apply_log SET ok=0, status='value_overflow' "
+                    "WHERE height=2"));
+
+        /* Install a coherent higher-work fork that diverges below the tip. Clear
+         * BLOCK_HAVE_DATA on the fork's lookahead (block[2]) so that after the
+         * reorg rewinds the tip_finalize cursor it HOLDS (have_data_missing,
+         * JOB_IDLE) instead of immediately re-finalizing — the ONLY refresh that
+         * runs is the reorg-rewind one, so the assertion isolates that site. */
+        sc.hashes[2].data[0] = 0xf2;
+        sc.hashes[3].data[0] = 0xf3;
+        sc.blocks[2].pprev = &sc.blocks[1];
+        sc.blocks[3].pprev = &sc.blocks[2];
+        sc.blocks[2].nStatus = BLOCK_VALID_SCRIPTS;  /* HAVE_DATA cleared */
+        arith_uint256_set_u64(&sc.blocks[2].nChainWork, 20);
+        arith_uint256_set_u64(&sc.blocks[3].nChainWork, 30);
+        TF_CHECK("provable_tip: installs coherent fork",
+                 active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]));
+
+        uint64_t reorgs_before = tip_finalize_stage_reorg_detected_total();
+        /* The step detects the reorg and rewinds the tip_finalize cursor (3->1),
+         * lowering the cache at the rewind chokepoint, then holds (the fork
+         * lookahead's body is absent). The step result is IDLE; what matters is
+         * the rewind fired and lowered the proven tip. */
+        tip_finalize_stage_step_once();
+        TF_CHECK("provable_tip: reorg rewind fired",
+                 tip_finalize_stage_reorg_detected_total() == reorgs_before + 1);
+
+        int32_t post_reorg = reducer_frontier_provable_tip_cached();
+        TF_CHECK("provable_tip: reorg STRICTLY LOWERED the cached tip",
+                 post_reorg < pre_reorg);
+        TF_CHECK("provable_tip: lowered cache still mirrors compute_hstar",
+                 post_reorg == compute_hstar_now(progress_store_db()));
+        TF_CHECK("provable_tip: lowered cache holds at/above the anchor",
+                 post_reorg >= 0);
+
+        /* Shutdown mirrors the served-tip reset back to the finality anchor. */
+        tf_teardown(dir, &ms, &sc);
+        TF_CHECK("provable_tip: shutdown reset cache to anchor",
+                 reducer_frontier_provable_tip_cached() ==
+                     REDUCER_FRONTIER_TRUSTED_ANCHOR);
+        reducer_frontier_test_set_compiled_anchor(-1); /* restore mainnet floor */
     }
 
     {

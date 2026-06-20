@@ -17,6 +17,7 @@
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "util/log_macros.h"
@@ -36,7 +37,12 @@ bool rpc_getblockcount(const struct json_value *params, bool help,
         json_set_str(result, "Not initialized");
         LOG_FAIL("blockchain", "getblockcount: main_state not initialized");
     }
-    json_set_int(result, active_chain_height(&ctx->main_state->chain_active));
+    /* Report the PROVABLE tip (H*), not the sync-window/lookahead tip: an
+     * external getblockcount must never name a height we cannot prove or that
+     * rewinds under a reorg. Cached lock-free atomic refreshed once per
+     * finalized advance / reorg rewind — see reducer_frontier_provable_tip_cached.
+     * Equals the real tip at steady state; LOWER mid-fold / post-reorg. */
+    json_set_int(result, reducer_frontier_provable_tip_cached());
     return true;
 }
 
@@ -161,7 +167,10 @@ void block_header_to_json(const struct block_index *bi,
     struct blockchain_context *ctx = blockchain_ctx();
     int64_t confirmations = 1;
     if (ctx->main_state) {
-        int tip_height = active_chain_height(&ctx->main_state->chain_active);
+        /* Confirmations is an EXTERNAL count relative to the provable tip (H*),
+         * matching getblockcount above; a block at/above H* shows 1 (or 0 only
+         * if H* hasn't reached it). Cached atomic — never the window tip. */
+        int tip_height = reducer_frontier_provable_tip_cached();
         int64_t c = 1 + (int64_t)tip_height - (int64_t)bi->nHeight;
         confirmations = c > 0 ? c : 0;
     }

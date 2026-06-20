@@ -5,6 +5,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/refold_progress.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/block_header_emit.h"
 #include "tip_finalize_anchor_internal.h"
 #include "tip_finalize_post_step.h"
@@ -127,6 +128,34 @@ static bool get_last_advance(int64_t *height, uint8_t hash[32])
     memcpy(hash, g_last_advance_hash, 32);
     zcl_mutex_unlock(&g_last_advance_hash_mu);
     return true;
+}
+
+/* Recompute H* (the deepest provably-consistent height) from the durable
+ * progress.kv state and publish it into the external provable-tip cache.
+ *
+ * Called at exactly two chokepoints — the finalize ADVANCE (step_finalize,
+ * once per finalized block) and the reorg REWIND
+ * (rewind_cursor_if_active_chain_reorged, once per detected reorg) — both of
+ * which already hold progress_store_tx_lock() (acquired by
+ * tip_finalize_stage_step_once). reducer_frontier_compute_hstar is PURE
+ * SELECT-only and REQUIRES the caller hold that lock, so this must never run
+ * off those two paths. Cost is one O(cursor-anchor) fold per RARE event, never
+ * per RPC. On a read error it leaves the cache unchanged (logs, does not crash)
+ * — a stale-but-bounded H* is strictly better than serving -1 or a wrong tip.
+ *
+ * CALLER MUST hold progress_store_tx_lock(). */
+static void tf_refresh_provable_tip(sqlite3 *db)
+{
+    if (!db)
+        return;
+    int32_t hs = 0, sf = 0;
+    if (!reducer_frontier_compute_hstar(db, &hs, &sf)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] provable-tip refresh: compute_hstar failed "
+                 "(cache holds prior H*)");
+        return;
+    }
+    reducer_frontier_provable_tip_set(hs);
 }
 
 
@@ -287,6 +316,18 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
         LOG_WARN("tip_finalize", "[tip_finalize] reorg rewind failed from=%llu to=%llu", (unsigned long long)cursor, (unsigned long long)rewind_to);
         return false;
     }
+
+    /* LOWER the external provable-tip cache (H*) on the reorg rewind. This is
+     * the #1 site: stage_set_cursor just dropped the tip_finalize cursor, but
+     * g_last_advance_height (and thus active_chain_height) is raise-only and
+     * stays stale-high until a new finalize republishes. Without this refresh
+     * the external readers (getblockcount / P2P start_height) would serve an
+     * unproven height across the reorg window. We hold progress_store_tx_lock
+     * here (tip_finalize_stage_step_once), and this is the SAME chokepoint every
+     * other unwind path (process_block_invalidate, utxo_apply_delta_reorg,
+     * process_block_self_heal) flows through via reducer_kick -> tip_finalize
+     * drain, so refreshing here lowers the cache for ALL of them. */
+    tf_refresh_provable_tip(db);
 
     atomic_fetch_add(&g_reorg_detected_total, 1);
     atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -505,6 +546,14 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
          * whole header graph when a peer re-delivers the tip header. */
         update_last_advance(new_tip->nHeight, new_tip->phashBlock->data);
     }
+    /* Refresh the EXTERNAL provable-tip cache (H*) on the finalize advance.
+     * The durable "finalized" ok=1 row was inserted above (log_insert), and we
+     * still hold progress_store_tx_lock (tip_finalize_stage_step_once), so the
+     * recompute reads the just-committed prefix. One O(n) fold per finalized
+     * block — never per RPC. Runs on EVERY finalized advance (not only when
+     * `publish` fires): H* is derived from durable state and must not stay stale
+     * high even on a non-republishing re-finalize. */
+    tf_refresh_provable_tip(db);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }
@@ -640,6 +689,9 @@ void tip_finalize_stage_shutdown(void)
     for (int i = 0; i < TF_BLOCKED_CLASS_N; i++)
         atomic_store(&g_blocked_class_total[i], (uint64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    /* Mirror the served-tip reset into the external provable-tip cache so a
+     * stale-high H* from this run cannot leak into the next boot. */
+    reducer_frontier_provable_tip_reset();
     atomic_store(&g_last_precondition_height, (int64_t)-1);
     log_throttle_reset(&g_precondition_throttle);
     log_throttle_reset(&g_cursor_gap_throttle);
@@ -748,7 +800,7 @@ int64_t tip_finalize_stage_last_height(void) { return atomic_load(&g_last_advanc
 
 /* Test-only: reset the published served-tip height to -1 (a stale high value
  * from a prior group without shutdown() poisons later active_chain_tip reads). */
-void tip_finalize_stage_test_reset(void) { atomic_store(&g_last_advance_height, (int64_t)-1); }
+void tip_finalize_stage_test_reset(void) { atomic_store(&g_last_advance_height, (int64_t)-1); reducer_frontier_provable_tip_reset(); }
 uint64_t tip_finalize_stage_finalized_total(void) { return atomic_load(&g_finalized_total); }
 uint64_t tip_finalize_stage_upstream_failed_total(void) { return atomic_load(&g_upstream_failed_total); }
 uint64_t tip_finalize_stage_reorg_detected_total(void) { return atomic_load(&g_reorg_detected_total); }

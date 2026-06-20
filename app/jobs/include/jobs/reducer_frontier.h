@@ -52,6 +52,37 @@
  * anchor. Cheap (atomic cache read + at most the compiled-anchor read). */
 int32_t reducer_frontier_floor(void);
 
+/* The PROVABLE TIP cache (H*), served to EXTERNAL consumers (getblockcount,
+ * P2P version.start_height, zcl_status chain.height, explorer tip, getblock
+ * confirmations). It is a single cached atomic refreshed ONCE per finalized
+ * advance and ONCE per reorg rewind — never per RPC (compute_hstar is O(n)).
+ *
+ * Internal sync-window callers (header-admit window, snapshot lookahead, the
+ * watchdog/reconcile/lag detectors, MMR catchup) keep reading
+ * active_chain_height() — they legitimately need the lookahead/window tip,
+ * which can sit ABOVE H* by the pipeline depth. This cache is the SEPARATE,
+ * provable-prefix number, equal to the real tip at steady state and LOWER
+ * mid-fold or after a reorg.
+ *
+ * Init value is REDUCER_FRONTIER_TRUSTED_ANCHOR (the irreversible finality
+ * floor) — a sane >= anchor fallback before the first refresh. The getter is
+ * a plain lock-free atomic load; never takes progress_store_tx_lock(). */
+int32_t reducer_frontier_provable_tip_cached(void);
+
+/* Refresh the cached provable tip (H*). Stores `hstar` verbatim — the caller
+ * passes the value it just computed via reducer_frontier_compute_hstar (which
+ * already clamps to the finality floor), so this never re-clamps and faithfully
+ * mirrors a reorg-LOWERED H*. Called ONLY at the two chokepoints under
+ * progress_store_tx_lock: the finalize advance (tip_finalize_stage.c) and the
+ * reorg-rewind (rewind_cursor_if_active_chain_reorged). Cross-thread-safe
+ * (atomic store); the getter is the matching atomic load. */
+void reducer_frontier_provable_tip_set(int32_t hstar);
+
+/* Reset the cached provable tip to the finality anchor — mirrors the
+ * tip_finalize g_last_advance_height reset on shutdown / test_reset so a stale
+ * high value from a prior run/test group cannot leak into a fresh boot. */
+void reducer_frontier_provable_tip_reset(void);
+
 /* Durable trusted-base declaration (progress_meta, 8-byte LE height blob +
  * 32-byte hash blob — the coins_applied_height storage convention). Written
  * RAISE-ONLY by the cold-import/snapshot seed (tip_finalize_anchor.c);

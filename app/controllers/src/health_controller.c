@@ -8,6 +8,7 @@
 #include "services/block_source_policy.h"
 #include "services/sync_monitor.h"
 #include "services/legacy_mirror_sync_service.h"
+#include "jobs/reducer_frontier.h"
 #include "validation/chainstate.h"
 #include "net/p2p_game.h"
 #include "net/msgprocessor.h"
@@ -145,8 +146,10 @@ static bool rpc_getsyncdetail(const struct json_value *params, bool help,
         struct json_value chain = {0};
         json_set_object(&chain);
 
+        /* Operator-facing chain.height = the PROVABLE tip (H*), not the
+         * sync-window tip. Cached lock-free atomic; -1 only pre-init. */
         int tip_h = ctx->main_state ?
-            active_chain_height(&ctx->main_state->chain_active) : -1;
+            reducer_frontier_provable_tip_cached() : -1;
         json_push_kv_int(&chain, "height", tip_h);
 
         struct block_index *tip = ctx->main_state ?

@@ -14,6 +14,7 @@
 #include "chain/pow.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
+#include "jobs/reducer_frontier.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include <stdio.h>
@@ -115,8 +116,14 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
 {
     struct explorer_context *ctx = explorer_ctx();
 
-    int tip = active_chain_height(&ctx->main_state->chain_active);
-    const struct block_index *tip_bi = active_chain_tip(&ctx->main_state->chain_active);
+    /* Externally-served explorer tip = the PROVABLE tip (H*). The block-list
+     * walk below starts here and steps DOWN via active_chain_at, which is
+     * always valid at/below H* (those blocks are in the window). */
+    int tip = reducer_frontier_provable_tip_cached();
+    const struct block_index *tip_bi =
+        active_chain_at(&ctx->main_state->chain_active, tip);
+    if (!tip_bi)
+        tip_bi = active_chain_tip(&ctx->main_state->chain_active);
 
     size_t mp_count = ctx->mempool ? tx_mempool_size(ctx->mempool) : 0;
     uint64_t mp_bytes = ctx->mempool ? tx_mempool_total_size(ctx->mempool) : 0;

@@ -58,6 +58,7 @@
 #include "support/cleanse.h"
 #include "event/event.h"
 #include "config/runtime.h"
+#include "jobs/refold_progress.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -353,6 +354,19 @@ int node_db_catchup_service_run(struct node_db *ndb,
 
     if (!ndb || !ndb->open || !chain)
         LOG_ERR("sync", "catchup: invalid args (ndb=%p, chain=%p)", (void *)ndb, (void *)chain);
+
+    /* Phase 0.2b — skip the node.db catchup while a from-genesis refold runs.
+     * The refold re-walks the frozen prefix and indexes ZERO readable blocks
+     * during the window, so every ~5 s re-trigger (boot_background_workers.c)
+     * would take the node.db writer lock, find no tip hash, log
+     * "catchup: final commit missing tip hash", and roll back — pure log spam +
+     * lock contention against the fold. Returning 0 ("no work this pass") here
+     * short-circuits before turbo-mode setup / node_db_begin, the single
+     * chokepoint both call sites (boot loop + sync_controller) funnel through.
+     * Mirrors the proven utxo_mirror_sync_run_once guard. The first post-refold
+     * pass resumes catchup normally once refold_in_progress() clears. */
+    if (refold_in_progress())
+        return 0;
 
     int db_tip = node_db_sync_get_tip_height(ndb);
     int chain_tip = active_chain_height(chain);
