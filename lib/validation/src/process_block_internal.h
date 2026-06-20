@@ -133,8 +133,6 @@ void process_block_maybe_trigger_hot_loop_exit(int height,
 
 /* process_block_flush_policy.c */
 struct coins_view_sqlite *process_block_coins_sqlite_ptr(void);
-bool flush_coins_if_needed(struct coins_view_cache *coins_tip, bool force);
-void sapling_checkpoint_maybe_flush(int height);
 bool sapling_tree_persist_once(void);
 
 /* process_block_index.c helpers. find_block_pos +

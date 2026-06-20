@@ -5,9 +5,7 @@
  * Contents:
  *   - g_flush_policy + tunable setter
  *   - g_coins_sqlite_ptr, g_sapling_tree_for_flush, g_sapling_ckpt_path
- *   - sapling_checkpoint_maybe_flush
  *   - sapling_tree_persist_once
- *   - flush_coins_if_needed (the per-block coins flush gate)
  *   - ZCL_TESTING hooks */
 
 #include <stdatomic.h>
@@ -55,13 +53,7 @@ static struct flush_policy g_flush_policy = {
     .max_entries    = 500000,
     .block_interval = 0,
 };
-static _Atomic int64_t g_last_coins_flush = 0;
-static _Atomic int64_t g_blocks_since_flush = 0;
 
-/* Sapling tree checkpoint — persist every N blocks so SIGKILL only
- * loses ~N blocks of tree state (seconds to rebuild) instead of the
- * full tree (5+ minutes). */
-#define SAPLING_TREE_CHECKPOINT_INTERVAL 1000
 static _Atomic int64_t g_blocks_since_sapling_save = 0;
 static _Atomic int g_sapling_persist_fail_count = 0;
 static _Atomic int g_sapling_persist_test_force_fail = 0;
@@ -113,22 +105,6 @@ void set_sapling_checkpoint_datadir(const char *datadir)
         g_sapling_ckpt_path[0] = '\0';
 }
 
-void sapling_checkpoint_maybe_flush(int height)
-{
-    if (!g_sapling_tree_for_flush || g_sapling_ckpt_path[0] == '\0')
-        return;
-    if (height < 0)
-        return;
-    if ((height % SAPLING_CHECKPOINT_BLOCK_INTERVAL) != 0)
-        return;
-    /* Best-effort: a failed flush is not fatal — the next interval
-     * will retry, and the node_state-backed persist path still runs
-     * as a secondary belt. */
-    (void)sapling_tree_flush_checkpoint(g_sapling_tree_for_flush,
-                                        (int64_t)height,
-                                        g_sapling_ckpt_path);
-}
-
 bool sapling_tree_persist_once(void)
 {
     struct node_db *ndb = process_block_node_db_internal();
@@ -178,138 +154,6 @@ void set_flush_policy(int64_t interval_secs, size_t max_entries,
     g_flush_policy.block_interval = block_interval;
     printf("flush_policy: interval=%llds max_entries=%zu block_interval=%d\n",
            (long long)interval_secs, max_entries, block_interval);
-}
-
-bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
-                           bool force)
-{
-    int64_t now = GetTime();
-    if (g_last_coins_flush == 0)
-        g_last_coins_flush = now;
-
-    g_blocks_since_flush++;
-    g_blocks_since_sapling_save++;
-
-    bool time_flush = (now - g_last_coins_flush) > g_flush_policy.interval_secs;
-    bool size_flush = coins_tip->cache_coins.size > g_flush_policy.max_entries;
-    bool block_flush = g_flush_policy.block_interval > 0 &&
-                       g_blocks_since_flush >= g_flush_policy.block_interval;
-
-    if (!force && !time_flush && !size_flush && !block_flush) {
-        /* Even without a full coins flush, periodically persist the
-         * Sapling commitment tree so SIGKILL only loses ~1000 blocks
-         * of tree state (seconds to rebuild) instead of all of it. */
-        if (g_sapling_tree_for_flush &&
-            g_blocks_since_sapling_save >= SAPLING_TREE_CHECKPOINT_INTERVAL) {
-            struct node_db *sap_ndb = process_block_node_db_internal();
-            if (app_runtime_node_db_handle_open(sap_ndb)) {
-                struct byte_stream ts;
-                stream_init(&ts, 4096);
-                if (incremental_tree_serialize(g_sapling_tree_for_flush, &ts)) {
-                    if (app_runtime_node_db_state_set(
-                            sap_ndb, "sapling_tree", ts.data, ts.size)) {
-                        g_blocks_since_sapling_save = 0;
-                        (void)app_runtime_node_db_wal_checkpoint_passive(
-                            sap_ndb);
-                    }
-                }
-                stream_free(&ts);
-            }
-        }
-        return true;
-    }
-
-
-    /* Flush node_db batch first — coins_flush needs the write lock. */
-    struct node_db *ndb = process_block_node_db_internal();
-    app_runtime_node_db_sync_flush_if_needed(ndb);
-
-    size_t batched = (size_t)g_blocks_since_flush;
-
-    /* Use batch_write_ex to write UTXO commitment atomically inside
-     * the same SAVEPOINT transaction as the coins flush. This eliminates
-     * the race window where a concurrent reader could block the next
-     * SAVEPOINT between flush and commitment write. */
-    bool ok;
-    if (g_coins_sqlite_ptr) {
-        ok = coins_view_sqlite_batch_write_ex( // one-write-path-ok:process-block-flush-policy
-            g_coins_sqlite_ptr, &coins_tip->cache_coins,
-            &coins_tip->hash_block, &coins_tip->commitment);
-        if (ok) {
-            coins_map_free(&coins_tip->cache_coins);
-            coins_map_init(&coins_tip->cache_coins);
-        } else {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "WARNING: coins cache flush FAILED — retaining "
-                    "%zu dirty entries for retry\n",
-                    coins_tip->cache_coins.size);
-        }
-    } else {
-#ifdef ZCL_TESTING
-        ok = coins_view_cache_flush_for_testing(
-            coins_tip);
-#else
-        LOG_FAIL("flush",
-                 "coins SQLite writer is not configured; refusing legacy "
-                 "coins_view_cache_flush fallback");
-#endif
-    }
-
-    if (ok) {
-        g_last_coins_flush = now;
-        g_blocks_since_flush = 0;
-
-        /* Persist Sapling commitment tree state */
-        if (app_runtime_node_db_handle_open(ndb) &&
-            g_sapling_tree_for_flush) {
-            ok = sapling_tree_persist_once() && ok;
-        }
-
-        const char *trigger = force ? "forced" : time_flush ? "periodic" :
-                              size_flush ? "cache-full" : "block-interval";
-        event_emitf(EV_COINS_FLUSH, 0, "%s batched=%zu entries=%zu",
-                    trigger, batched, coins_tip->cache_coins.size);
-        if (batched >= 100)
-            printf("flush_coins: wrote %s (%zu blocks batched)\n",
-                   trigger, batched);
-
-        /* WAL checkpoint after every successful flush — prevents WAL
-         * from growing to multi-GB during sustained block processing.
-         * A 6GB WAL was observed in production, blocking all operations.
-         * Checkpointing on every flush keeps WAL size bounded. */
-        if (app_runtime_node_db_handle_open(ndb))
-            (void)app_runtime_node_db_wal_checkpoint(ndb);
-    } else {
-        event_emitf(EV_COINS_FLUSH_FAILED, 0, "flush returned false");
-        /* If there's nothing dirty in the cache, the flush "failure" is
-         * harmless — nothing was lost. This happens when force-flush
-         * triggers before any blocks are connected (SQLITE_BUSY from
-         * background threads). */
-        if (coins_tip->cache_coins.size == 0 && batched <= 1) {
-            /* Empty cache — nothing to flush, not fatal */
-            return true;
-        }
-        /* During IBD (many blocks since last flush), a flush failure
-         * is likely SQLITE_BUSY from lock contention. Don't treat as
-         * fatal — retry on next interval. The coins stay in memory. */
-        if (batched > 10 && coins_tip->cache_coins.size < 2000000) {
-            fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "flush_coins: BUSY — coins cached in memory, "
-                    "will retry (%zu blocks batched, %zu entries)\n",
-                   batched, coins_tip->cache_coins.size);
-            return true; /* non-fatal during IBD */
-        }
-        if (coins_tip->cache_coins.size >= 2000000)
-            LOG_FAIL("flush",
-                     "CRITICAL — cache has %zu entries and flush keeps failing; "
-                     "halting to prevent OOM",
-                     coins_tip->cache_coins.size);
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "flush_coins: FAILED to flush coins cache to disk "
-                "(%zu blocks batched, %zu entries)\n",
-                batched, coins_tip->cache_coins.size);
-    }
-    return ok;
 }
 
 #ifdef ZCL_TESTING

@@ -136,14 +136,3 @@ struct block_tree_db *process_block_get_block_tree(void)
 {
     return g_active_block_tree;
 }
-
-bool process_block_flush_coins(struct coins_view_cache *coins_tip,
-                               bool force)
-{
-    return flush_coins_if_needed(coins_tip, force);
-}
-
-bool process_block_persist_sapling_tree(void)
-{
-    return sapling_tree_persist_once();
-}

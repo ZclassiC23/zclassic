@@ -31,15 +31,4 @@ bool process_block_commit_tip_ext(struct main_state *ms,
                                   const char *reason,
                                   bool update_header_tip);
 
-/* Force a coins flush (force=true) or a policy-gated flush
- * (force=false). Returns false on a hard flush failure that the
- * caller must surface. */
-bool process_block_flush_coins(struct coins_view_cache *coins_tip,
-                               bool force);
-
-/* Persist the Sapling commitment tree row through node_db's currently
- * open transaction (or autocommit if none). Best-effort; failures are
- * logged but never abort the chain advance. */
-bool process_block_persist_sapling_tree(void);
-
 #endif /* ZCL_VALIDATION_PROCESS_BLOCK_INTERNALS_H */
