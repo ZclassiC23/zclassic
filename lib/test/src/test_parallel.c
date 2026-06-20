@@ -133,7 +133,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reorg_projection_parity) X(stage_reorg_unwind_parity) \
     X(coins_applied_frontier) \
     X(utxo_apply_value_balance) \
-    X(connect_block_self_write) X(invalidateblock) \
+    X(connect_block_self_write) X(connect_block_sapling_root) X(invalidateblock) \
     X(key_scrub) X(block_index_loader) X(chain_state_validator) \
     X(utxo_recovery_service) X(utxo_reimport_flag) \
     X(self_heal_scan_fallback) \

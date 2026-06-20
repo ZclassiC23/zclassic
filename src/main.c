@@ -27,6 +27,7 @@
 #include "services/wallet_backup_service.h"
 #include "util/clientversion.h"
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -721,6 +722,10 @@ static void print_usage(const char *prog)
     printf("                      request Host header with a single cert)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -enforce-sapling-root  Reject ANY hashFinalSaplingRoot mismatch\n");
+    printf("                      (default OFF: only all-zeros is rejected).\n");
+    printf("                      DO NOT use on the live node until a full-history\n");
+    printf("                      replay confirms zero false-rejects (h=478544).\n");
     printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
     printf("                      projection (cold-start opt-in)\n");
     printf("  -bench              Run all five user benchmark probes\n");
@@ -1729,6 +1734,17 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled above */ }
         else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
         else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
+        else if (strcmp(argv[i], "-enforce-sapling-root") == 0) {
+            /* DEFAULT-OFF Sapling-root parity reject (project_sapling_root
+             * _parity_hole). Default behavior rejects ONLY an all-zeros
+             * hashFinalSaplingRoot; this flag additionally rejects ANY
+             * mismatch vs the locally-recomputed Sapling tree root, matching
+             * zclassicd. ⚠ Do NOT pass on the live node until a full-history
+             * replay confirms ZERO false-rejects (h=478544 lesson — see
+             * validation/connect_block.h). */
+            extern _Atomic _Bool g_enforce_sapling_root;
+            atomic_store(&g_enforce_sapling_root, true);
+        }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
         else if (strcmp(argv[i], "-rebuildfromlog") == 0) ctx.boot_from_log = true;

@@ -934,6 +934,7 @@ int main(void)
     failures += test_reducer_step_drain_harness();
     failures += test_reducer_ondemand_genesis_seed();
     failures += test_connect_block_self_write();
+    failures += test_connect_block_sapling_root();
     failures += test_key_scrub();
     failures += test_block_index_loader();
     failures += test_chain_state_validator();

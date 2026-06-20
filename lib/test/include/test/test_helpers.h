@@ -419,6 +419,7 @@ int test_stage_reducer_unwedge(void);
 int test_stage_repair_coin_backfill(void);
 int test_reducer_frontier_reconcile_light(void);
 int test_connect_block_self_write(void);
+int test_connect_block_sapling_root(void);
 int test_key_scrub(void);
 int test_block_index_loader(void);
 int test_chain_state_validator(void);

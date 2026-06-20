@@ -20,6 +20,7 @@
  *   - Input value < output check (bad-txns-in-belowout) */
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include "util/log_macros.h"
 #include "validation/connect_block.h"
 #include "validation/check_block.h"
@@ -87,6 +88,37 @@ static struct incremental_merkle_tree *g_sapling_tree = NULL;
 void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree)
 {
     g_sapling_tree = tree;
+}
+
+/* ── Sapling-root parity enforcement (DEFAULT-OFF) ──────────────────────
+ * See connect_block.h for the full contract and the replay-before-enable
+ * warning. Default false ⇒ default connect_block behavior is byte-identical
+ * to today (still ONLY the all-zeros reject below). */
+_Atomic _Bool g_enforce_sapling_root = false;
+
+/* PURE recompute predicate — no DB, no globals, no input mutation.
+ * Copies the pre-block frontier by value (incremental_merkle_tree is POD:
+ * inline arrays + static function pointers, so a value-copy is a true deep
+ * copy), appends this block's Sapling output commitments in order, folds
+ * the root, and compares it to the header's hashFinalSaplingRoot.
+ * NULL frontier ⇒ cannot-decide ⇒ return true (never false-reject). */
+_Bool sapling_root_matches(const struct block *block,
+                           const struct incremental_merkle_tree *pre_block_tree)
+{
+    if (!block || !pre_block_tree)
+        return true; /* cannot recompute without a frontier; do not reject */
+
+    struct incremental_merkle_tree t = *pre_block_tree; /* value copy */
+    for (size_t i = 0; i < block->num_vtx; i++) {
+        const struct transaction *tx = &block->vtx[i];
+        for (size_t j = 0; j < tx->num_shielded_output; j++)
+            incremental_tree_append(&t, &tx->v_shielded_output[j].cm);
+    }
+
+    struct uint256 recomputed;
+    incremental_tree_root(&t, &recomputed);
+    return memcmp(recomputed.data,
+                  block->header.hashFinalSaplingRoot.data, 32) == 0;
 }
 
 #ifndef COINBASE_MATURITY
@@ -641,6 +673,26 @@ bool connect_block(const struct block *block,
                 block_undo_free(&blockundo);
                 return validation_state_dos(state, 100, false,
                     REJECT_INVALID, "bad-sapling-root-zeroed", false,
+                    NULL);
+            }
+
+            /* DEFAULT-OFF full parity reject. Only runs when the operator
+             * has enabled -enforce-sapling-root (default false), so default
+             * behavior above is byte-identical to today (zeros-only reject).
+             * Recompute is PURE: sapling_root_matches folds a value-copy of
+             * the pre-block frontier; with no frontier wired (g_sapling_tree
+             * NULL) it returns true and cannot false-reject. Enabling this
+             * requires a full-history replay (0 false-rejects) FIRST — see
+             * the h=478544 lesson in connect_block.h. */
+            if (atomic_load_explicit(&g_enforce_sapling_root,
+                                     memory_order_relaxed) &&
+                !sapling_root_matches(block, g_sapling_tree)) {
+                fprintf(stderr, "connect_block: hashFinalSaplingRoot "  // obs-ok:helper-context-logged
+                        "mismatch at Sapling height %d "
+                        "(-enforce-sapling-root)\n", pindex->nHeight);
+                block_undo_free(&blockundo);
+                return validation_state_dos(state, 100, false,
+                    REJECT_INVALID, "bad-sapling-root-mismatch", false,
                     NULL);
             }
         }
