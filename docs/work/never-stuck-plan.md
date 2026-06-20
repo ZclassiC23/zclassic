@@ -189,6 +189,40 @@ execution-plan's two stale claims (`refold_driver_main`, FIX-1), records the `co
 mechanism, and names the anchor-source ordering knot so the B2/B3 implementer never ships the
 unsound DELETE-and-reuse shortcut.
 
+## 0d. 2026-06-20 COPY-PROVE RESULT — B2 hard-assert PROVEN; the anchor SOURCE is the gap
+
+Built `-refold-from-anchor` (branch `wf/b2-from-anchor-refold`) and ran it against a 12 G working
+copy of the frozen fixture (isolated ports, `-connect=127.0.0.1:1 -nolegacyimport -nobgvalidation`).
+Decisive result:
+
+```
+FATAL: -refold-from-anchor: re-seeded anchor set FAILED the SHA3/count check
+(count=1344574 want=1354771, commitment_match=0, reseed_ok=1) — refusing to fold from an unproven anchor
+```
+
+Two proven conclusions:
+1. **The B2 hard-assert WORKS.** It computed `coins_kv_commitment` over the re-seeded set, compared to
+   the compiled checkpoint (count 1,354,771 + SHA3 root), found a mismatch, and FATAL'd — never folded
+   from an unproven base. The "fail loud, name the exact gap" property holds.
+2. **Re-seeding from node.db `utxos` CANNOT reconstruct the anchor set.** It yields 1,344,574 coins
+   (the contaminated TIP state), not the anchor's 1,354,771. Above-anchor spends already row-DELETEd
+   below-anchor coins, so the mirror is the tip, not the anchor. **There is NO in-tree trustless source
+   that re-materializes the anchor UTXO set on a contaminated datadir** (the Plan agent's central
+   unknown, now proven).
+
+**Corollary (corrects §0c + the roadmap): B2 is NOT fully independent of the mint.** The fold-FORWARD
+leg (anchor+1..tip, ~94k blocks) is serial-OK / LB-1-independent — but the anchor-SET SOURCE must be a
+VERIFIED anchor UTXO set, which only two things produce: (a) a stored SHA3-committed snapshot AT the
+anchor (a minted artifact; `utxo_snapshot_loader.c` exists but has no production writer/source), or
+(b) a fold from GENESIS to the anchor (LB-2's core mint, ~3.06M blocks — where LB-1's parallel verify
+actually pays off). Corrected build order: **mint the anchor set once (fold genesis→anchor, full
+validation, store a SHA3-committed snapshot) → the from-anchor refold loads + asserts + folds-forward
+from THAT.** Replace B2's `coins_kv_seed_from_node_db` source with the snapshot loader; the node.db
+re-seed is a dead end on a contaminated datadir.
+
+**Live-node recovery TODAY: unchanged** — only the two-step cold-import crutch produces an internally
+consistent set (zclassicd's full chainstate at ITS tip). B2 cannot self-heal until the anchor mint exists.
+
 ## 1. Thesis
 
 Wire the self-sufficient proof (`snapshot_verify`) into the cold-import door, kill
