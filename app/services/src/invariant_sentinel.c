@@ -18,6 +18,7 @@
 #include "config/runtime.h"
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/refold_progress.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/tip_finalize_stage.h"
 #include "models/database.h"
@@ -158,6 +159,20 @@ static int pair_resolve_height(struct node_db *ndb, const uint8_t hash[32],
 void invariant_sentinel_pair_violation(const char *site, int height,
                                        int64_t resolved_h)
 {
+    /* Suppress during a -mint-anchor / -refold-staged window. Both reset the
+     * staged reducer to genesis and re-walk the frozen prefix while the active
+     * chain tip is still the (torn) UPPER tip from the borrowed datadir copy.
+     * Every projection-tip write in that window resolves the pair to a
+     * DIFFERENT height, so this fires on EVERY pass — pure non-consensus churn
+     * (the dominant ~143/200 log-line slowdown measured 2026-06-20), hammering
+     * the progress.kv lock and starving the genesis..anchor fold. The same
+     * refold_in_progress() guard already self-suppresses node_db_catchup and
+     * utxo_mirror_sync for the identical reason. Scoped to mint/refold ONLY:
+     * on a normal boot the key is absent and this stays fully active. Pure
+     * suppression — no consensus value is read or written here. */
+    if (refold_in_progress())
+        return;
+
     atomic_fetch_add(&g_pair_violations_total, 1);
     pthread_mutex_lock(&g_detail_lock);
     snprintf(g_last_pair_detail, sizeof(g_last_pair_detail),
@@ -185,6 +200,14 @@ bool invariant_sentinel_check_pair(struct node_db *ndb,
         return true; /* tip reset (e.g. snapshot import) — not a publish */
     if (!ndb || !ndb->open || !ndb->db)
         return true; /* projection not wired (early boot / unit tests) */
+    if (refold_in_progress())
+        return true; /* mint/refold: torn UPPER tip vs genesis-up fold — the
+                      * pair legitimately resolves to a different height every
+                      * pass. Pass it (no read, no refusal, no retry, no spam)
+                      * so the coordinator doesn't fight the doomed write. Same
+                      * window the catchup/mirror-sync guards already skip; the
+                      * key is absent on a normal boot, so this is mint/refold
+                      * ONLY. No consensus value is touched. */
 
     atomic_fetch_add(&g_pair_checks_total, 1);
     int64_t resolved_h = -1;
