@@ -66,4 +66,25 @@ struct verify_job {
 bool verify_queue_submit_batch(struct thread_pool *pool,
                                struct verify_job *jobs, int n);
 
+/* ── Observability (additive; see CLAUDE.md "Adding state introspection") ──
+ *
+ * Reentrant-safe state dump for the parallel-verify engine, surfaced via
+ * `zcl_state subsystem=verify_engine`. The engine is currently ADDITIVE and
+ * not wired into any consensus path, so the dump reports:
+ *   - status / wired            : honest "additive, not on the hot path" flag
+ *   - would_be_workers          : the worker count a default pool WOULD spawn
+ *                                 now (GetNumCores()-1, clamped >= 1)
+ *   - batches_submitted         : lifetime verify_queue_submit_batch() calls
+ *   - jobs_processed            : lifetime per-job verdicts written
+ *   - parallel_batches /
+ *     serial_batches            : how each batch was routed
+ *   - empty_batches             : vacuous n==0 submissions
+ *
+ * Counters are process-lifetime, lock-free (atomic_fetch_add on the existing
+ * hot path), and zero until the engine is exercised (today: only the unit
+ * tests). `out` is pre-initialized as an object by the caller; this function
+ * only pushes keys and allocates nothing. */
+struct json_value;
+bool verify_engine_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_VALIDATION_VERIFY_QUEUE_H */
