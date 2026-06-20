@@ -204,8 +204,10 @@ int test_reducer_step_drain_harness(void)
     test_fmt_tmpdir(dir, sizeof(dir), "reducer_step_drain_harness", "main");
     sd_mkdir_p(dir);
 
+    /* SetDataDir already clears the cache and populates cachedDataDirNet =
+     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
+     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
     SetDataDir(dir);
-    ClearDataDirCache();
     char netdir[512];
     GetDataDir(true, netdir, sizeof(netdir));
     sd_mkdir_p(netdir);
@@ -457,8 +459,10 @@ int test_reducer_ondemand_genesis_seed(void)
     sd_mkdir_p("./test-tmp");
     test_fmt_tmpdir(dir, sizeof(dir), "reducer_ondemand_genesis_seed", "main");
     sd_mkdir_p(dir);
+    /* SetDataDir already clears the cache and populates cachedDataDirNet =
+     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
+     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
     SetDataDir(dir);
-    ClearDataDirCache();
     char netdir[512];
     GetDataDir(true, netdir, sizeof(netdir));
     sd_mkdir_p(netdir);

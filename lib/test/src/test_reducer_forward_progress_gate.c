@@ -332,8 +332,10 @@ int test_reducer_forward_progress_gate(void)
     test_fmt_tmpdir(dir, sizeof(dir), "reducer_forward_progress_gate", "main");
     rfp_mkdir_p(dir);
 
+    /* SetDataDir already clears the cache and populates cachedDataDirNet =
+     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
+     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
     SetDataDir(dir);
-    ClearDataDirCache();
     char netdir[512];
     GetDataDir(true /*net-specific (regtest subdir)*/, netdir, sizeof(netdir));
     rfp_mkdir_p(netdir);

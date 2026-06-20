@@ -561,8 +561,10 @@ static int run_drain_harness_refill(void)
     test_fmt_tmpdir(dir, sizeof(dir), "stage_repair_script_refill", "drain");
     srf_mkdir_p(dir);
 
+    /* SetDataDir already clears the cache and populates cachedDataDirNet =
+     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
+     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
     SetDataDir(dir);
-    ClearDataDirCache();
     char netdir[512];
     GetDataDir(true, netdir, sizeof(netdir));
     srf_mkdir_p(netdir);

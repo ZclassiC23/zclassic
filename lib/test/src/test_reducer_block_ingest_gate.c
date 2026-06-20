@@ -310,8 +310,10 @@ int test_reducer_block_ingest_gate(void)
      * but read from ~/.zclassic-c23/regtest — the read fails and no stage can
      * apply the block. We derive the net-specific path GetDataDir returns and
      * use it verbatim for the controller, then pre-create its blocks/ dir. */
+    /* SetDataDir already clears the cache and populates cachedDataDirNet =
+     * <dir>/regtest; do NOT ClearDataDirCache() here or GetDataDir falls back
+     * to the shared default ~/.zclassic-c23/regtest and races other groups. */
     SetDataDir(dir);
-    ClearDataDirCache();
     char netdir[512];
     GetDataDir(true /*net-specific (regtest subdir)*/, netdir, sizeof(netdir));
     rbi_mkdir_p(netdir);
