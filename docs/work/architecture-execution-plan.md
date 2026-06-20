@@ -104,7 +104,7 @@ consensus-compatible with zclassicd (INVIOLABLE)**; operated by AI via typed MCP
   REFOLD-SCOPED ONLY (`refold_driver_start_if_active` early-returns on normal boot,
   reducer_ingest_service.c:184); it does NOT transfer to the normal-boot path that 1.5 promotes the driver
   to — 1.5 MUST re-verify on normal forward sync WITH reorgs.
-- [ ] **0.2 FIX-1: wire H\* (provable tip) to served APIs.** `getblockcount` reads `active_chain_height`
+- [x] **0.2 FIX-1: wire H\* (provable tip) to served APIs.** ✓ DONE 2026-06-20 (e75b5c62c): `getblockcount` now serves `reducer_frontier_provable_tip_cached` (`blockchain_controller_blocks.c:45`) and P2P `start_height` serves H\* (`msg_version.c:155`); cached atomic as specified, internal window callers untouched. Original notes below. `getblockcount` read `active_chain_height`
   at `app/controllers/src/blockchain_controller_blocks.c:39`; P2P `start_height` at
   `lib/net/src/msg_version.c:148`. ⚠ **REVIEW CORRECTION:** the provable value is
   `reducer_frontier_compute_hstar` (`reducer_frontier.h:90` — MIN over ALL stage logs incl. tip_finalize),
@@ -149,11 +149,12 @@ consensus-compatible with zclassicd (INVIOLABLE)**; operated by AI via typed MCP
   - **base58/bech32** already single-homed in `domain/encoding/`; no lib wrapper exists. Nothing to do.
   - **Lesson for the plan:** "duplicate-name" ≠ "duplicate definition". The earlier review (#7) and roadmap
     FIX-6 over-counted; consensus de-dup here would have been a fork risk, not a tidy. Leave as-is.
-- [ ] **0.5 Promote domain-purity + lib-layering lint from RATCHET to HARD** (`check_lib_layering.sh`,
-  the domain-purity gate). **Verify:** `make lint` green; an injected app-include into domain/ trips it.
-- [ ] **0.6 FIX-3 (reads): add `zcl_wait_*` long-poll RPCs** (waitforheight/waitforhalt/waitforblocker,
-  shutdown-aware). Additive new methods. **Verify:** a wait returns on the event and on shutdown; no
-  busy-loop.
+- [x] **0.5 Promote domain-purity + lib-layering lint from RATCHET to HARD** ✓ DONE 2026-06-20
+  (9a56188a6 lib-layering→HARD; 098605865 new `check_domain_purity.sh` HARD gate). `make lint` green;
+  injected app-include into domain/ trips it.
+- [x] **0.6 FIX-3 (reads): add `zcl_wait_*` long-poll RPCs** ✓ DONE 2026-06-20 (a1ace9df3):
+  waitforheight/waitforhalt/waitforblocker, 200ms poll, shutdown-aware, 9000ms cap under the 10s RPC
+  watchdog; +3 MCP wrappers. Returns on event and on shutdown; no busy-loop.
 
 ### Phase 1 — LB-1: parallel verification engine (behind default-on `-par`, `-par=1` = serial oracle)
 > ⚠ **PHASE-1 INVIOLABLE CONCURRENCY INVARIANTS (REVIEW #1,#2,#3 — read before 1.1).**
