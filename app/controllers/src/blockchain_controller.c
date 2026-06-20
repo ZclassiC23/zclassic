@@ -310,6 +310,10 @@ void register_blockchain_rpc_commands(struct rpc_table *t)
         { "blockchain", "verifycheckpoint",    rpc_verifycheckpoint,      true },
         { "blockchain", "getdataintegrity",    rpc_getdataintegrity,      true },
         { "blockchain", "rebuildsaplingtree", rpc_rebuildsaplingtree,    false },
+        /* Long-poll waitfor* (additive, read-only; ok_safe_mode=true) */
+        { "blockchain", "waitforheight",       rpc_waitforheight,         true },
+        { "blockchain", "waitforhalt",         rpc_waitforhalt,           true },
+        { "blockchain", "waitforblocker",      rpc_waitforblocker,        true },
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)

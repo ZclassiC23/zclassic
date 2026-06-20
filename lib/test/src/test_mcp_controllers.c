@@ -46,13 +46,15 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      98  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     101  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 framework Phase 0: zcl_conditions;
                                  * +2 Phase 6b postmortem capsule tools
-                                 * +1 offline replay verifier: zcl_replay_verify */
+                                 * +1 offline replay verifier: zcl_replay_verify
+                                 * +3 wait tools: zcl_waitforheight,
+                                 *   zcl_waitforhalt, zcl_waitforblocker */
 #define EXPECTED_OPS        37  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
@@ -68,9 +70,11 @@
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
                                  * + zcl_postmortem_list/replay (Phase 6b) */
-#define EXPECTED_CHAIN      16  /* + chain_tip + reorg_history
+#define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
-                                 * + zcl_invalidateblock + zcl_reconsiderblock (recovery) */
+                                 * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
+                                 * + zcl_waitforheight + zcl_waitforhalt
+                                 *   + zcl_waitforblocker (wait tools) */
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20

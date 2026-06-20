@@ -220,6 +220,50 @@ static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *re
                                    "id=%s", id_str ? id_str : "(null)");
 }
 
+/* ── waitfor* long-poll passthroughs ───────────────────────────────
+ *
+ * These map 1:1 onto the blockchain controller's waitforheight /
+ * waitforhalt / waitforblocker RPCs. The RPC blocks for up to its
+ * (capped) timeout, so the MCP stdio dispatch blocks for that duration —
+ * acceptable; the RPC's internal 9000ms cap keeps it well under the
+ * per-request watchdog. */
+static int h_zcl_waitforheight(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "height", 0));
+    mcp_params_push_int(&p, json_get_int_or(req->args, "timeout_ms", 30000));
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("waitforheight", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, out, "waitforheight", "mcp.chain");
+}
+
+static int h_zcl_waitforhalt(const struct mcp_request *req,
+                             struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "timeout_ms", 30000));
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("waitforhalt", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, out, "waitforhalt", "mcp.chain");
+}
+
+static int h_zcl_waitforblocker(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_int(&p, json_get_int_or(req->args, "timeout_ms", 30000));
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("waitforblocker", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, out, "waitforblocker", "mcp.chain");
+}
+
 /* invalidateblock — the operator recovery lever. Drop a stale fork
  * (mark BLOCK_FAILED_VALID + disconnect-and-reorg). Destructive. */
 DEFINE_PT_STR(h_zcl_invalidateblock, "hash", "invalidateblock", "mcp.chain")
@@ -264,6 +308,21 @@ static const struct mcp_param_spec p_replay_verify[] = {
     { "legacy_datadir", MCP_PARAM_STR, false,
       "Legacy zclassicd data directory. Defaults to $HOME/.zclassic.",
       0, 0, 0, 1023, NULL, NULL },
+};
+
+static const struct mcp_param_spec p_waitforheight[] = {
+    { "height", MCP_PARAM_INT, true,
+      "Target active-chain height to wait for (returns once height >= this).",
+      0, 100000000, 0, 0, NULL, NULL },
+    { "timeout_ms", MCP_PARAM_INT, false,
+      "Max wait in ms (default 30000, internally capped at 9000).",
+      0, 120000, 0, 0, NULL, "30000" },
+};
+
+static const struct mcp_param_spec p_waitfor_timeout[] = {
+    { "timeout_ms", MCP_PARAM_INT, false,
+      "Max wait in ms (default 30000, internally capped at 9000).",
+      0, 120000, 0, 0, NULL, "30000" },
 };
 
 static const struct mcp_param_spec p_utxo_audit[] = {
@@ -337,6 +396,28 @@ static const struct mcp_tool_route k_routes[] = {
       p_replay_verify, PARAM_COUNT(p_replay_verify),
       h_zcl_replay_verify, 0,
       .self_test_args = "{\"start_height\":0,\"max_blocks\":4}" },
+    { "zcl_waitforheight", "chain",
+      "Long-poll: block until the active chain height reaches `height`, "
+      "the timeout elapses, or the node shuts down. Returns "
+      "{target, height, reached, timed_out, shutdown}. Shutdown-aware and "
+      "bounded (internal 9000ms cap); always returns current state.",
+      p_waitforheight, PARAM_COUNT(p_waitforheight), h_zcl_waitforheight, 0,
+      .self_test_args = "{\"height\":0,\"timeout_ms\":0}" },
+    { "zcl_waitforhalt", "chain",
+      "Long-poll: block until an operator-needed / halt latch is set, the "
+      "timeout elapses, or the node shuts down. Returns "
+      "{operator_needed, detail, since_unix, timed_out, shutdown}. "
+      "\"A halt can never be silent\" — surfaces the latch the moment it "
+      "fires. Shutdown-aware and bounded (internal 9000ms cap).",
+      p_waitfor_timeout, PARAM_COUNT(p_waitfor_timeout), h_zcl_waitforhalt, 0,
+      .self_test_args = "{\"timeout_ms\":0}" },
+    { "zcl_waitforblocker", "chain",
+      "Long-poll: block until at least one typed blocker is present, the "
+      "timeout elapses, or the node shuts down. Returns "
+      "{active, blockers:[...], timed_out, shutdown}. Shutdown-aware and "
+      "bounded (internal 9000ms cap); always returns current state.",
+      p_waitfor_timeout, PARAM_COUNT(p_waitfor_timeout), h_zcl_waitforblocker, 0,
+      .self_test_args = "{\"timeout_ms\":0}" },
     { "zcl_invalidateblock", "chain",
       "Recovery lever: permanently mark a block invalid by hash. The "
       "active chain disconnects back below it (if on the active chain) "
