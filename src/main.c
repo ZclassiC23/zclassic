@@ -717,6 +717,9 @@ static void print_usage(const char *prog)
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
+    printf("  -gui                Launch the WebKit wallet GUI instead of the\n");
+    printf("                      headless node (needs a display; default is\n");
+    printf("                      headless node + MCP/REST/onion)\n");
     printf("  -httpsdomain=<dom>  TLS servername / HTTPS-redirect host for the\n");
     printf("                      clearnet explorer (optional; defaults to the\n");
     printf("                      request Host header with a single cert)\n");
@@ -1653,13 +1656,19 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Default: headless node. GUI only with explicit --gui flag.
-     * build/bin/zclassic23         → node (always)
-     * build/bin/zclassic23 --gui   → wallet GUI (if display available) */
+    /* Default boot is the headless node (north star: AI-as-interface, no GUI).
+     * The WebKit wallet GUI is opt-in via -gui; a plain `zclassic23`, -mcp,
+     * and -datadir all run the node, never wallet_gui_main.
+     *   build/bin/zclassic23          → headless node
+     *   build/bin/zclassic23 -gui     → wallet GUI (needs a display)
+     * --self-test is the GUI bot harness (runs the GUI under xvfb), so it
+     * is itself an explicit GUI launch; --gui is kept as a back-compat
+     * spelling of -gui. */
     {
         bool gui_mode = false;
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--gui") == 0 ||
+            if (strcmp(argv[i], "-gui") == 0 ||
+                strcmp(argv[i], "--gui") == 0 ||
                 strcmp(argv[i], "--self-test") == 0)
                 gui_mode = true;
         }
@@ -1789,6 +1798,11 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-externalip=", 12) == 0) ctx.external_ip = argv[i] + 12;
         else if (strncmp(argv[i], "-httpsdomain=", 13) == 0) ctx.https_domain = argv[i] + 13;
         else if (strcmp(argv[i], "-daemon") == 0) { /* legacy compat */ }
+        else if (strcmp(argv[i], "-gui") == 0 || strcmp(argv[i], "--gui") == 0) {
+            /* Opt-in to the WebKit wallet GUI. Consumed earlier (the GUI
+             * launch returns before node mode); recognized here so it is
+             * an intentional flag, not silently dropped node-mode noise. */
+        }
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
         }
