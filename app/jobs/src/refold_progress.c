@@ -7,6 +7,7 @@
 
 #include "jobs/reducer_frontier.h"   /* REDUCER_FRONTIER_TRUSTED_ANCHOR */
 #include "storage/progress_store.h"
+#include "json/json.h"
 #include "util/log_macros.h"
 
 #include <stdatomic.h>
@@ -223,6 +224,79 @@ bool refold_progress_clear_if_reached(sqlite3 *db, int32_t utxo_apply_cursor,
              "cursor=%d — cleared refold_from_anchor + refold_in_progress; H* "
              "floor and self-repair restored to normal",
              (int)target, (int)utxo_apply_cursor);
+    return true;
+}
+
+/* ── zcl_state introspection ────────────────────────────────────────────────
+ *
+ * See CLAUDE.md "Adding state introspection". Read-only: this dumper observes
+ * the cached atomics and the durable progress.kv keys; it never marks, clears,
+ * or otherwise mutates refold state. `key` is unused. Reentrant-safe — the
+ * cached reads take no lock, and the durable peek takes only the recursive
+ * progress_store tx lock (the same lock refold_progress_refresh uses), so it is
+ * safe to call from a diagnostics context even while a fold step holds it. */
+bool refold_progress_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        LOG_FAIL("refold", "dump_state_json: NULL out");
+    json_set_object(out);
+
+    /* Cheap, lock-free cached answers — the same values the hot path reads. */
+    bool in_progress = atomic_load(&g_refold_in_progress);
+    bool from_anchor = atomic_load(&g_refold_from_anchor);
+    json_push_kv_bool(out, "in_progress", in_progress);
+    json_push_kv_bool(out, "from_anchor", from_anchor);
+
+    /* The compiled SHA3 UTXO checkpoint the from-genesis fold must re-cross
+     * before the H* floor and below-anchor self-repair return to normal. */
+    json_push_kv_int(out, "trusted_anchor",
+                     (int64_t)REDUCER_FRONTIER_TRUSTED_ANCHOR);
+
+    /* Durable view: peek the persisted keys so a restart mid-fold is visible
+     * even before the cache is refreshed. Best-effort — when the progress
+     * store is not open we report the cached answers only. */
+    sqlite3 *db = progress_store_db();
+    json_push_kv_bool(out, "durable_store_open", db != NULL);
+    if (db) {
+        uint8_t ip[1] = {0};
+        size_t ip_n = 0;
+        bool ip_found = false;
+        uint8_t fa[1] = {0};
+        size_t fa_n = 0;
+        bool fa_found = false;
+        uint8_t tbuf[4] = {0};
+        size_t t_n = 0;
+        bool t_found = false;
+        progress_store_tx_lock();
+        bool ip_ok = progress_meta_get(db, REFOLD_IN_PROGRESS_KEY,
+                                       ip, sizeof(ip), &ip_n, &ip_found);
+        bool fa_ok = progress_meta_get(db, REFOLD_FROM_ANCHOR_KEY,
+                                       fa, sizeof(fa), &fa_n, &fa_found);
+        bool t_ok = progress_meta_get(db, REFOLD_FROM_ANCHOR_TARGET_KEY,
+                                      tbuf, sizeof(tbuf), &t_n, &t_found);
+        progress_store_tx_unlock();
+
+        bool durable_in_progress = ip_ok && ip_found && ip_n == 1 &&
+                                   ip[0] == 0x01;
+        bool durable_from_anchor = fa_ok && fa_found && fa_n == 1 &&
+                                   fa[0] == 0x01;
+        json_push_kv_bool(out, "durable_in_progress", durable_in_progress);
+        json_push_kv_bool(out, "durable_from_anchor", durable_from_anchor);
+
+        /* The from-anchor resume target tip, decoded little-endian (the same
+         * encoding mark_started_from_anchor writes). Absent on a normal boot
+         * or a from-genesis refold. */
+        if (t_ok && t_found && t_n == 4) {
+            int32_t target = (int32_t)((uint32_t)tbuf[0] |
+                                       ((uint32_t)tbuf[1] << 8) |
+                                       ((uint32_t)tbuf[2] << 16) |
+                                       ((uint32_t)tbuf[3] << 24));
+            json_push_kv_int(out, "from_anchor_target_tip", (int64_t)target);
+        } else {
+            json_push_kv_bool(out, "from_anchor_target_tip_present", false);
+        }
+    }
     return true;
 }
 

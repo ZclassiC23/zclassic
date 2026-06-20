@@ -56,6 +56,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_repair_coin_backfill.h"
+#include "jobs/refold_progress.h"
 #include "services/chain_tip_watchdog.h"
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
@@ -494,6 +495,10 @@ static const struct dump_entry g_dumpers[] = {
                      "self_sha3 valid" },
     { "progress",    progress_store_dump_state_json,
                      "progress.kv: open/path/stage_cursor row count" },
+    { "refold",      refold_progress_dump_state_json,
+                     "refold/mint mode: in_progress + from_anchor cached "
+                     "flags, compiled trusted_anchor, durable progress.kv keys "
+                     "(durable_in_progress/from_anchor), from_anchor_target_tip" },
     { "header_admit", header_admit_stage_dump_state_json,
                      "header_admit stage: cursor, counters, last admit" },
     { "validate_headers", validate_headers_stage_dump_state_json,

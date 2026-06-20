@@ -106,6 +106,10 @@ bool refold_progress_mark_started_from_anchor(sqlite3 *db, int32_t resume_target
 bool refold_progress_clear_if_reached(sqlite3 *db, int32_t utxo_apply_cursor,
                                       int32_t target);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool refold_progress_dump_state_json(struct json_value *out, const char *key);
+
 #ifdef ZCL_TESTING
 /* Test-only: force the cached atomic without touching any DB. Lets a unit
  * test exercise reducer_frontier_floor() / the reconcile gate at both
