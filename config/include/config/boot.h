@@ -39,6 +39,22 @@ struct app_context {
     bool sapling_scan;
     const char *snapshot_dir;
     bool reindex_chainstate;
+    bool refold_staged;        /* -refold-staged : reset the 8 staged-reducer
+                                 * cursors + their per-height *_log rows DOWN to
+                                 * genesis so the staged pipeline (header_admit..
+                                 * tip_finalize) re-folds forward over on-disk
+                                 * block BODIES, writing the per-height log rows
+                                 * reducer_frontier folds into H*. Unlike
+                                 * -reindex-chainstate (connect_block: rebuilds
+                                 * the node.db utxos mirror but writes NO staged
+                                 * logs, so H* pins at the checkpoint), this
+                                 * rebuilds the folded log the frontier authority
+                                 * actually reads. Also marks refold_in_progress
+                                 * (progress.kv) so the L0 frontier floor drops to
+                                 * 0 and the below-anchor self-repair is suspended
+                                 * while the fold re-walks the frozen prefix; the
+                                 * mark clears once utxo_apply crosses the anchor.
+                                 * Requires -nolegacyimport. */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -72,15 +88,6 @@ struct app_context {
                                  * to the request's Host header). */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
                                  * (default false → boot FATALs on broken chain state). */
-    bool refold_staged;        /* -refold-staged : reset the reducer cursors to
-                                 * genesis and mark refold_in_progress so the L0
-                                 * frontier floor drops to 0 and the below-anchor
-                                 * self-repair is suspended while the bodies-only
-                                 * fold re-walks the frozen prefix. Owner-gated;
-                                 * the fold engine itself is built separately. The
-                                 * mark is what this flag wires (the floor/repair
-                                 * enabler); progress.kv only — no consensus rule
-                                 * changes. */
 };
 
 void app_context_defaults(struct app_context *ctx);
@@ -95,6 +102,15 @@ bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile);
 
 bool app_init(struct app_context *ctx);
 void app_shutdown(void);
+
+/* -refold-staged (impl in config/src/boot_refold_staged.c): boot_refold_staged_init
+ * caches the durable refold_in_progress signal before the reducer starts (thin
+ * wrapper over refold_progress_boot_init; no-op on a normal boot). _reset wipes
+ * the staged reducer's derived state to genesis so the pipeline re-folds forward
+ * over on-disk block BODIES. Owner-gated; progress.kv + node.db mirror only. */
+struct node_db;
+void boot_refold_staged_init(bool refold_staged);
+void boot_refold_staged_reset(struct node_db *ndb);
 
 bool app_is_running(void);
 void app_add_node(const char *host, int port);

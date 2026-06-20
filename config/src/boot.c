@@ -23,7 +23,6 @@
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
-#include "jobs/refold_progress.h"
 #include "jobs/stage_repair.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/utxo_reimport_flag.h"
@@ -1484,9 +1483,7 @@ bool app_init(struct app_context *ctx)
     } else {
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
         (void)service_state_restore_from_progress_store();
-        /* refold_in_progress: cache the durable signal pre-reducer; -refold-
-         * staged SETs it. Absent on a normal boot => cache false => no change. */
-        (void)refold_progress_boot_init(progress_store_db(), ctx->refold_staged);
+        boot_refold_staged_init(ctx->refold_staged);  /* cache refold_in_progress */
     }
 
     /* Snapshot-first: if a downloaded consensus_snapshot.db
@@ -3284,6 +3281,9 @@ sapling_tree_boot_check_done:
      * forward. Reset-safe: deletes no log rows,
      * so the public tip can never drop below coins_best (proven in
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
+
+    if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
+
     {
         /* SINGLE SOURCE OF TRUTH (docs/work/tip-durability-collapse.md):
          * floor on the GENUINE coins frontier. Wave 2: that frontier is
