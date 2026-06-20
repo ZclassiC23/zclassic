@@ -30,6 +30,8 @@
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "util/log_macros.h"
+#include "util/alerts.h"
+#include "util/blocker.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "storage/progress_store.h"
@@ -224,6 +226,42 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
     return true;
 }
 
+/* ── Cause probe ───────────────────────────────────────────────────────
+ *
+ * A tip that has been constant for thr_restart seconds is not, by itself,
+ * a power-cycle-clearable fault. Restarting burns the bounded budget and
+ * costs peer reputation; a DETERMINISTIC stall is byte-identical every
+ * boot, so a restart provably cannot clear it. Classify the cause before
+ * escalating: only a stall with NO named deterministic blocker is genuine
+ * liveness loss that a restart might recover. Every recognised cause is
+ * named back to the caller (returned literal) so the watchdog can page +
+ * log it; the probe itself takes no destructive action. The string returns
+ * are process-lifetime literals — race-safe to read off-thread. */
+static const char *wd_deterministic_stall_cause(void)
+{
+    /* (1) tip_finalize pinned on a persisted ok=0 precondition: the
+     * successor is present but not finalizable (e.g. a persisted ok=0
+     * script_validate / proof_validate row). Byte-identical every boot. */
+    const char *br = tip_finalize_stage_last_blocked_reason();
+    if (br && strcmp(br, "successor_pending") == 0)
+        return "tip_finalize_successor_pending";
+
+    /* (2) A latched operator-needed page is already standing — the "a halt
+     * can never be silent" signal (EV_OPERATOR_NEEDED fired and not yet
+     * cleared). The operator has already been told a restart won't help; a
+     * fresh power-cycle would re-burn the budget against the same wedge. */
+    if (alerts_operator_needed(NULL, 0, NULL))
+        return "operator_needed_latched";
+
+    /* (3) Any active PERMANENT-class typed blocker (bad PoW, malformed
+     * block, consensus reject) — by definition never auto-retryable; only
+     * an operator clears it. A restart re-derives the identical reject. */
+    if (blocker_count_by_class(BLOCKER_PERMANENT) > 0)
+        return "permanent_blocker_active";
+
+    return NULL;  /* no named deterministic cause — genuine liveness loss */
+}
+
 /* ── Supervisor tick ───────────────────────────────────────────────── */
 
 /* The advance-or-escalate body, factored out so the supervisor tick and the
@@ -274,18 +312,30 @@ static void wd_apply_tick(int64_t h, int64_t now_us, bool do_shutdown)
 
     if (level < 3 && thr_restart > 0 && age_s >= thr_restart) {
         atomic_store(&g_escalation, 3);
-        /* Cause-probe: a stall whose successor is present but pinned on a
-         * deterministic precondition (TF_BLOCKED_SUCCESSOR_PENDING — e.g. a
-         * persisted ok=0 script_validate row) is byte-identical every boot,
-         * so a process restart cannot clear it. Page immediately and skip the
-         * restart power-cycle; transient/data-missing stalls (other blocked
-         * classes) still get the bounded restart. The accessor returns a
-         * process-lifetime string literal (race-safe to read off-thread). */
-        const char *br = tip_finalize_stage_last_blocked_reason();
-        bool deterministic = br && strcmp(br, "successor_pending") == 0;
+        /* Cause-probe: classify WHY the tip is constant before escalating.
+         * A stall pinned on a named deterministic cause — a persisted ok=0
+         * precondition (tip_finalize successor_pending), an already-latched
+         * operator_needed page, or an active PERMANENT-class blocker (bad
+         * PoW / malformed block / consensus reject) — is byte-identical
+         * every boot, so a process restart provably cannot clear it. Page +
+         * name it and SKIP the restart power-cycle (it would only burn the
+         * bounded budget and cost peer reputation). Only a stall with NO
+         * named deterministic cause is genuine liveness loss that still gets
+         * the bounded restart. The cause accessor returns a process-lifetime
+         * string literal (race-safe to read off-thread). */
+        const char *cause = wd_deterministic_stall_cause();
+        bool deterministic = (cause != NULL);
+        if (deterministic) {
+            LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] tip constant for %llds at h=%lld but " "deterministic blocker '%s' is named — a restart cannot clear " "it; skipping power-cycle, paging instead", (long long)age_s, (long long)h, cause);
+            event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "chain_tip_watchdog skip_restart_deterministic h=%lld age=%llds cause=%s",
+                (long long)h, (long long)age_s, cause);
+        }
         /* Bounded path: increments the persisted no-progress counter and
          * requests shutdown; once the cap is hit it pages an operator and
-         * stays up instead of power-cycling forever (see wd_decide_restart). */
+         * stays up instead of power-cycling forever (see wd_decide_restart).
+         * When `deterministic` it never requests shutdown — it pages an
+         * operator with the named cause and stays up degraded. */
         wd_decide_restart(h, age_s, do_shutdown, deterministic);
     }
 

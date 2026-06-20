@@ -135,7 +135,7 @@ static int t_below_threshold_stays_allowed(void)
 static int t_threshold_halts_and_blocks(void)
 {
     int failures = 0;
-    TEST_CASE("oracle_policy: crossing distinct-height threshold HALTs and blocks extension")
+    TEST_CASE("oracle_policy: crossing distinct-height threshold HALTs (evidence-only; extension stays allowed, B8)")
     {
         op_arm(3, 1);
 
@@ -148,7 +148,9 @@ static int t_threshold_halts_and_blocks(void)
         /* Third distinct height crosses the threshold (3 >= 3). */
         oracle_policy_record_disagreement(3000003, "a", "b");
         ASSERT(oracle_policy_get_state() == OP_HALTED);
-        ASSERT(oracle_policy_chain_extension_allowed() == false);
+        /* B8: oracle disagreement is evidence-only — it drives the state
+         * machine + events but NEVER gates chain extension. */
+        ASSERT(oracle_policy_chain_extension_allowed() == true);
 
         /* dump_state_json must reflect the transition. */
         char st[16];
@@ -173,7 +175,7 @@ static int t_clear_restores_allowed(void)
         oracle_policy_record_disagreement(4000002, "a", "b");
         oracle_policy_record_disagreement(4000003, "a", "b");
         ASSERT(oracle_policy_get_state() == OP_HALTED);
-        ASSERT(oracle_policy_chain_extension_allowed() == false);
+        ASSERT(oracle_policy_chain_extension_allowed() == true);  /* B8: evidence-only, never gates */
 
         oracle_policy_clear();
 
@@ -198,7 +200,7 @@ static int t_clear_restores_allowed(void)
 static int t_prefix_disagreement_panics(void)
 {
     int failures = 0;
-    TEST_CASE("oracle_policy: disagreement at evidence prefix PANICs and blocks extension")
+    TEST_CASE("oracle_policy: disagreement at evidence prefix PANICs (evidence-only; extension stays allowed, B8)")
     {
         /* prefix_end = 100 → any height <= 100 is a prefix violation;
          * one such observation must PANIC immediately (no threshold). */
@@ -208,7 +210,7 @@ static int t_prefix_disagreement_panics(void)
         oracle_policy_record_disagreement(50, "ours", "theirs");
 
         ASSERT(oracle_policy_get_state() == OP_PANIC);
-        ASSERT(oracle_policy_chain_extension_allowed() == false);
+        ASSERT(oracle_policy_chain_extension_allowed() == true);  /* B8: evidence-only, never gates */
 
         char st[16];
         op_dump_state_str(st, sizeof(st));

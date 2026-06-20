@@ -182,7 +182,7 @@ void oracle_policy_record_disagreement(int height,
                     "reason=anchor_panic distinct_heights=%d", distinct);
         fprintf(stderr,
                 "[oracle_policy] ANCHOR_PANIC at h=%d "
-                "(our=%s their=%s) — chain frozen\n",
+                "(our=%s their=%s) — recorded as evidence; extension NOT gated (B8)\n",
                 height,
                 our_hash_hex  ? our_hash_hex  : "",
                 their_hash_hex ? their_hash_hex : "");
@@ -197,15 +197,25 @@ void oracle_policy_record_disagreement(int height,
         fprintf(stderr,
                 "[oracle_policy] FORK_SUSPECTED — %d distinct "
                 "disagreement heights in last %d s (first=%d last=%d) — "
-                "chain frozen\n",
+                "recorded as evidence; extension NOT gated (B8)\n",
                 distinct, g_op.window_secs, first_h, last_h);
     }
 }
 
 bool oracle_policy_chain_extension_allowed(void)
 {
-    int s = atomic_load(&g_op.state);
-    return s == OP_NORMAL;
+    /* EVIDENCE-ONLY (never-stuck plan item B8). The oracle is an EXTERNAL
+     * comparator (zclassicd). A comparator that is merely wrong or behind
+     * must NEVER gate our own chain extension — that would let an external
+     * party stop our chain, violating the "stands alone / cannot get stuck
+     * on an external comparator" property. Disagreement is still RECORDED
+     * as evidence: oracle_policy_record_disagreement() keeps driving the
+     * OP_HALTED / OP_PANIC state machine, emitting EV_FORK_SUSPECTED /
+     * EV_ANCHOR_PANIC / EV_CHAIN_HALTED, and the divergence stays fully
+     * visible via oracle_policy_get_state() + the zcl_state dump. The state
+     * is now an observable signal, not a liveness gate — so this predicate
+     * unconditionally allows extension regardless of OP_HALTED/OP_PANIC. */
+    return true;  // raw-return-ok:evidence-only-never-gates-extension-B8
 }
 
 enum oracle_policy_state oracle_policy_get_state(void)
