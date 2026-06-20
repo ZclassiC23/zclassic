@@ -26,6 +26,7 @@
 #include "mcp/replay.h"
 #include "mcp/controllers.h"
 #include "mcp/rpc_client.h"
+#include "mcp/mcp_notify.h"
 
 #include "json/json.h"
 
@@ -33,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #include "util/safe_alloc.h"
 
@@ -43,10 +45,25 @@
 
 /* ── MCP protocol ────────────────────────────────────────────── */
 
+/* The request/response loop and the background event notifier both write
+ * complete JSON-RPC lines to stdout. Serialize them so a pushed
+ * notification frame can never interleave its bytes with a response. */
+static pthread_mutex_t g_stdout_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void mcp_send(const char *json)
 {
+    pthread_mutex_lock(&g_stdout_lock);
     fprintf(stdout, "%s\n", json);
     fflush(stdout);
+    pthread_mutex_unlock(&g_stdout_lock);
+}
+
+/* Sink for mcp_notify: push one notification frame on the same stdout
+ * channel the agent reads responses from. */
+static void mcp_notify_sink_stdout(const char *json_line, void *ctx)
+{
+    (void)ctx;
+    mcp_send(json_line);
 }
 
 static void handle_initialize(const struct json_value *req)
@@ -56,7 +73,9 @@ static void handle_initialize(const struct json_value *req)
     snprintf(resp, sizeof(resp),
         "{\"jsonrpc\":\"2.0\",\"id\":%lld,\"result\":{"
         "\"protocolVersion\":\"2024-11-05\","
-        "\"capabilities\":{\"tools\":{}},"
+        /* Advertise logging: operator-class EV_* events are pushed as
+         * notifications/message frames on this channel (see mcp_notify). */
+        "\"capabilities\":{\"tools\":{},\"logging\":{}},"
         "\"serverInfo\":{\"name\":\"zcl23\",\"version\":\"1.0.0\"}"
         "}}",
         id ? (long long)json_get_int(id) : 0LL);
@@ -153,6 +172,11 @@ static void register_all_controllers(void)
     mcp_register_meta();
 }
 
+/* Live event source — polls the node's eventlog RPC. Defined in
+ * mcp_notify.c; this is the seam exec-plan 4.1 replaces with a direct
+ * in-process subscription. */
+extern char *mcp_notify_eventlog_fetch(void *ctx);
+
 int mcp_server_main(const char *datadir, int rpc_port)
 {
     mcp_rpc_client_init(datadir, rpc_port);
@@ -160,6 +184,13 @@ int mcp_server_main(const char *datadir, int rpc_port)
     mcp_middleware_init_global();
     mcp_metrics_init();
     mcp_replay_init();
+
+    /* Start the event push out-channel: operator-class EV_* events the
+     * node emits are converted to MCP notifications/message frames and
+     * pushed on stdout, so a chain halt / SLO breach / operator-needed
+     * condition reaches the agent without it polling zcl_events. */
+    mcp_notify_start(mcp_notify_eventlog_fetch, NULL,
+                     mcp_notify_sink_stdout, NULL, 750);
 
     char line[65536];
     while (fgets(line, sizeof(line), stdin)) {
@@ -204,5 +235,7 @@ int mcp_server_main(const char *datadir, int rpc_port)
         json_free(&req);
     }
 
+    /* stdin closed (agent disconnected) — drain and join the notifier. */
+    mcp_notify_stop();
     return 0;
 }

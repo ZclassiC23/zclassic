@@ -461,6 +461,14 @@ const char *event_type_name(enum event_type type)
         [EV_SAPLING_PERSIST_FAIL]    = "val.sapling_persist_fail",
         [EV_ORACLE_AGREE]            = "oracle.agree",
         [EV_ORACLE_DISAGREE]         = "oracle.disagree",
+        /* Oracle-policy escalations: emitted by the chain-advance guard but
+         * previously absent from this table, so they serialized as "unknown"
+         * in eventlog and could not be filtered by name. They are the loudest
+         * operator-action signals (a suspected fork, a violated anchor prefix,
+         * a halted chain), so name them explicitly. */
+        [EV_FORK_SUSPECTED]          = "oracle.fork_suspected",
+        [EV_ANCHOR_PANIC]            = "oracle.anchor_panic",
+        [EV_CHAIN_HALTED]            = "oracle.chain_halted",
         [EV_CHAIN_ADVANCE_DECISION]  = "chain.advance_decision",
         [EV_MIRROR_CONSENSUS_DECISION] = "mirror.consensus_decision",
         [EV_CHAIN_ADVANCE_RESERVED]  = "chain.advance_reserved",

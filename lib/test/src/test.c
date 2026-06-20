@@ -813,6 +813,7 @@ int main(void)
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();
     failures += test_mcp_e2e();
+    failures += test_mcp_notify();
     failures += test_db_validators();
     failures += test_peer_scoring();
     failures += test_peer_bandwidth();

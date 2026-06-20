@@ -307,6 +307,7 @@ int test_mcp_controllers(void);
 int test_mcp_middleware(void);
 int test_mcp_metrics(void);
 int test_mcp_e2e(void);
+int test_mcp_notify(void);
 int test_db_validators(void);
 int test_peer_scoring(void);
 int test_peer_bandwidth(void);
