@@ -192,6 +192,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(waitforheight_provable) \
     X(refold_progress_floor) \
     X(chain_linkage_check) X(invariant_sentinel) \
+    X(contaminated_coin_above_anchor) X(refold_from_anchor_fatal) \
     X(seed_integrity_gate) X(mirror_divergence_locator) \
     X(log_throttle) \
     X(reducer_frontier_reconcile_light) \

@@ -1076,6 +1076,8 @@ int main(void)
       failures += test_reindex_epilogue(); }
     failures += test_chain_linkage_check();
     failures += test_invariant_sentinel();
+    failures += test_contaminated_coin_above_anchor();
+    failures += test_refold_from_anchor_fatal();
     failures += test_seed_integrity_gate();
     failures += test_seed_torn_import_gate();
     failures += test_mirror_divergence_locator();

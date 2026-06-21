@@ -545,6 +545,8 @@ int test_waitforheight_provable(void);
 int test_refold_progress_floor(void);
 int test_chain_linkage_check(void);
 int test_invariant_sentinel(void);
+int test_contaminated_coin_above_anchor(void);
+int test_refold_from_anchor_fatal(void);
 int test_seed_integrity_gate(void);
 int test_seed_torn_import_gate(void);
 int test_mirror_divergence_locator(void);
