@@ -1111,6 +1111,8 @@ int main(void)
     failures += test_domain_consensus_sapling_structural();
     failures += test_domain_consensus_sighash();
     failures += test_domain_consensus_check_block();
+    failures += test_parity_lockin_contextual_header();
+    failures += test_parity_lockin_anchor_membership();
     failures += test_domain_consensus_equihash();
     failures += test_domain_consensus_script_interp();
     failures += test_domain_consensus_coins_math();

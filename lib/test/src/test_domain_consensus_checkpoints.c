@@ -186,6 +186,59 @@ int test_domain_consensus_checkpoints(void)
                   !domain_consensus_checkpoints_validate_header(&cd, 5000, &wrong));
     }
 
+    /* ──────────────── L3 LOCK-IN: checkpoint fork-guard is exact-height-only ──
+     *
+     * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L3):
+     * domain_consensus_checkpoints_validate_header() returns true whenever no
+     * checkpoint exists at the EXACT height being checked — even when that
+     * height sits BELOW the last (deepest) checkpoint height. zclassicd
+     * additionally rejects ANY block with nHeight < lastCheckpoint.nHeight
+     * (main.cpp:4386-4392, "rejected by checkpoint lock-in at <h>"). zcl23 has
+     * no such "below the last checkpoint" guard.
+     *
+     * THIS PIN ASSERTS THE CURRENT (LOOSENED) BEHAVIOR: a header at a
+     * non-checkpointed height that is strictly below the last checkpoint
+     * (5000) is ACCEPTED with ANY hash. The exact-height mismatch still
+     * rejects (the one rule zcl23 does enforce). When a future "reject below
+     * last checkpoint" guard lands (replay-gated per the doc), the accept
+     * assertions below flip deliberately. */
+    {
+        struct checkpoint_entry e[3];
+        struct checkpoint_data cd;
+        mk_table(&cd, e);  /* checkpoints at 100, 1000, 5000 */
+
+        const int last = domain_consensus_checkpoints_last_height(&cd);  /* 5000 */
+        DCC_CHECK("L3: last checkpoint height is 5000", last == 5000);
+
+        /* Arbitrary attacker-chosen hash with no relation to any pin. */
+        struct uint256 forged;
+        memset(forged.data, 0x42, 32);
+
+        /* A height strictly below the last checkpoint but at no exact pin
+         * (e.g. 4000, between 1000 and 5000) — zcl23 ACCEPTS with any hash. */
+        DCC_CHECK("L3 PIN: header below last checkpoint (h=4000), "
+                  "non-pinned, arbitrary hash -> ACCEPTED today",
+                  domain_consensus_checkpoints_validate_header(&cd, 4000, &forged));
+
+        /* Even just below the deepest pin (h=4999) — still accepted, because
+         * the only rule is exact-height match and 4999 is not a pin. */
+        DCC_CHECK("L3 PIN: header at h=4999 (just below last cp), "
+                  "arbitrary hash -> ACCEPTED today",
+                  domain_consensus_checkpoints_validate_header(&cd, 4999, &forged));
+
+        /* A non-pinned height ABOVE the last checkpoint (h=6000) is also
+         * accepted — this is correct parity (zclassicd accepts these too);
+         * pinned here only to bracket the loosening: the gap is specifically
+         * "below last checkpoint", not "anywhere non-pinned". */
+        DCC_CHECK("L3: header above last checkpoint (h=6000) -> accepted (parity)",
+                  domain_consensus_checkpoints_validate_header(&cd, 6000, &forged));
+
+        /* The one rule zcl23 DOES enforce: an EXACT-height mismatch at a pin
+         * rejects. h=5000 is a pin and `forged` != 0xCC. */
+        DCC_CHECK("L3: exact-height mismatch at h=5000 -> REJECTED (enforced)",
+                  !domain_consensus_checkpoints_validate_header(&cd, 5000, &forged));
+    }
+
     /* ──────────────────── total_blocks_estimate ──────────────────── */
 
     {

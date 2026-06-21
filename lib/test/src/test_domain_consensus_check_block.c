@@ -369,6 +369,72 @@ int test_domain_consensus_check_block(void)
                   r.code == DOMAIN_CONSENSUS_CHECK_BLOCK_ERR_BAD_BLK_LENGTH);
     }
 
+    /* ---- L1 LOCK-IN: no 2 MB serialized block-size cap ----------------
+     *
+     * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L1):
+     * domain_consensus_check_block_size_and_coinbase() bounds only the
+     * tx-COUNT (num_vtx <= 2,000,000), never the SERIALIZED byte size.
+     * zclassicd's CheckBlock rejects a block whose serialized size exceeds
+     * GENEROUS_BLOCK_SIZE_LIMIT (2,000,000) with "bad-blk-length"
+     * (main.cpp:4317). zcl23 has no such byte clause.
+     *
+     * THIS PIN ASSERTS THE CURRENT (LOOSENED) BEHAVIOR: a block whose
+     * serialized size is well over 2,000,000 bytes — but whose num_vtx is a
+     * tiny 2, far under the count cap — currently PASSES the size+coinbase
+     * check (no bad-blk-length). When a future byte-size clause lands (after
+     * the replay gate the doc requires), this assertion flips deliberately
+     * and the new reject must be wired in. */
+    {
+        /* Build one non-coinbase tx with enough full-size (MAX_SCRIPT_SIZE)
+         * output scripts to push the serialized block over 2,000,000 bytes.
+         * Each output contributes ~MAX_SCRIPT_SIZE (10,000) script bytes plus
+         * 8 value bytes plus the compact-size length prefix. 220 outputs ⇒
+         * ~2.2 MB, comfortably over the 2 MB band. */
+        const size_t n_out = 220;  /* 220 * ~10009 ≈ 2.20 MB > 2,000,000 */
+
+        struct transaction txs[2];
+        coinbase_tx(&txs[0], 0x80);
+
+        transaction_init(&txs[1]);
+        bool alloc_ok = transaction_alloc(&txs[1], 1, n_out);
+        DCB_CHECK("L1: oversize tx alloc (1 vin / 220 vout)", alloc_ok);
+        memset(txs[1].vin[0].prevout.hash.data, 0xee, 32); /* non-null => not coinbase */
+        txs[1].vin[0].prevout.n = 0;
+        txs[1].vin[0].sequence = UINT32_MAX;
+        txs[1].vin[0].script_sig.size = 0;
+        for (size_t i = 0; i < n_out; i++) {
+            memset(txs[1].vout[i].script_pub_key.data, OP_NOP, MAX_SCRIPT_SIZE);
+            txs[1].vout[i].script_pub_key.size = MAX_SCRIPT_SIZE;
+            txs[1].vout[i].value = 1;
+        }
+        memset(txs[1].hash.data, 0, 32);
+        txs[1].hash.data[0] = 0x81;
+        txs[1].hash.data[31] = 0x1b;
+
+        struct block b;
+        build_block(&b, txs, 2);
+
+        /* Prove the premise: the serialized block really is over 2 MB. */
+        size_t cb_sz  = transaction_serialize_size(&txs[0]);
+        size_t big_sz = transaction_serialize_size(&txs[1]);
+        size_t total  = cb_sz + big_sz;  /* header + count prefix are tiny extra */
+        DCB_CHECK("L1: synthetic block serializes > 2,000,000 bytes",
+                  total > 2000000 && b.num_vtx == 2);
+
+        /* num_vtx (2) is far under DOMAIN_GENEROUS_BLOCK_TXN_LIMIT (2,000,000),
+         * so the ONLY cap in the predicate passes — the oversize block is
+         * accepted today. */
+        reason[0] = '\xff'; dos = -1;
+        struct zcl_result r_sz =
+            domain_consensus_check_block_size_and_coinbase(
+                &b, reason, sizeof(reason), &dos);
+        DCB_CHECK("L1 PIN: >2MB block with num_vtx=2 currently ACCEPTED "
+                  "(no serialized-size cap)",
+                  r_sz.ok && reason[0] == '\0' && dos == 0);
+
+        for (size_t i = 0; i < 2; i++) transaction_free(&txs[i]);
+    }
+
     /* ---- CHECKDATASIG counts toward the block sigop limit (zclassicd parity) ----
      *
      * zclassicd counts OP_CHECKDATASIG/OP_CHECKDATASIGVERIFY toward
