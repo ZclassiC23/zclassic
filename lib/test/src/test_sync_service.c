@@ -303,18 +303,41 @@ static int test_sync_service_block_assignment_plan(void)
         memset(&node, 0, sizeof(node));
         memset(&plan, 0, sizeof(plan));
 
-        syncsvc_plan_block_assignment(&plan, &node, 0);
+        /* our_height=100000; peer ahead so the behind-gate keeps it
+         * eligible (the gate only excludes peers proven SUBSTANTIALLY —
+         * >SYNC_PEER_BEHIND_TOLERANCE blocks — behind us). */
+        node.starting_height = 100200;
+        const int our_height = 100000;
+
+        syncsvc_plan_block_assignment(&plan, &node, 0, our_height);
         ASSERT(!plan.should_assign);
 
         node.state = PEER_HANDSHAKE_COMPLETE;
-        syncsvc_plan_block_assignment(&plan, &node, 0);
+        syncsvc_plan_block_assignment(&plan, &node, 0, our_height);
         ASSERT(plan.should_assign);
         ASSERT(plan.max_assign == 64);
 
         syncsvc_plan_block_assignment(&plan, &node,
-                                      (DL_MAX_IN_FLIGHT_PER_PEER / 2) + 1);
+                                      (DL_MAX_IN_FLIGHT_PER_PEER / 2) + 1,
+                                      our_height);
         ASSERT(plan.should_assign);
         ASSERT(plan.max_assign == 16);
+
+        /* Behind-gate: a peer within the tolerance band is NOT gated (it
+         * may be a long-lived at-tip peer with a stale-low handshake h). */
+        node.starting_height = our_height;   /* exactly at our height */
+        syncsvc_plan_block_assignment(&plan, &node, 0, our_height);
+        ASSERT(plan.should_assign);
+        node.starting_height = our_height - SYNC_PEER_BEHIND_TOLERANCE;
+        syncsvc_plan_block_assignment(&plan, &node, 0, our_height);
+        ASSERT(plan.should_assign);   /* exactly at the band edge: kept */
+        /* Substantially behind (past the band): gated, no assignment. */
+        node.starting_height = our_height - SYNC_PEER_BEHIND_TOLERANCE - 1;
+        syncsvc_plan_block_assignment(&plan, &node, 0, our_height);
+        ASSERT(!plan.should_assign);
+        node.starting_height = -1;   /* unknown height: stays eligible */
+        syncsvc_plan_block_assignment(&plan, &node, 0, our_height);
+        ASSERT(plan.should_assign);
         PASS();
     } _test_next:;
 
@@ -339,6 +362,7 @@ static int test_sync_service_assigns_peer_blocks(void)
         memset(assigned, 0, sizeof(assigned));
         node.id = 3;
         node.state = PEER_HANDSHAKE_COMPLETE;
+        node.starting_height = 200;   /* ahead of our_height below */
         queued[0].data[0] = 1;
         queued[1].data[0] = 2;
 
@@ -346,7 +370,7 @@ static int test_sync_service_assigns_peer_blocks(void)
         ASSERT(dl_queue_blocks(&dm, queued, heights, 2) == 2);
 
         syncsvc_assign_peer_blocks(&batch, &dm, &node, assigned,
-                                   DL_WINDOW_SIZE);
+                                   DL_WINDOW_SIZE, /*our_height=*/100);
         ASSERT(batch.should_assign);
         ASSERT(batch.in_flight_before == 0);
         ASSERT(batch.assigned == 2);

@@ -347,8 +347,23 @@ int test_connman_addnode_fallback(void)
 
         ok = ok && cm.addnode_protocol_failures[0] == 1;
         ok = ok && cm.addnode_tcp_failures[0] == 0;
-        ok = ok && cm.addnode_backoff_sec[0] >= 900;
+        /* First PROTOCOL failure now backs off via the gentle ramp
+         * (step 1 = 60s), NOT an instant 900s lockout — a transient drop
+         * is re-dialed in time to fill the outbound floor. */
+        ok = ok && cm.addnode_backoff_sec[0] == 60;
         ok = ok && cm.addnode_last_attempt[0] > 0;
+
+        /* A second consecutive prehandshake (PROTOCOL) failure ramps but is
+         * still well below the 1800s ceiling — proves it is no longer an
+         * instant lockout. */
+        struct p2p_node *node2 = add_test_peer(
+            &cm, 51, 178, 179, 75, PEER_VERSION_SENT, false, false);
+        if (node2)
+            connman_note_addnode_prehandshake_disconnect(
+                &cm, node2, "unit-test-2");
+        ok = ok && cm.addnode_protocol_failures[0] == 2;
+        ok = ok && cm.addnode_backoff_sec[0] == 120;   /* step 2 */
+        ok = ok && cm.addnode_backoff_sec[0] < 1800;
 
         connman_free(&cm);
         if (ok) printf("OK\n");
@@ -377,8 +392,21 @@ int test_connman_addnode_fallback(void)
                                        CONNMAN_ADDNODE_FAILURE_TCP);
         connman_record_addnode_failure(&cm, 1,
                                        CONNMAN_ADDNODE_FAILURE_PROTOCOL);
-        ok = ok && cm.addnode_backoff_sec[0] == 120;
-        ok = ok && cm.addnode_backoff_sec[1] == 900;
+        /* After ONE failure each: TCP=20 (ramp step 0), PROTOCOL=60 (ramp
+         * step 1, one ahead). PROTOCOL still backs off longer than TCP —
+         * the invariant this test guards — but neither is an instant
+         * 900s/120s lockout. */
+        ok = ok && cm.addnode_backoff_sec[0] == 20;
+        ok = ok && cm.addnode_backoff_sec[1] == 60;
+        ok = ok && cm.addnode_backoff_sec[1] > cm.addnode_backoff_sec[0];
+
+        /* A genuinely dead host still reaches the 1800s ceiling: ramp a TCP
+         * addnode to 7 consecutive failures (step 6 = the last ramp entry). */
+        for (int f = 0; f < 6; f++)
+            connman_record_addnode_failure(&cm, 0,
+                                           CONNMAN_ADDNODE_FAILURE_TCP);
+        ok = ok && cm.addnode_tcp_failures[0] == 7;
+        ok = ok && cm.addnode_backoff_sec[0] == 1800;
 
         connman_free(&cm);
         if (ok) printf("OK\n");

@@ -181,15 +181,21 @@ void connman_record_addnode_attempt(struct connman *cm,
                                     size_t addnode_index,
                                     bool success);
 /* Bumps the per-kind failure counter (addnode_tcp_failures[i] or
- * addnode_protocol_failures[i]) and grows addnode_backoff_sec[i]: from 0
- * it seeds 120s (TCP) or 900s (PROTOCOL), otherwise doubles, capped at
- * 1800s. */
+ * addnode_protocol_failures[i]) and sets addnode_backoff_sec[i] from a
+ * gentle early ramp keyed on that count: 20 -> 60 -> 120 -> 300 -> 600 ->
+ * 1200 -> 1800s (capped). A PROTOCOL failure starts one ramp step ahead of
+ * a TCP failure (so PROTOCOL > TCP for the same count). A single transient
+ * failure costs ~20s — not an instant 900s lockout — so a momentarily-flaky
+ * but reachable peer is re-dialed in time to fill the outbound floor, while
+ * a persistently-dead host still reaches the 1800s ceiling after ~6-7
+ * consecutive misses. */
 void connman_record_addnode_failure(struct connman *cm,
                                     size_t addnode_index,
                                     enum connman_addnode_failure_kind kind);
-/* Charges a PROTOCOL failure (the 900s seed / doubling-to-1800s backoff)
- * when an addnode peer drops before the handshake completes. No-op for
- * inbound, already-handshaked, or non-addnode nodes. */
+/* Charges a PROTOCOL failure (which on the FIRST miss backs off ~60s and
+ * ramps to the 1800s ceiling — see record_addnode_failure) when an addnode
+ * peer drops before the handshake completes. No-op for inbound,
+ * already-handshaked, or non-addnode nodes. */
 void connman_note_addnode_prehandshake_disconnect(
     struct connman *cm,
     const struct p2p_node *node,

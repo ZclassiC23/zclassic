@@ -1557,8 +1557,11 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         if (!snapshot_active) {
             struct uint256 assign_hashes[DL_WINDOW_SIZE];
             struct sync_block_batch batch;
+            /* our_height for the behind-peer gate (sibling scope; recompute
+             * the same way as the sync block above, msgprocessor.c:1330). */
+            int our_height = msg_get_height(mp);
             syncsvc_assign_peer_blocks(&batch, dm, node, assign_hashes,
-                                       DL_WINDOW_SIZE);
+                                       DL_WINDOW_SIZE, our_height);
             if (batch.assigned > 0) {
                 struct byte_stream getdata_msg;
                 stream_init(&getdata_msg, batch.assigned * 36 + 8);

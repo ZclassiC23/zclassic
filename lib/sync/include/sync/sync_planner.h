@@ -241,6 +241,36 @@ bool syncsvc_should_log_accepted_headers(const struct p2p_node *node,
                                          const struct block_index *header_tip);
 bool syncsvc_is_initial_block_download(const struct p2p_node *node,
                                        int our_height);
+/* A peer is treated as "behind" (and skipped for getheaders + block
+ * getdata) only when its handshake-claimed tip is more than this many
+ * blocks below ours.
+ *
+ * Why a large (wedge-scale) tolerance, not a tight one: node->starting_height
+ * is HANDSHAKE-STATIC (msg_version.c:221; never updated). A peer that
+ * connected when the chain was lower keeps a stale-low value even though it
+ * has since followed the tip, so a tight gate would (a) suppress the 120s
+ * at-tip keepalive getheaders and (b) demote a healthy long-lived peer.
+ * New blocks from a healthy peer still reach us via BIP130 push
+ * (sendheaders, msg_blocks.c:409-477), so the keepalive poll is only a
+ * backstop — but we still keep it for any peer within this band.
+ *
+ * The threshold is set far above any plausible "connected-long-ago-at-tip"
+ * gap so it NEVER trips on a healthy peer, yet is dwarfed by the live wedge
+ * (peer at 3056758 while we are at 3150488 — a ~94k gap, ~94x this bound),
+ * which is correctly excluded. Net policy only. */
+#define SYNC_PEER_BEHIND_TOLERANCE 1000
+
+/* True ONLY when we can PROVE this peer is substantially behind our height
+ * (see SYNC_PEER_BEHIND_TOLERANCE). A peer with unknown advertised height
+ * (starting_height < 0, e.g. mid-handshake or the co-located zclassicd
+ * oracle before it reports its tip) is NEVER considered behind — header
+ * sync is how we learn its real tip, so we keep it eligible. Mirrors
+ * zclassicd FindNextBlocksToDownload (main.cpp:501) refusing peers whose
+ * best-known work is below our tip. Net policy only; touches no block/tx/
+ * header VALIDITY predicate. Used to skip getheaders rounds and block-
+ * getdata slots spent on a wedged/behind peer (the live 3056758-vs-3150488
+ * stall) so they go to a strictly-ahead peer instead. */
+bool syncsvc_peer_is_behind(const struct p2p_node *node, int our_height);
 bool syncsvc_should_request_headers(const struct p2p_node *node,
                                     int our_height,
                                     int64_t now_seconds);
@@ -301,12 +331,14 @@ void syncsvc_plan_invalid_block_getheaders(struct sync_getheaders_action *action
                                            enum sync_state sync_state);
 void syncsvc_plan_block_assignment(struct sync_block_assignment *plan,
                                    const struct p2p_node *node,
-                                   size_t in_flight);
+                                   size_t in_flight,
+                                   int our_height);
 void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
                                 struct download_manager *dm,
                                 const struct p2p_node *node,
                                 struct uint256 *out_hashes,
-                                size_t out_cap);
+                                size_t out_cap,
+                                int our_height);
 void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               const struct p2p_node *node,
                               enum sync_state sync_state,

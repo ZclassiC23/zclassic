@@ -431,12 +431,47 @@ static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
     return base;
 }
 
+bool syncsvc_peer_is_behind(const struct p2p_node *node, int our_height)
+{
+    if (!node)
+        return false;
+    /* Unknown advertised height (mid-handshake, or the co-located
+     * zclassicd oracle before it reports a tip): cannot prove behind,
+     * so keep eligible — header sync is how we learn its real tip. */
+    if (node->starting_height < 0)
+        return false;
+    /* node->starting_height is HANDSHAKE-STATIC (set once from the version
+     * message, msg_version.c:221; never updated). So a peer that connected
+     * when the chain was lower shows a stale-low starting_height even though
+     * it has since followed the tip. We must NOT gate such a long-lived
+     * at-tip peer — that would suppress the 120s at-tip keepalive getheaders
+     * that discovers new blocks, and would wrongly demote healthy peers.
+     *
+     * We therefore EXCLUDE a peer only when it is SUBSTANTIALLY behind:
+     * its claimed tip is more than SYNC_PEER_BEHIND_TOLERANCE blocks below
+     * ours. This mirrors the existing frontier-parity band already used for
+     * stale-header discipline (best_header >= starting_height - 144,
+     * msgprocessor.c:1416-1418) — same handshake-static reasoning, same
+     * tolerance. The live wedge (peer at 3056758 while we are at 3150488,
+     * a ~94k gap) is far past the band and is correctly gated; a peer at or
+     * near our tip stays fully eligible. Net policy only; no validity. */
+    return node->starting_height + SYNC_PEER_BEHIND_TOLERANCE < our_height;
+}
+
 bool syncsvc_should_request_headers(const struct p2p_node *node,
                                     int our_height,
                                     int64_t now_seconds)
 {
     if (!node || node->inbound) return false;
     if (node->state < PEER_SYNCING_HEADERS) return false;
+
+    /* Never spend a getheaders round on a peer we KNOW is at/behind us; it
+     * can only re-deliver headers we already have (stale rounds). At tip
+     * our_height tracks the peer's starting_height, so this stays false for
+     * a healthy at-tip peer and only fires on a truly-behind peer (the live
+     * 3056758-vs-3150488 wedge). Net policy only — no validity touched. */
+    if (syncsvc_peer_is_behind(node, our_height))
+        return false;
 
     int64_t interval = syncsvc_getheaders_interval(node, our_height);
     return (now_seconds - node->last_getheaders_time) > interval;
@@ -777,6 +812,10 @@ bool syncsvc_should_request_headers_with_fallback(const struct p2p_node *node,
                                                    bool header_stall_active)
 {
     if (!node) return false;
+    /* Even during a stall, a peer we KNOW is at/behind us cannot extend
+     * our header frontier — asking it just burns a stale round. Unknown-
+     * height peers (starting_height<0) stay eligible. Net policy only. */
+    if (syncsvc_peer_is_behind(node, our_height)) return false;
     /* During stall, allow inbound peers as fallback */
     if (node->inbound && !header_stall_active) return false;
     if (node->state < PEER_SYNCING_HEADERS) {

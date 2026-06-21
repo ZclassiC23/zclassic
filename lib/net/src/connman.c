@@ -739,20 +739,38 @@ void connman_record_addnode_failure(struct connman *cm,
         return;
 
     cm->addnode_last_attempt[addnode_index] = (int64_t)platform_time_wall_time_t();
+
+    /* Count this failure first so the ramp below can read the running
+     * total for this kind. */
+    int64_t n;
     if (kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL)
-        cm->addnode_protocol_failures[addnode_index]++;
+        n = ++cm->addnode_protocol_failures[addnode_index];
     else
-        cm->addnode_tcp_failures[addnode_index]++;
+        n = ++cm->addnode_tcp_failures[addnode_index];
 
-    if (cm->addnode_backoff_sec[addnode_index] == 0) {
-        cm->addnode_backoff_sec[addnode_index] =
-            kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL ? 900 : 120;
-    } else if (cm->addnode_backoff_sec[addnode_index] < 1800) {
-        cm->addnode_backoff_sec[addnode_index] *= 2;
-    }
-
-    if (cm->addnode_backoff_sec[addnode_index] > 1800)
-        cm->addnode_backoff_sec[addnode_index] = 1800;
+    /* Gentle early ramp, then exponential to the 1800s ceiling, driven by
+     * the per-kind failure count (not by doubling the previous value).
+     *
+     * The old logic jumped a FIRST protocol failure straight to 900s, so a
+     * single transient drop (one remote-close before the handshake, or one
+     * slow first handshake) made a real-but-momentarily-flaky peer invisible
+     * to the outbound dialer for 15-30 min. With only 2 healthy outbound and
+     * a floor of 3, that starves the floor and "Peer discovery: 2 peers
+     * (need 3+)" persists. Now a transient failure costs ~20s, so the peer is
+     * re-dialed within seconds; a genuinely dead host still reaches the 1800s
+     * cap after ~6-7 consecutive misses, so we do not hammer it.
+     *
+     * PROTOCOL ramps one step ahead of a bare TCP refusal (a handshake-stage
+     * failure is treated slightly more cautiously), preserving the
+     * PROTOCOL > TCP ordering the addnode-fallback test asserts. */
+    static const int ramp[] = { 20, 60, 120, 300, 600, 1200, 1800 };
+    const int ramp_len = (int)(sizeof(ramp) / sizeof(ramp[0]));
+    int step = (int)n - 1;
+    if (kind == CONNMAN_ADDNODE_FAILURE_PROTOCOL)
+        step += 1;            /* one step ahead of a TCP failure */
+    if (step < 0) step = 0;
+    if (step >= ramp_len) step = ramp_len - 1;
+    cm->addnode_backoff_sec[addnode_index] = ramp[step];
 }
 
 static void *thread_open_connections(void *arg)

@@ -52,13 +52,23 @@ void syncsvc_plan_invalid_block_getheaders(struct sync_getheaders_action *action
 
 void syncsvc_plan_block_assignment(struct sync_block_assignment *plan,
                                    const struct p2p_node *node,
-                                   size_t in_flight)
+                                   size_t in_flight,
+                                   int our_height)
 {
     struct sync_block_assignment empty = {0};
     if (!plan) return;
     *plan = empty;
 
     if (!node || node->state < PEER_HANDSHAKE_COMPLETE)
+        return;
+
+    /* Don't assign block bodies to a peer we KNOW is behind — it cannot
+     * hold queued (ahead-of-us) blocks, so a getdata would only burn an
+     * in-flight slot until timeout instead of fetching from a strictly-
+     * ahead peer. Exact analog of zclassicd FindNextBlocksToDownload
+     * (main.cpp:501). Unknown-height peers (starting_height<0, e.g. the
+     * mid-handshake oracle) stay eligible. Net policy only. */
+    if (syncsvc_peer_is_behind(node, our_height))
         return;
 
     /* K2: loopback peers have a wider request window. The WAN-fairness
@@ -84,7 +94,8 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
                                 struct download_manager *dm,
                                 const struct p2p_node *node,
                                 struct uint256 *out_hashes,
-                                size_t out_cap)
+                                size_t out_cap,
+                                int our_height)
 {
     struct sync_block_batch empty = {0};
     struct sync_block_assignment plan;
@@ -96,7 +107,8 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
         return;
 
     batch->in_flight_before = dl_peer_in_flight(dm, (uint32_t)node->id);
-    syncsvc_plan_block_assignment(&plan, node, batch->in_flight_before);
+    syncsvc_plan_block_assignment(&plan, node, batch->in_flight_before,
+                                  our_height);
     batch->should_assign = plan.should_assign;
     if (!plan.should_assign)
         return;
