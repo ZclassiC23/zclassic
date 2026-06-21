@@ -24,10 +24,6 @@ struct main_state;
 void diagnostics_controller_set_state(struct main_state *ms,
                                       const char *datadir);
 
-/* Accessor for the wired main_state used by state dumpers and other
- * cross-controller consumers. Returns NULL until set_state() is called. */
-struct main_state *diagnostics_controller_get_state(void);
-
 void register_diagnostics_rpc_commands(struct rpc_table *t);
 
 /* Fill `out` with a comma-separated list of every subsystem name accepted

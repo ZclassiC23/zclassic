@@ -37,7 +37,6 @@ struct peer_lifecycle_summary {
 };
 
 const char *peer_lifecycle_source_name(enum peer_lifecycle_source source);
-enum peer_lifecycle_source peer_lifecycle_source_from_string(const char *s);
 
 void peer_lifecycle_note_attempt(const struct net_address *addr,
                                  enum peer_lifecycle_source source);

@@ -419,12 +419,3 @@ void gap_fill_kick(void)
     pthread_mutex_unlock(&g_gf.mu);
 }
 
-void gap_fill_get_stats(struct gap_fill_stats *out)
-{
-    if (!out) return;
-    if (!atomic_load(&g_gf.running)) {
-        memset(out, 0, sizeof(*out));
-        return;
-    }
-    *out = g_gf.stats;
-}

@@ -55,59 +55,6 @@ void wallet_view_utxo(struct json_value *out,
     json_push_kv_bool(out, "solvable", coin->solvable);
 }
 
-void wallet_view_tx(struct json_value *out,
-                    const struct wallet_tx *wtx,
-                    const struct wallet *w)
-{
-    (void)w;
-    json_set_object(out);
-
-    char txid_hex[65];
-    uint256_get_hex(&wtx->tx.hash, txid_hex);
-    json_push_kv_str(out, "txid", txid_hex);
-    json_push_kv_int(out, "confirmations", wtx->confirms);
-    json_push_kv_int(out, "time", wtx->time_received);
-    json_push_kv_int(out, "timereceived", wtx->time_received);
-
-    if (wtx->from_me)
-        json_push_kv_str(out, "category", "send");
-    else if (wtx->confirms > 0)
-        json_push_kv_str(out, "category", "receive");
-    else
-        json_push_kv_str(out, "category", "orphan");
-}
-
-void wallet_view_info(struct json_value *out,
-                      const struct wallet *w,
-                      int64_t balance,
-                      int64_t unconfirmed)
-{
-    json_set_object(out);
-
-    char amt[32];
-    zcl_format_zcl(amt, sizeof(amt), balance);
-    json_push_kv_real(out, "balance", strtod(amt, NULL));
-    zcl_format_zcl(amt, sizeof(amt), unconfirmed);
-    json_push_kv_real(out, "unconfirmed_balance", strtod(amt, NULL));
-    json_push_kv_int(out, "txcount", (int64_t)w->num_wallet_tx);
-    json_push_kv_int(out, "keypoolsize", (int64_t)w->key_pool_size);
-}
-
-void wallet_view_balance(struct json_value *out,
-                         int64_t balance,
-                         int64_t unconfirmed,
-                         int64_t immature)
-{
-    json_set_object(out);
-    char amt[32];
-    zcl_format_zcl(amt, sizeof(amt), balance);
-    json_push_kv_real(out, "balance", strtod(amt, NULL));
-    zcl_format_zcl(amt, sizeof(amt), unconfirmed);
-    json_push_kv_real(out, "unconfirmed", strtod(amt, NULL));
-    zcl_format_zcl(amt, sizeof(amt), immature);
-    json_push_kv_real(out, "immature", strtod(amt, NULL));
-}
-
 void wallet_view_key_entry(struct json_value *out,
                            const struct db_wallet_key *key,
                            const char *address,
@@ -236,48 +183,6 @@ void wallet_view_sync_summary(struct json_value *out,
     json_push_kv_real(out, "balance_before", strtod(amt, NULL));
     zcl_format_zcl(amt, sizeof(amt), balance_after);
     json_push_kv_real(out, "balance_after", strtod(amt, NULL));
-}
-
-void wallet_view_legacy_import(struct json_value *out,
-                           const struct chain_snapshot *snap,
-                           int keys_recovered, int keys_total,
-                           int64_t balance)
-{
-    json_set_object(out);
-
-    struct json_value src_info = {0};
-    json_set_object(&src_info);
-    json_push_kv_str(&src_info, "directory",
-                     snap->src_dir ? snap->src_dir : "");
-    json_push_kv_bool(&src_info, "valid", snap->src_valid);
-    json_push_kv_int(&src_info, "block_files", snap->src_block_files);
-
-    char sz[32];
-    snprintf(sz, sizeof(sz), "%" PRId64, snap->src_blocks_bytes / 1048576);
-    json_push_kv_str(&src_info, "blocks_mb", sz);
-    snprintf(sz, sizeof(sz), "%" PRId64, snap->src_chainstate_bytes / 1048576);
-    json_push_kv_str(&src_info, "chainstate_mb", sz);
-    json_push_kv(out, "source", &src_info);
-    json_free(&src_info);
-
-    struct json_value copy_info = {0};
-    json_set_object(&copy_info);
-    json_push_kv_bool(&copy_info, "blocks", snap->copy_blocks_ok);
-    json_push_kv_bool(&copy_info, "index", snap->copy_index_ok);
-    json_push_kv_bool(&copy_info, "chainstate", snap->copy_chainstate_ok);
-    json_push_kv(out, "copy_status", &copy_info);
-    json_free(&copy_info);
-
-    struct json_value wallet_info = {0};
-    json_set_object(&wallet_info);
-    json_push_kv_int(&wallet_info, "keys_recovered", keys_recovered);
-    json_push_kv_int(&wallet_info, "keys_total", keys_total);
-
-    char amt[32];
-    zcl_format_zcl(amt, sizeof(amt), balance);
-    json_push_kv_str(&wallet_info, "balance", amt);
-    json_push_kv(out, "wallet", &wallet_info);
-    json_free(&wallet_info);
 }
 
 void wallet_view_chain_coin(struct json_value *out,

@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-11 (rev 2026-06-16) · **Status:** active · **Builds on:** [`canonical-frontier-derived-state-plan.md`](./canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).
 
-> This roadmap is forward engineering, not an active-incident log — the historical failures below are the *origin* of each item, not current blockers. Live recovery + near-term hardening sequencing live in [`rock-solid-program-2026-06-16.md`](./rock-solid-program-2026-06-16.md) and [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md).
+> This roadmap is forward engineering, not an active-incident log — the historical failures below are the *origin* of each item, not current blockers. Near-term hardening sequencing lives in [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md); the merged rock-solid recovery-program L1/L2 items are in this doc (see "Rock-solid recovery program" below).
 
 ## The lens
 
@@ -127,6 +127,94 @@ Rule of thumb: **anomaly above S ⇒ rebuild; anomaly at/below S ⇒ page.** Not
 - **Mechanism:** after item 2 deploys, delete the flag from the env file, restart the service, let bg validation walk past h=478544.
 - **Acceptance:** live `zcl_validationstatus` shows progress monotonically past 478544 with zero false flags; no `BLOCK_FAILED_VALID` entries; RSS stays within the known bg-validation envelope (watch the stair-step gotcha).
 - **Size:** config-only + one live observation window.
+
+---
+
+## Rock-solid recovery program — open L1/L2 items (merged from rock-solid-program-2026-06-16)
+
+The 2026-06-16 recovery program's Layer-0 (restore the live node) is DONE; these are
+its still-open autonomous (copy-prove-gated, no live mutation) and continuous-proof
+items. Both Layer-0 wedge classes (the coin tear AND restart fragility) share one
+root: cold import is a non-self-sufficient "borrow from zclassicd" bootstrap (skips
+SHA3 verify at non-checkpoint heights, depends on a co-located zclassicd, commits
+state derived from zclassicd's index). The structural cure is self-sufficient sync
+(FlyClient + SHA3 snapshot + delta P2P) — see [`never-stuck-plan.md`](./never-stuck-plan.md);
+these harden the bridge.
+
+### L1 — autonomous durability (copy-prove-gated, no live mutation)
+
+- **(b) Cold-import restart-fragility — OPTION 1 *(keystone)*.** Stop the destructive
+  `zclassicd_import_best` backward commit (and the clamped flat re-save) when the
+  node's own derived frontier is **strictly above** zclassicd's index tip. Derive the
+  frontier via `boot_derive_coins_best(&ndcb)` (`config/src/boot.c:820`); suppress
+  `boot_promote_tip_via_csr(best, "zclassicd_import_best", false)` (`:2110-2113`) ONLY
+  when `have_ndcb && ndcb.height > zcd_best_h` (**strictly** `>`); emit a loud WARN +
+  `EV_RECOVERY_ACTION zcd_import_tip_suppressed`. Keep the index import + blk-file
+  linking unconditional. Skip `save_block_index_flat` (`:2122`) when promotion was
+  suppressed. Key strictly `>`, never `>=` (a node at exactly zcd's tip or trailing
+  MUST still promote). Do NOT touch the detached-island guard, do NOT raise
+  `REBUILD_RECENT_MAX_RANGE`, do NOT force-link the pprev=NULL placeholder. Root cause
+  of the live `contradiction_frozen` latch. Copy-prove matrix: baseline reproduces the
+  backward commit; patched suppresses it; negative (real torn set / derived ≤ zcd)
+  still promotes/refuses as today. **CAVEAT (verify first):** the captured fixture's
+  failure may be stale-flat-rejection → detached-root, which OPTION-1 does NOT cover;
+  the true fix may be forward-extent connectivity preservation (raise-only projection
+  topup so coins-best is never a detached root).
+- **(c) `chain_restore_finalize` SEGV — serialize the recovery cascade.** Make the
+  rebuild cascade hold `ms->cs_main` for the block_index/active_chain mutation. Today
+  `chain_restore_rebuild_active_chain{,_from_block_files}` mutate shared block_index
+  node fields + the `active_chain` slot array under `c->write_lock` ONLY (never
+  `cs_main`, `chain_restore_repair.c:50,52,231,242`) while bg-hash-verify + bg-validation
+  read those same fields under `cs_main`/lock-free → heap corruption (same class as the
+  documented `phashBlock`/`block_map_grow` UAF). Defense-in-depth: quiesce bg-validation
+  + bg-hash around the rebuild, or only run it at boot before workers spawn. Gate:
+  ASan/UBSan + TSan binary on an ISOLATED copy of an anchor-replay datadir exhibiting
+  `tip_window_holes`; confirm both sanitizers clean + the canary survives. Review the
+  lock change against the LOCK-ORDER LAW (do NOT take `cs_main` while holding a leaf
+  lock the drive path holds).
+- **(d1) Scope the replay-canary FAIL sentinel.** `canary_sentinel_watch.c:191-205`
+  reads only `verdict` and latches `fail` on `"FAIL"` without filtering by
+  `build_commit` (vs the running build) or `started_ts` (vs process start) — both
+  fields ARE present in the sentinel JSON. A 3-day-old FAIL from an OLD wedged binary
+  in the shared `~/.local/state/zclassic23-canary/` dir latches `replay_canary_failed`
+  forever on a healthy node. Fix: in `fold_sentinel` ignore any sentinel whose
+  `build_commit` != the running build or whose `started_ts` predates process start.
+  Unit test + dev-lane restart showing the condition clears.
+- **(d2) Make `contradiction_frozen` self-clearing once reconciled.** The freeze is
+  raised on a transient `active_tip_hash != csr_tip_hash` at boot
+  (`chain_evidence_reconstruct.c:178-184`) but the remedy returns
+  `COND_REMEDY_FAILED` and never clears (`contradiction_frozen.c:38`) even after the
+  chain reconciles forward. The coins-best cursor mismatch is already correctly
+  treated as recoverable lag in the same function (`:185-201`) — the self-clearing
+  precedent is right there. Fix: once `active_tip_hash == csr_tip_hash` again, clear
+  the `cec.*` keys and let the witness mark the condition resolved. Root trigger is
+  (b); (d2) is belt-and-suspenders for any datadir already carrying the latch.
+  Secondary: eliminate the `database is locked` write of `cec.contradiction_reason`
+  at boot.
+
+### L2 — continuous proof (all LOCAL, no GitHub Actions)
+
+- **(4.1) Local pre-push enforcement.** Add a tracked `.githooks/pre-push` running
+  `make lint` (incl. E13) + a fast `test_parallel` subset; `git config core.hooksPath
+  .githooks` (per-clone; document for wt2/wt3). A push failing lint or the
+  consensus-parity golden group is blocked locally. Keep it fast enough to not tempt
+  `--no-verify`.
+- **(4.2) systemd --user timer for the heavy gate + soak accrual.** Nightly `make ci`
+  against HEAD, dated verdict = local CI. Pair with the dev lane staying up to accrue
+  soak time toward MVP-C (7-day soak).
+- **(4.3) Get the replay canary GREEN and scheduled.** Masking fix already landed
+  (poll loop `kill -0` + `node_crashed_signal_N`). Remaining: land (c) so anchor-replay
+  no longer SEGVs, land (d1) so a stale cross-binary sentinel can't latch a false FAIL,
+  then schedule on the §4.2 timer and require a PASS sentinel for the running
+  build_commit before declaring the node soak-healthy.
+- **(4.4) MVP-C8 parity oracle — keep it continuous.** Make the tip-hash-vs-zclassicd
+  probe a continuous timer on live + soak lanes, alerting on `match:false`, so a future
+  tear is caught the moment it diverges, not 2.85 days later. The live node had NO
+  continuous set-parity gate when the tear formed.
+- **(4.5) Rolling-commitment seal *(owner-gated, designed not built)*.** A rolling
+  per-window SHA3 UTXO commitment, persisted, would let a node detect AND repair a coin
+  tear from its own recent history instead of a full re-import. Consensus-adjacent; must
+  be designed against the parity doctrine first. Overlaps item 4 (the seal) above.
 
 ---
 

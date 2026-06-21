@@ -331,21 +331,3 @@ bool file_market_download_challenge_passed(const uint8_t root_hash[32])
     pthread_mutex_unlock(&g_market_mutex);
     return false;
 }
-
-bool file_market_release_peer_chunks(int peer_id)
-{
-    pthread_mutex_lock(&g_market_mutex);
-    bool found = false;
-    for (int i = 0; i < g_download_count; i++) {
-        if (g_downloads[i].peer_id == peer_id &&
-            g_downloads[i].state == FDL_DOWNLOADING) {
-            g_downloads[i].state = FDL_IDLE;
-            g_downloads[i].peer_id = -1;
-            found = true;
-            printf("[market] released download '%s' from disconnected peer %d\n",
-                   g_downloads[i].offer.filename, peer_id);
-        }
-    }
-    pthread_mutex_unlock(&g_market_mutex);
-    return found;
-}

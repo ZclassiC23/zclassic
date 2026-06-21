@@ -128,19 +128,6 @@ void quorum_oracle_record_peer_header_vote(uint32_t peer_id,
     pthread_mutex_unlock(&g_qo.lock);
 }
 
-void quorum_oracle_forget_peer(uint32_t peer_id)
-{
-    if (peer_id == 0)
-        return;
-    pthread_mutex_lock(&g_qo.lock);
-    for (size_t i = 0; i < QO_MAX_PEER_VOTES; i++) {
-        if (g_qo.peer_votes[i].present &&
-            g_qo.peer_votes[i].peer_id == peer_id)
-            memset(&g_qo.peer_votes[i], 0, sizeof(g_qo.peer_votes[i]));
-    }
-    pthread_mutex_unlock(&g_qo.lock);
-}
-
 void quorum_oracle_init(const struct quorum_oracle_config *cfg)
 {
     pthread_mutex_lock(&g_qo.lock);
@@ -417,25 +404,4 @@ bool quorum_oracle_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str(out, "source_zclassicd", "wired");
     json_push_kv_str(out, "source_peer",      "wired");
     return true;
-}
-
-void quorum_oracle_reset_for_test(void)
-{
-    pthread_mutex_lock(&g_qo.lock);
-    g_qo.initialized = false;
-    g_qo.min_agree = 0;
-    memset(g_qo.peer_votes, 0, sizeof(g_qo.peer_votes));
-    g_qo.peer_vote_cursor = 0;
-    g_qo.last_winning_hash[0] = '\0';
-    g_qo.last_split_a[0] = '\0';
-    g_qo.last_split_b[0] = '\0';
-    pthread_mutex_unlock(&g_qo.lock);
-    atomic_store(&g_qo.total_probes, 0);
-    atomic_store(&g_qo.total_matches, 0);
-    atomic_store(&g_qo.total_splits, 0);
-    atomic_store(&g_qo.total_no_data, 0);
-    atomic_store(&g_qo.last_height, 0);
-    atomic_store(&g_qo.last_probe_unix, 0);
-    atomic_store(&g_qo.last_verdict, QO_VERDICT_NO_DATA);
-    atomic_store(&g_qo.last_agreeing_sources, 0);
 }

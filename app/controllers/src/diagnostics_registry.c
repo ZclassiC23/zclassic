@@ -100,16 +100,6 @@ void diagnostics_controller_set_state(struct main_state *ms,
     }
 }
 
-struct main_state *diagnostics_controller_get_state(void)
-{
-    return g_diag.main_state;
-}
-
-struct main_state *diag_main_state(void)
-{
-    return g_diag.main_state;
-}
-
 const char *diag_datadir(void)
 {
     return g_diag.datadir;

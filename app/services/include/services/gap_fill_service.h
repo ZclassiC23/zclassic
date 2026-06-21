@@ -75,8 +75,4 @@ void gap_fill_stop(void);
  * service not running. */
 void gap_fill_kick(void);
 
-/* Snapshot current stats for diagnostics / RPC. Zero-initialises out
- * if service not running. */
-void gap_fill_get_stats(struct gap_fill_stats *out);
-
 #endif /* ZCL_GAP_FILL_SERVICE_H */

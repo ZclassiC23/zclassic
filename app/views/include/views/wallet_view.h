@@ -25,23 +25,6 @@ void wallet_view_utxo(struct json_value *out,
                       const struct coin_entry *coin,
                       const struct wallet *w);
 
-/* Wallet transaction for gettransaction/listtransactions */
-void wallet_view_tx(struct json_value *out,
-                    const struct wallet_tx *wtx,
-                    const struct wallet *w);
-
-/* Wallet info summary for getwalletinfo */
-void wallet_view_info(struct json_value *out,
-                      const struct wallet *w,
-                      int64_t balance,
-                      int64_t unconfirmed);
-
-/* Balance summary (balance, unconfirmed, immature) */
-void wallet_view_balance(struct json_value *out,
-                         int64_t balance,
-                         int64_t unconfirmed,
-                         int64_t immature);
-
 /* Diagnostic view: wallet key with per-key balance */
 struct db_wallet_key;
 void wallet_view_key_entry(struct json_value *out,
@@ -90,13 +73,6 @@ void wallet_view_replay_summary(struct json_value *out,
 void wallet_view_sync_summary(struct json_value *out,
     int synced, int already_correct, int marked_spent,
     int64_t balance_before, int64_t balance_after);
-
-/* Diagnostic view: legacy import chain snapshot result */
-struct chain_snapshot;
-void wallet_view_legacy_import(struct json_value *out,
-                           const struct chain_snapshot *snap,
-                           int keys_recovered, int keys_total,
-                           int64_t balance);
 
 /* ── HTML view layer ─────────────────────────────────────────
  * Controller fills struct with data, view renders HTML.

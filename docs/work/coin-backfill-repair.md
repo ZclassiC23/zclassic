@@ -1,9 +1,12 @@
 # Sync-Strength Fix — Implementation Design (SLATED FOR DELETION)
 
-> **Status (robustness-audit-2026-06-15 + tenacity-roadmap item 4):** this whole
-> repair ladder — `coin_backfill`, ~1798 LOC — is a runtime compensator for the
-> exact import-skip the project decided to prevent at **write time** via the SHA3
-> import gate (`import-gate-spec.md`). It is slated for **leaf-first deletion**
+> **Status (robustness-audit findings, now folded into
+> [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md),
+> + tenacity-roadmap item 4):** this whole repair ladder — `coin_backfill`, ~1798
+> LOC — is a runtime compensator for the exact import-skip the project decided to
+> prevent at **write time** via the SHA3 import gate (shipped — the bless-time
+> torn-import gate now lives in `block_index_loader_torn_gate.c` + its test
+> `test_seed_torn_import_gate.c`). It is slated for **leaf-first deletion**
 > once that gate is live. The exhaustive guard-ladder / scan-protocol / test-plan
 > detail (the original §2–§5) has been archived; what remains is a summary plus
 > the **consensus-safety argument**, which is load-bearing for as long as the code

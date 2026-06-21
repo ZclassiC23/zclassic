@@ -26,19 +26,6 @@ typedef SOCKET zcl_socket_t;
 
 #define DEFAULT_CONNECT_TIMEOUT 5000
 
-struct proxy_info {
-    struct net_service proxy;
-    bool randomize_credentials;
-    bool valid;
-};
-
-static inline void proxy_info_init(struct proxy_info *p)
-{
-    net_service_init(&p->proxy);
-    p->randomize_credentials = false;
-    p->valid = false;
-}
-
 bool lookup_host(const char *name, struct net_addr *results,
                  size_t max_results, size_t *num_results,
                  bool allow_lookup);

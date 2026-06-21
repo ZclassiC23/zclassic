@@ -114,3 +114,121 @@ main()
     The node stands on coins it folded itself; coins_applied can never exceed H*;
     the coin-tear / log-less-span failure modes are unreachable by construction.
 ```
+
+## Carve manifest — file-by-file deletion order + blockers (merged from carve-manifest, 2026-06-19)
+
+> Produced 2026-06-19 by an adversarial multi-agent audit (22 files / 11,262 LOC,
+> every "deletable" verdict attacked by a skeptic hunting for a live caller). All
+> cites re-readable against the live tree; verify before cutting. The deletion is
+> gated behind the cure (B1–B3 in [`never-stuck-plan.md`](./never-stuck-plan.md));
+> the live-verified correction below explains why the family runs-attempts-refuses
+> rather than remedies, so cure-first gating holds even though the family is NOT a
+> working remedy.
+
+**LIVE-VERIFIED CORRECTION (2026-06-19).** The node is ALREADY pinned with all 8
+"deletable" files active: `reducer_frontier_reconcile_light` last_outcome=failed;
+`coin_backfill` last_status=refused_spent, inserted=0; node.log `L1 refused:
+coins_applied_height=3151412 > hstar_cursor=3056759` repeats 1,186+. The family
+ENGAGES (`refused_coin_tear=TRUE`) but TERMINALLY REFUSES (`txindex_miss` latched,
+node.db txindex tops at 3,151,411, the unfolded gap [3,056,759..3,150,899] has no
+fold rows to source coins from). So it RUNS-ATTEMPTS-REFUSES, it does not REMEDY —
+the true remedy is the offline from-checkpoint fold. The UTXO-set wrong-fork
+corruption is bounded at **exactly 1 coin** (02663FF1 at h=3,151,306, two methods),
+so a targeted 1-coin backfill is a viable *liveness* band-aid but leaves the deep
+lie (H*=3,056,759 ≪ served 3,151,411) intact.
+
+### Numbers (22 files / 11,262 LOC audited)
+
+| Class | Files | LOC | Meaning |
+|-------|------:|----:|---------|
+| **Cleanly deletable post-cure** | 8 | 5,895 | Every one pivots on `refused_coin_tear` / `prevout_unresolved`-hole / `value_overflow`-row-below-cursor — states only reachable because import stamped cursors past unfolded logs. The cure makes them impossible **by construction**. |
+| **Needs rework (not delete)** | 1 | 799 | `stage_repair_reducer_frontier.c` — the orchestrator. Its tear pivot dies; its reorg/flag-reconcile guts must be re-homed. |
+| **Genuine support — KEEP** | 13 | 4,568 | Reorg unwind, header-solution cache/poison-rewind, body-fetch self-heal, legacy/utxo mirror + oracle drift detectors, wallet/explorer read-model feeder. NOT lie-cover. |
+
+The 8 cleanly deletable (post-cure): `stage_repair_reducer_frontier_coin.c` (787),
+`_refill.c` (743), `_tipfin.c` (650), `stage_repair_coin_backfill.c` (795),
+`_scan.c` (539), `_util.c` (483), `utxo_apply_delta_repair.c` (456),
+`quorum_oracle_service.c` (442). Plus `block_index_loader_torn_gate.c` (orphaned by
+removing `coin_backfill_util` — forward-declares util symbols, won't link alone;
+delete in the same change with its call site `block_index_loader_rebuild.c:596`).
+
+### Deletion order (leaves before orchestrators, tree always links)
+
+1. **`utxo_apply_delta_repair.c`** (456) — leaf. Sever caller
+   `stage_repair_reducer_frontier_coin.c:533` (`maybe_repair_value_overflow`);
+   delete `maybe_repair_value_overflow` (coin.c:489-550) + dispatch (coin.c:724-736),
+   the `value_overflow_repair_*` fields in `struct
+   stage_reducer_frontier_reconcile_result` (`stage_repair.h:122-129`) and their
+   reads (`reducer_frontier_reconcile_light.c:366-367,507-511`;
+   `stage_repair_reducer_frontier.c:503-504`). **KEEP** `utxo_apply_delta_reorg.c`'s
+   primitives (`emit_inverse_delta`/`delete_rows_above`/`unwind_write_cursor`) —
+   shared with the LIVE reorg path `utxo_apply_stage.c:703`.
+2. **`stage_repair_coin_backfill_scan.c`** (539) — sever callers in
+   `stage_repair_coin_backfill.c:280,295,650,659`.
+3. **`stage_repair_coin_backfill.c`** (795) — sever sole external caller
+   `stage_repair_reducer_frontier_coin.c:748`.
+4. **`stage_repair_coin_backfill_util.c`** (483) — sever
+   `block_index_loader_torn_gate.c:108/111/113` (fwd-decls) + `:156/167/169`; remove
+   torn-gate call site `block_index_loader_rebuild.c:596`; remove MCP `zcl_state
+   subsystem=coin_backfill` row `diagnostics_registry.c:512`; delete
+   `block_index_loader_torn_gate.c` itself.
+5. **`stage_repair_reducer_frontier_coin.c`** (787) — sever sole caller
+   `stage_repair_reducer_frontier.c:625`. Callees now gone, deletes cleanly.
+6. **`stage_repair_reducer_frontier_tipfin.c`** (650) — sever tear-gated caller
+   `stage_repair_reducer_frontier.c:650` (if-block 644-658).
+7. **`stage_repair_reducer_frontier_refill.c`** (743) — sever tear-gated callers
+   `stage_repair_reducer_frontier.c:646` + `:661`. See blocker #2:
+   `force_stage_cursor_in_tx` (:452) + `reconcile_refill_cursors` (:709) are UNGATED;
+   re-home a reorg-residue cursor-clamp into the KEEP purge TU first.
+8. **`quorum_oracle_service.c`** (442) — independent. Sever dead
+   `rolling_anchor_service.c:384` ref + the two repair-only callers via
+   `process_block_revalidate.c:124` (`block_failed_mask_at_tip.c:117` +
+   `chain_supervisor.c:83`); remove MCP `zcl_state subsystem=quorum_oracle` row
+   `diagnostics_registry.c:514`. `quorum_oracle_init` is never started in prod.
+9. **REWORK `stage_repair_reducer_frontier.c`** (799) — LAST. Remove the dead tear
+   branch (295-296 pivot, 644-703 dispatch, 234-296 `read_frontier_snapshot`
+   `utxo_apply_contig`). **Preserve / re-home** the genuine self-heal:
+   `reconcile_block_index_flags` (311-403, HAVE_DATA/VALID_SCRIPTS/FAILED_MASK), purge
+   calls into the KEEP file `stage_repair_reducer_frontier_purge.c`
+   (`purge_noncanonical` 580, `purge_stale_reorg_tipfin` 598),
+   `reconcile_refill_cursors` (709) + `reconcile_tip_finalize_cursor` (712). Rewrite
+   the self-heal Condition `reducer_frontier_reconcile_light`
+   (`condition_registry.c:59`) to keep only the reorg-residue/flag-reconcile remedy,
+   not the tear remedy.
+
+### Blockers (must clear in this order)
+
+1. **CURE FIRST — precondition for ALL deletes.** Wire `snapshot_verify.c`
+   (FlyClient+MMB+SHA3) into the cold-import door and fold anchor→tip, deriving stage
+   cursors honestly; remove the synthetic stamp (`block_index_loader_rebuild.c:728,743`,
+   `stage_anchor.c:153-154 seed_exempt`). Until this lands, `refused_coin_tear` /
+   `prevout_unresolved` holes are REACHABLE.
+2. **REORG-RESIDUE RE-HOME** (blocks step 7 + 9): `reconcile_refill_cursors` +
+   `force_stage_cursor_in_tx` run UNGATED and consume holes from the genuine
+   reorg-residue purge (KEEP). A replacement cursor-clamp must live in the kept
+   purge/reconcile TU before `refill.c` is removed, or depth-N reorgs lose their clamp
+   consumer.
+3. **TORN-GATE COUPLING** (blocks step 4): delete `block_index_loader_torn_gate.c`
+   together with `coin_backfill_util` + its call site, or the tree won't link.
+4. **CONDITION DEREGISTRATION** (blocks steps 5-9): the Condition
+   `reducer_frontier_reconcile_light` (`condition_registry.c:59`) is the sole live
+   entry into the whole reducer-frontier repair family — deregister or rewrite it,
+   never leave it dangling. Same for the quorum path (`block_failed_mask_at_tip` +
+   `chain_supervisor` coord_escalation).
+
+### Zero-feature-loss verdict: TRUE (verified)
+
+No wallet, explorer, mempool, P2P, ZNAM, ZMSG, ZSWP/market, RPC, or block-serving
+feature routes through any deletable file. The only losses: (1) the cold-import
+coin-tear/log-hole self-heal slice the cure makes unreachable; (2) two read-only MCP
+`zcl_state` diagnostic subsystems (`coin_backfill`, `quorum_oracle`) — cosmetic.
+
+**KEPT (look adjacent, survive the cure untouched):** reorg handling
+(`utxo_apply_delta_reorg.c` live at `utxo_apply_stage.c:703`,
+`invalidateblock`/`zcl_invalidateblock`; reorg-residue purge in
+`stage_repair_reducer_frontier_purge.c`; header-solution-poison rewind
+`stage_repair_rewind.c` serving `zcl_rebuild_recent`), header PoW re-source
+(`stage_repair_header_solution.c`), body recovery (`stage_repair_body_fetch.c`), the
+explorer/wallet UTXO read-model feeder (`utxo_mirror_sync_service.c`), all wallet HTML
+UI (`wallet_view_projection.c`), and the legacy/utxo mirror + `oracle_policy` +
+`zclassicd_oracle` + `mirror_divergence_locator` drift detectors.

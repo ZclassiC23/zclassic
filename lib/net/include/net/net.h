@@ -343,7 +343,6 @@ struct net_manager {
     node_id_t last_node_id;
     zcl_mutex_t cs_last_node_id;
 
-    struct semaphore *sem_outbound;
     struct node_signals signals;
     zcl_cond_t msg_handler_cond;
     zcl_mutex_t msg_handler_mutex;
@@ -390,9 +389,6 @@ bool p2p_node_end_message(struct p2p_node *node);
 
 void socket_send_data(struct p2p_node *node);
 
-struct p2p_node *find_node_by_addr(struct net_manager *nm,
-                                    const struct net_addr *addr);
-
 struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,
                                const char *dest);
@@ -413,7 +409,6 @@ bool add_local(struct net_manager *nm, const struct net_service *addr,
 bool remove_local(struct net_manager *nm, const struct net_service *addr);
 bool is_local(struct net_manager *nm, const struct net_service *addr);
 bool is_reachable_net(struct net_manager *nm, enum zcl_network net);
-bool is_reachable_addr(struct net_manager *nm, const struct net_addr *addr);
 void set_limited(struct net_manager *nm, enum zcl_network net, bool limited);
 
 bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,

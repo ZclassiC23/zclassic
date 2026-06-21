@@ -11,6 +11,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Remove a directory's immediate entries (one level deep), unlinking a
+ * symlink target directly. File-local: the only caller is dir_copy below. */
+static void dir_remove_shallow(const char *dir);
+
 bool file_copy(const char *src, const char *dst)
 {
     struct stat st;
@@ -104,7 +108,7 @@ void block_files_clean(const char *dir)
     closedir(d);
 }
 
-void dir_remove_shallow(const char *dir)
+static void dir_remove_shallow(const char *dir)
 {
     struct stat lst;
     if (lstat(dir, &lst) != 0) return;

@@ -3,8 +3,8 @@
 *Adopted 2026-06-11 from the information-theory diagnosis. This is the
 **doctrine** (timeless rules). The live status boards — the divergence-surface
 audit, the failure-rate budget (F1–F11), and the verification gates (G1–G5) —
-live in `docs/work/tenacity-roadmap.md`; the active program of record is
-`docs/work/rock-solid-program-2026-06-16.md` +
+live in `docs/work/tenacity-roadmap.md` (which now carries the merged
+rock-solid recovery-program L1/L2 items); the active hardening task board is
 `docs/work/stability-improvements-2026-06-16.md`.*
 
 Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),

@@ -76,8 +76,6 @@ void rolling_bloom_free(struct rolling_bloom_filter *f);
 void rolling_bloom_insert(struct rolling_bloom_filter *f, const unsigned char *data, size_t len);
 /* Probabilistic membership over the retained window; false positives possible. */
 bool rolling_bloom_contains(const struct rolling_bloom_filter *f, const unsigned char *data, size_t len);
-/* Clear both generations and pick a fresh random tweak. */
-void rolling_bloom_reset(struct rolling_bloom_filter *f);
 
 /* BIP37 gating — returns true only if ZCL_ENABLE_BIP37=1 is set.
  * Default OFF because BIP37 is a known privacy leak (CVE-2014). */

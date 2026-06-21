@@ -138,10 +138,6 @@ void legacy_mirror_sync_reset_for_test(void);
 void legacy_mirror_sync_test_set_stats(
     const struct legacy_mirror_sync_stats *stats,
     struct main_state *ms);
-void legacy_mirror_sync_test_set_catchup_result(bool enabled,
-                                                bool result,
-                                                bool clear_stuck);
-int legacy_mirror_sync_test_catchup_calls(void);
 #endif
 
 #endif /* ZCL_SERVICES_LEGACY_MIRROR_SYNC_SERVICE_H */

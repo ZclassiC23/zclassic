@@ -531,19 +531,4 @@ void legacy_mirror_sync_test_set_stats(
     atomic_store(&g_lms.blocks_applied, stats->blocks_applied);
     atomic_store(&g_lms.headers_added, stats->headers_added);
 }
-
-void legacy_mirror_sync_test_set_catchup_result(bool enabled,
-                                                bool result,
-                                                bool clear_stuck)
-{
-    atomic_store(&g_lms_test_catchup_enabled, enabled ? 1 : 0);
-    atomic_store(&g_lms_test_catchup_result, result ? 1 : 0);
-    atomic_store(&g_lms_test_catchup_clear_stuck, clear_stuck ? 1 : 0);
-    atomic_store(&g_lms_test_catchup_calls, 0);
-}
-
-int legacy_mirror_sync_test_catchup_calls(void)
-{
-    return atomic_load(&g_lms_test_catchup_calls);
-}
 #endif

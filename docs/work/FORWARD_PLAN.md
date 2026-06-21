@@ -21,7 +21,8 @@
 > bodies forward from the verified checkpoint:
 > [`never-stuck-plan.md`](./never-stuck-plan.md) (the cold-sync recipe is a
 > stopgap crutch, not the cure). Hardening program of record:
-> [`rock-solid-program-2026-06-16.md`](./rock-solid-program-2026-06-16.md) +
+> [`tenacity-roadmap.md`](./tenacity-roadmap.md) (carries the merged rock-solid
+> recovery-program L1/L2 items) +
 > [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md).
 > Frozen wedge fixture for copy-prove:
 > `~/.zclassic-c23-postrestore-wedge-20260611` (KEEP).

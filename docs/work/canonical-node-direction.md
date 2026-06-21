@@ -72,3 +72,55 @@ No Docker. CI is local (`make test`/`make ci`). Normal FF pushes to
 build/bin/zclassic23` + verify `build_commit` before any deploy (stale-.o
 footgun). Copy-prove on a datadir COPY before any live mutation. Never weaken a
 gate (honest messengers stay).
+
+## Daily-driver solidity bar (merged from daily-driver-solidity, 2026-06-17)
+
+Companion owner bar (same 2026-06-17 direction): zclassic23 must be solid enough to
+be the **canonical daily-driver node** BEFORE services are built on top. "Solid" =
+survives the three things you do to a daily driver — **reboot it, kill it, walk away
+for a week** — while **continuously proving it still equals zclassicd**.
+
+| Dimension | Solid? | Blocks daily-driver? | Pri |
+|---|:---:|:---:|:---:|
+| Consensus parity (bit-for-bit vs zclassicd) | partial | yes | **P0** |
+| Restart-durability (reboot without dropping the chain) | **no** | yes | **P0** |
+| Cold-import correctness (no silent coin tears) | **no** | yes | **P0** |
+| Liveness / no-silent-wedge | partial | no | P1 |
+| Kill-9 recovery + crash-safety | **yes** | no | P1 |
+| Soak / unattended-for-weeks (168h) | **no** | yes | P1 |
+
+Steady-state at tip is proven; every remaining gap is a cold-import / restart
+correctness gap — the node holds tip fine; the reboot and the cold-import are what
+bite. None require new consensus logic; the hard part is *proving*, not coding.
+Distance ≈ 3 copy-proven fixes + one 168h soak clock. Rule for all P0 fixes: clone to
+`/tmp`, isolated 39xxx ports, dead-sink `-connect`; never start/stop/mutate the live
+main node, dev lane, soak node, or zclassicd.
+
+- **P0-A — Restart-durability copy-prove (the reboot blocker).** A daily driver must
+  reboot safely and this has NEVER been proven. Build a genuine pre-fix baseline (so
+  the test has teeth), clone the broken-restart fixture, reproduce the genesis-drop,
+  then prove HEAD suppresses the backward CSR commit and holds the derived frontier.
+  CRITICAL: the captured failure may be *stale-flat-rejection → detached-root →
+  `contradiction_frozen`*, which OPTION-1 does NOT cover; the true reboot fix may be
+  forward-extent connectivity preservation (raise-only projection topup so coins-best
+  is never a detached root). Negative: a detached-island/torn clone must still refuse;
+  a below-zcd clone must still promote.
+- **P0-B — Cold-import write-time-honest gate (the recurring wedge class).** A true
+  per-outpoint write-time check is infeasible (bodies stripped at import). Deliverable
+  = forward-evidence bless-time refusal everywhere + checkpoint-reject at the compiled
+  height (3,056,758). Route the P2P snapshot/FlyClient seed path (`snapshot_apply.c`)
+  through the same torn-import predicate the LDB path uses (today it can silently bless
+  a torn snapshot). Copy-prove FIRES on torn fixtures, NO-OP on a faithful import (the
+  safety-critical leg; real-chain validated — h=478544 lesson).
+- **P0-C — Make consensus parity EXACT, not coarse (closes the C8 set-divergence
+  hole).** The standing UTXO check asserts height only → structurally cannot page a
+  UTXO-set tear. Promote the parity reference to byte-exact (zclassic23-format SHA3
+  over the canonical UTXO set, generated cross-node on the C++ reference daemon), wire
+  `utxo_audit_compare_remote` to byte-compare; stand up the replay canary as an
+  enforced recurring proof. (Same as roadmap #6 above — this is its daily-driver
+  framing.)
+- **P1 (after P0s land):** recover the soak node and bank a clean judge-graded **168h
+  VERDICT=MET** window (add a judge timer so a live-but-wedged gap-growing node pages);
+  close the total-process-hang SPOF (supervisor + `zcl_health_sweep` mutually watch, or
+  an off-node replay-canary deadman); promote the full-binary crash harnesses into a
+  `make ci-crash` stage + a mainnet-scale kill-9-restart copy-prove.

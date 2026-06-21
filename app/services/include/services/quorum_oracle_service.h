@@ -74,10 +74,7 @@ struct zcl_result quorum_oracle_probe(int height, struct quorum_oracle_result *o
 void quorum_oracle_record_peer_header_vote(uint32_t peer_id,
                                            int height,
                                            const char hash_hex[65]);
-void quorum_oracle_forget_peer(uint32_t peer_id);
 
 bool quorum_oracle_dump_state_json(struct json_value *out, const char *key);
-
-void quorum_oracle_reset_for_test(void);
 
 #endif /* ZCL_SERVICES_QUORUM_ORACLE_SERVICE_H */

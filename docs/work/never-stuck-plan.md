@@ -61,7 +61,8 @@ load-bearing claim re-queried by hand. Net: the thesis HOLDS; three refinements.
 
 Full evidence + every file:line is in the north-star memory
 `project_frontier_wedge_real_rootcause_2026-06-18` (re-corrected 2026-06-19) and the
-carve-manifest's live-verified correction header.
+carve manifest's live-verified correction header (folded into
+[`architecture-deletion-plan.md`](./architecture-deletion-plan.md)).
 
 ## 0b. CURE RESOLVED 2026-06-19 (workflow `wl5j9piiu`, adversarially verified — `partial`)
 
@@ -299,6 +300,55 @@ Commitment MMR with the SHA3 root, bound to PoW per B1); point the bisect at the
 **self-committed** ladder (not zclassicd); trigger the existing bounded-window repair.
 Then verify/locate/repair are **self-contained and O(log n + window)** — fast,
 never-lies, never-stuck, the same property.
+
+## 1c. Why fold-from-bodies is the only certainty (merged from leveldb-copy-correctness-plan)
+
+> Built 2026-06-19 from a source-grounded pass over zclassic/src/leveldb, Zcash
+> txdb.cpp, this repo's dbwrapper.c / coins_db.c / utxo_recovery_*, host FS facts.
+
+**Certainty does NOT come from copying the LevelDB carefully — it comes from
+verifying any candidate UTXO set against a fingerprint computed from our own
+immutable block bodies.** The copy can be arbitrarily messy; it is accepted only if
+its whole-set SHA3 equals the body-derived SHA3 at a pinned height, else it is
+rejected and the set is folded from blocks. This exactly covers the blast radius of
+LevelDB copy corruption (keyspace-wide).
+
+Why a live `cp -a` over a running daemon can be silently wrong (each: detectable? /
+blast radius):
+1. **Missing referenced SST** (compaction deleted it before cp reached it) —
+   DETECTABLE on our writable open (`DBImpl::Recover` → `Corruption`) / keyspace-wide.
+2. **Mismatched SST/MANIFEST versions** (cp captured two compaction states) — SILENT /
+   keyspace-wide. *This produced the live failure: a coin 77 blocks below the anchor
+   silently absent.*
+3. **Torn MANIFEST tail** — SILENT (log_reader treats it as clean EOF) / recent-edit.
+4. **Torn / mid-file `.log`** — SILENT (`paranoid_checks` defaults false) / recent coins.
+5. **Torn SST data block** — DETECTABLE as a halt (`verify_checksums` on by default).
+6. **Mid-iteration CRC error swallowed** — SILENT / keyspace-wide. *OUR code defect:*
+   `node_db_import_service.c:380` discards `db_iter_check_error`'s result.
+7. Unreferenced extra SST — SILENT but benign.
+8. **Fork-tip image** (internally consistent but `'B'` names a block zclassicd later
+   disconnected) — SILENT / **height-bounded to top ~10**. *This is the wrong coin at
+   h=3,151,306 (orphan 02663FF1 instead of canonical 7E7894BF).* Not a cp artifact — a
+   property of which static image was captured.
+9. Stale-but-clean (copy lags tip) — SILENT / height-bounded.
+
+The dangerous ones (2,3,4,6) are SILENT and keyspace-wide, so a "reconcile the top 10
+blocks" repair cannot find them — only a whole-set commitment can. **Do we even need
+the copy? No — not for correctness, only for speed.** Block bodies + the one
+bit-for-bit-verified SHA3 anchor (h=3,056,758, count 1,354,771, root `00e95dbd…`)
+deterministically reconstruct the entire UTXO set with zero zclassicd dependency. The
+copy buys only skipping the fold of ~94,654 blocks (anchor→tip). **If the from-blocks
+fold is fast enough on this NVMe box, delete the copy mechanism entirely** — the copy
+is the sole source of both live failures (the keyspace-wide silent drop and the fork
+coin). Falsification tests that must pass before deleting the cp path: the fork-coin
+fixture MUST report a SHA3 mismatch and refuse; the clean image MUST match and accept
+(resolve txid byte-order: is our stored txid BLOB the same internal order as
+zclassicd's uint256 LevelDB key?); body fold genesis→3,056,758 MUST reproduce SHA3
+`00e95dbd…` / count 1,354,771; a one-byte-corrupted SST MUST hard-halt the import
+(`node_db_import_service.c:380` wired to abort on any iterator error); full-history
+replay against the real chain — zero false-rejects across 3.15M blocks (h=478544
+doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
+`ZCL_FINALITY_DEPTH=10` at `in_ibd=false`.
 
 ## 2. Invariants (true by construction)
 

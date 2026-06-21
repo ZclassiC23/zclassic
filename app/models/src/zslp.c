@@ -538,36 +538,6 @@ bool db_zslp_balance_credit(struct node_db *ndb, const char *token_id,
     return db_zslp_balance_save(ndb, &rec);
 }
 
-int64_t db_zslp_token_count(struct node_db *ndb)
-{
-    if (!ndb || !ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT count(*) FROM zslp_tokens",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
-    int64_t count = 0;
-    if (AR_STEP_ROW(s))
-        count = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return count;
-}
-
-int64_t db_zslp_transfer_count(struct node_db *ndb)
-{
-    if (!ndb || !ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT count(*) FROM zslp_transfers",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
-    int64_t count = 0;
-    if (AR_STEP_ROW(s))
-        count = AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return count;
-}
-
 void db_zslp_clear_all(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return;

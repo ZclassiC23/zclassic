@@ -38,10 +38,6 @@ bool db_tx_prepare_bulk_load(struct node_db *ndb);
 bool db_tx_finalize_bulk_load(struct node_db *ndb);
 bool db_tx_configure_additive_build(struct node_db *ndb);
 
-/* Batch insert for block connect. Call within begin/commit. */
-bool db_tx_save_batch(struct node_db *ndb, const struct db_tx_index *txs,
-                      size_t count);
-
 /* Find all txids in a block. Returns count, fills out array up to max. */
 int db_tx_find_by_block(struct node_db *ndb, const uint8_t block_hash[32],
                         struct db_tx_index *out, size_t max);

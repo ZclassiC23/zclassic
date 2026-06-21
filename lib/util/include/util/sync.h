@@ -54,54 +54,6 @@ static inline void zcl_cond_broadcast(zcl_cond_t *c) { pthread_cond_broadcast(c)
 
 #endif
 
-struct semaphore {
-    zcl_cond_t cond;
-    zcl_mutex_t mutex;
-    int value;
-};
-
-static inline void semaphore_init(struct semaphore *s, int init)
-{
-    zcl_cond_init(&s->cond);
-    zcl_mutex_init(&s->mutex);
-    s->value = init;
-}
-
-static inline void semaphore_destroy(struct semaphore *s)
-{
-    zcl_cond_destroy(&s->cond);
-    zcl_mutex_destroy(&s->mutex);
-}
-
-static inline void semaphore_wait(struct semaphore *s)
-{
-    zcl_mutex_lock(&s->mutex);
-    while (s->value < 1)
-        zcl_cond_wait(&s->cond, &s->mutex);
-    s->value--;
-    zcl_mutex_unlock(&s->mutex);
-}
-
-static inline bool semaphore_try_wait(struct semaphore *s)
-{
-    zcl_mutex_lock(&s->mutex);
-    if (s->value < 1) {
-        zcl_mutex_unlock(&s->mutex);
-        return false;
-    }
-    s->value--;
-    zcl_mutex_unlock(&s->mutex);
-    return true;
-}
-
-static inline void semaphore_post(struct semaphore *s)
-{
-    zcl_mutex_lock(&s->mutex);
-    s->value++;
-    zcl_mutex_unlock(&s->mutex);
-    zcl_cond_signal(&s->cond);
-}
-
 /* Convenience macros for lock scoping */
 #define LOCK(cs) zcl_mutex_lock(&(cs))
 #define UNLOCK(cs) zcl_mutex_unlock(&(cs))

@@ -34,14 +34,6 @@ bool db_wallet_key_validate(const struct db_wallet_key *k,
 
 bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k);
 
-/* Rich-error convenience save.  Builds a db_wallet_key from the
- * pubkey/privkey pair (validating pubkey/hash consistency) and
- * routes the write through the same AR_BEGIN_SAVE lifecycle as the
- * legacy save.  Prefer this over wallet_sqlite_write_key_r in new
- * code so before_save / after_save hooks fire (plan §5.4). */
-struct zcl_result db_wallet_key_save_r(struct node_db *ndb,
-                                        const struct pubkey *pk,
-                                        const struct privkey *key);
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
                         struct db_wallet_key *out);
 bool db_wallet_key_delete(struct node_db *ndb, const uint8_t pubkey_hash[20]);
@@ -78,9 +70,6 @@ bool db_sapling_key_find_by_address(struct node_db *ndb, const char *address,
                                     struct db_sapling_key *out);
 int db_sapling_key_count(struct node_db *ndb);
 
-typedef void (*sapling_key_cb)(const struct db_sapling_key *key, void *ctx);
-int db_sapling_key_each(struct node_db *ndb, sapling_key_cb cb, void *ctx);
-
 /* Wallet seed (singleton) */
 bool db_wallet_seed_save(struct node_db *ndb, const uint8_t seed[32],
                          uint32_t next_child);
@@ -99,9 +88,6 @@ bool db_wallet_script_validate(const struct db_wallet_script *s,
 bool db_wallet_script_save(struct node_db *ndb, const struct db_wallet_script *s);
 bool db_wallet_script_find(struct node_db *ndb, const uint8_t script_hash[20],
                            struct db_wallet_script *out);
-
-typedef void (*wallet_script_cb)(const struct db_wallet_script *s, void *ctx);
-int db_wallet_script_each(struct node_db *ndb, wallet_script_cb cb, void *ctx);
 
 /* ── Relationships ─────────────────────────────────────────────── */
 

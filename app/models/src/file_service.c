@@ -85,26 +85,6 @@ bool db_file_service_save(struct node_db *ndb,
 
 /* ── Find (cached stmt) ──────────────────────────────────────── */
 
-/* ── Delete ────────────────────────────────────────────────────── */
-
-bool db_file_service_delete(struct node_db *ndb,
-                            const uint8_t ip[16], uint16_t port)
-{
-    if (!ndb->open) return false;
-
-    struct ar_callbacks *cbs = db_file_service_callbacks();
-    struct db_file_service fs;
-    memset(&fs, 0, sizeof(fs));
-    memcpy(fs.ip, ip, 16);
-    fs.port = port;
-    sqlite3_stmt *s = NULL;
-    AR_ADHOC_DESTROY(ndb, s,
-        "DELETE FROM file_services WHERE ip=? AND port=?",
-        cbs, &fs,
-        AR_BIND_BLOB(s, 1, ip, 16);
-        AR_BIND_INT(s, 2, port));
-}
-
 /* ── Recent ────────────────────────────────────────────────────── */
 
 int db_file_service_recent(struct node_db *ndb,

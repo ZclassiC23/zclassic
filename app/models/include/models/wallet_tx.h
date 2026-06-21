@@ -77,10 +77,6 @@ bool db_wallet_tx_update_block_height(struct node_db *ndb,
 int db_wallet_tx_list(struct node_db *ndb, struct db_wallet_tx *out,
                       size_t max, size_t offset);
 
-/* List transactions at a given height. */
-int db_wallet_tx_at_height(struct node_db *ndb, int height,
-                           struct db_wallet_tx *out, size_t max);
-
 /* Wallet UTXOs (transparent outputs belonging to the wallet) */
 struct db_wallet_utxo {
     uint8_t txid[32];
@@ -214,8 +210,6 @@ enum db_mark_spent_result db_sapling_note_mark_spent_ex(
 bool db_sapling_note_mark_spent(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
-bool db_sapling_note_is_nullifier_spent(struct node_db *ndb,
-                                        const uint8_t nullifier[32]);
 int64_t db_sapling_note_balance(struct node_db *ndb);
 int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
                                         const uint8_t ivk[32]);
@@ -273,11 +267,6 @@ int db_wallet_tx_utxos(struct node_db *ndb, const uint8_t txid[32],
 /* WalletTx has_many :sapling_notes */
 int db_wallet_tx_notes(struct node_db *ndb, const uint8_t txid[32],
                         struct db_sapling_note *out, size_t max);
-
-/* WalletTx belongs_to :block */
-struct db_block;
-bool db_wallet_tx_block(struct node_db *ndb, const struct db_wallet_tx *t,
-                        struct db_block *out);
 
 /* WalletUTXO belongs_to :wallet_key */
 struct db_wallet_key;

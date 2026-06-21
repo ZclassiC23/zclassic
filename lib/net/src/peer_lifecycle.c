@@ -67,17 +67,6 @@ const char *peer_lifecycle_source_name(enum peer_lifecycle_source source)
     }
 }
 
-enum peer_lifecycle_source peer_lifecycle_source_from_string(const char *s)
-{
-    if (!s || !s[0]) return PEER_LIFECYCLE_SOURCE_UNKNOWN;
-    if (strcmp(s, "inbound") == 0) return PEER_LIFECYCLE_SOURCE_INBOUND;
-    if (strcmp(s, "addnode") == 0) return PEER_LIFECYCLE_SOURCE_ADDNODE;
-    if (strcmp(s, "addrman") == 0) return PEER_LIFECYCLE_SOURCE_ADDRMAN;
-    if (strcmp(s, "zcl23_db") == 0) return PEER_LIFECYCLE_SOURCE_ZCL23_DB;
-    if (strcmp(s, "manual") == 0) return PEER_LIFECYCLE_SOURCE_MANUAL;
-    return PEER_LIFECYCLE_SOURCE_UNKNOWN;
-}
-
 static void addr_key_from_netaddr(const struct net_address *addr,
                                   char *out, size_t out_sz)
 {

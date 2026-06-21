@@ -193,16 +193,6 @@ bool db_sapling_note_mark_spent(struct node_db *ndb,
            == DB_MARK_SPENT_OK;
 }
 
-bool db_sapling_note_is_nullifier_spent(struct node_db *ndb,
-                                        const uint8_t nullifier[32])
-{
-    if (!ndb->open) return false;
-    sqlite3_stmt *s = ndb->stmt_nullifier_exists;
-    AR_RESET(s);
-    AR_BIND_BLOB(s, 1, nullifier, 32);
-    return AR_STEP_ROW(s);
-}
-
 int64_t db_sapling_note_balance(struct node_db *ndb)
 {
     return db_sapling_note_balance_with_count(ndb, NULL);

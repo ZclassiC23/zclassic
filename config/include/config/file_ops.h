@@ -22,9 +22,6 @@ int block_files_copy(const char *src_dir, const char *dst_dir);
 /* Remove all blk*.dat and rev*.dat from a directory. */
 void block_files_clean(const char *dir);
 
-/* Remove a directory tree (one level deep). */
-void dir_remove_shallow(const char *dir);
-
 /* Remove a directory tree recursively. */
 void dir_remove_tree(const char *dir);
 

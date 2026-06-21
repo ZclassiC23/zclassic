@@ -219,53 +219,6 @@ bool db_wallet_key_save(struct node_db *ndb, const struct db_wallet_key *k)
         AR_BIND_INT(s, 5, k->created_at));
 }
 
-struct zcl_result db_wallet_key_save_r(struct node_db *ndb,
-                                        const struct pubkey *pk,
-                                        const struct privkey *key)
-{
-    if (!ndb)
-        return ZCL_ERR(WSQL_NULL_ARG, "node_db pointer is NULL");
-    if (!pk)
-        return ZCL_ERR(WSQL_INVARIANT_PUBKEY, "pubkey pointer is NULL");
-    if (!key)
-        return ZCL_ERR(WSQL_INVARIANT_PRIVKEY, "privkey pointer is NULL");
-    if (!ndb->open)
-        return ZCL_ERR(WSQL_DB_NOT_OPEN, "node_db is not open");
-
-    /* Plan §5.4: pubkey_hash must equal hash160(pubkey).  The
-     * legacy save path trusted the caller; this one does not. */
-    if (pk->size != 33 && pk->size != 65)
-        return ZCL_ERR(WSQL_INVARIANT_PUBKEY,
-            "pubkey size %u is not 33 or 65", pk->size);
-    if (!key->fValid)
-        return ZCL_ERR(WSQL_INVARIANT_PRIVKEY, "privkey->fValid is false");
-    static const uint8_t zero32[32] = {0};
-    if (memcmp(key->vch, zero32, 32) == 0)
-        return ZCL_ERR(WSQL_INVARIANT_PRIVKEY, "privkey is all zero");
-
-    struct key_id kid = pubkey_get_id(pk);
-
-    struct db_wallet_key dbk;
-    memset(&dbk, 0, sizeof(dbk));
-    memcpy(dbk.pubkey_hash, kid.id.data, 20);
-    memcpy(dbk.pubkey, pk->vch, pk->size);
-    dbk.pubkey_len = pk->size;
-    memcpy(dbk.privkey, key->vch, 32);
-    dbk.compressed = key->fCompressed;
-    dbk.created_at = (int64_t)platform_time_wall_time_t();
-
-    bool ok = db_wallet_key_save(ndb, &dbk);
-
-    /* Don't leave key material on the stack. */
-    memory_cleanse(dbk.privkey, sizeof(dbk.privkey));
-
-    if (!ok)
-        return ZCL_ERR(WSQL_WRITE_FAIL,
-            "db_wallet_key_save failed: last_op=%s last_sqlite_rc=%d",
-            ndb->last_op[0] ? ndb->last_op : "(none)",
-            ndb->last_sqlite_rc);
-    return ZCL_OK;
-}
 
 bool db_wallet_key_find(struct node_db *ndb, const uint8_t pubkey_hash[20],
                         struct db_wallet_key *out)
@@ -441,25 +394,6 @@ int db_sapling_key_count(struct node_db *ndb)
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM wallet_sapling_keys");
 }
 
-int db_sapling_key_each(struct node_db *ndb, sapling_key_cb cb, void *ctx)
-{
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    AR_PREPARE_RET(ndb, s,
-        "SELECT ivk,xsk,xfvk,diversifier,pk_d,child_index,address"
-        " FROM wallet_sapling_keys",
-        0);
-    int count = 0;
-    while (AR_STEP_ROW(s)) {
-        struct db_sapling_key k;
-        row_to_sapling_key(s, 0, &k);
-        cb(&k, ctx);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
-}
-
 /* ── Wallet Seed ──────────────────────────────────────────────── */
 
 bool db_wallet_seed_save(struct node_db *ndb, const uint8_t seed[32],
@@ -521,34 +455,6 @@ bool db_wallet_script_find(struct node_db *ndb, const uint8_t script_hash[20],
             if (out->redeem_script)
                 memcpy(out->redeem_script, rs, out->script_len);
         });
-}
-
-int db_wallet_script_each(struct node_db *ndb, wallet_script_cb cb, void *ctx)
-{
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ndb->db,
-        "SELECT script_hash,redeem_script FROM wallet_scripts",
-        -1, &s, NULL);
-    if (!s) return 0;
-    int count = 0;
-    while (AR_STEP_ROW(s)) {
-        struct db_wallet_script sc;
-        memset(&sc, 0, sizeof(sc));
-        AR_READ_BLOB(s, 0, sc.script_hash, 20);
-        sc.script_len = (size_t)AR_COL_BYTES(s, 1);
-        const void *rs = sqlite3_column_blob(s, 1);
-        if (rs && sc.script_len > 0) {
-            sc.redeem_script = zcl_malloc(sc.script_len, "wallet_key redeem_script each");
-            if (sc.redeem_script)
-                memcpy(sc.redeem_script, rs, sc.script_len);
-        }
-        cb(&sc, ctx);
-        free(sc.redeem_script);
-        count++;
-    }
-    AR_FINALIZE(s);
-    return count;
 }
 
 /* ── Relationships ─────────────────────────────────────────────── */

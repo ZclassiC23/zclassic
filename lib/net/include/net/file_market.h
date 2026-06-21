@@ -164,9 +164,6 @@ bool file_market_update_download(const uint8_t root_hash[32],
 /* Increment challenges_passed for a download. */
 bool file_market_download_challenge_passed(const uint8_t root_hash[32]);
 
-/* Release chunks assigned to a disconnected peer. */
-bool file_market_release_peer_chunks(int peer_id);
-
 /* ── SQLite Persistence ─────────────────────────────────────────── */
 
 struct node_db;

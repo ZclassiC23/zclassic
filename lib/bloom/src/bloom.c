@@ -162,14 +162,6 @@ bool rolling_bloom_contains(const struct rolling_bloom_filter *f, const unsigned
     return bloom_filter_contains(&f->b1, data, len);
 }
 
-void rolling_bloom_reset(struct rolling_bloom_filter *f)
-{
-    unsigned int tweak = (unsigned int)GetRand(UINT32_MAX);
-    bloom_filter_reset(&f->b1, tweak);
-    bloom_filter_reset(&f->b2, tweak);
-    f->insertions = 0;
-}
-
 bool bip37_enabled(void)
 {
     const char *v = getenv("ZCL_ENABLE_BIP37");

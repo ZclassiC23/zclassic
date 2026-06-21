@@ -475,19 +475,6 @@ bool db_wallet_tx_update_block_height(struct node_db *ndb,
         AR_BIND_BLOB(s, 2, txid, 32));
 }
 
-int db_wallet_tx_at_height(struct node_db *ndb, int height,
-                           struct db_wallet_tx *out, size_t max)
-{
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    AR_QUERY_LIST(ndb, s,
-        "SELECT txid,raw_tx,block_hash,block_height,time_received,from_me,fee"
-        " FROM wallet_transactions WHERE block_height=?",
-        out, max,
-        AR_BIND_INT(s, 1, height),
-        db_wallet_tx_read_row(s, 0, &out[count]));
-}
-
 /* ── WalletUTXO CRUD ─────────────────────────────────────────── */
 
 bool db_wallet_utxo_save(struct node_db *ndb, const struct db_wallet_utxo *u)
@@ -780,14 +767,6 @@ int db_wallet_tx_notes(struct node_db *ndb, const uint8_t txid[32],
     }
     AR_FINALIZE(s);
     return count;
-}
-
-/* WalletTx belongs_to :block */
-bool db_wallet_tx_block(struct node_db *ndb, const struct db_wallet_tx *t,
-                        struct db_block *out)
-{
-    if (!t->has_block) return false;
-    return db_block_find_by_hash(ndb, t->block_hash, out);
 }
 
 /* WalletUTXO belongs_to :wallet_key */

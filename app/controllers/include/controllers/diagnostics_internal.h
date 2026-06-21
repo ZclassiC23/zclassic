@@ -20,9 +20,7 @@ struct json_value;
 struct main_state;
 
 /* Wired controller-level state, owned by diagnostics_registry.c.
- * `diag_main_state()` returns NULL until set_state() runs; `diag_datadir()`
- * returns "" until then. */
-struct main_state *diag_main_state(void);
+ * `diag_datadir()` returns "" until set_state() runs. */
 const char *diag_datadir(void);
 
 /* RPC handlers, one per concern file. Signatures match rpc_handler_fn. */

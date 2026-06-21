@@ -792,20 +792,6 @@ void net_manager_free(struct net_manager *nm)
 
 /* --- find node --- */
 
-struct p2p_node *find_node_by_addr(struct net_manager *nm,
-                                    const struct net_addr *addr)
-{
-    zcl_mutex_lock(&nm->cs_nodes);
-    for (size_t i = 0; i < nm->num_nodes; i++) {
-        if (net_addr_eq(&nm->nodes[i]->addr.svc.addr, addr)) {
-            zcl_mutex_unlock(&nm->cs_nodes);
-            return nm->nodes[i];
-        }
-    }
-    zcl_mutex_unlock(&nm->cs_nodes);
-    return NULL;
-}
-
 /* Find a matching, NON-disconnect node and take a ref on it atomically under
  * cs_nodes. Returns the node with ref_count already incremented, or NULL.
  *
@@ -1113,12 +1099,6 @@ bool is_reachable_net(struct net_manager *nm, enum zcl_network net)
     bool result = !nm->limited[net];
     zcl_mutex_unlock(&nm->cs_local_host);
     return result;
-}
-
-bool is_reachable_addr(struct net_manager *nm, const struct net_addr *a)
-{
-    enum zcl_network net = net_addr_get_network(a);
-    return is_reachable_net(nm, net);
 }
 
 void set_limited(struct net_manager *nm, enum zcl_network net, bool limited)
