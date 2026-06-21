@@ -1274,10 +1274,25 @@ deploy: lint zclassic-cli tools/wal_checkpoint
 	    $(WAL_CHECKPOINT_BIN) $(HOME)/.zclassic-c23/node.db \
 	        || { echo "WAL checkpoint failed"; exit 1; }; \
 	fi
+	@# Option 2 (DEPLOY-WRITE) bridge: stage a verified anchor snapshot into the
+	@# datadir so this install carries a reachable snapshot from boot one
+	@# (covers the cold-start case the in-fold self-mint cannot). Best-effort:
+	@# a missing source does NOT fail deploy; the node SHA3-verifies before trust.
+	$(MAKE) seed-anchor-snapshot
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23
 	@ZCL_DEPLOY_EXPECT_COMMIT="$(BUILD_COMMIT)" ./tools/deploy_verify.sh
+
+# Option 2 (DEPLOY-WRITE) snapshot reachability bridge: stage a verified anchor
+# UTXO snapshot into the datadir at <datadir>/utxo-anchor.snapshot (the path the
+# torn-import self-heal resolves). Best-effort + idempotent + node-verified on
+# boot — see tools/seed_anchor_snapshot.sh. Standalone so an operator can run it
+# without a full deploy: `make seed-anchor-snapshot`.
+#   ZCL_DATADIR=<dir> ZCL_ANCHOR_SNAPSHOT_SRC=<file> make seed-anchor-snapshot
+.PHONY: seed-anchor-snapshot
+seed-anchor-snapshot:
+	@./tools/seed_anchor_snapshot.sh
 
 # Deploy the freshly-built binary to the DEV linger lane (isolated datadir
 # ~/.zclassic-c23-dev + ports 8053/18252) — where code-in-progress runs live

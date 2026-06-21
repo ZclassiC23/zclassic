@@ -1079,6 +1079,7 @@ int main(void)
     failures += test_reducer_frontier();
     failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
+    failures += test_anchor_selfmint();
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
     { extern int test_boot_reindex_terminates(void);

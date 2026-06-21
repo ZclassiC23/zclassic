@@ -543,6 +543,7 @@ int test_tip_finalize_post_step(void);
 int test_reducer_frontier(void);
 int test_waitforheight_provable(void);
 int test_refold_progress_floor(void);
+int test_anchor_selfmint(void);
 int test_chain_linkage_check(void);
 int test_invariant_sentinel(void);
 int test_contaminated_coin_above_anchor(void);
