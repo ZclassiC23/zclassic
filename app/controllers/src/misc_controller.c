@@ -6,6 +6,7 @@
 #include "controllers/misc_controller.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "sync/sync_state.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
@@ -64,8 +65,18 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "version", CLIENT_VERSION);
     json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
 
-    struct block_index *tip = ctx->main_state ?
-        active_chain_tip(&ctx->main_state->chain_active) : NULL;
+    /* Report the PROVABLE tip (H*), not the active/lookahead tip — same
+     * contract as getblockcount (reducer_frontier_provable_tip_cached): never
+     * name a height we cannot prove or that rewinds under a reorg. Resolve the
+     * block by-height at H* so a follow-on getblock/getblockhash is consistent;
+     * fall back to the active tip only if the slot is momentarily unresolved. */
+    struct block_index *tip = NULL;
+    if (ctx->main_state) {
+        int32_t hstar = reducer_frontier_provable_tip_cached();
+        tip = active_chain_at(&ctx->main_state->chain_active, (int)hstar);
+        if (!tip)
+            tip = active_chain_tip(&ctx->main_state->chain_active);
+    }
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     json_push_kv_int(result, "timeoffset", 0);
     json_push_kv_int(result, "connections", 0);

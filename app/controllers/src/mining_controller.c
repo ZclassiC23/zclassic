@@ -13,6 +13,7 @@
 #include "core/core_io.h"
 #include "core/serialize.h"
 #include "encoding/utilstrencodings.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "mining/miner.h"
 #include "primitives/block.h"
@@ -92,7 +93,17 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
 
     json_set_object(result);
-    json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
+    /* "blocks" reports the PROVABLE tip (H*), matching getblockcount — never a
+     * height we cannot prove / that rewinds under a reorg. `tip` (the active
+     * tip) is still used below for difficulty and the next-template height,
+     * which legitimately build on the live tip; only the externally-reported
+     * height field is clamped to H*. */
+    int32_t hstar_mining = reducer_frontier_provable_tip_cached();
+    struct block_index *report_tip =
+        active_chain_at(&ctx->main_state->chain_active, (int)hstar_mining);
+    if (!report_tip)
+        report_tip = tip;
+    json_push_kv_int(result, "blocks", report_tip ? report_tip->nHeight : 0);
     json_push_kv_int(result, "currentblocksize",
                       (int64_t)ctx->main_state->nLastBlockSize);
     json_push_kv_int(result, "currentblocktx",

@@ -29,6 +29,7 @@
 #include "core/uint256.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "net/connman.h"
 #include "primitives/block.h"
@@ -67,7 +68,24 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "chain", cp->strNetworkID);
 
-    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    /* Report the PROVABLE tip (H*), not the sync-window/lookahead active tip:
+     * an external getblockchaininfo must never name a height we cannot prove or
+     * that rewinds under a reorg. Mirror getblockcount (which already serves
+     * reducer_frontier_provable_tip_cached) — and resolve the WHOLE reported
+     * best block AT H* so every tip-derived field below (bestblockhash,
+     * mediantime, difficulty, chainwork, valuePools, upgrade status) stays
+     * internally consistent with the reported "blocks" rather than a higher
+     * active tip leaking through mid-fold / post-reorg.
+     *
+     * `tip` is resolved by-height via active_chain_at(H*): equals the active
+     * tip at steady state, LOWER mid-fold / after a reorg. Fall back to the
+     * active tip only if the by-height slot is momentarily unresolved (window
+     * collapse), so we never regress to emitting nothing. */
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    struct block_index *tip = active_chain_at(&ctx->main_state->chain_active,
+                                              (int)hstar);
+    if (!tip)
+        tip = active_chain_tip(&ctx->main_state->chain_active);
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     struct block_index *best_hdr = ctx->main_state->pindex_best_header;
     /* Emit headers=0 when best_header isn't known yet, rather than
