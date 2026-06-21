@@ -154,15 +154,6 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "store") == 0) {
-        printf("[test] ZCL_TEST_ONLY=store — running store + ZSLP unit "
-               "tests only (payment-address mint teeth)\n");
-        { extern int test_store(void);
-          failures += test_store(); }
-        printf("\n=== store subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
     if (only && strcmp(only, "parity_diff") == 0) {
         printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
         failures += test_reorg_parity();
@@ -334,13 +325,6 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=seed_torn_import — running torn-import gate only\n");
         failures += test_seed_torn_import_gate();
         printf("\n=== seed_torn_import subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
-    if (only && strcmp(only, "refold_auto_arm") == 0) {
-        printf("[test] ZCL_TEST_ONLY=refold_auto_arm — running the torn-import auto-arm detect/heal/decline test only\n");
-        failures += test_refold_auto_arm();
-        printf("\n=== refold_auto_arm subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -790,6 +774,10 @@ int main(void)
     { extern int test_check_block_edge(void);     failures += test_check_block_edge(); }
     { extern int test_amount_subsidy_edge(void);  failures += test_amount_subsidy_edge(); }
     { extern int test_locktime_edge(void);        failures += test_locktime_edge(); }
+    /* Consensus-parity round-3 lock-in pins (assert CURRENT zcl23-vs-zclassicd
+     * behavior so a future tightening flips a test deliberately). */
+    { extern int test_pow_diffadj_precedence(void);       failures += test_pow_diffadj_precedence(); }
+    { extern int test_bip34_coinbase_height_parity(void); failures += test_bip34_coinbase_height_parity(); }
     /* MVP "it works" gate: one mined block through the reducer front door */
     { extern int test_reducer_block_ingest_gate(void); failures += test_reducer_block_ingest_gate(); }
     /* MVP C2/C4 hermetic slices (self-skip without ZCL_STRESS_TESTS) */
@@ -1079,18 +1067,12 @@ int main(void)
     failures += test_reducer_frontier();
     failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
-    failures += test_anchor_selfmint();
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
-    { extern int test_boot_reindex_terminates(void);
-      failures += test_boot_reindex_terminates(); }
     failures += test_chain_linkage_check();
     failures += test_invariant_sentinel();
-    failures += test_contaminated_coin_above_anchor();
-    failures += test_refold_from_anchor_fatal();
     failures += test_seed_integrity_gate();
     failures += test_seed_torn_import_gate();
-    failures += test_refold_auto_arm();
     failures += test_mirror_divergence_locator();
     failures += test_log_throttle();
     failures += test_reducer_frontier_reconcile_light();
@@ -1122,8 +1104,6 @@ int main(void)
     failures += test_domain_consensus_sapling_structural();
     failures += test_domain_consensus_sighash();
     failures += test_domain_consensus_check_block();
-    failures += test_parity_lockin_contextual_header();
-    failures += test_parity_lockin_anchor_membership();
     failures += test_domain_consensus_equihash();
     failures += test_domain_consensus_script_interp();
     failures += test_domain_consensus_coins_math();

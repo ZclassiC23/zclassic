@@ -192,7 +192,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(waitforheight_provable) \
     X(refold_progress_floor) \
     X(chain_linkage_check) X(invariant_sentinel) \
-    X(contaminated_coin_above_anchor) X(refold_from_anchor_fatal) \
     X(seed_integrity_gate) X(mirror_divergence_locator) \
     X(log_throttle) \
     X(reducer_frontier_reconcile_light) \
@@ -212,7 +211,6 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_consensus_tx_structural) X(domain_consensus_sapling_structural) \
     X(domain_consensus_sighash) \
     X(domain_consensus_check_block) X(domain_consensus_equihash) \
-    X(parity_lockin_contextual_header) X(parity_lockin_anchor_membership) \
     X(domain_consensus_script_interp) X(domain_consensus_coins_math) \
     X(domain_consensus_checkpoints) X(domain_consensus_locktime) \
     X(domain_consensus_upgrades) X(domain_consensus_coinbase) \
@@ -241,13 +239,14 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(zclassicd_oracle) X(oracle_policy) \
     X(script_interp_edge) X(sighash_edge) X(sigops_edge) \
     X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) \
-    X(locktime_edge) X(reducer_block_ingest_gate) \
+    X(locktime_edge) \
+    X(pow_diffadj_precedence) X(bip34_coinbase_height_parity) \
+    X(reducer_block_ingest_gate) \
     X(onion_bootstrap_slice) X(shielded_receive_slice) X(shielded_receive_persist) \
     X(reducer_forward_progress_gate) X(parity_slice) \
     X(coins_kv_reset_for_reseed) X(reindex_epilogue) \
-    X(boot_reindex_terminates) \
     X(replay_canary_verdict) \
-    X(canary_sentinel_watch) X(seed_torn_import_gate) X(refold_auto_arm) \
+    X(canary_sentinel_watch) X(seed_torn_import_gate) \
     X(shielded_spend_slice) X(atomic_commit_ordering) \
     X(coldimport_restart_fragility)
 

@@ -230,5 +230,63 @@ int test_accept_to_mempool(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * 4. D5 PARITY GAP (parity-audit round 3): NON-FINAL tx ACCEPTED.
+     *    accept_to_mempool() has NO CheckFinalTx / is_final_tx step
+     *    (lib/validation/src/accept_to_mempool.c) — so a tx whose
+     *    nLockTime is in the FUTURE (not yet final for the next block)
+     *    but otherwise fully valid (good sig, prevout present, positive
+     *    fee) is ADMITTED and would be relayed. zclassicd rejects this
+     *    as `non-final` (REJECT_NONSTANDARD, BIP113 against the tip's
+     *    MedianTimePast). This is pure mempool/relay policy — the
+     *    block-connect finality path is byte-identical — so it is NOT a
+     *    block-consensus fork. PIN the current acceptance; closing it is
+     *    relay-policy-only (no replay needed), parity-restoring, and will
+     *    flip this case loudly.
+     *
+     *    The lock_time is a huge HEIGHT-domain value (10,000,000, below
+     *    LOCKTIME_THRESHOLD 5e8 so it is interpreted as a height far above
+     *    any plausible tip) and the single input's sequence is NON-final
+     *    (not 0xFFFFFFFF), so the lock is ACTIVE. lock_time + sequence are
+     *    set BEFORE signing so the signature covers them.
+     * ================================================================ */
+    printf("accept_to_mempool: NON-FINAL tx ACCEPTED today "
+           "(zclassicd rejects non-final — parity GAP)... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+
+        struct uint256 utxo;
+        memset(utxo.data, 0xD4, 32);
+        bool ok = atm_add_p2pkh_utxo(&coins, &utxo, utxo_value, &kid);
+
+        struct transaction tx;
+        atm_build_spend(&tx, &utxo, 50 * COIN_VALUE);
+        /* Make the tx NON-FINAL: future height-domain lock_time + a
+         * non-final input sequence (so the lock is not overridden). Set
+         * BEFORE signing so the sighash commits to them. */
+        tx.lock_time = 10000000u;          /* height domain, far future */
+        tx.vin[0].sequence = 0xFFFFFFFEu;  /* NOT 0xFFFFFFFF → lock active */
+        atm_sign_input(&tx, &prev_spk, utxo_value, &key, &pub,
+                       /*corrupt=*/false);
+
+        enum mempool_accept_result r =
+            accept_to_mempool(&pool, &coins, NULL, NULL, &tx);
+
+        ok = ok && (r == MEMPOOL_ACCEPT_OK);
+        ok = ok && (tx_mempool_size(&pool) == 1);
+        ok = ok && tx_mempool_exists(&pool, &tx.hash);
+
+        transaction_free(&tx);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

@@ -186,6 +186,54 @@ int test_utxo_apply_coinbase_maturity(void)
         block_free(&b);
     }
 
+    /* (a2) D2 AUTHORITY INTEGRATION PIN (parity-audit round 3).
+     * The earlier (a) check pins the accept/reject decision; this case pins
+     * that the LIVE-FOLD AUTHORITY (utxo_apply_compute_block_delta, the
+     * function utxo_apply_stage.c drives to author coins_kv) actually FOLDS a
+     * block that spends a coinbase at depth 99 with the flag OFF — it does NOT
+     * block. We assert the full delta the authority produces, not merely that
+     * it didn't error: the coinbase coin is recorded as spent with its
+     * is_coinbase flag and creation height preserved, the new output is added,
+     * and total_value_delta nets the spend against the new output. zclassicd
+     * would REJECT this block (bad-txns-premature-spend-of-coinbase); zcl23
+     * accepts it on the live author path today. Pinning the WHOLE delta makes
+     * a future default-on flip (the tightening) flip this case loudly. */
+    {
+        atomic_store(&g_enforce_coinbase_maturity, false);
+        struct block b;
+        bool built = ucm_build_block(&b, 0xA2, &cb);
+        UCM_CHECK("(a2) authority: depth-99 block builds", built);
+        if (built) {
+            const int64_t out_value = cb.value - 1000; /* leave a small fee */
+            ucm_set_normal_out(&b.vtx[1], 0, out_value, 0x21);
+            struct delta_summary out;
+            utxo_apply_compute_block_delta(&b, premature_h, ucm_lookup, &cb,
+                                           &out);
+            UCM_CHECK("(a2) authority flag OFF: depth-99 coinbase spend "
+                      "does NOT block (ok)", out.ok == true);
+            UCM_CHECK("(a2) authority: exactly one input spent",
+                      out.spent_count == 1);
+            UCM_CHECK("(a2) authority: spent coin is the coinbase coin",
+                      out.spent_count == 1 && out.spent != NULL &&
+                      out.spent[0].is_coinbase == true &&
+                      out.spent[0].height == cb.height &&
+                      out.spent[0].value == cb.value);
+            /* added: vtx[1].vout[0]; the coinbase vtx[0] output is also added.
+             * The authority records every spendable output, so added_count is
+             * the 2 outputs (coinbase out + the spend's out). */
+            UCM_CHECK("(a2) authority: outputs were added",
+                      out.added_count == 2);
+            /* total_value_delta = (added outputs) - (spent coinbase). The
+             * coinbase vtx[0] adds 1,000,000,000 (ucm_make_coinbase), the
+             * spend adds out_value, and the spent coinbase removes cb.value. */
+            UCM_CHECK("(a2) authority: value delta nets spend vs new outputs",
+                      out.total_value_delta ==
+                          (1000000000LL + out_value) - cb.value);
+            free_delta(&out);
+        }
+        block_free(&b);
+    }
+
     /* (b) Flag ON + premature coinbase spend -> REJECTS. */
     {
         atomic_store(&g_enforce_coinbase_maturity, true);
