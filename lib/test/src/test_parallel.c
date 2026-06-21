@@ -186,7 +186,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(seal_kv) X(seal_ratify) \
     X(nullifier_kv) \
     X(script_validate_stage) X(script_validate_contextual_gate) \
-    X(proof_validate_stage) \
+    X(proof_validate_stage) X(mint_skip_crypto) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(waitforheight_provable) \

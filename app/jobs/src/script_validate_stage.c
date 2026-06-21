@@ -28,6 +28,7 @@
 #include "storage/event_log_singleton.h"
 #include "jobs/block_header_emit.h"
 #include "jobs/created_outputs_index.h"
+#include "jobs/mint_skip_crypto.h"
 #include "jobs/script_validate_contextual.h"
 #include "script/script.h"
 #include "storage/progress_store.h"
@@ -459,8 +460,24 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct validate_summary summary;
-    validate_block_scripts_with_prevout(&blk, next_h, true, NULL, NULL,
-                                        &summary);
+    if (mint_skip_crypto_get()) {
+        /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): SKIP the
+         * per-input ECDSA verify_script loop and synthesize the SAME "verified"
+         * summary the clean path produces (the contextual gate above still ran;
+         * the coin SET is unchanged — utxo_apply is the state transition). The
+         * terminal SHA3==checkpoint hard-assert certifies it. Default OFF → a
+         * normal boot never reaches this branch. */
+        validate_summary_init(&summary);   /* ok=1, internal_error=0 */
+        for (size_t ti = 0; ti < blk.num_vtx; ti++) {
+            const struct transaction *tx = &blk.vtx[ti];
+            summary.tx_count++;
+            if (!transaction_is_coinbase(tx))
+                summary.input_count += tx->num_vin;
+        }
+    } else {
+        validate_block_scripts_with_prevout(&blk, next_h, true, NULL, NULL,
+                                            &summary);
+    }
     block_free(&blk);
 
     const char *status = "verified";

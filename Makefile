@@ -1789,6 +1789,16 @@ check-no-csr-lock-on-finalize-drive:
 	@echo "══ LINT: no csr->lock on post-finalize drive (LOCK-ORDER LAW / ABBA) ══"
 	@./tools/lint/gate_no_csr_lock_on_finalize_drive.sh .
 
+# Gate — OFFLINE-ONLY FENCE for the FAST-MINT crypto pass-through. The
+# mint_skip_crypto setter (which makes script_validate/proof_validate skip
+# per-block crypto) may be called ONLY from the offline -mint-anchor mint
+# driver TUs — never from a P2P/RPC/relay/connect_block path, so a signature
+# bypass on a running node is unreachable by construction. See
+# jobs/mint_skip_crypto.h.
+check-mint-skip-crypto-offline-only:
+	@echo "══ LINT: fast-mint crypto pass-through is offline-only ══"
+	@./tools/lint/check_mint_skip_crypto_offline_only.sh .
+
 # Gate E1 — file-size ceiling for app/ .c files (RATCHET). Mega-modules
 # cannot hide behind <500-LOC functions; baseline at
 # tools/scripts/file_size_ceiling_baseline.txt may only shrink.
@@ -1889,7 +1899,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

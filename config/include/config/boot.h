@@ -84,6 +84,23 @@ struct app_context {
                                  * shot: exits after writing. Requires
                                  * -nolegacyimport. Default false → never set on a
                                  * normal boot (no clamp). */
+    bool mint_anchor_fast;     /* -mint-anchor-fast : OFFLINE FAST-MINT — the
+                                 * SAME ANCHOR-SET MINT as -mint-anchor EXCEPT the
+                                 * two crypto stages (script_validate's per-input
+                                 * ECDSA verify_script loop and proof_validate's
+                                 * Groth16/Ed25519/PHGR13/binding-sig) PASS THROUGH
+                                 * without running (jobs/mint_skip_crypto.h). The
+                                 * state-transition stage (utxo_apply) is UNCHANGED,
+                                 * so the folded coins_kv set is IDENTICAL to the
+                                 * full-validated fold, and the SAME terminal
+                                 * SHA3==checkpoint + count hard-assert certifies
+                                 * it (FATAL on mismatch — never writes a wrong
+                                 * snapshot). HONORED ONLY when -mint-anchor is ALSO
+                                 * set (refused otherwise at the argv parse); a
+                                 * normal boot never sets it, so the skip-crypto
+                                 * path is unreachable on a running node. OFFLINE
+                                 * PRODUCTION ONLY, fingerprint-gated, NEVER a
+                                 * node-boot signature bypass. Default false. */
     bool reindex_explorer;     /* -reindex-explorer : truncate the explorer
                                  * projection + on-chain ZNAM tables and rewind
                                  * the shared node.db catchup tip to genesis so
@@ -167,8 +184,17 @@ void boot_refold_from_anchor_reset(struct node_db *ndb);
  * genesis..anchor over on-disk BODIES and then converges AT the anchor. Marks
  * refold_in_progress (progress.kv) so the L0 floor drops to 0 while the fold
  * re-walks the frozen prefix. Gated at the call site on ctx->mint_anchor —
- * a normal boot never calls it (no reset, no clamp). */
-void boot_mint_anchor_reset(struct node_db *ndb);
+ * a normal boot never calls it (no reset, no clamp).
+ *
+ * `fast` (the -mint-anchor-fast OFFLINE FAST-MINT): when true this ALSO flips
+ * the process-global mint_skip_crypto toggle (jobs/mint_skip_crypto.h) so
+ * script_validate/proof_validate PASS THROUGH their per-block crypto. The state
+ * fold is unchanged, so the minted coins_kv set is identical and the same
+ * terminal SHA3==checkpoint hard-assert certifies it. `fast` is only ever true
+ * here when the caller already confirmed ctx->mint_anchor — this TU is the sole
+ * caller of mint_skip_crypto_set (lint-fenced), so the skip-crypto path cannot
+ * be armed on a running node. */
+void boot_mint_anchor_reset(struct node_db *ndb, bool fast);
 
 /* -mint-anchor driver (impl in config/src/boot_mint_anchor.c): after app_init
  * has reset to genesis + capped the fold at the anchor, this DRIVES the staged

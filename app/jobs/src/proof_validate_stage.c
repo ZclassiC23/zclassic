@@ -17,6 +17,7 @@
 #include "crypto/ed25519.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "jobs/mint_skip_crypto.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "sapling/bn254.h"
@@ -373,7 +374,12 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return JOB_IDLE;
     }
 
-    if (!g_tx_verifier && block_has_shielded_proofs(&blk) &&
+    bool skip_crypto = mint_skip_crypto_get();
+
+    /* The sapling-params wait gate is a VERIFICATION precondition; in the
+     * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
+     * params need not be loaded. Keep the gate ONLY when actually verifying. */
+    if (!skip_crypto && !g_tx_verifier && block_has_shielded_proofs(&blk) &&
         !sapling_params_loaded()) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -381,7 +387,20 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct validate_summary summary;
-    validate_block_proofs(&blk, next_h, &summary);
+    if (skip_crypto) {
+        /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): the
+         * -mint-anchor-fast driver set the toggle. SKIP validate_block_proofs
+         * (Groth16 / Ed25519 / PHGR13 / binding-sig) and synthesize the "verified"
+         * summary so the success branch below writes ok=true and the cursor
+         * advances. The coin SET is unaffected (utxo_apply is the state
+         * transition; proofs only authorize shielded value, they do not change
+         * which outpoints a block consumes). The terminal SHA3==checkpoint
+         * hard-assert in boot_mint_anchor.c certifies correctness; a divergence
+         * FATALs there. Default OFF → a normal boot never reaches this branch. */
+        validate_summary_init(&summary);   /* ok=1, internal_error=0 */
+    } else {
+        validate_block_proofs(&blk, next_h, &summary);
+    }
     block_free(&blk);
 
     const char *status = "verified";

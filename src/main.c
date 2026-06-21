@@ -1750,6 +1750,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-refold-staged") == 0) ctx.refold_staged = true;
         else if (strcmp(argv[i], "-refold-from-anchor") == 0) ctx.refold_from_anchor = true;
         else if (strcmp(argv[i], "-mint-anchor") == 0) ctx.mint_anchor = true;
+        else if (strcmp(argv[i], "-mint-anchor-fast") == 0) ctx.mint_anchor_fast = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;
         else if (strcmp(argv[i], "-backfill-zslp") == 0) ctx.backfill_zslp = true;
         else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
@@ -1833,6 +1834,22 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-help") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
         }
+    }
+
+    /* OFFLINE-ONLY GUARD (jobs/mint_skip_crypto.h): -mint-anchor-fast (the
+     * crypto pass-through) is HONORED ONLY together with -mint-anchor (the
+     * one-shot offline mint that never starts P2P/RPC and _exit()s). Refuse the
+     * flag standalone so the skip-crypto toggle can never be armed on a path
+     * that becomes a running node. This is the FIRST of the four composed
+     * guards; the setter call is also nested under ctx->mint_anchor at the
+     * boot.c reset site and lint-fenced to the mint driver TUs. */
+    if (ctx.mint_anchor_fast && !ctx.mint_anchor) {
+        fprintf(stderr,
+                "FATAL: -mint-anchor-fast is the OFFLINE FAST-MINT crypto "
+                "pass-through and is honored ONLY together with -mint-anchor. "
+                "It is never a running-node signature bypass. Re-run with both "
+                "-mint-anchor -mint-anchor-fast, or drop -mint-anchor-fast.\n");
+        return 1;
     }
 
     /* Fast file sync: download block files via SHA3 encrypted service

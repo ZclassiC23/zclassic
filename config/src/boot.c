@@ -3290,7 +3290,7 @@ sapling_tree_boot_check_done:
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
 
     if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
-    if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db);     /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor */
+    if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db, ctx->mint_anchor_fast); /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor; fast => crypto pass-through */
     if (ctx->refold_from_anchor) {
         /* B2 — reset the staged reducer to the SHA3 anchor (FULL coins_kv reset +
          * re-seed + HARD-ASSERT; FATALs inside on a mismatch), then mark the

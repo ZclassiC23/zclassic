@@ -22,6 +22,7 @@
                                           * progress_store_tx_lock/unlock */
 #include "jobs/stage_repair_internal.h"  /* stage_repair_force_stage_cursor */
 #include "jobs/mint_fold_ceiling.h"      /* mint_fold_ceiling_set (-mint-anchor) */
+#include "jobs/mint_skip_crypto.h"       /* mint_skip_crypto_set (-mint-anchor-fast) */
 #include "jobs/refold_progress.h"        /* refold_progress_boot_init,
                                           * refold_progress_mark_started,
                                           * refold_progress_mark_started_from_anchor */
@@ -509,7 +510,7 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
  *       the frozen prefix (the from-genesis refold semantics).
  * The driver boot_mint_anchor_run() (config/src/boot_mint_anchor.c) then drives
  * the fold to the anchor and writes + hard-asserts the snapshot. */
-void boot_mint_anchor_reset(struct node_db *ndb)
+void boot_mint_anchor_reset(struct node_db *ndb, bool fast)
 {
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     if (!cp) {
@@ -525,6 +526,25 @@ void boot_mint_anchor_reset(struct node_db *ndb)
 
     /* (2) cap the fold AT the anchor (inclusive). header_admit stops here. */
     mint_fold_ceiling_set(cp->height);
+
+    /* (2b) OFFLINE FAST-MINT (-mint-anchor-fast): flip the process-global
+     * crypto pass-through so script_validate/proof_validate skip their per-block
+     * ECDSA/Groth16 verification while folding genesis..anchor. The state
+     * transition (utxo_apply) is untouched, so the minted coins_kv set is
+     * IDENTICAL to the full-validated fold; boot_mint_anchor_run still
+     * HARD-ASSERTS SHA3==checkpoint + count before publishing, so a wrong set
+     * can never be written. `fast` is true ONLY when the caller already gated on
+     * ctx->mint_anchor (config/src/boot.c) — this TU is the lone caller of
+     * mint_skip_crypto_set, so a normal boot can never arm the pass-through. */
+    if (fast) {
+        mint_skip_crypto_set(true);
+        fprintf(stderr,
+                "[boot] -mint-anchor-fast: OFFLINE FAST-MINT — script_validate/"
+                "proof_validate crypto PASS-THROUGH for the genesis..%d fold; the "
+                "state fold is unchanged and the SHA3==checkpoint hard-assert "
+                "still certifies the minted set (FATAL on mismatch)\n",
+                cp->height);
+    }
 
     /* (3) suspend the below-anchor self-repair while the frozen prefix re-folds
      * (the from-genesis refold L0 floor = 0). */
