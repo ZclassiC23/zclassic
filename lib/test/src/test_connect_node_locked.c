@@ -3,7 +3,14 @@
 /* Regression test for the connect_node TOCTOU use-after-free fix
  * (find_node_by_service_locked): the find-and-ref of an existing peer now
  * happens atomically under cs_nodes, and disconnect-flagged nodes are skipped
- * so connect_node never re-refs a peer the socket sweep is about to free. */
+ * so connect_node never re-refs a peer the socket sweep is about to free.
+ *
+ * Also covers the symmetric-ref contract (UAF + dedupe leak fix): connect_node
+ * ALWAYS returns either NULL or a node with a +1 CALLER-owned ref —
+ *   - the new-node path publishes the node at ref==2 (MANAGER + CALLER), so the
+ *     returned pointer cannot be freed under the caller; and
+ *   - releasing that caller ref balances the count, so a deduped/new return
+ *     does not leak into deferred_free forever and a release-to-zero frees. */
 
 #include "test/test_helpers.h"
 
@@ -13,6 +20,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 /* Manually splice a pre-built node into nm->nodes[] the way nm_add_node does
  * internally (nm_add_node is static). net_manager_free() will free both the
@@ -63,6 +75,15 @@ int test_connect_node_locked(void)
         ASSERT(p2p_node_get_ref(node) == ref_before + 1);
         ASSERT(nm.num_nodes == nodes_before);
 
+        /* Symmetric-ref contract: the deduped +1 is a CALLER-owned ref the
+         * caller releases under cs_nodes once done. Releasing it must restore
+         * the original count exactly (no leak into deferred_free, no over-free
+         * that would drive the still-published manager ref negative). */
+        zcl_mutex_lock(&nm.cs_nodes);
+        p2p_node_release(got);
+        ASSERT(p2p_node_get_ref(node) == ref_before);
+        zcl_mutex_unlock(&nm.cs_nodes);
+
         net_manager_free(&nm);
 
         /* Case 2: the node for service S is flagged disconnect before the call.
@@ -94,6 +115,83 @@ int test_connect_node_locked(void)
         ASSERT(p2p_node_get_ref(dnode) == dref_before);
 
         net_manager_free(&nm2);
+    }
+
+    /* Case 3: new-node path returns a releasable +1 caller ref.
+     * (Folded into this single TEST_CASE because TEST_END defines a fixed
+     * _test_next label, so only one TEST_CASE/TEST_END pair is allowed per
+     * function — a second pair would redefine the label.) */
+    printf("\n  new-node path returns a releasable +1 caller ref... ");
+    {
+        /* Stand up a real loopback listener so the new-node path's TCP connect
+         * completes deterministically. After connect_node returns the freshly
+         * created node is published in nodes[] at ref==2: the MANAGER ref
+         * (dropped by the socket-sweep reap) + the CALLER ref (this contract).
+         * Two refs at publish time are exactly what pins the node across the
+         * window between connect_node returning and the dialer's first deref —
+         * the UAF the fix closes. */
+        int lsock = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT(lsock >= 0);
+        int reuse = 1;
+        setsockopt(lsock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+        struct sockaddr_in sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family = AF_INET;
+        sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sa.sin_port = 0; /* ephemeral — kernel picks a free port */
+        ASSERT(bind(lsock, (struct sockaddr *)&sa, sizeof(sa)) == 0);
+        ASSERT(listen(lsock, 4) == 0);
+
+        socklen_t salen = sizeof(sa);
+        ASSERT(getsockname(lsock, (struct sockaddr *)&sa, &salen) == 0);
+        uint16_t listen_port = ntohs(sa.sin_port);
+
+        struct net_manager nm3;
+        net_manager_init(&nm3);
+        memcpy(nm3.message_start, "\xfa\x1a\xf9\xbf", 4);
+
+        struct net_address addr3;
+        net_address_init(&addr3);
+        unsigned char lo4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr3.svc.addr, lo4);
+        addr3.svc.port = listen_port;
+
+        size_t nodes_before = nm3.num_nodes;
+        /* dest non-NULL so connect_node skips the is_local refusal for
+         * loopback; this is the addnode/localhost dial path. */
+        struct p2p_node *node = connect_node(&nm3, &addr3, "loopback-peer");
+        ASSERT(node != NULL);
+        /* Published exactly once. */
+        ASSERT(nm3.num_nodes == nodes_before + 1);
+        ASSERT(nm3.nodes[nm3.num_nodes - 1] == node);
+        /* ref==2: MANAGER + CALLER. */
+        ASSERT(p2p_node_get_ref(node) == 2);
+
+        /* Caller releases its ref under cs_nodes (what
+         * connman_release_connect_node_ref does in connman.c). The node is
+         * still in nodes[] holding the manager ref, so it must NOT reach 0. */
+        zcl_mutex_lock(&nm3.cs_nodes);
+        p2p_node_release(node);
+        ASSERT(p2p_node_get_ref(node) == 1);
+        zcl_mutex_unlock(&nm3.cs_nodes);
+
+        /* Release-to-zero-frees: simulate the reap dropping the manager ref
+         * after the node has left nodes[]. Once both refs are gone the node is
+         * freeable with no remaining owner — net_manager_free would otherwise
+         * double-account it, so we remove + free it here explicitly and assert
+         * the manager list is empty. */
+        zcl_mutex_lock(&nm3.cs_nodes);
+        nm3.nodes[nm3.num_nodes - 1] = NULL;
+        nm3.num_nodes--;
+        p2p_node_release(node); /* manager ref 1 -> 0 */
+        ASSERT(p2p_node_get_ref(node) == 0);
+        p2p_node_free(node);    /* reaches zero -> frees, no UAF, no leak */
+        zcl_mutex_unlock(&nm3.cs_nodes);
+        ASSERT(nm3.num_nodes == nodes_before);
+
+        net_manager_free(&nm3);
+        close(lsock);
     }
     TEST_END
 

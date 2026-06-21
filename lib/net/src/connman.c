@@ -459,6 +459,38 @@ static bool connman_addr_is_connected(struct connman *cm,
     return connected;
 }
 
+/* Release the +1 caller-owned ref that connect_node ALWAYS returns (the
+ * symmetric-ref contract: dedupe path returns find_node_by_service_locked's
+ * ref; new-node path takes a dedicated CALLER ref alongside the MANAGER ref).
+ * Call this AFTER the caller has finished deref'ing the returned node
+ * (peer_lifecycle_note_connected, addnode bookkeeping, etc).
+ *
+ * All ref mutations happen under cs_nodes (p2p_node_add_ref/release are plain
+ * non-atomic ++/--), so this acquires it. Two reap orderings are possible:
+ *   A) caller releases before the socket sweep reaps the manager ref: ref
+ *      2->1, node still in nodes[], reap later drops it to 0 and frees.
+ *   B) the socket sweep reaps the manager ref first (POLLHUP -> disconnect ->
+ *      reap): the node has left nodes[] and is parked in deferred_free at
+ *      ref 1; this release takes it to 0. We must NOT p2p_node_free() it here
+ *      — it is still in the deferred_free list, so a direct free would be a
+ *      double free on the next sweep. Instead run the deferred_free sweep,
+ *      which is the single owner that knows the node is parked and reclaims
+ *      every ref<=0 entry. */
+static void connman_release_connect_node_ref(struct connman *cm,
+                                             struct p2p_node *node)
+{
+    if (!cm || !node)
+        return;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    p2p_node_release(node);
+    if (p2p_node_get_ref(node) <= 0) {
+        /* Manager ref already reaped concurrently; node is parked in
+         * deferred_free. Reclaim it (and any other now-zero entries) here. */
+        connman_run_deferred_free_sweep(cm);
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+}
+
 static bool connman_addrman_port_allowed(uint16_t port)
 {
     return port == 8033 || port == 18033 || port == 8034 ||
@@ -857,6 +889,8 @@ static void *thread_open_connections(void *arg)
                         peer_lifecycle_note_connected(
                             node, PEER_LIFECYCLE_SOURCE_ZCL23_DB);
                         tried_zcl23 = true;
+                        /* Drop the +1 caller ref connect_node returns. */
+                        connman_release_connect_node_ref(cm, node);
                     }
                 }
             }
@@ -973,6 +1007,8 @@ static void *thread_open_connections(void *arg)
                 printf("Outbound diversity: connected to %s:%u (%zu/%d outbound)\n",
                        ipbuf, info.addr.svc.port, outbound + 1,
                        MAX_OUTBOUND_CONNECTIONS);
+                /* Drop the +1 caller ref connect_node returns. */
+                connman_release_connect_node_ref(cm, node);
             }
         }
 
@@ -1880,9 +1916,8 @@ void connman_open_connection(struct connman *cm,
             cm->addnodes[cm->num_addnodes++] = *addr;
     }
 
-    /* Already connected (e.g. repeated RPC addnode): connect_node would
-     * dedupe-return the existing node with an extra borrowed ref this
-     * caller has no way to release — skip the dial entirely. */
+    /* Already connected (e.g. repeated RPC addnode): connect_node would just
+     * dedupe-return the existing node. Skip the redundant dedupe round-trip. */
     if (connman_addr_is_connected(cm, addr))
         return;
 
@@ -1893,8 +1928,11 @@ void connman_open_connection(struct connman *cm,
     peer_lifecycle_note_attempt(addr, PEER_LIFECYCLE_SOURCE_MANUAL);
     struct p2p_node *node = connect_node(&cm->manager,
                                          (struct net_address *)addr, dest);
-    if (node)
+    if (node) {
         peer_lifecycle_note_connected(node, PEER_LIFECYCLE_SOURCE_MANUAL);
+        /* Drop the +1 caller ref connect_node returns. */
+        connman_release_connect_node_ref(cm, node);
+    }
 }
 
 size_t connman_get_node_count(const struct connman *cm)

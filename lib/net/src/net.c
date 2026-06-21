@@ -835,7 +835,21 @@ static bool nm_add_node(struct net_manager *nm, struct p2p_node *node)
     return true;
 }
 
-/* --- connect_node --- */
+/* --- connect_node ---
+ *
+ * SYMMETRIC-REF CONTRACT: connect_node ALWAYS returns either NULL or a node
+ * with a +1 CALLER-owned ref. The caller MUST release that ref under cs_nodes
+ * once it has finished deref'ing the node (see connman.c
+ * connman_release_connect_node_ref). This closes two bugs at once:
+ *   - UAF: previously the new-node path published the node at ref==1 (manager
+ *     ref only) and returned a bare pointer; between the return and the
+ *     dialer's peer_lifecycle_note_connected deref, the socket thread could
+ *     recv POLLHUP -> disconnect -> reap -> free, and the dialer read freed
+ *     memory. The extra CALLER ref pins the node across that window.
+ *   - LEAK: the dedupe path returns find_node_by_service_locked's +1 ref;
+ *     before this contract no caller released it, so on disconnect the reap
+ *     saw ref>0 and parked the node in deferred_free forever. Now every caller
+ *     releases symmetrically, so deduped returns are balanced too. */
 
 struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,
@@ -871,9 +885,20 @@ struct p2p_node *connect_node(struct net_manager *nm,
         close_socket(&sock);
         LOG_NULL("net", "p2p_node_create failed for outbound connection");
     }
-    p2p_node_add_ref(node);
 
+    /* Symmetric-ref contract: connect_node ALWAYS returns a +1 caller-owned
+     * ref (matching the dedupe path, which returns the ref taken by
+     * find_node_by_service_locked). Take TWO refs under the SAME cs_nodes
+     * acquire that publishes the node into nodes[]: one MANAGER ref (released
+     * by the reap sweep when the node leaves nodes[]) and one CALLER ref. With
+     * ref_count==2 at publish time, the socket sweep can flag disconnect and
+     * reap the manager ref concurrently (2->1) but cannot drive the node to 0
+     * and free it under the caller. The caller drops its ref under cs_nodes
+     * once it has finished deref'ing the node (peer_lifecycle_note_connected
+     * etc), freeing it there iff that release brings ref to 0. */
     zcl_mutex_lock(&nm->cs_nodes);
+    p2p_node_add_ref(node); /* MANAGER ref */
+    p2p_node_add_ref(node); /* CALLER ref — released by connect_node's caller */
     nm_add_node(nm, node);
     zcl_mutex_unlock(&nm->cs_nodes);
 

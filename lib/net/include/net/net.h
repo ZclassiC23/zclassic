@@ -389,6 +389,10 @@ bool p2p_node_end_message(struct p2p_node *node);
 
 void socket_send_data(struct p2p_node *node);
 
+/* Returns NULL or a node with a +1 CALLER-owned ref. The caller MUST release
+ * that ref under cs_nodes after it is done deref'ing the node (symmetric-ref
+ * contract — see the connect_node body in net.c). Both the new-node and the
+ * dedupe path return a releasable +1 ref. */
 struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,
                                const char *dest);
