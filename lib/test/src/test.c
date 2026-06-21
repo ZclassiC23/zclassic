@@ -840,6 +840,8 @@ int main(void)
     failures += test_block_map_grow_collision();
     failures += test_connect_node_locked();
     failures += test_stream_read_no_overflow();
+    failures += test_transaction_deserialize_count_amplification();
+    failures += test_block_deserialize_txcount_amplification();
     failures += test_fast_sync_serve_chunk_db_clamps();
     failures += test_connman_node_count_locked();
     failures += test_fees_oom();

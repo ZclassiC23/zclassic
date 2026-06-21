@@ -325,6 +325,8 @@ int test_block_locator_bounds(void);
 int test_block_map_grow_collision(void);
 int test_connect_node_locked(void);
 int test_stream_read_no_overflow(void);
+int test_transaction_deserialize_count_amplification(void);
+int test_block_deserialize_txcount_amplification(void);
 int test_fast_sync_serve_chunk_db_clamps(void);
 int test_connman_node_count_locked(void);
 int test_fees_oom(void);

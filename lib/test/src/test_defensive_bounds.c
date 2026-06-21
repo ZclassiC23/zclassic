@@ -21,6 +21,8 @@
 
 #include "test/test_helpers.h"
 #include "core/serialize.h"
+#include "primitives/transaction.h"
+#include "primitives/block.h"
 #include "net/fast_sync.h"
 #include "net/connman.h"
 #include "net/netaddr.h"
@@ -119,6 +121,96 @@ int test_fast_sync_serve_chunk_db_clamps(void)
 
         free(chunk);
         sqlite3_close(db);
+    } TEST_END
+    return failures;
+}
+
+/* #7 — transaction_deserialize must reject an implausible vin/vout count
+ * (a 5-byte compact-size claiming 65536 with a truncated body) BEFORE the
+ * ~627 MB / ~626 MB allocation, and must not crash. A minimal valid tx
+ * still round-trips, proving the guard does not narrow the accept set. */
+int test_transaction_deserialize_count_amplification(void)
+{
+    int failures = 0;
+    TEST_CASE("transaction_deserialize rejects implausible vin/vout counts") {
+        /* v1 tx header, then num_vin = 65536 encoded as 0xFE 00 00 01 00,
+         * then the stream ends. 65536 vin need >=65536*41 bytes; only 0
+         * remain, so the plausibility guard must reject before allocating. */
+        const unsigned char vin_bomb[] = {
+            0x01, 0x00, 0x00, 0x00,       /* version 1, not overwintered */
+            0xFE, 0x00, 0x00, 0x01, 0x00, /* num_vin = 65536 */
+        };
+        struct byte_stream s;
+        stream_init_from_data(&s, vin_bomb, sizeof(vin_bomb));
+        struct transaction tx;
+        ASSERT(transaction_deserialize(&tx, &s) == false);
+        transaction_free(&tx);
+        stream_free(&s);
+
+        /* num_vout = 65536 (after a 0 vin count) with a truncated body. */
+        const unsigned char vout_bomb[] = {
+            0x01, 0x00, 0x00, 0x00,       /* version 1 */
+            0x00,                         /* num_vin = 0 */
+            0xFE, 0x00, 0x00, 0x01, 0x00, /* num_vout = 65536 */
+        };
+        struct byte_stream s2;
+        stream_init_from_data(&s2, vout_bomb, sizeof(vout_bomb));
+        struct transaction tx2;
+        ASSERT(transaction_deserialize(&tx2, &s2) == false);
+        transaction_free(&tx2);
+        stream_free(&s2);
+
+        /* A minimal VALID v1 tx (0 vin, 0 vout, lock_time 0) still parses —
+         * the guard rejects only counts the body cannot satisfy. */
+        struct transaction valid;
+        transaction_init(&valid);
+        valid.version = 1;
+        valid.overwintered = false;
+        struct byte_stream ser;
+        stream_init(&ser, 64);
+        ASSERT(transaction_serialize(&valid, &ser));
+        struct byte_stream rd;
+        stream_init_from_data(&rd, ser.data, ser.size);
+        struct transaction got;
+        ASSERT(transaction_deserialize(&got, &rd) == true);
+        ASSERT(got.num_vin == 0 && got.num_vout == 0);
+        transaction_free(&got);
+        transaction_free(&valid);
+        stream_free(&ser);
+        stream_free(&rd);
+    } TEST_END
+    return failures;
+}
+
+/* #7b — block_deserialize must reject an implausible tx count (a 5-byte
+ * compact-size claiming 50000 with a truncated stream) before the ~14 MB
+ * slot allocation, without crashing. */
+int test_block_deserialize_txcount_amplification(void)
+{
+    int failures = 0;
+    TEST_CASE("block_deserialize rejects implausible tx count") {
+        /* Build a valid 1487-byte block header, then claim num_vtx = 50000
+         * (0xFE 50 C3 00 00) with no tx bytes following. 50000 tx need
+         * >=500000 bytes; the guard must reject before allocating slots. */
+        struct block_header h;
+        memset(&h, 0, sizeof(h));
+        h.nVersion = 4;
+        h.nSolutionSize = 0;
+        struct byte_stream hs;
+        stream_init(&hs, 256);
+        ASSERT(block_header_serialize(&h, &hs));
+        /* Append num_vtx = 50000 as a 254-marker compact size. */
+        ASSERT(stream_write_compact_size(&hs, 50000));
+        /* Stream ends here — no tx bodies. */
+
+        struct byte_stream rd;
+        stream_init_from_data(&rd, hs.data, hs.size);
+        struct block b;
+        block_init(&b);
+        ASSERT(block_deserialize(&b, &rd) == false);
+        block_free(&b);
+        stream_free(&hs);
+        stream_free(&rd);
     } TEST_END
     return failures;
 }

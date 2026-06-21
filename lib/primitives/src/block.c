@@ -76,6 +76,15 @@ bool block_deserialize(struct block *b, struct byte_stream *s)
     if (count > MAX_BLOCK_TRANSACTIONS)
         LOG_FAIL("block", "tx count %llu exceeds MAX_BLOCK_TRANSACTIONS %d",
                  (unsigned long long)count, MAX_BLOCK_TRANSACTIONS);
+    /* Reject before the calloc when the remaining stream cannot hold `count`
+     * transactions. The smallest valid tx serialization is 10 bytes (4-byte
+     * version + 1-byte vin count + 1-byte vout count + 4-byte lock_time).
+     * count is already <=MAX_BLOCK_TRANSACTIONS(50000), so count*10 cannot
+     * overflow. This refuses only counts the per-tx loop would fail to read
+     * anyway (accept set unchanged) before the ~14 MB slot allocation. */
+    if (count * 10 > stream_remaining(s))
+        LOG_FAIL("block", "tx count %llu exceeds remaining bytes %zu (>=10/tx)",
+                 (unsigned long long)count, stream_remaining(s));
     b->num_vtx = (size_t)count;
     b->vtx = zcl_calloc(b->num_vtx, sizeof(struct transaction), "block_vtx");
     if (!b->vtx && b->num_vtx > 0)

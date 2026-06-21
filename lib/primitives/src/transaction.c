@@ -515,6 +515,15 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
     if (num_vin > MAX_TX_INPUTS)
         LOG_FAIL("tx", "num_vin out of range: %llu > MAX_TX_INPUTS(%d)",
                  (unsigned long long)num_vin, MAX_TX_INPUTS);
+    /* Reject before the giant calloc when the remaining stream cannot
+     * possibly hold num_vin entries. A vin is >=41 wire bytes (outpoint 36 +
+     * 1-byte compact scriptSig length + 4-byte sequence). num_vin is already
+     * <=MAX_TX_INPUTS(65536), so num_vin*41 cannot overflow. This refuses only
+     * counts that the element loop would fail to read anyway (so the accept
+     * set is unchanged) BEFORE transaction_alloc page-touches ~627 MB. */
+    if (num_vin * 41 > stream_remaining(s))
+        LOG_FAIL("tx", "num_vin %llu exceeds remaining bytes %zu (>=41/vin)",
+                 (unsigned long long)num_vin, stream_remaining(s));
     if (!transaction_alloc(tx, (size_t)num_vin, 0)) return false;
 
     for (size_t i = 0; i < tx->num_vin; i++)
@@ -525,6 +534,12 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
     if (num_vout > MAX_TX_OUTPUTS)
         LOG_FAIL("tx", "num_vout out of range: %llu > MAX_TX_OUTPUTS(%d)",
                  (unsigned long long)num_vout, MAX_TX_OUTPUTS);
+    /* A vout is >=9 wire bytes (8-byte value + 1-byte compact scriptPubKey
+     * length). num_vout <=MAX_TX_OUTPUTS(65536), so num_vout*9 cannot
+     * overflow. Reject implausible counts before the ~626 MB calloc. */
+    if (num_vout * 9 > stream_remaining(s))
+        LOG_FAIL("tx", "num_vout %llu exceeds remaining bytes %zu (>=9/vout)",
+                 (unsigned long long)num_vout, stream_remaining(s));
     tx->vout = zcl_calloc((size_t)num_vout, sizeof(struct tx_out), "tx_vout");
     if (num_vout > 0 && !tx->vout)
         LOG_FAIL("tx", "calloc failed for %llu tx_vout entries",
@@ -549,6 +564,12 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         if (num_spend > MAX_SHIELDED_SPENDS)
             LOG_FAIL("tx", "num_shielded_spend out of range: %llu > MAX_SHIELDED_SPENDS(%d)",
                      (unsigned long long)num_spend, MAX_SHIELDED_SPENDS);
+        /* A spend description is a fixed 384 wire bytes (cv32+anchor32+
+         * nullifier32+rk32+zkproof192+spendAuthSig64). num_spend
+         * <=MAX_SHIELDED_SPENDS(4096), so num_spend*384 cannot overflow. */
+        if (num_spend * 384 > stream_remaining(s))
+            LOG_FAIL("tx", "num_shielded_spend %llu exceeds remaining bytes %zu (384/spend)",
+                     (unsigned long long)num_spend, stream_remaining(s));
         if (num_spend > 0) {
             tx->v_shielded_spend = zcl_calloc((size_t)num_spend,
                                            sizeof(struct spend_description), "tx_shielded_spend");
@@ -566,6 +587,13 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         if (num_output > MAX_SHIELDED_OUTPUTS)
             LOG_FAIL("tx", "num_shielded_output out of range: %llu > MAX_SHIELDED_OUTPUTS(%d)",
                      (unsigned long long)num_output, MAX_SHIELDED_OUTPUTS);
+        /* An output description is a fixed 948 wire bytes (cv32+cm32+
+         * ephemeralKey32+encCiphertext580+outCiphertext80+zkproof192).
+         * num_output <=MAX_SHIELDED_OUTPUTS(4096), so num_output*948 cannot
+         * overflow. */
+        if (num_output * 948 > stream_remaining(s))
+            LOG_FAIL("tx", "num_shielded_output %llu exceeds remaining bytes %zu (948/output)",
+                     (unsigned long long)num_output, stream_remaining(s));
         if (num_output > 0) {
             tx->v_shielded_output = zcl_calloc((size_t)num_output,
                                             sizeof(struct output_description), "tx_shielded_output");
@@ -586,6 +614,15 @@ bool transaction_deserialize(struct transaction *tx, struct byte_stream *s)
         if (num_js > MAX_JOINSPLITS)
             LOG_FAIL("tx", "num_joinsplit out of range: %llu > MAX_JOINSPLITS(%d)",
                      (unsigned long long)num_js, MAX_JOINSPLITS);
+        /* A joinsplit description is >=1634 wire bytes: 1442 fixed bytes
+         * (vpub_old8+vpub_new8+anchor32+nullifiers64+commitments64+
+         * ephemeralKey32+randomSeed32+macs64+ciphertexts1138) plus the
+         * proof, which is the SMALLER GROTH form (192) here so the guard
+         * never false-rejects the larger PHGR form (296). num_js
+         * <=MAX_JOINSPLITS(4096), so num_js*1634 cannot overflow. */
+        if (num_js * 1634 > stream_remaining(s))
+            LOG_FAIL("tx", "num_joinsplit %llu exceeds remaining bytes %zu (>=1634/js)",
+                     (unsigned long long)num_js, stream_remaining(s));
         if (num_js > 0) {
             tx->v_joinsplit = zcl_calloc((size_t)num_js,
                                       sizeof(struct js_description), "tx_joinsplit");
