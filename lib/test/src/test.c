@@ -1081,6 +1081,8 @@ int main(void)
     failures += test_refold_progress_floor();
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
+    { extern int test_boot_reindex_terminates(void);
+      failures += test_boot_reindex_terminates(); }
     failures += test_chain_linkage_check();
     failures += test_invariant_sentinel();
     failures += test_contaminated_coin_above_anchor();

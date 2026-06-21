@@ -25,13 +25,19 @@ void boot_crashonly_clear(const char *datadir);
  * index extent), the verb is executable (reindex_executable: the caller
  * verified blocks/ can serve the replay start), and the bounded budget
  * allows, request a self-rebuild and log it.
- * Returns true  => the caller must exit boot (reindex requested, budget
- *                  exhausted page, or structural-corruption FATAL).
- * Returns false => replay-from-blocks/ is not executable on this datadir
- *                  (cold-import window): no sentinel was written, the
- *                  cold_import_reseed_required page fired, and the caller
- *                  must KEEP SERVING degraded instead of crash-looping
- *                  into an impossible rebuild (defect #6). */
+ * Returns true  => the caller must exit boot (reindex requested for the next
+ *                  boot, or structural-corruption FATAL).
+ * Returns false => the caller must KEEP SERVING degraded instead of exiting
+ *                  into a crash-loop. Two cases:
+ *                   (a) replay-from-blocks/ is not executable (cold-import
+ *                       window): no sentinel was written, the
+ *                       cold_import_reseed_required page fired.
+ *                   (b) the bounded reindex budget is EXHAUSTED at a stable
+ *                       anchor: a TERMINAL marker was persisted (so the next
+ *                       boot does NOT re-arm the budget and crash-loop), the
+ *                       crashonly_auto_reindex_exhausted page fired, and the
+ *                       node stays up degraded — matching chain_tip_watchdog.
+ *                  Either way operator_needed is latched (EV_OPERATOR_NEEDED). */
 bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                                          int zero_nbits, int mismatches,
                                          int first_mismatch_h,

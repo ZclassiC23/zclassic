@@ -2607,6 +2607,13 @@ bool app_init(struct app_context *ctx)
         }
         if (!reindex_chainstate(&g_state, &g_coins_sqlite, &g_coins_tip,
                                  &g_node_db, ctx->datadir)) {
+            /* Replay-from-blocks/ failed. Warn-and-continue: the post-restore
+             * integrity gate + boot_crashonly_handle_unrecoverable own the
+             * BOUNDED reindex budget (a genuinely-corrupt datadir climbs to
+             * BOOT_AUTO_REINDEX_MAX there and persists the terminal marker ->
+             * stays-up-degraded). The errors==0 epilogue-derivation-failure case
+             * (boot_index.c) is deliberately retry-forever-with-paging on a
+             * FIXABLE failure, so we must NOT advance the budget here. */
             fprintf(stderr, "Warning: Chainstate reindex had errors\n");
         }
     } else if (fast_restart) {
@@ -3517,12 +3524,19 @@ sapling_tree_boot_check_done:
                         integ.zero_nbits_count, integ.active_chain_mismatches,
                         integ.first_mismatch_height, reindex_ok))
                     return false;
-                /* Reindex unexecutable (cold-import window): the page fired,
-                 * no sentinel was written — serve degraded; the reducer
-                 * reconciles forward exactly like the RECONCILABLE shape. */
+                /* handle_unrecoverable returned false => stay-up-degraded, not
+                 * exit. Either the reindex was unexecutable (cold-import window)
+                 * or the bounded reindex budget is EXHAUSTED at a stable anchor
+                 * (terminal marker persisted; operator paged once). In BOTH
+                 * cases the page already fired and operator_needed is latched;
+                 * serve DEGRADED so the reducer reconciles forward instead of
+                 * crash-looping. The DEGRADED_SERVING state gates the advance to
+                 * SYNCING (only the clean-integrity else-branch below transitions
+                 * to SYNCING), so the node never serves a bad tip while
+                 * degraded. */
                 service_state_transition_and_persist(
                     SERVICE_STATE_DEGRADED_SERVING,
-                    "reindex unexecutable on cold-import window");
+                    "reindex unexecutable or budget exhausted; operator needed");
             } else if (cls == CHAIN_INTEGRITY_UNRECOVERABLE) {
                 fprintf(stderr,
                     "[boot] WARNING: post-restore structural corruption at "

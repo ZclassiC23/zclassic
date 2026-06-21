@@ -74,14 +74,30 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                 "crashonly_auto_reindex_requested tip=%d attempt=%d", tip_h, n);
             return true;
         }
-        boot_auto_reindex_clear(datadir);
+        /* Budget exhausted (n == BOOT_AUTO_REINDEX_MAX+1, the terminal marker
+         * already on disk, or a write error). PERSIST the exhausted state by
+         * REWRITING the sentinel as a TERMINAL marker — do NOT clear it.
+         * Clearing would let the next boot find no sentinel, re-detect the same
+         * damage, and write a fresh count=1, re-arming the 3-attempt budget from
+         * scratch → an unbounded reindex loop throttled only by systemd backoff.
+         * The terminal marker makes boot_auto_reindex_pending()/consume return
+         * false forever after, so the next boot does NOT re-request a reindex.
+         * This matches chain_tip_watchdog: exhaustion is persisted, the operator
+         * is paged ONCE, and the node stays up degraded. Return false so the
+         * caller serves DEGRADED instead of exiting into a crash-loop. */
+        (void)boot_auto_reindex_mark_terminal(datadir, tip_h);
         fprintf(stderr,
             "[boot] crash-only recovery EXHAUSTED after %d reindex attempts at "
-            "tip_h=%d — pausing for the operator (block data may be genuinely "
-            "corrupt).\n", BOOT_AUTO_REINDEX_MAX, tip_h);
+            "tip_h=%d — NOT restarting, staying up DEGRADED for the operator "
+            "(block data may be genuinely corrupt; terminal marker persisted so "
+            "this does not re-arm the reindex budget).\n",
+            BOOT_AUTO_REINDEX_MAX, tip_h);
         event_emitf(EV_OPERATOR_NEEDED, 0,
             "condition=crashonly_auto_reindex_exhausted tip=%d attempts=%d",
             tip_h, BOOT_AUTO_REINDEX_MAX);
+        /* Stay-up-degraded: the caller takes the DEGRADED_SERVING branch, the
+         * reducer reconciles forward, and operator_needed is latched (above). */
+        return false;
     }
     fprintf(stderr,
         "[boot] FATAL: post-restore integrity found structural corruption at "
