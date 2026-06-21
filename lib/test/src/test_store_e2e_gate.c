@@ -31,8 +31,43 @@
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
+#include "config/runtime.h"
 
 #include <unistd.h>
+
+/* Wire a seeded merchant wallet as the current runtime so the order-create
+ * controller path (serve_create_order → zslp_generate_payment_address →
+ * app_runtime_wallet) can mint a REAL, recoverable Sapling z-address. The
+ * placeholder fallback was removed, so an order can no longer bind to a
+ * synthetic address; without a seeded keystore the create would be refused
+ * with a 503.
+ *
+ * The wallet is HEAP-allocated (struct wallet is far too large for the
+ * stack — it would overflow an 8 MB default stack). `rt` is caller-owned and
+ * must outlive the order create. On success returns the seeded wallet (the
+ * caller owns it: app_runtime_set_current(NULL) + wallet_free + free); on
+ * failure returns NULL and leaves the runtime untouched. */
+static struct wallet *p11_wire_merchant_runtime(struct app_runtime_context *rt,
+                                                uint8_t seed_byte)
+{
+    struct wallet *w = zcl_calloc(1, sizeof(struct wallet),
+                                  "p11_merchant_runtime_wallet");
+    if (!w)
+        LOG_NULL("store_e2e", "p11_wire_merchant_runtime: wallet alloc failed");
+    wallet_init(w);
+    uint8_t seed[32];
+    memset(seed, seed_byte, sizeof(seed));
+    if (!sapling_keystore_set_seed(&w->sapling_keys, seed)) {
+        wallet_free(w);
+        free(w);
+        LOG_NULL("store_e2e", "p11_wire_merchant_runtime: set_seed failed");
+    }
+    memset(rt, 0, sizeof(*rt));
+    rt->wallet = w;
+    app_runtime_set_current(rt);
+    return w;
+}
 
 /* The exact payload the buyer must receive on gated download. It embeds a
  * NUL byte (and non-ASCII bytes) so a passing assertion proves the
@@ -189,8 +224,16 @@ int test_store_e2e_gate(void)
         memset(&ndb, 0, sizeof(ndb));
         memset(&order, 0, sizeof(order));
 
+        /* Seeded merchant runtime so the order-create path mints a real
+         * recoverable z-address (the placeholder fallback is gone).
+         * Heap-allocated: struct wallet is too large for the stack. */
+        struct app_runtime_context merchant_rt;
+        struct wallet *merchant_w = p11_wire_merchant_runtime(&merchant_rt, 0x11);
+        if (ok) fail_step = "wire merchant runtime";
+        ok = merchant_w != NULL;
+
         if (ok) fail_step = "fetch csrf";
-        ok = p11_5_fetch_csrf_token(datadir, 1, csrf, sizeof(csrf));
+        ok = ok && p11_5_fetch_csrf_token(datadir, 1, csrf, sizeof(csrf));
         if (ok) {
             fail_step = "create order";
             snprintf(body, sizeof(body),
@@ -314,6 +357,12 @@ int test_store_e2e_gate(void)
         } else {
             printf("FAIL (%s; debug datadir: %s)\n", fail_step, datadir);
             failures++;
+        }
+
+        app_runtime_set_current(NULL);
+        if (merchant_w) {
+            wallet_free(merchant_w);
+            free(merchant_w);
         }
     }
 
@@ -456,9 +505,19 @@ int test_store_e2e_shielded(void)
     memset(&ndb, 0, sizeof(ndb));
     memset(&order, 0, sizeof(order));
 
+    /* Seeded merchant runtime so the order-create controller path can mint a
+     * real recoverable z-address (the placeholder fallback is gone). This is
+     * a separate keystore from the decrypt wallet `w` built below; the gate's
+     * crypto binding is via the memo, not the minted address value.
+     * Heap-allocated: struct wallet is too large for the stack. */
+    struct app_runtime_context merchant_rt;
+    struct wallet *merchant_w = p11_wire_merchant_runtime(&merchant_rt, 0x11);
+    if (ok) fail_step = "wire merchant runtime";
+    ok = merchant_w != NULL;
+
     /* (1) Create an order through the HTTP controller (same as the gate). */
-    fail_step = "fetch csrf";
-    ok = p11_5_fetch_csrf_token(datadir, 1, csrf, sizeof(csrf));
+    if (ok) fail_step = "fetch csrf";
+    ok = ok && p11_5_fetch_csrf_token(datadir, 1, csrf, sizeof(csrf));
     if (ok) {
         fail_step = "create order";
         snprintf(body, sizeof(body),
@@ -594,6 +653,12 @@ int test_store_e2e_shielded(void)
     if (w) {
         wallet_free(w);
         free(w);
+    }
+
+    app_runtime_set_current(NULL);
+    if (merchant_w) {
+        wallet_free(merchant_w);
+        free(merchant_w);
     }
 
     if (ok) {

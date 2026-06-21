@@ -154,6 +154,15 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "store") == 0) {
+        printf("[test] ZCL_TEST_ONLY=store — running store + ZSLP unit "
+               "tests only (payment-address mint teeth)\n");
+        { extern int test_store(void);
+          failures += test_store(); }
+        printf("\n=== store subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "parity_diff") == 0) {
         printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
         failures += test_reorg_parity();

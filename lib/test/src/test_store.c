@@ -7,6 +7,9 @@
 #include "services/zslp_command_service.h"
 #include "services/zslp_service.h"
 #include "util/template.h"
+#include "wallet/wallet.h"
+#include "wallet/sapling_keys.h"
+#include "config/runtime.h"
 #include <unistd.h>
 
 static char test_datadir[256];
@@ -54,6 +57,29 @@ int test_store(void)
 {
     int failures = 0;
     setup_datadir();
+
+    /* Wire a seeded merchant wallet as the current runtime so the
+     * order-creation path (serve_create_order → zslp_generate_payment_address
+     * → app_runtime_wallet) can mint a REAL, recoverable Sapling z-address —
+     * exactly as production does. Without a seeded keystore the order-create
+     * tests would (correctly) be refused with a 503, since the placeholder
+     * fallback has been removed. Static storage: the runtime pointer must
+     * outlive every call below. */
+    static struct wallet g_store_test_wallet;
+    static struct app_runtime_context g_store_test_rt;
+    memset(&g_store_test_wallet, 0, sizeof(g_store_test_wallet));
+    wallet_init(&g_store_test_wallet);
+    {
+        uint8_t seed[32];
+        memset(seed, 0x5A, sizeof(seed));
+        if (!sapling_keystore_set_seed(&g_store_test_wallet.sapling_keys, seed)) {
+            printf("store: FAIL (could not seed merchant wallet)\n");
+            failures++;
+        }
+    }
+    memset(&g_store_test_rt, 0, sizeof(g_store_test_rt));
+    g_store_test_rt.wallet = &g_store_test_wallet;
+    app_runtime_set_current(&g_store_test_rt);
 
     uint8_t resp[16384];
 
@@ -404,14 +430,89 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("store: zslp_generate_payment_address works... ");
+    printf("store: zslp_generate_payment_address mints a real z-address... ");
     {
+        /* The seeded merchant runtime wallet (wired above) lets the
+         * controller mint a REAL, recoverable bech32 z-address — never the
+         * old synthetic "zs1_pay_" placeholder. */
         char addr[128] = "";
         bool ok = zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
-        ok = ok && (strlen(addr) > 0);
-        ok = ok && (strstr(addr, "zs1_pay_") != NULL);
+        ok = ok && (strncmp(addr, "zs1", 3) == 0);
+        ok = ok && (strstr(addr, "zs1_pay_") == NULL);
+        ok = ok && (strlen(addr) > 20);
         if (ok) printf("OK (%s)\n", addr);
-        else { printf("FAIL\n"); failures++; }
+        else { printf("FAIL (got '%s')\n", addr); failures++; }
+    }
+
+    printf("store: payment mint refused when runtime wallet is unseeded... ");
+    {
+        /* Temporarily drop the runtime wallet to prove the controller path
+         * refuses (no fake fallback) when no seeded keystore is available —
+         * the exact production "node still loading keys" case that must
+         * yield a 503 rather than bind an order to an unrecoverable addr. */
+        app_runtime_set_current(NULL);
+        char addr[128] = "sentinel";
+        bool ok = !zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
+        ok = ok && (addr[0] == '\0');
+        app_runtime_set_current(&g_store_test_rt);
+        if (ok) printf("OK (refused, no fake address)\n");
+        else { printf("FAIL (got '%s')\n", addr); failures++; }
+    }
+
+    /* ── TEETH: the service-layer mint, called directly with the wallet ──
+     * Proves both halves of the fix in one place (no runtime needed, since
+     * zslp_payment_generate_address takes the wallet by argument):
+     *   (a) NULL / keyless wallet  → ZCL_ERR, buffer cleared (no fake addr)
+     *   (b) real seeded Sapling key → ZCL_OK, a real bech32 z-address */
+    printf("store: payment mint refuses a NULL/keyless wallet (no fake)... ");
+    {
+        char addr[128] = "sentinel";
+        struct zcl_result r =
+            zslp_payment_generate_address(NULL, addr, sizeof(addr));
+        bool ok = (!r.ok) && (addr[0] == '\0');
+
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet),
+                                      "test_store_keyless_wallet");
+        if (w) {
+            wallet_init(w);  /* zero sapling keys */
+            char addr2[128] = "sentinel";
+            struct zcl_result r2 =
+                zslp_payment_generate_address(w, addr2, sizeof(addr2));
+            ok = ok && (!r2.ok) && (addr2[0] == '\0');
+            free(w);
+        } else {
+            ok = false;
+        }
+        if (ok) printf("OK (both refused)\n");
+        else { printf("FAIL (got '%s')\n", addr); failures++; }
+    }
+
+    printf("store: payment mint yields a real z-address with a key... ");
+    {
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet),
+                                      "test_store_real_wallet");
+        bool ok = (w != NULL);
+        if (ok) {
+            wallet_init(w);
+            uint8_t seed[32];
+            memset(seed, 0x42, sizeof(seed));
+            ok = sapling_keystore_set_seed(&w->sapling_keys, seed);
+
+            char addr[128] = "";
+            struct zcl_result r =
+                zslp_payment_generate_address(w, addr, sizeof(addr));
+            ok = ok && r.ok;
+            /* A genuine Sapling payment address is bech32 "zs1..." and is
+             * NEVER the old synthetic "zs1_pay_" placeholder. */
+            ok = ok && (strncmp(addr, "zs1", 3) == 0);
+            ok = ok && (strstr(addr, "zs1_pay_") == NULL);
+            ok = ok && (strlen(addr) > 20);
+            if (ok) printf("OK (%s)\n", addr);
+            else { printf("FAIL (got '%s')\n", addr); failures++; }
+            free(w);
+        } else {
+            printf("FAIL (wallet alloc)\n"); failures++;
+        }
     }
 
     /* ── Token-gated access ───────────────────────────────── */
@@ -926,52 +1027,38 @@ int test_store(void)
 
     /* ── Sapling z-address generation ────────────────────────── */
 
-    printf("store: zslp_generate_payment_address fallback without wallet... ");
-    {
-        char addr[128] = "";
-        bool ok = zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
-        ok = ok && (strlen(addr) > 0);
-        ok = ok && (strncmp(addr, "zs1_pay_", 8) == 0);
-        if (ok) printf("OK (fallback: %s)\n", addr);
-        else { printf("FAIL (%s)\n", addr); failures++; }
-    }
-
-    printf("store: zslp_generate_payment_address NULL wallet graceful... ");
-    {
-        char addr[128] = "";
-        bool ok = zslp_generate_payment_address(test_datadir, addr, sizeof(addr));
-        ok = ok && (strlen(addr) > 0);
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("store: consecutive z-address calls return different addresses... ");
-    {
-        char addr1[128] = "", addr2[128] = "";
-        zslp_generate_payment_address(test_datadir, addr1, sizeof(addr1));
-        /* Ensure timestamp differs for fallback path. */
-        zslp_generate_payment_address(test_datadir, addr2, sizeof(addr2));
-        /* With a real wallet, diversifiers differ. With fallback, timestamps
-         * may match within the same second, so we accept both cases as long
-         * as the function succeeds and returns non-empty strings. */
-        bool ok = (strlen(addr1) > 0) && (strlen(addr2) > 0);
-        if (strcmp(addr1, addr2) != 0)
-            printf("OK (different: %s vs %s)\n", addr1, addr2);
-        else
-            printf("OK (same second fallback: %s)\n", addr1);
-        if (!ok) { printf("FAIL\n"); failures++; }
-    }
-
     printf("store: zslp_generate_payment_address rejects small buffer... ");
     {
+        /* Buffer-size guard fires before any key check, regardless of
+         * whether a seeded wallet is wired. */
         char tiny[16] = "";
         bool ok = !zslp_generate_payment_address(test_datadir, tiny, sizeof(tiny));
         if (ok) printf("OK (rejected buffer < 80)\n");
         else { printf("FAIL\n"); failures++; }
     }
 
-    /* ── Robustness: store buy never returns fake z-address ── */
-    printf("store: buy never generates fake zs1_order address... ");
+    /* ── Refusal teeth (no seeded keystore) ─────────────────────
+     * Drop the runtime wallet so the controller path has no seeded
+     * keystore, then prove EVERY entry point refuses (no synthetic
+     * fallback) and the buy page returns 503 rather than binding an order
+     * to an unrecoverable address. Restore the seeded wallet afterwards. */
+    app_runtime_set_current(NULL);
+
+    printf("store: payment-address mint refused when no seeded keystore... ");
+    {
+        char addr1[128] = "x", addr2[128] = "y";
+        bool ok1 = !zslp_generate_payment_address(test_datadir, addr1,
+                                                  sizeof(addr1));
+        bool ok2 = !zslp_generate_payment_address(test_datadir, addr2,
+                                                  sizeof(addr2));
+        /* Both calls refuse and clear the buffer; no synthetic address is
+         * ever produced regardless of timestamp. */
+        bool ok = ok1 && ok2 && addr1[0] == '\0' && addr2[0] == '\0';
+        if (ok) printf("OK (both refused)\n");
+        else { printf("FAIL (a1='%s' a2='%s')\n", addr1, addr2); failures++; }
+    }
+
+    printf("store: buy serves 503 rather than bind a fake address... ");
     {
         uint8_t resp[4096];
         char csrf_rb[64] = "";
@@ -984,12 +1071,19 @@ int test_store(void)
             (const uint8_t *)body, (size_t)blen,
             resp, sizeof(resp), test_datadir);
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
-        /* Should either show a real z-address (if ZK loaded) or 503.
-         * Must NEVER contain a fake placeholder like zs1_order_ */
-        bool ok = (n > 0 && strstr((char *)resp, "zs1_order_") == NULL);
-        if (ok) printf("OK\n");
-        else { printf("FAIL (contains fake zs1_order_ address)\n"); failures++; }
+        /* With no seeded keystore the order MUST NOT be created. The
+         * controller serves 503 and NEVER emits a synthetic placeholder
+         * address (zs1_pay_ / zs1_order_). */
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "503") != NULL);
+        ok = ok && (strstr((char *)resp, "zs1_order_") == NULL);
+        ok = ok && (strstr((char *)resp, "zs1_pay_") == NULL);
+        if (ok) printf("OK (503, no fake address)\n");
+        else { printf("FAIL (no 503 / contains fake address)\n"); failures++; }
     }
+
+    /* Restore the seeded merchant wallet for any subsequent tests. */
+    app_runtime_set_current(&g_store_test_rt);
 
     /* ── Robustness: products.json loading ── */
     printf("store: loads products from JSON file... ");
@@ -1027,6 +1121,10 @@ int test_store(void)
         unlink(json_path);
         test_cleanup_tmpdir(store_dir);
     }
+
+    /* Tear down the seeded merchant runtime wallet. */
+    app_runtime_set_current(NULL);
+    sapling_keystore_free(&g_store_test_wallet.sapling_keys);
 
     if (failures > 0)
         printf("Store: debug datadir preserved at %s\n", test_datadir);

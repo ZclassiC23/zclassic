@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * ZSLP application service — validation and persistence helpers. */
 
-#include "platform/time_compat.h"
 #include "services/zslp_service.h"
 #include "adapters/outbound/persistence/zslp_store_sqlite.h"
 #include "ports/zslp_store_port.h"
@@ -20,7 +19,6 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #define ZSLP_MAX_TOKEN_KEY_LEN 64
 #define ZSLP_MAX_TICKER_LEN 10
@@ -342,21 +340,46 @@ struct zcl_result zslp_payment_generate_address(struct wallet *wallet,
         return ZCL_ERR(-1,
                  "generate_address: NULL output or max too small (%zu)", max);
 
-    if (wallet && wallet->sapling_keys.num_keys > 0) {
-        uint8_t diversifier[ZC_DIVERSIFIER_SIZE];
-        uint8_t pk_d[32];
-        const struct chain_params *cp = chain_params_get();
-
-        if (sapling_keystore_new_address(&wallet->sapling_keys,
-                                         diversifier, pk_d) &&
-            sapling_encode_payment_address(diversifier, pk_d,
-                cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
-                z_addr_out, max)) {
-            return ZCL_OK;
-        }
+    /* A payment z-address MUST be a real, decryptable merchant Sapling
+     * address. There is NO synthetic fallback: an order that binds to a
+     * fake address can never be matched/decrypted, so the payment is lost.
+     *
+     * The merchant's keystore must already hold a deterministic seed (set
+     * from the persisted wallet). We deliberately refuse an UNSEEDED
+     * keystore even though sapling_keystore_new_address() would lazily mint
+     * a *random* seed on the spot: that random seed is never persisted, so
+     * the resulting address is unrecoverable after a restart and the
+     * payment would be lost just like a synthetic placeholder. Fail loudly
+     * so the caller refuses to create the order (store_controller serves a
+     * 503) instead of binding to an unrecoverable address. */
+    if (!wallet || !wallet->sapling_keys.has_seed) {
+        z_addr_out[0] = '\0';
+        return ZCL_ERR(-2,
+            "generate_address: no seeded Sapling keystore "
+            "(wallet=%p has_seed=%d num_keys=%zu) — refusing to mint an "
+            "unrecoverable address",
+            (const void *)wallet,
+            wallet ? (int)wallet->sapling_keys.has_seed : 0,
+            wallet ? (size_t)wallet->sapling_keys.num_keys : (size_t)0);
     }
 
-    snprintf(z_addr_out, max, "zs1_pay_%lld", (long long)platform_time_wall_time_t());
+    uint8_t diversifier[ZC_DIVERSIFIER_SIZE];
+    uint8_t pk_d[32];
+    const struct chain_params *cp = chain_params_get();
+
+    if (!sapling_keystore_new_address(&wallet->sapling_keys,
+                                      diversifier, pk_d)) {
+        z_addr_out[0] = '\0';
+        return ZCL_ERR(-3,
+            "generate_address: sapling_keystore_new_address failed");
+    }
+    if (!sapling_encode_payment_address(diversifier, pk_d,
+            cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+            z_addr_out, max)) {
+        z_addr_out[0] = '\0';
+        return ZCL_ERR(-4,
+            "generate_address: sapling_encode_payment_address failed");
+    }
     return ZCL_OK;
 }
 
