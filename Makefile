@@ -696,6 +696,7 @@ replay-gate-d2: zclassic23
 	     echo "replay-gate-d2: DATADIR $$ddabs does not exist"; exit 2; \
 	 fi; \
 	 logf="$$ddabs/replay-gate-d2.run.log"; rm -f "$$logf"; \
+	 rm -f "$$ddabs/zclassic23.pid"; \
 	 echo "replay-gate-d2: replaying $$ddabs genesis->tip (count-and-continue); log -> $$logf"; \
 	 set +e; \
 	 ZCL_REPLAY_COUNT_ONLY=1 build/bin/zclassic23 -datadir="$$ddabs" \
