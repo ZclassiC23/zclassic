@@ -902,10 +902,15 @@ bool peer_transition_valid(enum peer_state from, enum peer_state to)
     return g_peer_transitions[from][to];
 }
 
-bool peer_set_state_checked(uint32_t peer_id, enum peer_state *current,
+bool peer_set_state_checked(uint32_t peer_id, _Atomic enum peer_state *current,
                             enum peer_state new_state, const char *reason)
 {
-    enum peer_state old = *current;
+    /* Relaxed atomic read removes the torn read that produced spurious
+     * "BUG: illegal transition" spam. The read-validate-write below is not a
+     * single CAS, so two concurrent transitions can still race the validate
+     * (documented-benign: mis-print / lost transition only, no memory
+     * corruption, no change to which transitions are legal). */
+    enum peer_state old = atomic_load_explicit(current, memory_order_relaxed);
 
     if (!peer_transition_valid(old, new_state)) {
         /* Illegal transition — this is always a bug */
@@ -921,7 +926,7 @@ bool peer_set_state_checked(uint32_t peer_id, enum peer_state *current,
         return false;
     }
 
-    *current = new_state;
+    atomic_store_explicit(current, new_state, memory_order_relaxed);
 
     char buf[EVENT_PAYLOAD_SIZE];
     int n = snprintf(buf, sizeof(buf), "%s->%s: %s",

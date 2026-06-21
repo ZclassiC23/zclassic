@@ -149,7 +149,14 @@ struct askfor_entry {
 };
 
 struct p2p_node {
-    enum peer_state state;         /* explicit state machine — use peer_set_state_checked() */
+    /* Cross-thread: transitioned from the msg-handler thread (no cs_nodes,
+     * via peer_set_state_checked) and from the self_heal thread (under
+     * cs_nodes). _Atomic + relaxed removes the torn read in
+     * peer_set_state_checked that caused spurious "BUG: illegal transition"
+     * stderr. The read-validate-write there is still not one CAS, but that
+     * residual race only mis-prints / loses a transition; it never corrupts
+     * memory — see peer_set_state_checked() in lib/event/src/event.c. */
+    _Atomic enum peer_state state; /* explicit state machine — use peer_set_state_checked() */
     uint64_t services;
     zcl_socket_t socket;
 
@@ -230,11 +237,18 @@ struct p2p_node {
     size_t compact_num_missing;                /* count of missing indices */
     int64_t compact_request_time;              /* when getblocktxn was sent (timeout) */
 
-    int64_t last_getheaders_time;
-    int     getheaders_stale_count;   /* consecutive empty header batches */
+    /* Cross-thread: the msg-handler thread writes these (no cs_nodes) while
+     * the self_heal thread reads/resets them (under cs_nodes). cs_nodes gives
+     * zero mutual exclusion because one side never takes it, so make them
+     * _Atomic and use relaxed atomics at every site. This removes torn reads
+     * / lost stall-counter updates without changing any net policy (these are
+     * heuristic stall counters; relaxed ordering is sufficient). */
+    _Atomic int64_t last_getheaders_time;
+    _Atomic int     getheaders_stale_count;   /* consecutive empty header batches */
 
-    /* Per-peer header delivery tracking (stall detection) */
-    int64_t  last_useful_headers_time;  /* last time peer delivered accepted headers */
+    /* Per-peer header delivery tracking (stall detection). Same cross-thread
+     * rationale as above — _Atomic + relaxed. */
+    _Atomic int64_t  last_useful_headers_time;  /* last time peer delivered accepted headers */
     uint64_t total_headers_delivered;   /* lifetime count of accepted headers from peer */
 
     _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */

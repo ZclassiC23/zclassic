@@ -1422,11 +1422,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             syncsvc_should_disconnect_stale_header_peer(node, our_height,
                                                         best_header_height,
                                                         now_send)) {
+            int64_t last_useful = atomic_load_explicit(
+                &node->last_useful_headers_time, memory_order_relaxed);
             printf("HEADER STALL: peer %s delivered 0 useful headers in "
                    "%llds (total_delivered=%llu), disconnecting\n",
                    node->addr_name,
-                   (long long)(now_send - (node->last_useful_headers_time
-                       ? node->last_useful_headers_time
+                   (long long)(now_send - (last_useful
+                       ? last_useful
                        : node->time_connected)),
                    (unsigned long long)node->total_headers_delivered);
             node->disconnect = true;

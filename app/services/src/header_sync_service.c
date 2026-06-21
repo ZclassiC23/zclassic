@@ -380,7 +380,8 @@ static int64_t syncsvc_getheaders_interval(const struct p2p_node *node,
     bool peer_is_loopback = net_addr_is_local(&node->addr.svc.addr);
 
     /* Exponential backoff based on consecutive stale responses */
-    int stale = node->getheaders_stale_count;
+    int stale = atomic_load_explicit(&node->getheaders_stale_count,
+                                     memory_order_relaxed);
     if (stale > 0 && !peer_is_loopback) {
         int shift = stale > 5 ? 5 : stale;  /* cap at 2^5 = 32x */
         base <<= shift;
@@ -474,7 +475,8 @@ bool syncsvc_should_request_headers(const struct p2p_node *node,
         return false;
 
     int64_t interval = syncsvc_getheaders_interval(node, our_height);
-    return (now_seconds - node->last_getheaders_time) > interval;
+    return (now_seconds - atomic_load_explicit(&node->last_getheaders_time,
+                                                memory_order_relaxed)) > interval;
 }
 
 void syncsvc_plan_periodic_getheaders(struct sync_getheaders_action *action,
@@ -503,7 +505,8 @@ void syncsvc_note_headers_requested(struct p2p_node *node,
                                     int64_t now_seconds)
 {
     if (!node) return;
-    node->last_getheaders_time = now_seconds;
+    atomic_store_explicit(&node->last_getheaders_time, now_seconds,
+                          memory_order_relaxed);
 }
 
 /* Credit a peer for a delivered headers batch. `newly_added` is the
@@ -516,11 +519,15 @@ void syncsvc_note_headers_received(struct p2p_node *node,
 {
     if (!node) return;
     if (newly_added > 0) {
-        node->getheaders_stale_count = 0;
-        node->last_useful_headers_time = (int64_t)platform_time_wall_time_t();
+        atomic_store_explicit(&node->getheaders_stale_count, 0,
+                              memory_order_relaxed);
+        atomic_store_explicit(&node->last_useful_headers_time,
+                              (int64_t)platform_time_wall_time_t(),
+                              memory_order_relaxed);
         node->total_headers_delivered += (uint64_t)newly_added;
     } else {
-        node->getheaders_stale_count++;
+        atomic_fetch_add_explicit(&node->getheaders_stale_count, 1,
+                                  memory_order_relaxed);
     }
 }
 
@@ -786,7 +793,8 @@ bool syncsvc_should_disconnect_stale_header_peer(const struct p2p_node *node,
         return false;
 
     /* If peer has never delivered useful headers, use connection time. */
-    int64_t ref_time = node->last_useful_headers_time;
+    int64_t ref_time = atomic_load_explicit(&node->last_useful_headers_time,
+                                             memory_order_relaxed);
     if (ref_time == 0)
         ref_time = node->time_connected;
 
@@ -831,5 +839,6 @@ bool syncsvc_should_request_headers_with_fallback(const struct p2p_node *node,
         interval = 10;
     else
         interval = 30; /* tighter during stall */
-    return (now_seconds - node->last_getheaders_time) > interval;
+    return (now_seconds - atomic_load_explicit(&node->last_getheaders_time,
+                                                memory_order_relaxed)) > interval;
 }

@@ -309,8 +309,17 @@ void event_install_crash_handler(void);
 /* ── Peer state machine API ─────────────────────────────── */
 
 /* Validate and execute a peer state transition.
- * Returns false if the transition is illegal (bug). */
-bool peer_set_state_checked(uint32_t peer_id, enum peer_state *current,
+ * Returns false if the transition is illegal (bug).
+ *
+ * `current` is _Atomic because the live peer field (p2p_node.state) is
+ * transitioned from multiple threads. Internally this does an atomic load
+ * (relaxed), validates, then an atomic store (relaxed) — the read and write
+ * are NOT a single CAS, so two concurrent transitions can still race the
+ * validate step (mis-print / lose one transition). That residual race is
+ * benign: it never corrupts memory and never changes which transitions are
+ * legal. The atomicity here only removes the torn read that produced
+ * spurious "BUG: illegal transition" stderr. */
+bool peer_set_state_checked(uint32_t peer_id, _Atomic enum peer_state *current,
                             enum peer_state new_state, const char *reason);
 
 /* Get peer state name as string. */

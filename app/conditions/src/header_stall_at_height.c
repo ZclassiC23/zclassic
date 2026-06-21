@@ -80,8 +80,10 @@ static enum condition_remedy_result remedy_header_stall_at_height(void)
             struct p2p_node *n = cm->manager.nodes[i];
             if (!n || n->disconnect || n->inbound)
                 continue;
-            n->last_getheaders_time = 0;
-            n->getheaders_stale_count = 0;
+            atomic_store_explicit(&n->last_getheaders_time, 0,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&n->getheaders_stale_count, 0,
+                                  memory_order_relaxed);
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
     }

@@ -386,8 +386,8 @@ int sync_monitor_local_header_refill(struct connman *cm,
             continue;
 
         eligible++;
-        n->last_getheaders_time = 0;
-        n->getheaders_stale_count = 0;
+        atomic_store_explicit(&n->last_getheaders_time, 0, memory_order_relaxed);
+        atomic_store_explicit(&n->getheaders_stale_count, 0, memory_order_relaxed);
         if (n->state == PEER_HANDSHAKE_COMPLETE ||
             n->state == PEER_ACTIVE ||
             n->state == PEER_SYNCING_BLOCKS ||

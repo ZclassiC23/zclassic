@@ -92,7 +92,7 @@ static int test_peer_state_legal(void)
 
     TEST("peer_set_state_checked legal transitions") {
         event_log_init();
-        enum peer_state state = PEER_DISCONNECTED;
+        _Atomic enum peer_state state = PEER_DISCONNECTED;
 
         ASSERT(peer_set_state_checked(1, &state, PEER_CONNECTING, "outbound"));
         ASSERT(state == PEER_CONNECTING);
@@ -130,7 +130,7 @@ static int test_peer_state_snapshot_takeover(void)
 
     TEST("peer_set_state_checked allows snapshot takeover during sync") {
         event_log_init();
-        enum peer_state state = PEER_SYNCING_HEADERS;
+        _Atomic enum peer_state state = PEER_SYNCING_HEADERS;
 
         ASSERT(peer_set_state_checked(1, &state, PEER_SNAPSHOT_RECEIVING,
                                       "accepted snapshot offer"));
@@ -158,7 +158,7 @@ static int test_peer_state_illegal(void)
 
     TEST("peer_set_state_checked rejects illegal transitions") {
         event_log_init();
-        enum peer_state state = PEER_DISCONNECTED;
+        _Atomic enum peer_state state = PEER_DISCONNECTED;
 
         /* DISCONNECTED -> ACTIVE (skip handshake) */
         ASSERT(!peer_set_state_checked(1, &state, PEER_ACTIVE, "skip"));
@@ -503,7 +503,7 @@ static int test_peer_full_lifecycle(void)
 
     TEST("peer state machine full lifecycle with ban") {
         event_log_init();
-        enum peer_state s = PEER_DISCONNECTED;
+        _Atomic enum peer_state s = PEER_DISCONNECTED;
 
         /* Normal connect -> handshake -> active -> snapshot -> ban */
         ASSERT(peer_set_state_checked(1, &s, PEER_CONNECTING, "outbound"));
@@ -543,7 +543,7 @@ static int test_peer_stale_recovery(void)
 
     TEST("peer state machine stale -> active recovery") {
         event_log_init();
-        enum peer_state s = PEER_DISCONNECTED;
+        _Atomic enum peer_state s = PEER_DISCONNECTED;
 
         /* Get to active */
         peer_set_state_checked(1, &s, PEER_CONNECTING, "out");

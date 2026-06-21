@@ -22,7 +22,7 @@ int spec_state_machine(void)
 
     {   printf("peer: full handshake lifecycle... ");
         event_log_init();
-        enum peer_state st = PEER_DISCONNECTED;
+        _Atomic enum peer_state st = PEER_DISCONNECTED;
         bool ok = peer_set_state_checked(1, &st, PEER_CONNECTING, "out");
         ok = ok && peer_set_state_checked(1, &st, PEER_CONNECTED, "tcp");
         ok = ok && peer_set_state_checked(1, &st, PEER_VERSION_SENT, "v");
@@ -34,7 +34,7 @@ int spec_state_machine(void)
 
     {   printf("peer: illegal transition rejected... ");
         event_log_init();
-        enum peer_state st = PEER_DISCONNECTED;
+        _Atomic enum peer_state st = PEER_DISCONNECTED;
         bool ok = !peer_set_state_checked(1, &st, PEER_ACTIVE, "skip");
         ok = ok && st == PEER_DISCONNECTED;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
@@ -56,7 +56,7 @@ int spec_state_machine(void)
 
     {   printf("peer: ban and disconnect... ");
         event_log_init();
-        enum peer_state st = PEER_ACTIVE;
+        _Atomic enum peer_state st = PEER_ACTIVE;
         bool ok = peer_set_state_checked(1, &st, PEER_BANNED, "bad");
         ok = ok && peer_set_state_checked(1, &st, PEER_DISCONNECTED, "done");
         ok = ok && st == PEER_DISCONNECTED;
@@ -68,7 +68,7 @@ int spec_state_machine(void)
         event_clear_all_observers();
         g_sc_count = 0;
         event_observe(EV_PEER_STATE_CHANGE, sc_obs, NULL);
-        enum peer_state st = PEER_DISCONNECTED;
+        _Atomic enum peer_state st = PEER_DISCONNECTED;
         peer_set_state_checked(1, &st, PEER_CONNECTING, "t");
         bool ok = g_sc_count == 1;
         event_clear_all_observers();
