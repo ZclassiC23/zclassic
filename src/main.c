@@ -20,6 +20,7 @@
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/ldb_snapshot.h"
 #include "chain/checkpoints.h"
+#include "chain/utxo_snapshot_loader.h"  /* uss_open: post-write checkpoint verify */
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
 #include "core/uint256.h"
@@ -984,6 +985,47 @@ static int gen_utxo_snapshot_mode(int argc, char **argv)
     fprintf(stderr, "[gen_utxo] wrote %s (%llu records, %llu vouts)\n",
             out_path, (unsigned long long)g.records,
             (unsigned long long)g.vouts);
+
+    /* POST-WRITE CHECKPOINT ASSERT (mirror boot_mint_anchor's bless step): before
+     * treating the artifact as SHIPPABLE, re-open it through the SAME loader the
+     * boot path uses and bind expected_sha3 = the compiled checkpoint. uss_open
+     * recomputes the full body SHA3 and rejects (NULL) on any header/body
+     * mismatch, so this proves the freshly-written snapshot reproduces the
+     * compiled checkpoint root + count. A non-anchor chainstate (e.g. the oracle
+     * advanced past h=3,056,758) FAILS here — we leave the file on disk but exit
+     * non-zero so an operator never ships an unverified set. This re-uses the
+     * loader's SHA3 verification; it does not reimplement it. */
+    {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (!cp) {
+            fprintf(stderr, "[gen_utxo] FATAL: no compiled SHA3 UTXO checkpoint "
+                    "to verify the snapshot against\n");
+            return 1;
+        }
+        char verr[256] = {0};
+        struct uss_header vhdr;
+        struct uss_handle *vh = uss_open(out_path, /*verify_full_sha3=*/true,
+                                         cp->sha3_hash, &vhdr, verr, sizeof(verr));
+        if (!vh) {
+            fprintf(stderr, "[gen_utxo] FATAL: written snapshot %s FAILED the "
+                    "compiled-checkpoint SHA3 verify (%s) — NOT shippable. The "
+                    "chainstate likely is not the anchor h=%d set.\n",
+                    out_path, verr[0] ? verr : "sha3/header mismatch", cp->height);
+            return 1;
+        }
+        bool count_ok = (vhdr.count == cp->utxo_count);
+        uss_close(vh);
+        if (!count_ok) {
+            fprintf(stderr, "[gen_utxo] FATAL: written snapshot count=%llu != "
+                    "compiled checkpoint %llu — NOT shippable.\n",
+                    (unsigned long long)vhdr.count,
+                    (unsigned long long)cp->utxo_count);
+            return 1;
+        }
+        fprintf(stderr, "[gen_utxo] VERIFIED: snapshot reproduces the compiled "
+                "checkpoint (h=%d, count=%llu, SHA3 OK) — shippable.\n",
+                cp->height, (unsigned long long)cp->utxo_count);
+    }
     return 0;
 }
 
@@ -1749,6 +1791,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-reindex-chainstate") == 0) ctx.reindex_chainstate = true;
         else if (strcmp(argv[i], "-refold-staged") == 0) ctx.refold_staged = true;
         else if (strcmp(argv[i], "-refold-from-anchor") == 0) ctx.refold_from_anchor = true;
+        else if (strcmp(argv[i], "-load-verify-boot") == 0) ctx.load_verify_boot = true;
         else if (strcmp(argv[i], "-mint-anchor") == 0) ctx.mint_anchor = true;
         else if (strcmp(argv[i], "-mint-anchor-fast") == 0) ctx.mint_anchor_fast = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;

@@ -436,6 +436,67 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
             (unsigned long long)cp->utxo_count, anchor);
 }
 
+/* -load-verify-boot eligibility probe (config/boot.h). Pure: decides whether a
+ * NORMAL boot should route the verified-snapshot load+anchor-fold instead of the
+ * cold-import seed. Reuses mint_snapshot_path + uss_open (the EXISTING loader's
+ * SHA3 verification — never reimplemented). See boot.h for the full contract.
+ *
+ * SAFETY (load-bearing): a snapshot whose recomputed SHA3 != the compiled
+ * checkpoint makes uss_open return NULL (header expected_sha3 memcmp OR full-body
+ * SHA3 memcmp in the loader) → this returns FALSE → the caller runs the proven
+ * path and NO bad set is ever routed toward coins_kv. A healthy coins_kv (proven
+ * authority) also returns FALSE → an already-seeded node is NEVER reset. */
+bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
+                                        struct sqlite3 *progress_db)
+{
+    if (!ndb || !progress_db)
+        return false;
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp)
+        return false;  /* no compiled checkpoint to anchor against */
+
+    /* (3) NEVER reset a healthy node: if coins_kv already provably holds the
+     * live coin set, the load-verify route must not fire (it FULL-resets
+     * coins_kv). Probe this BEFORE touching the file so a synced node short-
+     * circuits cheaply. */
+    if (coins_kv_is_proven_authority(progress_db, NULL))
+        return false;
+
+    char path[1100];
+    if (!mint_snapshot_path(ndb, path, sizeof(path)))
+        return false;
+
+    /* (1)+(2) Present + verified: uss_open binds expected_sha3 = cp->sha3_hash
+     * AND recomputes the full body SHA3 (verify_full_sha3=true). A NULL return
+     * means absent OR header-magic/version/expected-sha3 mismatch OR body-SHA3
+     * mismatch — every "no usable baked snapshot" case. Read-only mmap; closed
+     * immediately (no coins_kv mutation in this probe). */
+    char err[256] = {0};
+    struct uss_header hdr;
+    struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
+                                    cp->sha3_hash, &hdr, err, sizeof(err));
+    if (!h)
+        return false;  /* absent or failed SHA3/header verify → safe fallback */
+
+    bool count_ok = (hdr.count == cp->utxo_count);
+    uss_close(h);
+    if (!count_ok) {
+        LOG_WARN("boot", "[boot] -load-verify-boot: snapshot %s count=%llu != "
+                 "checkpoint %llu — ignoring the artifact, running the proven "
+                 "boot path", path, (unsigned long long)hdr.count,
+                 (unsigned long long)cp->utxo_count);
+        return false;
+    }
+
+    LOG_INFO("boot", "[boot] -load-verify-boot: verified baked anchor snapshot "
+             "present (%s, SHA3 == compiled checkpoint, count=%llu) and coins_kv "
+             "is not yet the proven authority — routing the LOAD+VERIFY anchor "
+             "seed + anchor->tip delta fold", path,
+             (unsigned long long)cp->utxo_count);
+    return true;
+}
+
 /* B2 1c — the boot torn-import AUTO-ARM. Consults the PURE detect predicate
  * (block_index_loader_torn_import_detect — no side-effects) and, on a detected
  * tear, ARMS a from-anchor refold (reset 1a + mark 1b) so the node REPAIRS by

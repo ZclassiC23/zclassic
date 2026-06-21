@@ -25,6 +25,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/refold_progress.h"      /* refold_from_anchor_active (-load-verify-boot skip) */
 #include "services/chain_tip_watchdog.h"
 #include "services/invariant_sentinel.h"
 #include "conditions/condition_registry.h"
@@ -1473,11 +1474,20 @@ bool app_init_services(struct app_context *ctx,
          * cold-import seed: the from-anchor refold owns the fold forward from the
          * proven anchor. Gated on ctx->refold_from_anchor: a normal boot never
          * calls arm_if_torn and takes the seed path (whose torn-import gate
-         * remains the operator-page fallback). */
+         * remains the operator-page fallback).
+         *
+         * -load-verify-boot path: app_init already ran boot_refold_from_anchor_reset
+         * + refold_progress_mark_started_from_anchor when the verified-snapshot
+         * probe passed, so refold_from_anchor_active() is TRUE here. Detect that
+         * and SKIP the cold-import seed exactly like the explicit flag (the loaded
+         * + SHA3-verified anchor set already owns the fold from the anchor). When
+         * no verified snapshot was present, the reset never ran, the signal is
+         * false, and the cold-import seed runs UNCHANGED — additive, safe. */
         bool armed_from_anchor =
-            ctx->refold_from_anchor &&
-            boot_refold_from_anchor_arm_if_torn(
-                svc->state, boot_node_db(svc), progress_store_db());
+            (ctx->refold_from_anchor &&
+             boot_refold_from_anchor_arm_if_torn(
+                 svc->state, boot_node_db(svc), progress_store_db())) ||
+            (ctx->load_verify_boot && refold_from_anchor_active());
         if (!armed_from_anchor)
             (void)block_index_loader_seed_stages_from_cold_import(
                 svc->state, boot_node_db(svc), progress_store_db());

@@ -228,6 +228,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(zslp_store_port) \
     X(sapling_tree) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
     X(chainstate_legacy_reader) X(ldb_snapshot) X(utxo_snapshot_loader) \
+    X(load_verify_boot) \
     X(chain_stall_repro) \
     X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
     X(failed_child_cap) X(header_probe) \

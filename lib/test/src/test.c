@@ -731,6 +731,8 @@ int main(void)
       failures += test_ldb_snapshot(); }
     { extern int test_utxo_snapshot_loader(void);
       failures += test_utxo_snapshot_loader(); }
+    { extern int test_load_verify_boot(void);
+      failures += test_load_verify_boot(); }
     failures += test_store();
     failures += test_blog();
     failures += test_api();

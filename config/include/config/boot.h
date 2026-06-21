@@ -140,6 +140,23 @@ struct app_context {
                                  * (no worker threads; verify_queue runs inline).
                                  * ADDITIVE foundation — not yet wired into the
                                  * staged reducer / consensus path. */
+    bool load_verify_boot;     /* -load-verify-boot : on a NORMAL boot, AUTO-DETECT
+                                 * a baked, SHA3-verified anchor snapshot
+                                 * (<datadir>/utxo-anchor.snapshot or
+                                 * $ZCL_MINT_ANCHOR_OUT) and, when present + its
+                                 * recomputed body SHA3 == the compiled checkpoint
+                                 * AND coins_kv is NOT already the proven authority,
+                                 * LOAD+VERIFY it into coins_kv at the anchor and
+                                 * fold ONLY the anchor->tip delta (same machinery
+                                 * as -refold-from-anchor, but reached without that
+                                 * explicit flag). ADDITIVE + SAFE-FALLBACK: when no
+                                 * snapshot is present, or its SHA3 mismatches the
+                                 * checkpoint, or coins_kv is already proven, the
+                                 * predicate is FALSE and the CURRENT proven boot
+                                 * path runs unchanged (cold-import seed). NEVER
+                                 * loads an unverified/mismatched set; NEVER silently
+                                 * re-folds from genesis. Default false → a normal
+                                 * boot runs its current path exactly. */
 };
 
 void app_context_defaults(struct app_context *ctx);
@@ -224,6 +241,26 @@ struct sqlite3;
 bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
                                          struct node_db *ndb,
                                          struct sqlite3 *progress_db);
+
+/* -load-verify-boot eligibility probe (impl in config/src/boot_refold_staged.c).
+ * Pure, side-effect-free predicate that decides whether a NORMAL boot should
+ * route the load+verify+anchor-fold path instead of the cold-import seed. Returns
+ * true iff ALL hold:
+ *   (1) a baked anchor snapshot exists at the mint path
+ *       ($ZCL_MINT_ANCHOR_OUT else <datadir>/utxo-anchor.snapshot), AND
+ *   (2) uss_open(path, verify_full_sha3=true, cp->sha3_hash) SUCCEEDS — i.e. the
+ *       snapshot's recomputed body SHA3 EQUALS the compiled checkpoint root (the
+ *       existing loader does the SHA3 verification; this never reimplements it),
+ *       AND hdr.count == cp->utxo_count, AND
+ *   (3) coins_kv is NOT already the proven authority
+ *       (coins_kv_is_proven_authority == false) — a healthy forward-built /
+ *       already-seeded node is NEVER reset.
+ * On ANY doubt (file absent, header/body SHA3 mismatch, count mismatch, healthy
+ * coins_kv, no compiled checkpoint, NULL args) it returns FALSE so the caller
+ * runs today's exact proven path. SELECT-only on progress.kv; mmaps + verifies the
+ * snapshot read-only via uss_open/uss_close (no coins_kv mutation here). */
+bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
+                                        struct sqlite3 *progress_db);
 
 bool app_is_running(void);
 void app_add_node(const char *host, int port);

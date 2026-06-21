@@ -3291,7 +3291,23 @@ sapling_tree_boot_check_done:
 
     if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
     if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db, ctx->mint_anchor_fast); /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor; fast => crypto pass-through */
-    if (ctx->refold_from_anchor) {
+    /* The from-anchor reset (LOAD+VERIFY the SHA3 anchor set into coins_kv, then
+     * fold ONLY the anchor->tip delta) runs when EITHER:
+     *   (a) the explicit -refold-from-anchor override is set, OR
+     *   (b) -load-verify-boot is set AND a baked snapshot is present whose
+     *       recomputed SHA3 == the compiled checkpoint AND coins_kv is not yet the
+     *       proven authority (boot_load_verify_snapshot_eligible — pure probe).
+     * (b) is ADDITIVE + SAFE-FALLBACK: with no verified snapshot the predicate is
+     * false, so a normal boot runs its current path exactly and the cold-import
+     * seed runs. The reset itself binds expected_sha3 = the compiled checkpoint inside
+     * the loader AND hard-asserts the re-seeded set, so a mismatched/forged
+     * snapshot can NEVER seed coins_kv and a from-genesis re-fold is never reached
+     * as a silent fallback. */
+    bool do_from_anchor =
+        ctx->refold_from_anchor ||
+        (ctx->load_verify_boot &&
+         boot_load_verify_snapshot_eligible(&g_node_db, progress_store_db()));
+    if (do_from_anchor) {
         /* B2 — reset the staged reducer to the SHA3 anchor (FULL coins_kv reset +
          * re-seed + HARD-ASSERT; FATALs inside on a mismatch), then mark the
          * from-anchor signal so the L0 floor holds at the anchor and the
