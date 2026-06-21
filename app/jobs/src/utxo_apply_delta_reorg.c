@@ -494,6 +494,14 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         sqlite3_exec(db, ua_undo, NULL, NULL, NULL);
         return false;
     }
+    /* The unwind is durable, correct work that did NOT advance the forward
+     * cursor (the winning block is re-applied on a later drain, after reconcile
+     * purges the displaced verdict). When it enrolled in an outer drain batch
+     * (the SAVEPOINT/RELEASE path above), flag the batch dirty so
+     * stage_batch_end COMMITs it — a drain that ends with advanced==0 would
+     * otherwise ROLLBACK the completed unwind and oscillate (regression from
+     * 429706f87; this restores the pre-batch own-txn COMMIT durability). */
+    if (ua_batched) stage_batch_mark_dirty();
 
     atomic_fetch_add(unwound_counter, 1);
     atomic_store(last_blocked_unix, wall_now_s());

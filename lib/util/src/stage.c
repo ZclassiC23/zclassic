@@ -285,10 +285,25 @@ uint64_t stage_error_count(const stage_t *s)
  * across begin..end (see util/stage.h). */
 #define STAGE_SAVEPOINT_NAME "stage_step"
 static _Atomic bool g_batch_open = false;
+/* Set when a step enrols durable, correct work into the open batch that did
+ * NOT advance the forward cursor (a reorg unwind). stage_batch_end then COMMITs
+ * the batch even when advanced==0, instead of rolling the unwind back. Cleared
+ * on every begin. */
+static _Atomic bool g_batch_dirty = false;
 
 bool stage_batch_active(void)
 {
     return atomic_load(&g_batch_open);
+}
+
+void stage_batch_mark_dirty(void)
+{
+    atomic_store(&g_batch_dirty, true);
+}
+
+bool stage_batch_dirty(void)
+{
+    return atomic_load(&g_batch_dirty);
 }
 
 bool stage_batch_begin(sqlite3 *db)
@@ -309,6 +324,7 @@ bool stage_batch_begin(sqlite3 *db)
         return false;
     }
     atomic_store(&g_batch_open, true);
+    atomic_store(&g_batch_dirty, false);
     return true;
 }
 

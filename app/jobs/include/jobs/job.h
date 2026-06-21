@@ -70,7 +70,11 @@ typedef enum {
             advanced++;                                           \
         }                                                         \
         if (batched) {                                            \
-            stage_batch_end(batch_db, advanced > 0);             \
+            /* COMMIT on forward advance OR durable non-advancing  \
+             * work (a reorg unwind); else the unwind is rolled    \
+             * back and the drain oscillates. */                   \
+            stage_batch_end(batch_db,                             \
+                            advanced > 0 || stage_batch_dirty());  \
             progress_store_tx_unlock();                           \
         }                                                         \
         return advanced;                                         \

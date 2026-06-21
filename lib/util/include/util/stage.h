@@ -168,6 +168,17 @@ bool stage_batch_begin(sqlite3 *db);
 bool stage_batch_end(sqlite3 *db, bool commit);
 bool stage_batch_active(void);
 
+/* A drain commits its batch only when at least one step ADVANCED. But a step
+ * can do durable, correct work WITHOUT advancing the cursor — a reorg unwind
+ * removes the losing branch and rewinds the cursor, then the winning block is
+ * (correctly) not re-applied in the same drain. stage_batch_mark_dirty() flags
+ * that such durable work is enrolled in the open batch so stage_batch_end()
+ * COMMITs it instead of rolling it back (the pre-batch unwind committed in its
+ * own txn; batching must not silently discard it). Cleared by stage_batch_begin.
+ */
+void stage_batch_mark_dirty(void);
+bool stage_batch_dirty(void);
+
 /* Boot-time restore: explicitly set the cursor. Persists immediately.
  * Intended for replaying a known-good cursor on import. */
 bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value);
