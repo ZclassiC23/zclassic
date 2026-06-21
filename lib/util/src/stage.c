@@ -579,6 +579,12 @@ bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
         return false;
     }
     s->cursor = value;
+    /* A standalone cursor set is durable, non-advancing work (e.g.
+     * tip_finalize's reorg rewind). When it enrolled in an outer drain batch
+     * it persists only if that batch COMMITs — flag it dirty so a drain ending
+     * advanced==0 commits instead of rolling the rewind back (the "persists
+     * immediately" contract above; same class as the utxo_apply unwind). */
+    if (batched) stage_batch_mark_dirty();
     progress_store_tx_unlock();
     pthread_mutex_unlock(&s->lock);
     return true;
@@ -630,6 +636,10 @@ bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
         progress_store_tx_unlock();
         return false;
     }
+    /* Durable batched write — keep the batch from rolling it back (see
+     * stage_set_cursor). The early "already ahead" path above rolled back and
+     * never reaches here, so a no-op never marks the batch dirty. */
+    if (batched) stage_batch_mark_dirty();
     progress_store_tx_unlock();
     return true;
 }
