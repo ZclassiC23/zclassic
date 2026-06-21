@@ -56,7 +56,6 @@ uint64_t znam_projection_text_count(znam_projection_t *p);
  */
 void znam_projection_set_event_log(event_log_t *log);
 event_log_t *znam_projection_event_log(void);
-znam_projection_t *znam_projection_current(void);
 
 bool znam_projection_emit_register(const char *name, const char *owner,
                                    uint8_t target_type,

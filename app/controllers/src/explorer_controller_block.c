@@ -75,14 +75,8 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
     format_time(d.ts, sizeof(d.ts), (uint32_t)blk_time);
 
     /* Count txs */
-    int tx_count = 0;
+    int tx_count = explorer_count_json_tx_array(buf);
     const char *txarr = strstr(buf, "\"tx\":[");
-    if (txarr) {
-        const char *end = strchr(txarr, ']');
-        tx_count = 1;
-        if (end) for (const char *p = txarr; p < end; p++)
-            if (*p == ',') tx_count++;
-    }
     d.tx_count = tx_count;
     d.has_tx_array = (txarr != NULL);
 

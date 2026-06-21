@@ -1188,63 +1188,6 @@ bool coins_view_sqlite_batch_write_ex( // one-write-path-ok:coins-sqlite-writer-
     return true;
 }
 
-/* ── Explicit cross-handle transaction control ──────────────────
- *
- * Used by the chain_advance atomicity protocol (Move 2). When the
- * coins handle owns its own sqlite3 (file DB, ), these
- * issue BEGIN IMMEDIATE / COMMIT / ROLLBACK. On the shared
- * :memory: fallback they use SAVEPOINT semantics so unit-test
- * fixtures still work without changes. */
-
-static bool coins_view_sqlite_exec_one(struct coins_view_sqlite *cvs,
-                                        const char *owns_db_sql,
-                                        const char *shared_sql,
-                                        const char *label)
-{
-    if (!cvs || !cvs->db) {
-        fprintf(stderr, "coins_view_sqlite_%s: null cvs/db\n", label);
-        return false;
-    }
-    const char *sql = cvs->owns_db ? owns_db_sql : shared_sql;
-    char *err = NULL;
-    pthread_mutex_lock(&cvs->mutex);
-    int rc = sqlite3_exec(cvs->db, sql, NULL, NULL, &err);
-    pthread_mutex_unlock(&cvs->mutex);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:paired-with-return-false-below
-                "coins_view_sqlite_%s: %s failed rc=%d err=%s\n",
-                label, sql, rc, err ? err : "?");
-        sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
-bool coins_view_sqlite_begin(struct coins_view_sqlite *cvs)
-{
-    return coins_view_sqlite_exec_one(cvs,
-        "BEGIN IMMEDIATE",
-        "SAVEPOINT coins_external",
-        "begin");
-}
-
-bool coins_view_sqlite_commit(struct coins_view_sqlite *cvs)
-{
-    return coins_view_sqlite_exec_one(cvs,
-        "COMMIT",
-        "RELEASE coins_external",
-        "commit");
-}
-
-bool coins_view_sqlite_rollback(struct coins_view_sqlite *cvs)
-{
-    return coins_view_sqlite_exec_one(cvs,
-        "ROLLBACK",
-        "ROLLBACK TO SAVEPOINT coins_external; "
-        "RELEASE coins_external",
-        "rollback");
-}
-
 /* ── Bulk UTXO import (Stage B1 of fast-sync plan) ─────────────────
  *
  * Fast path for phase-2 cold-start: skip the in-memory coins cache

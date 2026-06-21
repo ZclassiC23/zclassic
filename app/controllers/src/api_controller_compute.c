@@ -96,14 +96,7 @@ size_t compute_blocks(uint8_t *r, size_t max)
         double diff = zcl_json_real(buf, "difficulty");
 
         /* Count transactions */
-        int tx_count = 0;
-        const char *txarr = strstr(buf, "\"tx\":[");
-        if (txarr) {
-            const char *end = strchr(txarr, ']');
-            tx_count = 1;
-            if (end) for (const char *p = txarr; p < end; p++)
-                if (*p == ',') tx_count++;
-        }
+        int tx_count = explorer_count_json_tx_array(buf);
 
         if (i > 0) off += (size_t)snprintf((char *)r + off, max - off, ",");
         off += (size_t)snprintf((char *)r + off, max - off,

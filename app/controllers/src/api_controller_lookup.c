@@ -104,14 +104,8 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
     int64_t confirmations = zcl_json_int(buf, "confirmations");
 
     /* Count and collect transaction IDs */
-    int tx_count = 0;
+    int tx_count = explorer_count_json_tx_array(buf);
     const char *txarr = strstr(buf, "\"tx\":[");
-    if (txarr) {
-        const char *end = strchr(txarr, ']');
-        tx_count = 1;
-        if (end) for (const char *p = txarr; p < end; p++)
-            if (*p == ',') tx_count++;
-    }
 
     size_t off = 0;
     off += (size_t)snprintf((char *)r + off, max - off,

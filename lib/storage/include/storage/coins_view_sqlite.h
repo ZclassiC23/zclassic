@@ -71,28 +71,6 @@ bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
  * exist, or -1 on guard refusal / SQL failure. */
 int coins_rewind_above_tip(sqlite3 *db, int64_t tip_height, int64_t max_rows);
 
-/* Explicit cross-handle transaction control. Used by the chain_advance
- * body to coordinate atomicity across coins.db + node.db (the two
- * separate SQLite handles ). On the dedicated file handle
- * these issue BEGIN IMMEDIATE / COMMIT / ROLLBACK on cvs->db; on the
- * shared :memory: fallback they fall back to SAVEPOINT semantics so
- * unit tests still work.
- *
- * Caller obligation: the begin/commit pair must wrap any external
- * write made directly via sqlite3 on cvs->db. The internal flush
- * (`coins_view_sqlite_batch_write_ex`) opens its OWN transaction and
- * does NOT need to be wrapped — use these only when the chain_advance
- * 9-step protocol coordinates writes on BOTH handles.
- *
- * Return values:
- *   true  — transaction state advanced (BEGIN/COMMIT/ROLLBACK succeeded)
- *   false — failed; cvs->db's transaction state is unchanged on
- *           begin failures, may be in an indeterminate state on
- *           commit/rollback failures (caller must abort the larger op) */
-bool coins_view_sqlite_begin(struct coins_view_sqlite *cvs);
-bool coins_view_sqlite_commit(struct coins_view_sqlite *cvs);
-bool coins_view_sqlite_rollback(struct coins_view_sqlite *cvs);
-
 /* Bulk-insert UTXOs in one transaction. Skips the in-memory coins
  * cache entirely (caller is responsible for invalidating cached
  * state when this is used for a phase-2-style bulk import). Each

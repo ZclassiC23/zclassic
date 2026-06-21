@@ -453,6 +453,25 @@ static inline bool explorer_block_history_usable_for_height(sqlite3 *db,
     return v.usable;
 }
 
+/* ── getblock JSON "tx":[...] element count ─────────────────
+ *
+ * Counts the transactions in a getblock RPC JSON response by locating
+ * the `"tx":[` array and counting comma separators + 1. Returns 0 when
+ * the array is absent. Used by the api/explorer block controllers to
+ * report a block's tx count without a full JSON parse. */
+static inline int explorer_count_json_tx_array(const char *json)
+{
+    const char *txarr = strstr(json, "\"tx\":[");
+    if (!txarr)
+        return 0;
+    const char *end = strchr(txarr, ']');
+    int n = 1;
+    if (end)
+        for (const char *p = txarr; p < end; p++)
+            if (*p == ',') n++;
+    return n;
+}
+
 /* ── Number formatting with comma separators ─────────────── */
 
 static inline int format_with_commas(char *buf, size_t max, int64_t val)

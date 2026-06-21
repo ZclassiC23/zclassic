@@ -104,11 +104,4 @@ bool block_index_set_have_data_verified(struct block_index *pindex,
 void disk_block_io_lock(void);
 void disk_block_io_unlock(void);
 
-/* Safely release a FILE* obtained from open_block_file/open_undo_file.
- * If the handle is the cached g_cached_file, does nothing (cache owns it).
- * If it's a different handle, calls fclose(). This prevents dangling
- * g_cached_file pointers that cause SIGSEGV in subsequent readers.
- * MUST be called while holding disk_block_io_lock(). */
-void disk_block_io_release_handle(FILE *f);
-
 #endif

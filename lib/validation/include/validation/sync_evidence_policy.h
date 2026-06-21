@@ -10,8 +10,6 @@ int zcl_finality_depth(void);
 int zcl_immutable_height(int tip_height);
 bool zcl_is_finality_safe_anchor(int anchor_height, int peer_tip_height);
 bool zcl_is_snapshot_anchor_acceptable(int anchor_height, int peer_tip_height);
-int zcl_reorg_depth_allowed(void);
-int zcl_ibd_reorg_depth_allowed(void);
 bool zcl_ibd_reorg_allowed(int reorg_depth);
 bool zcl_reorg_allowed(int tip_height, int fork_height, bool in_ibd,
                        const char **reason_out);

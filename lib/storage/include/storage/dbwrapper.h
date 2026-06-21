@@ -68,7 +68,6 @@ void db_batch_free(struct db_batch *b);
 void db_batch_put(struct db_batch *b, const char *key, size_t keylen,
                   const char *val, size_t vallen);
 void db_batch_delete(struct db_batch *b, const char *key, size_t keylen);
-void db_batch_clear(struct db_batch *b);
 bool db_write_batch(struct db_wrapper *w, struct db_batch *b, bool sync);
 
 void db_iter_init(struct db_iterator *it, struct db_wrapper *w);

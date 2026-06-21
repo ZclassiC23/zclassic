@@ -33,16 +33,6 @@ bool zcl_is_snapshot_anchor_acceptable(int anchor_height, int peer_tip_height)
     return anchor_height >= 0 && anchor_height == peer_tip_height;
 }
 
-int zcl_reorg_depth_allowed(void)
-{
-    return ZCL_FINALITY_DEPTH;
-}
-
-int zcl_ibd_reorg_depth_allowed(void)
-{
-    return MAX_IBD_REORG_LENGTH;
-}
-
 bool zcl_ibd_reorg_allowed(int reorg_depth)
 {
     return reorg_depth >= 0 && reorg_depth <= MAX_IBD_REORG_LENGTH;

@@ -325,11 +325,6 @@ void db_batch_delete(struct db_batch *b, const char *key, size_t keylen)
     leveldb_writebatch_delete(b->batch, key, keylen);
 }
 
-void db_batch_clear(struct db_batch *b)
-{
-    leveldb_writebatch_clear(b->batch);
-}
-
 bool db_write_batch(struct db_wrapper *w, struct db_batch *b, bool sync)
 {
     char *err = NULL;

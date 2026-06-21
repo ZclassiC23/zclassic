@@ -97,15 +97,6 @@ void disk_block_io_unlock(void)
     pthread_mutex_unlock(&g_file_cache_mutex);
 }
 
-void disk_block_io_release_handle(FILE *f)
-{
-    /* If this is the cached handle, don't close it — the cache owns it.
-     * Closing the cached handle leaves g_cached_file as a dangling pointer
-     * that causes SIGSEGV in the next reader (fseek/fread on freed memory). */
-    if (f && f != g_cached_file)
-        fclose(f);
-}
-
 /* Caller-owned-lock variant: used from paths that already hold
  * g_file_cache_mutex (e.g. block_pruning_service during the
  * invalidate-then-unlink sequence, where re-entering the lock

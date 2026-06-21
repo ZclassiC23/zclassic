@@ -224,7 +224,7 @@ void utxo_recovery_note_band_unrooted_tip(const struct block_index *tip,
      * does NOT abstain on an empty progress db — log_contiguous_prefix
      * collapses to the compiled SHA3 anchor — so a log-frontier-derived
      * producer cried wolf on every clean two-step cold-import
-     * (--importblockindex then -cold-import): a fully contiguous
+     * (--importblockindex then a normal boot): a fully contiguous
      * imported header chain was recorded as a band hole and the first
      * accepted batch fired a false closure. Ancestry derivation is
      * correct on both paths: a pprev-less installed anchor above the

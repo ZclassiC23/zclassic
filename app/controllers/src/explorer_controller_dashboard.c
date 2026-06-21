@@ -65,28 +65,7 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         double blk_diff = zcl_json_real(buf, "difficulty");
 
         /* Count txs by counting "tx":[ array elements */
-        const char *txarr = strstr(buf, "\"tx\":[");
-        int tx_count = 0;
-        if (txarr) {
-            const char *p = txarr;
-            while ((p = strstr(p + 1, "\"")) != NULL && *p) {
-                /* Count quoted strings in the tx array */
-                tx_count++;
-                p = strchr(p + 1, '"');
-                if (!p) break;
-                if (*(p + 1) == ']' || *(p + 1) == ',') continue;
-                break;
-            }
-            tx_count /= 1; /* each tx has open+close quote */
-        }
-        /* Simpler: just count commas + 1 */
-        if (txarr) {
-            const char *end = strchr(txarr, ']');
-            tx_count = 1;
-            if (end)
-                for (const char *p = txarr; p < end; p++)
-                    if (*p == ',') tx_count++;
-        }
+        int tx_count = explorer_count_json_tx_array(buf);
         (void)ntx;
 
         struct explorer_dashboard_rpc_row *row = &rows[n++];

@@ -30,7 +30,6 @@ uint64_t peers_projection_count(peers_projection_t *p);
  */
 void peers_projection_set_event_log(event_log_t *log);
 event_log_t *peers_projection_event_log(void);
-peers_projection_t *peers_projection_current(void);
 
 bool peers_projection_emit_observed(const uint8_t ip[16], uint16_t port,
                                     uint64_t services, int64_t observed_unix,

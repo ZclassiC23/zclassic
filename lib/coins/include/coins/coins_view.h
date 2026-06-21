@@ -220,11 +220,6 @@ struct coins_cache_entry *coins_view_cache_modify_new(struct coins_view_cache *c
 bool coins_view_cache_flush_for_testing(struct coins_view_cache *c);
 #endif
 
-/* Clear all cached entries without flushing to backing store.
- * Used during reorg recovery to discard stale UTXO cache entries.
- * Does NOT touch hash_block — caller must set it explicitly. */
-void coins_view_cache_clear(struct coins_view_cache *c);
-
 /* Resolve the txout an input spends: looks up in->prevout.hash (loading from
  * the backing view and caching it on a miss), then indexes prevout.n.
  * Returns NULL if the parent coin is absent, the index is out of range, or

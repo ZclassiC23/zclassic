@@ -38,7 +38,6 @@ uint64_t mempool_projection_total_weight(mempool_projection_t *p);
 
 void mempool_projection_set_event_log(event_log_t *log);
 event_log_t *mempool_projection_event_log(void);
-mempool_projection_t *mempool_projection_current(void);
 
 bool mempool_projection_emit_admit(const uint8_t txid[32], int64_t fee,
                                    uint32_t size_bytes, uint32_t weight,

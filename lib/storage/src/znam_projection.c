@@ -657,11 +657,6 @@ event_log_t *znam_projection_event_log(void)
     return atomic_load_explicit(&g_event_log, memory_order_acquire);
 }
 
-znam_projection_t *znam_projection_current(void)
-{
-    return atomic_load_explicit(&g_projection, memory_order_acquire);
-}
-
 /* Maximum serialized event payload for any ZNAM event.
  *   REGISTER: 1+63 + 1+64 + 1 + 1+128 + 32 + 4 + 4 + 4 = 303
  *   UPDATE:   1+63 + 1+1+1+32+1+128 + 32 = 260

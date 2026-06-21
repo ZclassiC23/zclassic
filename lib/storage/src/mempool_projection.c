@@ -456,11 +456,6 @@ event_log_t *mempool_projection_event_log(void)
     return atomic_load_explicit(&g_event_log, memory_order_acquire);
 }
 
-mempool_projection_t *mempool_projection_current(void)
-{
-    return atomic_load_explicit(&g_projection, memory_order_acquire);
-}
-
 bool mempool_projection_emit_admit(const uint8_t txid[32], int64_t fee,
                                    uint32_t size_bytes, uint32_t weight,
                                    int64_t admitted_unix,
