@@ -10,23 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char DB_BLOCK_FILES = 'f';
 static const char DB_TXINDEX = 't';
 static const char DB_REINDEX_FLAG = 'R';
-static const char DB_LAST_BLOCK = 'l';
 static const char DB_FLAG = 'F';
 
 static void make_key_char(char *buf, size_t *len, char prefix)
 {
     buf[0] = prefix;
     *len = 1;
-}
-
-static void make_key_char_int(char *buf, size_t *len, char prefix, int val)
-{
-    buf[0] = prefix;
-    memcpy(buf + 1, &val, sizeof(int));
-    *len = 1 + sizeof(int);
 }
 
 static void make_key_char_hash(char *buf, size_t *len, char prefix,
@@ -55,49 +46,6 @@ bool block_tree_db_open(struct block_tree_db *btdb, const char *path,
 void block_tree_db_close(struct block_tree_db *btdb)
 {
     db_wrapper_close(&btdb->db);
-}
-
-bool block_tree_db_read_block_file_info(struct block_tree_db *btdb,
-                                         int file_num,
-                                         struct block_file_info *info)
-{
-    char key[64];
-    size_t keylen;
-    make_key_char_int(key, &keylen, DB_BLOCK_FILES, file_num);
-
-    char *val = NULL;
-    size_t vallen = 0;
-    if (!db_read(&btdb->db, key, keylen, &val, &vallen))
-        return false;
-
-    if (vallen >= sizeof(struct block_file_info))
-        memcpy(info, val, sizeof(struct block_file_info));
-    else
-        block_file_info_init(info);
-
-    free(val);
-    return true;
-}
-
-bool block_tree_db_read_last_block_file(struct block_tree_db *btdb,
-                                         int *file_num)
-{
-    char key[64];
-    size_t keylen;
-    make_key_char(key, &keylen, DB_LAST_BLOCK);
-
-    char *val = NULL;
-    size_t vallen = 0;
-    if (!db_read(&btdb->db, key, keylen, &val, &vallen))
-        return false;
-
-    if (vallen >= sizeof(int))
-        memcpy(file_num, val, sizeof(int));
-    else
-        *file_num = 0;
-
-    free(val);
-    return true;
 }
 
 bool block_tree_db_write_reindexing(struct block_tree_db *btdb, bool reindexing)

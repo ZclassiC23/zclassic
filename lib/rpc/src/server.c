@@ -14,7 +14,6 @@
 #include <assert.h>
 #include <inttypes.h>
 
-static bool rpc_running = false;
 static bool rpc_in_warmup = true;
 static char warmup_status[256] = "RPC server started";
 static zcl_mutex_t cs_warmup;
@@ -186,27 +185,6 @@ bool rpc_is_in_warmup(char *status_out, size_t status_size)
 }
 
 
-
-void interrupt_rpc(void)
-{
-    LogPrint("rpc", "Interrupting RPC\n");
-    rpc_running = false;
-}
-
-/* Convert a JSON number to a CAmount (zatoshis). JSON_INT is taken as a raw
- * zatoshi count; JSON_REAL is a coin value scaled by COIN with round-to-nearest.
- * CONTRACT/CAVEAT: a non-numeric value (string/bool/null/array/object) silently
- * returns 0, which is indistinguishable from a legitimate 0 amount. The
- * signature is fixed (callers depend on it), so callers that must reject a
- * malformed amount have to type-check value->type themselves before calling. */
-CAmount amount_from_value(const struct json_value *value)
-{
-    if (value->type == JSON_INT)
-        return value->val.i;
-    if (value->type == JSON_REAL)
-        return (CAmount)(value->val.d * (double)COIN + 0.5);
-    return 0;
-}
 
 void value_from_amount(CAmount amount, struct json_value *out)
 {

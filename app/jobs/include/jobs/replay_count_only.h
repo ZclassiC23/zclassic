@@ -46,7 +46,7 @@ struct uint256;
 /* True iff ZCL_REPLAY_COUNT_ONLY is set (to a non-empty, non-"0" value).
  * Read ONCE on first call, then cached — the active-state is stable for the
  * whole process. When false, the count-only path is never entered and the
- * live fold is byte-identical to today. */
+ * live fold runs exactly as it does today. */
 bool replay_count_only_active(void);
 
 /* Record one D2 coinbase-maturity fire (a premature coinbase spend the
@@ -88,7 +88,6 @@ void replay_count_only_reset_for_test(void);
 /* Test-only accessors (read the accumulated counters). */
 int64_t  replay_count_only_total_rejected(void);
 int64_t  replay_count_only_first_offending_height(void);
-uint64_t replay_count_only_blocks_replayed(void);
 
 #ifdef __cplusplus
 }

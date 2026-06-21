@@ -103,8 +103,7 @@ bool hd_deserialize_xpub(const char *str,
 
 /* ── Address generation helpers ───────────────────────────────────── */
 
-/* Get the public key and key_id for a derived ext_key. */
-bool hd_get_pubkey(const struct ext_key *ek, struct pubkey *pk_out);
+/* Get the key_id for a derived ext_key. */
 struct key_id hd_get_key_id(const struct ext_key *ek);
 
 #endif /* ZCL_WALLET_HD_KEYCHAIN_H */

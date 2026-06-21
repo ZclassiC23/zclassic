@@ -65,8 +65,5 @@ static inline uint64_t uint256_get_cheap_hash(const struct uint256 *v)
 
 void uint256_get_hex(const struct uint256 *v, char out[65]);
 void uint256_set_hex(struct uint256 *v, const char *psz);
-void uint160_get_hex(const struct uint160 *v, char out[41]);
-void uint160_set_hex(struct uint160 *v, const char *psz);
-uint64_t uint256_get_hash(const struct uint256 *v, const struct uint256 *salt);
 
 #endif

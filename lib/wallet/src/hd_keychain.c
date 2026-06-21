@@ -227,13 +227,6 @@ bool hd_deserialize_xpub(const char *str,
 
 /* ── Address generation helpers ───────────────────────────────────── */
 
-bool hd_get_pubkey(const struct ext_key *ek, struct pubkey *pk_out)
-{
-    GUARD_NOT_NULL(ek, DOMAIN, "ek");
-    GUARD_NOT_NULL(pk_out, DOMAIN, "pk_out");
-    return privkey_get_pubkey(&ek->key, pk_out);
-}
-
 struct key_id hd_get_key_id(const struct ext_key *ek)
 {
     struct pubkey pk;

@@ -72,16 +72,11 @@ bool zcl_service_kernel_start_all(struct zcl_service_kernel *kernel);
 void zcl_service_kernel_stop_all(struct zcl_service_kernel *kernel);
 
 size_t zcl_service_kernel_count(const struct zcl_service_kernel *kernel);
-const struct zcl_service_entry *zcl_service_kernel_at(
-    const struct zcl_service_kernel *kernel,
-    size_t index);
 const struct zcl_service_entry *zcl_service_kernel_find(
     const struct zcl_service_kernel *kernel,
     const char *name);
 bool zcl_service_kernel_status(const struct zcl_service_kernel *kernel,
                                const char *name,
                                struct zcl_service_status *out);
-
-const char *zcl_service_state_name(enum zcl_service_state state);
 
 #endif

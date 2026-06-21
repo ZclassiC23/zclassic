@@ -68,7 +68,7 @@ struct delta_summary {
      * reject: ok stays true, but the stage MUST author NO coins for this
      * block and continue WITHOUT halting the frontier (strictly
      * read/log/continue). When the env is unset this is always false and
-     * the live path is byte-identical. See jobs/replay_count_only.h. */
+     * the stage takes its normal author/reject path. See jobs/replay_count_only.h. */
     bool count_only_d2_skip;
 };
 

@@ -56,7 +56,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
  */
 
 #define TEST_LIST(X) \
-    X(load_balancer) X(game) X(crypto) X(crypto_registry) X(encoding) X(chain) \
+    X(game) X(crypto) X(crypto_registry) X(encoding) X(chain) \
     X(pprev_walk) X(chain_tip) X(checkpoint) X(keys) \
     X(script) X(net) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
     X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \

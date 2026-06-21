@@ -435,7 +435,4 @@ bool bind_listen_port(struct net_manager *nm, const struct net_service *addr,
 bool addr_db_write(const struct net_manager *nm, const char *datadir);
 bool addr_db_read(struct net_manager *nm, const char *datadir);
 
-unsigned int receive_flood_size(void);
-unsigned int send_buffer_size(void);
-
 #endif

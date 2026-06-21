@@ -131,15 +131,6 @@ size_t zcl_service_kernel_count(const struct zcl_service_kernel *kernel)
     return kernel ? kernel->count : 0;
 }
 
-const struct zcl_service_entry *zcl_service_kernel_at(
-    const struct zcl_service_kernel *kernel,
-    size_t index)
-{
-    if (!kernel || index >= kernel->count)
-        return NULL;
-    return &kernel->services[index];
-}
-
 const struct zcl_service_entry *zcl_service_kernel_find(
     const struct zcl_service_kernel *kernel,
     const char *name)
@@ -173,22 +164,3 @@ bool zcl_service_kernel_status(const struct zcl_service_kernel *kernel,
     return true;
 }
 
-const char *zcl_service_state_name(enum zcl_service_state state)
-{
-    switch (state) {
-    case ZCL_SERVICE_UNREGISTERED:
-        return "unregistered";
-    case ZCL_SERVICE_REGISTERED:
-        return "registered";
-    case ZCL_SERVICE_INITIALIZED:
-        return "initialized";
-    case ZCL_SERVICE_STARTED:
-        return "started";
-    case ZCL_SERVICE_STOPPED:
-        return "stopped";
-    case ZCL_SERVICE_FAILED:
-        return "failed";
-    default:
-        return "unknown";
-    }
-}

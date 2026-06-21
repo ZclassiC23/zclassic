@@ -35,10 +35,9 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 | 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | **RESOLVED — keep reserved-and-empty by design** (audit: no misplaced Event code; concept owned by `lib/event/` + `lib/storage/event_log` + projections; lone app subscriber is a Service). README + FRAMEWORK §3 row 7 document the keep-empty rule; `events` now in Makefile `APP_DIRS` for build/lint symmetry. | — |
 | 6 | Controller/Service legacy compat | baselines 0 (no NEW violations); import/sync controllers still orchestrate; services keep bare-bool compat APIs | subtraction, not new structure | B/C |
 
-Mapping to FINISH_CHECKLIST: Wave B = §5.3 (line 186, split the 8 files at the
-800 ceiling), Wave C = §5.6 (line 189, rename `*_controller`/`*_repository` →
-`*_service`). Waves A/D/E are deeper REFACTOR_STATUS items not yet enumerated as
-FINISH_CHECKLIST checkboxes.
+Wave B = split the 8 files at the 800 ceiling; Wave C = rename
+`*_controller`/`*_repository` → `*_service`. Waves A/D/E are deeper
+REFACTOR_STATUS items tracked in the table above.
 
 **Landed waves (historical):**
 

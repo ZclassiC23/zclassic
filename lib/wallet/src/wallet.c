@@ -553,11 +553,6 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
     return true;
 }
 
-bool wallet_have_tx(const struct wallet *w, const struct uint256 *hash)
-{
-    return wallet_find_slot(w, hash) < MAX_WALLET_TX;
-}
-
 const struct wallet_tx *wallet_get_tx(const struct wallet *w,
                                        const struct uint256 *hash)
 {
@@ -601,11 +596,6 @@ bool wallet_is_watch_only(const struct wallet *w, const struct tx_out *txout)
     return false;
 }
 
-bool wallet_is_from_me(const struct wallet *w, const struct transaction *tx)
-{
-    return wallet_get_debit(w, tx) > 0;
-}
-
 bool wallet_is_change(const struct wallet *w, const struct tx_out *txout)
 {
     struct tx_destination dest;
@@ -631,13 +621,6 @@ int64_t wallet_get_debit(const struct wallet *w, const struct transaction *tx)
         }
     }
     return debit;
-}
-
-int64_t wallet_get_credit(const struct wallet *w, const struct tx_out *txout)
-{
-    if (!MoneyRange(txout->value))
-        return 0;
-    return wallet_is_mine(w, txout) ? txout->value : 0;
 }
 
 int64_t wallet_get_balance(const struct wallet *w)
@@ -1225,15 +1208,6 @@ bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,
                       struct privkey *key_out)
 {
     return keystore_get_key(&w->keystore, keyid, key_out);
-}
-
-int wallet_tx_get_depth_in_main_chain(const struct wallet *w,
-                                        const struct wallet_tx *wtx)
-{
-    (void)w;
-    if (!wtx->used)
-        return 0;
-    return wtx->confirms > 0 ? wtx->confirms : 0;
 }
 
 int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx)

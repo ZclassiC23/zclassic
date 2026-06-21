@@ -422,7 +422,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * offending block's coins are NEVER authored, so the copy's coins_kv is
      * not corrupted past a real reject. This whole branch is unreachable when
      * the env is unset (count_only_d2_skip is always false then), so the live
-     * fold is byte-identical to today. */
+     * fold runs exactly as it does today. */
     if (summary.count_only_d2_skip) {
         replay_count_only_note_block_replayed((uint32_t)next_h);
         free_delta(&summary);

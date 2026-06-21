@@ -685,7 +685,6 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-    failures += test_load_balancer();
     failures += test_game();
     failures += test_crypto();
     failures += test_crypto_registry();

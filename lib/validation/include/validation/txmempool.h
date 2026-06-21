@@ -120,9 +120,6 @@ bool tx_mempool_lookup(const struct tx_mempool *pool,
 void tx_mempool_remove(struct tx_mempool *pool,
                         const struct uint256 *hash);
 
-void tx_mempool_remove_expired(struct tx_mempool *pool,
-                                unsigned int block_height);
-
 void tx_mempool_remove_for_block(struct tx_mempool *pool,
                                   const struct transaction *txs,
                                   size_t num_txs,

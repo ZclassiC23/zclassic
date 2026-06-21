@@ -292,8 +292,8 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                      * must reach genesis->tip to count ALL offenders, not just
                      * the first — but the offending block's coins are NEVER
                      * authored. When the env is unset replay_count_only_active()
-                     * is false and this branch is byte-identical to today (the
-                     * normal delta_fail reject below). */
+                     * is false and this branch is never entered, so the
+                     * normal delta_fail reject below runs as it does today. */
                     if (replay_count_only_active()) {
                         replay_count_only_note_d2_fire(block_height, &op->hash,
                                                        op->n);

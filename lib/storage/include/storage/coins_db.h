@@ -35,10 +35,4 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
                                struct coins_map *map_coins,
                                const struct uint256 *hash_block);
 
-/* UTXO commitment persistence (key 'U' in LevelDB) */
-bool coins_view_db_write_commitment(struct coins_view_db *cvdb,
-                                     const struct utxo_commitment *uc);
-bool coins_view_db_read_commitment(struct coins_view_db *cvdb,
-                                    struct utxo_commitment *uc);
-
 #endif

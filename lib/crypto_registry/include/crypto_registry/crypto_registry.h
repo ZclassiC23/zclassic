@@ -157,11 +157,6 @@ bool crypto_registry_is_usable(enum crypto_scheme_id id);
 size_t crypto_registry_count(void);                       /* total registered */
 size_t crypto_registry_count_by_kind(enum crypto_scheme_kind kind);
 
-/* Test-only reset — wipes the registry. Used by unit tests to exercise
- * the collision path deterministically. NOT for production use; the
- * constructors only fire once per process. */
-void crypto_registry_test_reset(void);
-
 /* Diagnostics dumper — see CLAUDE.md "Adding state introspection".
  * Reentrant-safe; caller calls json_set_object(out) before invoking. */
 struct json_value;

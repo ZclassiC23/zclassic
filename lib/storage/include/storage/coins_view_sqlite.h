@@ -54,8 +54,6 @@ bool coins_view_sqlite_batch_write_ex( // one-write-path-ok:coins-sqlite-writer-
     const struct uint256 *hash_block, const struct utxo_commitment *commit);
 
 /* UTXO commitment persistence */
-bool coins_view_sqlite_write_commitment(struct coins_view_sqlite *cvs,
-                                         const struct utxo_commitment *uc);
 bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
                                         struct utxo_commitment *uc);
 
@@ -70,31 +68,5 @@ bool coins_view_sqlite_read_commitment(struct coins_view_sqlite *cvs,
  * Returns deleted UTXO rows (height + txid sweep), 0 when no above-tip rows
  * exist, or -1 on guard refusal / SQL failure. */
 int coins_rewind_above_tip(sqlite3 *db, int64_t tip_height, int64_t max_rows);
-
-/* Bulk-insert UTXOs in one transaction. Skips the in-memory coins
- * cache entirely (caller is responsible for invalidating cached
- * state when this is used for a phase-2-style bulk import). Each
- * record is a flattened UTXO row matching the `utxos` table.
- *
- * Steps internally:
- *   BEGIN IMMEDIATE
- *   for each rec: reset+bind+step the prepared INSERT OR REPLACE stmt
- *   COMMIT (or ROLLBACK on any step error)
- *
- * Returns the number of rows successfully inserted (== n on success;
- * less on failure — caller should treat <n as a hard error).
- * On COMMIT failure returns -1; mutex still released. */
-struct utxo_bulk_rec {
-    const uint8_t *txid;        /* 32 bytes */
-    uint32_t       vout;
-    int64_t        value;
-    const uint8_t *script;
-    uint32_t       script_len;
-    uint32_t       height;
-    uint8_t        is_coinbase;
-};
-int64_t coins_view_sqlite_bulk_insert(struct coins_view_sqlite *cvs,
-                                      const struct utxo_bulk_rec *recs,
-                                      size_t n);
 
 #endif

@@ -435,11 +435,6 @@ int ws_events_client_count(void)
     return atomic_load(&g_client_count);
 }
 
-uint64_t ws_events_total_delivered(void)
-{
-    return atomic_load(&g_total_delivered);
-}
-
 __attribute__((format(printf, 4, 5)))
 static size_t ws_append(char *buf, size_t cap, size_t pos, const char *fmt, ...)
 {

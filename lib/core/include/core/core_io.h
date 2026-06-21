@@ -22,8 +22,6 @@ bool decode_hex_tx(struct transaction *tx, const char *hex_str);
 
 bool parse_hash_str(const char *hex_str, struct uint256 *out);
 
-bool parse_hash_uv(const struct json_value *v, struct uint256 *out);
-
 size_t encode_hex_tx(const struct transaction *tx, char *out, size_t out_size);
 
 void script_pub_key_to_json(const struct script *script_pub_key,

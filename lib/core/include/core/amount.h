@@ -49,6 +49,4 @@ static inline CAmount fee_rate_get_fee_per_k(const struct fee_rate *r)
     return fee_rate_get_fee(r, 1000);
 }
 
-void fee_rate_to_string(const struct fee_rate *r, char *out, size_t out_size);
-
 #endif

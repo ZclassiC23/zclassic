@@ -168,8 +168,3 @@ void sha1_finalize(struct sha1_ctx *ctx, unsigned char hash[SHA1_OUTPUT_SIZE])
     WriteBE32(hash + 12, ctx->s[3]);
     WriteBE32(hash + 16, ctx->s[4]);
 }
-
-void sha1_reset(struct sha1_ctx *ctx)
-{
-    sha1_init(ctx);
-}

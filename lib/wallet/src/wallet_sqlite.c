@@ -702,39 +702,6 @@ bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w)
 
 /* ── Best block / scan height ──────────────────────────────────── */
 
-bool wallet_sqlite_write_best_block(struct wallet_sqlite *ws,
-                                      const struct uint256 *hash)
-{
-    if (!ws || !ws->open)
-        LOG_FAIL("wallet_sqlite", "write_best_block: not open");
-    sqlite3_stmt *s = ws->stmt_best_block_write;
-    sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1, hash->data, 32, SQLITE_STATIC);
-    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
-    if (!ok)
-        LOG_FAIL("wallet_sqlite", "write_best_block: step failed: %s",
-                 sqlite3_errmsg(ws->db));
-    return true;
-}
-
-bool wallet_sqlite_read_best_block(struct wallet_sqlite *ws,
-                                     struct uint256 *hash)
-{
-    if (!ws || !ws->open) return false;
-    sqlite3_stmt *s = ws->stmt_best_block_read;
-    sqlite3_reset(s);
-    bool ok = false;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        const void *data = sqlite3_column_blob(s, 0);
-        if (data && sqlite3_column_bytes(s, 0) >= 32) {
-            memcpy(hash->data, data, 32);
-            ok = true;
-        }
-    }
-    sqlite3_reset(s);
-    return ok;
-}
-
 bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height)
 {
     if (!ws || !ws->open)

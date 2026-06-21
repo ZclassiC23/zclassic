@@ -67,11 +67,6 @@ void set_rpc_warmup_status(const char *status);
 void set_rpc_warmup_finished(void);
 bool rpc_is_in_warmup(char *status_out, size_t status_size);
 
-
-void interrupt_rpc(void);
-
-
-CAmount amount_from_value(const struct json_value *value);
 void value_from_amount(CAmount amount, struct json_value *out);
 
 #endif

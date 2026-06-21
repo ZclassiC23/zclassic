@@ -249,12 +249,6 @@ bool parse_hash_str(const char *hex_str, struct uint256 *out)
     return true;
 }
 
-bool parse_hash_uv(const struct json_value *v, struct uint256 *out)
-{
-    if (!v || v->type != JSON_STR) return false;
-    return parse_hash_str(v->val.s, out);
-}
-
 size_t encode_hex_tx(const struct transaction *tx, char *out, size_t out_size)
 {
     struct byte_stream s;

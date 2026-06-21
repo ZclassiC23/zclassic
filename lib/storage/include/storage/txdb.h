@@ -25,13 +25,6 @@ bool block_tree_db_open(struct block_tree_db *btdb, const char *path,
                         size_t cache_size, bool memory, bool wipe);
 void block_tree_db_close(struct block_tree_db *btdb);
 
-bool block_tree_db_read_block_file_info(struct block_tree_db *btdb,
-                                         int file_num,
-                                         struct block_file_info *info);
-
-bool block_tree_db_read_last_block_file(struct block_tree_db *btdb,
-                                         int *file_num);
-
 bool block_tree_db_write_reindexing(struct block_tree_db *btdb, bool reindexing);
 bool block_tree_db_read_reindexing(struct block_tree_db *btdb, bool *reindexing);
 

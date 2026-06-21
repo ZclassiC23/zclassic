@@ -5,7 +5,7 @@
  * Non-stopping COUNT-AND-CONTINUE harness for the D2 coinbase-maturity replay
  * gate. Entirely gated on ZCL_REPLAY_COUNT_ONLY: when unset, replay_count_only
  * _active() returns false and the live fold never enters this path (the live
- * consensus path is byte-identical to today). */
+ * consensus path runs exactly as it does today). */
 
 #include "jobs/replay_count_only.h"
 
@@ -35,7 +35,7 @@ bool replay_count_only_active(void)
     /* First read: latch the env decision ONCE. A non-empty value that is not
      * "0" enables it; everything else (unset / "" / "0") leaves it off. The
      * env is read exactly here so the gate can never be flipped mid-process by
-     * a setenv race, and so the UNSET path stays byte-identical. */
+     * a setenv race, and so the UNSET path stays exactly as today. */
     const char *v = getenv("ZCL_REPLAY_COUNT_ONLY");
     int decided = (v && v[0] != '\0' && strcmp(v, "0") != 0) ? 1 : 0;
     /* CAS so concurrent first-callers agree on the latched value. */
@@ -182,9 +182,4 @@ int64_t replay_count_only_first_offending_height(void)
 {
     return atomic_load_explicit(&g_first_offending_height,
                                 memory_order_relaxed);
-}
-
-uint64_t replay_count_only_blocks_replayed(void)
-{
-    return atomic_load_explicit(&g_blocks_replayed, memory_order_relaxed);
 }

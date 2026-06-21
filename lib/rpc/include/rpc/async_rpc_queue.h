@@ -58,21 +58,8 @@ void async_queue_finish_and_wait(struct async_rpc_queue *q);
 /* Cancel every registered op and broadcast to wake workers. Thread-safe; does not remove ops or join. */
 void async_queue_cancel_all(struct async_rpc_queue *q);
 
-/* Number of ids currently waiting in the run queue (pending, not yet picked up). Mutex-guarded snapshot. */
-size_t async_queue_op_count(const struct async_rpc_queue *q);
 /* Register op and enqueue its id for execution. No-op if closed/finishing or at MAX_ASYNC_OPS. The queue does NOT take ownership of op (caller-owned; must outlive its run). Thread-safe. */
 void async_queue_add_op(struct async_rpc_queue *q,
                         struct async_rpc_operation *op);
-/* Look up a registered op by id without removing it; returns a borrowed pointer (still queue/caller-owned) or NULL. Thread-safe. */
-struct async_rpc_operation *async_queue_get_op(struct async_rpc_queue *q,
-                                               const char *id);
-/* Find op by id, unregister it from the op table, and return it (ownership passes to caller) or NULL. Does not touch the run queue. Thread-safe. */
-struct async_rpc_operation *async_queue_pop_op(struct async_rpc_queue *q,
-                                               const char *id);
-
-/* Copy up to max_ids registered op ids into ids[]; returns the number copied. Mutex-guarded snapshot. */
-size_t async_queue_get_all_ids(const struct async_rpc_queue *q,
-                               char ids[][ASYNC_OP_ID_SIZE],
-                               size_t max_ids);
 
 #endif

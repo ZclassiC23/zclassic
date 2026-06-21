@@ -136,16 +136,6 @@ size_t crypto_registry_count_by_kind(enum crypto_scheme_kind kind)
     return c ? atomic_load(c) : 0;
 }
 
-void crypto_registry_test_reset(void)
-{
-    for (int i = 0; i < CRYPTO_SCHEME_MAX; i++)
-        atomic_store(&g_schemes[i], NULL);
-    atomic_store(&g_count_total, 0);
-    atomic_store(&g_count_hash,  0);
-    atomic_store(&g_count_sig,   0);
-    atomic_store(&g_count_zk,    0);
-}
-
 /* ── Diagnostics ─────────────────────────────────────────────────── */
 
 static const char *kind_name(enum crypto_scheme_kind k)

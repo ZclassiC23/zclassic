@@ -90,25 +90,6 @@ static void *node_db_sync_catchup_job_thread(void *arg)
     return NULL;
 }
 
-void *node_db_sync_catchup_thread(void *arg)
-{
-    struct node_db_sync_catchup_job job;
-    struct catchup_args *args = arg;
-
-    node_db_sync_catchup_job_init(&job);
-    if (!args)
-        LOG_NULL("sync", "catchup_thread: args is NULL");
-    job.args.ndb = args->ndb;
-    job.args.chain = args->chain;
-    job.args.w = args->w;
-    job.args.datadir = args->datadir;
-    if (!node_db_sync_catchup_job_start(&job, job.args.ndb, job.args.chain,
-                                        job.args.w, job.args.datadir))
-        LOG_NULL("sync", "catchup_thread: job_start failed");
-    node_db_sync_catchup_job_join(&job, NULL);
-    return NULL;
-}
-
 void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job)
 {
     if (!job)
@@ -223,10 +204,4 @@ bool node_db_sync_import_job_join(struct node_db_sync_import_job *job,
     if (result_out)
         *result_out = job->result;
     return true;
-}
-
-bool node_db_sync_import_job_is_started(
-    const struct node_db_sync_import_job *job)
-{
-    return job && job->started;
 }

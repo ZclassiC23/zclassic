@@ -259,7 +259,6 @@ int test_addrman_rebalance(void);
 int test_coins(void);
 int test_chainstate_legacy_reader(void);
 int test_tor(void);
-int test_load_balancer(void);
 int test_game(void);
 int test_store(void);
 int test_blog(void);

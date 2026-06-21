@@ -194,10 +194,6 @@ int node_db_sync_catchup(struct node_db *ndb,
 int node_db_sync_wallet_keys(struct node_db *ndb,
                              const struct wallet *w);
 
-/* Background thread entry point for catchup.
- * Arg is pointer to struct with ndb, chain, w, datadir fields. */
-void *node_db_sync_catchup_thread(void *arg);
-
 /* Import the full UTXO set from chainstate LevelDB into SQLite.
  * Iterates all 'c'-prefixed entries, decodes compressed outputs,
  * and bulk-inserts into the utxos table with address indexing.
@@ -235,7 +231,5 @@ bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
                                    struct coins_view_db *cvdb);
 bool node_db_sync_import_job_join(struct node_db_sync_import_job *job,
                                   int *result_out);
-bool node_db_sync_import_job_is_started(
-    const struct node_db_sync_import_job *job);
 
 #endif

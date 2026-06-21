@@ -126,17 +126,6 @@ bool keystore_get_pubkey(const struct basic_keystore *ks,
     return false;
 }
 
-size_t keystore_get_keys(const struct basic_keystore *ks,
-                          struct key_id *out, size_t max_out)
-{
-    size_t count = 0;
-    for (size_t i = 0; i < ks->num_keys && count < max_out; i++) {
-        if (ks->keys[i].used)
-            out[count++] = ks->keys[i].keyid;
-    }
-    return count;
-}
-
 bool keystore_add_cscript(struct basic_keystore *ks,
                             const struct script *redeem_script)
 {

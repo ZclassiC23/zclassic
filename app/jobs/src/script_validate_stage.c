@@ -666,11 +666,6 @@ uint64_t script_validate_stage_inputs_verified_total(void)
     return atomic_load(&g_inputs_verified_total);
 }
 
-uint64_t script_validate_stage_inputs_failed_total(void)
-{
-    return atomic_load(&g_inputs_failed_total);
-}
-
 /* Emit {blocking_height, status, reason, txid, vin} for the lowest logged
  * height with ok=0 — i.e. the first row holding the pipeline back. Reads the
  * status + first_failure_* columns persisted by step_validate and composes

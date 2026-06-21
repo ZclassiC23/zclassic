@@ -42,7 +42,4 @@ char *mcp_replay_dump(size_t count);
 /* Return the number of recorded entries. */
 size_t mcp_replay_count(void);
 
-/* Clear the ring buffer. */
-void mcp_replay_clear(void);
-
 #endif /* ZCL_MCP_REPLAY_H */

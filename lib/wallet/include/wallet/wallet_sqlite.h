@@ -191,11 +191,6 @@ bool wallet_sqlite_write_tx(struct wallet_sqlite *ws,
                               const struct wallet_tx *wtx);
 bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w);
 
-bool wallet_sqlite_write_best_block(struct wallet_sqlite *ws,
-                                      const struct uint256 *hash);
-bool wallet_sqlite_read_best_block(struct wallet_sqlite *ws,
-                                     struct uint256 *hash);
-
 bool wallet_sqlite_write_scan_height(struct wallet_sqlite *ws, int height);
 bool wallet_sqlite_read_scan_height(struct wallet_sqlite *ws, int *height);
 

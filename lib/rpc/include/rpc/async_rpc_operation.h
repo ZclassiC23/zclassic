@@ -49,7 +49,6 @@ void async_op_cancel(struct async_rpc_operation *op);
 enum async_op_status async_op_get_state(const struct async_rpc_operation *op);
 const char *async_op_state_str(enum async_op_status s);
 bool async_op_is_cancelled(const struct async_rpc_operation *op);
-bool async_op_is_executing(const struct async_rpc_operation *op);
 bool async_op_is_ready(const struct async_rpc_operation *op);
 bool async_op_is_failed(const struct async_rpc_operation *op);
 bool async_op_is_success(const struct async_rpc_operation *op);

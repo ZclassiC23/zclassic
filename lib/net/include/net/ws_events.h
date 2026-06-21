@@ -58,9 +58,6 @@ bool ws_events_accept(int fd, const char *domain_filter);
 /* Current number of connected clients. */
 int ws_events_client_count(void);
 
-/* Total events delivered across all clients since start. */
-uint64_t ws_events_total_delivered(void);
-
 /* Render a JSON status snapshot.
  * Returns bytes written (excluding NUL). */
 size_t ws_events_status_json(char *buf, size_t cap);

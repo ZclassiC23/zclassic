@@ -103,12 +103,6 @@ stage_repair_header_solution_poison_mode(sqlite3 *db, int height)
     return mode;
 }
 
-bool stage_repair_header_solution_poison_present(sqlite3 *db, int height)
-{
-    return stage_repair_header_solution_poison_mode(db, height) !=
-           STAGE_REPAIR_POISON_NONE;
-}
-
 /* Returns rows deleted, or -1 on failure (callers `goto rollback` on n < 0).
  * Every failure must be -1, not a row count: a bind failure leaves the param
  * NULL, the WHERE matches nothing, and the DELETE silently no-ops — returning

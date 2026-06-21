@@ -139,18 +139,15 @@ bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size);
 bool wallet_get_key_from_pool(struct wallet *w, struct pubkey *pk_out);
 
 bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx);
-bool wallet_have_tx(const struct wallet *w, const struct uint256 *hash);
 const struct wallet_tx *wallet_get_tx(const struct wallet *w,
                                        const struct uint256 *hash);
 
 void wallet_mark_dirty(struct wallet_tx *wtx);
 bool wallet_is_mine(const struct wallet *w, const struct tx_out *txout);
 bool wallet_is_watch_only(const struct wallet *w, const struct tx_out *txout);
-bool wallet_is_from_me(const struct wallet *w, const struct transaction *tx);
 bool wallet_is_change(const struct wallet *w, const struct tx_out *txout);
 
 int64_t wallet_get_debit(const struct wallet *w, const struct transaction *tx);
-int64_t wallet_get_credit(const struct wallet *w, const struct tx_out *txout);
 int64_t wallet_get_balance(const struct wallet *w);
 int64_t wallet_get_unconfirmed_balance(const struct wallet *w);
 int64_t wallet_get_immature_balance(const struct wallet *w);
@@ -214,8 +211,6 @@ int wallet_rescan(struct wallet *w, const struct active_chain *chain,
                   int start_height, int stop_height, const char *datadir);
 int wallet_scan_blockfiles(struct wallet *w, const char *datadir);
 
-int wallet_tx_get_depth_in_main_chain(const struct wallet *w,
-                                        const struct wallet_tx *wtx);
 int wallet_tx_get_blocks_to_maturity(const struct wallet_tx *wtx);
 
 /* Spent outpoint tracking */

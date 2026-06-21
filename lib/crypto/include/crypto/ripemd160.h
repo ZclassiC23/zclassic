@@ -21,6 +21,5 @@ struct ripemd160_ctx {
 void ripemd160_init(struct ripemd160_ctx *ctx);
 void ripemd160_write(struct ripemd160_ctx *ctx, const unsigned char *data, size_t len);
 void ripemd160_finalize(struct ripemd160_ctx *ctx, unsigned char hash[RIPEMD160_OUTPUT_SIZE]);
-void ripemd160_reset(struct ripemd160_ctx *ctx);
 
 #endif

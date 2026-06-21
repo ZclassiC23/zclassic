@@ -21,6 +21,5 @@ struct sha1_ctx {
 void sha1_init(struct sha1_ctx *ctx);
 void sha1_write(struct sha1_ctx *ctx, const unsigned char *data, size_t len);
 void sha1_finalize(struct sha1_ctx *ctx, unsigned char hash[SHA1_OUTPUT_SIZE]);
-void sha1_reset(struct sha1_ctx *ctx);
 
 #endif

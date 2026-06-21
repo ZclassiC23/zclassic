@@ -62,9 +62,4 @@ void sig_cache_set(struct sig_cache *cache, const struct uint256 *entry);
  * Thread-safe. */
 void sig_cache_erase(struct sig_cache *cache, const struct uint256 *entry);
 
-/* The process-wide singleton cache, lazily initialized on first call (NOT
- * thread-safe to FIRST-touch from multiple threads; touch once during boot).
- * Subsequent get/set/erase on the returned instance are mutex-guarded. */
-struct sig_cache *sig_cache_instance(void);
-
 #endif

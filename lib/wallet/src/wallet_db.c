@@ -201,30 +201,6 @@ bool wallet_db_read_txs(struct wallet_db *wdb, struct wallet *w)
     return true;
 }
 
-bool wallet_db_write_best_block(struct wallet_db *wdb,
-                                  const struct uint256 *hash)
-{
-    if (!wdb->open) return false;
-    return db_write(&wdb->db, PREFIX_BEST, 9,
-                    (const char *)hash->data, 32, true);
-}
-
-bool wallet_db_read_best_block(struct wallet_db *wdb, struct uint256 *hash)
-{
-    if (!wdb->open) return false;
-    char *val = NULL;
-    size_t vlen = 0;
-    if (!db_read(&wdb->db, PREFIX_BEST, 9, &val, &vlen))
-        return false;
-    if (vlen != 32) {
-        free(val);
-        return false;
-    }
-    memcpy(hash->data, val, 32);
-    free(val);
-    return true;
-}
-
 bool wallet_db_write_scan_height(struct wallet_db *wdb, int height)
 {
     if (!wdb->open) return false;
@@ -432,47 +408,3 @@ bool wallet_db_read_scripts(struct wallet_db *wdb, struct wallet *w)
     return true;
 }
 
-bool wallet_db_flush(struct wallet_db *wdb, struct wallet *w)
-{
-    if (!wdb->open) return false;
-
-    /* Write all keys */
-    zcl_mutex_lock(&w->cs);
-    for (size_t i = 0; i < w->keystore.num_keys; i++) {
-        if (!w->keystore.keys[i].used) continue;
-
-        struct pubkey pk;
-        if (privkey_get_pubkey(&w->keystore.keys[i].key, &pk)) {
-            wallet_db_write_key(wdb, &pk, &w->keystore.keys[i].key);
-        }
-    }
-
-    /* Write all wallet transactions */
-    for (size_t i = 0; i < MAX_WALLET_TX; i++) {
-        if (!w->map_wallet[i].used) continue;
-        wallet_db_write_tx(wdb, &w->map_wallet[i]);
-    }
-
-    /* Write Sapling seed and keys */
-    struct sapling_keystore *sks = &w->sapling_keys;
-    if (sks->has_seed)
-        wallet_db_write_sapling_seed(wdb, sks->seed);
-    for (size_t i = 0; i < sks->num_keys; i++) {
-        if (sks->keys[i].used)
-            wallet_db_write_sapling_key(wdb, sks->keys[i].child_index,
-                                          &sks->keys[i]);
-    }
-
-    /* Write redeem scripts */
-    for (size_t i = 0; i < w->keystore.num_scripts; i++) {
-        if (w->keystore.scripts[i].used)
-            wallet_db_write_script(wdb, &w->keystore.scripts[i].script_id,
-                                     &w->keystore.scripts[i].redeem_script);
-    }
-
-    /* Write scan height */
-    wallet_db_write_scan_height(wdb, w->best_block_height);
-    zcl_mutex_unlock(&w->cs);
-
-    return true;
-}

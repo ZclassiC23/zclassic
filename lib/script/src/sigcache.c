@@ -77,14 +77,3 @@ void sig_cache_erase(struct sig_cache *cache, const struct uint256 *entry)
     zcl_mutex_unlock(&cache->mutex);
 }
 
-static struct sig_cache g_sig_cache;
-static bool g_sig_cache_initialized = false;
-
-struct sig_cache *sig_cache_instance(void)
-{
-    if (!g_sig_cache_initialized) {
-        sig_cache_init(&g_sig_cache);
-        g_sig_cache_initialized = true;
-    }
-    return &g_sig_cache;
-}

@@ -84,10 +84,6 @@ bool keystore_get_key(const struct basic_keystore *ks,
  * derivation fails. Read-only, does NOT take ks->cs. */
 bool keystore_get_pubkey(const struct basic_keystore *ks,
                           const struct key_id *keyid, struct pubkey *pk_out);
-/* Copy up to max_out live key_ids into out[]. Returns the number copied
- * (<= max_out). Read-only, does NOT take ks->cs. */
-size_t keystore_get_keys(const struct basic_keystore *ks,
-                          struct key_id *out, size_t max_out);
 
 /* Store a redeem script keyed by its hash160. If that script hash is
  * already present it is a no-op. Returns true on insert or duplicate;

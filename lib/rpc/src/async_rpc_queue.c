@@ -165,14 +165,6 @@ void async_queue_cancel_all(struct async_rpc_queue *q)
     zcl_mutex_unlock(&q->lock);
 }
 
-size_t async_queue_op_count(const struct async_rpc_queue *q)
-{
-    zcl_mutex_lock((zcl_mutex_t *)&q->lock);
-    size_t n = q->queue_count;
-    zcl_mutex_unlock((zcl_mutex_t *)&q->lock);
-    return n;
-}
-
 void async_queue_add_op(struct async_rpc_queue *q,
                         struct async_rpc_operation *op)
 {
@@ -194,46 +186,3 @@ void async_queue_add_op(struct async_rpc_queue *q,
     zcl_mutex_unlock(&q->lock);
 }
 
-struct async_rpc_operation *async_queue_get_op(struct async_rpc_queue *q,
-                                               const char *id)
-{
-    struct async_rpc_operation *result = NULL;
-    zcl_mutex_lock(&q->lock);
-    for (size_t i = 0; i < q->num_ops; i++) {
-        if (strcmp(q->ops[i]->id, id) == 0) {
-            result = q->ops[i];
-            break;
-        }
-    }
-    zcl_mutex_unlock(&q->lock);
-    return result;
-}
-
-struct async_rpc_operation *async_queue_pop_op(struct async_rpc_queue *q,
-                                               const char *id)
-{
-    struct async_rpc_operation *result = NULL;
-    zcl_mutex_lock(&q->lock);
-    for (size_t i = 0; i < q->num_ops; i++) {
-        if (strcmp(q->ops[i]->id, id) == 0) {
-            result = q->ops[i];
-            q->ops[i] = q->ops[q->num_ops - 1];
-            q->num_ops--;
-            break;
-        }
-    }
-    zcl_mutex_unlock(&q->lock);
-    return result;
-}
-
-size_t async_queue_get_all_ids(const struct async_rpc_queue *q,
-                               char ids[][ASYNC_OP_ID_SIZE],
-                               size_t max_ids)
-{
-    zcl_mutex_lock((zcl_mutex_t *)&q->lock);
-    size_t n = q->num_ops < max_ids ? q->num_ops : max_ids;
-    for (size_t i = 0; i < n; i++)
-        memcpy(ids[i], q->ops[i]->id, ASYNC_OP_ID_SIZE);
-    zcl_mutex_unlock((zcl_mutex_t *)&q->lock);
-    return n;
-}

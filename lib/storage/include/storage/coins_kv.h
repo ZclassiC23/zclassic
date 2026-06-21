@@ -122,7 +122,7 @@ bool coins_kv_seed_from_node_db(struct sqlite3 *progress_db,
  *
  * A single progress_meta key recording the contiguous applied frontier of the
  * coins_kv UTXO set: it ALWAYS equals the utxo_apply stage cursor by
- * construction (see docs/work/self-healing-reducer-plan.md). The frontier is
+ * construction (see docs/work/sync-organism-map.md). The frontier is
  * co-committed inside the SAME transaction as every WRITE that moves the
  * utxo_apply cursor — never lagging it — unlike MAX(coins.height), which is only
  * the most-recent surviving coin's creation height and cannot see an interior

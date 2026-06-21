@@ -195,6 +195,5 @@ Architecture axis (~90% done): [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
 [`../FRAMEWORK.md`](../FRAMEWORK.md). The only remaining size debt is the three
 `config/` boot files (`boot.c`, `boot_services.c`, `boot_index.c`), frozen
 shrink-only by the size gate; seam plan in
-[`boot-decomposition-seams.md`](./boot-decomposition-seams.md). Engineering
-quality detail: [`FINISH_CHECKLIST.md`](./FINISH_CHECKLIST.md). Safe-execution
+[`boot-decomposition-seams.md`](./boot-decomposition-seams.md). Safe-execution
 method for any consensus-critical change: [`fast-path.md`](./fast-path.md).

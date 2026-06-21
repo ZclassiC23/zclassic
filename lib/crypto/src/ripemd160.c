@@ -182,8 +182,3 @@ void ripemd160_finalize(struct ripemd160_ctx *ctx, unsigned char hash[RIPEMD160_
     WriteLE32(hash + 12, ctx->s[3]);
     WriteLE32(hash + 16, ctx->s[4]);
 }
-
-void ripemd160_reset(struct ripemd160_ctx *ctx)
-{
-    ripemd160_init(ctx);
-}

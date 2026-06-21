@@ -58,7 +58,6 @@ uint64_t script_validate_stage_script_invalid_total(void);
 uint64_t script_validate_stage_internal_error_total(void);
 uint64_t script_validate_stage_upstream_failed_total(void);
 uint64_t script_validate_stage_inputs_verified_total(void);
-uint64_t script_validate_stage_inputs_failed_total(void);
 
 void script_validate_stage_set_reader(script_validate_reader_fn fn,
                                       void *user);

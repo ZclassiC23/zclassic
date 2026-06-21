@@ -18,7 +18,7 @@
  * It is a CREATION index, not a UTXO set: rows are never deleted on spend, so a
  * coin spent earlier in the same lookahead window is still resolvable. Pre-anchor
  * (snapshot-seeded) coins are NOT here — the resolver falls back to the seeded
- * utxo_projection for those. See the P0 §2.1 design (docs/work/FINISH_CHECKLIST.md). */
+ * utxo_projection for those. */
 
 struct block;
 typedef struct sqlite3 sqlite3;

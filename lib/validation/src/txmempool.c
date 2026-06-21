@@ -448,20 +448,6 @@ void tx_mempool_remove(struct tx_mempool *pool, const struct uint256 *hash)
     zcl_mutex_unlock(&pool->cs);
 }
 
-void tx_mempool_remove_expired(struct tx_mempool *pool,
-                                unsigned int block_height)
-{
-    zcl_mutex_lock(&pool->cs);
-    for (size_t i = 0; i < pool->num_entries; ) {
-        if (is_expired_tx(&pool->entries[i].tx, (int)block_height)) {
-            remove_entry_at(pool, i);
-        } else {
-            i++;
-        }
-    }
-    zcl_mutex_unlock(&pool->cs);
-}
-
 void tx_mempool_remove_for_block(struct tx_mempool *pool,
                                   const struct transaction *txs,
                                   size_t num_txs,

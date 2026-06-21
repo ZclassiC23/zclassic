@@ -146,7 +146,6 @@ uint32_t arith_uint256_get_compact(const struct arith_uint256 *a, bool negative)
 void arith_to_uint256(struct uint256 *r, const struct arith_uint256 *a);
 void uint256_to_arith(struct arith_uint256 *r, const struct uint256 *a);
 
-void arith_uint256_set_hex(struct arith_uint256 *a, const char *psz);
 void arith_uint256_get_hex(const struct arith_uint256 *a, char out[65]);
 
 #endif

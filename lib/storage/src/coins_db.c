@@ -283,36 +283,3 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
     return ok;
 }
 
-/* ── UTXO commitment persistence ─────────────────────────── */
-
-static const char DB_UTXO_COMMITMENT = 'U';
-
-bool coins_view_db_write_commitment(struct coins_view_db *cvdb,
-                                     const struct utxo_commitment *uc)
-{
-    uint8_t buf[UTXO_COMMITMENT_SERIALIZED_SIZE];
-    utxo_commitment_serialize(uc, buf);
-
-    struct db_batch batch;
-    db_batch_init(&batch);
-    db_batch_put(&batch, &DB_UTXO_COMMITMENT, 1,
-                 (char *)buf, UTXO_COMMITMENT_SERIALIZED_SIZE);
-    bool ok = db_write_batch(&cvdb->db, &batch, true);
-    db_batch_free(&batch);
-    return ok;
-}
-
-bool coins_view_db_read_commitment(struct coins_view_db *cvdb,
-                                    struct utxo_commitment *uc)
-{
-    char *val = NULL;
-    size_t vlen = 0;
-    bool ok = db_read(&cvdb->db, &DB_UTXO_COMMITMENT, 1, &val, &vlen);
-    if (!ok || !val) {
-        utxo_commitment_init(uc);
-        return false;
-    }
-    ok = utxo_commitment_deserialize(uc, (uint8_t *)val, vlen);
-    free(val);
-    return ok;
-}

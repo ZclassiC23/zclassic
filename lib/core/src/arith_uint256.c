@@ -146,13 +146,6 @@ void uint256_to_arith(struct arith_uint256 *r, const struct uint256 *a)
         r->pn[x] = ReadLE32(a->data + x * 4);
 }
 
-void arith_uint256_set_hex(struct arith_uint256 *a, const char *psz)
-{
-    struct uint256 u;
-    uint256_set_hex(&u, psz);
-    uint256_to_arith(a, &u);
-}
-
 void arith_uint256_get_hex(const struct arith_uint256 *a, char out[65])
 {
     struct uint256 u;

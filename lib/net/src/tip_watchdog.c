@@ -222,11 +222,6 @@ void tip_watchdog_test_set_dl_counts(int64_t in_flight, int64_t queued)
     atomic_store(&g_test_dl_queued, queued);
 }
 
-bool tip_watchdog_test_is_armed(void)
-{
-    return atomic_load(&g_armed);
-}
-
 void tip_watchdog_test_inject_tip_advance(int height, int64_t when_ns)
 {
     atomic_store(&g_last_tip_height, height);

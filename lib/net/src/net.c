@@ -1379,6 +1379,3 @@ bool addr_db_read(struct net_manager *nm, const char *datadir)
     free(buf);
     return ok;
 }
-
-unsigned int receive_flood_size(void) { return 5 * 1000 * 1000; }
-unsigned int send_buffer_size(void) { return 1 * 1000 * 1000; }

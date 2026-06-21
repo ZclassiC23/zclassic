@@ -125,8 +125,6 @@ void tip_watchdog_test_set_queue_bytes(size_t bytes);
  * tests exercise the real in_flight/queued accounting (reachability
  * at the 1024/4096 caps, queued-only never trips). -1 = unset. */
 void tip_watchdog_test_set_dl_counts(int64_t in_flight, int64_t queued);
-/* Reads the re-arm hysteresis latch (true = entry permitted). */
-bool tip_watchdog_test_is_armed(void);
 void tip_watchdog_test_inject_tip_advance(int height, int64_t when_ns);
 
 #endif /* ZCL_NET_TIP_WATCHDOG_H */

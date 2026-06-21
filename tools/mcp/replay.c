@@ -55,11 +55,6 @@ size_t mcp_replay_count(void)
     return n;
 }
 
-void mcp_replay_clear(void)
-{
-    mcp_replay_init();
-}
-
 /* Escape a string for JSON output: \ and " */
 static size_t json_escape(const char *src, char *dst, size_t cap)
 {

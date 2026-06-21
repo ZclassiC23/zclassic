@@ -75,11 +75,6 @@ bool async_op_is_cancelled(const struct async_rpc_operation *op)
     return async_op_get_state(op) == ASYNC_OP_CANCELLED;
 }
 
-bool async_op_is_executing(const struct async_rpc_operation *op)
-{
-    return async_op_get_state(op) == ASYNC_OP_EXECUTING;
-}
-
 bool async_op_is_ready(const struct async_rpc_operation *op)
 {
     return async_op_get_state(op) == ASYNC_OP_READY;

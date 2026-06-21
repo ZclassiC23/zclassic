@@ -42,9 +42,6 @@ struct stage_repair_body_fetch_gap {
 enum stage_repair_header_solution_poison
 stage_repair_header_solution_poison_mode(struct sqlite3 *db, int height);
 
-bool stage_repair_header_solution_poison_present(struct sqlite3 *db,
-                                                 int height);
-
 bool stage_repair_header_solution_save(struct sqlite3 *db,
                                        int height,
                                        const struct uint256 *hash,

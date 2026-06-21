@@ -71,17 +71,6 @@ size_t json_rpc_request(const char *method,
                         const struct json_value *id,
                         char *out, size_t out_size);
 
-/* Serialize a JSON-RPC reply {"result":...,"error":...,"id":...} into out.
- * If error is non-null (json_is_null(error) is false), "result" is forced to
- * null and the error object is emitted; otherwise the error field carries
- * error's (null) value and result is emitted as-is. Newline-terminated and
- * NUL-terminated like json_rpc_request; returns the byte count written
- * including the trailing newline (excluding the NUL). */
-size_t json_rpc_reply(const struct json_value *result,
-                      const struct json_value *error,
-                      const struct json_value *id,
-                      char *out, size_t out_size);
-
 void json_rpc_error(struct json_value *out, int code, const char *message);
 
 /* Extended error object: {code, message, method}.
@@ -96,27 +85,5 @@ void json_rpc_error_full(struct json_value *out, int code,
 size_t json_rpc_error_response(char *buf, size_t buflen, int code,
                                const char *message, const char *method,
                                const char *id_json);
-
-/* Resolve the absolute path of the RPC auth-cookie file into out. Honors
- * -rpccookiefile: an absolute path (leading '/') is used as-is, otherwise it
- * is treated as a name relative to the data directory (default COOKIEAUTH_FILE).
- * Always writes a NUL-terminated path; no filesystem access. */
-void get_auth_cookie_file(char *out, size_t out_size);
-
-/* Generate a fresh random "COOKIEAUTH_USER:base64(32 random bytes)" credential
- * and write it (no trailing newline) to the cookie file path. Side effect:
- * overwrites that file. On success, if cookie_out is non-NULL the credential is
- * also copied there; returns true. Returns false if the file cannot be opened
- * for writing (logged). */
-bool generate_auth_cookie(char *cookie_out, size_t cookie_size);
-
-/* Read the current "user:pass" credential from the cookie file into cookie_out
- * (if non-NULL), stripping any trailing CR/LF. Returns true if the file exists
- * and a line was read; false if the file is absent or empty. Read-only. */
-bool get_auth_cookie(char *cookie_out, size_t cookie_size);
-
-/* Remove the cookie file (unlink). Side effect only; no return value, and a
- * missing file is not treated as an error. */
-void delete_auth_cookie(void);
 
 #endif
