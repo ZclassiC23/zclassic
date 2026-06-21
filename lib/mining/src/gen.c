@@ -48,7 +48,8 @@ static bool try_solve_equihash(struct block *blk,
     blake2b_update(&base_state, s.data, s.size);
     stream_free(&s);
 
-    /* Use Tromp solver for (192,7), fallback to brute force for regtest */
+    /* Tromp solver path is for (192,7); ZClassic is (200,9) on mainnet/testnet
+     * and (48,5) on regtest, so the brute-force else-branch is the live path. */
     if (n == 192 && k == 7) {
         struct eh_solver *solver = eh_solver_new();
         if (!solver)

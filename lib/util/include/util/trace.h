@@ -117,7 +117,6 @@ const char *trace_current_id(void);
  * returns NULL and no spans are emitted.  Default: enabled.
  * Env var ZCL_TRACE_ENABLED=0 disables at startup. */
 void trace_set_enabled(bool enabled);
-bool trace_is_enabled(void);
 
 /* Reset thread-local state.  For tests only. */
 void trace_reset_thread(void);

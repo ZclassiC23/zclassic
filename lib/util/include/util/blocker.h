@@ -202,7 +202,6 @@ void blocker_reset_for_testing(void);
 void blocker_set_clock_for_testing(int64_t now_us);
 void blocker_advance_clock_for_testing(int64_t delta_us);
 uint32_t blocker_fire_count_for_testing(const char *id);
-int blocker_escape_dispatched_count_for_testing(void);
 void blocker_set_rate_limit_ms_for_testing(int ms);
 
 #endif /* ZCL_UTIL_BLOCKER_H */

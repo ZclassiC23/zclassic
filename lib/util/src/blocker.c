@@ -503,11 +503,6 @@ int blocker_escape_dispatched_count(void)
     return atomic_load(&g_dispatched_count);
 }
 
-int blocker_escape_dispatched_count_for_testing(void)
-{
-    return blocker_escape_dispatched_count();
-}
-
 void blocker_set_rate_limit_ms_for_testing(int ms)
 {
     pthread_mutex_lock(&g_lock);

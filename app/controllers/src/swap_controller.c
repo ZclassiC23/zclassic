@@ -76,6 +76,88 @@ static void swap_to_json(const struct swap_contract *swap, struct json_value *ob
     json_push_kv_int(obj, "created_at", swap->created_at);
 }
 
+/* Parse the optional amount argument (index 2): real if present, else int. */
+static double swap_parse_amount(const struct json_value *params)
+{
+    const struct json_value *amt_val = json_at(params, 2);
+    if (!amt_val) return 0;
+    double amount = json_get_real(amt_val);
+    if (amount == 0.0) amount = (double)json_get_int(amt_val);
+    return amount;
+}
+
+/* Shared build pipeline for swap_initiate / swap_participate: decode both
+ * addresses, build the HTLC redeem script + P2SH address, assemble the
+ * swap_contract, persist it, and emit it as JSON. secret_or_null is non-NULL
+ * for the initiator (has_secret=true). strict_build_fail makes a build-script
+ * failure return false (initiate); when false (participate) the legacy
+ * fall-through is preserved. Returns false (with result set to an error
+ * string) on a hard failure, true on success. */
+static bool swap_build_and_persist(const char *my_addr, const char *counter_addr,
+                                   double amount, int64_t locktime,
+                                   enum swap_chain chain,
+                                   const uint8_t secret_hash[32],
+                                   const uint8_t *secret_or_null,
+                                   enum swap_role role, bool strict_build_fail,
+                                   struct json_value *result)
+{
+    struct htlc_params hp;
+    memset(&hp, 0, sizeof(hp));
+    memcpy(hp.secret_hash, secret_hash, 32);
+    hp.locktime = (uint32_t)locktime;
+
+    if (!htlc_address_to_pkh(counter_addr, chain, hp.recipient_pkh)) {
+        json_set_str(result, "Cannot decode counter_address");
+        return false;
+    }
+    if (!htlc_address_to_pkh(my_addr, chain, hp.refunder_pkh)) {
+        json_set_str(result, "Cannot decode my_address");
+        return false;
+    }
+
+    uint8_t script[256];
+    size_t script_len = htlc_build_script(&hp, script, sizeof(script));
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build HTLC script");
+        if (strict_build_fail) return false;
+        LOG_FAIL("swap", "swap_participate: htlc_build_script failed");
+    }
+
+    char p2sh_addr[64];
+    if (!htlc_p2sh_address(script, script_len, chain, p2sh_addr, sizeof(p2sh_addr))) {
+        if (strict_build_fail) {
+            json_set_str(result, "Failed to compute P2SH address");
+            return false;
+        }
+    }
+
+    struct swap_contract swap;
+    memset(&swap, 0, sizeof(swap));
+    swap_compute_id(my_addr, counter_addr, secret_hash, swap.swap_id);
+    swap.role = role;
+    swap.state = SWAP_PENDING;
+    swap.chain = chain;
+    memcpy(swap.secret_hash, secret_hash, 32);
+    if (secret_or_null) {
+        memcpy(swap.secret, secret_or_null, 32);
+        swap.has_secret = true;
+    }
+    swap.amount = (int64_t)(amount * 100000000.0);
+    swap.locktime = (uint32_t)locktime;
+    snprintf(swap.my_address, sizeof(swap.my_address), "%s", my_addr);
+    snprintf(swap.counter_address, sizeof(swap.counter_address), "%s", counter_addr);
+    memcpy(swap.redeem_script, script, script_len);
+    swap.redeem_script_len = script_len;
+    snprintf(swap.p2sh_address, sizeof(swap.p2sh_address), "%s", p2sh_addr);
+    swap.created_at = (int64_t)platform_time_wall_time_t();
+
+    if (g_swap_ndb)
+        db_swap_save(g_swap_ndb, &swap);
+
+    swap_to_json(&swap, result);
+    return true;
+}
+
 /* ── swap_chains ────────────────────────────────────────────────── */
 
 static bool rpc_swap_chains(const struct json_value *params, bool help,
@@ -121,12 +203,7 @@ static bool rpc_swap_initiate(const struct json_value *params, bool help,
 
     const char *my_addr = json_get_str(json_at(params, 0));
     const char *counter_addr = json_get_str(json_at(params, 1));
-    double amount = 0;
-    const struct json_value *amt_val = json_at(params, 2);
-    if (amt_val) {
-        amount = json_get_real(amt_val);
-        if (amount == 0.0) amount = (double)json_get_int(amt_val);
-    }
+    double amount = swap_parse_amount(params);
     int64_t locktime = json_get_int(json_at(params, 3));
 
     enum swap_chain chain = SWAP_CHAIN_ZCL;
@@ -145,67 +222,15 @@ static bool rpc_swap_initiate(const struct json_value *params, bool help,
     uint8_t secret[32], secret_hash[32];
     htlc_generate_secret(secret, secret_hash);
 
-    struct htlc_params hp;
-    memset(&hp, 0, sizeof(hp));
-    memcpy(hp.secret_hash, secret_hash, 32);
-    hp.locktime = (uint32_t)locktime;
-
-    /* Decode real pubkey hashes from addresses */
-    if (!htlc_address_to_pkh(counter_addr, chain, hp.recipient_pkh)) {
-        json_set_str(result, "Cannot decode counter_address (invalid base58check for this chain)");
+    if (!swap_build_and_persist(my_addr, counter_addr, amount, locktime, chain,
+                                secret_hash, secret, SWAP_INITIATOR,
+                                /*strict_build_fail=*/true, result))
         return false;
-    }
-    if (!htlc_address_to_pkh(my_addr, chain, hp.refunder_pkh)) {
-        json_set_str(result, "Cannot decode my_address (invalid base58check for this chain)");
-        return false;
-    }
-
-    /* Build redeem script */
-    uint8_t script[256];
-    size_t script_len = htlc_build_script(&hp, script, sizeof(script));
-    if (script_len == 0) {
-        json_set_str(result, "Failed to build HTLC script");
-        return false;
-    }
-
-    /* Compute P2SH address */
-    char p2sh_addr[64];
-    if (!htlc_p2sh_address(script, script_len, chain, p2sh_addr, sizeof(p2sh_addr))) {
-        json_set_str(result, "Failed to compute P2SH address");
-        return false;
-    }
-
-    /* Build swap contract */
-    struct swap_contract swap;
-    memset(&swap, 0, sizeof(swap));
-    swap_compute_id(my_addr, counter_addr, secret_hash, swap.swap_id);
-    swap.role = SWAP_INITIATOR;
-    swap.state = SWAP_PENDING;
-    swap.chain = chain;
-    memcpy(swap.secret_hash, secret_hash, 32);
-    memcpy(swap.secret, secret, 32);
-    swap.has_secret = true;
-    swap.amount = (int64_t)(amount * 100000000.0);
-    swap.locktime = (uint32_t)locktime;
-    snprintf(swap.my_address, sizeof(swap.my_address), "%s", my_addr);
-    snprintf(swap.counter_address, sizeof(swap.counter_address), "%s", counter_addr);
-    memcpy(swap.redeem_script, script, script_len);
-    swap.redeem_script_len = script_len;
-    snprintf(swap.p2sh_address, sizeof(swap.p2sh_address), "%s", p2sh_addr);
-    swap.created_at = (int64_t)platform_time_wall_time_t();
-
-    /* Persist */
-    if (g_swap_ndb)
-        db_swap_save(g_swap_ndb, &swap);
-
-    /* Return contract */
-    swap_to_json(&swap, result);
 
     const struct swap_chain_params *cp = swap_get_chain_params(chain);
     printf("swap: initiated %s swap for %.8f %s (locktime %u blocks)\n",
            cp->ticker, amount, cp->ticker, (unsigned)locktime);
-    printf("swap: P2SH address: %s\n", p2sh_addr);
-    printf("swap: Fund this address to activate the swap.\n");
+    printf("swap: Fund the P2SH address to activate the swap.\n");
 
     return true;
 }
@@ -231,12 +256,7 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
 
     const char *my_addr = json_get_str(json_at(params, 0));
     const char *counter_addr = json_get_str(json_at(params, 1));
-    double amount = 0;
-    const struct json_value *amt_val = json_at(params, 2);
-    if (amt_val) {
-        amount = json_get_real(amt_val);
-        if (amount == 0.0) amount = (double)json_get_int(amt_val);
-    }
+    double amount = swap_parse_amount(params);
     int64_t locktime = json_get_int(json_at(params, 3));
     const char *hash_hex = json_get_str(json_at(params, 4));
 
@@ -259,51 +279,10 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
         return false;
     }
 
-    struct htlc_params hp;
-    memset(&hp, 0, sizeof(hp));
-    memcpy(hp.secret_hash, secret_hash, 32);
-    hp.locktime = (uint32_t)locktime;
-
-    if (!htlc_address_to_pkh(counter_addr, chain, hp.recipient_pkh)) {
-        json_set_str(result, "Cannot decode counter_address");
-        return false;
-    }
-    if (!htlc_address_to_pkh(my_addr, chain, hp.refunder_pkh)) {
-        json_set_str(result, "Cannot decode my_address");
-        return false;
-    }
-
-    uint8_t script[256];
-    size_t script_len = htlc_build_script(&hp, script, sizeof(script));
-    if (script_len == 0) {
-        json_set_str(result, "Failed to build HTLC script");
-        LOG_FAIL("swap", "swap_participate: htlc_build_script failed");
-    }
-
-    char p2sh_addr[64];
-    htlc_p2sh_address(script, script_len, chain, p2sh_addr, sizeof(p2sh_addr));
-
-    struct swap_contract swap;
-    memset(&swap, 0, sizeof(swap));
-    swap_compute_id(my_addr, counter_addr, secret_hash, swap.swap_id);
-    swap.role = SWAP_PARTICIPANT;
-    swap.state = SWAP_PENDING;
-    swap.chain = chain;
-    memcpy(swap.secret_hash, secret_hash, 32);
-    swap.amount = (int64_t)(amount * 100000000.0);
-    swap.locktime = (uint32_t)locktime;
-    snprintf(swap.my_address, sizeof(swap.my_address), "%s", my_addr);
-    snprintf(swap.counter_address, sizeof(swap.counter_address), "%s", counter_addr);
-    memcpy(swap.redeem_script, script, script_len);
-    swap.redeem_script_len = script_len;
-    snprintf(swap.p2sh_address, sizeof(swap.p2sh_address), "%s", p2sh_addr);
-    swap.created_at = (int64_t)platform_time_wall_time_t();
-
-    if (g_swap_ndb)
-        db_swap_save(g_swap_ndb, &swap);
-
-    swap_to_json(&swap, result);
-    return true;
+    return swap_build_and_persist(my_addr, counter_addr, amount, locktime, chain,
+                                  secret_hash, /*secret_or_null=*/NULL,
+                                  SWAP_PARTICIPANT, /*strict_build_fail=*/false,
+                                  result);
 }
 
 /* ── swap_list ──────────────────────────────────────────────────── */

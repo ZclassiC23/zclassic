@@ -48,11 +48,6 @@ void trace_set_enabled(bool enabled)
     g_trace_enabled = enabled;
 }
 
-bool trace_is_enabled(void)
-{
-    return g_trace_enabled;
-}
-
 /* Fast successful spans are dropped at trace_end() unless verbose tracing
  * is requested: status==OK spans under this duration are pure log volume
  * (rpc.dispatch alone was ~40% of the live log at INFO). Non-OK and slow
