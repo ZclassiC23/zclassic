@@ -543,8 +543,12 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
  * (block_index_loader_torn_import_gate_fires) remains the EV_OPERATOR_NEEDED +
  * BLOCKER_PERMANENT fallback.
  *
- * NORMAL-BOOT INVARIANT: gated at the call site on ctx->refold_from_anchor; a
- * normal boot never calls this and runs the normal seed path. */
+ * DEFAULT SELF-HEAL: this is now called UNCONDITIONALLY on every boot from the
+ * single seed-vs-anchor decision site (config/src/boot_services.c). It is safe
+ * to run flag-free because the PURE detect predicate only fires on a DURABLY
+ * proven tear, and the reset it triggers can only ever stamp the SHA3-verified
+ * anchor set (or FATAL) — never an unproven one. A HEALTHY (untorn) datadir
+ * returns false here and takes the normal seed path unchanged. */
 bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
                                          struct node_db *ndb,
                                          struct sqlite3 *progress_db)

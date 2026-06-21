@@ -1469,25 +1469,34 @@ bool app_init_services(struct app_context *ctx,
         int seeded = block_index_loader_seed_tip_from_finalized(
             svc->state, params, progress_store_db());
         (void)seeded;  /* logs its own success line; benign no-op otherwise */
-        /* B2 1c — when -refold-from-anchor is set, try the torn-import AUTO-ARM
-         * FIRST. If it arms (or a refold is already in progress), SKIP the
-         * cold-import seed: the from-anchor refold owns the fold forward from the
-         * proven anchor. Gated on ctx->refold_from_anchor: a normal boot never
-         * calls arm_if_torn and takes the seed path (whose torn-import gate
-         * remains the operator-page fallback).
+        /* B2 1c — torn-import AUTO-ARM is now the DEFAULT self-heal. On EVERY
+         * boot we consult the PURE detect predicate
+         * (block_index_loader_torn_import_detect, no side-effects); if it finds a
+         * durable tear (a prevout_unresolved hole ABOVE the compiled anchor
+         * h=3056758 plus a coin_backfill.refused.<h>.<hash> marker), arm_if_torn
+         * re-seeds coins_kv from the SHA3-verified anchor snapshot (uss_open
+         * verify_full_sha3=true bound to cp->sha3_hash) and HARD-ASSERTS the
+         * re-seeded set == checkpoint (commitment + count==1354771; FATAL on
+         * mismatch). It then folds forward from the proven anchor. If it arms (or
+         * a from-anchor refold is already in progress — explicit flag at boot.c,
+         * or a mid-fold restart), SKIP the cold-import seed.
          *
-         * -load-verify-boot path: app_init already ran boot_refold_from_anchor_reset
-         * + refold_progress_mark_started_from_anchor when the verified-snapshot
-         * probe passed, so refold_from_anchor_active() is TRUE here. Detect that
-         * and SKIP the cold-import seed exactly like the explicit flag (the loaded
-         * + SHA3-verified anchor set already owns the fold from the anchor). When
-         * no verified snapshot was present, the reset never ran, the signal is
-         * false, and the cold-import seed runs UNCHANGED — additive, safe. */
+         * NO FLAG REQUIRED: a normal boot of a TORN datadir now self-heals. On a
+         * HEALTHY (untorn) datadir the detect predicate returns false, arm_if_torn
+         * does NOT reset, and the cold-import seed runs UNCHANGED — additive,
+         * safe; a synced node never re-folds. The reset path itself is the
+         * load-bearing safety net: it can only ever stamp the SHA3-verified anchor
+         * set (or FATAL), never an unproven one.
+         *
+         * The explicit -refold-from-anchor flag and the -load-verify-boot route
+         * (which armed the from-anchor signal in app_init when the verified
+         * snapshot probe passed) are still honored — both surface here as
+         * refold_from_anchor_active() == TRUE, which arm_if_torn short-circuits to
+         * true without re-resetting. */
         bool armed_from_anchor =
-            (ctx->refold_from_anchor &&
-             boot_refold_from_anchor_arm_if_torn(
-                 svc->state, boot_node_db(svc), progress_store_db())) ||
-            (ctx->load_verify_boot && refold_from_anchor_active());
+            refold_from_anchor_active() ||           /* already armed: flag / load-verify / mid-fold */
+            boot_refold_from_anchor_arm_if_torn(     /* DEFAULT: detect-gated torn-import self-heal */
+                svc->state, boot_node_db(svc), progress_store_db());
         if (!armed_from_anchor)
             (void)block_index_loader_seed_stages_from_cold_import(
                 svc->state, boot_node_db(svc), progress_store_db());
