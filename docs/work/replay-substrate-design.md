@@ -38,8 +38,13 @@ state the predicate reads (the spent coin's `restore_height` + `restore_coinbase
    AND `blocks_replayed == tip+1` contiguous — `legacy_iter_from` silently `continue`s
    past holes (`block_log_legacy.c:134`), so a sparse/cold-import set walks a subset and
    reports a FALSE 0. A short walk is a **gate FAILURE, not a pass**. [tooling]
-3. **Run the existing fold** `-refold-from-anchor -enforce-coinbase-maturity` (from
-   genesis — NOT `-load-verify-boot`, which no-ops on a stamped coins_kv = false-green).
+3. **Run the from-GENESIS fold** `-refold-staged -enforce-coinbase-maturity` — NOT
+   `-refold-from-anchor` (which seeds genesis→anchor from the snapshot WITHOUT folding
+   it and pins the cursors to the anchor h=3,056,758, so the predicate never fires
+   below the anchor → the h=478544-class offender is INVISIBLE and the walk can never
+   be contiguous from genesis), and NOT `-load-verify-boot` (no-ops on a stamped
+   coins_kv = false-green). `-refold-staged` (`boot_refold_staged.c:47`) resets all 8
+   stage cursors + coins_kv to genesis, so the predicate fires on EVERY block from h=0.
    The predicate fires at `utxo_apply_delta.c:281` per spend. [consensus-adjacent]
 4. **Count-and-continue mode** (env-gated `ZCL_REPLAY_COUNT_ONLY`): today a `delta_fail`
    flips `summary.ok` → JOB_BLOCKED and the frontier halts at the first fire. In
@@ -47,18 +52,28 @@ state the predicate reads (the spent coin's `restore_height` + `restore_coinbase
    authoring/blocking**, accumulating a total. **SAFETY: strictly read/log/continue,
    NO coins authored when counting** (else it corrupts the copy's coins_kv). [consensus-adjacent]
 5. **Structured summary** `{first_offending_height, total_newly_rejected, blocks_replayed,
-   tip}` (model `replay_verify_service.c:264-285`). [tooling]
+   tip, target_tip, genesis_readable, contiguous, reached_target, gate_pass}` (model
+   `replay_verify_service.c:264-285`). `target_tip` is the `header_admit` cursor (top of
+   the staged pipeline = header tip); `reached_target` (tip+1==target_tip) closes the
+   "proof_validate stalls below chaintip" hole — a contiguous-but-truncated walk is NOT a
+   pass. [tooling]
 6. **`make replay-gate-d2 DATADIR=<copy>`** — greps the summary, exits non-zero unless
-   `total==0 && blocks_replayed==tip+1`. [tooling]
+   `total==0 && contiguous && reached_target` (i.e. `gate_pass`). [tooling]
 7. **Lock the result:** only after a 0-count genesis→tip pass, flip the default at
    `utxo_apply_delta.c:59` + add a parity lock-in test. [consensus-adjacent]
 
 ### The gate
 Replay full chain with `-enforce-coinbase-maturity` ON, count-and-continue: assert
-`total_newly_rejected == 0` AND `first_offending_height == -1` AND `blocks_replayed ==
-tip+1` (contiguous from genesis). ~tens of minutes (from-genesis refold authors
-coins_kv, ~cold-sync-apply cost). Read-only over blk*.dat; writes only the copy's
-coins_kv; runs alongside the live node; zclassicd untouched.
+`total_newly_rejected == 0` AND `first_offending_height == -1` AND a contiguous
+genesis→FULL-header-tip walk (`genesis_readable && blocks_replayed == tip+1 &&
+reached_target`). ~tens of minutes (from-genesis refold authors coins_kv,
+~cold-sync-apply cost). Read-only over blk*.dat; writes only the copy's coins_kv; runs
+alongside the live node; zclassicd untouched.
+
+> **Convergence (2026-06-21):** the from-genesis `-refold-staged` fold is ALSO the live
+> wedge cure — a clean re-derivation with no borrowed chainstate seed has no
+> non-best-chain coin for the frontier to refuse, so H\* climbs from the anchor to tip.
+> A 0-offender gate run therefore doubles as proof the wedge is curable by re-derivation.
 
 ## Deferred (NOT in the first gate)
 - **D1 difficulty precedence** — a STRUCTURAL boolean (`pow.c:52-56`), no flag; needs
