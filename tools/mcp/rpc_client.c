@@ -6,6 +6,8 @@
 #include "rpc_client.h"
 
 #include "json/json.h"
+#include "rpc/server.h"
+#include "rpc/httpserver.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,13 @@
 #include <arpa/inet.h>
 
 #include "util/safe_alloc.h"
+
+/* Selectable transport backend. Defaults to the out-of-process HTTP path
+ * so the existing -mcp proxy is byte-for-byte unchanged unless the
+ * in-process mode explicitly flips it via mcp_rpc_client_use_inprocess(). */
+typedef char *(*mcp_rpc_backend_fn)(const char *method,
+                                    const char *params_json);
+static mcp_rpc_backend_fn g_rpc_backend = mcp_node_rpc_http;
 
 static char g_cookie[256];
 static int g_port = 18232;
@@ -117,12 +126,8 @@ const char *mcp_rpc_client_datadir(void)
     return g_datadir;
 }
 
-char *mcp_node_rpc(const char *method, const char *params_json)
+char *mcp_node_rpc_http(const char *method, const char *params_json)
 {
-#ifdef ZCL_TESTING
-    if (g_test_rpc_hook)
-        return g_test_rpc_hook(method, params_json);
-#endif
     /* Fail fast with an actionable message rather than sending an empty
      * credential that the node would reject with a cryptic 401. */
     if (!read_cookie())
@@ -228,4 +233,115 @@ char *mcp_node_rpc(const char *method, const char *params_json)
         json_free(&v);
     }
     return buf;
+}
+
+/* In-process backend. Instead of opening a socket and POSTing JSON-RPC to
+ * 127.0.0.1, call the node's own rpc_table_execute() — the SAME function
+ * lib/rpc/src/httpserver.c invokes — on the live dispatch table, then
+ * project the result into the identical malloc'd JSON shape mcp_node_rpc_http
+ * returns: the bare "result" value on success, or the "error" object on
+ * failure.  We build the full JSON-RPC envelope with the same helper the
+ * HTTP server uses (rpc_http_test_build_response_envelope) and extract from
+ * it exactly the way mcp_node_rpc_http parses the wire reply, so the bytes
+ * handed back to every controller are byte-for-byte what the proxy returns. */
+char *mcp_node_rpc_inproc(const char *method, const char *params_json)
+{
+    const char *mname = method ? method : "(null)";
+    const struct rpc_table *table = rpc_http_active_table();
+    if (!table) {
+        /* The in-process path needs a fully booted node (rpc_http_start
+         * has run and wired the table). Mirror the HTTP "cannot reach the
+         * node" envelope so downstream parsing is unaffected. (We log via
+         * fprintf, not LOG_FAIL, because LOG_FAIL returns false — wrong for
+         * a pointer-returning function — and we must still hand back a
+         * proper error body.) */
+        fprintf(stderr, "[mcp] %s:%d %s(): in-process RPC for '%s' before "
+                "rpc_table is live\n", __FILE__, __LINE__, __func__, mname);
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"node not ready: RPC table not live "
+                      "(in-process MCP requires a booted node)\"}}");
+    }
+
+    /* Parse params_json (NULL/empty → []) into a JSON array value, exactly
+     * the shape rpc_table_execute receives from the HTTP request parser. */
+    struct json_value params;
+    json_init(&params);
+    if (params_json && params_json[0]) {
+        if (!json_read(&params, params_json, strlen(params_json))) {
+            json_free(&params);
+            fprintf(stderr, "[mcp] %s:%d %s(): in-process RPC '%s' bad "
+                    "params JSON\n", __FILE__, __LINE__, __func__, mname);
+            return strdup("{\"error\":{\"code\":-32602,"
+                          "\"message\":\"invalid params JSON\"}}");
+        }
+    } else {
+        json_set_array(&params);
+    }
+
+    struct json_value result;
+    json_init(&result);
+    bool rpc_ok = rpc_table_execute(table, method, &params, &result);
+
+    /* Reuse the HTTP server's envelope builder so the success/error
+     * projection (including the "method" key it appends to error objects)
+     * is identical to the wire path. id is irrelevant to the extracted
+     * result/error, but the builder requires one. */
+    struct json_value id;
+    json_init(&id);
+    json_set_int(&id, 1);
+
+    struct json_value envelope;
+    json_init(&envelope);
+    bool built = rpc_http_test_build_response_envelope(
+        rpc_ok, method, &result, &id, &envelope);
+
+    char *out = NULL;
+    if (built) {
+        const struct json_value *err = json_get(&envelope, "error");
+        const struct json_value *res = json_get(&envelope, "result");
+        /* Same precedence as mcp_node_rpc_http: a non-null error wins. */
+        const struct json_value *pick =
+            (err && err->type != JSON_NULL) ? err : res;
+        if (pick) {
+            size_t need = json_write(pick, NULL, 0) + 1;
+            out = zcl_malloc(need, "mcp inproc rpc json");
+            if (out)
+                json_write(pick, out, need);
+            else
+                fprintf(stderr, "[mcp] %s:%d %s(): in-process RPC '%s' "
+                        "result alloc failed\n", __FILE__, __LINE__,
+                        __func__, mname);
+        }
+    }
+
+    json_free(&envelope);
+    json_free(&id);
+    json_free(&result);
+    json_free(&params);
+
+    if (!out) {
+        /* Never hand a controller NULL on a path the HTTP backend would
+         * have answered — always set an error body. */
+        out = strdup("{\"error\":{\"code\":-32603,"
+                     "\"message\":\"in-process RPC failed to build "
+                     "response\"}}");
+    }
+    return out;
+}
+
+void mcp_rpc_client_use_inprocess(void)
+{
+    g_rpc_backend = mcp_node_rpc_inproc;
+}
+
+/* Public entry every controller and the diagnostics dumper call. Routes to
+ * the selected backend; the ZCL_TESTING hook still wins so the controller
+ * equivalence tests can stub the node out regardless of transport. */
+char *mcp_node_rpc(const char *method, const char *params_json)
+{
+#ifdef ZCL_TESTING
+    if (g_test_rpc_hook)
+        return g_test_rpc_hook(method, params_json);
+#endif
+    return g_rpc_backend(method, params_json);
 }

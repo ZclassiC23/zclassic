@@ -892,6 +892,11 @@ int rpc_http_cookie_rotate_sec(void)
 
 /* ── Server start/stop ──────────────────────────────────────────── */
 
+const struct rpc_table *rpc_http_active_table(void)
+{
+    return g_table;
+}
+
 bool rpc_http_start(const struct rpc_table *table, uint16_t port,
                      const char *rpc_user, const char *rpc_password,
                      const char *datadir)

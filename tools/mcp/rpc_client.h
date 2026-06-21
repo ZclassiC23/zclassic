@@ -20,8 +20,30 @@ const char *mcp_rpc_client_datadir(void);
  * params_json may be NULL (sends []) or a JSON array string.
  * Returns a malloc'd JSON string (either the "result" field or an
  * error stub).  Never returns NULL in practice — on connection
- * failure, returns a minimal error object instead.  Caller frees. */
+ * failure, returns a minimal error object instead.  Caller frees.
+ *
+ * Transport is selectable: the default is the out-of-process HTTP path
+ * (mcp_node_rpc_http). When the in-process MCP transport is enabled
+ * (-mcp-inprocess), mcp_rpc_client_use_inprocess() flips the backend to
+ * mcp_node_rpc_inproc, which calls the node's live rpc_table directly
+ * — no socket, no second JSON marshal. Both return the SAME malloc'd
+ * JSON shape (the bare "result" value, or the "error" object on failure)
+ * so every controller and mcp_return_rpc_body is transport-agnostic. */
 char *mcp_node_rpc(const char *method, const char *params_json);
+
+/* The default out-of-process HTTP backend (socket + JSON-RPC POST). */
+char *mcp_node_rpc_http(const char *method, const char *params_json);
+
+/* The in-process backend: executes the live rpc_table directly.
+ * Requires a fully booted node (rpc_http_active_table() != NULL); if the
+ * table is not yet live it returns the same actionable error envelope the
+ * HTTP path produces when it cannot reach the node. */
+char *mcp_node_rpc_inproc(const char *method, const char *params_json);
+
+/* Select the in-process backend for all subsequent mcp_node_rpc calls.
+ * Default (never called) keeps the HTTP backend, so the existing proxy
+ * path is byte-for-byte unchanged. Idempotent. */
+void mcp_rpc_client_use_inprocess(void);
 
 #ifdef ZCL_TESTING
 typedef char *(*mcp_node_rpc_test_fn)(const char *method,

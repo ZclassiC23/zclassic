@@ -239,3 +239,26 @@ int mcp_server_main(const char *datadir, int rpc_port)
     mcp_notify_stop();
     return 0;
 }
+
+/* In-process MCP server (default OFF, behind -mcp-inprocess).
+ *
+ * Same wire protocol and same controller/middleware/notify stack as
+ * mcp_server_main, but the RPC transport is the in-process backend:
+ * every tool's mcp_node_rpc call dispatches straight to the node's live
+ * rpc_table (rpc_table_execute) instead of opening a socket and POSTing
+ * JSON-RPC to 127.0.0.1. This requires a fully-booted node in the SAME
+ * process (rpc_http_active_table() must be live), so main.c only reaches
+ * here AFTER app_init has started the RPC service.
+ *
+ * The event push channel is unchanged: mcp_notify_eventlog_fetch still
+ * calls mcp_node_rpc("eventlog",...), which now resolves in-process too.
+ *
+ * Returns when stdin closes (agent disconnects); the caller then drives a
+ * normal node shutdown. */
+int mcp_server_main_inprocess(const char *datadir, int rpc_port)
+{
+    /* Flip the transport BEFORE any controller can issue a call. From here
+     * on mcp_node_rpc routes to the live rpc_table in this process. */
+    mcp_rpc_client_use_inprocess();
+    return mcp_server_main(datadir, rpc_port);
+}

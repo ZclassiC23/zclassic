@@ -304,6 +304,7 @@ int test_chain_restore_service(void);
 int test_chain_activation_controller(void);
 int test_mcp_router(void);
 int test_mcp_controllers(void);
+int test_mcp_inproc_equiv(void);
 int test_mcp_middleware(void);
 int test_mcp_metrics(void);
 int test_mcp_e2e(void);

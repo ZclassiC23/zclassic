@@ -703,6 +703,25 @@ static void signal_handler(int sig)
     alarm(90);
 }
 
+/* Defined in tools/mcp_server.c — runs the MCP stdio protocol with the
+ * in-process RPC transport selected. Returns when stdin closes. */
+extern int mcp_server_main_inprocess(const char *datadir, int rpc_port);
+
+/* Thread body for the -mcp-inprocess run mode. Runs the MCP stdio loop on
+ * the live, fully-booted node, then requests a clean shutdown so the
+ * process exits when the agent disconnects (stdin EOF) rather than
+ * lingering as a headless node with no controller attached. */
+static void *mcp_inprocess_thread_main(void *arg)
+{
+    const struct app_context *ctx = (const struct app_context *)arg;
+    int rpc_port = ctx->rpc_port > 0 ? ctx->rpc_port : 18232;
+    mcp_server_main_inprocess(ctx->datadir ? ctx->datadir : "", rpc_port);
+    /* Agent disconnected — fall through to a normal node shutdown. */
+    g_shutdown_requested = 1;
+    thread_registry_request_shutdown();
+    return NULL;
+}
+
 static void print_usage(const char *prog)
 {
     printf("Usage:\n");
@@ -1699,6 +1718,13 @@ int main(int argc, char **argv)
 
     bool show_metrics = true;
 
+    /* Host the MCP server in-process on a thread of this booted node instead
+     * of the default out-of-process -mcp proxy. Default OFF — the proxy
+     * (handled far above, before any node boot) is unchanged. When set, the
+     * node boots normally and, once the RPC table is live, an MCP stdio loop
+     * runs with the in-process transport (no socket round-trip per tool). */
+    bool mcp_inprocess = false;
+
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) ctx.datadir = argv[i] + 9;
         else if (strncmp(argv[i], "-paramsdir=", 11) == 0) ctx.params_dir = argv[i] + 11;
@@ -1787,6 +1813,7 @@ int main(int argc, char **argv)
             atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        else if (strcmp(argv[i], "-mcp-inprocess") == 0) mcp_inprocess = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
         else if (strcmp(argv[i], "-rebuildfromlog") == 0) ctx.boot_from_log = true;
         else if (strcmp(argv[i], "-leveldb-no-verify-checksums") == 0) {
@@ -1928,10 +1955,30 @@ int main(int argc, char **argv)
 
     if (show_metrics) app_start_metrics(ctx.gen);
 
+    /* In-process MCP server (default OFF). The node has finished app_init,
+     * so the RPC table is live (rpc_http started inside app_init_services).
+     * Run the MCP stdio loop on a dedicated thread with the in-process
+     * transport selected; when the agent disconnects (stdin closes), the
+     * thread returns and requests a clean node shutdown so the process
+     * exits rather than lingering headless. */
+    pthread_t mcp_thread;
+    bool mcp_thread_started = false;
+    if (mcp_inprocess) {
+        if (pthread_create(&mcp_thread, NULL, mcp_inprocess_thread_main,
+                           &ctx) == 0) {
+            mcp_thread_started = true;
+        } else {
+            fprintf(stderr, "[mcp] failed to start in-process MCP thread; "
+                            "continuing as a headless node\n");
+        }
+    }
+
     while (!g_shutdown_requested &&
            !thread_registry_shutdown_requested() &&
            app_is_running())
         sleep(1);
+    if (mcp_thread_started)
+        pthread_join(mcp_thread, NULL);
     if (thread_registry_shutdown_requested())
         g_shutdown_requested = 1;
 
