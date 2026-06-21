@@ -235,7 +235,17 @@ bool boot_mint_anchor_run(const char *datadir);
  * SHA3/count assert. Returns false when no tear is detected → the caller runs the
  * normal seed path, whose torn-import gate stays the EV_OPERATOR_NEEDED fallback.
  * Gated at the call site on ctx->refold_from_anchor so a normal boot never calls
- * it (no reset, runs the normal seed path). */
+ * it (no reset, runs the normal seed path).
+ *
+ * SAFETY DECLINE (no-snapshot honest-halt guard): when a tear IS detected but NO
+ * SHA3-verified anchor snapshot is reachable (no file at the mint path, or its
+ * body SHA3 != the compiled checkpoint, or count mismatch), this returns FALSE
+ * WITHOUT calling the reset. The reset's node.db `utxos` fallback would re-seed
+ * the CONTAMINATED tip mirror and FATAL on the hard-assert; declining instead
+ * defers to the caller's normal seed path → the torn gate's honest
+ * operator_needed halt. (The explicit -refold-from-anchor flag path is
+ * UNCHANGED: it still allows the node.db fallback + FATAL as the operator-paged
+ * recovery; only this auto-arm declines.) */
 struct main_state;
 struct sqlite3;
 bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,

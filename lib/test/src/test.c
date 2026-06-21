@@ -337,6 +337,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "refold_auto_arm") == 0) {
+        printf("[test] ZCL_TEST_ONLY=refold_auto_arm — running the torn-import auto-arm detect/heal/decline test only\n");
+        failures += test_refold_auto_arm();
+        printf("\n=== refold_auto_arm subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "coin_backfill") == 0) {
         printf("[test] ZCL_TEST_ONLY=coin_backfill — running coin_backfill + torn-import gate only\n");
         failures += test_stage_repair_coin_backfill();
@@ -1080,6 +1087,7 @@ int main(void)
     failures += test_refold_from_anchor_fatal();
     failures += test_seed_integrity_gate();
     failures += test_seed_torn_import_gate();
+    failures += test_refold_auto_arm();
     failures += test_mirror_divergence_locator();
     failures += test_log_throttle();
     failures += test_reducer_frontier_reconcile_light();

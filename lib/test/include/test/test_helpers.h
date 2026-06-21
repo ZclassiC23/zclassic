@@ -549,6 +549,7 @@ int test_contaminated_coin_above_anchor(void);
 int test_refold_from_anchor_fatal(void);
 int test_seed_integrity_gate(void);
 int test_seed_torn_import_gate(void);
+int test_refold_auto_arm(void);
 int test_mirror_divergence_locator(void);
 int test_log_throttle(void);
 int test_reducer_stage_fuzz(void);

@@ -154,6 +154,34 @@ static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
     return m > 0 && (size_t)m < cap;
 }
 
+/* Read-only probe: is a SHA3-verified anchor snapshot reachable for THIS
+ * checkpoint? True iff a file exists at mint_snapshot_path AND uss_open verifies
+ * its full body SHA3 against cp->sha3_hash (verify_full_sha3=true binds the
+ * compiled checkpoint root) AND hdr.count == cp->utxo_count. This is the EXACT
+ * "usable verified snapshot" predicate boot_anchor_seed_from_snapshot
+ * (lines below) and boot_load_verify_snapshot_eligible apply before they trust a
+ * snapshot — factored here so the from-anchor AUTO-ARM can DECLINE (instead of
+ * falling into the node.db reseed + FATAL) when no verified snapshot exists. No
+ * coins_kv mutation: mmaps read-only, closes immediately. */
+static bool anchor_snapshot_verified_reachable(struct node_db *ndb,
+                                               const struct sha3_utxo_checkpoint *cp)
+{
+    if (!ndb || !cp)
+        return false;
+    char path[1100];
+    if (!mint_snapshot_path(ndb, path, sizeof(path)))
+        return false;
+    char err[256] = {0};
+    struct uss_header hdr;
+    struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
+                                    cp->sha3_hash, &hdr, err, sizeof(err));
+    if (!h)
+        return false;  /* absent OR header/body SHA3 mismatch → not reachable */
+    bool ok = (hdr.count == cp->utxo_count);
+    uss_close(h);
+    return ok;
+}
+
 /* uss_iter callback: insert one snapshot record into coins_kv. The caller holds
  * the progress.kv handle in an open BEGIN IMMEDIATE so every coins_kv_add
  * commits atomically with the rest. Stops the iteration (returns false) on a
@@ -540,6 +568,27 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
                                                &hole_h, &ceiling))
         return false;  /* no durable tear → caller runs the normal seed path */
 
+    /* SAFETY (load-bearing): the AUTO-ARM must NEVER route a torn datadir into
+     * the node.db `utxos` reseed + the hard-assert FATAL. boot_refold_from_anchor_reset
+     * (the explicit -refold-from-anchor flag path) DELIBERATELY allows that
+     * node.db fallback as the operator-paged path (its contract). But the
+     * auto-arm runs by DEFAULT on a torn boot, so if no SHA3-verified snapshot is
+     * reachable it must DECLINE — return false WITHOUT resetting — so the caller
+     * (boot_services.c) falls through to the normal cold-import seed, whose torn
+     * gate (block_index_loader_torn_import_gate_fires) raises the honest
+     * EV_OPERATOR_NEEDED + seed.torn_import PERMANENT blocker. Without this the
+     * default auto-arm would turn the current honest operator_needed halt into a
+     * _exit(EXIT_FAILURE) on a torn-but-no-snapshot datadir — a regression. */
+    if (!anchor_snapshot_verified_reachable(ndb, cp)) {
+        LOG_WARN("boot", "[boot] from-anchor auto-arm: torn cold-import detected "
+                 "at h=%d (frontier=%d) but NO SHA3-verified anchor snapshot is "
+                 "reachable — DECLINING the auto-arm (would otherwise fall into "
+                 "the contaminated node.db reseed + FATAL); deferring to the "
+                 "honest operator_needed halt (block_index_loader_torn_import_"
+                 "gate_fires)", (int)hole_h, (int)ceiling);
+        return false;
+    }
+
     LOG_WARN("boot",
              "[boot] from-anchor auto-arm: torn cold-import detected (durable "
              "unresolved prevout at h=%d, frontier=%d) — arming a from-anchor "
@@ -550,7 +599,9 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
     /* Reset FATALs internally if the re-seeded anchor set fails the SHA3/count
      * assert (a genuinely-unrecoverable tear). On return the anchor set is
      * PROVEN, so mark the from-anchor signal + resume target (the active tip the
-     * fold climbs to). */
+     * fold climbs to). The verified-snapshot reachability was just confirmed
+     * above, so the reset takes the snapshot reseed path (never the node.db
+     * fallback). */
     boot_refold_from_anchor_reset(ndb);
     int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
     (void)refold_progress_mark_started_from_anchor(progress_db, resume_target);
