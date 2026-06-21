@@ -62,6 +62,14 @@ struct delta_summary {
      * failure path compute_block_delta frees them and leaves NULL. */
     struct delta_entry *spent;
     struct delta_entry *added;
+    /* REPLAY GATE (D2 count-and-continue) — set ONLY when the env gate
+     * ZCL_REPLAY_COUNT_ONLY is active AND this block tripped the coinbase
+     * -maturity predicate (a fire was logged+counted). It is NOT a normal
+     * reject: ok stays true, but the stage MUST author NO coins for this
+     * block and continue WITHOUT halting the frontier (strictly
+     * read/log/continue). When the env is unset this is always false and
+     * the live path is byte-identical. See jobs/replay_count_only.h. */
+    bool count_only_d2_skip;
 };
 
 /* Free a delta-entry array, releasing any owned restore-scripts in the

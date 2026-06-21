@@ -40,6 +40,7 @@
 #include "core/uint256.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_stage.h"
+#include "jobs/replay_count_only.h"   /* D2 replay-gate count-and-continue */
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
@@ -48,6 +49,7 @@
 
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>   /* setenv / unsetenv */
 #include <string.h>
 
 #define UCM_CHECK(name, expr) do {                          \
@@ -300,6 +302,81 @@ int test_utxo_apply_coinbase_maturity(void)
         }
         block_free(&b);
         atomic_store(&g_enforce_coinbase_maturity, false);
+    }
+
+    /* (e) D2 REPLAY-GATE COUNT-AND-CONTINUE (env-gated ZCL_REPLAY_COUNT_ONLY).
+     * The MOST IMPORTANT mechanism check: when the env gate is active AND the
+     * tightening flag is ON, a premature coinbase spend must be LOGGED+COUNTED
+     * and the delta must come back as a NON-halting SKIP that authors NO coins
+     * — proving the count-only fold reads/logs/continues and never authors
+     * coins past a fire (so it can reach tip and count EVERY offender, never
+     * corrupting the copy's coins_kv). */
+    {
+        replay_count_only_reset_for_test();   /* clears cached env + counters */
+        setenv("ZCL_REPLAY_COUNT_ONLY", "1", 1);
+        atomic_store(&g_enforce_coinbase_maturity, true);
+
+        UCM_CHECK("(e) count-only env latches active",
+                  replay_count_only_active() == true);
+
+        struct block b;
+        bool built = ucm_build_block(&b, 0xE5, &cb);
+        UCM_CHECK("(e) count-only block builds", built);
+        if (built) {
+            ucm_set_normal_out(&b.vtx[1], 0, cb.value, 0x15);
+            struct delta_summary out;
+            /* Same premature (depth 99) spend as (b), which REJECTS+HALTS when
+             * the env is unset. In count-only mode it must NOT halt. */
+            utxo_apply_compute_block_delta(&b, premature_h, ucm_lookup, &cb,
+                                           &out);
+            /* (1) does NOT flip ok / halt the frontier */
+            UCM_CHECK("(e) count-only: fire does NOT halt (ok stays true)",
+                      out.ok == true);
+            /* (2) marked as a count-only skip so the stage skips authoring */
+            UCM_CHECK("(e) count-only: block marked count_only_d2_skip",
+                      out.count_only_d2_skip == true);
+            /* (3) authors NO coins past the fire — the load-bearing safety */
+            UCM_CHECK("(e) count-only: NO coins authored (0 spent, 0 added)",
+                      out.spent_count == 0 && out.added_count == 0 &&
+                      out.spent == NULL && out.added == NULL &&
+                      out.total_value_delta == 0);
+            /* (4) the fire was COUNTED + first offending height recorded */
+            UCM_CHECK("(e) count-only: the fire was counted (total == 1)",
+                      replay_count_only_total_rejected() == 1);
+            UCM_CHECK("(e) count-only: first offending height recorded",
+                      replay_count_only_first_offending_height() ==
+                          (int64_t)premature_h);
+            free_delta(&out);
+        }
+        block_free(&b);
+
+        /* (e2) CONTROL — with the env UNSET, the SAME premature spend rejects
+         * exactly as case (b) did. This is the live-path-unchanged proof: the
+         * count-only branch is unreachable when the env is unset, so the fold
+         * makes the identical reject decision it makes today. */
+        unsetenv("ZCL_REPLAY_COUNT_ONLY");
+        replay_count_only_reset_for_test();   /* re-latch from the unset env */
+        UCM_CHECK("(e2) env unset latches INACTIVE",
+                  replay_count_only_active() == false);
+        struct block b2;
+        bool built2 = ucm_build_block(&b2, 0xE6, &cb);
+        UCM_CHECK("(e2) control block builds", built2);
+        if (built2) {
+            ucm_set_normal_out(&b2.vtx[1], 0, cb.value, 0x16);
+            struct delta_summary out2;
+            utxo_apply_compute_block_delta(&b2, premature_h, ucm_lookup, &cb,
+                                           &out2);
+            UCM_CHECK("(e2) env unset: premature spend REJECTS (live unchanged)",
+                      out2.ok == false &&
+                      out2.count_only_d2_skip == false &&
+                      out2.failure_kind != NULL &&
+                      strcmp(out2.failure_kind,
+                             "bad-txns-premature-spend-of-coinbase") == 0);
+            free_delta(&out2);
+        }
+        block_free(&b2);
+        atomic_store(&g_enforce_coinbase_maturity, false);
+        replay_count_only_reset_for_test();
     }
 
     /* Leave the global in its default (off) state for any later group. */

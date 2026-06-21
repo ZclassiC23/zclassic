@@ -655,6 +655,78 @@ replay-canary-genesis: zclassic23 zcl-rpc
 	 rm -f "$$marker"; \
 	 echo "replay-canary-genesis: PASS (fresh sentinel verdict=PASS)"'
 
+# ── D2 coinbase-maturity REPLAY GATE (docs/work/replay-substrate-design.md) ──
+#
+# Replays the real chain genesis->tip on a COPY datadir with the
+# coinbase-maturity tightening ON (-enforce-coinbase-maturity) under the
+# env gate ZCL_REPLAY_COUNT_ONLY=1, which makes the fold COUNT-AND-CONTINUE:
+# every premature-coinbase-spend the tightening would NEWLY reject is
+# logged+counted and the fold continues to tip WITHOUT authoring the
+# offending block's coins. The gate then greps the structured summary:
+#   total_newly_rejected == 0  => safe to flip the default (no real block
+#                                  depends on the looser rule)
+#   total_newly_rejected >= 1  => MUST NOT ship (the h=478544 class)
+# AND blocks_replayed == tip+1 (contiguous from genesis) — a sparse / non
+# -genesis walk reports a FALSE 0 and is a GATE FAILURE, not a pass.
+#
+# SAFETY: REFUSES to run against the live datadirs (~/.zclassic-c23 and
+# ~/.zclassic). DATADIR=<copy> is mandatory and must be a copy:
+#   cp -a ~/.zclassic-c23 ~/.zclassic-c23-replay-d2
+#   make replay-gate-d2 DATADIR=$HOME/.zclassic-c23-replay-d2
+# The fold authors coins_kv on the COPY (~cold-sync-apply cost, tens of
+# minutes); zclassicd and the live node are untouched.
+.PHONY: replay-gate-d2
+replay-gate-d2: zclassic23
+	@bash -c 'set -uo pipefail; \
+	 dd="$${DATADIR:-}"; \
+	 if [ -z "$$dd" ]; then \
+	     echo "replay-gate-d2: DATADIR=<copy> is required (a COPY of the datadir, never the live one)"; \
+	     echo "  cp -a $$HOME/.zclassic-c23 $$HOME/.zclassic-c23-replay-d2"; \
+	     echo "  make replay-gate-d2 DATADIR=$$HOME/.zclassic-c23-replay-d2"; \
+	     exit 2; \
+	 fi; \
+	 ddabs="$$(readlink -f "$$dd" 2>/dev/null || echo "$$dd")"; \
+	 live1="$$(readlink -f "$$HOME/.zclassic-c23" 2>/dev/null || echo "$$HOME/.zclassic-c23")"; \
+	 live2="$$(readlink -f "$$HOME/.zclassic" 2>/dev/null || echo "$$HOME/.zclassic")"; \
+	 if [ "$$ddabs" = "$$live1" ] || [ "$$ddabs" = "$$live2" ]; then \
+	     echo "replay-gate-d2: REFUSING — DATADIR ($$ddabs) is a LIVE datadir. The fold WRITES coins_kv; run it on a COPY only."; \
+	     exit 2; \
+	 fi; \
+	 if [ ! -d "$$ddabs" ]; then \
+	     echo "replay-gate-d2: DATADIR $$ddabs does not exist"; exit 2; \
+	 fi; \
+	 logf="$$ddabs/replay-gate-d2.run.log"; rm -f "$$logf"; \
+	 echo "replay-gate-d2: replaying $$ddabs genesis->tip (count-and-continue); log -> $$logf"; \
+	 set +e; \
+	 ZCL_REPLAY_COUNT_ONLY=1 build/bin/zclassic23 -datadir="$$ddabs" \
+	     -refold-staged -enforce-coinbase-maturity -nobgvalidation \
+	     > "$$logf" 2>&1; \
+	 rc=$$?; set -e; \
+	 line="$$(grep -F "\"event\":\"replay_gate.d2.summary\"" "$$logf" | tail -1)"; \
+	 if [ -z "$$line" ]; then \
+	     echo "replay-gate-d2: FALSE-GREEN GUARD — no replay_gate.d2.summary line in $$logf (binary rc=$$rc). Did the fold reach tip?"; \
+	     tail -20 "$$logf" 2>/dev/null || true; \
+	     exit 1; \
+	 fi; \
+	 echo "replay-gate-d2: summary => $$line"; \
+	 total="$$(echo "$$line" | grep -oE "\"total_newly_rejected\":[0-9]+" | grep -oE "[0-9]+")"; \
+	 pass="$$(echo "$$line" | grep -oE "\"gate_pass\":(true|false)" | grep -oE "(true|false)")"; \
+	 contig="$$(echo "$$line" | grep -oE "\"contiguous\":(true|false)" | grep -oE "(true|false)")"; \
+	 reached="$$(echo "$$line" | grep -oE "\"reached_target\":(true|false)" | grep -oE "(true|false)")"; \
+	 if [ "$$contig" != "true" ]; then \
+	     echo "replay-gate-d2: FAIL — blocks_replayed != tip+1 (sparse/non-genesis walk = FALSE 0, NOT a pass)"; \
+	     exit 1; \
+	 fi; \
+	 if [ "$$reached" != "true" ]; then \
+	     echo "replay-gate-d2: FAIL — reached_target=false (the apply walk stalled BELOW the header tip; a contiguous-but-truncated walk is NOT a pass)"; \
+	     exit 1; \
+	 fi; \
+	 if [ "$$total" != "0" ] || [ "$$pass" != "true" ]; then \
+	     echo "replay-gate-d2: FAIL — total_newly_rejected=$$total (>=1 => the chain depends on the looser rule; the h=478544 class; MUST NOT flip the default)"; \
+	     exit 1; \
+	 fi; \
+	 echo "replay-gate-d2: PASS — 0 newly-rejected over a contiguous genesis->FULL-header-tip walk; safe to flip the default"'
+
 # ── MVP-C6 live-soak evidence (opt-in; reads the LIVE soak node) ─────
 #
 # soak-evidence-report judges the hourly evidence JSONL accumulated by

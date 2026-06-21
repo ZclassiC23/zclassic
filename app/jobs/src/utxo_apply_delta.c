@@ -8,6 +8,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_delta.h"
+#include "jobs/replay_count_only.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -283,6 +284,35 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                     restore_coinbase &&
                     (block_height < restore_height ||
                      block_height - restore_height < COINBASE_MATURITY)) {
+                    /* REPLAY GATE: in count-and-continue mode (env-gated
+                     * ZCL_REPLAY_COUNT_ONLY), do NOT flip ok / halt the
+                     * frontier. LOG + COUNT this fire and mark the block
+                     * count_only_d2_skip so the stage authors NO coins for it
+                     * and continues (strictly read/log/continue). The fold
+                     * must reach genesis->tip to count ALL offenders, not just
+                     * the first — but the offending block's coins are NEVER
+                     * authored. When the env is unset replay_count_only_active()
+                     * is false and this branch is byte-identical to today (the
+                     * normal delta_fail reject below). */
+                    if (replay_count_only_active()) {
+                        replay_count_only_note_d2_fire(block_height, &op->hash,
+                                                       op->n);
+                        out->count_only_d2_skip = true;
+                        /* Read/log/continue: discard the partially-built delta
+                         * (the block is not authored) and return ok=true so the
+                         * stage skips authoring without taking the reject/halt
+                         * path. */
+                        free_delta(out);
+                        out->ok = true;
+                        out->status = "verified";
+                        out->failure_kind = NULL;
+                        out->spent = NULL;
+                        out->added = NULL;
+                        out->spent_count = 0;
+                        out->added_count = 0;
+                        out->total_value_delta = 0;
+                        return;
+                    }
                     delta_fail(out, "coinbase_immature",
                                "bad-txns-premature-spend-of-coinbase",
                                &op->hash, op->n);

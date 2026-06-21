@@ -8,6 +8,7 @@
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/utxo_apply_delta.h"
+#include "jobs/replay_count_only.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/stage_helpers.h"
 #include "utxo_apply_log_store.h"
@@ -411,6 +412,39 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
                                    g_lookup, g_lookup_user, &summary);
 
+    /* REPLAY GATE (D2 count-and-continue, env-gated ZCL_REPLAY_COUNT_ONLY).
+     * compute_block_delta sets count_only_d2_skip ONLY in count-only mode when
+     * the coinbase-maturity predicate fired (already logged+counted there).
+     * STRICTLY read/log/continue: author NO coins, insert NO nullifiers,
+     * persist NO inverse-delta, write NO utxo_apply_log row, and DO NOT take
+     * the reject/halt path — just advance the read-only cursor so the walk
+     * reaches tip and counts EVERY offender, never the first only. The
+     * offending block's coins are NEVER authored, so the copy's coins_kv is
+     * not corrupted past a real reject. This whole branch is unreachable when
+     * the env is unset (count_only_d2_skip is always false then), so the live
+     * fold is byte-identical to today. */
+    if (summary.count_only_d2_skip) {
+        replay_count_only_note_block_replayed((uint32_t)next_h);
+        free_delta(&summary);
+        block_free(&blk);
+        /* Advance the cursor WITHOUT authoring/sealing/minting: this is a
+         * diagnostic walk over a copy, not a real apply. coins_applied_height
+         * is intentionally NOT co-committed (no coins were written), so the
+         * copy's coins_kv reflects the truth that this block was skipped. */
+        atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
+        c->cursor_out = c->cursor_in + 1;
+        /* Emit the running summary when we reach the proven tip (cursor caught
+         * up to the upstream proof_validate frontier — see the pv_cursor guard
+         * at step_apply entry; one more tick returns JOB_IDLE). target_tip is
+         * the header_admit cursor (top of the staged pipeline == header tip),
+         * so the gate can assert the walk reached the FULL header chain, not a
+         * subset stalled below it. */
+        if (c->cursor_out >= pv_cursor)
+            replay_count_only_emit_summary(
+                (int64_t)stage_cursor_persisted(db, "header_admit", STAGE_NAME));
+        return JOB_ADVANCED;
+    }
+
     /* Shielded-nullifier double-spend gate (C-3) — BEFORE the coins write,
      * under the same author gate. May flip summary.ok to a consensus reject
      * (which then takes the regular counter/log/JOB_BLOCKED path below); a
@@ -527,6 +561,20 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
     reject_memo_clear();
     c->cursor_out = next_cursor;
+
+    /* REPLAY GATE coverage accounting (no-op unless ZCL_REPLAY_COUNT_ONLY):
+     * count every successfully-applied block toward blocks_replayed so the
+     * contiguity check (blocks_replayed == tip+1) can detect a sparse / non
+     * -genesis walk (a FALSE 0). Mark genesis readable when this is h=0.
+     * Emit the running summary once the cursor catches the proven tip. */
+    if (replay_count_only_active()) {
+        if (next_h == 0)
+            replay_count_only_mark_genesis_readable();
+        replay_count_only_note_block_replayed((uint32_t)next_h);
+        if (next_cursor >= pv_cursor)
+            replay_count_only_emit_summary(
+                (int64_t)stage_cursor_persisted(db, "header_admit", STAGE_NAME));
+    }
     return JOB_ADVANCED;
 }
 
