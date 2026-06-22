@@ -1148,7 +1148,115 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "prologue",
            (long long)(boot_clock_ms() - t_boot_start));
 
-    /* Initialize wallet (before block index — needed for -importlegacy).
+    boot_step_start_maintenance_services();
+
+    /* Pre-flight: check for stale lock files from crashed processes */
+    {
+        char lock_path[1024];
+
+        /* Check LevelDB locks */
+        snprintf(lock_path, sizeof(lock_path), "%s/blocks/index/LOCK",
+                 ctx->datadir);
+        if (access(lock_path, F_OK) == 0) {
+            /* LevelDB LOCK exists — check if holder is still alive */
+            FILE *lf = fopen(lock_path, "r");
+            if (lf) {
+                char pidbuf[32] = {0};
+                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
+                fclose(lf);
+                if (nr > 0) {
+                    long pid = strtol(pidbuf, NULL, 10);
+                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
+                        printf("Removing stale LevelDB LOCK (pid %ld dead)\n",
+                               pid);
+                        unlink(lock_path);
+                    } else if (pid > 0) {
+                        fprintf(stderr,
+                            "ERROR: LevelDB locked by pid %ld (still running)\n"
+                            "Kill the other process or use a different datadir.\n",
+                            pid);
+                    }
+                }
+            }
+        }
+        snprintf(lock_path, sizeof(lock_path), "%s/chainstate/LOCK",
+                 ctx->datadir);
+        if (access(lock_path, F_OK) == 0) {
+            FILE *lf = fopen(lock_path, "r");
+            if (lf) {
+                char pidbuf[32] = {0};
+                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
+                fclose(lf);
+                if (nr > 0) {
+                    long pid = strtol(pidbuf, NULL, 10);
+                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
+                        printf("Removing stale chainstate LOCK (pid %ld dead)\n",
+                               pid);
+                        unlink(lock_path);
+                    }
+                }
+            }
+        }
+
+        /* Check SQLite WAL lock — WAL mode handles this via busy_timeout,
+         * but a crash can leave a -wal file. SQLite recovers automatically. */
+        snprintf(lock_path, sizeof(lock_path), "%s/node.db-wal",
+                 ctx->datadir);
+        if (access(lock_path, F_OK) == 0)
+            printf("SQLite WAL file exists (normal after crash recovery)\n");
+    }
+
+    /* Open SQLite node database */
+    t_phase = boot_clock_ms();
+    if (node_db_sync_init(&g_node_db, ctx->datadir)) {
+        int migrate_rc = node_db_migrate(&g_node_db, ctx->datadir);
+        if (migrate_rc == -2) {
+            /* Schema downgrade refused — node_db_migrate has already
+             * printed the operator-actionable explanation to stderr.
+             * Bail before any wallet / chain logic runs so we don't
+             * write through a schema we don't understand. */
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "node_db_schema_downgrade_refused rc=%d", migrate_rc);
+            exit(1);
+        }
+        process_block_set_node_db(&g_node_db);
+        if (!db_service_is_started(&g_db_service)) {
+            if (!boot_step_start_db_service()) {
+                fprintf(stderr,
+                    "Warning: DB service unavailable during boot; "
+                    "activation metadata writes will use direct SQLite\n");
+            }
+        }
+        boot_stage_advance_to(BOOT_STAGE_DB_OPEN);
+        int db_tip = node_db_sync_get_tip_height(&g_node_db);
+        if (db_tip >= 0) {
+            printf("SQLite tip: height=%d\n", db_tip);
+            event_emitf(EV_BOOT_DB_OPEN, 0, "schema=%d tip=%d",
+                        node_db_schema_version(&g_node_db), db_tip);
+        }
+    } else {
+        fprintf(stderr, "Warning: SQLite database unavailable\n");
+        event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
+                    ctx->datadir);
+    }
+    printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
+           (long long)(boot_clock_ms() - t_phase));
+
+    /* Initialize wallet. MUST run AFTER node.db is opened above
+     * (node_db_sync_init → create_schema → g_node_db.open=true) and
+     * BEFORE the block index load below — the latter is the only
+     * ordering -importlegacy actually needs. Persisted wallet state
+     * (keys, sapling keys, scripts, txs, scan height) lives in the
+     * shared node.db tables wallet_keys / wallet_sapling_keys /
+     * wallet_scripts / wallet_seed / wallet_watch_only /
+     * wallet_transactions — there is intentionally no separate
+     * wallet*.db. If this block ran before node.db was open (the prior
+     * ordering bug), g_node_db.open was false, wallet_sqlite_open_r was
+     * never called, every load/flush below silently no-op'd, and an
+     * imported key or trial-decrypted note vanished on restart while the
+     * STATE D/E/F abort guards (all conditioned on g_node_db.open) sat
+     * dead. Opening node.db first makes the persistence layer and its
+     * guards live.
      *
      * Wallet persistence boot state machine (per WALLET_PERSISTENCE_PLAN.md §7).
      *
@@ -1380,100 +1488,6 @@ bool app_init(struct app_context *ctx)
     }
     printf("Wallet has %zu keys.\n", g_wallet.keystore.num_keys);
     printf("[boot] %-30s %lldms\n", "wallet_load",
-           (long long)(boot_clock_ms() - t_phase));
-
-    boot_step_start_maintenance_services();
-
-    /* Pre-flight: check for stale lock files from crashed processes */
-    {
-        char lock_path[1024];
-
-        /* Check LevelDB locks */
-        snprintf(lock_path, sizeof(lock_path), "%s/blocks/index/LOCK",
-                 ctx->datadir);
-        if (access(lock_path, F_OK) == 0) {
-            /* LevelDB LOCK exists — check if holder is still alive */
-            FILE *lf = fopen(lock_path, "r");
-            if (lf) {
-                char pidbuf[32] = {0};
-                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
-                fclose(lf);
-                if (nr > 0) {
-                    long pid = strtol(pidbuf, NULL, 10);
-                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
-                        printf("Removing stale LevelDB LOCK (pid %ld dead)\n",
-                               pid);
-                        unlink(lock_path);
-                    } else if (pid > 0) {
-                        fprintf(stderr,
-                            "ERROR: LevelDB locked by pid %ld (still running)\n"
-                            "Kill the other process or use a different datadir.\n",
-                            pid);
-                    }
-                }
-            }
-        }
-        snprintf(lock_path, sizeof(lock_path), "%s/chainstate/LOCK",
-                 ctx->datadir);
-        if (access(lock_path, F_OK) == 0) {
-            FILE *lf = fopen(lock_path, "r");
-            if (lf) {
-                char pidbuf[32] = {0};
-                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
-                fclose(lf);
-                if (nr > 0) {
-                    long pid = strtol(pidbuf, NULL, 10);
-                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
-                        printf("Removing stale chainstate LOCK (pid %ld dead)\n",
-                               pid);
-                        unlink(lock_path);
-                    }
-                }
-            }
-        }
-
-        /* Check SQLite WAL lock — WAL mode handles this via busy_timeout,
-         * but a crash can leave a -wal file. SQLite recovers automatically. */
-        snprintf(lock_path, sizeof(lock_path), "%s/node.db-wal",
-                 ctx->datadir);
-        if (access(lock_path, F_OK) == 0)
-            printf("SQLite WAL file exists (normal after crash recovery)\n");
-    }
-
-    /* Open SQLite node database */
-    t_phase = boot_clock_ms();
-    if (node_db_sync_init(&g_node_db, ctx->datadir)) {
-        int migrate_rc = node_db_migrate(&g_node_db, ctx->datadir);
-        if (migrate_rc == -2) {
-            /* Schema downgrade refused — node_db_migrate has already
-             * printed the operator-actionable explanation to stderr.
-             * Bail before any wallet / chain logic runs so we don't
-             * write through a schema we don't understand. */
-            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-                        "node_db_schema_downgrade_refused rc=%d", migrate_rc);
-            exit(1);
-        }
-        process_block_set_node_db(&g_node_db);
-        if (!db_service_is_started(&g_db_service)) {
-            if (!boot_step_start_db_service()) {
-                fprintf(stderr,
-                    "Warning: DB service unavailable during boot; "
-                    "activation metadata writes will use direct SQLite\n");
-            }
-        }
-        boot_stage_advance_to(BOOT_STAGE_DB_OPEN);
-        int db_tip = node_db_sync_get_tip_height(&g_node_db);
-        if (db_tip >= 0) {
-            printf("SQLite tip: height=%d\n", db_tip);
-            event_emitf(EV_BOOT_DB_OPEN, 0, "schema=%d tip=%d",
-                        node_db_schema_version(&g_node_db), db_tip);
-        }
-    } else {
-        fprintf(stderr, "Warning: SQLite database unavailable\n");
-        event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
-                    ctx->datadir);
-    }
-    printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
 
     /* Open the dedicated progress.kv SQLite file that hosts every staged-sync

@@ -20,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* Minimal schema mirroring the production tables wallet_sqlite.c
  * prepares statements against.  wallet_watch_only is included —
@@ -367,9 +370,93 @@ static int test_health_snapshot_without_open(void)
     return failures;
 }
 
+/* Locate <root>/config/src/boot.c by walking up from the test binary
+ * (<root>/build/bin/<name>) until a directory holding both the Makefile
+ * and config/src/boot.c appears. Returns a malloc'd file buffer (caller
+ * frees) or NULL if not found — in which case the test SKIPs rather than
+ * failing, so a standalone test_zcl built outside the repo tree still
+ * passes. */
+static char *read_boot_c(void)
+{
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0 || n >= (ssize_t)sizeof(exe) - 1)
+        return NULL;
+    exe[n] = '\0';
+
+    char boot_path[PATH_MAX] = {0};
+    for (int depth = 0; depth < 6; depth++) {
+        char *slash = strrchr(exe, '/');
+        if (!slash || slash == exe) break;
+        *slash = '\0';
+
+        char probe[PATH_MAX];
+        struct stat st;
+        if (snprintf(probe, sizeof(probe), "%s/Makefile", exe)
+                >= (int)sizeof(probe))
+            break;
+        if (stat(probe, &st) != 0) continue;
+        if (snprintf(probe, sizeof(probe), "%s/config/src/boot.c", exe)
+                >= (int)sizeof(probe))
+            break;
+        if (stat(probe, &st) != 0) continue;
+        snprintf(boot_path, sizeof(boot_path), "%s", probe);
+        break;
+    }
+    if (!boot_path[0]) return NULL;
+
+    FILE *f = fopen(boot_path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return NULL; }
+    rewind(f);
+    char *buf = zcl_malloc((size_t)sz + 1, "boot.c");
+    if (!buf) { fclose(f); return NULL; }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[rd] = '\0';
+    return buf;
+}
+
+/* Regression for the wallet-persistence boot-ordering bug: the wallet
+ * load/open block MUST run AFTER node.db is opened, otherwise
+ * g_node_db.open is false when wallet_sqlite_open_r is reached, the
+ * persistence layer never attaches, and every imported key / shielded
+ * note is RAM-only and vanishes on restart. We pin the ordering at the
+ * source level: in config/src/boot.c the node_db_sync_init(&g_node_db
+ * call must appear BEFORE the wallet block's wallet_sqlite_open_r(
+ * &g_wallet_sqlite call. */
+static int test_boot_opens_node_db_before_wallet(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: boot opens node.db before wallet_sqlite_open_r") {
+        char *src = read_boot_c();
+        if (!src) {
+            /* Not in a repo tree (standalone test_zcl) — skip, don't fail. */
+            PASS();
+            goto _test_next;
+        }
+
+        const char *db_open = strstr(src, "node_db_sync_init(&g_node_db");
+        const char *wallet_open =
+            strstr(src, "wallet_sqlite_open_r(&g_wallet_sqlite");
+
+        ASSERT(db_open != NULL);     /* the only node.db opener must exist */
+        ASSERT(wallet_open != NULL); /* the wallet attach must exist */
+        /* The opener must come first in the boot flow. */
+        ASSERT(db_open < wallet_open);
+
+        free(src);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_wallet_persistence_cycle(void)
 {
     int failures = 0;
+    failures += test_boot_opens_node_db_before_wallet();
     failures += test_open_empty_schema_ok();
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
