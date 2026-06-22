@@ -430,10 +430,27 @@ static enum csr_result csr_validate_header_locked(
         bool have_work = !arith_uint256_is_zero(&new_tip->nChainWork) &&
                          !arith_uint256_is_zero(&cur->nChainWork);
         if (have_work) {
+            int work_cmp = arith_uint256_compare(&new_tip->nChainWork,
+                                                 &cur->nChainWork);
             /* Strictly-less work is a regression; equal work keeps the
              * incumbent (no churn between equal-work tips). */
-            if (arith_uint256_compare(&new_tip->nChainWork,
-                                      &cur->nChainWork) < 0)
+            if (work_cmp < 0)
+                return CSR_REJECTED_HEADER_REGRESSION;
+            /* A strictly-greater-work tip always wins (it IS the new most-
+             * work header). But when the candidate does NOT strictly exceed
+             * the incumbent's work (work_cmp == 0 here, since < 0 already
+             * returned), a LOWER-height tip can never legitimately be the
+             * best header on the same most-work chain — admitting it would
+             * drag pindex_best_header (and therefore the active-chain window
+             * the header pipeline extends to) BACKWARD below heights already
+             * in the index, freezing header_admit/validate_headers. This is
+             * the regression that lets an inbound msg_headers batch whose
+             * pindex_last lands below the current tip clobber best_header
+             * downward. Bitcoin Core's pindexBestHeader is never moved
+             * backward by an incoming headers batch; mirror that here.
+             * A legitimate authorized reorg still rewinds via the
+             * rollback_auth escape (checked at the top of this block). */
+            if (work_cmp == 0 && new_tip->nHeight < cur->nHeight)
                 return CSR_REJECTED_HEADER_REGRESSION;
         } else if (new_tip->nHeight < cur->nHeight) {
             return CSR_REJECTED_HEADER_REGRESSION;

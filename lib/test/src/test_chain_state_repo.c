@@ -705,6 +705,76 @@ static int t_header_zero_work_falls_back_to_height(void)
     return failures;
 }
 
+/* Live regression (datadir ~/.zclassic-c23, pid 3591607): an inbound
+ * msg_headers batch whose pindex_last lands BELOW the current best
+ * header — but carries non-zero cumulative work that is NOT strictly
+ * less than the incumbent's — was committing best_header DOWNWARD. That
+ * dragged the active-chain window (which the header pipeline extends only
+ * up to pindex_best_header) back below heights already in the index,
+ * freezing header_admit/validate_headers at seed_h+1 while peers
+ * advertised the real tip ~3,349 blocks higher. The guard must reject a
+ * strictly-LOWER-height tip whenever its work does not strictly exceed
+ * the incumbent (here: equal work), so best_header stays monotonic
+ * non-decreasing on the network path. A legitimate authorized reorg
+ * still rewinds via rollback_auth. */
+static int t_header_equal_work_lower_height_rejected(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+
+    /* low/high on the SAME most-work chain: equal cumulative work, high
+     * is taller. (Stamping equal work models the real failure: the
+     * inbound low-height pindex_last carried non-zero work that did not
+     * trip the strict-less-work test.) */
+    struct block_index *low  = csr_fix_add(&f, 0x60);
+    struct block_index *high = csr_fix_add(&f, 0x61);
+    arith_uint256_set_u64(&low->nChainWork, 1000);
+    arith_uint256_set_u64(&high->nChainWork, 1000);
+    high->nHeight = low->nHeight + 1;
+
+    /* Promote the high (real) header tip. */
+    struct chain_state_header_commit ch = {
+        .new_header_tip = high, .rollback_auth = NULL,
+        .reason = "unit.equalwork_high",
+    };
+    bool ok = csr_commit_header_tip(&csr, &ch) == CSR_OK &&
+              f.header_tip == high;
+
+    /* The lower-height, equal-work tip (the inbound low batch) MUST be
+     * rejected — best_header must NOT regress. This is the exact bug:
+     * before the fix it slipped through (work not strictly-less), pulling
+     * best_header down and freezing the header pipeline. */
+    struct chain_state_header_commit cl = {
+        .new_header_tip = low, .rollback_auth = NULL,
+        .reason = "unit.equalwork_low",
+    };
+    ok = ok && csr_commit_header_tip(&csr, &cl) ==
+         CSR_REJECTED_HEADER_REGRESSION &&
+         f.header_tip == high;
+
+    /* A typed authorized reorg can still rewind to the lower header. */
+    struct chain_state_rollback_authorization auth = {
+        .source = CSR_ROLLBACK_SOURCE_TEST,
+        .decision = POLICY_ALLOW,
+        .from_height = high->nHeight,
+        .to_height = low->nHeight,
+        .max_depth = 10,
+        .evidence_class = "unit_test_equalwork",
+        .reason = "authorized_equalwork_rewind",
+    };
+    cl.rollback_auth = &auth;
+    ok = ok && csr_commit_header_tip(&csr, &cl) == CSR_OK &&
+         f.header_tip == low;
+
+    CSR_RUN("csr: equal-work lower-height header tip rejected "
+            "(no backward best_header)", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
 static int t_clear_active_tip_requires_typed_auth(void)
 {
     int failures = 0;
@@ -1424,6 +1494,7 @@ int test_chain_state_repo(void)
     failures += t_header_commit_api_gates_regression();
     failures += t_header_chainwork_ranked();
     failures += t_header_zero_work_falls_back_to_height();
+    failures += t_header_equal_work_lower_height_rejected();
     failures += t_clear_active_tip_requires_typed_auth();
     failures += t_extend_chain();
     failures += t_sql_stale_index();

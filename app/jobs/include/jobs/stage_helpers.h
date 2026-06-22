@@ -96,7 +96,7 @@ static inline bool stage_default_block_reader(struct block *out,
  * in effect (injected==NULL). A test-injected reader bypasses the cache so the
  * staged-pipeline fake readers keep exact control. The cache hands back a
  * COMPLETE deep clone (block_serialize<->block_deserialize round-trip), so the
- * `out` block every stage receives is byte-identical to a fresh
+ * `out` block every stage receives is exactly equal to a fresh
  * stage_default_block_reader read and is owned by the caller (block_free as
  * before). Same true/false success contract as stage_default_block_reader. */
 static inline bool stage_read_block(struct block *out,
