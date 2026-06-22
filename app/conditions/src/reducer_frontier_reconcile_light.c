@@ -441,10 +441,29 @@ static bool detect_reducer_frontier_reconcile_light(void)
         if (db) {
             int ua = -1;
             if (read_reducer_cursor(db, "utxo_apply", &ua) && ua >= 0) {
-                if (refold_from_anchor_active())
+                if (refold_from_anchor_active()) {
+                    /* CUTOVER DEFECT 1 — the from-anchor resume target is
+                     * captured ONCE at boot, but the chain advances during a
+                     * multi-hour fold. Re-write the durable target to
+                     * MAX(stored, live tip) BEFORE the clear so the clear edge
+                     * keys on the CURRENT tip, not the frozen boot height —
+                     * otherwise utxo_apply crossing the stale boot target
+                     * un-suspends below-anchor self-repair while the fold is
+                     * still climbing to the real tip (the re-wedge surface).
+                     * Touches ONLY progress.kv — no csr->lock, no evidence
+                     * machinery (lock-order-safe on the reducer-drive path). */
+                    struct main_state *ms = sync_monitor_main_state();
+                    if (ms) {
+                        int live_tip =
+                            active_chain_height(&ms->chain_active);
+                        if (live_tip >= 0)
+                            (void)refold_progress_bump_target(
+                                db, (int32_t)live_tip);
+                    }
                     (void)refold_progress_clear_if_reached(db, (int32_t)ua, -1);
-                else
+                } else {
                     (void)refold_progress_clear_if_crossed(db, (int32_t)ua);
+                }
             }
         }
         if (refold_in_progress())

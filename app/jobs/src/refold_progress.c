@@ -227,6 +227,47 @@ bool refold_progress_clear_if_reached(sqlite3 *db, int32_t utxo_apply_cursor,
     return true;
 }
 
+bool refold_progress_bump_target(sqlite3 *db, int32_t live_tip)
+{
+    if (!db)
+        LOG_FAIL("refold", "bump_target: NULL db");
+
+    /* Cheap pre-check off the cache: only a from-anchor refold has a target. */
+    if (!atomic_load(&g_refold_from_anchor))
+        return true;
+    if (live_tip < 0)
+        return true;  /* nothing meaningful to raise to */
+
+    progress_store_tx_lock();
+    /* Read the durable target; absent => from-anchor refold not actually armed
+     * on disk (cache stale from a crash window) — leave it alone. */
+    uint8_t tbuf[4] = {0};
+    size_t tn = 0;
+    bool tfound = false;
+    bool ok = progress_meta_get(db, REFOLD_FROM_ANCHOR_TARGET_KEY,
+                                tbuf, sizeof(tbuf), &tn, &tfound);
+    if (ok && tfound && tn == 4) {
+        int32_t stored = (int32_t)((uint32_t)tbuf[0] | ((uint32_t)tbuf[1] << 8) |
+                                   ((uint32_t)tbuf[2] << 16) |
+                                   ((uint32_t)tbuf[3] << 24));
+        /* NEVER lower the target — only raise it to a higher live tip. */
+        if (live_tip > stored) {
+            uint8_t nbuf[4] = {
+                (uint8_t)(live_tip & 0xff),
+                (uint8_t)((live_tip >> 8) & 0xff),
+                (uint8_t)((live_tip >> 16) & 0xff),
+                (uint8_t)((live_tip >> 24) & 0xff),
+            };
+            ok = progress_meta_set(db, REFOLD_FROM_ANCHOR_TARGET_KEY,
+                                   nbuf, sizeof(nbuf));
+        }
+    }
+    progress_store_tx_unlock();
+    if (!ok)
+        LOG_FAIL("refold", "bump_target: progress_meta read/write failed");
+    return true;
+}
+
 /* ── zcl_state introspection ────────────────────────────────────────────────
  *
  * See CLAUDE.md "Adding state introspection". Read-only: this dumper observes

@@ -190,7 +190,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(waitforheight_provable) \
-    X(refold_progress_floor) \
+    X(refold_progress_floor) X(refold_premature_clear) \
     X(refold_from_anchor_fatal) X(refold_auto_arm) X(anchor_selfmint) \
     X(loader_owns_seed_gate) \
     X(refold_retro_validate) X(refold_body_span_contiguous) \

@@ -106,6 +106,19 @@ bool refold_progress_mark_started_from_anchor(sqlite3 *db, int32_t resume_target
 bool refold_progress_clear_if_reached(sqlite3 *db, int32_t utxo_apply_cursor,
                                       int32_t target);
 
+/* CUTOVER DEFECT 1 fix — raise the durable from-anchor resume target to
+ * MAX(stored, `live_tip`). The resume target is captured ONCE at boot (the
+ * active-chain tip then), but the chain advances during a multi-hour fold, so
+ * the stale boot target sits BELOW the true tip. The off-the-drive reconcile
+ * tick calls this each tick with the LIVE active_chain_height BEFORE
+ * refold_progress_clear_if_reached, so the clear edge keys on the CURRENT tip
+ * and never fires while the fold is still climbing to it. NEVER lowers the
+ * target (a brief reorg-rollback read must not drop the fold ceiling) and is a
+ * no-op when no from-anchor refold is armed. Returns false on a DB read/write
+ * error. Touches ONLY progress.kv — takes no csr->lock and runs no evidence
+ * machinery, so it is safe on the reducer-drive-adjacent reconcile path. */
+bool refold_progress_bump_target(sqlite3 *db, int32_t live_tip);
+
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 struct json_value;
 bool refold_progress_dump_state_json(struct json_value *out, const char *key);
