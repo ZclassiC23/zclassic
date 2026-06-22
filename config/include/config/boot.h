@@ -236,6 +236,18 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
                                             struct main_state *ms);
 
+/* FIX 3 seam — PURE consensus cross-check for the forged-snapshot FATAL inside
+ * boot_load_snapshot_at_own_height_reset. The loaded snapshot's
+ * hdr.anchor_block_hash MUST byte-equal this node's PoW-proven header hash at
+ * the snapshot height; on mismatch the loader FATALs (refuses a forged /
+ * wrong-chain snapshot) rather than seeding contaminated coins. Both inputs are
+ * 32 raw bytes (internal little-endian). Returns true iff the snapshot is
+ * consensus-bound to this chain (the two hashes are byte-identical). NULL on
+ * either side is treated as a non-match (refuse). Behavior-identical to the
+ * inline `memcmp(bi->hashBlock.data, hdr.anchor_block_hash, 32) == 0`. */
+bool boot_snapshot_anchor_hash_matches(const unsigned char *index_block_hash,
+                                       const unsigned char *snapshot_anchor_hash);
+
 /* -mint-anchor (impl in config/src/boot_refold_staged.c): the ANCHOR-SET MINT
  * boot-time reset. Resets the staged reducer to GENESIS (delegates to
  * boot_refold_staged_reset) AND caps the fold at the compiled SHA3 UTXO

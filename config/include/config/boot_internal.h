@@ -205,6 +205,19 @@ bool boot_profile_has_explorer(const struct app_context *ctx);
 bool boot_profile_has_store(const struct app_context *ctx);
 bool boot_profile_has_onion(const struct app_context *ctx);
 
+/* FIX 1 (loader_owns_seed) — PURE seam for the daily-driver seed-clobber guard
+ * at app_init_services (boot_services.c). When -load-snapshot-at-own-height is
+ * set the loader at boot.c ALREADY re-seeded coins_kv from the self-verified
+ * snapshot at its OWN height, forced the 8 stage cursors there, and raised the
+ * tip_finalize trusted base; it is the authoritative seed for this boot. Both
+ * fallback seeders (boot_refold_from_anchor_arm_if_torn AND
+ * block_index_loader_seed_stages_from_cold_import) would CLOBBER it — dropping
+ * the trusted base back to the compiled checkpoint and re-wedging forward sync.
+ * Returns true iff this boot must SKIP both fallbacks (ctx non-NULL AND
+ * ctx->load_snapshot_at_own_height != NULL). Behavior-identical to the inline
+ * `svc->app_ctx && svc->app_ctx->load_snapshot_at_own_height != NULL`. */
+bool boot_loader_owns_seed(const struct app_context *ctx);
+
 /* Point explorer + API-cache RPC backends at the local JSON-RPC endpoint.
  * Called by the frontend api_cache / https_explorer starts and once directly
  * from app_init_services (boot_services.c). */

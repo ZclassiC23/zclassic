@@ -488,6 +488,16 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
  *
  * GATED: only called when ctx->load_snapshot_at_own_height is non-NULL (an
  * operator-supplied path); a normal boot never reaches it. */
+
+/* FIX 3 seam (see boot.h). PURE: no side effects. */
+bool boot_snapshot_anchor_hash_matches(const unsigned char *index_block_hash,
+                                       const unsigned char *snapshot_anchor_hash)
+{
+    if (!index_block_hash || !snapshot_anchor_hash)
+        return false;
+    return memcmp(index_block_hash, snapshot_anchor_hash, 32) == 0;
+}
+
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
                                             struct main_state *ms)
@@ -552,7 +562,8 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
             uss_close(h);
             _exit(EXIT_FAILURE);
         }
-        if (memcmp(bi->hashBlock.data, hdr.anchor_block_hash, 32) != 0) {
+        if (!boot_snapshot_anchor_hash_matches(bi->hashBlock.data,
+                                               hdr.anchor_block_hash)) {
             fprintf(stderr,
                     "FATAL: -load-snapshot-at-own-height: snapshot anchor hash "
                     "DOES NOT MATCH this node's PoW-proven header at h=%d — the "

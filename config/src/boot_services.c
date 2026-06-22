@@ -204,6 +204,12 @@ bool boot_profile_has_onion(const struct app_context *ctx)
                                                 ctx->tor);
 }
 
+/* FIX 1 seam (see boot_internal.h). PURE: no side effects. */
+bool boot_loader_owns_seed(const struct app_context *ctx)
+{
+    return ctx && ctx->load_snapshot_at_own_height != NULL;
+}
+
 bool boot_profile_has_file_service(const struct app_context *ctx)
 {
     if (!ctx)
@@ -1509,8 +1515,7 @@ bool app_init_services(struct app_context *ctx,
          *     re-stamp the cursors forward off the loader's seed_h.
          * So when the loader flag is set for this boot, skip BOTH — the loader
          * owns the seed and the staged pipeline folds forward from seed_h. */
-        bool loader_owns_seed = svc->app_ctx &&
-            svc->app_ctx->load_snapshot_at_own_height != NULL;
+        bool loader_owns_seed = boot_loader_owns_seed(svc->app_ctx);
         bool armed_from_anchor =
             loader_owns_seed ||                      /* loader at boot.c re-seeded + armed the stages */
             refold_from_anchor_active() ||           /* already armed: flag / load-verify / mid-fold */
