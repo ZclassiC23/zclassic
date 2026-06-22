@@ -253,7 +253,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(replay_canary_verdict) \
     X(canary_sentinel_watch) X(seed_torn_import_gate) \
     X(shielded_spend_slice) X(atomic_commit_ordering) \
-    X(coldimport_restart_fragility)
+    X(coldimport_restart_fragility) \
+    X(block_parse_cache)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \
