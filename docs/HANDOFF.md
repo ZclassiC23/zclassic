@@ -1,3 +1,10 @@
+> ## CURRENT STATE (2026-06-22)
+> Node is HARD-WEDGED at blocks=3,156,170 (headers ~3,156,491, peers mining ahead) —
+> this is borrowed-seed INCOMPLETENESS, NOT slow sync. A RESTART re-seeds the same
+> incomplete snapshot and re-wedges at the same height (restart does NOT recover).
+> Cure = mint a SHA3-verified anchor at h=3,056,758 → `-refold-from-anchor` cutover →
+> DELETE the borrowed loader. See **docs/work/FUTURE-CLAUDE-FIX-THIS.md** (canonical).
+
 # HANDOFF — read this first
 
 **Restart command:** type **`continue zclassic23 development`**.
