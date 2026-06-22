@@ -383,6 +383,7 @@ add/remove a gate.
 - `check-stage-advances-or-blocks`
 - `check-supervisor-domain`
 - `check-supervisor-registration`
+- `check-test-registration`
 - `check-typed-blocker`
 - `check-doc-no-false-deleted`
 - `check-stage-log-reorg-unsafe`
