@@ -1709,8 +1709,11 @@ check-silent-errors-conditions:
 check-before-save-hooks:
 	@echo "══ LINT: critical models wire before_save hooks ══"
 	@for model in utxo block wallet_key wallet_tx; do \
-	    grep -q 'before_save' app/models/src/$$model.c \
-	    || (echo "FAIL: app/models/src/$$model.c missing before_save hook" && exit 1); \
+	    f=app/models/src/$$model.c; \
+	    test -f "$$f" \
+	    || { echo "FAIL: $$f missing (model file moved/renamed)"; exit 1; }; \
+	    grep -qE 'ar_register_before_save[[:space:]]*\(' "$$f" \
+	    || { echo "FAIL: $$f does not WIRE a before_save hook (no ar_register_before_save(...) call; a bare 'before_save' comment does not count)"; exit 1; }; \
 	done
 	@echo "  OK: critical models have before_save hooks"
 

@@ -32,8 +32,25 @@ done < "$BASELINE"
 
 pattern='active_chain_set_tip[[:space:]]*\(|coins_view_sqlite_batch_write(_ex)?[[:space:]]*\(|coins_view_cache_flush[[:space:]]*\(|utxo_projection_set_author[[:space:]]*\(|process_new_block[[:space:]]*\(|connect_tip[[:space:]]*\(|disconnect_tip[[:space:]]*\('
 
+# Fail-loud preflight: the scan set MUST be non-empty. If find silently
+# produces nothing (a moved/renamed core dir), the loop runs zero times,
+# `violations` stays empty, and the gate would print "clean" exit 0 — a
+# hollow pass. Assert a known floor instead.
+mapfile -t scan_files < <(find app domain lib config tools -type f \( -name '*.c' -o -name '*.h' \) \
+    ! -path '*/test/*' \
+    ! -path 'tools/scripts/*' \
+    ! -path 'tools/lint/*' \
+    | sort)
+SCAN_FLOOR=200
+if [ "${#scan_files[@]}" -lt "$SCAN_FLOOR" ]; then
+    echo "check_one_write_path: FATAL — scan set is ${#scan_files[@]} files (< floor $SCAN_FLOOR)." >&2
+    echo "  The find roots (app domain lib config tools) produced too few files;" >&2
+    echo "  a core dir was likely renamed/moved. Refusing to pass hollow." >&2
+    exit 2
+fi
+
 violations=()
-while IFS= read -r f; do
+for f in "${scan_files[@]}"; do
     while IFS= read -r match; do
         key=$(printf '%s:%s\n' "$f" "$match" | sed -E 's/[[:space:]]+/ /g')
         line_content="${key#*:}"
@@ -50,11 +67,7 @@ while IFS= read -r f; do
         fi
         violations+=("$key")
     done < <(grep -nE "$pattern" "$f" || true)
-done < <(find app lib config tools -type f \( -name '*.c' -o -name '*.h' \) \
-    ! -path '*/test/*' \
-    ! -path 'tools/scripts/*' \
-    ! -path 'tools/lint/*' \
-    | sort)
+done
 
 if [ "${#violations[@]}" -eq 0 ]; then
     echo "check_one_write_path: clean — $baseline_count grandfathered write surface(s), no new ones"

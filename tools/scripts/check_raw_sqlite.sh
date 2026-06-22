@@ -54,7 +54,20 @@ if [[ -f "$ALLOWLIST" ]]; then
     done < "$ALLOWLIST"
 fi
 
-raw_hits=$(grep -rn 'sqlite3_step\s*(' app/ tools/ lib/ --include='*.c' 2>/dev/null \
+# Fail-loud grep: a grep exit >=2 is a REAL ERROR (bad pattern, unreadable
+# tree, non-GNU grep rejecting the syntax). The old form swallowed it with
+# `2>/dev/null ... || true`, so the producer silently emptied and the gate
+# passed "clean" exit 0 over zero scanned hits. Capture the first grep's
+# exit explicitly: 0=hits, 1=no-hits (fine), >=2=fatal.
+raw_scan=$(grep -rn 'sqlite3_step[[:space:]]*(' app/ tools/ lib/ --include='*.c')
+grep_rc=$?
+if [[ $grep_rc -ge 2 ]]; then
+    echo "check_raw_sqlite: FATAL — grep exited $grep_rc scanning app/ tools/ lib/." >&2
+    echo "  This is a real error (bad pattern / unreadable tree / non-GNU grep)," >&2
+    echo "  not 'no matches'. Refusing to pass hollow." >&2
+    exit 2
+fi
+raw_hits=$(printf '%s\n' "$raw_scan" \
     | grep -v 'vendor/\|/test/\|AR_STEP_ROW\|AR_STEP_DONE\|AR_STEP_ROW_READONLY\|AR_STEP_WRITE\|safe_alloc\|".*sqlite3_step' \
     | grep -vE '// raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+' \
     || true)
