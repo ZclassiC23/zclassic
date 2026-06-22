@@ -43,6 +43,19 @@ Five proven, consensus-audited fixes make up the consolidated binary:
    `coins_kv` batch apply. Proven **bit-identical**
    (`test_reducer_forward_progress_gate`).
 
+**Resilience posture (red-team verdict 2026-06-22, `docs/work/recovery-selfheal-redteam-2026-06-21.md`):**
+the deployed config self-heals UNATTENDED from **3 of 4** corruption classes —
+chainstate-corruption (→ `-reindex-chainstate`, confirmed live ~390 blk/s),
+kill-9 mid-fold (durable per-block SQLite txn, recovers to tip bit-identical —
+but SLOW ~16 min because every boot re-replays the Sapling tree), and
+supervisor restart (`Restart=always`, never burns out). A missing/forged anchor
+snapshot DECLINES honestly (`operator_needed`, never serves wrong data). cgroup-OOM
+is PROVEN survivable (a runaway hits its own cgroup cap, the box survives, the node
+restarts). **Two P1 gaps remain:** (a) a corrupted `coins_kv`/`progress.kv`
+authority store CRASH-LOOPS under the loader flag (FATALs each boot instead of
+dropping+reseeding); (b) recovery is slow (Sapling replay every boot — should
+persist + load a cached tree). See backlog P1-6/P1-7.
+
 **Validation posture:** the staged forward-fold `proof_validate` (shielded-proof
 verification on the fold) is **NOT** gated by `-nobgvalidation`. `-nobgvalidation`
 only skips the from-genesis re-verify of borrowed history (the RAM-heavy
@@ -116,9 +129,11 @@ sound source; the fold-speedup work targets making it tractable.
 | **P0-3** | Sovereign cutover (gated on P0-2): refold-from-anchor on a copy → gate on H\* climb → live cutover → retroactively validate the near-tip snapshot. Re-wedge guard: clamp the resume target to the on-disk body ceiling, not active_chain_height | designed |
 | **P1-1** | Sapling caveats: `sapling_tree_rebuild` logs a root MISMATCH but does NOT fail; the resume path accepts an unverified checkpoint when `hashFinalSaplingRoot==0` at a 100k boundary | in flight |
 | **P1-2** | Boot-reindex always-terminates gap: a clean/reconcilable mid-replay reindex failure can loop without advancing the budget | in flight |
-| **P1-3** | OOM durable guard: add a lint/runtime check that the systemd `MemoryMax` cap-sum < physical RAM (a global OOM once killed every node) | owner-sudo staged |
+| **P1-3** | OOM durable guard: add a lint/runtime check that the systemd `MemoryMax` cap-sum < physical RAM (a global OOM once killed every node). **Cap re-budget (108G→60G) is APPLIED without root** via user-cgroup drop-ins + linger; only the optional swappiness + negative `oom_score_adj` would need sudo and are not load-bearing. Remaining = the lint/runtime guard so a future cap edit can't re-exceed RAM | guard open (cap fix live, no sudo) |
 | **P1-4** | Persistent .onion + onion-seed `/directory.json` discovery (the .onion regenerates every boot) | in flight |
-| **P1-5** | Cold-start <10min (MVP C3): the single-binary snapshot import sets `coins_best_block` but does NOT seed `coins_kv`/`coins_applied_height`, so a snapshot cold-boot stalls (reducer L1 refuses) | in flight |
+| **P1-5** | Cold-start <10min (MVP C3): the single-binary snapshot import sets `coins_best_block` but does NOT seed `coins_kv`/`coins_applied_height`, so a snapshot cold-boot stalls (reducer L1 refuses). Banked partial C3: coins_kv seed works but needs header/block-index seeding too | in flight |
+| **P1-6** | Corrupted-authority crash-loop: a torn `coins_kv`/`progress.kv` authority store FATALs each boot under the loader flag instead of dropping+reseeding (red-team gap) | open |
+| **P1-7** | Slow recovery: every boot re-replays the Sapling note-commitment tree (~16 min). Persist + load a cached Sapling tree so a clean restart doesn't pay the full replay | open |
 | **P2-1** | MVP gate (CLAUDE.md #1 priority) — live scorer `tools/mvp_gate.sh`; hermetic `make ci-mvp-gates` / `make mvp-verify` | open |
 | **P2-2** | File market end-to-end (MVP C5) — `zmarket_buy` parks; `root_hash` is a `path:size` placeholder; remove the `zs1_pay_<time>` placeholder in `zslp_service.c` | open |
 | **P2-3** | The permanent subtraction (~715 LOC): once a verified anchor is guaranteed reachable on every cold-start, make `-refold-from-anchor` the DEFAULT and delete the borrowed-seed machinery. Re-derive the delete-set from the CURRENT tree. KEEP the 5 legit `tip_finalize_stage_seed_anchor` callers. Parity-safe | gated on P0-2/P0-3 |
