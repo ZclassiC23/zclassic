@@ -43,6 +43,14 @@
 
 #define STAGE_NAME "utxo_apply"
 
+/* Fold-progress heartbeat cadence (Task A — mint/catch-up observability). One
+ * LOG_INFO every UA_PROGRESS_LOG_EVERY applied heights so a from-genesis fold
+ * (the mint, whose own log is ~88% schema-version spam) and the daily catch-up
+ * are MEASURABLE — ETA + termination become observable from node.log alone.
+ * Log-only: never touches consensus/fold behavior, O(1) per block (guarded by
+ * height % N == 0). */
+#define UA_PROGRESS_LOG_EVERY 10000
+
 /* struct proof_validate_row + the utxo_apply_log schema/read/write helpers
  * live in utxo_apply_log_store.c (pure sqlite kernel helpers below the AR
  * layer); the delta structs, free_delta(_arr), the block-delta builder
@@ -154,6 +162,16 @@ static struct { int64_t h; uint64_t reps; int64_t last_log; }
 /* label_splice WARN memo — same shape/contract as g_upstream_hole_warn. */
 static struct { int64_t h; uint64_t reps; int64_t last_log; }
     g_label_splice_warn = { .h = -1 };
+
+/* Fold-progress heartbeat memo (Task A). Touched ONLY by the single-threaded
+ * step_apply path, so it needs no lock. first_h/first_unix anchor the rate
+ * estimate to the first successful apply THIS process (so a daily catch-up that
+ * resumes high still reports a meaningful blocks/sec over its own run, not a
+ * since-genesis average). last_logged_h dedups the heartbeat to one line per
+ * UA_PROGRESS_LOG_EVERY boundary even if the same boundary is re-reached after
+ * a reorg rewind. */
+static struct { int64_t first_h; int64_t first_unix; int64_t last_logged_h; }
+    g_ua_progress = { .first_h = -1, .first_unix = 0, .last_logged_h = -1 };
 
 /* tipfin_warn_throttled shape (tip_finalize_stage.c:78): emit on a height
  * TRANSITION (first occurrence never suppressed) or as a 300 s keep-alive
@@ -591,6 +609,32 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     reject_memo_clear();
     c->cursor_out = next_cursor;
 
+    /* Fold-progress heartbeat (Task A — log-only, O(1), no consensus effect).
+     * Anchor the rate estimate to the first apply this process, then emit ONE
+     * LOG_INFO per UA_PROGRESS_LOG_EVERY-height boundary. coins_applied_height
+     * (next_cursor == applied-through) is the canonical fold frontier. */
+    {
+        int64_t now = platform_time_wall_unix();
+        if (g_ua_progress.first_h < 0) {
+            g_ua_progress.first_h = (int64_t)next_h;
+            g_ua_progress.first_unix = now;
+        }
+        if ((next_h % UA_PROGRESS_LOG_EVERY) == 0 &&
+            g_ua_progress.last_logged_h != (int64_t)next_h) {
+            g_ua_progress.last_logged_h = (int64_t)next_h;
+            int64_t elapsed = now - g_ua_progress.first_unix;
+            int64_t done = (int64_t)next_h - g_ua_progress.first_h;
+            double rate = (elapsed > 0 && done > 0)
+                          ? (double)done / (double)elapsed : 0.0;
+            LOG_INFO(STAGE_NAME,
+                     "[utxo_apply] fold progress: applied_height=%d "
+                     "(coins_applied_height=%lld, base_this_run=%lld) "
+                     "rate=%.1f blocks/s",
+                     next_h, (long long)next_cursor,
+                     (long long)g_ua_progress.first_h, rate);
+        }
+    }
+
     /* REPLAY GATE coverage accounting (no-op unless ZCL_REPLAY_COUNT_ONLY):
      * count every successfully-applied block toward blocks_replayed so the
      * contiguity check (blocks_replayed == tip+1) can detect a sparse / non
@@ -846,6 +890,9 @@ void utxo_apply_stage_shutdown(void)
     g_label_splice_warn.h = -1;
     g_label_splice_warn.reps = 0;
     g_label_splice_warn.last_log = 0;
+    g_ua_progress.first_h = -1;
+    g_ua_progress.first_unix = 0;
+    g_ua_progress.last_logged_h = -1;
     reject_memo_clear();
     pthread_mutex_unlock(&g_lock);
 }

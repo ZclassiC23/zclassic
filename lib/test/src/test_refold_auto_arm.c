@@ -198,24 +198,33 @@ static bool raa_seed_torn_progress(sqlite3 *pk, const char *status_token,
 }
 
 /* A main_state whose active chain sits at the frontier (so detect's ceiling
- * raise covers the hole). */
+ * raise covers the hole). Installs a body-PRESENT (BLOCK_HAVE_DATA) slot at
+ * EVERY height in [RAA_CP_HEIGHT .. height] (ascending installs accumulate the
+ * lower slots), so the from-anchor body-span gate
+ * (boot_refold_body_span_contiguous, checked in arm_if_torn before the reset)
+ * sees a contiguous fold span (checkpoint, frontier] and does not decline the
+ * arm. Without the full span only the tip slot existed and the gate would
+ * correctly refuse on the first missing body at checkpoint+1. */
 static void raa_install_tip(struct main_state *ms, int height)
 {
-    struct uint256 tip_hash;
-    raa_hash_for(height, &tip_hash);
-    struct block_index *tip =
-        chainstate_insert_block_index((struct chainstate *)ms, &tip_hash);
-    if (!tip)
-        return;
-    tip->nHeight = height;
-    tip->nBits = 0x2000ffffu;
-    tip->nTime = 1700000000u + (uint32_t)height;
-    tip->nVersion = 4;
-    tip->nStatus = BLOCK_VALID_TREE;
-    tip->nTx = 0;
-    tip->nFile = -1;
-    tip->nDataPos = 0;
-    (void)active_chain_install_tip_slot(&ms->chain_active, tip);
+    for (int h = RAA_CP_HEIGHT; h <= height; h++) {
+        struct uint256 bh;
+        raa_hash_for(h, &bh);
+        struct block_index *bi =
+            chainstate_insert_block_index((struct chainstate *)ms, &bh);
+        if (!bi)
+            return;
+        bi->nHeight = h;
+        bi->nBits = 0x2000ffffu;
+        bi->nTime = 1700000000u + (uint32_t)h;
+        bi->nVersion = 4;
+        /* BLOCK_HAVE_DATA: the body is on disk for the span gate. */
+        bi->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        bi->nTx = 0;
+        bi->nFile = 0;
+        bi->nDataPos = 0;
+        (void)active_chain_install_tip_slot(&ms->chain_active, bi);
+    }
 }
 
 /* Build a MATCHING anchor snapshot at `snap_path` from a fresh coins_kv set in

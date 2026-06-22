@@ -8,6 +8,7 @@
 #define ZCL_INIT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 enum zcl_runtime_profile {
     ZCL_RUNTIME_FULL = 0,
@@ -294,6 +295,26 @@ struct sqlite3;
 bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
                                          struct node_db *ndb,
                                          struct sqlite3 *progress_db);
+
+/* CUTOVER DEFECT 2 — body-span contiguity gate (impl in
+ * config/src/boot_refold_staged.c). PURE precondition for the from-anchor fold:
+ * every block in (anchor_height, resume_target] must have its body present on
+ * disk (BLOCK_HAVE_DATA in the active-chain block_index) before the fold is
+ * armed. A pruned/missing body in that span would otherwise pin utxo_apply
+ * mid-fold at the missing height (the prevout_unresolved wedge, relocated).
+ *
+ * Returns true iff the WHOLE span is body-contiguous (or the span is empty,
+ * resume_target <= anchor_height). On the FIRST missing body it returns false,
+ * writes that height to *out_first_missing (when non-NULL), and — unless
+ * raise_blocker is false — raises the NAMED typed blocker "refold.body_gap"
+ * (BLOCKER_DEPENDENCY: the body-fetch path is the dependency that fills it), so
+ * the operator/peer-fetch path sees a named blocker, never a silent stall.
+ * ms==NULL → returns false (cannot prove contiguity without the chain). */
+bool boot_refold_body_span_contiguous(struct main_state *ms,
+                                      int32_t anchor_height,
+                                      int32_t resume_target,
+                                      int32_t *out_first_missing,
+                                      bool raise_blocker);
 
 /* -load-verify-boot eligibility probe (impl in config/src/boot_refold_staged.c).
  * Pure, side-effect-free predicate that decides whether a NORMAL boot should

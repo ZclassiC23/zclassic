@@ -36,6 +36,7 @@
 #include "chain/chain.h"                  /* struct block_index (hashBlock) */
 #include "controllers/sync_controller.h" /* sapling_tree_rebuild (re-seed tree) */
 #include "util/util.h"                   /* GetDataDir */
+#include "util/blocker.h"                 /* refold.body_gap named blocker */
 #include "util/log_macros.h"
 
 /* Declared in app/services/src/utxo_recovery_internal.h (src-private); forward
@@ -886,6 +887,63 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
     return true;
 }
 
+/* CUTOVER DEFECT 2 — body-span contiguity gate. See config/boot.h for the
+ * contract. PURE except for the optional named-blocker raise on a gap: it scans
+ * the active-chain block_index over (anchor_height, resume_target] and verifies
+ * each slot has BLOCK_HAVE_DATA. The from-anchor fold replays on-disk BODIES
+ * across this span; a missing/pruned body would pin utxo_apply at that height
+ * (the prevout_unresolved wedge relocated). Gate BEFORE arming so the failure is
+ * a NAMED blocker the operator/peer-fetch path can act on, never a silent stall. */
+bool boot_refold_body_span_contiguous(struct main_state *ms,
+                                      int32_t anchor_height,
+                                      int32_t resume_target,
+                                      int32_t *out_first_missing,
+                                      bool raise_blocker)
+{
+    if (out_first_missing)
+        *out_first_missing = -1;
+    if (!ms)
+        return false;   /* cannot prove contiguity without the chain */
+    if (resume_target <= anchor_height)
+        return true;    /* empty span — nothing to fold, trivially contiguous */
+
+    for (int32_t h = anchor_height + 1; h <= resume_target; h++) {
+        const struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+            if (out_first_missing)
+                *out_first_missing = h;
+            if (raise_blocker) {
+                char reason[BLOCKER_REASON_MAX];
+                snprintf(reason, sizeof(reason),
+                         "from-anchor fold span (%d..%d] has a missing/pruned "
+                         "block body at height=%d (%s); refusing to arm the "
+                         "fold — utxo_apply would pin here. ACTION: fetch the "
+                         "body (peer/disk) so the span is contiguous, then retry",
+                         anchor_height, resume_target, h,
+                         bi ? "BLOCK_HAVE_DATA clear" : "no block_index slot");
+                struct blocker_record r;
+                if (blocker_init(&r, "refold.body_gap", "boot",
+                                 BLOCKER_DEPENDENCY, reason)) {
+                    r.escape_deadline_secs = 0;   /* no auto-escape: needs a body */
+                    r.retry_budget = -1;
+                    (void)blocker_set(&r);
+                }
+                fprintf(stderr,
+                        "[boot] -refold-from-anchor: BODY-SPAN GAP at height=%d "
+                        "in (%d..%d] — NOT arming the fold; raised named blocker "
+                        "refold.body_gap (fill the body, then retry)\n",
+                        h, anchor_height, resume_target);
+            }
+            return false;
+        }
+    }
+    /* Whole span contiguous: clear any stale gap blocker from a prior boot so a
+     * re-armed fold over a now-filled span starts clean. */
+    if (raise_blocker)
+        blocker_clear("refold.body_gap");
+    return true;
+}
+
 /* B2 1c — the boot torn-import AUTO-ARM. Consults the PURE detect predicate
  * (block_index_loader_torn_import_detect — no side-effects) and, on a detected
  * tear, ARMS a from-anchor refold (reset 1a + mark 1b) so the node REPAIRS by
@@ -954,6 +1012,27 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
         return false;
     }
 
+    /* CUTOVER DEFECT 2 — body-span gate BEFORE arming. The from-anchor fold
+     * replays on-disk BODIES over (anchor, resume_target]; a missing/pruned body
+     * in that span pins utxo_apply mid-fold (the prevout_unresolved wedge,
+     * relocated to the gap height). Capture resume_target from the SAME
+     * active_chain_height read the post-reset mark uses, then verify every body
+     * is present. On a gap: raise the NAMED blocker refold.body_gap and DECLINE
+     * the arm (return false) so the caller defers to the normal seed path / a
+     * peer-fetch fills the body — never a silent stall mid-fold. */
+    int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
+    int32_t first_missing = -1;
+    if (!boot_refold_body_span_contiguous(ms, cp->height, resume_target,
+                                          &first_missing, /*raise_blocker=*/true)) {
+        LOG_WARN("boot", "[boot] from-anchor auto-arm: torn cold-import detected "
+                 "at h=%d (frontier=%d) but the fold span (%d..%d] has a missing "
+                 "block body at h=%d — DECLINING the auto-arm and raising "
+                 "refold.body_gap (would otherwise pin utxo_apply mid-fold)",
+                 (int)hole_h, (int)ceiling, (int)checkpoint, (int)resume_target,
+                 (int)first_missing);
+        return false;
+    }
+
     LOG_WARN("boot",
              "[boot] from-anchor auto-arm: torn cold-import detected (durable "
              "unresolved prevout at h=%d, frontier=%d) — arming a from-anchor "
@@ -968,7 +1047,6 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
      * above, so the reset takes the snapshot reseed path (never the node.db
      * fallback). */
     boot_refold_from_anchor_reset(ndb);
-    int32_t resume_target = (int32_t)active_chain_height(&ms->chain_active);
     (void)refold_progress_mark_started_from_anchor(progress_db, resume_target);
     return true;
 }
