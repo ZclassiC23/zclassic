@@ -233,9 +233,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
 
     struct block blk;
     block_init(&blk);
-    body_persist_reader_fn reader = g_reader ? g_reader
-                                             : stage_default_block_reader;
-    if (!reader(&blk, bi, g_datadir, g_reader_user)) {
+    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
         block_free(&blk);
         return requeue_body_for_refetch(bi, next_h, "read_failed",
                                         &g_read_failed_total);

@@ -112,6 +112,99 @@ bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
     return rc == SQLITE_DONE;
 }
 
+bool coins_kv_add_many(sqlite3 *db, const struct coins_kv_add_row *rows,
+                       size_t count)
+{
+    if (!db) return false;
+    if (count == 0) return true;
+    if (!rows) return false;
+
+    /* ONE stack-local prepared statement, reset+bind+step per row. Byte-
+     * identical SQL to coins_kv_add — only the prepare/finalize is hoisted out
+     * of the row loop. Stack-local (never module-static): no cross-thread
+     * cached-statement hazard (see the coins_kv.c header note). */
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO coins"
+        "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
+        -1, &s, NULL) != SQLITE_OK) {
+        LOG_FAIL("coins_kv", "add_many prepare failed: %s (ext=%d)",
+                 sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+        return false;
+    }
+
+    bool ok = true;
+    for (size_t i = 0; i < count; i++) {
+        const struct coins_kv_add_row *r = &rows[i];
+        if (!r->txid) { ok = false;
+            LOG_WARN("coins_kv", "add_many row %zu has NULL txid", i);
+            break; }
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        sqlite3_bind_blob (s, 1, r->txid, 32, SQLITE_STATIC);
+        sqlite3_bind_int  (s, 2, (int)r->vout);
+        sqlite3_bind_int64(s, 3, (sqlite3_int64)r->value);
+        sqlite3_bind_int64(s, 4, (sqlite3_int64)r->height);
+        sqlite3_bind_int  (s, 5, r->is_coinbase ? 1 : 0);
+        if (r->script && r->script_len > 0)
+            sqlite3_bind_blob(s, 6, r->script, (int)r->script_len, SQLITE_STATIC);
+        else
+            sqlite3_bind_blob(s, 6, "", 0, SQLITE_STATIC);
+        int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+        if (rc != SQLITE_DONE) {
+            LOG_WARN("coins_kv",
+                     "add_many row %zu step failed rc=%d: %s (ext=%d)",
+                     i, rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+            ok = false;
+            break;
+        }
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
+bool coins_kv_spend_many(sqlite3 *db, const struct coins_kv_spend_row *rows,
+                         size_t count)
+{
+    if (!db) return false;
+    if (count == 0) return true;
+    if (!rows) return false;
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "DELETE FROM coins WHERE txid=? AND vout=?",
+        -1, &s, NULL) != SQLITE_OK) {
+        LOG_FAIL("coins_kv", "spend_many prepare failed: %s (ext=%d)",
+                 sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+        return false;
+    }
+
+    bool ok = true;
+    for (size_t i = 0; i < count; i++) {
+        const struct coins_kv_spend_row *r = &rows[i];
+        if (!r->txid) { ok = false;
+            LOG_WARN("coins_kv", "spend_many row %zu has NULL txid", i);
+            break; }
+        sqlite3_reset(s);
+        sqlite3_clear_bindings(s);
+        sqlite3_bind_blob(s, 1, r->txid, 32, SQLITE_STATIC);
+        sqlite3_bind_int (s, 2, (int)r->vout);
+        int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+        /* DELETE of an absent row returns SQLITE_DONE (a no-op, not an error) —
+         * intra-block double-spend safety relies on that, identical to
+         * coins_kv_spend; only a real engine error is fatal. */
+        if (rc != SQLITE_DONE) {
+            LOG_WARN("coins_kv",
+                     "spend_many row %zu step failed rc=%d: %s (ext=%d)",
+                     i, rc, sqlite3_errmsg(db), sqlite3_extended_errcode(db));
+            ok = false;
+            break;
+        }
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
 bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
 {
     if (!db || !txid) return false;

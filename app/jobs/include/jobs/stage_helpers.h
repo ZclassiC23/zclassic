@@ -16,7 +16,9 @@
 #ifndef ZCL_JOBS_STAGE_HELPERS_H
 #define ZCL_JOBS_STAGE_HELPERS_H
 
+#include "core/uint256.h"
 #include "json/json.h"
+#include "storage/block_parse_cache.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
@@ -87,6 +89,27 @@ static inline bool stage_default_block_reader(struct block *out,
     pos.nFile = bi->nFile;
     pos.nPos = bi->nDataPos;
     return read_block_from_disk_pread(out, &pos, datadir ? datadir : "");
+}
+
+/* Read the block body for `height`/`bi`, sharing the deserialized result across
+ * the five stages via block_parse_cache when the PRODUCTION default reader is
+ * in effect (injected==NULL). A test-injected reader bypasses the cache so the
+ * staged-pipeline fake readers keep exact control. The cache hands back a
+ * COMPLETE deep clone (block_serialize<->block_deserialize round-trip), so the
+ * `out` block every stage receives is byte-identical to a fresh
+ * stage_default_block_reader read and is owned by the caller (block_free as
+ * before). Same true/false success contract as stage_default_block_reader. */
+static inline bool stage_read_block(struct block *out,
+                                    const struct block_index *bi,
+                                    int height, const char *datadir,
+                                    stage_block_reader_fn injected, void *user)
+{
+    if (injected)
+        return injected(out, bi, datadir, user);
+    if (!out || !bi || !bi->phashBlock)
+        return false;
+    return block_parse_cache_get((int32_t)height, bi->phashBlock->data,
+                                 bi, datadir, out);
 }
 
 /* SELECT COUNT(*) FROM <table>, for the *_dump_state_json log_rows field.

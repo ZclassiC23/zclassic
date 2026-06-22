@@ -230,16 +230,47 @@ static void upstream_hole_healed(int height)
 static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
                            uint32_t height)
 {
-    for (size_t i = 0; i < s->added_count; i++)
-        if (!coins_kv_add(db, s->added[i].txid.data, s->added[i].vout,
-                          s->added[i].value, (int32_t)height,
-                          s->added[i].is_coinbase,
-                          s->added[i].script, s->added[i].script_len))
-            return false;
-    for (size_t i = 0; i < s->spent_count; i++)
-        if (!coins_kv_spend(db, s->spent[i].txid.data, s->spent[i].vout))
-            return false;
-    return true;
+    /* Batched apply: one prepared statement reused across all adds, then one
+     * across all spends. Adds STILL run before spends (the create-then-spend
+     * intra-block invariant), and within each phase the original (txid,vout)
+     * order is preserved by walking added[]/spent[] in index order — so the
+     * coins set, and coins_kv_commitment over it, is bit-identical to the
+     * per-row coins_kv_add / coins_kv_spend loop. The block height (param) is
+     * stamped as each added coin's height, EXACTLY as the per-row path did
+     * (NOT added[i].height). Row arrays alias the summary/block buffers, which
+     * the caller keeps live until after this returns (SQLITE_STATIC binds). */
+    bool ok = true;
+
+    if (s->added_count > 0) {
+        struct coins_kv_add_row *adds =
+            zcl_malloc(s->added_count * sizeof(*adds), "apply_coins_kv_adds");
+        if (!adds) return false;
+        for (size_t i = 0; i < s->added_count; i++) {
+            adds[i].txid        = s->added[i].txid.data;
+            adds[i].vout        = s->added[i].vout;
+            adds[i].value       = s->added[i].value;
+            adds[i].height      = (int32_t)height;
+            adds[i].is_coinbase = s->added[i].is_coinbase;
+            adds[i].script      = s->added[i].script;
+            adds[i].script_len  = s->added[i].script_len;
+        }
+        ok = coins_kv_add_many(db, adds, s->added_count);
+        free(adds);
+        if (!ok) return false;
+    }
+
+    if (s->spent_count > 0) {
+        struct coins_kv_spend_row *spends =
+            zcl_malloc(s->spent_count * sizeof(*spends), "apply_coins_kv_spends");
+        if (!spends) return false;
+        for (size_t i = 0; i < s->spent_count; i++) {
+            spends[i].txid = s->spent[i].txid.data;
+            spends[i].vout = s->spent[i].vout;
+        }
+        ok = coins_kv_spend_many(db, spends, s->spent_count);
+        free(spends);
+    }
+    return ok;
 }
 
 /* The reducer's port of zclassicd's shielded-double-spend gate (C-3) lives
@@ -400,9 +431,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 
     struct block blk;
     block_init(&blk);
-    utxo_apply_reader_fn reader = g_reader ? g_reader
-                                           : stage_default_block_reader;
-    if (!reader(&blk, bi, g_datadir, g_reader_user)) {
+    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
         block_free(&blk);
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

@@ -60,7 +60,8 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
 
     struct block blk;
     block_init(&blk);
-    if (!stage_default_block_reader(&blk, pindex_new, datadir, NULL)) {
+    if (!stage_read_block(&blk, pindex_new, pindex_new->nHeight, datadir,
+                          NULL, NULL)) {
         /* No on-disk body (HAVE_DATA absent / read failed). The body is read
          * back from disk, so a missing body is a benign skip — the tip still
          * advanced, only the derived side effects are deferred. The skip must

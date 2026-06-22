@@ -366,9 +366,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
 
     struct block blk;
     block_init(&blk);
-    proof_validate_reader_fn reader = g_reader ? g_reader
-                                               : stage_default_block_reader;
-    if (!reader(&blk, bi, g_datadir, g_reader_user)) {
+    if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

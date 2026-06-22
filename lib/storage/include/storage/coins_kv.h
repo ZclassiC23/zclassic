@@ -43,6 +43,46 @@ bool coins_kv_add(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
 /* DELETE one output (spend). A missing row is not an error. */
 bool coins_kv_spend(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout);
 
+/* ── Batched per-block apply (utxo_apply_stage.c apply_coins_kv hot loop) ──
+ *
+ * coins_kv_add / coins_kv_spend each prepare+step+finalize their own statement
+ * per row. A block with thousands of outputs/inputs pays that prepare/finalize
+ * cost thousands of times. These _many variants prepare ONE statement (a
+ * STACK-LOCAL stmt — NOT a module-static cached statement; the coins_kv.c
+ * statement-lifetime prohibition is specifically about cached statics shared
+ * across threads, which these are not) and reset+bind+step it for every row in
+ * the SAME (txid,vout) order the per-row helpers would have used. The emitted
+ * SQL is byte-identical to coins_kv_add / coins_kv_spend, so the resulting
+ * coins set — and therefore coins_kv_commitment — is bit-identical. The
+ * stack-local statement is finalized before the call returns; nothing escapes.
+ *
+ * Caller MUST preserve the intra-block invariant (adds BEFORE spends) by
+ * invoking coins_kv_add_many for the whole added[] array first, then
+ * coins_kv_spend_many for the whole spent[] array — exactly as the per-row
+ * loop did. `txids`/`scripts` buffers must outlive the call (SQLITE_STATIC
+ * binds); they do (the caller owns the parsed block until after this returns).
+ *
+ * Returns false on the first row whose step fails (the partial writes roll back
+ * with the caller's enclosing transaction); the index of any failing row is
+ * logged. count==0 is a clean true no-op. */
+struct coins_kv_add_row {
+    const uint8_t *txid;        /* 32 bytes */
+    uint32_t       vout;
+    int64_t        value;
+    int32_t        height;
+    bool           is_coinbase;
+    const uint8_t *script;      /* may be NULL iff script_len==0 */
+    size_t         script_len;
+};
+struct coins_kv_spend_row {
+    const uint8_t *txid;        /* 32 bytes */
+    uint32_t       vout;
+};
+bool coins_kv_add_many(struct sqlite3 *db, const struct coins_kv_add_row *rows,
+                       size_t count);
+bool coins_kv_spend_many(struct sqlite3 *db,
+                         const struct coins_kv_spend_row *rows, size_t count);
+
 /* True iff (txid,vout) is currently live (unspent). */
 bool coins_kv_exists(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout);
 
