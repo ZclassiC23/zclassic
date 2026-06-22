@@ -1792,6 +1792,10 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-refold-staged") == 0) ctx.refold_staged = true;
         else if (strcmp(argv[i], "-refold-from-anchor") == 0) ctx.refold_from_anchor = true;
         else if (strcmp(argv[i], "-load-verify-boot") == 0) ctx.load_verify_boot = true;
+        else if (strncmp(argv[i], "-load-snapshot-at-own-height=",
+                         sizeof("-load-snapshot-at-own-height=") - 1) == 0)
+            ctx.load_snapshot_at_own_height =
+                argv[i] + sizeof("-load-snapshot-at-own-height=") - 1;
         else if (strcmp(argv[i], "-mint-anchor") == 0) ctx.mint_anchor = true;
         else if (strcmp(argv[i], "-mint-anchor-fast") == 0) ctx.mint_anchor_fast = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;

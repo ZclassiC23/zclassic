@@ -3298,6 +3298,14 @@ sapling_tree_boot_check_done:
 
     if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
     if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db, ctx->mint_anchor_fast); /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor; fast => crypto pass-through */
+    /* -load-snapshot-at-own-height=PATH (EXPLICIT-ONLY recovery): seed coins_kv
+     * from a SELF-SHA3-verified ZCLUTXO snapshot at the snapshot's OWN header
+     * height and fold forward from there. NULL unless the operator set the flag,
+     * so a normal boot never reaches this. FATAL-refuses inside on a failed
+     * self-verify; never seeds an unproven set. */
+    if (ctx->load_snapshot_at_own_height)
+        boot_load_snapshot_at_own_height_reset(&g_node_db,
+                                               ctx->load_snapshot_at_own_height);
     /* The from-anchor reset (LOAD+VERIFY the SHA3 anchor set into coins_kv, then
      * fold ONLY the anchor->tip delta) runs when EITHER:
      *   (a) the explicit -refold-from-anchor override is set, OR
@@ -3467,7 +3475,8 @@ sapling_tree_boot_check_done:
          * the reset+fold. A normal boot (no flag) is unchanged: the gate below
          * stays fatal on UNRECOVERABLE integrity. */
         bool mint_or_refold =
-            ctx->mint_anchor || ctx->refold_from_anchor || ctx->refold_staged;
+            ctx->mint_anchor || ctx->refold_from_anchor || ctx->refold_staged ||
+            ctx->load_snapshot_at_own_height != NULL;
         if (mint_or_refold && !finalize_ok) {
             fprintf(stderr,
                 "[boot] mint/refold flag set: skipping the chain_restore_finalize "

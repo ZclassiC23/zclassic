@@ -140,6 +140,21 @@ struct app_context {
                                  * (no worker threads; verify_queue runs inline).
                                  * ADDITIVE foundation — not yet wired into the
                                  * staged reducer / consensus path. */
+    const char *load_snapshot_at_own_height; /* -load-snapshot-at-own-height=PATH :
+                                 * EXPLICIT-ONLY recovery (NEVER fires on a normal
+                                 * boot — NULL unless the operator sets the flag).
+                                 * Seed coins_kv from a ZCLUTXO snapshot at the
+                                 * snapshot's OWN header height, SELF-verified against
+                                 * the file's OWN body SHA3 (uss_open verify_full_sha3
+                                 * with expected_sha3=NULL) + hdr.count == records
+                                 * parsed — NOT bound to the compiled checkpoint. Then
+                                 * force the 8 stage cursors to hdr.height, set
+                                 * applied=hdr.height+1, seed tip_finalize at
+                                 * hdr.height with hdr.anchor_block_hash, and fold
+                                 * FORWARD over on-disk bodies from there. For a
+                                 * snapshot taken ABOVE the compiled checkpoint (does
+                                 * not cross it). Owner-gated; FATAL-refuses if the
+                                 * self-verify fails (never seeds an unproven set). */
     bool load_verify_boot;     /* -load-verify-boot : on a NORMAL boot, AUTO-DETECT
                                  * a baked, SHA3-verified anchor snapshot
                                  * (<datadir>/utxo-anchor.snapshot or
@@ -193,6 +208,23 @@ void boot_refold_staged_reset(struct node_db *ndb);
  * the anchor and the below-anchor self-repair is suspended until the fold reaches
  * the resume target. */
 void boot_refold_from_anchor_reset(struct node_db *ndb);
+
+/* -load-snapshot-at-own-height=PATH (impl in config/src/boot_refold_staged.c):
+ * EXPLICIT-ONLY recovery loader. Sibling of boot_refold_from_anchor_reset EXCEPT
+ * the snapshot is SELF-verified against its OWN header SHA3 (uss_open
+ * verify_full_sha3=true, expected_sha3=NULL) — NOT bound to the compiled
+ * checkpoint — and the fold resumes at the snapshot's OWN header height, not the
+ * compiled anchor. Used to seed coins_kv from a SHA3-internally-consistent
+ * UTXO-set dump taken at a height ABOVE the compiled checkpoint (so it never
+ * crosses the checkpoint and the anchor self-mint hook is irrelevant). The ONLY
+ * trust gate is: body SHA3 == hdr.sha3_hash AND records_parsed == hdr.count; on
+ * failure it LOG_FAILs and FATAL-refuses (never seeds). Forces the 8 stage
+ * cursors to hdr.height, sets applied = hdr.height+1, seeds the tip_finalize
+ * anchor at hdr.height with hdr.anchor_block_hash, then the staged pipeline folds
+ * FORWARD over on-disk BODIES from hdr.height. Caller must have passed a non-NULL
+ * `path` (from ctx->load_snapshot_at_own_height); a normal boot never calls it. */
+void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
+                                            const char *path);
 
 /* -mint-anchor (impl in config/src/boot_refold_staged.c): the ANCHOR-SET MINT
  * boot-time reset. Resets the staged reducer to GENESIS (delegates to
