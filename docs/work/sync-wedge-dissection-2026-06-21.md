@@ -1,10 +1,18 @@
 # Why zclassic23 wedges on forward sync when zclassicd does not — root-cause dissection (2026-06-21)
 
-> Deep parallel dissection (8 readers → synthesis → 4 adversarial refuters), live-verified
-> against the wedged node and the zclassicd C++ reference (`/home/rhett/github/zclassic/src`).
-> Raw workflow run `wf_151dc753-a03`. This CONFIRMS + SHARPENS the long-standing borrowed-seed
-> hypothesis with live row counts, elevates the deeper architectural root, and corrects the
-> fix scope.
+> **STATUS (2026-06-22): the wedge is FIXED** — the consolidated daily-driver
+> loader re-seeds `coins_kv` from a consensus-bound snapshot and raises the
+> reducer trusted base to the seed height, so the node reaches tip (a
+> borrowed-but-consensus-bound stopgap; `docs/HANDOFF.md`). This document is
+> **retained as the load-bearing analysis the sovereign cure rests on** — the
+> decoupled-second-authority diagnosis and why one-writer-fold dissolves the
+> wedge class. The live row counts below (coins ~3,150,489 / H\* pinned
+> 3,056,758) are **historical**, not the live node.
+>
+> Deep parallel dissection (8 readers → synthesis → 4 adversarial refuters),
+> live-verified against the then-wedged node and the zclassicd C++ reference.
+> This CONFIRMS + SHARPENS the long-standing borrowed-seed hypothesis with live
+> row counts, elevates the deeper architectural root, and corrects the fix scope.
 
 ## TL;DR (plain)
 

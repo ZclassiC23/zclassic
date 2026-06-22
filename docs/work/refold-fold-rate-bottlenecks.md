@@ -1,11 +1,17 @@
 # From-genesis refold: fold-rate bottlenecks + fix plan
 
-> Built 2026-06-20 from a live `-refold-staged` run (folding the 17G fixture
-> from genesis, no peers) + a source-grounded bottleneck pass. Measured rate:
-> ~3.3 blocks/sec, STEADY even at height <1000, node at ~76% CPU (one core).
-> At 3/sec the fold to the checkpoint (h=3,056,758) is ~12 days — infeasible.
-> All fixes below are gated on `refold_in_progress()` so a normal boot/sync is
-> byte-identical. Verify against code before relying; specifics rot.
+> **STATUS (2026-06-22): PARTIALLY LANDED.** The parse-dedup + batch-apply work
+> (`block_parse_cache` + `coins_kv` batch apply) has SHIPPED, bit-identical —
+> addressing the repeated per-block re-decode. The dominant per-block 3.1M-node
+> pprev-walk window (#1) and the mint acceleration are STILL OPEN (HANDOFF P0-2:
+> measure the real fold bottleneck — on disk it is ~74% commit-fsync, on tmpfs
+> it is CPU-bound on the serial `coins_kv` apply). The ~3.3 blk/s / ~12-day
+> figures below **predate the speedup — re-measure before quoting them.**
+>
+> Built 2026-06-20 from a live `-refold-staged` run (folding the fixture from
+> genesis, no peers) + a source-grounded bottleneck pass. All fixes below are
+> gated on `refold_in_progress()` so a normal boot/sync is byte-identical.
+> Verify against code before relying; specifics rot.
 
 ## The split-brain root cause
 

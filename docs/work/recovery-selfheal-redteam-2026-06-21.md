@@ -6,11 +6,19 @@
 > `recovery-selfheal-redteam` (run `wf_82a0127d-dda`).
 
 ## Verdict
-**Not a stranger's daily driver YET — one blocker.** The node honors "no silent
-halt" across ALL four classes (every halt is a named `EV_OPERATOR_NEEDED`/FATAL,
-verified live: node up >1 day, `NRestarts=0`, serving-degraded with
-`operator_needed=true`). But it does NOT "self-heal without a human" for
-torn-cold-import.
+> **UPDATE (2026-06-22): the THE-blocker below is RESOLVED.** "No reachable SHA3
+> snapshot → torn-cold-import declines every boot" was addressed: the node can
+> now self-mint + deploy-write the anchor so it is reachable, and torn-import
+> `-refold-from-anchor` is the default self-heal. The **4 boot-reindex-budget
+> "always-terminates" corner gaps (#1–#4) below remain OPEN**, and none of the
+> recommended regression tests exist yet — that is the surviving load-bearing
+> payload. Keep them.
+
+**[HISTORICAL] Not a stranger's daily driver YET — one blocker.** The node honors
+"no silent halt" across ALL four classes (every halt is a named
+`EV_OPERATOR_NEEDED`/FATAL, verified live: node up >1 day, `NRestarts=0`,
+serving-degraded with `operator_needed=true`). But it did NOT "self-heal without a
+human" for torn-cold-import (now resolved — see the UPDATE above).
 
 | Class | Detect | Request | Completes unattended? |
 |-------|--------|---------|----------------------|

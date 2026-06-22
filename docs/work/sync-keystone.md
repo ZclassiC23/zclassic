@@ -1,8 +1,17 @@
 # The Sync Keystone — bind the UTXO set to the PoW-proven chain
 
-> Built 2026-06-20 from a grounded, adversarially-verified research pass
-> (`sync-truth-research`). Every claim here is file:line-checked or a live
-> measurement. Supersedes the optimistic "the cure is built" framing.
+> **STATUS (2026-06-22):** the forward-sync wedge is FIXED (the consolidated
+> stopgap reaches tip — `docs/HANDOFF.md`), and **B1 has landed** — the MMB-leaf
+> preimage now carries a `utxo_root` and the anchor snapshot is bound to the
+> in-binary root. This keystone (a non-forgeable per-height SHA3 `utxo_root` bound
+> into the PoW-proven leaf) is **NOT the wedge** and is the substrate of the
+> sovereign cure's verified-anchor trust — still load-bearing for the remaining
+> negative-path gate + IBD back-fill. The "Live truth" section's pinned
+> H\*=3,056,758 / active-chain 3,151,411 numbers are **historical**, not the live
+> node. Refresh those, keep the binding design.
+>
+> Built 2026-06-20 from a grounded, adversarially-verified research pass. Every
+> claim here is file:line-checked or a live measurement.
 
 ## The one root cause
 

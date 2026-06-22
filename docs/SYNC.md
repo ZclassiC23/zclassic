@@ -112,11 +112,22 @@ Skipping step 1 is a footgun: importing UTXOs without the header import leaves a
 (`-cold-import=`/`-fastimport=`) no longer exist — the argv loop ignores unknown
 flags, so passing them silently no-ops.
 
-**Caveat:** cold import is still slow + fragile (a ~12k-block header band
-backfills over P2P, and the first boot can latch a transient freeze that needs a
-restart). The robust path for a known-good datadir is to copy one onto the target
-lane; the durable fix is tracked as C1/C2/O2 in
-`work/stability-improvements-2026-06-16.md`.
+**Caveat:** the legacy cold import is slow (a ~12k-block header band backfills
+over P2P, and the first boot can latch a transient freeze that needs a restart).
+The robust path for a known-good datadir is to copy one onto the target lane.
+
+### Consolidated daily-driver loader (the current bootstrap)
+
+The deployed path re-seeds `coins_kv` from a UTXO snapshot whose
+`anchor_block_hash` is consensus-bound to the in-binary PoW header at the seed
+height (FATAL on mismatch), and raises the reducer trusted base to the seed
+height so the provable tip H\* starts there instead of pinning at the compiled
+checkpoint. The node then reaches the network tip. This is a **borrowed-but-
+consensus-bound stopgap** — it trusts the seed set instead of folding it from our
+own checkpoint. The **sovereign cure** (`-refold-from-anchor`: fold forward from
+the verified checkpoint, then make it the default and delete the borrowed-seed
+machinery) is in flight — design `work/never-stuck-plan.md`, posture
+`HANDOFF.md`.
 
 Rules:
 - The import flags **only run on an empty datadir** (or one below the legacy

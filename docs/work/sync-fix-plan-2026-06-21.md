@@ -1,5 +1,16 @@
 ## ONE ordered fix plan — collapse the second authority, match zclassicd's one-writer-per-block model
 
+> **STATUS (2026-06-22): the live node is NO LONGER wedged** — the consolidated
+> daily-driver loader reaches tip via a consensus-bound stopgap
+> (`docs/HANDOFF.md`). STEP 0/1 (the `-refold-from-anchor` un-wedge runbook + the
+> loader-owns-seed / consensus cross-check) are **DONE / superseded** by the
+> deployed fixes. This doc is **retained as the subtraction worksheet** for the
+> sovereign cure — the file:line decomposition of the ~715-LOC permanent deletion
+> (HANDOFF P2-3). **Re-verify every line number against the current
+> `deploy/daily-driver` tree before deleting**, and re-frame STEP 0 from
+> "un-wedge" to "cut the live node over from the stopgap to the self-folded
+> foundation."
+
 **Root (verified):** cold import bulk-copies zclassicd's `node.db.utxos` into `coins_kv`, stamps `COINS_KV_MIGRATION_COMPLETE_KEY` (so `coins_kv_is_proven_authority` at `lib/storage/src/coins_kv.c:396-427` reads it as a proven authority), and stamps the 8 stage cursors + `coins_applied_height` forward over a span with NO per-height log rows. `reducer_frontier` then pins H* at the compiled checkpoint (3,056,758) because the contiguous ok=1 log prefix has a hole at anchor+1, and forward finalization halts. The cure mechanism already exists and is proven: `boot_refold_from_anchor_reset` / `refold_from_anchor_active` (`config/src/boot_refold_staged.c:419-465`) forces the 8 cursors to the SHA3-verified anchor + sets `coins_applied_height=anchor+1` in one txn, then the live single fold (`app/jobs/src/utxo_apply_stage.c:520-563`) re-derives forward, co-committing coins + cursor + ok=1 log row per height.
 
 ---

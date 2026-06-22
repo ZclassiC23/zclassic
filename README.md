@@ -19,14 +19,15 @@ operate the node through ~100 typed tools.
 none are yet end-to-end CI-verified across a live soak. Don't rely on it as your
 only mainnet node yet.
 
-It runs on ZClassic mainnet on the `zclassicd` consensus floor. The cold-start
-bootstrap is **slow and not yet robust**: it seeds from a borrowed UTXO snapshot,
-and that path can wedge during sync — at which point the node **halts honestly**
-(it reports `operator_needed` and pins rather than serving an unvalidated tip; it
-does not corrupt). For current live state, ask the running node (`zcl_status`) or
-read [`docs/HANDOFF.md`](docs/HANDOFF.md) — this file does not track it. The root
-fix (fold real block bodies forward from the verified checkpoint) is in
-[`docs/work/never-stuck-plan.md`](docs/work/never-stuck-plan.md). The other known
+It runs on ZClassic mainnet on the `zclassicd` consensus floor and **reaches the
+network tip** via a **borrowed-but-consensus-bound stopgap**: it seeds from a
+UTXO snapshot whose anchor hash is bound to the in-binary PoW header, rather than
+folding that set from its own checkpoint. The **sovereign cold-start cure** —
+fold real block bodies forward from the verified checkpoint, then delete the
+borrowed-seed machinery — is in flight; its design is in
+[`docs/work/never-stuck-plan.md`](docs/work/never-stuck-plan.md). For current live
+state, ask the running node (`zcl_status`) or read
+[`docs/HANDOFF.md`](docs/HANDOFF.md) — this file does not track it. The other known
 soft spot: **off-chain ZMSG is plaintext on the wire**.
 
 It is operator-owned full-node infrastructure: embedded Tor publishes *your* onion

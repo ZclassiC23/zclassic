@@ -30,24 +30,31 @@ consensus-breakers, mine the idea, build it better ourselves).
 ## Tenacity & recovery (operator invariants)
 
 Full model: [`docs/TENACITY.md`](./docs/TENACITY.md) + the live-diagnosis
-fast path [`docs/work/fast-path.md`](./docs/work/fast-path.md).
+fast path [`docs/work/fast-path.md`](./docs/work/fast-path.md). Current bootstrap
+posture + the sovereign-cure path: [`docs/HANDOFF.md`](./docs/HANDOFF.md).
 
-**The PROVEN cold-sync recipe is TWO steps, in this order** (verified
-2026-06-11: hash-identical tip vs zclassicd at multiple heights, ~25 min
-total, warm-reboot-proven). zclassicd stays RUNNING (P2P=8033, RPC=8232):
+**Current bootstrap = the consolidated daily-driver loader** — a snapshot whose
+anchor hash is consensus-bound to the in-binary PoW header re-seeds `coins_kv`
+and raises the reducer trusted base to the seed height, so the node reaches tip
+(a borrowed-but-consensus-bound stopgap; the sovereign `-refold-from-anchor`
+cure that deletes the borrow is in flight — see HANDOFF §3).
+
+**The legacy TWO-step recipe still works** (verified 2026-06-11: hash-identical
+tip vs zclassicd at multiple heights, ~25 min total, warm-reboot-proven; this is
+the legacy `zclassicd`-datadir bootstrap, not the cure). zclassicd stays RUNNING:
 
 ```bash
-# 1. Headers FIRST — 3.14M headers in 60-74s from the live zclassicd datadir
+# 1. Headers FIRST — ~3.1M headers in ~60-74s from the legacy zclassicd datadir
 build/bin/zclassic23 --importblockindex $HOME/.zclassic
-# 2. Then a NORMAL boot — it auto-reads/links ~/.zclassic (legacy import
-#    is on by default; opt out with -nolegacyimport) — tip in ~25 min
+# 2. Then a NORMAL boot — it auto-reads/links $HOME/.zclassic (legacy import
+#    is on by default; opt out with -nolegacyimport)
 build/bin/zclassic23
 ```
 
 (The old `-cold-import=` flag no longer exists — the argv loop ignores
 unknown flags, so passing it silently no-ops.) Skipping step 1 is a
-footgun: importing UTXOs without the header import leaves a 3.1M-header
-hole (headers=960) and the node pins forever.
+footgun: importing UTXOs without the header import leaves a ~3.1M-header
+hole (headers=960) and the node pins.
 
 **Consensus rule: validate against the CHAIN, not the reference text.**
 zclassicd source is a lossy proxy — the real chain contains a 125,811-byte
@@ -56,19 +63,20 @@ cannot resync its own chain). Any parity tightening of a bounded predicate
 requires a full-history replay against the real chain first.
 
 **Recovery paths get copy-proven on a fixture before live.** Never live
-surgery: copy the datadir (frozen wedge fixture:
-`~/.zclassic-c23-postrestore-wedge-20260611`), repro there, prove the fix
-FIRES on the copy, then deploy. `test_parallel` green is a regression
-floor, not a liveness proof.
+surgery: copy the datadir, repro there, prove the fix FIRES on the copy, then
+deploy. Gate on **H\* CLIMB**, not "booted without FATAL." `test_parallel` green
+is a regression floor, not a liveness proof.
 
 ## Current focus — **Ship v1 (MVP 8/8)**
 
-> **Before treating MVP/soak as the active mission, check the live node.** The
-> cold-import bootstrap can wedge during sync; when it does, the node halts
-> honestly (`operator_needed`) and no soak time accrues — so MVP/soak progress is
-> gated on that wedge class being fixed. Verify live state with `zcl_status` /
+> **Check the live node before treating MVP/soak as the active mission.** The
+> forward-sync wedge class is **FIXED** — the consolidated daily-driver loader
+> reaches the network tip via a borrowed-but-consensus-bound stopgap, so soak
+> time can now accrue. The remaining gate is the **sovereign cure**
+> (`-refold-from-anchor` cutover that deletes the borrowed seed) **+ accumulated
+> soak hours**, not un-wedging. Verify live state with `zcl_status` /
 > [`docs/HANDOFF.md`](./docs/HANDOFF.md) — never assume "synced" from a doc.
-> Wedge-class root fix: [`docs/work/never-stuck-plan.md`](./docs/work/never-stuck-plan.md).
+> Wedge-class cure design: [`docs/work/never-stuck-plan.md`](./docs/work/never-stuck-plan.md).
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
 **THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: CI-enforce the MVP criteria and accumulate soak time.**

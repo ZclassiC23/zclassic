@@ -1,5 +1,13 @@
 # Architecture tree + deletion plan (less is more)
 
+> **STATUS (2026-06-22): the forward-sync wedge is FIXED** (consolidated stopgap
+> reaches tip — `docs/HANDOFF.md`). This is **retained as the deletion map for
+> the sovereign cure** — the file-by-file deletion order for the borrowed-seed /
+> repair machinery the cure removes, plus the KEPT/deletable classification. Any
+> dated "LIVE-VERIFIED" block below (node pinned, L1 refused N reps, the 1-coin
+> wrong-fork bind) is **historical**, not the live node. Re-derive the delete-set
+> + re-verify line numbers against the current tree before deleting.
+>
 > Built 2026-06-20 from a 4-subagent code map + synthesis, grounded in file:line.
 > Verify against code before deleting; specifics rot.
 

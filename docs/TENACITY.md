@@ -11,14 +11,15 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).
 
-The cold-import wedge **class is not resolved** — a 2026-06-16 instance was
-cleared but the same class recurred. The node seeds from a borrowed UTXO
-snapshot whose stage cursors are stamped past the validated checkpoint, and the
-honest fold engine then refuses to advance (it pins with `operator_needed`, no
-destructive path — honest, not corrupting). Treat it as an ACTIVE blocker until
-the live node actually advances; the root fix is
-`docs/work/never-stuck-plan.md`. Verify live state from `zcl_status`, never from
-this doc.
+The cold-import wedge **class is FIXED** (2026-06-22): the consolidated
+daily-driver loader re-seeds `coins_kv` from a consensus-bound snapshot and
+raises the reducer trusted base to the seed height, so the node reaches tip — a
+borrowed-but-consensus-bound stopgap. The remaining work is the **sovereign cure**
+(fold the UTXO set forward from our OWN cryptographic checkpoint, then delete the
+borrowed-seed machinery), in flight — design `docs/work/never-stuck-plan.md`,
+current posture `docs/HANDOFF.md`. Verify live state from `zcl_status`, never from
+this doc. The six principles below are timeless doctrine, independent of that
+status.
 
 ---
 

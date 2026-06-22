@@ -13,19 +13,19 @@
 
 ## #1 PRIORITY — CI-enforce the MVP criteria + accumulate soak/canary/seal evidence
 
-> **The cold-import wedge class is NOT resolved — it recurred.** The bootstrap
-> seeds a borrowed UTXO snapshot and stamps stage cursors forward past the
-> validated checkpoint; the honest fold engine then refuses to advance and the
-> node pins (`operator_needed`, no destructive path). Verify live state with
-> `zcl_status` — do not assume the node holds tip. ROOT FIX = fold real block
-> bodies forward from the verified checkpoint:
-> [`never-stuck-plan.md`](./never-stuck-plan.md) (the cold-sync recipe is a
-> stopgap crutch, not the cure). Hardening program of record:
-> [`tenacity-roadmap.md`](./tenacity-roadmap.md) (carries the merged rock-solid
-> recovery-program L1/L2 items) +
+> **The forward-sync wedge class is FIXED.** The consolidated daily-driver loader
+> re-seeds `coins_kv` from a consensus-bound snapshot and raises the reducer
+> trusted base to the seed height, so the node **reaches the network tip** (a
+> borrowed-but-consensus-bound STOPGAP). Verify live state with `zcl_status` — do
+> not assume from a doc. The remaining work is the **sovereign cure** = fold real
+> block bodies forward from the verified checkpoint, cut over, then delete the
+> borrowed-seed machinery (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)
+> + the ordered worksheet [`sync-fix-plan-2026-06-21.md`](./sync-fix-plan-2026-06-21.md).
+> The P0/P1/P2 subtask backlog is in [`../HANDOFF.md`](../HANDOFF.md) §4. Hardening
+> program of record: [`tenacity-roadmap.md`](./tenacity-roadmap.md) (carries the
+> merged rock-solid recovery-program L1/L2 items) +
 > [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md).
-> Frozen wedge fixture for copy-prove:
-> `~/.zclassic-c23-postrestore-wedge-20260611` (KEEP).
+> Copy-prove every recovery path on a datadir COPY before live; gate on H\* climb.
 
 **The #1 work now:** promote ◐ slice-gates to full ✅ CI gates and accumulate
 soak/canary/seal evidence (first seal ratification expected at grid 3,146,000,
@@ -46,9 +46,10 @@ Summary: ~2/8 met by hand, 0/8 CI-verified full.
 
 ## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-Ordering principle: **un-wedge the live node (fold-forward root fix) → make v1
-measurable in CI → prove features → soak.** Refactor debt does not block a working sovereign node and
-must not jump the queue.
+Ordering principle: **land the sovereign cure (fold-forward from our own
+checkpoint, cut over off the stopgap) → make v1 measurable in CI → prove
+features → soak.** The wedge that blocked forward progress is fixed; refactor
+debt does not block a working sovereign node and must not jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
 - [x] **Criterion tests are real CI gates (hermetic slices)** — `make ci` chains
@@ -181,11 +182,12 @@ must not jump the queue.
       proves it; remaining = hermetic-CI promotion). Operator coverage:
       [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** the live node is WEDGED at the cold-import working face
-(`operator_needed`, no destructive path) → C3/C6/C8 are BLOCKED on live forward
-progress until the fold-forward root fix lands
-([`never-stuck-plan.md`](./never-stuck-plan.md)); CI promotion (A) gates honest
-measurement; the boot refactor gates nothing v1.
+**Gating summary:** the forward-sync wedge is FIXED — the node reaches tip on a
+borrowed-but-consensus-bound stopgap, so C3/C6/C8 are now gated on the **sovereign
+foundation** (`-refold-from-anchor` cutover + the ~715-LOC subtraction,
+[`never-stuck-plan.md`](./never-stuck-plan.md)) **+ accumulated soak time**, not on
+un-wedging; CI promotion (A) gates honest measurement; the boot refactor gates
+nothing v1.
 
 ---
 

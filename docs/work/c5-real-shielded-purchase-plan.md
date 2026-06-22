@@ -6,6 +6,14 @@ rate-limited mid-run, so the review was completed **by hand against the real
 code** (claims A–D below confirmed with file:line). Consensus-neutral
 (app-layer only). The live-behavior parts are **owner-gated + copy-prove**.
 
+> **UPDATE (2026-06-22): Slice 2 (memo-bound live reconcile) has LANDED** — the
+> live `store_process_payments` reconcile calls the memo-bound finder
+> `db_store_received_payment_for_memo`; the old amount/address finder has no app
+> callers. The remaining OPEN sub-task is removing the `zs1_pay_<time>`
+> placeholder fallback in `zslp_payment_generate_address` (`zslp_service.c`) so an
+> order can never bind to an undecryptable address. The Slice-1 design below
+> stands.
+
 ## The gap
 
 MVP C5 ([`docs/MVP.md`](../MVP.md) row 5) is "operator lists a product → buyer

@@ -1,9 +1,19 @@
 # THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
 
-Status: PLAN (owner-review). Verified 2026-06-18 by a 12-agent pass (4 deep gating
-questions + 7 lighter-model LOC census). Supersedes earlier framings.
+> **STATUS (2026-06-22): the forward-sync wedge is FIXED** — the consolidated
+> daily-driver loader reaches tip via a consensus-bound stopgap
+> (`docs/HANDOFF.md`). This doc is **retained as the design of record for the
+> sovereign cure** (fold forward from our own checkpoint, then delete the
+> borrowed-seed machinery) + the never-stuck hardening map + the per-100-block
+> UTXO-ladder/keystone design. The dated "LIVE RE-VERIFICATION" section below
+> (pinned tip 3,151,411, H\*=3,056,759, the prevout_unresolved false-rejects) is
+> **historical** — that wedge instance is fixed; treat those numbers as the
+> diagnosis behind the cure, not the live node.
 
-## 0. 2026-06-19 LIVE RE-VERIFICATION (4 workflows, cross-checked by hand)
+Status: PLAN (owner-review). The cure design verified by a 12-agent pass (4 deep
+gating questions + 7 lighter-model LOC census). Supersedes earlier framings.
+
+## 0. 2026-06-19 LIVE RE-VERIFICATION (4 workflows, cross-checked by hand) — HISTORICAL
 
 Ran against the RUNNING wedged node (`wk80speni` root-cause, `wyrtafl1h` never-stuck
 sweep / 24 agents, `wzfdxe34f` repair-vs-reality, + a breadth agent), every
@@ -100,7 +110,7 @@ known-good earlier UTXO state seeds it; if the recompute ≠ 1,354,771/SHA3 root
 premise is WRONG → fall back to a fresh trustless cold-import.
 
 **Copy-prove procedure (all on a COPY; never live, never touch `~/.zclassic`):**
-0. `cp -a /home/rhett/.zclassic-c23 …-refold-fixture-COPY` (ext fs has no reflink; ~6.8G).
+0. `cp -a $HOME/.zclassic-c23 …-refold-fixture-COPY` (ext fs has no reflink; ~6.8G).
 1. Pre-state fingerprint FROM THE COPY (it is a moving target while live runs): coins
    count, MAX(height), coins_applied_height, and the wrong-fork witnesses (02663FF1
    present / 7E7894BF absent at h=3,151,306).

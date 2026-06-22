@@ -1,5 +1,14 @@
 # The sync organism — the whole picture, grounded in code
 
+> **STATUS (2026-06-22): the wedge is FIXED** (consolidated daily-driver loader
+> reaches tip via a consensus-bound stopgap — `docs/HANDOFF.md`). The
+> "keystone experiment" below ("nobody has run the bodies-only refold to tip")
+> HAS since been run on a copy and H\* climbs anchor→tip; the fold-speedup
+> (parse-cache + batch apply) has landed. This map is **retained for its
+> subtraction plan** — the deletion targets the sovereign cure removes. The line
+> numbers are 2026-06-19-era; **re-verify against the current tree before
+> deleting anything.**
+>
 > Built 2026-06-19 from a 7-lens code map (docs treated as suspect, every claim
 > file:line-anchored). This is a CODE MAP, not a live runtime diagnosis —
 > re-verify line numbers and live state before acting; specifics rot.
