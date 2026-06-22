@@ -222,9 +222,18 @@ void boot_refold_from_anchor_reset(struct node_db *ndb);
  * cursors to hdr.height, sets applied = hdr.height+1, seeds the tip_finalize
  * anchor at hdr.height with hdr.anchor_block_hash, then the staged pipeline folds
  * FORWARD over on-disk BODIES from hdr.height. Caller must have passed a non-NULL
- * `path` (from ctx->load_snapshot_at_own_height); a normal boot never calls it. */
+ * `path` (from ctx->load_snapshot_at_own_height); a normal boot never calls it.
+ *
+ * CONSENSUS CROSS-CHECK: `ms` is the live main_state whose in-memory active
+ * chain (populated by the prior block-index load) is consulted to bind the
+ * snapshot's hdr.anchor_block_hash to the PoW-proven header at seed_h — a
+ * mismatch is FATAL, so a self-consistent-but-FORGED snapshot can never seed
+ * coins_kv. `ms` may be NULL only in unit tests with no chain loaded (the
+ * binding is then skipped with a loud warning). */
+struct main_state;
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
-                                            const char *path);
+                                            const char *path,
+                                            struct main_state *ms);
 
 /* -mint-anchor (impl in config/src/boot_refold_staged.c): the ANCHOR-SET MINT
  * boot-time reset. Resets the staged reducer to GENESIS (delegates to

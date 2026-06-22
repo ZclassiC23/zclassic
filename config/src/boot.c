@@ -3305,7 +3305,8 @@ sapling_tree_boot_check_done:
      * self-verify; never seeds an unproven set. */
     if (ctx->load_snapshot_at_own_height)
         boot_load_snapshot_at_own_height_reset(&g_node_db,
-                                               ctx->load_snapshot_at_own_height);
+                                               ctx->load_snapshot_at_own_height,
+                                               &g_state);
     /* The from-anchor reset (LOAD+VERIFY the SHA3 anchor set into coins_kv, then
      * fold ONLY the anchor->tip delta) runs when EITHER:
      *   (a) the explicit -refold-from-anchor override is set, OR

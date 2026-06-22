@@ -32,7 +32,10 @@
 #include "event/event.h"                 /* event_emitf, EV_BOOT_VALIDATION_FAILED */
 #include "services/block_index_loader.h" /* block_index_loader_torn_import_detect (B2 1c) */
 #include "validation/main_state.h"       /* struct main_state */
-#include "validation/chainstate.h"       /* active_chain_height */
+#include "validation/chainstate.h"       /* active_chain_height, active_chain_at */
+#include "chain/chain.h"                  /* struct block_index (hashBlock) */
+#include "controllers/sync_controller.h" /* sapling_tree_rebuild (re-seed tree) */
+#include "util/util.h"                   /* GetDataDir */
 #include "util/log_macros.h"
 
 /* Declared in app/services/src/utxo_recovery_internal.h (src-private); forward
@@ -485,7 +488,8 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
  * GATED: only called when ctx->load_snapshot_at_own_height is non-NULL (an
  * operator-supplied path); a normal boot never reaches it. */
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
-                                            const char *path)
+                                            const char *path,
+                                            struct main_state *ms)
 {
     sqlite3 *rpdb = progress_store_db();
     if (!rpdb) {
@@ -519,6 +523,56 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
         _exit(EXIT_FAILURE);
     }
     const int32_t seed_h = (int32_t)hdr.height;
+
+    /* (ii) CONSENSUS CROSS-CHECK — bind the snapshot to THIS node's PoW-proven
+     * header chain. The self-SHA3 verify above proves the file is internally
+     * consistent but binds it to NOTHING on the real chain: a self-consistent
+     * FORGED snapshot at an arbitrary height would otherwise seed coins_kv.
+     * Require the snapshot's hdr.anchor_block_hash to byte-equal the in-memory
+     * active-chain block hash at seed_h (both internal little-endian; the
+     * snapshot writer fed cp->block_hash, same representation as
+     * block_index.hashBlock). The prior block-index load (`--importblockindex`
+     * is a documented prerequisite) populates ms->chain_active up to the tip, so
+     * the slot at seed_h is present on the supported recovery path. FATAL on a
+     * mismatch — never stamp a coin against a forged anchor. */
+    if (ms) {
+        const struct block_index *bi = active_chain_at(&ms->chain_active, seed_h);
+        if (!bi) {
+            fprintf(stderr,
+                    "FATAL: -load-snapshot-at-own-height: the in-memory active "
+                    "chain has NO block at the snapshot height h=%d — cannot "
+                    "consensus-bind the snapshot's anchor hash. Run "
+                    "`--importblockindex <datadir>` FIRST so the header chain "
+                    "spans h=%d, then retry. REFUSING to seed.\n",
+                    seed_h, seed_h);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height no_index_block seed_h=%d",
+                        seed_h);
+            uss_close(h);
+            _exit(EXIT_FAILURE);
+        }
+        if (memcmp(bi->hashBlock.data, hdr.anchor_block_hash, 32) != 0) {
+            fprintf(stderr,
+                    "FATAL: -load-snapshot-at-own-height: snapshot anchor hash "
+                    "DOES NOT MATCH this node's PoW-proven header at h=%d — the "
+                    "snapshot is for a DIFFERENT (or forged) chain. REFUSING to "
+                    "seed coins_kv.\n",
+                    seed_h);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height anchor_hash_mismatch "
+                        "seed_h=%d", seed_h);
+            uss_close(h);
+            _exit(EXIT_FAILURE);
+        }
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: anchor hash MATCHES the "
+                "in-binary PoW header at h=%d — snapshot is consensus-bound to "
+                "this chain\n", seed_h);
+    } else {
+        LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: no main_state "
+                 "passed (unit-test path?) — SKIPPING the anchor-hash consensus "
+                 "cross-check; the loaded set is NOT bound to a PoW header");
+    }
 
     /* Neutralize the cold-import seed provenance so the later stage init
      * (block_index_loader_seed_stages_from_cold_import) does not re-stamp the
@@ -582,8 +636,58 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
             path, seed_h, (unsigned long long)hdr.count);
 
     (void)boot_index_clear_coins_state(ndb);
+
+    /* SAPLING COMMITMENT-TREE RE-SEED at the seed height.
+     *
+     * Why this is needed: this loader keeps body_persist/validate_headers at the
+     * on-disk header/body tip (so db_tip stays HIGH) while it re-seeds coins_kv
+     * at seed_h. The Sapling note-commitment tree (node_state["sapling_tree"])
+     * is consumed by the wallet witness machinery + the MMR controllers
+     * (node_db_catchup_service.c, wallet_rescan_controller_witness.c,
+     * blockchain_controller_mmr.c). The OLD behavior here BLINDLY cleared
+     * node_state["sapling_tree"] to NULL — but the catchup service resumes its
+     * tree from db_tip+1 deserializing exactly that blob, so a NULL blob at a
+     * HIGH db_tip would silently rebuild the tree as if EMPTY below db_tip:
+     * a wrong (truncated) commitment tree, breaking wallet note witnesses and
+     * the MMR root. (NOTE: this re-seed does NOT unblock proof_validate —
+     * proof_validate is stateless w.r.t. this tree; it reads each shielded
+     * spend's OWN embedded anchor. See the blocker note returned by the task.)
+     *
+     * Correct re-seed: clear ALL stale resume markers together, then drive the
+     * dedicated, consensus-validating rebuilder (sync_controller_sapling_tree.c
+     * sapling_tree_rebuild) which replays note commitments from a SHA3-verified
+     * flat-file checkpoint (<datadir>/sapling_tree_ckpt.dat) — or from Sapling
+     * activation when no checkpoint is present — validating each per-height root
+     * against hashFinalSaplingRoot, and re-persists node_state["sapling_tree"]
+     * coherent with the chain tip. It is bounded by the flat-file checkpoint
+     * (no unconditional 2.6M-block replay) and is a no-op below Sapling
+     * activation. Requires the in-memory active chain (ms); when absent (unit
+     * tests) we fall back to the old NULL-clear so the catchup path still owns
+     * the rebuild. */
     (void)node_db_state_set(ndb, "sapling_tree", NULL, 0);
     (void)node_db_state_set(ndb, "sapling_tree_rescan_height", NULL, 0);
+    (void)node_db_state_set(ndb, "sapling_tree_rebuild_height", NULL, 0);
+    if (ms) {
+        char datadir[1024] = {0};
+        GetDataDir(true, datadir, sizeof(datadir));
+        int appended = sapling_tree_rebuild(ndb, &ms->chain_active, datadir);
+        if (appended < 0) {
+            LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: "
+                     "sapling_tree_rebuild failed (returned %d) — wallet note "
+                     "witnesses / MMR may be stale until the catchup service "
+                     "rebuilds; the consensus coins-fold is unaffected",
+                     appended);
+        } else {
+            fprintf(stderr,
+                    "[boot] -load-snapshot-at-own-height: Sapling commitment "
+                    "tree REBUILT + re-persisted (%d commitments) coherent with "
+                    "the chain tip\n", appended);
+        }
+    } else {
+        LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: no main_state — "
+                 "cleared sapling_tree to NULL; the catchup service rebuilds it "
+                 "from genesis on next run");
+    }
 
     /* Phase 2 — TWO-TIER stage reset (one progress.kv transaction).
      *
