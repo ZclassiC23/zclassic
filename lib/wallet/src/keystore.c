@@ -91,38 +91,61 @@ bool keystore_remove_key(struct basic_keystore *ks,
 bool keystore_have_key(const struct basic_keystore *ks,
                         const struct key_id *keyid)
 {
+    /* Hold ks->cs so the read sees a consistent entry vs add/remove writers
+     * (uniform with keystore_get_key / keystore_get_pubkey). */
+    zcl_mutex_lock((zcl_mutex_t *)&ks->cs);
     for (size_t i = 0; i < ks->num_keys; i++)
-        if (ks->keys[i].used && key_id_eq(&ks->keys[i].keyid, keyid))
+        if (ks->keys[i].used && key_id_eq(&ks->keys[i].keyid, keyid)) {
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
             return true;
+        }
+    zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
     return false;
 }
 
 bool keystore_get_key(const struct basic_keystore *ks,
                        const struct key_id *keyid, struct privkey *key_out)
 {
+    /* Take ks->cs: keystore_remove_key cleanses ks->keys[i].key under the
+     * lock and keystore_add_key publishes new entries under it. Reading
+     * lock-free races those writers and can copy out a half-written or
+     * memory_cleanse()'d (zeroed) private key. const-cast to lock is the
+     * established reader pattern in this codebase (e.g. wallet.c:629). */
+    zcl_mutex_lock((zcl_mutex_t *)&ks->cs);
     for (size_t i = 0; i < ks->num_keys; i++) {
         if (ks->keys[i].used && key_id_eq(&ks->keys[i].keyid, keyid)) {
             *key_out = ks->keys[i].key;
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
             return true;
         }
     }
+    zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
     return false;
 }
 
 bool keystore_get_pubkey(const struct basic_keystore *ks,
                           const struct key_id *keyid, struct pubkey *pk_out)
 {
+    /* Same race as keystore_get_key: ks->keys[i].key is read (to derive the
+     * pubkey) while writers mutate/cleanse entries under ks->cs. Lock the whole
+     * read and unlock on every exit; const-cast follows the reader pattern. */
+    zcl_mutex_lock((zcl_mutex_t *)&ks->cs);
     for (size_t i = 0; i < ks->num_keys; i++) {
-        if (ks->keys[i].used && key_id_eq(&ks->keys[i].keyid, keyid))
-            return privkey_get_pubkey(&ks->keys[i].key, pk_out);
+        if (ks->keys[i].used && key_id_eq(&ks->keys[i].keyid, keyid)) {
+            bool ok = privkey_get_pubkey(&ks->keys[i].key, pk_out);
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
+            return ok;
+        }
     }
 
     for (size_t i = 0; i < ks->num_watching; i++) {
         if (ks->watching[i].used && key_id_eq(&ks->watching[i].keyid, keyid)) {
             *pk_out = ks->watching[i].key;
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
             return true;
         }
     }
+    zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
     return false;
 }
 
