@@ -13,10 +13,21 @@
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <limits.h>
 
 static _Atomic int g_target_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
+
+#ifdef ZCL_TESTING
+static _Atomic int g_test_hstar_override = -1;
+
+void stale_validate_headers_repair_test_set_hstar_override(int height);
+void stale_validate_headers_repair_test_set_hstar_override(int height)
+{
+    atomic_store(&g_test_hstar_override, height);
+}
+#endif
 
 static bool validate_repairable_mode(
     enum stage_repair_header_solution_poison mode)
@@ -30,6 +41,12 @@ static int reducer_frontier_height(sqlite3 *db)
     if (!db)
         return -1; // raw-return-ok:progress-db-not-open
 
+#ifdef ZCL_TESTING
+    int ov = atomic_load(&g_test_hstar_override);
+    if (ov >= 0)
+        return ov;
+#endif
+
     progress_store_tx_lock();
     int32_t hstar = -1;
     int32_t served_floor = -1;
@@ -42,16 +59,39 @@ static int reducer_frontier_height(sqlite3 *db)
 
 static int repair_target_height(sqlite3 *db)
 {
-    int hstar = reducer_frontier_height(db);
-    if (hstar >= 0)
-        return hstar + 1;
-
     int scan = -1;
-    if (stage_repair_header_solution_repairable_validate_frontier(db, &scan) &&
-        scan >= 0)
+    bool have_scan =
+        stage_repair_header_solution_repairable_validate_frontier(db, &scan) &&
+        scan >= reducer_frontier_floor();
+
+    int hstar = reducer_frontier_height(db);
+    if (hstar < 0)
+        return have_scan ? scan : -1; // raw-return-ok:no-repairable-frontier
+
+    if (hstar >= INT_MAX)
+        return have_scan ? scan : -1; // raw-return-ok:frontier-overflow
+
+    int hstar_target = hstar + 1;
+    if (have_scan && scan <= hstar_target)
         return scan;
-    return -1; // raw-return-ok:no-repairable-frontier
+
+    enum stage_repair_header_solution_poison hstar_mode =
+        stage_repair_header_solution_poison_mode(db, hstar_target);
+    if (hstar_mode != STAGE_REPAIR_POISON_NONE)
+        return hstar_target;
+
+    if (have_scan)
+        return scan;
+    return hstar_target;
 }
+
+#ifdef ZCL_TESTING
+int stale_validate_headers_repair_test_repair_target(sqlite3 *db);
+int stale_validate_headers_repair_test_repair_target(sqlite3 *db)
+{
+    return repair_target_height(db);
+}
+#endif
 
 static bool detect_stale_validate_headers_repair(void)
 {
@@ -222,6 +262,9 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_mode_at_detect, STAGE_REPAIR_POISON_NONE);
+#ifdef ZCL_TESTING
+    atomic_store(&g_test_hstar_override, -1);
+#endif
     condition_reset_state(&c_stale_validate_headers_repair);
     /* Zero last_remedy_unix so condition_due_for_remedy treats the next tick
      * as due (last==0 bypasses the wall-clock backoff). There is no

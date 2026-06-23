@@ -23,6 +23,8 @@ void register_stale_validate_headers_repair(void);
 void stale_validate_headers_repair_test_reset(void);
 int stale_validate_headers_repair_test_remedy_calls(void);
 void stale_validate_headers_repair_test_clear_backoff(void);
+void stale_validate_headers_repair_test_set_hstar_override(int height);
+int stale_validate_headers_repair_test_repair_target(sqlite3 *db);
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 static bool exec_sql(sqlite3 *db, const char *sql)
@@ -482,6 +484,34 @@ int test_stale_validate_headers_repair_condition(void)
         ok = ok && row_exists(db, "tip_finalize_log", 2);
         SVHR_CHECK("served tip above H* does not hide or witness-clear the "
                    "repairable validate frontier",
+                   ok);
+        teardown_condition_case(dir, &ms);
+    }
+
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[2];
+        struct uint256 hashes[2];
+        bool ok = setup_condition_case("scan_below_hstar", dir,
+                                       sizeof(dir),
+                                       &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+        ok = ok && seed_cursors(db, 10, 1);
+        ok = ok && seed_poison_rows(
+            db, 2, "'no-header-solution-backfill-required'", 0);
+        ok = ok && seed_repair_header(db, 2);
+        stale_validate_headers_repair_test_set_hstar_override(8);
+
+        ok = ok && stale_validate_headers_repair_test_repair_target(db) == 2;
+        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && cursor_for(db, "validate_headers") == 10;
+        ok = ok && cursor_for(db, "body_fetch") == 1;
+        ok = ok && row_exists(db, "validate_headers_log", 2);
+        ok = ok && row_exists(db, "body_fetch_log", 2);
+        SVHR_CHECK("repairable validate scan below H* is targeted before "
+                   "H*+1",
                    ok);
         teardown_condition_case(dir, &ms);
     }
