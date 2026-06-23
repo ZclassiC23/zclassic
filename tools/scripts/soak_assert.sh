@@ -4,7 +4,7 @@
 # Polls /api/health + getpeerinfo + getnetworkinfo + getsyncdetail
 # every 60 s and asserts:
 #   - peer_count >= MIN_PEERS (default 3)
-#   - mirror_lag <= LAG_BREACH_BLOCKS (default 10)
+#   - mirror_lag is known and <= LAG_BREACH_BLOCKS (default 10)
 #   - mirror_lag_breach_severity == "none"
 #   - systemd restart count does not increment
 #   - magicbean_peer_count > 0 (validates Goal 3 reporting)
@@ -62,6 +62,14 @@ try:
     print(d.get('mirror_lag', -1))
 except: print(-1)
 ")
+    lag_known=$(echo "$sync_detail" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin).get('result', {})
+    v = d.get('mirror_lag_known', d.get('lag_known', False))
+    print('true' if v is True else 'false')
+except: print('false')
+")
     severity=$(echo "$sync_detail" | python3 -c "
 import sys, json
 try:
@@ -74,6 +82,8 @@ except: print('unknown')
     fail=""
     if [ "$peer_count" -lt "$MIN_PEERS" ]; then
         fail="peers=$peer_count<$MIN_PEERS"
+    elif [ "$lag_known" != "true" ]; then
+        fail="mirror_lag_unknown"
     elif [ "$lag" -gt "$LAG_BREACH_BLOCKS" ]; then
         fail="lag=$lag>$LAG_BREACH_BLOCKS"
     elif [ "$severity" != "none" ]; then
@@ -86,14 +96,14 @@ except: print('unknown')
 
     if [ -n "$fail" ]; then
         deviations=$((deviations + 1))
-        echo "soak DEVIATION @ +${elapsed}s: $fail (peers=$peer_count mb=$mb_count lag=$lag sev=$severity nrestarts=$nrestarts)"
+        echo "soak DEVIATION @ +${elapsed}s: $fail (peers=$peer_count mb=$mb_count lag=$lag lag_known=$lag_known sev=$severity nrestarts=$nrestarts)"
         if [ "$deviations" -eq 1 ]; then
             echo "soak: first-deviation snapshot:"
             echo "$health" | head -40
         fi
     else
         if [ $((elapsed % 600)) -eq 0 ]; then
-            echo "soak OK @ +${elapsed}s: peers=$peer_count mb=$mb_count lag=$lag sev=$severity"
+            echo "soak OK @ +${elapsed}s: peers=$peer_count mb=$mb_count lag=$lag lag_known=$lag_known sev=$severity"
         fi
     fi
 

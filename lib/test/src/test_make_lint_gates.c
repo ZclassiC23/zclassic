@@ -1676,6 +1676,29 @@ static int t_tools_z_operator_diagnostics_contract(void)
     return failures;
 }
 
+static int t_soak_assert_requires_known_mirror_lag(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("soak assert treats unknown mirror lag as a deviation") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "tools/scripts/soak_assert.sh") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mirror_lag_known") != NULL);
+        ASSERT(strstr(buf, "lag_known=$(echo \"$sync_detail\"") != NULL);
+        ASSERT(strstr(buf, "fail=\"mirror_lag_unknown\"") != NULL);
+        ASSERT(strstr(buf, "lag_known=$lag_known") != NULL);
+        ASSERT(strstr(buf, "elif [ \"$lag_known\" != \"true\" ]; then")
+               != NULL);
+        ASSERT(strstr(buf, "elif [ \"$lag\" -gt \"$LAG_BREACH_BLOCKS\" ]; then")
+               != NULL);
+        ASSERT(strstr(buf, "mirror_lag is known and <=") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_chain_advance_diagnostics_contract(void)
 {
     int failures = 0;
@@ -3158,6 +3181,7 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_soak_assert_requires_known_mirror_lag();
     failures += t_boot_chain_advance_diagnostics_contract();
     failures += t_boot_addrman_persistence_contract();
     failures += t_lib_runtime_gauges_are_callback_injected();
