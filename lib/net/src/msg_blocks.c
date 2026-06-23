@@ -225,6 +225,13 @@ bool msg_blocks_should_mark_seen(const struct active_chain *chain,
     return active_chain_contains(chain, bi);
 }
 
+bool msg_block_validation_is_retryable(const struct validation_state *state)
+{
+    if (!state || validation_state_is_valid(state))
+        return false;
+    return strcmp(state->reject_reason, "block-not-finalized-by-reducer") == 0;
+}
+
 bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
 {
@@ -290,7 +297,8 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     }
     (void)mp->block_submit(&blk, &state, mp->block_submit_ctx);
 
-    if (!validation_state_is_valid(&state)) {
+    if (!validation_state_is_valid(&state) &&
+        !msg_block_validation_is_retryable(&state)) {
         char hex[65];
         uint256_get_hex(&hash, hex);
         event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
@@ -310,6 +318,11 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * This forces the peer to send us the correct chain of headers,
          * which will include the valid block at the failed height. */
         msg_processor_request_invalid_block_headers(mp, node);
+    } else if (msg_block_validation_is_retryable(&state)) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        LOG_INFO("net", "block %s pending reducer finalization; leaving retryable",
+                 hex);
     }
 
     if (validation_state_is_valid(&state)) {

@@ -142,6 +142,8 @@ void tx_mark_seen(const struct uint256 *hash);
  * arrivals. */
 struct active_chain;
 struct block_index;
+struct validation_state;
+bool msg_block_validation_is_retryable(const struct validation_state *state);
 bool msg_blocks_should_mark_seen(const struct active_chain *chain,
                                   const struct block_index *bi);
 bool msg_processor_snapshot_active(const struct msg_processor *mp);

@@ -14,7 +14,9 @@
 #include "test/test_helpers.h"
 #include "net/msgprocessor.h"
 #include "net/msg_internal.h"
+#include "consensus/validation.h"
 #include "core/uint256.h"
+#include "primitives/block.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -228,6 +230,82 @@ static int test_p148_should_mark_seen_accepts_active(void)
     return failures;
 }
 
+static int test_block_validation_retryable_classifier(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: reducer-pending block verdict is retryable") {
+        struct validation_state st;
+        validation_state_init(&st);
+        validation_state_invalid(&st, false, REJECT_INVALID,
+                                 "block-not-finalized-by-reducer", NULL);
+        ASSERT(msg_block_validation_is_retryable(&st));
+
+        validation_state_init(&st);
+        validation_state_invalid(&st, false, REJECT_INVALID,
+                                 "bad-txns-inputs-missingorspent", NULL);
+        ASSERT(!msg_block_validation_is_retryable(&st));
+
+        validation_state_init(&st);
+        ASSERT(!msg_block_validation_is_retryable(&st));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool submit_reducer_pending_block(struct block *block,
+                                         struct validation_state *out,
+                                         void *ctx)
+{
+    (void)block;
+    int *calls = (int *)ctx;
+    if (calls)
+        (*calls)++;
+    validation_state_invalid(out, false, REJECT_INVALID,
+                             "block-not-finalized-by-reducer", NULL);
+    return false;
+}
+
+static int test_process_block_msg_reducer_pending_stays_retryable(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: reducer-pending process_block_msg does not mark seen") {
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000000u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 7;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+
+        int submit_calls = 0;
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.block_submit = submit_reducer_pending_block;
+        mp.block_submit_ctx = &submit_calls;
+
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 77;
+        snprintf(node.addr_name, sizeof(node.addr_name), "test-peer");
+
+        ASSERT(process_block_msg(&mp, &node, &s));
+        ASSERT(submit_calls == 1);
+        ASSERT(!block_already_seen(&hash));
+
+        stream_free(&s);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────── */
 
 int test_msg_handlers(void);
@@ -248,6 +326,8 @@ int test_msg_handlers(void)
     failures += test_p148_should_mark_seen_rejects_null();
     failures += test_p148_should_mark_seen_rejects_orphan();
     failures += test_p148_should_mark_seen_accepts_active();
+    failures += test_block_validation_retryable_classifier();
+    failures += test_process_block_msg_reducer_pending_stays_retryable();
 
     return failures;
 }

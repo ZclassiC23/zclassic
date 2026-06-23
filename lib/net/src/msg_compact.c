@@ -59,14 +59,20 @@ static void compact_submit_block(struct msg_processor *mp,
     if (!mp || !mp->compact_block_submit) {
         validation_state_error(&state, "compact-submit-unavailable");
     } else {
-        block_mark_seen(&hash);
         bool accepted = mp->compact_block_submit(blk, &state,
                                                  mp->compact_block_submit_ctx);
         if (!accepted && validation_state_is_valid(&state))
             validation_state_error(&state, "compact-submit-failed");
     }
 
-    if (!validation_state_is_valid(&state)) {
+    if (!validation_state_is_valid(&state) &&
+        msg_block_validation_is_retryable(&state)) {
+        char hex[65];
+        uint256_get_hex(&hash, hex);
+        LOG_INFO("compact",
+                 "peer %s: compact block %s pending reducer finalization; leaving retryable",
+                 node->addr_name, hex);
+    } else if (!validation_state_is_valid(&state)) {
         char hex[65];
         uint256_get_hex(&hash, hex);
         LOG_WARN("compact", "peer %s: compact block %s rejected: %s",
@@ -75,7 +81,15 @@ static void compact_submit_block(struct msg_processor *mp,
         event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
                     "compact hash=%s reason=%s", hex,
                     state.reject_reason[0] ? state.reject_reason : "unknown");
+        block_mark_seen(&hash);
     } else {
+        if (mp && mp->main_state) {
+            struct block_index *landed =
+                block_map_find(&mp->main_state->map_block_index, &hash);
+            if (msg_blocks_should_mark_seen(&mp->main_state->chain_active,
+                                             landed))
+                block_mark_seen(&hash);
+        }
         peer_scoring_on_good_interaction(node, peer_scoring_now_ms());
         node->last_block_time = (int64_t)platform_time_wall_time_t();
         node->blocks_received++;
