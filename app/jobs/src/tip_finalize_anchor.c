@@ -133,14 +133,23 @@ bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
 void tip_finalize_stage_set_authoritative_tip(int height,
                                               const uint8_t hash[32])
 {
-    tip_finalize_publish_last_advance(height, hash);
     sqlite3 *db = progress_store_db();
     if (db && tip_finalize_stage_handle()) {
         progress_store_tx_lock();
-        (void)tip_finalize_anchor_cursor_to_authority(db, height, hash, false,
-                                                      false, "trusted_tip");
+        bool anchored = tip_finalize_anchor_cursor_to_authority(
+            db, height, hash, false, false, "trusted_tip");
+        if (anchored) {
+            int accepted = -1;
+            uint8_t accepted_hash[32];
+            if (tip_finalize_stage_resolve_durable_tip(db, &accepted,
+                                                       accepted_hash)) {
+                tip_finalize_publish_last_advance(accepted, accepted_hash);
+            }
+        }
         progress_store_tx_unlock();
+        return;
     }
+    tip_finalize_publish_last_advance(height, hash);
 }
 
 bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],

@@ -130,6 +130,55 @@ static bool get_last_advance(int64_t *height, uint8_t hash[32])
     return true;
 }
 
+static bool publish_resolved_durable_tip(sqlite3 *db, const char *reason)
+{
+    int h = -1;
+    uint8_t hash[32];
+    if (!tip_finalize_stage_resolve_durable_tip(db, &h, hash))
+        return false;
+    update_last_advance(h, hash);
+    LOG_INFO("tip_finalize",
+             "[tip_finalize] authority publish durable h=%d reason=%s",
+             h, reason ? reason : "");
+    return true;
+}
+
+static bool has_no_durable_tip_history(sqlite3 *db)
+{
+    return stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME) == 0 &&
+           stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") <= 0;
+}
+
+static bool hydrate_stage_cursor_from_store(sqlite3 *db, stage_t *stage,
+                                            const char *reason)
+{
+    if (!stage)
+        return true;
+    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    if (!stage_set_cursor(stage, db, cursor)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] cursor hydrate failed cursor=%llu reason=%s",
+                 (unsigned long long)cursor, reason ? reason : "");
+        return false;
+    }
+    return true;
+}
+
+static void publish_resolved_or_fresh_tip(
+    sqlite3 *db, const struct block_index *existing_tip, const char *reason)
+{
+    if (publish_resolved_durable_tip(db, reason))
+        return;
+    if (existing_tip && existing_tip->phashBlock &&
+        has_no_durable_tip_history(db)) {
+        update_last_advance(existing_tip->nHeight,
+                            existing_tip->phashBlock->data);
+        LOG_INFO("tip_finalize",
+                 "[tip_finalize] authority publish fresh h=%d reason=%s",
+                 existing_tip->nHeight, reason ? reason : "");
+    }
+}
+
 /* Recompute H* (the deepest provably-consistent height) from the durable
  * progress.kv state and publish it into the external provable-tip cache.
  *
@@ -587,9 +636,6 @@ bool tip_finalize_stage_init(struct main_state *ms)
     g_ms = ms;
 
     struct block_index *existing_tip = active_chain_cached_tip(&ms->chain_active);
-    if (existing_tip && existing_tip->phashBlock &&
-        atomic_load(&g_last_advance_height) < 0)
-        update_last_advance(existing_tip->nHeight, existing_tip->phashBlock->data);
 
     struct active_chain_authority auth = { .get_height = get_height,
         .get_hash = get_hash, .is_authoritative = is_authoritative };
@@ -603,6 +649,13 @@ bool tip_finalize_stage_init(struct main_state *ms)
             pthread_mutex_unlock(&g_lock);
             return false;
         }
+        if (!hydrate_stage_cursor_from_store(db, g_stage,
+                                             "init_existing_tip_reanchor")) {
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
+        publish_resolved_or_fresh_tip(db, existing_tip,
+                                      "init_existing_tip_reanchor");
         pthread_mutex_unlock(&g_lock);
         return true;
     }
@@ -633,6 +686,13 @@ bool tip_finalize_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
+    if (!hydrate_stage_cursor_from_store(db, s, "init_existing_tip")) {
+        stage_destroy(s);
+        g_stage = NULL;
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    publish_resolved_or_fresh_tip(db, existing_tip, "init_existing_tip");
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO("tip_finalize", "[tip_finalize] stage initialised (authoritative)");

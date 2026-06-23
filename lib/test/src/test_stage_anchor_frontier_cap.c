@@ -106,6 +106,41 @@ static bool fc_seed_cursor(sqlite3 *db, const char *name, int cursor)
     return fc_exec(db, sql);
 }
 
+static bool fc_make_tip_finalize_log(sqlite3 *db)
+{
+    return fc_exec(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "  height           INTEGER PRIMARY KEY,"
+        "  status           TEXT    NOT NULL,"
+        "  ok               INTEGER NOT NULL,"
+        "  work_delta_high  INTEGER NOT NULL DEFAULT 0,"
+        "  work_delta_low   INTEGER NOT NULL DEFAULT 0,"
+        "  utxo_size_after  INTEGER NOT NULL DEFAULT 0,"
+        "  reorg_depth      INTEGER NOT NULL DEFAULT 0,"
+        "  finalized_at     INTEGER NOT NULL DEFAULT 1,"
+        "  tip_hash         BLOB"
+        ")");
+}
+
+static bool fc_put_tip_hash_row(sqlite3 *db, int height, const char *status,
+                                const uint8_t hash[32])
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok,work_delta_high,work_delta_low,"
+            " utxo_size_after,reorg_depth,finalized_at,tip_hash) "
+            "VALUES(?,?,1,0,0,0,0,1,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 3, hash, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* tip_finalize_log row readback: ok + status at height (-1 ok = absent). */
 static int fc_tip_row(sqlite3 *db, int height, char *status, size_t n)
 {
@@ -357,6 +392,49 @@ static bool fc_chain_build(struct fc_chain *sc, struct main_state *ms)
                                         &sc->blocks[FC_N - 1]);
 }
 
+static int fc_case_init_publishes_capped_cursor(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "frontier_cap", "init_publish");
+    FC_CHECK("T7b: progress store opens", progress_store_open(dir));
+    sqlite3 *db = progress_store_db();
+    if (!db) { progress_store_close(); return failures + 1; }
+
+    struct main_state ms;
+    memset(&ms, 0, sizeof(ms));
+    main_state_init(&ms);
+    struct fc_chain sc = {0};
+    FC_CHECK("T7b: chain 0..3 built", fc_chain_build(&sc, &ms));
+
+    bool seeded = fc_make_tip_finalize_log(db) &&
+                  fc_put_tip_hash_row(db, 0, "finalized",
+                                      sc.hashes[1].data) &&
+                  fc_seed_cursor(db, "tip_finalize", 1);
+    FC_CHECK("T7b: durable cursor/log frontier at h=1", seeded);
+
+    FC_CHECK("T7b: stage init", tip_finalize_stage_init(&ms));
+    FC_CHECK("T7b: cursor remains capped at durable frontier",
+             tip_finalize_stage_cursor() == 1 &&
+             fc_cursor(db, "tip_finalize") == 1);
+    FC_CHECK("T7b: init publishes durable frontier, not cached high tip",
+             tip_finalize_stage_last_height() == 1 &&
+             active_chain_height(&ms.chain_active) == 1 &&
+             active_chain_tip(&ms.chain_active) == &sc.blocks[1]);
+    char status[32];
+    FC_CHECK("T7b: high anchor row is evidence only",
+             fc_tip_row(db, FC_N - 1, status, sizeof(status)) == 1 &&
+             strcmp(status, "anchor") == 0);
+
+    tip_finalize_stage_shutdown();
+    main_state_free(&ms);
+    free(sc.blocks);
+    free(sc.hashes);
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static bool fc_seed_utxo_apply(sqlite3 *db, int rows)
 {
     if (!fc_exec(db,
@@ -414,6 +492,10 @@ static int fc_case_held_cursor(void)
     FC_CHECK("T7: cursor capped at the rowless height (not bulldozed)",
              tip_finalize_stage_cursor() == 1 &&
              fc_cursor(db, "tip_finalize") == 1);
+    FC_CHECK("T7: authority publish remains at capped frontier",
+             tip_finalize_stage_last_height() == 1 &&
+             active_chain_height(&ms.chain_active) == 1 &&
+             active_chain_tip(&ms.chain_active) == &sc.blocks[1]);
     char status[32];
     FC_CHECK("T7: authority anchor row still written at the tip",
              fc_tip_row(db, FC_N - 1, status, sizeof(status)) == 1 &&
@@ -507,6 +589,7 @@ int test_stage_anchor_frontier_cap(void)
 
     failures += fc_case_helper();
     failures += fc_case_fresh_seed();
+    failures += fc_case_init_publishes_capped_cursor();
     failures += fc_case_held_cursor();
     failures += fc_case_interleave();
 
