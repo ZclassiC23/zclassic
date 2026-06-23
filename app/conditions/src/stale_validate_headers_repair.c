@@ -237,12 +237,27 @@ static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
         return false;
 
     sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+
     int hstar_at_detect = atomic_load(&g_hstar_at_detect);
-    if (db && hstar_at_detect >= 0 && target <= hstar_at_detect) {
+    if (hstar_at_detect >= 0 && target <= hstar_at_detect) {
         return stage_repair_header_solution_poison_mode(db, target) ==
                STAGE_REPAIR_POISON_NONE;
     }
-    return reducer_frontier_height(db) >= target;
+
+#ifdef ZCL_TESTING
+    int ov = atomic_load(&g_test_hstar_override);
+    if (ov >= 0)
+        return ov >= target;
+#endif
+
+    progress_store_tx_lock();
+    int32_t hstar_now = -1;
+    int32_t served_floor = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar_now, &served_floor);
+    progress_store_tx_unlock();
+    return ok && hstar_now >= target;
 }
 
 static struct condition c_stale_validate_headers_repair = {

@@ -1313,6 +1313,21 @@ static int t_e12_honest_witness(void)
     unlink_rel(E12_FIXTURE_DST);
     int baseline_rc = run_gate_script(E12_SCRIPT_REL, "FAIL");
     char path[PATH_MAX];
+    int planted_good = (repo_path(path, sizeof(path), E12_FIXTURE_DST) == 0 &&
+                        write_file(path,
+                            "#include <stdbool.h>\n"
+                            "#include <stdint.h>\n"
+                            "static bool reducer_frontier_compute_hstar(void *db, int32_t *h, int32_t *s){\n"
+                            "    (void)db; *h = 42; *s = 42; return true;\n"
+                            "}\n"
+                            "static bool witness_e12_frontier(int64_t t){\n"
+                            "    int32_t hstar = -1;\n"
+                            "    int32_t served = -1;\n"
+                            "    return reducer_frontier_compute_hstar(0, &hstar, &served) && hstar >= (int)t;\n"
+                            "}\n") == 0)
+                       ? 0 : -1;
+    int good_rc = planted_good == 0 ? run_gate_script(E12_SCRIPT_REL, "FAIL") : -1;
+    unlink_rel(E12_FIXTURE_DST);
     int planted = (repo_path(path, sizeof(path), E12_FIXTURE_DST) == 0 &&
                    write_file(path,
                        "#include <stdbool.h>\n"
@@ -1326,8 +1341,10 @@ static int t_e12_honest_witness(void)
     int trip_rc = planted == 0 ? run_gate_script(E12_SCRIPT_REL, "FAIL") : -1;
     unlink_rel(E12_FIXTURE_DST);
     int recover_rc = run_gate_script(E12_SCRIPT_REL, "FAIL");
-    TEST("[lint-gate] E12 honest-witness FAIL: clean tree, trips pure-inverse witness, recovers") {
+    TEST("[lint-gate] E12 honest-witness FAIL: accepts reducer H*, trips pure-inverse witness, recovers") {
         ASSERT(baseline_rc == 0);
+        ASSERT(planted_good == 0);
+        ASSERT(good_rc == 0);
         ASSERT(planted == 0);
         ASSERT(trip_rc != 0);
         ASSERT(recover_rc == 0);

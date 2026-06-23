@@ -46,12 +46,13 @@ COND_DIR="app/conditions/src"
 cd "$ROOT"
 
 # Observable-progress tokens. An honest witness must reference at least one:
-# real height/cursor advance, block_map iteration, a durable SELECT, or a
-# bounded external-state read (peer height, inflight stats, mirror height).
+# real height/cursor advance, reducer-frontier H*, block_map iteration, a
+# durable SELECT, or a bounded external-state read (peer height, inflight stats,
+# mirror height).
 # Deliberately NOT here: sync_get_state()/current_state() FSM reads and
 # poison-flag reads (read_drift_flag, *_paused_height, snapsync *.failed) —
 # those observe FSM/poison-absence, not that the symptom moved.
-OBSERVABLE_RE='active_chain_height|active_chain_tip|current_tip_height|block_map_next|block_map_get|pindex_best_header|->nHeight|\.nHeight|connman_max_peer_height|connman_outbound_healthy_count|dl_get_stats|\.local_height|s\.local_height|stage_repair_body_fetch_observed|block_index_have_data_readable|any_utxo_above|target_has_readable_data|sync_monitor_active_next_child_exists|sqlite3_step|sqlite3_prepare|[[:space:]]SELECT[[:space:]]|offered_height|offered_utxos|staged_row_count|received_utxos|\brequested\b'
+OBSERVABLE_RE='active_chain_height|active_chain_tip|current_tip_height|reducer_frontier_compute_hstar|block_map_next|block_map_get|pindex_best_header|->nHeight|\.nHeight|connman_max_peer_height|connman_outbound_healthy_count|dl_get_stats|\.local_height|s\.local_height|stage_repair_body_fetch_observed|block_index_have_data_readable|any_utxo_above|target_has_readable_data|sync_monitor_active_next_child_exists|sqlite3_step|sqlite3_prepare|[[:space:]]SELECT[[:space:]]|offered_height|offered_utxos|staged_row_count|received_utxos|\brequested\b'
 
 # Load baseline (set of witness names allowed to be dishonest, grandfathered).
 declare -A BASELINED=()
@@ -148,7 +149,7 @@ echo "[check_honest_witness] $violations violation(s) found (mode: $MODE)"
 if (( baselined_hits > 0 )); then
     echo "[check_honest_witness] $baselined_hits baselined violation(s) ignored"
 fi
-echo "[check_honest_witness] an honest witness reads OBSERVABLE progress (tip/cursor/block_map/SELECT), never poison-absence or FSM state"
+echo "[check_honest_witness] an honest witness reads OBSERVABLE progress (tip/cursor/H*/block_map/SELECT), never poison-absence or FSM state"
 echo "[check_honest_witness] document a reviewed exception with // honest-witness-ok:<reason>; baseline at tools/lint/honest_witness_baseline.txt (ratchet may only shrink)"
 
 if (( violations > 0 )) && [[ "$MODE" == "FAIL" || "$MODE" == "RATCHET" ]]; then
