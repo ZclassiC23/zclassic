@@ -327,6 +327,16 @@ static bool seed_reducer_frontier_owner_rows(sqlite3 *db)
     return ok;
 }
 
+static bool seed_pending_finalize_utxo(sqlite3 *db, int height)
+{
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+        "VALUES(%d,'verified',1);",
+        height);
+    return exec_progress_sql(db, sql);
+}
+
 static struct block_index *insert_reducer_owner_block(
     struct main_state *ms,
     struct uint256 *hash,
@@ -587,6 +597,74 @@ int test_utxo_activation_paused(void)
                     "frontier_repair") == 0;
         json_free(&dump);
         UAP_CHECK("reducer frontier owns generic no-advance stall", ok);
+
+        condition_engine_set_main_state(NULL);
+        main_state_free(&ms);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 3000);
+        bool ok = true;
+        char dir[256];
+
+        progress_store_close();
+        test_make_tmpdir(dir, sizeof(dir), "block_failed_mask",
+                         "pending_finalize");
+        ok = ok && progress_store_open(dir);
+        ok = ok && seed_reducer_frontier_owner_schema(progress_store_db());
+        ok = ok && seed_pending_finalize_utxo(progress_store_db(), 101);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 h100, h101;
+        struct block_index *tip = insert_reducer_owner_block(
+            &ms, &h100, 100, NULL, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *next = insert_reducer_owner_block(
+            &ms, &h101, 101, tip, BLOCK_HAVE_DATA);
+        ok = ok && tip && next &&
+             active_chain_move_window_tip(&ms.chain_active, tip);
+
+        condition_engine_set_main_state(&ms);
+        register_block_failed_mask_at_tip();
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 3301);
+        condition_engine_tick();
+
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && block_failed_mask_at_tip_test_reducer_owner_target() == 101;
+        ok = ok && block_failed_mask_at_tip_test_target_height() == -1;
+
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            uap_json_condition(&dump, "block_failed_mask_at_tip");
+        const struct json_value *detail = json_get(cond, "detail");
+        ok = ok && detail != NULL;
+        ok = ok &&
+             strcmp(json_get_str(json_get(
+                        detail, "reducer_frontier_owner_reason")),
+                    "pending_finalize") == 0;
+        json_free(&dump);
+
+        int target = -1;
+        int attempts = 0;
+        block_failed_mask_at_tip_test_mark_no_advance_exhausted(101, 100);
+        ok = ok &&
+             !block_failed_mask_at_tip_recovery_exhausted(&target,
+                                                          &attempts);
+        ok = ok && target == 101;
+        ok = ok && attempts == 5;
+
+        UAP_CHECK("pending tip-finalize owns no-advance stall and exhaustion",
+                  ok);
 
         condition_engine_set_main_state(NULL);
         main_state_free(&ms);

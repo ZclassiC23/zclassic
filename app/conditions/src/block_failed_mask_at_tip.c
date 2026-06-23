@@ -6,6 +6,8 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "jobs/stage_repair.h"
+#include "jobs/tip_finalize_stage.h"
+#include "jobs/utxo_apply_stage.h"
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
@@ -46,6 +48,7 @@ enum reducer_frontier_owner_reason {
     RFO_TIPFIN_BACKFILL,
     RFO_NONCANONICAL,
     RFO_REORG_RESIDUE_TIPFIN,
+    RFO_PENDING_FINALIZE,
 };
 
 static const char *reducer_owner_reason_name(int reason)
@@ -61,6 +64,7 @@ static const char *reducer_owner_reason_name(int reason)
     case RFO_TIPFIN_BACKFILL:      return "tipfin_backfill";
     case RFO_NONCANONICAL:         return "noncanonical_rows";
     case RFO_REORG_RESIDUE_TIPFIN: return "reorg_residue_tipfin";
+    case RFO_PENDING_FINALIZE:     return "pending_finalize";
     }
     return "unknown";
 }
@@ -185,6 +189,9 @@ static void remember_reducer_frontier_owner(
     }
 }
 
+static struct block_index *find_have_data_next(struct main_state *ms,
+                                               int target);
+
 static bool reducer_frontier_owns_stall(struct main_state *ms,
                                         int64_t stall_target,
                                         int stall_type)
@@ -193,15 +200,30 @@ static bool reducer_frontier_owns_stall(struct main_state *ms,
     if (!db || !ms || stall_target < 0)
         return false;
 
-    struct stage_reducer_frontier_reconcile_result rr;
-    if (!stage_reducer_frontier_reconcile_light_needed(db, ms, &rr))
-        return false;
+    if (stall_type == BF_STALL_NO_ADVANCE) {
+        int h = (int)stall_target;
+        if ((int64_t)h == stall_target) {
+            struct block_index *bi = find_have_data_next(ms, h);
+            if (bi && bi->phashBlock && utxo_apply_stage_succeeded_at(h)) {
+                uint8_t finalized[32] = {0};
+                if (!tip_finalize_stage_block_hash_at(db, h, finalized)) {
+                    remember_reducer_frontier_owner(
+                        stall_target, stall_type, NULL,
+                        RFO_PENDING_FINALIZE);
+                    return true;
+                }
+            }
+        }
+    }
 
-    int reason = reducer_frontier_owner_reason(&rr);
+    struct stage_reducer_frontier_reconcile_result rr;
+    bool have_rr = stage_reducer_frontier_reconcile_light_needed(db, ms, &rr);
+    int reason = have_rr ? reducer_frontier_owner_reason(&rr) : RFO_NONE;
     if (reason == RFO_NONE)
         return false;
 
-    remember_reducer_frontier_owner(stall_target, stall_type, &rr, reason);
+    remember_reducer_frontier_owner(stall_target, stall_type,
+                                    have_rr ? &rr : NULL, reason);
     return true;
 }
 
@@ -409,6 +431,13 @@ bool block_failed_mask_at_tip_recovery_exhausted(int *target_height,
     bool exhausted = atomic_load(&s->currently_active) &&
         attempts >= max_attempts &&
         exhausted_outcome;
+
+    if (exhausted &&
+        reducer_frontier_owns_stall(condition_engine_main_state(),
+                                    atomic_load(&g_target_at_detect),
+                                    stall_type)) {
+        exhausted = false;
+    }
 
     if (target_height)
         *target_height = (int)atomic_load(&g_target_at_detect);
