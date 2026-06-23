@@ -99,11 +99,7 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
      * which legitimately build on the live tip; only the externally-reported
      * height field is clamped to H*. */
     int32_t hstar_mining = reducer_frontier_provable_tip_cached();
-    struct block_index *report_tip =
-        active_chain_at(&ctx->main_state->chain_active, (int)hstar_mining);
-    if (!report_tip)
-        report_tip = tip;
-    json_push_kv_int(result, "blocks", report_tip ? report_tip->nHeight : 0);
+    json_push_kv_int(result, "blocks", hstar_mining);
     json_push_kv_int(result, "currentblocksize",
                       (int64_t)ctx->main_state->nLastBlockSize);
     json_push_kv_int(result, "currentblocktx",

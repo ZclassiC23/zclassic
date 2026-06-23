@@ -6,6 +6,8 @@
 #include "test/test_helpers.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/chain_inspect_controller.h"
+#include "controllers/mining_controller.h"
+#include "controllers/misc_controller.h"
 #include "controllers/repair_controller.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/wallet_diagnostic_controller.h"
@@ -392,6 +394,71 @@ int test_rpc_safety(void)
         rpc_blockchain_set_state(NULL, NULL, NULL);
         progress_store_close();
         test_cleanup_tmpdir(dir);
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: summary RPCs do not borrow unresolved active tip... ");
+    {
+        test_reset_shared_globals();
+        ensure_rpc_warmup_finished_once();
+
+        struct main_state ms;
+        struct block_index *blocks[4] = {0};
+        bool ok = rpc_safety_build_chain(&ms, blocks, 4);
+        if (ok)
+            ms.chain_active.chain[1] = NULL;
+        reducer_frontier_provable_tip_set(1);
+
+        struct rpc_table chain_tbl;
+        rpc_table_init(&chain_tbl);
+        rpc_blockchain_set_state(&ms, NULL, "/tmp");
+        register_blockchain_rpc_commands(&chain_tbl);
+
+        struct rpc_table misc_tbl;
+        rpc_table_init(&misc_tbl);
+        rpc_misc_set_state(&ms);
+        register_misc_rpc_commands(&misc_tbl);
+
+        struct rpc_table mining_tbl;
+        rpc_table_init(&mining_tbl);
+        rpc_mining_set_state(&ms, NULL, NULL);
+        register_mining_rpc_commands(&mining_tbl);
+
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+
+        ok = ok && !rpc_table_execute(&chain_tbl, "getblockchaininfo",
+                                      &params, &result);
+        ok = ok && result.type == JSON_STR &&
+             strstr(json_get_str(&result), "No provable tip") != NULL;
+        json_free(&result);
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&misc_tbl, "getinfo", &params,
+                                     &result);
+        const struct json_value *info_blocks = json_get(&result, "blocks");
+        ok = ok && info_blocks && json_get_int(info_blocks) == 1;
+        json_free(&result);
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&mining_tbl, "getmininginfo", &params,
+                                     &result);
+        const struct json_value *mining_blocks = json_get(&result, "blocks");
+        ok = ok && mining_blocks && json_get_int(mining_blocks) == 1;
+
+        json_free(&params);
+        json_free(&result);
+        rpc_blockchain_set_state(NULL, NULL, NULL);
+        rpc_misc_set_state(NULL);
+        rpc_mining_set_state(NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();
 

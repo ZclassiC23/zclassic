@@ -65,19 +65,12 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "version", CLIENT_VERSION);
     json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
 
-    /* Report the PROVABLE tip (H*), not the active/lookahead tip — same
-     * contract as getblockcount (reducer_frontier_provable_tip_cached): never
-     * name a height we cannot prove or that rewinds under a reorg. Resolve the
-     * block by-height at H* so a follow-on getblock/getblockhash is consistent;
-     * fall back to the active tip only if the slot is momentarily unresolved. */
-    struct block_index *tip = NULL;
-    if (ctx->main_state) {
-        int32_t hstar = reducer_frontier_provable_tip_cached();
-        tip = active_chain_at(&ctx->main_state->chain_active, (int)hstar);
-        if (!tip)
-            tip = active_chain_tip(&ctx->main_state->chain_active);
-    }
-    json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
+    /* Report the PROVABLE tip height (H*), not the active/lookahead tip. Do
+     * not fall back to active_chain_tip when the H* slot is unresolved; that
+     * would name an unprovable block. */
+    int32_t hstar = ctx->main_state ? reducer_frontier_provable_tip_cached()
+                                    : 0;
+    json_push_kv_int(result, "blocks", hstar);
     json_push_kv_int(result, "timeoffset", 0);
     json_push_kv_int(result, "connections", 0);
     json_push_kv_real(result, "difficulty", 0.0);

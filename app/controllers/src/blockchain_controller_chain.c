@@ -78,14 +78,18 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
      * active tip leaking through mid-fold / post-reorg.
      *
      * `tip` is resolved by-height via active_chain_at(H*): equals the active
-     * tip at steady state, LOWER mid-fold / after a reorg. Fall back to the
-     * active tip only if the by-height slot is momentarily unresolved (window
-     * collapse), so we never regress to emitting nothing. */
+     * tip at steady state, LOWER mid-fold / after a reorg. If the H* slot is
+     * unresolved, fail closed: the active/lookahead tip is not an acceptable
+     * substitute for public chain identity. */
     int32_t hstar = reducer_frontier_provable_tip_cached();
     struct block_index *tip = active_chain_at(&ctx->main_state->chain_active,
                                               (int)hstar);
-    if (!tip)
-        tip = active_chain_tip(&ctx->main_state->chain_active);
+    if (!tip) {
+        json_set_str(result, "No provable tip");
+        LOG_FAIL("blockchain",
+                 "getblockchaininfo: provable tip hstar=%d unresolved",
+                 hstar);
+    }
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     struct block_index *best_hdr = ctx->main_state->pindex_best_header;
     /* Emit headers=0 when best_header isn't known yet, rather than
