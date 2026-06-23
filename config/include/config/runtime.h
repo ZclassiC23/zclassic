@@ -46,7 +46,6 @@ bool app_runtime_node_db_state_set(struct node_db *ndb,
                                    size_t len);
 void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb);
 bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb);
-bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb);
 int app_runtime_node_db_utxo_max_height(struct node_db *ndb);
 bool app_runtime_node_db_tx_index_find(struct node_db *ndb,
                                        const uint8_t txid[32],
