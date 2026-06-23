@@ -8,6 +8,7 @@
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "json/json.h"
 #include "net/net.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
@@ -357,6 +358,22 @@ static void teardown_fixture(struct rfrl_fixture *fx)
     test_cleanup_tmpdir(fx->dir);
 }
 
+static const struct json_value *rfrl_json_condition(
+    const struct json_value *root,
+    const char *name)
+{
+    const struct json_value *conditions = json_get(root, "conditions");
+    if (!conditions || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = json_get(cond, "name");
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return cond;
+    }
+    return NULL;
+}
+
 /* Cross-thread lock probe: acquires + releases the progress lock from a
  * second thread. A refusal path that leaks the (recursive) lock is invisible
  * to the calling thread; the probe's join hangs the test binary instead. */
@@ -701,6 +718,33 @@ int test_reducer_frontier_reconcile_light(void)
                   snap.last_outcome == COND_REMEDY_SKIP &&
                   snap.cleared_count == 1 &&
                   !snap.operator_needed_emitted;
+
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            rfrl_json_condition(&dump, "reducer_frontier_reconcile_light");
+        const struct json_value *detail = json_get(cond, "detail");
+        ok = ok && detail != NULL;
+        ok = ok &&
+             json_get_int(json_get(detail, "hstar_at_detect")) == A + 1;
+        ok = ok &&
+             json_get_int(json_get(detail, "sweep_top_at_detect")) == A + 3;
+        ok = ok &&
+             json_get_int(json_get(
+                 detail, "body_fetch_cursor_at_detect")) == A + 4;
+        ok = ok &&
+             json_get_int(json_get(
+                 detail, "tip_finalize_cursor_at_detect")) == A + 4;
+        ok = ok &&
+             json_get_int(json_get(
+                 detail, "coin_backfill_scan_present_at_detect")) == 0;
+        ok = ok &&
+             json_get_int(json_get(
+                 detail, "tipfin_backfill_present_at_detect")) == 0;
+        ok = ok && json_get_int(json_get(detail, "remedy_calls")) == 1;
+        json_free(&dump);
 
         condition_engine_tick();
         got = condition_engine_get_registered_snapshot(

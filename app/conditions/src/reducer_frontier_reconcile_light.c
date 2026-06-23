@@ -39,13 +39,13 @@ static _Atomic int g_tipfin_backfill_progress_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_tear_bypass_warn_total = 0;
 
-/* Peer-gate visibility memos. detect runs only on the serial
- * condition-engine tick thread, so these plain statics need no lock. The
+/* Peer-gate visibility memos. detect runs only on the serial condition-engine
+ * tick thread; the active bit is atomic because diagnostics can read it. The
  * gate-suppress WARN is the shared log_throttle de-storm primitive, keyed on a
  * single "active" token: log_throttle_reset() re-arms it when the suppression
  * ends (so the next engagement emits immediately, reps=0), and a same-key
  * keep-alive fires every 300 s carrying the suppressed-tick count. */
-static bool g_tear_bypass_active;
+static _Atomic bool g_tear_bypass_active;
 #define GATE_SUPPRESS_ACTIVE_KEY ((uint64_t)1)
 static struct log_throttle g_gate_suppress = LOG_THROTTLE_INIT;
 
@@ -371,9 +371,9 @@ static bool peer_lag_allows_repair(struct main_state *ms)
 static void note_tear_bypass(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {
-    if (g_tear_bypass_active)
+    if (atomic_load(&g_tear_bypass_active))
         return;
-    g_tear_bypass_active = true;
+    atomic_store(&g_tear_bypass_active, true);
     atomic_fetch_add(&g_tear_bypass_warn_total, 1);
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] peer-gate BYPASS: "
@@ -521,7 +521,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
          * dry-run judged stale — the apply purge is the remedy.
          * reorg_residue_tipfin_found counts stale ok=0 reorg_detected
          * tip_finalize verdicts the apply path replaces in place. */
-        g_tear_bypass_active = false;
+        atomic_store(&g_tear_bypass_active, false);
         log_throttle_reset(&g_gate_suppress);
         return false;
     }
@@ -533,12 +533,12 @@ static bool detect_reducer_frontier_reconcile_light(void)
             /* Gate KEPT for the plain cursor-churn repair class: peers that
              * exist but are not ahead are no staleness evidence. The tear
              * state (if any) ended, so the bypass memo re-arms. */
-            g_tear_bypass_active = false;
+            atomic_store(&g_tear_bypass_active, false);
             note_gate_suppressed(db, &rr);
             return false;
         }
     } else {
-        g_tear_bypass_active = false;
+        atomic_store(&g_tear_bypass_active, false);
     }
     log_throttle_reset(&g_gate_suppress);
 
@@ -664,6 +664,60 @@ static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
     return tipfin_backfill_witnessed(db);
 }
 
+static bool detail_reducer_frontier_reconcile_light(struct json_value *out)
+{
+    if (!out)
+        return false;
+
+    bool ok = true;
+    ok = ok && json_push_kv_int(out, "local_height_at_detect",
+                                atomic_load(&g_local_height_at_detect));
+    ok = ok && json_push_kv_int(out, "hstar_at_detect",
+                                atomic_load(&g_hstar_at_detect));
+    ok = ok && json_push_kv_int(out, "sweep_top_at_detect",
+                                atomic_load(&g_sweep_top_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "validate_headers_cursor_at_detect",
+        atomic_load(&g_validate_headers_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "body_fetch_cursor_at_detect",
+        atomic_load(&g_body_fetch_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "body_persist_cursor_at_detect",
+        atomic_load(&g_body_persist_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "script_validate_cursor_at_detect",
+        atomic_load(&g_script_validate_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "proof_validate_cursor_at_detect",
+        atomic_load(&g_proof_validate_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "utxo_apply_cursor_at_detect",
+        atomic_load(&g_utxo_apply_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "tip_finalize_cursor_at_detect",
+        atomic_load(&g_tip_finalize_cursor_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "coin_backfill_scan_present_at_detect",
+        atomic_load(&g_coin_backfill_scan_present_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "coin_backfill_scan_next_at_detect",
+        atomic_load(&g_coin_backfill_scan_next_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "tipfin_backfill_present_at_detect",
+        atomic_load(&g_tipfin_backfill_present_at_detect));
+    ok = ok && json_push_kv_int(
+        out, "tipfin_backfill_progress_at_detect",
+        atomic_load(&g_tipfin_backfill_progress_at_detect));
+    ok = ok && json_push_kv_int(out, "remedy_calls",
+                                atomic_load(&g_remedy_calls));
+    ok = ok && json_push_kv_bool(out, "tear_bypass_active",
+                                 atomic_load(&g_tear_bypass_active));
+    ok = ok && json_push_kv_int(out, "tear_bypass_warn_total",
+                                atomic_load(&g_tear_bypass_warn_total));
+    return ok;
+}
+
 static struct condition c_reducer_frontier_reconcile_light = {
     .name = "reducer_frontier_reconcile_light",
     .severity = COND_CRITICAL,
@@ -673,6 +727,7 @@ static struct condition c_reducer_frontier_reconcile_light = {
     .detect = detect_reducer_frontier_reconcile_light,
     .remedy = remedy_reducer_frontier_reconcile_light,
     .witness = witness_reducer_frontier_reconcile_light,
+    .detail = detail_reducer_frontier_reconcile_light,
     .witness_window_secs = 60,
 };
 
@@ -701,7 +756,7 @@ void reducer_frontier_reconcile_light_test_reset(void)
     atomic_store(&g_tipfin_backfill_progress_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_tear_bypass_warn_total, 0);
-    g_tear_bypass_active = false;
+    atomic_store(&g_tear_bypass_active, false);
     log_throttle_reset(&g_gate_suppress);
     g_test_post_remedy_hook = NULL;
     condition_reset_state(&c_reducer_frontier_reconcile_light);
