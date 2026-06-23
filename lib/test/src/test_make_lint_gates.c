@@ -1564,6 +1564,13 @@ static int t_tools_z_mirror_fallback_contract(void)
                != NULL);
         ASSERT(strstr(buf,
                       "active_error_detail \"$active_detail\"") != NULL);
+        ASSERT(strstr(buf,
+                      "LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}")
+               != NULL);
+        ASSERT(strstr(buf, "lag_display=unknown") != NULL);
+        ASSERT(strstr(buf, "candidate_lag_display=unknown") != NULL);
+        ASSERT(strstr(buf, "\"$lag_display\"") != NULL);
+        ASSERT(strstr(buf, "\"$candidate_lag_display\"") != NULL);
         ASSERT(strstr(buf, "blockers=%s") != NULL);
         ASSERT(strstr(buf, "stalls=%s") != NULL);
         ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);

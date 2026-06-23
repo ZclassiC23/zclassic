@@ -136,7 +136,7 @@ legacy_rpc() {
     local method="$1" params="${2:-[]}" user pass port body
     user="$(legacy_conf_value rpcuser)"
     pass="$(legacy_conf_value rpcpassword)"
-    port="${LEGACY_RPCPORT:-$(legacy_conf_value rpcport)}"
+    port="${LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}}"
     port="${port:-8232}"
     [ -n "$user" ] && [ -n "$pass" ] || return 1
     body="{\"jsonrpc\":\"1.0\",\"id\":\"z-mirror\",\"method\":\"$method\",\"params\":$params}"
@@ -273,17 +273,25 @@ mirror)
     if [ "${2:-}" = "--json" ] || [ "${2:-}" = "-j" ]; then
         printf '%s\n' "$JSON"
     else
+        lag_display="$(json_field "$JSON" lag)"
+        if [ "$(json_field "$JSON" lag_known)" = "false" ]; then
+            lag_display=unknown
+        fi
+        candidate_lag_display="$(json_field "$JSON" candidate_lag)"
+        if [ "$(json_field "$JSON" candidate_lag_known)" = "false" ]; then
+            candidate_lag_display=unknown
+        fi
         printf 'zclassic23=%s zclassicd=%s lag=%s reachable=%s mirror_running=%s\n' \
             "$(json_field "$JSON" zclassic23_height)" \
             "$(json_field "$JSON" zclassicd_height)" \
-            "$(json_field "$JSON" lag)" \
+            "$lag_display" \
             "$(json_field "$JSON" reachable)" \
             "$(json_field "$JSON" mirror_running)"
         printf 'authority=%s trust=%s candidate_source=%s candidate_lag=%s candidate_lag_known=%s overrides=%s unsafe_overrides=%s blockers=%s last_override_height=%s last_override_safe=%s activation_blocker=%s\n' \
             "$(json_field "$JSON" consensus_authority)" \
             "$(json_field "$JSON" candidate_trust)" \
             "$(json_field "$JSON" candidate_source)" \
-            "$(json_field "$JSON" candidate_lag)" \
+            "$candidate_lag_display" \
             "$(json_field "$JSON" candidate_lag_known)" \
             "$(json_field "$JSON" overrides_total)" \
             "$(json_field "$JSON" unsafe_overrides_total)" \
