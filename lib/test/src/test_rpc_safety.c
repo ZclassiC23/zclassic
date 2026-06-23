@@ -51,6 +51,17 @@ static void init_single_str_param(struct json_value *params, const char *s)
     json_free(&v);
 }
 
+static void init_single_int_param(struct json_value *params, int64_t n)
+{
+    struct json_value v;
+    json_init(params);
+    json_set_array(params);
+    json_init(&v);
+    json_set_int(&v, n);
+    json_push_back(params, &v);
+    json_free(&v);
+}
+
 static bool result_is_chainstate_guard_error(const struct json_value *result,
                                              const char *method)
 {
@@ -264,6 +275,25 @@ int test_rpc_safety(void)
         ok = ok && tip_hash && tip_hash->type == JSON_STR &&
              strcmp(json_get_str(tip_hash), hstar_hex) == 0 &&
              strcmp(json_get_str(tip_hash), active_hex) != 0;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_int_param(&params, 1);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "getblockhash", &params,
+                                     &result) &&
+             result.type == JSON_STR &&
+             strcmp(json_get_str(&result), hstar_hex) == 0;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_int_param(&params, 2);
+        json_init(&result);
+        ok = ok && !rpc_table_execute(&tbl, "getblockhash", &params,
+                                      &result);
+        ok = ok && result.type == JSON_STR &&
+             strcmp(json_get_str(&result), active_hex) != 0 &&
+             strstr(json_get_str(&result), "out of range") != NULL;
 
         json_free(&params);
         json_free(&result);

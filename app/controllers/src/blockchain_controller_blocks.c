@@ -164,6 +164,13 @@ bool rpc_getblockhash(const struct json_value *params, bool help,
         json_set_str(result, "Not initialized");
         LOG_FAIL("blockchain", "getblockhash: main_state not initialized");
     }
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    if (height < 0 || height > hstar) {
+        json_set_str(result, "Block height out of range");
+        LOG_FAIL("blockchain",
+                 "getblockhash: height %d outside provable range hstar=%d",
+                 height, hstar);
+    }
     struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, height);
     if (!bi || !bi->phashBlock) {
         json_set_str(result, "Block height out of range");
