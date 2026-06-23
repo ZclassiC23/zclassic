@@ -307,8 +307,7 @@ size_t api_serve_file_services(const char *path,
         "{\"file_services\":[");
     for (int i = 0; i < count && w + 256 < response_max; i++) {
         char ip_hex[33];
-        for (int j = 0; j < 16; j++)
-            snprintf(ip_hex + j * 2, 3, "%02x", rows[i].ip[j]);
+        HexStr(rows[i].ip, 16, false, ip_hex, sizeof(ip_hex));
         w += (size_t)snprintf((char *)response + w, response_max - w,
             "%s{\"ip\":\"%s\",\"port\":%u,\"p2p_port\":%u,"
             "\"last_seen\":%" PRId64 ",\"is_zcl23\":%s}",

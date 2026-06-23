@@ -15,6 +15,7 @@
 #include "controllers/strong_params.h"
 #include "controllers/sync_controller.h"
 #include "views/format_helpers.h"
+#include "encoding/utilstrencodings.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
@@ -69,8 +70,7 @@ bool rpc_getmmrroot(const struct json_value *params, bool help,
     mmr_root(bm, root);
 
     char hex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(hex + i * 2, 3, "%02x", root[i]);
+    HexStr(root, 32, false, hex, sizeof(hex));
 
     json_set_object(result);
     json_push_kv_str(result, "mmr_root", hex);
@@ -94,8 +94,7 @@ bool rpc_getcommitmentmmr(const struct json_value *params, bool help,
     mmr_root(cm, root);
 
     char hex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(hex + i * 2, 3, "%02x", root[i]);
+    HexStr(root, 32, false, hex, sizeof(hex));
 
     json_set_object(result);
     json_push_kv_str(result, "commitment_mmr_root", hex);
@@ -125,8 +124,7 @@ bool rpc_auditchain(const struct json_value *params, bool help,
     uint8_t broot[32];
     mmr_root(bm, broot);
     char bhex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(bhex + i * 2, 3, "%02x", broot[i]);
+    HexStr(broot, 32, false, bhex, sizeof(bhex));
     json_push_kv_str(result, "block_mmr_root", bhex);
     json_push_kv_int(result, "block_mmr_leaves", (int64_t)bm->num_leaves);
 
@@ -135,8 +133,7 @@ bool rpc_auditchain(const struct json_value *params, bool help,
     uint8_t croot[32];
     mmr_root(cm, croot);
     char chex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(chex + i * 2, 3, "%02x", croot[i]);
+    HexStr(croot, 32, false, chex, sizeof(chex));
     json_push_kv_str(result, "commitment_mmr_root", chex);
     json_push_kv_int(result, "commitment_leaves", (int64_t)cm->num_leaves);
     json_push_kv_int(result, "commitment_covers_height",
