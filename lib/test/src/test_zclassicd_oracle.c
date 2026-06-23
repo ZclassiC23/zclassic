@@ -62,6 +62,8 @@ struct mock_server {
     int port;
     const char *canned_hex;       /* NULL → respond with JSON error */
     int chain_blocks;             /* >=0 → getblockchaininfo response */
+    bool chain_omit_headers;      /* true → omit optional result.headers */
+    bool chain_empty_result;      /* true → malformed empty chain-info result */
     bool chain_warmup;            /* true → getblockchaininfo RPC warmup */
     _Atomic int requests_served;
     _Atomic bool stop;
@@ -103,10 +105,20 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
                 "\"id\":\"zcl-oracle\"}\n");
         } else if (m->chain_blocks >= 0 &&
                    strstr(buf, "getblockchaininfo")) {
-            bl = snprintf(body, sizeof(body),
-                "{\"result\":{\"blocks\":%d,\"headers\":%d},"
-                "\"error\":null,\"id\":\"zcl-oracle\"}\n",
-                m->chain_blocks, m->chain_blocks);
+            if (m->chain_empty_result) {
+                bl = snprintf(body, sizeof(body),
+                    "{\"result\":{},\"error\":null,\"id\":\"zcl-oracle\"}\n");
+            } else if (m->chain_omit_headers) {
+                bl = snprintf(body, sizeof(body),
+                    "{\"result\":{\"blocks\":%d},"
+                    "\"error\":null,\"id\":\"zcl-oracle\"}\n",
+                    m->chain_blocks);
+            } else {
+                bl = snprintf(body, sizeof(body),
+                    "{\"result\":{\"blocks\":%d,\"headers\":%d},"
+                    "\"error\":null,\"id\":\"zcl-oracle\"}\n",
+                    m->chain_blocks, m->chain_blocks);
+            }
         } else if (m->canned_hex) {
             bl = snprintf(body, sizeof(body),
                 "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-oracle\"}\n",
@@ -175,6 +187,25 @@ static bool mock_server_start_chain(struct mock_server *m,
     bool ok = mock_server_start(m, canned_hex);
     if (ok)
         m->chain_blocks = blocks;
+    return ok;
+}
+
+static bool mock_server_start_chain_blocks_only(struct mock_server *m,
+                                                const char *canned_hex,
+                                                int blocks)
+{
+    bool ok = mock_server_start_chain(m, canned_hex, blocks);
+    if (ok)
+        m->chain_omit_headers = true;
+    return ok;
+}
+
+static bool mock_server_start_chain_empty_result(struct mock_server *m,
+                                                 const char *canned_hex)
+{
+    bool ok = mock_server_start_chain(m, canned_hex, 0);
+    if (ok)
+        m->chain_empty_result = true;
     return ok;
 }
 
@@ -343,6 +374,82 @@ int test_zclassicd_oracle(void)
 
         process_block_set_node_db(NULL);
         node_db_close(&ndb);
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+    }
+
+    /* zclassicd variants may omit result.headers while still reporting
+     * result.blocks. That must be treated as blocks==headers, not as an RPC
+     * schema failure. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (legacy blocks-only chain info)",
+                 mock_server_start_chain_blocks_only(&srv, AGREE_HEX, 7));
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for blocks-only chain info",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-blocks-only");
+        ZO_CHECK("legacy mirror accepts blocks-only chain info", catchup.ok);
+
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("legacy mirror blocks-only sets headers from blocks",
+                 lms.legacy_height == 7 && lms.legacy_headers == 7);
+        ZO_CHECK("legacy mirror blocks-only stays reachable", lms.reachable);
+        ZO_CHECK("legacy mirror blocks-only does not report headers error",
+                 strstr(lms.last_error, "result.headers") == NULL);
+
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+    }
+
+    /* If the required result.blocks field is missing, optional headers parsing
+     * must not overwrite the more precise required-field error. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (legacy empty chain info)",
+                 mock_server_start_chain_empty_result(&srv, AGREE_HEX));
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for empty chain info",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-empty-chain-info");
+        ZO_CHECK("legacy mirror rejects empty chain info", !catchup.ok);
+        ZO_CHECK("legacy mirror empty chain info names blocks",
+                 strstr(catchup.message, "missing int result.blocks") != NULL);
+        ZO_CHECK("legacy mirror empty chain info does not name headers",
+                 strstr(catchup.message, "result.headers") == NULL);
+
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("legacy mirror empty chain info last_error names blocks",
+                 strstr(lms.last_error, "missing int result.blocks") != NULL);
+
         mock_server_stop(&srv);
         legacy_mirror_sync_reset_for_test();
         zo_teardown();

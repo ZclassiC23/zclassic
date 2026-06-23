@@ -225,9 +225,12 @@ static bool lms_fetch_chain_info(int *out_blocks, int *out_headers,
         return false;
     int blocks = -1, headers = -1;
     bool ok_b = lms_parse_int_result(resp, "blocks", &blocks, err, err_sz);
+    if (!ok_b) {
+        free(resp);
+        return false;
+    }
     bool ok_h = lms_parse_int_result(resp, "headers", &headers, err, err_sz);
     free(resp);
-    if (!ok_b) return false;
     if (!ok_h) {
         headers = blocks;
         if (err && err_sz)
