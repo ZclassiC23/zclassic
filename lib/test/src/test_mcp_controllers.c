@@ -582,6 +582,18 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"header-source-hash-mismatch\","
                       "\"first_validate_failure_repair_owner\":"
                       "\"stale_validate_headers_repair\"}");
+    if (strcmp(method, "dumpstate") == 0 &&
+        params_json && strstr(params_json, "condition_engine") != NULL)
+        return strdup("{\"registered_count\":28,"
+                      "\"active_count\":2,"
+                      "\"unresolved_count\":1,"
+                      "\"conditions\":[{"
+                      "\"name\":\"stale_validate_headers_repair\","
+                      "\"currently_active\":true,"
+                      "\"attempts\":5,"
+                      "\"operator_needed_emitted\":true,"
+                      "\"last_operator_needed_unix\":1782240000,"
+                      "\"target_at_detect\":1782239000}]}");
     if (strcmp(method, "dumpstate") == 0)
         return strdup("{\"initialized\":true,"
                       "\"has_connman\":true,"
@@ -789,6 +801,23 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           frontier, "first_validate_failure_repair_owner")),
                       "stale_validate_headers_repair");
+        const struct json_value *condition_engine =
+            json_get(&root, "condition_engine");
+        ASSERT(condition_engine != NULL);
+        ASSERT(json_get_int(json_get(condition_engine,
+                                     "registered_count")) == 28);
+        ASSERT(json_get_int(json_get(condition_engine,
+                                     "active_count")) == 2);
+        ASSERT(json_get_int(json_get(condition_engine,
+                                     "unresolved_count")) == 1);
+        const struct json_value *conditions =
+            json_get(condition_engine, "conditions");
+        ASSERT(conditions != NULL);
+        ASSERT(json_size(conditions) == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(conditions, 0), "name")),
+                      "stale_validate_headers_repair");
+        ASSERT(json_get_bool(json_get(json_at(conditions, 0),
+                                      "operator_needed_emitted")));
         json_free(&root);
         json_free(&args);
         free(body);
