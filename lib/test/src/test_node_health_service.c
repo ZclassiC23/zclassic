@@ -133,6 +133,74 @@ int test_node_health_service(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("node_health_service: reducer log-head gap degrades health... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip = {0};
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        memset(&tip, 0, sizeof(tip));
+        main_state_init(&ms);
+        net_manager_init(&cm.manager);
+        block_index_init(&tip);
+
+        h_tip.data[0] = 102;
+        tip.phashBlock = &h_tip;
+        tip.nHeight = 102;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        arith_uint256_set_u64(&tip.nChainWork, 103);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &tip;
+
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),
+                                      "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        if (ok) {
+            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                                   "log-head-peer", false);
+            ok = ok && (node != NULL);
+        }
+        if (ok) {
+            node->starting_height = tip.nHeight;
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            node_health_test_set_log_head_override(100);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && !health.healthy;
+            ok = ok && health.tip_height == tip.nHeight;
+            ok = ok && health.peer_best_height == tip.nHeight;
+            ok = ok && health.log_head == 100;
+            ok = ok && health.log_head_gap == 2;
+            ok = ok && strcmp(health.degraded_reason,
+                              "log_head_gap_2") == 0;
+        }
+
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("node_health_service: coordinator at-tip overrides stale sync FSM... ");
     {
         struct cac_decision decision;

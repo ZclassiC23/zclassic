@@ -139,5 +139,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms);
 bool node_health_chain_advance_synced(const struct cac_decision *decision);
+#ifdef ZCL_TESTING
+void node_health_test_set_log_head_override(int log_head);
+#endif
 
 #endif

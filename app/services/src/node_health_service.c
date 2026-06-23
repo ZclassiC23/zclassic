@@ -37,6 +37,7 @@
 #include "ports/node_health_store_port.h"
 #include <stdio.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -107,6 +108,15 @@ static int64_t get_rss_kb(void)
 }
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
+
+#ifdef ZCL_TESTING
+static _Atomic int g_test_log_head_override = -2;
+
+void node_health_test_set_log_head_override(int log_head)
+{
+    atomic_store(&g_test_log_head_override, log_head);
+}
+#endif
 
 bool node_health_chain_advance_synced(const struct cac_decision *decision)
 {
@@ -283,8 +293,16 @@ void node_health_collect(struct node_health_snapshot *snapshot,
      * reducer's finalized served height directly — cursor C means "served
      * tip at C". A zero cursor means "nothing served yet" -> -1. */
     {
-        uint64_t lh = tip_finalize_stage_cursor();
-        snapshot->log_head = (lh > 0) ? (int)lh : -1;
+#ifdef ZCL_TESTING
+        int override = atomic_load(&g_test_log_head_override);
+        if (override >= -1) {
+            snapshot->log_head = override;
+        } else
+#endif
+        {
+            uint64_t lh = tip_finalize_stage_cursor();
+            snapshot->log_head = (lh > 0) ? (int)lh : -1;
+        }
         if (snapshot->peer_best_height >= 0 && snapshot->log_head >= 0)
             snapshot->log_head_gap =
                 snapshot->peer_best_height - snapshot->log_head;
@@ -389,6 +407,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (snapshot->tip_lag > 1) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "tip_lag_%d", snapshot->tip_lag);
+    } else if (snapshot->log_head_gap > 1) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "log_head_gap_%d", snapshot->log_head_gap);
     } else if (snapshot->tip_stale) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "tip_stale");
@@ -416,7 +437,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                         snapshot->has_peers &&
                         snapshot->header_height <= snapshot->tip_height + 1 &&
                         !snapshot->tip_stale &&
-                        snapshot->tip_lag <= 1;
+                        snapshot->tip_lag <= 1 &&
+                        snapshot->log_head_gap <= 1;
 
     /* Surface tip-advance age + flip healthy when the watchdog deadman
      * threshold is crossed in any non-tip state with peers. Threshold
