@@ -605,6 +605,8 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(svc, "candidate_trust") != NULL &&
             strcmp(json_get_str(json_get(svc, "candidate_trust")),
                    "bounded_advisory_fallback") == 0;
+        ok = ok && json_get(svc, "candidate_lag_observed") != NULL &&
+            json_is_null(json_get(svc, "candidate_lag_observed"));
         ok = ok && json_get(svc, "activation_blocker") != NULL &&
             strcmp(json_get_str(json_get(svc, "activation_blocker")),
                    "body-hash-mismatch") == 0;
@@ -629,6 +631,8 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(svc, "blockers_total")) == 1;
         ok = ok && json_get(svc, "stalls_total") != NULL &&
             json_get_int(json_get(svc, "stalls_total")) == 3;
+        ok = ok && json_get(svc, "lag_observed") != NULL &&
+            json_is_null(json_get(svc, "lag_observed"));
 
         json_free(&result);
         legacy_mirror_sync_reset_for_test();
@@ -655,7 +659,20 @@ int test_syncdiag_rpc(void)
         json_init(&result);
 
         block_source_policy_reset_for_test();
+        legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
+        struct legacy_mirror_sync_stats stats;
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = false;
+        stats.legacy_height = 0;
+        stats.local_height = 3157703;
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "rpc-unreachable");
+        snprintf(stats.last_error, sizeof(stats.last_error),
+                 "%s", "connect failed");
+        legacy_mirror_sync_test_set_stats(&stats, NULL);
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_override(100, "body-hash-mismatch");
         mirror_consensus_record_blocker("body-hash-mismatch");
@@ -679,6 +696,14 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(checks, "error_total") != NULL;
         ok = ok && json_get(checks, "last_error_age_seconds") != NULL;
         ok = ok && json_get(checks, "last_error_recent") != NULL;
+        ok = ok && json_get(&result, "candidate_lag_known") != NULL &&
+            !json_get_bool(json_get(&result, "candidate_lag_known"));
+        ok = ok && json_get(&result, "candidate_lag_valid") != NULL &&
+            !json_get_bool(json_get(&result, "candidate_lag_valid"));
+        ok = ok && json_get(&result, "candidate_lag") != NULL &&
+            json_get_int(json_get(&result, "candidate_lag")) == 0;
+        ok = ok && json_get(&result, "candidate_lag_observed") != NULL &&
+            json_is_null(json_get(&result, "candidate_lag_observed"));
         ok = ok && json_get(&result, "mirror_blockers_total") != NULL &&
             json_get_int(json_get(&result, "mirror_blockers_total")) == 1;
         ok = ok && json_get(&result, "mirror_stalls_total") != NULL &&
@@ -798,6 +823,7 @@ int test_syncdiag_rpc(void)
         json_free(&params);
         json_free(&result);
         block_source_policy_reset_for_test();
+        legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
     }
 
