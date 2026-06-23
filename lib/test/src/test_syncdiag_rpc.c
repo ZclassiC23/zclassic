@@ -21,6 +21,7 @@
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
+#include "framework/condition.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
@@ -470,6 +471,7 @@ int test_syncdiag_rpc(void)
         struct json_value result;
         json_init(&result);
         block_source_policy_reset_for_test();
+        condition_engine_reset_for_testing();
         mirror_consensus_reset_for_test();
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_blocker("body-hash-mismatch");
@@ -667,6 +669,8 @@ int test_syncdiag_rpc(void)
             checks ? json_get(checks, "chain_advance") : NULL;
         const struct json_value *ce =
             checks ? json_get(checks, "chain_evidence") : NULL;
+        const struct json_value *condition_engine =
+            checks ? json_get(checks, "condition_engine") : NULL;
         bool ok = seeded && executed && result.type == JSON_OBJ;
         ok = ok && json_get(&result, "build_commit") != NULL &&
             strcmp(json_get_str(json_get(&result, "build_commit")),
@@ -696,6 +700,11 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(&result,
                                          "mirror_activation_blocker")),
                    "body-hash-mismatch") == 0;
+        ok = ok && condition_engine && condition_engine->type == JSON_OBJ;
+        ok = ok && json_get(condition_engine, "registered_count") != NULL;
+        ok = ok && json_get(condition_engine, "active_count") != NULL;
+        ok = ok && json_get(condition_engine, "unresolved_count") != NULL;
+        ok = ok && json_get(condition_engine, "conditions") != NULL;
         ok = ok && ce && ce->type == JSON_OBJ;
         ok = ok && json_get(ce, "state") != NULL;
         ok = ok && json_get(ce, "publish_state") != NULL;

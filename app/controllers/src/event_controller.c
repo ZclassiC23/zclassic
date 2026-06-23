@@ -6,6 +6,7 @@
 #include "controllers/event_controller.h"
 #include "controllers/strong_params.h"
 #include "config/boot.h"
+#include "framework/condition.h"
 #include "services/node_health_service.h"
 #include "services/bg_validation_service.h"
 #include "services/block_index_integrity.h"
@@ -246,6 +247,13 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     if (health.operator_needed && health.operator_needed_detail[0])
         json_push_kv_str(&checks, "operator_needed_detail",
                          health.operator_needed_detail);
+    {
+        struct json_value conditions = {0};
+        json_set_object(&conditions);
+        if (condition_engine_dump_state_json(&conditions, NULL))
+            json_push_kv(&checks, "condition_engine", &conditions);
+        json_free(&conditions);
+    }
     /* Fail-loud validation pack rollup (informational; the pack pages
      * + HOLDs on its own — see zcl_state subsystem=validation_pack). */
     json_push_kv_bool(&checks, "validation_pack_ok",
