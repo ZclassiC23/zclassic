@@ -208,7 +208,8 @@ static bool validate_ok_row_exists(sqlite3 *db, int height)
     return ok;
 }
 
-static bool seed_repair_header(sqlite3 *db, int height)
+static bool seed_repair_header_hash(sqlite3 *db, int height,
+                                    struct uint256 *out_hash)
 {
     struct block_header h;
     block_header_init(&h);
@@ -229,7 +230,14 @@ static bool seed_repair_header(sqlite3 *db, int height)
 
     struct uint256 hash;
     block_header_get_hash(&h, &hash);
+    if (out_hash)
+        *out_hash = hash;
     return stage_repair_header_solution_save(db, height, &hash, &h);
+}
+
+static bool seed_repair_header(sqlite3 *db, int height)
+{
+    return seed_repair_header_hash(db, height, NULL);
 }
 
 static void setup_main_state(struct main_state *ms,
@@ -404,6 +412,49 @@ int test_stale_validate_headers_repair_condition(void)
         ok = ok && row_exists(db, "body_fetch_log", 2);
         SVHR_CHECK("header-source hash mismatch activates validate-header "
                    "repair without destructive rewind",
+                   ok);
+        teardown_condition_case(dir, &ms);
+    }
+
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[3];
+        struct uint256 hashes[3];
+        struct uint256 repair_hash;
+        bool ok = setup_condition_case("hash_mismatch_correct_header_pinned",
+                                       dir, sizeof(dir), &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_poison_rows(
+            db, 2, "'header-source-hash-mismatch'", 0);
+        ok = ok && seed_repair_header_hash(db, 2, &repair_hash);
+
+        block_index_init(&blocks[2]);
+        hashes[2] = repair_hash;
+        blocks[2].phashBlock = &hashes[2];
+        blocks[2].nHeight = 2;
+        blocks[2].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        blocks[2].pprev = &blocks[1];
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &blocks[2]);
+
+        for (int i = 0; i < 5; i++) {
+            stale_validate_headers_repair_test_clear_backoff();
+            condition_engine_tick();
+        }
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "stale_validate_headers_repair", &snap);
+
+        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 5;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok && got && snap.attempts >= 5;
+        ok = ok && got && snap.operator_needed_emitted;
+        ok = ok && row_exists(db, "validate_headers_log", 2);
+        SVHR_CHECK("correct repair header with pinned H* remains diagnosable "
+                   "and pages",
                    ok);
         teardown_condition_case(dir, &ms);
     }

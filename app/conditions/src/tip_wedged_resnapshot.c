@@ -20,10 +20,12 @@
 
 bool block_failed_mask_at_tip_recovery_exhausted(int *target_height,
                                                  int *attempts_out);
+bool block_failed_mask_at_tip_recovery_exhausted_is_no_advance(void);
 
 enum tip_wedged_trigger {
     TWR_TRIGGER_NONE = 0,
     TWR_TRIGGER_FAILED_MASK_EXHAUSTED,
+    TWR_TRIGGER_TIP_NO_ADVANCE_EXHAUSTED,
     TWR_TRIGGER_LOCAL_IMPORT_EXHAUSTED,
 };
 
@@ -46,6 +48,8 @@ static const char *trigger_name(enum tip_wedged_trigger trigger)
     switch (trigger) {
     case TWR_TRIGGER_FAILED_MASK_EXHAUSTED:
         return "block_failed_mask_exhausted";
+    case TWR_TRIGGER_TIP_NO_ADVANCE_EXHAUSTED:
+        return "tip_no_advance_exhausted";
     case TWR_TRIGGER_LOCAL_IMPORT_EXHAUSTED:
         return "local_import_exhausted";
     case TWR_TRIGGER_NONE:
@@ -138,7 +142,9 @@ static bool detect_tip_wedged_resnapshot(void)
     enum tip_wedged_trigger trigger = TWR_TRIGGER_NONE;
     if (block_failed_mask_at_tip_recovery_exhausted(&target, &attempts)) {
         (void)attempts;
-        trigger = TWR_TRIGGER_FAILED_MASK_EXHAUSTED;
+        trigger = block_failed_mask_at_tip_recovery_exhausted_is_no_advance()
+            ? TWR_TRIGGER_TIP_NO_ADVANCE_EXHAUSTED
+            : TWR_TRIGGER_FAILED_MASK_EXHAUSTED;
     } else if (local_import_exhausted(local, &target)) {
         trigger = TWR_TRIGGER_LOCAL_IMPORT_EXHAUSTED;
     }

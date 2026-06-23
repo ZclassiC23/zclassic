@@ -67,26 +67,10 @@ static bool detect_stale_validate_headers_repair(void)
     if (mode == STAGE_REPAIR_POISON_NONE)
         return false;
 
-    /* For a SOLUTIONLESS poison the symptom is "the frontier block's Equihash
-     * solution is missing." Once the CORRECT solution is backfilled, the
-     * non-destructive validate_headers recheck (header_from_repair_table +
-     * recheck_failed_rows) flips the ok=0 row forward — no
-     * destructive rewind is needed. So this Condition must DEACTIVATE the moment
-     * the correct solution is present, letting the recheck self-heal and the
-     * attempt counter reset (condition.c resets on !detected once cleared). The
-     * availability check is HASH-AWARE against the canonical block at `target`
-     * so a stale wrong-block row does not masquerade as "present". A
-     * DOWNSTREAM_STALE poison (validate ok=1 but a skipped-invalid body) has no
-     * non-destructive heal and always fires. */
-    if (validate_repairable_mode(mode)) {
-        struct main_state *ms = condition_engine_main_state();
-        struct block_index *bi =
-            ms ? active_chain_at(&ms->chain_active, target) : NULL;
-        const struct uint256 *canon = bi ? bi->phashBlock : NULL;
-        if (canon &&
-            stage_repair_header_solution_available(db, target, canon))
-            return false;
-    }
+    /* A repairable validate poison stays detected until H* advances. If the
+     * correct repair header is already present, the remedy below returns SKIP
+     * and lets validate_headers' non-destructive recheck flip the row forward;
+     * keeping detect=true makes a stuck recheck page instead of going quiet. */
 
     atomic_store(&g_target_at_detect, target);
     atomic_store(&g_mode_at_detect, (int)mode);

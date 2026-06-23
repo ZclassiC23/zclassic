@@ -9,10 +9,12 @@
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "framework/condition.h"
+#include "jobs/stage_repair.h"
 #include "models/database.h"
 #include "platform/clock.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/sync_monitor.h"
+#include "storage/progress_store.h"
 #include "validation/process_block.h"
 
 #include <stdatomic.h>
@@ -29,7 +31,14 @@ void register_block_failed_mask_at_tip(void);
 void register_tip_wedged_resnapshot(void);
 void block_failed_mask_at_tip_test_reset(void);
 int block_failed_mask_at_tip_test_stall_type(void);
+int block_failed_mask_at_tip_test_target_height(void);
+int block_failed_mask_at_tip_test_validate_repair_owner_height(void);
 void block_failed_mask_at_tip_test_mark_exhausted(int target_height);
+void block_failed_mask_at_tip_test_mark_no_advance_exhausted(
+    int target_height,
+    int tip_height);
+bool block_failed_mask_at_tip_recovery_exhausted(int *target_height,
+                                                 int *attempts_out);
 void tip_wedged_resnapshot_test_reset(void);
 void tip_wedged_resnapshot_test_set_runtime(
     struct node_db *ndb,
@@ -183,6 +192,36 @@ static bool seed_snapshot_manifest_db(struct node_db *ndb,
     return true;
 }
 
+static bool exec_progress_sql(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        printf("utxo_activation_paused SQL failed: %s\n",
+               err ? err : "(no message)");
+        if (err)
+            sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static bool seed_validate_repair_frontier(sqlite3 *db, int repair_height)
+{
+    char sql[1024];
+    snprintf(sql, sizeof(sql),
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "fail_reason TEXT, validated_at INTEGER NOT NULL);"
+        "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+        "VALUES('tip_finalize',%d,1),('validate_headers',%d,1);"
+        "INSERT OR REPLACE INTO validate_headers_log"
+        "(height,hash,ok,fail_reason,validated_at) "
+        "VALUES(%d,zeroblob(32),0,'header-source-hash-mismatch',1);",
+        repair_height - 1, repair_height + 1, repair_height);
+    return exec_progress_sql(db, sql);
+}
+
 int test_utxo_activation_paused(void)
 {
     printf("\n=== utxo activation paused condition tests ===\n");
@@ -218,6 +257,137 @@ int test_utxo_activation_paused(void)
         UAP_CHECK("block condition fires on stale tip with HAVE_DATA", ok);
         main_state_free(&ms);
         clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 6500);
+        bool ok = true;
+        struct main_state ms;
+        struct block_index tip;
+        struct block_index recovered_tip;
+        struct block_index best_header;
+        struct node_db ndb;
+        struct snapshot_sync_service svc;
+        uint8_t block_hash[32];
+        uint8_t chain_work[32];
+        struct watchdog_stats wd;
+
+        memset(&tip, 0, sizeof(tip));
+        memset(&recovered_tip, 0, sizeof(recovered_tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(block_hash, 0x54, sizeof(block_hash));
+        memset(chain_work, 0x58, sizeof(chain_work));
+        main_state_init(&ms);
+        tip.nHeight = 100;
+        tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        recovered_tip.nHeight = 101;
+        recovered_tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        recovered_tip.pprev = &tip;
+        best_header.nHeight = 110;
+        ms.pindex_best_header = &best_header;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+
+        ok = ok && node_db_open(&ndb, ":memory:");
+        ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
+        snapsync_init(&svc, &ndb);
+
+        condition_engine_set_main_state(&ms);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, NULL, &ms);
+        tip_wedged_resnapshot_test_set_runtime(&ndb, &svc);
+        block_failed_mask_at_tip_test_mark_no_advance_exhausted(101, 100);
+        register_tip_wedged_resnapshot();
+
+        condition_engine_tick();
+        bool observed = true;
+        observed = observed && tip_wedged_resnapshot_test_remedy_calls() == 1;
+        observed = observed && tip_wedged_resnapshot_test_recovery_accepted() == 1;
+        observed = observed &&
+                   tip_wedged_resnapshot_test_last_manifest_height() == 101;
+        observed = observed && svc.state == SNAPSYNC_NEGOTIATING;
+        observed = observed && condition_engine_get_active_count() == 1;
+        sync_monitor_get_stats(&wd);
+        observed = observed &&
+                   wd.last_recovery == WATCHDOG_SNAPSHOT_RESNAPSHOT;
+        observed = observed && wd.last_recovery_local_height == 100;
+        observed = observed && wd.last_recovery_peer_height == 110;
+        observed = observed && wd.last_recovery_target_height == 101;
+        observed = observed && wd.last_recovery_manifest_height == 101;
+        observed = observed &&
+                   strcmp(wd.last_recovery_trigger,
+                          "tip_no_advance_exhausted") == 0;
+
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &recovered_tip);
+        fake_clock_set(&clock, 6501);
+        condition_engine_tick();
+        observed = observed && condition_engine_get_active_count() == 0;
+        ok = ok && observed;
+
+        UAP_CHECK("tip_wedged_resnapshot labels exhausted no-advance recovery",
+                  ok);
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        main_state_free(&ms);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 1500);
+        bool ok = true;
+        char dir[256];
+
+        progress_store_close();
+        test_make_tmpdir(dir, sizeof(dir), "block_failed_mask", "vh_owner");
+        ok = ok && progress_store_open(dir);
+        ok = ok && seed_validate_repair_frontier(progress_store_db(), 2);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[3];
+        struct block_index *b0 = insert_test_block(
+            &ms, hashes, 0, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *tip = insert_test_block(
+            &ms, hashes, 1, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *next = insert_test_block(
+            &ms, hashes, 2, BLOCK_HAVE_DATA);
+        ok = ok && b0 && tip && next &&
+             active_chain_move_window_tip(&ms.chain_active, tip);
+        condition_engine_set_main_state(&ms);
+        register_block_failed_mask_at_tip();
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 1801);
+        condition_engine_tick();
+
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok &&
+             block_failed_mask_at_tip_test_validate_repair_owner_height() == 2;
+        ok = ok && block_failed_mask_at_tip_test_target_height() == -1;
+        UAP_CHECK("repairable validate frontier owns generic no-advance stall",
+                  ok);
+
+        condition_engine_set_main_state(NULL);
+        main_state_free(&ms);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        bool ok = true;
+        int target = -1;
+        int attempts = 0;
+        block_failed_mask_at_tip_test_mark_no_advance_exhausted(101, 100);
+        ok = ok &&
+             block_failed_mask_at_tip_recovery_exhausted(&target, &attempts);
+        ok = ok && target == 101;
+        ok = ok && attempts == 5;
+        UAP_CHECK("unwitnessed no-advance exhaustion is recoverable", ok);
     }
 
     {
