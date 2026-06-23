@@ -254,6 +254,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     char *ci = mcp_node_rpc("getblockchaininfo", NULL);
     char *cac = mcp_node_rpc("dumpstate", "[\"chain_advance_coordinator\"]");
     char *rf = mcp_node_rpc("dumpstate", "[\"reducer_frontier\"]");
+    char *tf = mcp_node_rpc("dumpstate", "[\"tip_finalize\"]");
     char *ce = mcp_node_rpc("dumpstate", "[\"condition_engine\"]");
 
     int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
@@ -348,13 +349,14 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     status_push_raw_json(&root, "health", hc);
     status_push_dumpstate_json(&root, "chain_advance", cac);
     status_push_dumpstate_json(&root, "reducer_frontier", rf);
+    status_push_dumpstate_json(&root, "tip_finalize", tf);
     status_push_dumpstate_json(&root, "condition_engine", ce);
     status_push_blocker_summary(&root);
 
     char *out = json_value_to_body(&root, "status_body");
     json_free(&root);
     free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
-    free(rf); free(ce);
+    free(rf); free(tf); free(ce);
     if (!out) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),

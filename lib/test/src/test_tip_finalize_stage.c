@@ -891,6 +891,11 @@ int test_tip_finalize_stage(void)
             TF_CHECK("precondition: repeat count == 2 in dump",
                      n > 0 && n < sizeof(buf) &&
                      strstr(buf, "\"precondition_repeat_count\":2") != NULL);
+            TF_CHECK("precondition: dump records blocked height",
+                     strstr(buf, "\"last_precondition_height\":1") != NULL);
+            TF_CHECK("precondition: dump records blocked reason",
+                     strstr(buf, "\"last_precondition_reason\":"
+                             "\"have_data_missing\"") != NULL);
             json_free(&v);
         }
         /* Land the successor body: block[2] now has HAVE_DATA, so BOTH height 1
@@ -1061,6 +1066,10 @@ int test_tip_finalize_stage(void)
                  strstr(buf, "\"finalized_total\":2") != NULL);
         TF_CHECK("dump: precondition_repeat_count=0",
                  strstr(buf, "\"precondition_repeat_count\":0") != NULL);
+        TF_CHECK("dump: last_precondition_height=-1",
+                 strstr(buf, "\"last_precondition_height\":-1") != NULL);
+        TF_CHECK("dump: last_precondition_reason empty",
+                 strstr(buf, "\"last_precondition_reason\":\"\"") != NULL);
         json_free(&v);
         tf_teardown(dir, &ms, &sc);
     }

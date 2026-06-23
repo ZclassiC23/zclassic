@@ -744,6 +744,26 @@ int test_reducer_frontier_reconcile_light(void)
              json_get_int(json_get(
                  detail, "tipfin_backfill_present_at_detect")) == 0;
         ok = ok && json_get_int(json_get(detail, "remedy_calls")) == 1;
+        ok = ok && json_get_bool(json_get(
+                     detail, "last_reconcile_seen"));
+        ok = ok && strcmp(json_get_str(json_get(
+                     detail, "last_reconcile_phase")), "remedy") == 0;
+        ok = ok && !json_get_bool(json_get(
+                     detail, "last_reconcile_refused_coin_tear"));
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_hstar")) == A + 1;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_body_fetch_cursor_before"))
+                     == A + 4;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_body_fetch_cursor_after"))
+                     == A + 2;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_tip_finalize_cursor_before"))
+                     == A + 4;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_tip_finalize_cursor_after"))
+                     == A + 1;
         json_free(&dump);
 
         condition_engine_tick();
@@ -810,6 +830,30 @@ int test_reducer_frontier_reconcile_light(void)
                   cursor_value(db, "tip_finalize") == A + 4 &&
                   cursor_value(db, "body_fetch") == A + 4 &&
                   (fx.idx[2]->nStatus & BLOCK_VALID_MASK) == 0;
+
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            rfrl_json_condition(&dump, "reducer_frontier_reconcile_light");
+        const struct json_value *detail = json_get(cond, "detail");
+        ok = ok && detail != NULL;
+        ok = ok && json_get_bool(json_get(
+                     detail, "last_reconcile_seen"));
+        ok = ok && strcmp(json_get_str(json_get(
+                     detail, "last_reconcile_phase")), "remedy") == 0;
+        ok = ok && json_get_bool(json_get(
+                     detail, "last_reconcile_refused_coin_tear"));
+        ok = ok && !json_get_bool(json_get(
+                     detail, "last_reconcile_refused_coin_unknown"));
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_coins_applied_height"))
+                     == A + 3;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_tip_finalize_cursor_before"))
+                     == A + 4;
+        json_free(&dump);
 
         RFRL_CHECK("coin-tear condition escalates without mutation", ok);
 
@@ -910,6 +954,30 @@ int test_reducer_frontier_reconcile_light(void)
                   cursor_value(db, "tip_finalize") == A + 1 &&
                   cursor_value(db, "script_validate") == A + 4 &&
                   cursor_value(db, "utxo_apply") == A + 4;
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            rfrl_json_condition(&dump, "reducer_frontier_reconcile_light");
+        const struct json_value *detail = json_get(cond, "detail");
+        ok = ok && detail != NULL;
+        ok = ok && json_get_bool(json_get(
+                     detail, "last_reconcile_seen"));
+        ok = ok && strcmp(json_get_str(json_get(
+                     detail, "last_reconcile_phase")), "remedy") == 0;
+        ok = ok && json_get_bool(json_get(
+                     detail, "last_reconcile_coin_backfill_attempted"));
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_coin_backfill_hole_height"))
+                     == A + 2;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_coin_backfill_status")) > 0;
+        ok = ok && strcmp(json_get_str(json_get(
+                     detail,
+                     "last_reconcile_coin_backfill_status_label")),
+                     "not_applicable") != 0;
+        json_free(&dump);
         RFRL_CHECK("coin-backfill refusal condition is failed, not skipped",
                    ok);
 

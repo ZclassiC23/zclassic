@@ -598,6 +598,15 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"operator_needed_emitted\":true,"
                       "\"last_operator_needed_unix\":1782240000,"
                       "\"target_at_detect\":1782239000}]}}");
+    if (strcmp(method, "dumpstate") == 0 &&
+        params_json && strstr(params_json, "tip_finalize") != NULL)
+        return strdup("{\"subsystem\":\"tip_finalize\","
+                      "\"captured_at\":1782240004,"
+                      "\"state\":{\"stage_name\":\"tip_finalize\","
+                      "\"cursor\":3157646,"
+                      "\"last_precondition_height\":3157646,"
+                      "\"last_precondition_reason\":\"have_data_missing\","
+                      "\"precondition_repeat_count\":7}}");
     if (strcmp(method, "dumpstate") == 0)
         return strdup("{\"subsystem\":\"chain_advance_coordinator\","
                       "\"captured_at\":1782240003,"
@@ -819,6 +828,18 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           frontier, "first_validate_failure_repair_owner")),
                       "stale_validate_headers_repair");
+        const struct json_value *tip_finalize =
+            json_get(&root, "tip_finalize");
+        ASSERT(tip_finalize != NULL);
+        ASSERT(json_get(tip_finalize, "state") == NULL);
+        ASSERT(json_get_int(json_get(tip_finalize, "cursor")) == 3157646);
+        ASSERT(json_get_int(json_get(
+                   tip_finalize, "last_precondition_height")) == 3157646);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          tip_finalize, "last_precondition_reason")),
+                      "have_data_missing");
+        ASSERT(json_get_int(json_get(
+                   tip_finalize, "precondition_repeat_count")) == 7);
         const struct json_value *condition_engine =
             json_get(&root, "condition_engine");
         ASSERT(condition_engine != NULL);

@@ -39,6 +39,135 @@ static _Atomic int g_tipfin_backfill_progress_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_tear_bypass_warn_total = 0;
 
+#define RFRL_RR_FIELD_LIST(X)                                             \
+    X(REPAIRED, "last_reconcile_repaired", true)                         \
+    X(CLAMPED_TIP_FINALIZE, "last_reconcile_clamped_tip_finalize", true) \
+    X(REFUSED_COIN_TEAR, "last_reconcile_refused_coin_tear", true)       \
+    X(REFUSED_COIN_UNKNOWN, "last_reconcile_refused_coin_unknown", true) \
+    X(COINS_APPLIED_FOUND, "last_reconcile_coins_applied_found", true)   \
+    X(HSTAR, "last_reconcile_hstar", false)                              \
+    X(SERVED_FLOOR, "last_reconcile_served_floor", false)                \
+    X(COINS_APPLIED_HEIGHT, "last_reconcile_coins_applied_height", false)\
+    X(CLAMPED_VALIDATE_HEADERS,                                           \
+      "last_reconcile_clamped_validate_headers", true)                   \
+    X(VALIDATE_HEADERS_CURSOR_BEFORE,                                     \
+      "last_reconcile_validate_headers_cursor_before", false)            \
+    X(VALIDATE_HEADERS_CURSOR_AFTER,                                      \
+      "last_reconcile_validate_headers_cursor_after", false)             \
+    X(CLAMPED_BODY_FETCH, "last_reconcile_clamped_body_fetch", true)     \
+    X(BODY_FETCH_CURSOR_BEFORE,                                           \
+      "last_reconcile_body_fetch_cursor_before", false)                  \
+    X(BODY_FETCH_CURSOR_AFTER,                                            \
+      "last_reconcile_body_fetch_cursor_after", false)                   \
+    X(CLAMPED_BODY_PERSIST,                                               \
+      "last_reconcile_clamped_body_persist", true)                       \
+    X(BODY_PERSIST_CURSOR_BEFORE,                                         \
+      "last_reconcile_body_persist_cursor_before", false)                \
+    X(BODY_PERSIST_CURSOR_AFTER,                                          \
+      "last_reconcile_body_persist_cursor_after", false)                 \
+    X(TIP_FINALIZE_CURSOR_BEFORE,                                         \
+      "last_reconcile_tip_finalize_cursor_before", false)                \
+    X(TIP_FINALIZE_CURSOR_AFTER,                                          \
+      "last_reconcile_tip_finalize_cursor_after", false)                 \
+    X(SWEEP_TOP, "last_reconcile_sweep_top", false)                      \
+    X(LOWEST_HAVE_DATA_CLEARED,                                           \
+      "last_reconcile_lowest_have_data_cleared", false)                  \
+    X(LOWEST_VALIDATE_HEADERS_REFILL_HOLE,                                \
+      "last_reconcile_lowest_validate_headers_refill_hole", false)       \
+    X(LOWEST_VALIDATE_HEADERS_HASH_SPLIT,                                 \
+      "last_reconcile_lowest_validate_headers_hash_split", false)        \
+    X(LOWEST_BODY_FETCH_REFILL_HOLE,                                      \
+      "last_reconcile_lowest_body_fetch_refill_hole", false)             \
+    X(LOWEST_BODY_PERSIST_REFILL_HOLE,                                    \
+      "last_reconcile_lowest_body_persist_refill_hole", false)           \
+    X(SCRIPTS_SET, "last_reconcile_scripts_set", false)                  \
+    X(HAVE_DATA_SET, "last_reconcile_have_data_set", false)              \
+    X(HAVE_DATA_CLEARED, "last_reconcile_have_data_cleared", false)      \
+    X(FAILED_MASK_CLEARED, "last_reconcile_failed_mask_cleared", false)  \
+    X(HEADER_EVENTS_EMITTED, "last_reconcile_header_events_emitted", false)\
+    X(STALE_SCRIPT_REPAIR_ATTEMPTED,                                      \
+      "last_reconcile_stale_script_repair_attempted", true)              \
+    X(STALE_SCRIPT_REPAIRED, "last_reconcile_stale_script_repaired", true)\
+    X(STALE_SCRIPT_REPAIR_MARKER_SEEN,                                    \
+      "last_reconcile_stale_script_repair_marker_seen", true)            \
+    X(STALE_SCRIPT_REPAIR_GENUINELY_INVALID,                              \
+      "last_reconcile_stale_script_repair_genuinely_invalid", true)      \
+    X(STALE_SCRIPT_REPAIR_HEIGHT,                                         \
+      "last_reconcile_stale_script_repair_height", false)                \
+    X(STALE_SCRIPT_CURSOR_BEFORE,                                         \
+      "last_reconcile_stale_script_cursor_before", false)                \
+    X(STALE_SCRIPT_CURSOR_AFTER,                                          \
+      "last_reconcile_stale_script_cursor_after", false)                 \
+    X(STALE_SCRIPT_BACKFILL_FIRST,                                        \
+      "last_reconcile_stale_script_backfill_first", false)               \
+    X(STALE_SCRIPT_BACKFILL_LAST,                                         \
+      "last_reconcile_stale_script_backfill_last", false)                \
+    X(STALE_SCRIPT_UTXO_CURSOR_BEFORE,                                    \
+      "last_reconcile_stale_script_utxo_cursor_before", false)           \
+    X(STALE_SCRIPT_TIP_CURSOR_BEFORE,                                     \
+      "last_reconcile_stale_script_tip_cursor_before", false)            \
+    X(COIN_BACKFILL_ATTEMPTED,                                            \
+      "last_reconcile_coin_backfill_attempted", true)                    \
+    X(COIN_BACKFILL_STATUS, "last_reconcile_coin_backfill_status", false)\
+    X(COIN_BACKFILL_HOLE_HEIGHT,                                          \
+      "last_reconcile_coin_backfill_hole_height", false)                 \
+    X(COIN_BACKFILL_UNRESOLVED,                                           \
+      "last_reconcile_coin_backfill_unresolved", false)                  \
+    X(COIN_BACKFILL_INSERTED,                                             \
+      "last_reconcile_coin_backfill_inserted", false)                    \
+    X(COIN_BACKFILL_SCAN_NEXT,                                            \
+      "last_reconcile_coin_backfill_scan_next", false)                   \
+    X(COIN_BACKFILL_OWNER_REFUSED,                                        \
+      "last_reconcile_coin_backfill_owner_refused", true)                \
+    X(COIN_BACKFILL_GENUINELY_INVALID,                                    \
+      "last_reconcile_coin_backfill_genuinely_invalid", true)            \
+    X(TIPFIN_BACKFILL_HEIGHT,                                             \
+      "last_reconcile_tipfin_backfill_height", false)                    \
+    X(TIPFIN_BACKFILL_COUNT,                                              \
+      "last_reconcile_tipfin_backfill_count", false)                     \
+    X(TIPFIN_BACKFILL_MARKER_SEEN,                                        \
+      "last_reconcile_tipfin_backfill_marker_seen", true)                \
+    X(TIPFIN_BACKFILL_REFUSED_REASON,                                     \
+      "last_reconcile_tipfin_backfill_refused_reason", false)            \
+    X(NONCANONICAL_FOUND, "last_reconcile_noncanonical_found", false)    \
+    X(NONCANONICAL_PURGED, "last_reconcile_noncanonical_purged", false)  \
+    X(LOWEST_NONCANONICAL, "last_reconcile_lowest_noncanonical", false)  \
+    X(REORG_RESIDUE_TIPFIN_FOUND,                                         \
+      "last_reconcile_reorg_residue_tipfin_found", false)                \
+    X(REORG_RESIDUE_TIPFIN_REPLACED,                                      \
+      "last_reconcile_reorg_residue_tipfin_replaced", false)             \
+    X(LOWEST_REORG_RESIDUE_TIPFIN,                                        \
+      "last_reconcile_lowest_reorg_residue_tipfin", false)
+
+enum rfrl_rr_field {
+#define RFRL_RR_ENUM(id, key, is_bool) RFRL_RR_##id,
+    RFRL_RR_FIELD_LIST(RFRL_RR_ENUM)
+#undef RFRL_RR_ENUM
+    RFRL_RR_FIELD_N
+};
+
+enum rfrl_rr_phase {
+    RFRL_RR_PHASE_NONE = 0,
+    RFRL_RR_PHASE_DETECT = 1,
+    RFRL_RR_PHASE_REMEDY = 2,
+};
+
+struct rfrl_rr_field_meta {
+    const char *key;
+    bool is_bool;
+};
+
+static const struct rfrl_rr_field_meta
+    k_rfrl_rr_fields[RFRL_RR_FIELD_N] = {
+#define RFRL_RR_META(id, key, is_bool) [RFRL_RR_##id] = { key, is_bool },
+        RFRL_RR_FIELD_LIST(RFRL_RR_META)
+#undef RFRL_RR_META
+};
+
+static _Atomic int g_last_rr_seen = 0;
+static _Atomic int g_last_rr_phase = RFRL_RR_PHASE_NONE;
+static _Atomic int g_last_rr_values[RFRL_RR_FIELD_N];
+
 /* Peer-gate visibility memos. detect runs only on the serial condition-engine
  * tick thread; the active bit is atomic because diagnostics can read it. The
  * gate-suppress WARN is the shared log_throttle de-storm primitive, keyed on a
@@ -70,6 +199,167 @@ static const char *coin_backfill_status_label(int status)
     case COIN_BACKFILL_MARKER_SEEN:        return "marker_seen";
     }
     return "unknown";
+}
+
+static const char *rfrl_rr_phase_label(int phase)
+{
+    switch ((enum rfrl_rr_phase)phase) {
+    case RFRL_RR_PHASE_NONE:   return "none";
+    case RFRL_RR_PHASE_DETECT: return "detect";
+    case RFRL_RR_PHASE_REMEDY: return "remedy";
+    }
+    return "unknown";
+}
+
+#define RFRL_RR_SET_BOOL(id, value) \
+    atomic_store(&g_last_rr_values[RFRL_RR_##id], (value) ? 1 : 0)
+#define RFRL_RR_SET_INT(id, value) \
+    atomic_store(&g_last_rr_values[RFRL_RR_##id], (value))
+
+static void rfrl_snapshot_reconcile_result(
+    enum rfrl_rr_phase phase,
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (!rr)
+        return;
+
+    RFRL_RR_SET_BOOL(REPAIRED, rr->repaired);
+    RFRL_RR_SET_BOOL(CLAMPED_TIP_FINALIZE, rr->clamped_tip_finalize);
+    RFRL_RR_SET_BOOL(REFUSED_COIN_TEAR, rr->refused_coin_tear);
+    RFRL_RR_SET_BOOL(REFUSED_COIN_UNKNOWN, rr->refused_coin_unknown);
+    RFRL_RR_SET_BOOL(COINS_APPLIED_FOUND, rr->coins_applied_found);
+    RFRL_RR_SET_INT(HSTAR, rr->hstar);
+    RFRL_RR_SET_INT(SERVED_FLOOR, rr->served_floor);
+    RFRL_RR_SET_INT(COINS_APPLIED_HEIGHT, rr->coins_applied_height);
+    RFRL_RR_SET_BOOL(CLAMPED_VALIDATE_HEADERS,
+                     rr->clamped_validate_headers);
+    RFRL_RR_SET_INT(VALIDATE_HEADERS_CURSOR_BEFORE,
+                    rr->validate_headers_cursor_before);
+    RFRL_RR_SET_INT(VALIDATE_HEADERS_CURSOR_AFTER,
+                    rr->validate_headers_cursor_after);
+    RFRL_RR_SET_BOOL(CLAMPED_BODY_FETCH, rr->clamped_body_fetch);
+    RFRL_RR_SET_INT(BODY_FETCH_CURSOR_BEFORE,
+                    rr->body_fetch_cursor_before);
+    RFRL_RR_SET_INT(BODY_FETCH_CURSOR_AFTER,
+                    rr->body_fetch_cursor_after);
+    RFRL_RR_SET_BOOL(CLAMPED_BODY_PERSIST, rr->clamped_body_persist);
+    RFRL_RR_SET_INT(BODY_PERSIST_CURSOR_BEFORE,
+                    rr->body_persist_cursor_before);
+    RFRL_RR_SET_INT(BODY_PERSIST_CURSOR_AFTER,
+                    rr->body_persist_cursor_after);
+    RFRL_RR_SET_INT(TIP_FINALIZE_CURSOR_BEFORE,
+                    rr->tip_finalize_cursor_before);
+    RFRL_RR_SET_INT(TIP_FINALIZE_CURSOR_AFTER,
+                    rr->tip_finalize_cursor_after);
+    RFRL_RR_SET_INT(SWEEP_TOP, rr->sweep_top);
+    RFRL_RR_SET_INT(LOWEST_HAVE_DATA_CLEARED,
+                    rr->lowest_have_data_cleared);
+    RFRL_RR_SET_INT(LOWEST_VALIDATE_HEADERS_REFILL_HOLE,
+                    rr->lowest_validate_headers_refill_hole);
+    RFRL_RR_SET_INT(LOWEST_VALIDATE_HEADERS_HASH_SPLIT,
+                    rr->lowest_validate_headers_hash_split);
+    RFRL_RR_SET_INT(LOWEST_BODY_FETCH_REFILL_HOLE,
+                    rr->lowest_body_fetch_refill_hole);
+    RFRL_RR_SET_INT(LOWEST_BODY_PERSIST_REFILL_HOLE,
+                    rr->lowest_body_persist_refill_hole);
+    RFRL_RR_SET_INT(SCRIPTS_SET, rr->scripts_set);
+    RFRL_RR_SET_INT(HAVE_DATA_SET, rr->have_data_set);
+    RFRL_RR_SET_INT(HAVE_DATA_CLEARED, rr->have_data_cleared);
+    RFRL_RR_SET_INT(FAILED_MASK_CLEARED, rr->failed_mask_cleared);
+    RFRL_RR_SET_INT(HEADER_EVENTS_EMITTED, rr->header_events_emitted);
+    RFRL_RR_SET_BOOL(STALE_SCRIPT_REPAIR_ATTEMPTED,
+                     rr->stale_script_repair_attempted);
+    RFRL_RR_SET_BOOL(STALE_SCRIPT_REPAIRED,
+                     rr->stale_script_repaired);
+    RFRL_RR_SET_BOOL(STALE_SCRIPT_REPAIR_MARKER_SEEN,
+                     rr->stale_script_repair_marker_seen);
+    RFRL_RR_SET_BOOL(STALE_SCRIPT_REPAIR_GENUINELY_INVALID,
+                     rr->stale_script_repair_genuinely_invalid);
+    RFRL_RR_SET_INT(STALE_SCRIPT_REPAIR_HEIGHT,
+                    rr->stale_script_repair_height);
+    RFRL_RR_SET_INT(STALE_SCRIPT_CURSOR_BEFORE,
+                    rr->stale_script_cursor_before);
+    RFRL_RR_SET_INT(STALE_SCRIPT_CURSOR_AFTER,
+                    rr->stale_script_cursor_after);
+    RFRL_RR_SET_INT(STALE_SCRIPT_BACKFILL_FIRST,
+                    rr->stale_script_backfill_first);
+    RFRL_RR_SET_INT(STALE_SCRIPT_BACKFILL_LAST,
+                    rr->stale_script_backfill_last);
+    RFRL_RR_SET_INT(STALE_SCRIPT_UTXO_CURSOR_BEFORE,
+                    rr->stale_script_utxo_cursor_before);
+    RFRL_RR_SET_INT(STALE_SCRIPT_TIP_CURSOR_BEFORE,
+                    rr->stale_script_tip_cursor_before);
+    RFRL_RR_SET_BOOL(COIN_BACKFILL_ATTEMPTED,
+                     rr->coin_backfill_attempted);
+    RFRL_RR_SET_INT(COIN_BACKFILL_STATUS, rr->coin_backfill_status);
+    RFRL_RR_SET_INT(COIN_BACKFILL_HOLE_HEIGHT,
+                    rr->coin_backfill_hole_height);
+    RFRL_RR_SET_INT(COIN_BACKFILL_UNRESOLVED,
+                    rr->coin_backfill_unresolved);
+    RFRL_RR_SET_INT(COIN_BACKFILL_INSERTED,
+                    rr->coin_backfill_inserted);
+    RFRL_RR_SET_INT(COIN_BACKFILL_SCAN_NEXT,
+                    rr->coin_backfill_scan_next);
+    RFRL_RR_SET_BOOL(COIN_BACKFILL_OWNER_REFUSED,
+                     rr->coin_backfill_owner_refused);
+    RFRL_RR_SET_BOOL(COIN_BACKFILL_GENUINELY_INVALID,
+                     rr->coin_backfill_genuinely_invalid);
+    RFRL_RR_SET_INT(TIPFIN_BACKFILL_HEIGHT,
+                    rr->tipfin_backfill_height);
+    RFRL_RR_SET_INT(TIPFIN_BACKFILL_COUNT, rr->tipfin_backfill_count);
+    RFRL_RR_SET_BOOL(TIPFIN_BACKFILL_MARKER_SEEN,
+                     rr->tipfin_backfill_marker_seen);
+    RFRL_RR_SET_INT(TIPFIN_BACKFILL_REFUSED_REASON,
+                    rr->tipfin_backfill_refused_reason);
+    RFRL_RR_SET_INT(NONCANONICAL_FOUND, rr->noncanonical_found);
+    RFRL_RR_SET_INT(NONCANONICAL_PURGED, rr->noncanonical_purged);
+    RFRL_RR_SET_INT(LOWEST_NONCANONICAL, rr->lowest_noncanonical);
+    RFRL_RR_SET_INT(REORG_RESIDUE_TIPFIN_FOUND,
+                    rr->reorg_residue_tipfin_found);
+    RFRL_RR_SET_INT(REORG_RESIDUE_TIPFIN_REPLACED,
+                    rr->reorg_residue_tipfin_replaced);
+    RFRL_RR_SET_INT(LOWEST_REORG_RESIDUE_TIPFIN,
+                    rr->lowest_reorg_residue_tipfin);
+
+    atomic_store(&g_last_rr_phase, (int)phase);
+    atomic_store(&g_last_rr_seen, 1);
+}
+
+#undef RFRL_RR_SET_BOOL
+#undef RFRL_RR_SET_INT
+
+static bool rfrl_push_reconcile_snapshot(struct json_value *out)
+{
+    bool ok = true;
+    int phase = atomic_load(&g_last_rr_phase);
+    int coin_status = atomic_load(&g_last_rr_values[RFRL_RR_COIN_BACKFILL_STATUS]);
+
+    ok = ok && json_push_kv_bool(out, "last_reconcile_seen",
+                                 atomic_load(&g_last_rr_seen) != 0);
+    ok = ok && json_push_kv_str(out, "last_reconcile_phase",
+                                rfrl_rr_phase_label(phase));
+    for (int i = 0; i < RFRL_RR_FIELD_N; i++) {
+        int value = atomic_load(&g_last_rr_values[i]);
+        if (k_rfrl_rr_fields[i].is_bool) {
+            ok = ok && json_push_kv_bool(out, k_rfrl_rr_fields[i].key,
+                                         value != 0);
+        } else {
+            ok = ok && json_push_kv_int(out, k_rfrl_rr_fields[i].key,
+                                        value);
+        }
+    }
+    ok = ok && json_push_kv_str(
+        out, "last_reconcile_coin_backfill_status_label",
+        coin_backfill_status_label(coin_status));
+    return ok;
+}
+
+static void rfrl_reconcile_snapshot_reset(void)
+{
+    atomic_store(&g_last_rr_seen, 0);
+    atomic_store(&g_last_rr_phase, RFRL_RR_PHASE_NONE);
+    for (int i = 0; i < RFRL_RR_FIELD_N; i++)
+        atomic_store(&g_last_rr_values[i], 0);
 }
 
 static bool coin_backfill_refused_reconcile(
@@ -511,6 +801,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light_needed(db, ms, &rr))
         return false;
+    rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_DETECT, &rr);
     if (rr.refused_coin_unknown)
         return false;
     if (!rr.refused_coin_tear && !rr.repaired &&
@@ -570,6 +861,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light(db, ms, &rr))
         return COND_REMEDY_FAILED;
+    rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_REMEDY, &rr);
     if (rr.refused_coin_unknown) {
         LOG_WARN("condition",
                  "[condition:reducer_frontier_reconcile_light] refused "
@@ -715,6 +1007,7 @@ static bool detail_reducer_frontier_reconcile_light(struct json_value *out)
                                  atomic_load(&g_tear_bypass_active));
     ok = ok && json_push_kv_int(out, "tear_bypass_warn_total",
                                 atomic_load(&g_tear_bypass_warn_total));
+    ok = ok && rfrl_push_reconcile_snapshot(out);
     return ok;
 }
 
@@ -757,6 +1050,7 @@ void reducer_frontier_reconcile_light_test_reset(void)
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_tear_bypass_warn_total, 0);
     atomic_store(&g_tear_bypass_active, false);
+    rfrl_reconcile_snapshot_reset();
     log_throttle_reset(&g_gate_suppress);
     g_test_post_remedy_hook = NULL;
     condition_reset_state(&c_reducer_frontier_reconcile_light);
