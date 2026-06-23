@@ -183,6 +183,11 @@ injected→exit 1, emptied/renamed scan→exit 2):
   tools/githooks` and fail LOUD otherwise.
 
 ### CP-7 — [AT MINT COMPLETION, blocks-sovereignty] Copy-prove the sovereign cutover, then deploy
+> Operational runbook with the exact staging command + the durability fork:
+> [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md). The mint writes its output to
+> `/tmp/anchor-ram.snapshot` (ZCL_MINT_ANCHOR_OUT), NOT the mislabeled `/tmp/utxo-anchor-3056758.snapshot`.
+> The RANK-1 parity blocker (over-counting unspendable outputs) is **RESOLVED** (`9fe9a8ee6`,
+> `utxo_apply_delta.c:381`), so the mint reaches `count==1,354,771` and will not FATAL.
 1. Verify the artifact read-only: `uss_open(<path>, expected_sha3=cp->sha3_hash)`
    non-NULL, `count==1,354,771`, `height==3,056,758`.
 2. Atomic-place at the loader's expected path `<datadir>/utxo-anchor.snapshot`

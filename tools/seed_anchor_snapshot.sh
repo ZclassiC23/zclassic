@@ -24,11 +24,16 @@
 # Env:
 #   ZCL_DATADIR              target datadir (default: ~/.zclassic-c23)
 #   ZCL_ANCHOR_SNAPSHOT_SRC  source snapshot path
-#                            (default: /tmp/utxo-anchor-3056758.snapshot)
+#                            (default: /tmp/anchor-ram.snapshot — the output the
+#                            offline `-mint-anchor` ceremony writes via
+#                            ZCL_MINT_ANCHOR_OUT. NOTE: the old default
+#                            /tmp/utxo-anchor-3056758.snapshot is MISLABELED — its
+#                            header decodes to height 3,151,901, count 1,344,817, so
+#                            uss_open rejects it on the count check. Never use it.)
 set -u
 
 DATADIR="${ZCL_DATADIR:-$HOME/.zclassic-c23}"
-SRC="${ZCL_ANCHOR_SNAPSHOT_SRC:-/tmp/utxo-anchor-3056758.snapshot}"
+SRC="${ZCL_ANCHOR_SNAPSHOT_SRC:-/tmp/anchor-ram.snapshot}"
 DST="$DATADIR/utxo-anchor.snapshot"
 
 if [ ! -d "$DATADIR" ]; then

@@ -244,7 +244,15 @@ re-seed is a dead end on a contaminated datadir.
 **Live-node recovery TODAY: unchanged** — only the two-step cold-import crutch produces an internally
 consistent set (zclassicd's full chainstate at ITS tip). B2 cannot self-heal until the anchor mint exists.
 
-## 0e. 2026-06-20 MINT PARITY AUDIT — RANK-1 BLOCKER (verified): the fold over-counts unspendable outputs
+## 0e. 2026-06-20 MINT PARITY AUDIT — RANK-1 BLOCKER [RESOLVED 2026-06-23]: the fold over-counted unspendable outputs
+
+> **RESOLVED 2026-06-23 (commit `9fe9a8ee6`, an ancestor of HEAD):** the one-line fix below
+> LANDED — `utxo_apply_delta.c:381` now does `if (script_is_unspendable(&txo->script_pub_key)) continue;`
+> (plus genesis-block-by-hash exclusion at `:168-171`), matching zclassicd's `IsUnspendable()`
+> (`script.h:132-136`) exactly. The live fold no longer over-counts; a genesis→anchor mint reaches
+> `count==1,354,771` + the SHA3 root, so `-mint-anchor`'s hard-assert (`boot_mint_anchor.c:155-180`)
+> passes instead of FATAL-ing. Verified read-only (workflow `wf_6b148b3c-fa7`). The text below is the
+> original audit, retained as the record of the (now-closed) blocker.
 
 Read-only audit (workflow `w1fvale9d`) of whether a genesis→anchor full-validation fold reproduces
 zclassicd's UTXO set at h=3,056,758 (count 1,354,771 + SHA3 root). GOOD: the h=478544 tx-size lesson is
