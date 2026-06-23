@@ -61,7 +61,10 @@ _Atomic int g_factoids_computing = 0;
 /* Stats page — computed in background thread, served from cache */
 #define STATS_CACHE_SIZE (1024 * 1024) /* 1MB for comprehensive stats */
 static char g_stats_cache[STATS_CACHE_SIZE] = "";
-static size_t g_stats_cache_len = 0;
+/* Published with release AFTER the bytes are written and read with acquire in
+ * serve_stats(), so a request thread never observes a nonzero length before
+ * g_stats_cache holds the matching bytes. */
+static _Atomic size_t g_stats_cache_len = 0;
 
 /* ── Disk cache helpers (survive restarts) ────────────────── */
 
@@ -109,7 +112,9 @@ void *stats_compute_thread(void *arg)
     if (g_stats_cache_len == 0) {
         size_t disk_len = cache_load("stats", g_stats_cache, STATS_CACHE_SIZE);
         if (disk_len > 0) {
-            g_stats_cache_len = disk_len;
+            /* Release: the cache_load() bytes above must be visible before a
+             * reader can observe this nonzero length. */
+            atomic_store_explicit(&g_stats_cache_len, disk_len, memory_order_release);
             printf("Stats: loaded %zu bytes from disk cache (instant)\n", disk_len);
             fflush(stdout);
         }
@@ -122,7 +127,9 @@ void *stats_compute_thread(void *arg)
     size_t len = explorer_stats_build((uint8_t *)tmp, STATS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
         memcpy(g_stats_cache, tmp, len);
-        g_stats_cache_len = len;
+        /* Release: publish the length only after the bytes are in place, pairing
+         * with the acquire-load in serve_stats(). */
+        atomic_store_explicit(&g_stats_cache_len, len, memory_order_release);
         cache_save("stats", g_stats_cache, len);
     }
     free(tmp);
@@ -135,9 +142,12 @@ void *stats_compute_thread(void *arg)
 
 size_t serve_stats(uint8_t *r, size_t max)
 {
-    /* Return cached version if available */
-    if (g_stats_cache_len > 0) {
-        size_t copy = g_stats_cache_len < max ? g_stats_cache_len : max;
+    /* Return cached version if available. Acquire-load pairs with the release
+     * store in stats_compute_thread(): once we read a nonzero length, the
+     * matching g_stats_cache bytes are guaranteed visible. */
+    size_t cached = atomic_load_explicit(&g_stats_cache_len, memory_order_acquire);
+    if (cached > 0) {
+        size_t copy = cached < max ? cached : max;
         memcpy(r, g_stats_cache, copy);
         return copy;
     }
@@ -153,7 +163,9 @@ size_t serve_stats(uint8_t *r, size_t max)
 
 #define FACTOIDS_CACHE_SIZE (1024 * 1024)  /* 1MB — 17 sections with SHA3 */
 static char g_factoids_cache[FACTOIDS_CACHE_SIZE] = "";
-static size_t g_factoids_cache_len = 0;
+/* Published with release after the bytes are in place and read with acquire in
+ * serve_factoids() (same contract as g_stats_cache_len). */
+static _Atomic size_t g_factoids_cache_len = 0;
 
 void *factoids_compute_thread(void *arg)
 {
@@ -163,28 +175,42 @@ void *factoids_compute_thread(void *arg)
     if (g_factoids_cache_len == 0) {
         size_t disk_len = cache_load("factoids", g_factoids_cache, FACTOIDS_CACHE_SIZE);
         if (disk_len > 0) {
-            g_factoids_cache_len = disk_len;
+            atomic_store_explicit(&g_factoids_cache_len, disk_len, memory_order_release);
             printf("Factoids: loaded %zu bytes from disk cache (instant)\n", disk_len);
             fflush(stdout);
         }
     }
     printf("Factoids background: computing historian data...\n");
     fflush(stdout);
-    size_t len = explorer_factoids_build((uint8_t *)g_factoids_cache,
+    /* Build into a temp buffer so request threads never read a half-written
+     * g_factoids_cache: explorer_factoids_build() APPENDs ~17 sections
+     * incrementally while serve_factoids() concurrently memcpy()s the live
+     * buffer. Publish with a single memcpy + release store (matches stats). */
+    char *tmp = zcl_malloc(FACTOIDS_CACHE_SIZE, "factoids_cache_tmp");
+    if (!tmp) {
+        g_factoids_computing = 0;
+        LOG_NULL("explorer", "factoids_compute_thread: malloc(%d) failed", FACTOIDS_CACHE_SIZE);
+    }
+    size_t len = explorer_factoids_build((uint8_t *)tmp,
                                           FACTOIDS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
-        g_factoids_cache_len = len;
+        memcpy(g_factoids_cache, tmp, len);
+        atomic_store_explicit(&g_factoids_cache_len, len, memory_order_release);
         cache_save("factoids", g_factoids_cache, len);
     }
+    free(tmp);
     g_factoids_computing = 0;
     return NULL;
 }
 
 size_t serve_factoids(uint8_t *r, size_t max)
 {
-    /* Return cached version if available */
-    if (g_factoids_cache_len > 0) {
-        size_t copy = g_factoids_cache_len < max ? g_factoids_cache_len : max;
+    /* Return cached version if available. Acquire-load pairs with the release
+     * store in factoids_compute_thread(): a nonzero length guarantees the
+     * matching g_factoids_cache bytes are visible. */
+    size_t cached = atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
+    if (cached > 0) {
+        size_t copy = cached < max ? cached : max;
         memcpy(r, g_factoids_cache, copy);
         return copy;
     }
