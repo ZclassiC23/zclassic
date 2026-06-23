@@ -143,6 +143,9 @@ static int h_zcl_probe_zclassicd(const struct mcp_request *req,
             snprintf(res->error_message, sizeof(res->error_message),
                      "node not synced: tip=%d", tip);
             LOG_ERR("mcp.diag", "probe_zclassicd: tip too low (%d)", tip);
+            /* MUST return: rand_r() % (unsigned)max_h below is a modulo-by-zero
+             * SIGFPE when max_h==0 (tip==100, the cold-start window). */
+            return -1; // raw-return-ok:logged-node-not-synced
         }
         unsigned seed = (unsigned)platform_time_wall_time_t() ^ (unsigned)getpid();
         height = (int)(rand_r(&seed) % (unsigned)max_h);
