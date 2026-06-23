@@ -557,7 +557,6 @@ static int test_postmortem_tools_list_and_replay(void)
 
 static char *mock_status_rpc(const char *method, const char *params_json)
 {
-    (void)params_json;
     if (strcmp(method, "getblockcount") == 0)
         return strdup("3117073");
     if (strcmp(method, "getpeerinfo") == 0)
@@ -571,6 +570,18 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"memory_rss_mb\":128,\"uptime_seconds\":9}");
     if (strcmp(method, "getblockchaininfo") == 0)
         return strdup("{\"best_header_height\":3117074}");
+    if (strcmp(method, "dumpstate") == 0 &&
+        params_json && strstr(params_json, "reducer_frontier") != NULL)
+        return strdup("{\"open\":true,"
+                      "\"authority\":\"reducer_frontier_hstar\","
+                      "\"hstar\":3157646,"
+                      "\"served_floor\":3157646,"
+                      "\"first_validate_failure_found\":true,"
+                      "\"first_validate_failure_height\":3157647,"
+                      "\"first_validate_failure_reason\":"
+                      "\"header-source-hash-mismatch\","
+                      "\"first_validate_failure_repair_owner\":"
+                      "\"stale_validate_headers_repair\"}");
     if (strcmp(method, "dumpstate") == 0)
         return strdup("{\"initialized\":true,"
                       "\"has_connman\":true,"
@@ -763,6 +774,21 @@ static int test_zcl_status_includes_chain_advance_dump(void)
                                      "score_target_lag_penalty")) == 0);
         ASSERT(json_get_int(json_get(json_at(sources, 0),
                                      "score_failure_penalty")) == 0);
+        const struct json_value *frontier =
+            json_get(&root, "reducer_frontier");
+        ASSERT(frontier != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(frontier, "authority")),
+                      "reducer_frontier_hstar");
+        ASSERT(json_get_int(json_get(frontier, "hstar")) == 3157646);
+        ASSERT(json_get_int(json_get(frontier,
+                                     "first_validate_failure_height"))
+               == 3157647);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          frontier, "first_validate_failure_reason")),
+                      "header-source-hash-mismatch");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          frontier, "first_validate_failure_repair_owner")),
+                      "stale_validate_headers_repair");
         json_free(&root);
         json_free(&args);
         free(body);

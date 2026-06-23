@@ -23,8 +23,10 @@
 #include "util/log_throttle.h"
 
 #include <sqlite3.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifdef ZCL_TESTING
@@ -624,6 +626,9 @@ bool reducer_frontier_log_frontier(sqlite3 *progress_db,
     bool ok = reducer_trusted_anchor(progress_db, compiled_anchor, &anchor);
     if (ok)
         ok = cursor_at(progress_db, cursor_name, &cursor);
+    if (ok && (strcmp(log_table, "tip_finalize_log") == 0 ||
+               strcmp(cursor_name, "tip_finalize") == 0))
+        cursor = cursor > 0 ? cursor + 1 : cursor;
     if (ok)
         ok = log_contiguous_prefix(progress_db, log_table, anchor, cursor, &h);
 

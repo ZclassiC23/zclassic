@@ -47,6 +47,7 @@
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_authority_service.h"
 #include "jobs/header_admit_stage.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/validate_headers_stage.h"
 #include "services/node_health_service.h"
 #include "jobs/body_fetch_stage.h"
@@ -489,6 +490,10 @@ static const struct dump_entry g_dumpers[] = {
                      "refold/mint mode: in_progress + from_anchor cached "
                      "flags, compiled trusted_anchor, durable progress.kv keys "
                      "(durable_in_progress/from_anchor), from_anchor_target_tip" },
+    { "reducer_frontier", reducer_frontier_dump_state_json,
+                     "reducer L0 authority: H*, served_floor, stage cursors, "
+                     "success-checked frontiers, coins frontier, first "
+                     "validate_headers blocker + repair owner" },
     { "header_admit", header_admit_stage_dump_state_json,
                      "header_admit stage: cursor, counters, last admit" },
     { "validate_headers", validate_headers_stage_dump_state_json,

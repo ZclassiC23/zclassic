@@ -31,6 +31,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct json_value;
+
 /* The compiled-in SHA3 UTXO checkpoint height — the irreversible floor H*
  * may never fall below. Mirrors get_sha3_utxo_checkpoint()->height; exposed
  * as a named constant so callers and tests can assert the clamp without
@@ -263,5 +265,12 @@ bool reducer_frontier_derive_coins_best_now(
     int32_t *out_height,      /* OUT: coins_applied_height - 1 */
     uint8_t  out_hash[32],    /* OUT (nullable): hash when *out_hash_found */
     bool    *out_hash_found); /* OUT (nullable): hash from a durable log */
+
+/* `zcl_state subsystem=reducer_frontier`: read-only snapshot of the L0
+ * reducer authority. Reports H*, served_floor, raw stage cursors,
+ * success-checked log frontiers, coins_applied_height, and first
+ * validate_headers failure. Never writes progress.kv. */
+bool reducer_frontier_dump_state_json(struct json_value *out,
+                                      const char *key);
 
 #endif /* ZCL_JOBS_REDUCER_FRONTIER_H */

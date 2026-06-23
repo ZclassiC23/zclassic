@@ -484,8 +484,8 @@ static const struct mcp_param_spec p_node_log[] = {
  * schema with no further plumbing. */
 /* Sized for the full registry: an undersized buffer silently truncates the
  * schema enum mid-subsystem-name. */
-static char g_state_subsystems_csv[1024];
-static char g_state_subsystem_desc[768];
+static char g_state_subsystems_csv[2048];
+static char g_state_subsystem_desc[2304];
 static struct mcp_param_spec p_state[] = {
     { "subsystem", MCP_PARAM_STR, true,
       "Subsystem name (filled at register-time from g_dumpers registry)",

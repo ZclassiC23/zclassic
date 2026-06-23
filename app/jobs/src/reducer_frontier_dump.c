@@ -1,0 +1,318 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * reducer_frontier_dump - zcl_state diagnostics for the reducer L0 authority.
+ * Read-only: every SQLite statement is a SELECT over progress.kv. */
+
+#include "jobs/reducer_frontier.h"
+
+#include "json/json.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
+
+#include <sqlite3.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+struct dump_log {
+    const char *stage;
+    const char *log_table;
+    const char *cursor_name;
+    bool served_tip_cursor;
+};
+
+static const struct dump_log k_logs[] = {
+    { "validate_headers", "validate_headers_log", "validate_headers", false },
+    { "script_validate",  "script_validate_log",  "script_validate",  false },
+    { "body_persist",     "body_persist_log",     "body_persist",     false },
+    { "proof_validate",   "proof_validate_log",   "proof_validate",   false },
+    { "utxo_apply",       "utxo_apply_log",       "utxo_apply",       false },
+    { "tip_finalize",     "tip_finalize_log",     "tip_finalize",     true  },
+};
+
+static const char *const k_stage_cursors[] = {
+    "header_admit",
+    "validate_headers",
+    "body_fetch",
+    "body_persist",
+    "script_validate",
+    "proof_validate",
+    "utxo_apply",
+    "tip_finalize",
+};
+
+static int64_t next_cursor_for_dump(const struct dump_log *log, int64_t cursor)
+{
+    return log && log->served_tip_cursor && cursor > 0 ? cursor + 1 : cursor;
+}
+
+static const char *diagnostic_repair_hint(const char *reason)
+{
+    if (!reason || !reason[0])
+        return "";
+    if (strcmp(reason, "no-header-solution-backfill-required") == 0 ||
+        strcmp(reason, "header-source-hash-mismatch") == 0)
+        return "stale_validate_headers_repair";
+    return "";
+}
+
+static bool table_exists(sqlite3 *db, const char *name, bool *out)
+{
+    *out = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = ? LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "dump table_exists prepare failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = true;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "dump table_exists step failed table=%s: %s",
+                 name, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+static bool schema_ready(sqlite3 *db, char *missing, size_t missing_sz)
+{
+    if (missing && missing_sz > 0)
+        missing[0] = '\0';
+
+    bool present = false;
+    if (!table_exists(db, "stage_cursor", &present))
+        return false;
+    if (!present) {
+        if (missing && missing_sz > 0)
+            snprintf(missing, missing_sz, "%s", "stage_cursor");
+        return true;
+    }
+    if (!table_exists(db, "progress_meta", &present))
+        return false;
+    if (!present) {
+        if (missing && missing_sz > 0)
+            snprintf(missing, missing_sz, "%s", "progress_meta");
+        return true;
+    }
+    for (size_t i = 0; i < sizeof(k_logs) / sizeof(k_logs[0]); i++) {
+        if (!table_exists(db, k_logs[i].log_table, &present))
+            return false;
+        if (!present) {
+            if (missing && missing_sz > 0)
+                snprintf(missing, missing_sz, "%s", k_logs[i].log_table);
+            return true;
+        }
+    }
+    return true;
+}
+
+static bool cursor_at(sqlite3 *db, const char *name, int64_t *out)
+{
+    *out = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "dump cursor prepare failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int64(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "dump cursor step failed stage=%s: %s",
+                 name, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+static bool first_validate_failure(sqlite3 *db,
+                                   int32_t min_exclusive,
+                                   int32_t max_inclusive,
+                                   bool *found,
+                                   int32_t *height,
+                                   char *reason,
+                                   size_t reason_sz)
+{
+    *found = false;
+    *height = -1;
+    if (reason && reason_sz > 0)
+        reason[0] = '\0';
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT height, COALESCE(fail_reason, '') "
+            "FROM validate_headers_log "
+            "WHERE height > ? AND height <= ? AND ok = 0 "
+            "ORDER BY height ASC LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "dump first validate failure prepare failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, min_exclusive);
+    sqlite3_bind_int(st, 2, max_inclusive);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *found = true;
+        *height = (int32_t)sqlite3_column_int64(st, 0);
+        const unsigned char *txt = sqlite3_column_text(st, 1);
+        if (reason && reason_sz > 0)
+            snprintf(reason, reason_sz, "%s", txt ? (const char *)txt : "");
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "dump first validate failure step failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    sqlite3 *db = progress_store_db();
+    json_push_kv_bool(out, "open", db != NULL);
+    json_push_kv_str(out, "authority", "reducer_frontier_hstar");
+    json_push_kv_int(out, "floor", reducer_frontier_floor());
+    json_push_kv_int(out, "cached_provable_tip",
+                     reducer_frontier_provable_tip_cached());
+    if (!db) {
+        json_push_kv_bool(out, "schema_ready", false);
+        json_push_kv_str(out, "schema_missing", "progress_store");
+        return true;
+    }
+
+    progress_store_tx_lock();
+
+    char missing[64] = "";
+    bool ready = schema_ready(db, missing, sizeof(missing));
+    if (!ready) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    json_push_kv_bool(out, "schema_ready", missing[0] == '\0');
+    json_push_kv_str(out, "schema_missing", missing);
+    if (missing[0] != '\0') {
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    int32_t hstar = -1;
+    int32_t served_floor = -1;
+    if (!reducer_frontier_compute_hstar(db, &hstar, &served_floor)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    json_push_kv_int(out, "hstar", hstar);
+    json_push_kv_int(out, "served_floor", served_floor);
+    json_push_kv_int(out, "served_gap",
+                     served_floor > hstar ? (int64_t)served_floor - hstar : 0);
+    json_push_kv_bool(out, "served_above_hstar", served_floor > hstar);
+
+    int32_t coins_applied = -1;
+    bool coins_found = false;
+    bool coins_ok = coins_kv_get_applied_height(db, &coins_applied,
+                                                &coins_found);
+    json_push_kv_bool(out, "coins_applied_read_ok", coins_ok);
+    json_push_kv_bool(out, "coins_applied_found", coins_ok && coins_found);
+    json_push_kv_int(out, "coins_applied_height",
+                     (coins_ok && coins_found) ? coins_applied : -1);
+    json_push_kv_int(out, "coins_best_height",
+                     (coins_ok && coins_found) ? coins_applied - 1 : -1);
+    json_push_kv_bool(out, "coins_best_above_hstar",
+                      coins_ok && coins_found && coins_applied - 1 > hstar);
+
+    struct json_value cursors = {0};
+    json_set_array(&cursors);
+    for (size_t i = 0;
+         i < sizeof(k_stage_cursors) / sizeof(k_stage_cursors[0]);
+         i++) {
+        int64_t cursor = 0;
+        bool ok = cursor_at(db, k_stage_cursors[i], &cursor);
+        struct json_value obj = {0};
+        json_set_object(&obj);
+        json_push_kv_str(&obj, "stage", k_stage_cursors[i]);
+        json_push_kv_bool(&obj, "read_ok", ok);
+        json_push_kv_int(&obj, "cursor", ok ? cursor : -1);
+        json_push_back(&cursors, &obj);
+        json_free(&obj);
+    }
+    json_push_kv(out, "stage_cursors", &cursors);
+    json_free(&cursors);
+
+    struct json_value frontiers = {0};
+    json_set_array(&frontiers);
+    int32_t validate_frontier = hstar;
+    int32_t validate_cursor_next = INT32_MAX;
+    for (size_t i = 0; i < sizeof(k_logs) / sizeof(k_logs[0]); i++) {
+        int64_t raw_cursor = 0;
+        bool cursor_ok = cursor_at(db, k_logs[i].cursor_name, &raw_cursor);
+        int64_t next_cursor = cursor_ok
+            ? next_cursor_for_dump(&k_logs[i], raw_cursor)
+            : -1;
+        int32_t frontier = -1;
+        bool frontier_ok = reducer_frontier_log_frontier(
+            db, k_logs[i].log_table, k_logs[i].cursor_name, &frontier);
+        if (strcmp(k_logs[i].log_table, "validate_headers_log") == 0) {
+            validate_frontier = frontier_ok ? frontier : hstar;
+            validate_cursor_next = (next_cursor > INT32_MAX)
+                ? INT32_MAX
+                : (int32_t)next_cursor;
+        }
+
+        struct json_value obj = {0};
+        json_set_object(&obj);
+        json_push_kv_str(&obj, "stage", k_logs[i].stage);
+        json_push_kv_str(&obj, "log_table", k_logs[i].log_table);
+        json_push_kv_int(&obj, "cursor", cursor_ok ? raw_cursor : -1);
+        json_push_kv_int(&obj, "next_cursor", next_cursor);
+        json_push_kv_bool(&obj, "served_tip_cursor",
+                          k_logs[i].served_tip_cursor);
+        json_push_kv_bool(&obj, "frontier_read_ok", frontier_ok);
+        json_push_kv_int(&obj, "contiguous_frontier",
+                         frontier_ok ? frontier : -1);
+        json_push_back(&frontiers, &obj);
+        json_free(&obj);
+    }
+    json_push_kv(out, "success_checked_frontiers", &frontiers);
+    json_free(&frontiers);
+
+    bool fail_found = false;
+    int32_t fail_height = -1;
+    char fail_reason[128] = "";
+    int32_t max_validate = validate_cursor_next > 0
+        ? validate_cursor_next - 1
+        : INT32_MAX;
+    if (!first_validate_failure(db, validate_frontier, max_validate,
+                                &fail_found, &fail_height,
+                                fail_reason, sizeof(fail_reason))) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    json_push_kv_bool(out, "first_validate_failure_found", fail_found);
+    json_push_kv_int(out, "first_validate_failure_height",
+                     fail_found ? fail_height : -1);
+    json_push_kv_str(out, "first_validate_failure_reason",
+                     fail_found ? fail_reason : "");
+    json_push_kv_str(out, "first_validate_failure_repair_owner",
+                     fail_found ? diagnostic_repair_hint(fail_reason) : "");
+
+    progress_store_tx_unlock();
+    return true;
+}

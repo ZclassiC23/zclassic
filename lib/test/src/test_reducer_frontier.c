@@ -17,6 +17,7 @@
 #include "test/test_helpers.h"
 
 #include "jobs/reducer_frontier.h"
+#include "storage/progress_store.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -42,22 +43,26 @@
 static bool build_schema(sqlite3 *db)
 {
     static const char *const ddl =
-        "CREATE TABLE stage_cursor (name TEXT PRIMARY KEY, cursor INTEGER);"
-        "CREATE TABLE progress_meta (key TEXT PRIMARY KEY, value BLOB);"
-        "CREATE TABLE validate_headers_log ("
+        "CREATE TABLE IF NOT EXISTS stage_cursor ("
+        "  name TEXT PRIMARY KEY,"
+        "  cursor INTEGER NOT NULL,"
+        "  updated_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS progress_meta ("
+        "  key TEXT PRIMARY KEY, value BLOB);"
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
         "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
         "  fail_reason TEXT, validated_at INTEGER);"
-        "CREATE TABLE script_validate_log ("
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
         "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  block_hash BLOB);"
-        "CREATE TABLE body_persist_log ("
+        "CREATE TABLE IF NOT EXISTS body_persist_log ("
         "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
-        "CREATE TABLE proof_validate_log ("
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
-        "CREATE TABLE utxo_apply_log ("
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
         "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
         "  spent_count INTEGER, added_count INTEGER);"
-        "CREATE TABLE tip_finalize_log ("
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
         "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  tip_hash BLOB);";
     char *err = NULL;
@@ -74,7 +79,9 @@ static bool set_cursor(sqlite3 *db, const char *name, int64_t cursor)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO stage_cursor(name,cursor) VALUES(?,?)",
+            "INSERT INTO stage_cursor(name,cursor,updated_at) VALUES(?,?,0) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "cursor=excluded.cursor, updated_at=excluded.updated_at",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -156,7 +163,32 @@ static bool put_consistent_height(sqlite3 *db, int32_t h)
         && put_log_row(db, "body_persist_log", NULL, h, 1, NULL, NULL)
         && put_log_row(db, "proof_validate_log", NULL, h, 1, NULL, NULL)
         && put_log_row(db, "utxo_apply_log", NULL, h, 1, NULL, NULL)
-	        && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+        && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+}
+
+static bool put_validate_failure(sqlite3 *db, int32_t h, const char *reason)
+{
+    uint8_t hh[32];
+    synth_hash(hh, h, 0);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO validate_headers_log(height,hash,ok,fail_reason) "
+            "VALUES(?,?,0,?)",
+            -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[test_reducer_frontier] prepare validate fail: %s\n",
+                sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hh, 32, SQLITE_STATIC);
+    sqlite3_bind_text(st, 3, reason ? reason : "", -1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok)
+        fprintf(stderr, "[test_reducer_frontier] step validate fail h=%d: %s\n",
+                h, sqlite3_errmsg(db));
+    return ok;
 }
 
 static bool put_tip_anchor(sqlite3 *db, int32_t h)
@@ -554,6 +586,69 @@ static int case_split_at_floor(void)
     return failures;
 }
 
+static int case_dump_reports_validate_failure_owner(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "dump");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("dump: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("dump: schema", db && build_schema(db));
+
+    const int32_t fail_h = A + 3;
+    bool built = put_consistent_height(db, A + 1)
+              && put_consistent_height(db, A + 2)
+              && put_validate_failure(db, fail_h,
+                                      "header-source-hash-mismatch")
+              && put_log_row(db, "script_validate_log", "block_hash",
+                             fail_h, 0, NULL, "upstream_failed")
+              && put_log_row(db, "body_persist_log", NULL,
+                             fail_h, 1, NULL, NULL)
+              && put_log_row(db, "proof_validate_log", NULL,
+                             fail_h, 1, NULL, NULL)
+              && put_log_row(db, "utxo_apply_log", NULL,
+                             fail_h, 1, NULL, NULL);
+    RF_CHECK("dump: rows built", built);
+    RF_CHECK("dump: cursors", set_all_cursors(db, fail_h + 1));
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("dump: returns true", dumped);
+    if (dumped) {
+        RF_CHECK("dump: hstar reaches block before validate failure",
+                 json_get_int(json_get(&out, "hstar")) == fail_h - 1);
+        RF_CHECK("dump: first validate failure found",
+                 json_get_bool(json_get(&out,
+                                        "first_validate_failure_found")));
+        RF_CHECK("dump: first validate failure height",
+                 json_get_int(json_get(&out,
+                                       "first_validate_failure_height"))
+                     == fail_h);
+        RF_CHECK("dump: first validate failure reason",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_validate_failure_reason")),
+                        "header-source-hash-mismatch") == 0);
+        RF_CHECK("dump: first validate failure owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_validate_failure_repair_owner")),
+                        "stale_validate_headers_repair") == 0);
+    }
+    json_free(&out);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_reducer_frontier(void)
 {
     int failures = 0;
@@ -565,6 +660,7 @@ int test_reducer_frontier(void)
     failures += case_clamp_up();
     failures += case_hash_split();
     failures += case_split_at_floor();
+    failures += case_dump_reports_validate_failure_owner();
     if (failures == 0)
         printf("reducer_frontier: all cases passed\n");
     else
