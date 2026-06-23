@@ -143,6 +143,29 @@ static bool lms_parse_int_result(const char *raw, const char *key,
     const struct json_value *field = key && result ? json_get(result, key)
                                                    : result;
     if (!field || field->type != JSON_INT) {
+        const struct json_value *jerr = json_get(&v, "error");
+        if (jerr && jerr->type == JSON_OBJ) {
+            const struct json_value *code = json_get(jerr, "code");
+            const struct json_value *msg = json_get(jerr, "message");
+            if (code && code->type == JSON_INT &&
+                msg && msg->type == JSON_STR) {
+                snprintf(err, err_sz, "rpc error %lld: %s",
+                         (long long)json_get_int(code), json_get_str(msg));
+                json_free(&v);
+                return false;
+            }
+            if (msg && msg->type == JSON_STR) {
+                snprintf(err, err_sz, "rpc error: %s", json_get_str(msg));
+                json_free(&v);
+                return false;
+            }
+            if (code && code->type == JSON_INT) {
+                snprintf(err, err_sz, "rpc error %lld",
+                         (long long)json_get_int(code));
+                json_free(&v);
+                return false;
+            }
+        }
         snprintf(err, err_sz, "missing int result%s%s",
                  key ? "." : "", key ? key : "");
         json_free(&v);
@@ -205,7 +228,11 @@ static bool lms_fetch_chain_info(int *out_blocks, int *out_headers,
     bool ok_h = lms_parse_int_result(resp, "headers", &headers, err, err_sz);
     free(resp);
     if (!ok_b) return false;
-    if (!ok_h) headers = blocks;
+    if (!ok_h) {
+        headers = blocks;
+        if (err && err_sz)
+            err[0] = '\0';
+    }
     *out_blocks = blocks;
     *out_headers = headers;
     return true;

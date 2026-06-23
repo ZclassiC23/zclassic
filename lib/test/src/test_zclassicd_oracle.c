@@ -62,6 +62,7 @@ struct mock_server {
     int port;
     const char *canned_hex;       /* NULL → respond with JSON error */
     int chain_blocks;             /* >=0 → getblockchaininfo response */
+    bool chain_warmup;            /* true → getblockchaininfo RPC warmup */
     _Atomic int requests_served;
     _Atomic bool stop;
     pthread_t thread;
@@ -95,7 +96,13 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
         /* Build JSON-RPC body */
         char body[256];
         int bl;
-        if (m->chain_blocks >= 0 && strstr(buf, "getblockchaininfo")) {
+        if (m->chain_warmup && strstr(buf, "getblockchaininfo")) {
+            bl = snprintf(body, sizeof(body),
+                "{\"result\":null,\"error\":{\"code\":-28,"
+                "\"message\":\"Activating best chain... height 0 (1%%)\"},"
+                "\"id\":\"zcl-oracle\"}\n");
+        } else if (m->chain_blocks >= 0 &&
+                   strstr(buf, "getblockchaininfo")) {
             bl = snprintf(body, sizeof(body),
                 "{\"result\":{\"blocks\":%d,\"headers\":%d},"
                 "\"error\":null,\"id\":\"zcl-oracle\"}\n",
@@ -168,6 +175,15 @@ static bool mock_server_start_chain(struct mock_server *m,
     bool ok = mock_server_start(m, canned_hex);
     if (ok)
         m->chain_blocks = blocks;
+    return ok;
+}
+
+static bool mock_server_start_chain_warmup(struct mock_server *m,
+                                           const char *canned_hex)
+{
+    bool ok = mock_server_start(m, canned_hex);
+    if (ok)
+        m->chain_warmup = true;
     return ok;
 }
 
@@ -327,6 +343,47 @@ int test_zclassicd_oracle(void)
 
         process_block_set_node_db(NULL);
         node_db_close(&ndb);
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+    }
+
+    /* JSON-RPC warmup (-28) must survive the mirror's object-field parser.
+     * Otherwise a reachable-but-activating zclassicd is misdiagnosed as a
+     * schema mismatch like "missing int result.headers". */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (legacy warmup)",
+                 mock_server_start_chain_warmup(&srv, AGREE_HEX));
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for warmup",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-warmup");
+        ZO_CHECK("legacy mirror warmup returns failure", !catchup.ok);
+        ZO_CHECK("legacy mirror warmup preserves rpc error",
+                 strstr(catchup.message,
+                        "rpc error -28: Activating best chain") != NULL);
+
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("legacy mirror warmup names rpc blocker",
+                 strcmp(lms.last_blocker_id, "rpc-unreachable") == 0);
+        ZO_CHECK("legacy mirror warmup last_error is precise",
+                 strstr(lms.last_error,
+                        "rpc error -28: Activating best chain") != NULL);
+
         mock_server_stop(&srv);
         legacy_mirror_sync_reset_for_test();
         zo_teardown();
