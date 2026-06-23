@@ -396,6 +396,6 @@ build/bin/zcl-rpc z_gettotalbalance
 ### Services
 ```bash
 systemctl --user status zclassic23        # Main node
-systemctl --user status zclassicd-peer    # C++ dev peer (zclassicd)
+systemctl --user status zclassicd         # C++ legacy reference/oracle
 systemctl --user status zclassic23-test   # Test instance
 ```

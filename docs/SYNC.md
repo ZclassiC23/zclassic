@@ -147,7 +147,9 @@ Rules:
 - Force reimport after a first run:
   `build/bin/zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
 
-The legacy peer ships as the `zclassicd-peer` systemd user service (see CLAUDE.md "Services").
+The live/default legacy reference is the `zclassicd` systemd user service (see
+CLAUDE.md "Services"). `zclassicd-peer.service` is only the operator-specific
+example unit committed under `deploy/examples/`.
 
 ### Legacy chain oracle boundary
 
