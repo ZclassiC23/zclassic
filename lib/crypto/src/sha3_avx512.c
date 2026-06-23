@@ -142,15 +142,20 @@ void sha3_512_x4(const uint8_t key[32], const uint8_t nonce[32],
         st[w] = _mm512_xor_si512(st[w], _mm512_loadu_si512(lanes));
     }
 
-    /* Pad: SHA3 domain separation byte 0x06 at byte 72 and 0x80 at byte 135.
-     * For rate=72: pad goes at word index 9 (byte 72) and word index 16 (byte 135).
-     * Byte 72 is word 9, byte 0 of that word. Byte 135 is word 16, byte 7. */
-    st[9] = _mm512_xor_si512(st[9], _mm512_set1_epi64(0x06));
-    /* Last byte of capacity: word index (136/8 - 1) = 16, bit 63 */
-    st[8] = _mm512_xor_si512(st[8], _mm512_set1_epi64((long long)0x8000000000000000ULL));
-
-    /* Permute */
-    keccakf_4way(st);
+    /* SHA3-512 rate = 72 bytes = 9 lanes (words 0..8); words 9..24 are CAPACITY
+     * and must never be touched by absorb/pad. The 72-byte input exactly FILLS
+     * the rate, so finalization needs TWO permutations — identical to the scalar
+     * sha3_512_finalize (sha3.c): permute the absorbed rate block, THEN absorb a
+     * pad block (domain byte 0x06 at rate byte 0; pad10*1 terminator 0x80 at rate
+     * byte 71 = word 8, bit 63) and permute again. The previous code wrote 0x06
+     * into word 9 (capacity) and permuted only once — that is not SHA3-512 and
+     * diverged from the scalar fallback, so an AVX-512 build could not exchange
+     * file-market frames with a scalar build. */
+    keccakf_4way(st);  /* permute the full first (rate) block */
+    st[0] = _mm512_xor_si512(st[0], _mm512_set1_epi64(0x06));  /* domain sep, rate byte 0 */
+    st[8] = _mm512_xor_si512(st[8],
+                _mm512_set1_epi64((long long)0x8000000000000000ULL));  /* pad terminator, rate byte 71 */
+    keccakf_4way(st);  /* permute the pad block */
 
     /* Squeeze: extract first 8 words (64 bytes) from each lane */
     for (int w = 0; w < 8; w++) {
