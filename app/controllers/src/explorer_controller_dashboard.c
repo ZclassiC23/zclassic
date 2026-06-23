@@ -109,6 +109,11 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
 
     int per_page = 25;
     if (page < 0) page = 0;
+    /* page comes from an untrusted ?page= query (atoi, unclamped). Clamp it so
+     * page * per_page cannot overflow signed int (UB) and start_height stays
+     * within [0, tip]; the last meaningful page is tip / per_page. */
+    int max_page = (tip > 0) ? tip / per_page : 0;
+    if (page > max_page) page = max_page;
     int start_height = tip - page * per_page;
     int end_height = start_height - per_page + 1;
     if (end_height < 0) end_height = 0;
