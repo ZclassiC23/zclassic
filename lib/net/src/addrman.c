@@ -878,8 +878,8 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
     if (!stream_read_i32_le(s, &nUBuckets)) LOG_FAIL("addrman", "deserialize: failed to read bucket count");
     if (nVersion != 0) nUBuckets ^= (1 << 30);
 
-    if (nNew > ADDRMAN_NEW_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nNew=%d exceeds max", nNew);
-    if (nTried > ADDRMAN_TRIED_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nTried=%d exceeds max", nTried);
+    if (nNew < 0 || nNew > ADDRMAN_NEW_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nNew=%d out of range", nNew);
+    if (nTried < 0 || nTried > ADDRMAN_TRIED_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nTried=%d out of range", nTried);
 
     size_t need = (size_t)(nNew + nTried);
     if (need > am->entries_cap) {
