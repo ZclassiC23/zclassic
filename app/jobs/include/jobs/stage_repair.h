@@ -24,6 +24,30 @@ enum stage_repair_header_solution_poison {
     STAGE_REPAIR_POISON_DOWNSTREAM_STALE,
 };
 
+enum stage_repair_tipfin_refused_reason {
+    STAGE_REPAIR_TIPFIN_REFUSED_NONE = 0,
+    STAGE_REPAIR_TIPFIN_REFUSED_G1_COIN_UNKNOWN = 1,
+    STAGE_REPAIR_TIPFIN_REFUSED_G2_EVIDENCE_ROW = 2,
+    STAGE_REPAIR_TIPFIN_REFUSED_G2_ROW_PRESENT = 3,
+    STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE = 4,
+    STAGE_REPAIR_TIPFIN_REFUSED_G4_AT_SERVED_FLOOR = 5,
+    STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING = 6,
+    STAGE_REPAIR_TIPFIN_REFUSED_G6_IN_TX_RECHECK = 7,
+    STAGE_REPAIR_TIPFIN_REFUSED_G7_MARKER_SEEN = 8,
+    STAGE_REPAIR_TIPFIN_REFUSED_HSTAR_RANGE = 9,
+};
+
+enum stage_repair_tipfin_refused_log {
+    STAGE_REPAIR_TIPFIN_LOG_UNKNOWN = 0,
+    STAGE_REPAIR_TIPFIN_LOG_VALIDATE_HEADERS = 1,
+    STAGE_REPAIR_TIPFIN_LOG_SCRIPT_VALIDATE = 2,
+    STAGE_REPAIR_TIPFIN_LOG_VALIDATE_SCRIPT_SPLIT = 3,
+    STAGE_REPAIR_TIPFIN_LOG_BODY_PERSIST = 4,
+    STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE = 5,
+    STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY = 6,
+    STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE = 7,
+};
+
 struct stage_repair_header_solution_result {
     bool repaired;
     int target_height;
@@ -160,10 +184,13 @@ struct stage_reducer_frontier_reconcile_result {
     int tipfin_backfill_height;
     int tipfin_backfill_count;
     bool tipfin_backfill_marker_seen;
-    /* enum tipfin_refused_reason code (stage_repair_reducer_frontier_tipfin.c
-     * — values mirrored by test_stage_repair_tipfin_backfill.c, keep stable);
-     * 0 = TIPFIN_REFUSED_NONE. The refusal WARN names the guard in text. */
+    /* enum stage_repair_tipfin_refused_reason code; 0 =
+     * STAGE_REPAIR_TIPFIN_REFUSED_NONE. The refusal WARN names the guard in
+     * text; *_height/log expose the precise evidence boundary to Conditions
+     * without parsing node.log. */
     int tipfin_backfill_refused_reason;
+    int tipfin_backfill_refused_height;
+    int tipfin_backfill_refused_log;
     /* Non-canonical row purge (stage_repair_reducer_frontier_purge.c):
      * stage-log rows whose stored hash doesn't match the canonical block
      * at their height — relabel/reorg residue. found counts rows judged
@@ -219,6 +246,11 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     struct sqlite3 *db,
     int coins_best,
     struct stage_reconcile_result *out);
+
+const char *stage_repair_tipfin_refused_reason_label(int reason);
+const char *stage_repair_tipfin_refused_log_label(int log);
+bool stage_repair_tipfin_refusal_is_pending_forward(
+    const struct stage_reducer_frontier_reconcile_result *rr);
 
 /* L1 reducer-frontier reconcile: repair block_index mirror flags from
  * hash-bound durable reducer logs, rewind validate_headers/body_fetch/

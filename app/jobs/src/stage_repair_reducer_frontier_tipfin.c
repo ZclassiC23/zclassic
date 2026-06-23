@@ -59,22 +59,24 @@
 #define TIPFIN_WITNESS_KEY "tipfin_backfill.progress"
 #define TIPFIN_BATCH_CAP 256
 
-/* Reason codes surfaced in result.tipfin_backfill_refused_reason
- * (stage_repair.h: "tipfin TU reason code; 0 = none"). The refusal WARN
- * names the guard in text; the result carries the code. Mirrored by
- * test_stage_repair_tipfin_backfill.c — keep the values stable. */
-enum tipfin_refused_reason {
-    TIPFIN_REFUSED_NONE = 0,
-    TIPFIN_REFUSED_G1_COIN_UNKNOWN = 1,
-    TIPFIN_REFUSED_G2_EVIDENCE_ROW = 2,
-    TIPFIN_REFUSED_G2_ROW_PRESENT = 3,
-    TIPFIN_REFUSED_G3_MISSING_EVIDENCE = 4,
-    TIPFIN_REFUSED_G4_AT_SERVED_FLOOR = 5,
-    TIPFIN_REFUSED_G5_BINDER_MISSING = 6,
-    TIPFIN_REFUSED_G6_IN_TX_RECHECK = 7,
-    TIPFIN_REFUSED_G7_MARKER_SEEN = 8,
-    TIPFIN_REFUSED_HSTAR_RANGE = 9,
-};
+#define TIPFIN_REFUSED_NONE STAGE_REPAIR_TIPFIN_REFUSED_NONE
+#define TIPFIN_REFUSED_G1_COIN_UNKNOWN \
+    STAGE_REPAIR_TIPFIN_REFUSED_G1_COIN_UNKNOWN
+#define TIPFIN_REFUSED_G2_EVIDENCE_ROW \
+    STAGE_REPAIR_TIPFIN_REFUSED_G2_EVIDENCE_ROW
+#define TIPFIN_REFUSED_G2_ROW_PRESENT \
+    STAGE_REPAIR_TIPFIN_REFUSED_G2_ROW_PRESENT
+#define TIPFIN_REFUSED_G3_MISSING_EVIDENCE \
+    STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE
+#define TIPFIN_REFUSED_G4_AT_SERVED_FLOOR \
+    STAGE_REPAIR_TIPFIN_REFUSED_G4_AT_SERVED_FLOOR
+#define TIPFIN_REFUSED_G5_BINDER_MISSING \
+    STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING
+#define TIPFIN_REFUSED_G6_IN_TX_RECHECK \
+    STAGE_REPAIR_TIPFIN_REFUSED_G6_IN_TX_RECHECK
+#define TIPFIN_REFUSED_G7_MARKER_SEEN \
+    STAGE_REPAIR_TIPFIN_REFUSED_G7_MARKER_SEEN
+#define TIPFIN_REFUSED_HSTAR_RANGE STAGE_REPAIR_TIPFIN_REFUSED_HSTAR_RANGE
 
 /* Tri-state row read, reducer_frontier.c:25-29 semantics. */
 enum tipfin_row_state {
@@ -91,12 +93,98 @@ enum tipfin_p_verdict {
 
 struct tipfin_p_eval {
     enum tipfin_p_verdict verdict;
-    enum tipfin_refused_reason reason;  /* code when not WRITE */
+    enum stage_repair_tipfin_refused_reason reason;  /* code when not WRITE */
     const char *guard;        /* guard NAME for the refusal WARN */
     const char *binding_log;  /* log naming the refusal, or NULL */
     int binding_height;
     struct uint256 tip_hash;  /* the G5 binder hash; valid when WRITE */
 };
+
+const char *stage_repair_tipfin_refused_reason_label(int reason)
+{
+    switch ((enum stage_repair_tipfin_refused_reason)reason) {
+    case STAGE_REPAIR_TIPFIN_REFUSED_NONE:
+        return "none";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G1_COIN_UNKNOWN:
+        return "G1_coin_unknown";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G2_EVIDENCE_ROW:
+        return "G2_evidence_row";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G2_ROW_PRESENT:
+        return "G2_row_present";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE:
+        return "G3_missing_evidence";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G4_AT_SERVED_FLOOR:
+        return "G4_at_served_floor";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING:
+        return "G5_binder_missing";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G6_IN_TX_RECHECK:
+        return "G6_in_tx_recheck";
+    case STAGE_REPAIR_TIPFIN_REFUSED_G7_MARKER_SEEN:
+        return "G7_marker_seen";
+    case STAGE_REPAIR_TIPFIN_REFUSED_HSTAR_RANGE:
+        return "hstar_out_of_range";
+    }
+    return "unknown";
+}
+
+const char *stage_repair_tipfin_refused_log_label(int log)
+{
+    switch ((enum stage_repair_tipfin_refused_log)log) {
+    case STAGE_REPAIR_TIPFIN_LOG_UNKNOWN:
+        return "unknown";
+    case STAGE_REPAIR_TIPFIN_LOG_VALIDATE_HEADERS:
+        return "validate_headers_log";
+    case STAGE_REPAIR_TIPFIN_LOG_SCRIPT_VALIDATE:
+        return "script_validate_log";
+    case STAGE_REPAIR_TIPFIN_LOG_VALIDATE_SCRIPT_SPLIT:
+        return "validate_headers_log/script_validate_log split";
+    case STAGE_REPAIR_TIPFIN_LOG_BODY_PERSIST:
+        return "body_persist_log";
+    case STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE:
+        return "proof_validate_log";
+    case STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY:
+        return "utxo_apply_log";
+    case STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE:
+        return "tip_finalize_log";
+    }
+    return "unknown";
+}
+
+static int tipfin_refused_log_code(const char *binding_log)
+{
+    if (!binding_log)
+        return STAGE_REPAIR_TIPFIN_LOG_UNKNOWN;
+    if (strcmp(binding_log, "validate_headers_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_VALIDATE_HEADERS;
+    if (strcmp(binding_log, "script_validate_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_SCRIPT_VALIDATE;
+    if (strcmp(binding_log, "validate_headers_log/script_validate_log split")
+            == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_VALIDATE_SCRIPT_SPLIT;
+    if (strcmp(binding_log, "body_persist_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_BODY_PERSIST;
+    if (strcmp(binding_log, "proof_validate_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE;
+    if (strcmp(binding_log, "utxo_apply_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY;
+    if (strcmp(binding_log, "tip_finalize_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE;
+    return STAGE_REPAIR_TIPFIN_LOG_UNKNOWN;
+}
+
+bool stage_repair_tipfin_refusal_is_pending_forward(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (!rr || !rr->refused_coin_tear || !rr->coins_applied_found ||
+        rr->coins_applied_height < 0)
+        return false;
+    if (rr->tipfin_backfill_refused_reason !=
+            STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE &&
+        rr->tipfin_backfill_refused_reason !=
+            STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING)
+        return false;
+    return rr->tipfin_backfill_refused_height >= rr->coins_applied_height;
+}
 
 static bool tipfin_row_state_at(sqlite3 *db, int height,
                                 enum tipfin_row_state *out)
@@ -321,7 +409,7 @@ static bool tipfin_eval_p(sqlite3 *db, int p, int served_floor,
  * suppressed. The L1 reconcile path is serialized (condition-engine tick
  * under progress_store_tx_lock), so plain statics are safe. */
 static void tipfin_refuse(struct stage_reducer_frontier_reconcile_result *out,
-                          enum tipfin_refused_reason reason,
+                          enum stage_repair_tipfin_refused_reason reason,
                           const char *guard, const char *binding_log,
                           int height)
 {
@@ -330,6 +418,8 @@ static void tipfin_refuse(struct stage_reducer_frontier_reconcile_result *out,
     static unsigned long long s_reps = 0;
 
     out->tipfin_backfill_refused_reason = (int)reason;
+    out->tipfin_backfill_refused_height = height;
+    out->tipfin_backfill_refused_log = tipfin_refused_log_code(binding_log);
     if (guard == s_last_guard && height == s_last_height) {
         s_reps++;
         return;
@@ -526,6 +616,8 @@ bool stage_reducer_frontier_try_tipfin_backfill(
     out->tipfin_backfill_count = 0;
     out->tipfin_backfill_marker_seen = false;
     out->tipfin_backfill_refused_reason = TIPFIN_REFUSED_NONE;
+    out->tipfin_backfill_refused_height = -1;
+    out->tipfin_backfill_refused_log = STAGE_REPAIR_TIPFIN_LOG_UNKNOWN;
     if (!db)
         LOG_FAIL("stage_repair", "tipfin backfill: NULL db");
 

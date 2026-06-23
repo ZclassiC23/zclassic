@@ -851,6 +851,15 @@ int test_reducer_frontier_reconcile_light(void)
                      detail, "last_reconcile_coins_applied_height"))
                      == A + 3;
         ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_tipfin_backfill_refused_reason"))
+                     == STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_tipfin_backfill_refused_height"))
+                     == A + 2;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_tipfin_backfill_refused_log"))
+                     == STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY;
+        ok = ok && json_get_int(json_get(
                      detail, "last_reconcile_tip_finalize_cursor_before"))
                      == A + 4;
         json_free(&dump);

@@ -565,6 +565,8 @@ static bool reducer_frontier_reconcile_light_impl(
     local.proof_validate_cursor_before = -1;
     local.proof_validate_cursor_after = -1;
     local.tipfin_backfill_height = -1;
+    local.tipfin_backfill_refused_height = -1;
+    local.tipfin_backfill_refused_log = STAGE_REPAIR_TIPFIN_LOG_UNKNOWN;
     local.coins_applied_height = -1;
     local.lowest_noncanonical = -1;
     local.lowest_reorg_residue_tipfin = -1;

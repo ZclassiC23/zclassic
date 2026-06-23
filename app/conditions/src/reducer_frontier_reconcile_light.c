@@ -129,6 +129,10 @@ static _Atomic int g_tear_bypass_warn_total = 0;
       "last_reconcile_tipfin_backfill_marker_seen", true)                \
     X(TIPFIN_BACKFILL_REFUSED_REASON,                                     \
       "last_reconcile_tipfin_backfill_refused_reason", false)            \
+    X(TIPFIN_BACKFILL_REFUSED_HEIGHT,                                     \
+      "last_reconcile_tipfin_backfill_refused_height", false)            \
+    X(TIPFIN_BACKFILL_REFUSED_LOG,                                        \
+      "last_reconcile_tipfin_backfill_refused_log", false)               \
     X(NONCANONICAL_FOUND, "last_reconcile_noncanonical_found", false)    \
     X(NONCANONICAL_PURGED, "last_reconcile_noncanonical_purged", false)  \
     X(LOWEST_NONCANONICAL, "last_reconcile_lowest_noncanonical", false)  \
@@ -311,6 +315,10 @@ static void rfrl_snapshot_reconcile_result(
                      rr->tipfin_backfill_marker_seen);
     RFRL_RR_SET_INT(TIPFIN_BACKFILL_REFUSED_REASON,
                     rr->tipfin_backfill_refused_reason);
+    RFRL_RR_SET_INT(TIPFIN_BACKFILL_REFUSED_HEIGHT,
+                    rr->tipfin_backfill_refused_height);
+    RFRL_RR_SET_INT(TIPFIN_BACKFILL_REFUSED_LOG,
+                    rr->tipfin_backfill_refused_log);
     RFRL_RR_SET_INT(NONCANONICAL_FOUND, rr->noncanonical_found);
     RFRL_RR_SET_INT(NONCANONICAL_PURGED, rr->noncanonical_purged);
     RFRL_RR_SET_INT(LOWEST_NONCANONICAL, rr->lowest_noncanonical);
@@ -804,6 +812,11 @@ static bool detect_reducer_frontier_reconcile_light(void)
     rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_DETECT, &rr);
     if (rr.refused_coin_unknown)
         return false;
+    if (stage_repair_tipfin_refusal_is_pending_forward(&rr)) {
+        atomic_store(&g_tear_bypass_active, false);
+        log_throttle_reset(&g_gate_suppress);
+        return false;
+    }
     if (!rr.refused_coin_tear && !rr.repaired &&
         rr.noncanonical_found == 0 &&
         rr.reorg_residue_tipfin_found == 0) {
@@ -866,6 +879,19 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
         LOG_WARN("condition",
                  "[condition:reducer_frontier_reconcile_light] refused "
                  "coins_applied_height absent");
+        return COND_REMEDY_SKIP;
+    }
+    if (stage_repair_tipfin_refusal_is_pending_forward(&rr)) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] pending "
+                 "tipfin backfill reason=%s binding_log=%s h=%d "
+                 "coins_applied=%d hstar=%d",
+                 stage_repair_tipfin_refused_reason_label(
+                     rr.tipfin_backfill_refused_reason),
+                 stage_repair_tipfin_refused_log_label(
+                     rr.tipfin_backfill_refused_log),
+                 rr.tipfin_backfill_refused_height,
+                 rr.coins_applied_height, rr.hstar);
         return COND_REMEDY_SKIP;
     }
     if (rr.refused_coin_tear) {

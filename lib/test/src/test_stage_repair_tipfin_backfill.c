@@ -31,14 +31,14 @@ bool stage_reducer_frontier_try_unapplied_hole_clamp(
     sqlite3 *db, bool apply,
     struct stage_reducer_frontier_reconcile_result *out, bool *handled);
 
-/* Mirror of enum tipfin_refused_reason in
- * stage_repair_reducer_frontier_tipfin.c (the result field carries an int
- * code, "0 = none"). Keep the values in sync with that TU. */
 enum {
-    T_REFUSED_NONE = 0,
-    T_REFUSED_G2_EVIDENCE_ROW = 2,
-    T_REFUSED_G3_MISSING_EVIDENCE = 4,
-    T_REFUSED_G5_BINDER_MISSING = 6,
+    T_REFUSED_NONE = STAGE_REPAIR_TIPFIN_REFUSED_NONE,
+    T_REFUSED_G2_EVIDENCE_ROW =
+        STAGE_REPAIR_TIPFIN_REFUSED_G2_EVIDENCE_ROW,
+    T_REFUSED_G3_MISSING_EVIDENCE =
+        STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE,
+    T_REFUSED_G5_BINDER_MISSING =
+        STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING,
 };
 
 #define TIPFIN_CHECK(name, expr) do { \
@@ -443,6 +443,34 @@ int test_stage_repair_tipfin_backfill(void)
     printf("\n=== stage_repair_tipfin_backfill tests ===\n");
     int failures = 0;
 
+    {
+        struct stage_reducer_frontier_reconcile_result rr;
+        memset(&rr, 0, sizeof(rr));
+        rr.refused_coin_tear = true;
+        rr.coins_applied_found = true;
+        rr.coins_applied_height = A + 8;
+        rr.tipfin_backfill_refused_reason =
+            STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING;
+        rr.tipfin_backfill_refused_height = A + 8;
+        TIPFIN_CHECK("pending-forward G5 classifier at coins frontier",
+                     stage_repair_tipfin_refusal_is_pending_forward(&rr));
+
+        rr.tipfin_backfill_refused_height = A + 7;
+        TIPFIN_CHECK("below-coins G5 stays hard refusal",
+                     !stage_repair_tipfin_refusal_is_pending_forward(&rr));
+
+        rr.tipfin_backfill_refused_reason =
+            STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE;
+        rr.tipfin_backfill_refused_height = A + 8;
+        TIPFIN_CHECK("pending-forward G3 classifier at coins frontier",
+                     stage_repair_tipfin_refusal_is_pending_forward(&rr));
+
+        rr.tipfin_backfill_refused_reason =
+            STAGE_REPAIR_TIPFIN_REFUSED_G2_EVIDENCE_ROW;
+        TIPFIN_CHECK("evidence rows never classify pending-forward",
+                     !stage_repair_tipfin_refusal_is_pending_forward(&rr));
+    }
+
     /* ── T2 — lifecycle: write, witness create/bump/delete, no deletes ── */
     {
         char dir[256];
@@ -604,7 +632,10 @@ int test_stage_repair_tipfin_backfill(void)
                          db, true, &rr, &handled) &&
                      !handled &&
                      rr.tipfin_backfill_refused_reason ==
-                         T_REFUSED_G3_MISSING_EVIDENCE);
+                         T_REFUSED_G3_MISSING_EVIDENCE &&
+                     rr.tipfin_backfill_refused_height == A + 3 &&
+                     rr.tipfin_backfill_refused_log ==
+                         STAGE_REPAIR_TIPFIN_LOG_SCRIPT_VALIDATE);
 
         /* FIX-2a must NOT clamp: the hole is strictly below the coins
          * frontier — the unapplied-hole clamp floor. */
@@ -661,6 +692,9 @@ int test_stage_repair_tipfin_backfill(void)
                      !handled &&
                      rr.tipfin_backfill_refused_reason ==
                          T_REFUSED_G3_MISSING_EVIDENCE &&
+                     rr.tipfin_backfill_refused_height == A + 2 &&
+                     rr.tipfin_backfill_refused_log ==
+                         STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE &&
                      tip_row_at(db, A + 2, &row) && !row.found);
         TIPFIN_CHECK("T4a byte-identical",
                      digest_all(db, after) &&
@@ -703,7 +737,10 @@ int test_stage_repair_tipfin_backfill(void)
                          db, true, &rr, &handled) &&
                      !handled &&
                      rr.tipfin_backfill_refused_reason ==
-                         T_REFUSED_G2_EVIDENCE_ROW);
+                         T_REFUSED_G2_EVIDENCE_ROW &&
+                     rr.tipfin_backfill_refused_height == A + 2 &&
+                     rr.tipfin_backfill_refused_log ==
+                         STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE);
         TIPFIN_CHECK("T4b evidence row never overwritten",
                      tip_row_at(db, A + 2, &row) && row.found &&
                      row.ok == 0 &&
