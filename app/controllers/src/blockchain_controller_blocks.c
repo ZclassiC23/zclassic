@@ -38,6 +38,15 @@ static struct block_index *rpc_provable_tip(struct blockchain_context *ctx,
     return active_chain_at(&ctx->main_state->chain_active, (int)hstar);
 }
 
+static bool rpc_block_within_provable_range(const struct block_index *bi,
+                                            int32_t *out_hstar)
+{
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    if (out_hstar)
+        *out_hstar = hstar;
+    return bi && bi->nHeight >= 0 && bi->nHeight <= hstar;
+}
+
 bool rpc_getblockcount(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -255,6 +264,13 @@ bool rpc_getblockheader(const struct json_value *params, bool help,
         json_set_str(result, "Block not found");
         LOG_FAIL("blockchain", "getblockheader: block %s not found", hash_str);
     }
+    int32_t hstar = -1;
+    if (!rpc_block_within_provable_range(bi, &hstar)) {
+        json_set_str(result, "Block not found");
+        LOG_FAIL("blockchain",
+                 "getblockheader: block %s height %d above provable hstar=%d",
+                 hash_str, bi->nHeight, hstar);
+    }
 
     block_header_to_json(bi, result);
     return true;
@@ -286,6 +302,13 @@ bool rpc_getblock(const struct json_value *params, bool help,
     if (!bi) {
         json_set_str(result, "Block not found");
         LOG_FAIL("blockchain", "getblock: block %s not found", hash_str);
+    }
+    int32_t hstar = -1;
+    if (!rpc_block_within_provable_range(bi, &hstar)) {
+        json_set_str(result, "Block not found");
+        LOG_FAIL("blockchain",
+                 "getblock: block %s height %d above provable hstar=%d",
+                 hash_str, bi->nHeight, hstar);
     }
 
     block_header_to_json(bi, result);

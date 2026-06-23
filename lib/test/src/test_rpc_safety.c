@@ -294,6 +294,40 @@ int test_rpc_safety(void)
         ok = ok && result.type == JSON_STR &&
              strcmp(json_get_str(&result), active_hex) != 0 &&
              strstr(json_get_str(&result), "out of range") != NULL;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_str_param(&params, hstar_hex);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "getblockheader", &params,
+                                     &result);
+        const struct json_value *header_height = json_get(&result, "height");
+        ok = ok && header_height && json_get_int(header_height) == 1;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_str_param(&params, active_hex);
+        json_init(&result);
+        ok = ok && !rpc_table_execute(&tbl, "getblockheader", &params,
+                                      &result);
+        ok = ok && result.type == JSON_STR &&
+             strstr(json_get_str(&result), "not found") != NULL;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_str_param(&params, hstar_hex);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "getblock", &params, &result);
+        const struct json_value *block_height = json_get(&result, "height");
+        ok = ok && block_height && json_get_int(block_height) == 1;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_str_param(&params, active_hex);
+        json_init(&result);
+        ok = ok && !rpc_table_execute(&tbl, "getblock", &params, &result);
+        ok = ok && result.type == JSON_STR &&
+             strstr(json_get_str(&result), "not found") != NULL;
 
         json_free(&params);
         json_free(&result);
