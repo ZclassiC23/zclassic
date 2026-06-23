@@ -19,6 +19,7 @@
 #include "script/interpreter.h"
 #include "primitives/transaction.h"
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -87,9 +88,11 @@ bool bg_validation_verify_scripts_parallel(struct script_check_item *items,
     struct worker_ctx *workers = zcl_calloc((size_t)nthreads,
                                         sizeof(struct worker_ctx), "bg_valid workers");
     pthread_t *threads = zcl_calloc((size_t)nthreads, sizeof(pthread_t), "bg_valid threads");
-    if (!workers || !threads) {
+    bool *created = zcl_calloc((size_t)nthreads, sizeof(bool), "bg_valid created");
+    if (!workers || !threads || !created) {
         free(workers);
         free(threads);
+        free(created);
         /* Fallback to serial */
         for (size_t i = 0; i < count; i++) {
             if (!verify_script_item(&items[i]))
@@ -109,17 +112,34 @@ bool bg_validation_verify_scripts_parallel(struct script_check_item *items,
         workers[t].result = true;
         offset += workers[t].count;
         /* raw-pthread-ok: short-burst-joined-immediately */
-        pthread_create(&threads[t], NULL, worker_thread, &workers[t]);
+        int rc = pthread_create(&threads[t], NULL, worker_thread, &workers[t]);
+        if (rc != 0) {
+            /* Thread did not start. Two failure modes must NOT happen here:
+             * (1) leaving workers[t].result == true for an unrun range would
+             * report unverified script signatures as VALID — a silent hole in
+             * the full-validation pass; (2) pthread_join on the garbage
+             * threads[t] is undefined behavior. Run this range INLINE so it is
+             * actually verified, and mark it not-created so the join loop skips
+             * the uninitialized handle. */
+            LOG_ERR("bg.validation",
+                    "pthread_create failed (%d) for worker %d/%d; verifying its %zu items inline",
+                    rc, t, nthreads, workers[t].count);
+            worker_thread(&workers[t]);   /* sets workers[t].result honestly */
+        } else {
+            created[t] = true;
+        }
     }
 
     bool all_ok = true;
     for (int t = 0; t < nthreads; t++) {
-        pthread_join(threads[t], NULL);
+        if (created[t])
+            pthread_join(threads[t], NULL);
         if (!workers[t].result)
             all_ok = false;
     }
 
     free(workers);
     free(threads);
+    free(created);
     return all_ok;
 }
