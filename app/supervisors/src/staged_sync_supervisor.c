@@ -37,6 +37,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Generous progress-quiet window shared by all eight stages:
  * 1800s (30 min) of IDLE before emitting a progress warning.
@@ -67,6 +68,7 @@ struct staged_stage_desc {
     struct liveness_contract contract;
     supervisor_child_id      id;    /* SUPERVISOR_INVALID_ID until registered */
     struct main_state       *ms;
+    bool                     init_ok;
 };
 
 /* ---- per-stage stall bodies (the only genuinely per-stage code) ---- */
@@ -227,9 +229,35 @@ static void staged_stage_stall(struct liveness_contract *c)
     d->log_stall();
 }
 
-/* Generic registration for one stage. Byte-equivalent to the prior
- * per-stage staged_*_register: idempotent on its own id, init-then-skip
- * on failure, period=2s, the shared quiet window, in the chain domain. */
+/* Register a failed-init placeholder. The stage remains disabled (period=0,
+ * no callbacks), but the expected child name is present in supervisor
+ * diagnostics with a child_reported stall. That keeps boot from looping on a
+ * perma-IDLE stage while making the missing core child visible. */
+static void staged_stage_register_init_failed(struct staged_stage_desc *d)
+{
+    liveness_contract_init(&d->contract, d->name);
+    atomic_store(&d->contract.period_secs, (int64_t)0);
+    atomic_store(&d->contract.deadline_secs, (int64_t)0);
+    atomic_store(&d->contract.progress_max_quiet_us, (int64_t)0);
+    d->contract.ctx      = d;
+    d->contract.on_tick  = NULL;
+    d->contract.on_stall = NULL;
+    d->ms = NULL;
+    d->init_ok = false;
+    d->id = supervisor_register_in_domain(g_chain_sup, &d->contract);
+    if (d->id == SUPERVISOR_INVALID_ID) {
+        LOG_WARN("supervisor",
+                 "[supervisor] WARN %s init-failed marker register failed",
+                 d->name);
+        return;
+    }
+    supervisor_report_stall(d->id, SUPERVISOR_STALL_CHILD_REPORTED);
+}
+
+/* Generic registration for one stage. The successful path is the production
+ * stage contract: idempotent on its own id, period=2s, the shared quiet
+ * window, in the chain domain. Init failures register a disabled diagnostic
+ * child instead of disappearing from the tree. */
 static void staged_stage_register(struct staged_stage_desc *d,
                                   struct main_state *ms)
 {
@@ -237,14 +265,16 @@ static void staged_stage_register(struct staged_stage_desc *d,
     if (d->id != SUPERVISOR_INVALID_ID) return;  /* idempotent */
 
     /* Bind the stage to the live chainstate. If progress_store didn't
-     * open at boot, init returns false — log and skip supervisor wire
-     * so a misconfigured boot doesn't loop on a perma-IDLE child. */
+     * open at boot, init returns false — log and register a disabled
+     * diagnostic child so the missing core stage is visible. */
     if (!d->init(ms)) {
         LOG_WARN("supervisor", "%s", d->init_fail_msg);
+        staged_stage_register_init_failed(d);
         return;
     }
 
     d->ms = ms;
+    d->init_ok = true;
     liveness_contract_init(&d->contract, d->name);
     atomic_store(&d->contract.period_secs, (int64_t)2);
     /* Generous progress-quiet window: the stage can legitimately be IDLE
@@ -269,3 +299,25 @@ void staged_sync_supervisor_register(struct main_state *ms)
         staged_stage_register(&g_stages[i], ms);
     }
 }
+
+#ifdef ZCL_TESTING
+void staged_sync_supervisor_test_reset_runtime(void)
+{
+    if (g_stages[0].init_ok) header_admit_stage_shutdown();
+    if (g_stages[1].init_ok) validate_headers_stage_shutdown();
+    if (g_stages[2].init_ok) body_fetch_stage_shutdown();
+    if (g_stages[3].init_ok) body_persist_stage_shutdown();
+    if (g_stages[4].init_ok) script_validate_stage_shutdown();
+    if (g_stages[5].init_ok) proof_validate_stage_shutdown();
+    if (g_stages[6].init_ok) utxo_apply_stage_shutdown();
+    if (g_stages[7].init_ok) tip_finalize_stage_shutdown();
+
+    for (size_t i = 0; i < STAGED_STAGE_COUNT; i++) {
+        g_stages[i].id = SUPERVISOR_INVALID_ID;
+        g_stages[i].ms = NULL;
+        g_stages[i].init_ok = false;
+        memset(&g_stages[i].contract, 0, sizeof(g_stages[i].contract));
+    }
+    atomic_store(&g_progress_sync_ibd, -1);
+}
+#endif

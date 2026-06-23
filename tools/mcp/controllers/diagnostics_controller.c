@@ -55,8 +55,10 @@ static int h_zcl_sql(const struct mcp_request *req,
 /* ── zcl_node_log ────────────────────────────────────────────── */
 
 /* Reverse-scan node.log via getnodelog RPC. Server-side regex match + level
- * filter. Bounded memory: chunks the live log and stops at max_lines. The
- * client doesn't have to download the whole file just to grep it. */
+ * filter. Timestamp filtering is exact for lines that carry a supported
+ * timestamp; legacy undated lines remain eligible and are counted in the
+ * result metadata. Bounded memory: chunks the live log and stops at
+ * max_lines. */
 static int h_zcl_node_log(const struct mcp_request *req,
                           struct mcp_response *res)
 {
@@ -464,7 +466,8 @@ static const struct mcp_param_spec p_node_log[] = {
       "POSIX-extended regex matched against each log line",
       0, 0, 1, 256, NULL, NULL },
     { "since_secs", MCP_PARAM_INT, false,
-      "Only consider lines from the last N seconds (0..86400)",
+      "Filter timestamped lines to the last N seconds; 0 disables it. "
+      "Undated legacy lines remain eligible and are counted.",
       0, 86400, 0, 0, NULL, "300" },
     { "max_lines",  MCP_PARAM_INT, false,
       "Cap on returned lines",
@@ -536,7 +539,9 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_probe_zclassicd, 0, NULL },
     { "zcl_node_log", "ops",
       "Reverse-scan node.log server-side with regex + level filter. Avoids "
-      "downloading the 56 MB log just to grep. Returns newest matches first.",
+      "downloading the 56 MB log just to grep. since_secs applies to "
+      "timestamped lines; undated legacy lines remain eligible and are "
+      "reported in metadata. Returns newest matches first.",
       p_node_log, PARAM_COUNT(p_node_log),
       h_zcl_node_log, 0, NULL },
     { "zcl_sql", "ops",

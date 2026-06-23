@@ -25,8 +25,10 @@
 
 #include <regex.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -41,6 +43,176 @@
 #define NODELOG_MAX_SCAN_BYTES   (16 * 1024 * 1024) /* 16 MB hard cap */
 
 enum log_level { LL_ALL = 0, LL_INFO, LL_WARN, LL_ERROR, LL_FATAL };
+
+static bool digit2(const char *s, int *out)
+{
+    if (!s || s[0] < '0' || s[0] > '9' ||
+        s[1] < '0' || s[1] > '9')
+        return false;
+    *out = (s[0] - '0') * 10 + (s[1] - '0');
+    return true;
+}
+
+static bool digit4(const char *s, int *out)
+{
+    int hi = 0, lo = 0;
+    if (!digit2(s, &hi) || !digit2(s + 2, &lo))
+        return false;
+    *out = hi * 100 + lo;
+    return true;
+}
+
+static bool leap_year(int year)
+{
+    return (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+}
+
+static int month_days(int year, int month)
+{
+    static const int k_days[] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    if (month < 1 || month > 12) return 0;
+    if (month == 2 && leap_year(year)) return 29;
+    return k_days[month - 1];
+}
+
+static bool make_unix_utc(int year, int month, int day,
+                          int hour, int minute, int second,
+                          int64_t *out)
+{
+    if (!out || year < 1970 || month < 1 || month > 12 ||
+        day < 1 || day > month_days(year, month) ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+        second < 0 || second > 60)
+        return false;
+
+    int y = year - (month <= 2);
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (unsigned)((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5
+                                    + day - 1);
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days = (int64_t)era * 146097 + (int64_t)doe - 719468;
+    *out = days * 86400 + hour * 3600 + minute * 60 + second;
+    return true;
+}
+
+static int current_utc_year(int64_t now)
+{
+    time_t t = (time_t)now;
+    struct tm tmv;
+    if (!gmtime_r(&t, &tmv))
+        return 1970;
+    return tmv.tm_year + 1900;
+}
+
+static bool make_unix_current_year(int year, int month, int day,
+                                   int hour, int minute, int second,
+                                   int64_t now, int64_t *out)
+{
+    if (!make_unix_utc(year, month, day, hour, minute, second, out))
+        return false;
+
+    if (*out > now + 86400 &&
+        make_unix_utc(year - 1, month, day, hour, minute, second, out))
+        return true;
+    return true;
+}
+
+static bool parse_iso_timestamp(const char *s, int64_t *out)
+{
+    if (!s || strlen(s) < 19)
+        return false;
+
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!digit4(s, &year) || s[4] != '-' ||
+        !digit2(s + 5, &month) || s[7] != '-' ||
+        !digit2(s + 8, &day) || (s[10] != 'T' && s[10] != ' ') ||
+        !digit2(s + 11, &hour) || s[13] != ':' ||
+        !digit2(s + 14, &minute) || s[16] != ':' ||
+        !digit2(s + 17, &second))
+        return false;
+
+    return make_unix_utc(year, month, day, hour, minute, second, out);
+}
+
+static int parse_month3(const char *s)
+{
+    static const char *const k_months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    if (!s) return 0;
+    for (int i = 0; i < 12; i++) {
+        if (s[0] == k_months[i][0] &&
+            s[1] == k_months[i][1] &&
+            s[2] == k_months[i][2])
+            return i + 1;
+    }
+    return 0;
+}
+
+static bool parse_mmdd_timestamp(const char *s, int64_t now, int64_t *out)
+{
+    if (!s || strlen(s) < 14)
+        return false;
+
+    int month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!digit2(s, &month) || s[2] != '-' ||
+        !digit2(s + 3, &day) || s[5] != ' ' ||
+        !digit2(s + 6, &hour) || s[8] != ':' ||
+        !digit2(s + 9, &minute) || s[11] != ':' ||
+        !digit2(s + 12, &second))
+        return false;
+
+    return make_unix_current_year(current_utc_year(now), month, day,
+                                  hour, minute, second, now, out);
+}
+
+static bool parse_syslog_timestamp(const char *s, int64_t now, int64_t *out)
+{
+    if (!s || strlen(s) < 15)
+        return false;
+
+    int month = parse_month3(s);
+    if (month == 0 || s[3] != ' ')
+        return false;
+
+    const char *p = s + 4;
+    if (*p == ' ') p++;
+    if (*p < '0' || *p > '9') return false;
+    int day = *p++ - '0';
+    if (*p >= '0' && *p <= '9')
+        day = day * 10 + (*p++ - '0');
+    if (*p++ != ' ') return false;
+
+    int hour = 0, minute = 0, second = 0;
+    if (!digit2(p, &hour) || p[2] != ':' ||
+        !digit2(p + 3, &minute) || p[5] != ':' ||
+        !digit2(p + 6, &second))
+        return false;
+
+    return make_unix_current_year(current_utc_year(now), month, day,
+                                  hour, minute, second, now, out);
+}
+
+static bool line_timestamp_unix(const char *line, int64_t now, int64_t *out)
+{
+    if (!line || !out) return false;
+
+    const char *json_ts = strstr(line, "\"ts\":\"");
+    if (json_ts && parse_iso_timestamp(json_ts + 6, out))
+        return true;
+
+    if (parse_iso_timestamp(line, out))
+        return true;
+    if (parse_mmdd_timestamp(line, now, out))
+        return true;
+    if (parse_syslog_timestamp(line, now, out))
+        return true;
+    return false;
+}
 
 static enum log_level parse_level(const char *s)
 {
@@ -79,6 +251,9 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
         "getnodelog <pattern> [since_secs=300] [max_lines=50] [level=all]\n"
         "\nReverse-scan node.log. `pattern` is POSIX-extended regex.\n"
         "`level` one of: all, info, warn, error, fatal.\n"
+        "`since_secs` filters lines with parseable timestamps; undated "
+        "legacy lines remain eligible and are counted in "
+        "`undated_lines_included`. Pass 0 to disable timestamp filtering.\n"
         "\nResult: { lines: [...], scanned_bytes, truncated, log_path }");
 
     const char *pattern = json_get_str(json_at(params, 0));
@@ -154,6 +329,9 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
     bool truncated = false;
     int64_t scanned = 0;
     off_t pos = st.st_size;
+    int timestamped_candidates = 0;
+    int timestamped_lines_skipped = 0;
+    int undated_lines_included = 0;
 
     /* Each scanned line goes onto a stack so we emit in
      * newest-first order; lines_arr is built from that stack at the end. */
@@ -213,17 +391,26 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
                             enum log_level lvl = line_level(line);
                             bool level_ok = (want_level == LL_ALL) ||
                                             (lvl >= want_level);
-                            /* Crude "since" filter: log lines start
-                             * with "Mon DD HH:MM:SS" or "MM-DD HH:MM:SS"
-                             * but we don't parse — use mtime delta as
-                             * a coarse approximation. Lines older than
-                             * `earliest` are not specifically detected
-                             * here; that's a future enhancement. */
-                            (void)earliest;
-                            if (match && level_ok &&
+                            bool since_ok = true;
+                            bool undated_candidate = false;
+                            if (match && level_ok && since_secs > 0) {
+                                int64_t line_ts = 0;
+                                if (line_timestamp_unix(line, now, &line_ts)) {
+                                    timestamped_candidates++;
+                                    since_ok = (line_ts >= earliest &&
+                                                line_ts <= now);
+                                    if (!since_ok)
+                                        timestamped_lines_skipped++;
+                                } else {
+                                    undated_candidate = true;
+                                }
+                            }
+                            if (match && level_ok && since_ok &&
                                 stack_n < NODELOG_MAX_MAX_LINES) {
                                 stack[stack_n++] = line;
                                 emitted++;
+                                if (undated_candidate)
+                                    undated_lines_included++;
                             } else {
                                 free(line);
                             }
@@ -242,7 +429,7 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
     if (pos > 0 && scanned >= NODELOG_MAX_SCAN_BYTES)
         truncated = true;
 
-    /* Build the result array newest-first (stack already newest-last → reverse). */
+    /* The reverse scan pushes newest matches first, so preserve stack order. */
     for (int i = 0; i < stack_n; i++) {
         struct json_value lv = {0};
         json_set_str(&lv, stack[i]);
@@ -257,6 +444,18 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
     json_push_kv_bool(result, "truncated", truncated);
     json_push_kv_str(result, "log_path", log_path);
     json_push_kv_int(result, "emitted", emitted);
+    json_push_kv_int(result, "since_secs", since_secs);
+    json_push_kv_int(result, "earliest_unix", earliest);
+    json_push_kv_str(result, "timestamp_filter",
+                     since_secs > 0 ? "timestamped_lines" : "disabled");
+    json_push_kv_int(result, "timestamped_candidates",
+                     timestamped_candidates);
+    json_push_kv_int(result, "timestamped_lines_skipped",
+                     timestamped_lines_skipped);
+    json_push_kv_int(result, "undated_lines_included",
+                     undated_lines_included);
+    json_push_kv_bool(result, "since_filter_complete",
+                      since_secs == 0 || undated_lines_included == 0);
 
     regfree(&re);
     close(fd);

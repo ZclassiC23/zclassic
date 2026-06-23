@@ -40,6 +40,8 @@
 #include "test/test_helpers.h"
 
 #include "services/chain_tip_watchdog.h"
+#include "supervisors/staged_sync_supervisor.h"
+#include "storage/progress_store.h"
 #include "util/supervisor.h"
 #include "validation/main_state.h"
 
@@ -72,6 +74,17 @@ static int find_child_snapshot(const char *child_name,
     if (out_count) *out_count = matches;
     return found;
 }
+
+static const char *const k_staged_children[] = {
+    "staged.header_admit",
+    "staged.validate_headers",
+    "staged.body_fetch",
+    "staged.body_persist",
+    "staged.script_validate",
+    "staged.proof_validate",
+    "staged.utxo_apply",
+    "staged.tip_finalize",
+};
 
 int test_supervisor_production_tree(void)
 {
@@ -135,6 +148,47 @@ int test_supervisor_production_tree(void)
     main_state_free(&ms);
     chain_tip_watchdog_test_reset_runtime();
     supervisor_reset_for_testing();
+
+    /* Failed init must be visible, not absent. With progress_store closed,
+     * every staged child init fails; the production register path should
+     * still leave one disabled child per core stage in the supervisor tree
+     * with a named child_reported stall. */
+    staged_sync_supervisor_test_reset_runtime();
+    progress_store_close();
+    supervisor_reset_for_testing();
+
+    struct main_state staged_ms;
+    main_state_init(&staged_ms);
+    staged_sync_supervisor_register(&staged_ms);
+
+    SPT_CHECK("staged failed-init children are visible",
+              supervisor_child_count_total() ==
+                  (int)(sizeof(k_staged_children) /
+                        sizeof(k_staged_children[0])));
+
+    for (size_t i = 0;
+         i < sizeof(k_staged_children) / sizeof(k_staged_children[0]);
+         i++) {
+        memset(&snap, 0, sizeof(snap));
+        count = 0;
+        idx = find_child_snapshot(k_staged_children[i], &snap, &count);
+
+        char label[96];
+        snprintf(label, sizeof(label), "%s failed-init marker exists",
+                 k_staged_children[i]);
+        SPT_CHECK(label, idx >= 0 && count == 1);
+
+        snprintf(label, sizeof(label), "%s failed-init marker disabled",
+                 k_staged_children[i]);
+        SPT_CHECK(label, snap.period_secs == 0 &&
+                         snap.stall_reason ==
+                             SUPERVISOR_STALL_CHILD_REPORTED &&
+                         snap.stall_fires == 1);
+    }
+
+    main_state_free(&staged_ms);
+    supervisor_reset_for_testing();
+    staged_sync_supervisor_test_reset_runtime();
 
     printf("supervisor_production_tree: %d failures\n", failures);
     return failures;

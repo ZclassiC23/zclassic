@@ -178,6 +178,49 @@ int test_sync_watchdog_conditions(void)
 
     {
         struct fake_clock clock;
+        fake_clock_install(&clock, 5000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+        for (int i = 1; i <= 5; i++) {
+            fake_clock_set(&clock, 5121 + ((int64_t)(i - 1) * 120));
+            condition_engine_tick();
+        }
+
+        struct condition_runtime_snapshot snap;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok &&
+             condition_engine_get_registered_snapshot(
+                 "download_queue_starved", &snap);
+        ok = ok && download_queue_starved_test_remedy_calls() == 5;
+        ok = ok && snap.max_attempts == 5;
+        ok = ok && snap.attempts == 5;
+        ok = ok && snap.last_outcome == COND_REMEDY_UNWITNESSED;
+        ok = ok && snap.operator_needed_emitted;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+
+        fake_clock_set(&clock, 5721);
+        condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 5;
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved finite unwitnessed escalation", ok);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        struct fake_clock clock;
         fake_clock_install(&clock, 4000);
         struct connman cm;
         struct download_manager dm;

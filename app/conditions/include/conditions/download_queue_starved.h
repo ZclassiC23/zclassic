@@ -8,7 +8,7 @@
  * REMEDY: action=kick_refill — sync_monitor_kick_local_sync().
  * WITNESSED: the cumulative request counter advanced past the value
  *   captured at detect (the queue actually refilled, new blocks requested).
- * COND_WARN; poll_secs=5 (backoff 120s, max_attempts 100000). */
+ * COND_WARN; poll_secs=5 (backoff 120s, max_attempts 5 -> operator_needed). */
 void register_download_queue_starved(void);
 
 #ifdef ZCL_TESTING

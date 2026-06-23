@@ -97,7 +97,10 @@ static struct condition c_download_queue_starved = {
     .severity = COND_WARN,
     .poll_secs = 5,
     .backoff_secs = 120,
-    .max_attempts = 100000,
+    /* Finite: repeated kick_refill attempts must page when the request
+     * counter never advances. 100000 attempts at 120s backoff made this
+     * condition effectively non-escalating. */
+    .max_attempts = 5,
     .detect = detect_download_queue_starved,
     .remedy = remedy_download_queue_starved,
     .witness = witness_download_queue_starved,

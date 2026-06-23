@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/diagnostics_controller.h"
+#include "platform/clock.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_rpc_client.h"
 #include <openssl/err.h>
@@ -12,6 +13,22 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+struct rpc_fake_clock {
+    int64_t wall_ms;
+};
+
+static int64_t rpc_fake_now_mono(void *self)
+{
+    (void)self;
+    return 0;
+}
+
+static int64_t rpc_fake_now_wall(void *self)
+{
+    struct rpc_fake_clock *c = (struct rpc_fake_clock *)self;
+    return c ? c->wall_ms : 0;
+}
 
 int test_rpc(void) {
     int failures = 0;
@@ -238,6 +255,101 @@ int test_rpc(void) {
         ok = ok && strcmp(status, "Loading blocks...") == 0;
         set_rpc_warmup_finished();
         ok = ok && !rpc_is_in_warmup(NULL, 0);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("getnodelog since_secs timestamp filtering... ");
+    {
+        char dir_template[] = "/tmp/zcl_nodelog_rpc_XXXXXX";
+        char *dir = mkdtemp(dir_template);
+        char log_path[1024] = {0};
+        bool ok = dir != NULL;
+        if (ok) {
+            int n = snprintf(log_path, sizeof(log_path), "%s/node.log", dir);
+            ok = n > 0 && (size_t)n < sizeof(log_path);
+        }
+        if (ok) {
+            FILE *fp = fopen(log_path, "w");
+            ok = fp != NULL;
+            if (fp) {
+                ok = fputs("{\"ts\":\"2026-06-23T18:30:00.000000Z\","
+                           "\"level\":\"info\","
+                           "\"event\":\"node_log_since_old\"}\n", fp) >= 0;
+                ok = ok && fputs("undated node_log_since_undated\n", fp) >= 0;
+                ok = ok && fputs("{\"ts\":\"2026-06-23T18:34:19.000000Z\","
+                                 "\"level\":\"info\","
+                                 "\"event\":\"node_log_since_recent\"}\n", fp) >= 0;
+                ok = ok && fclose(fp) == 0;
+            }
+        }
+
+        struct rpc_fake_clock fake = { .wall_ms = 1782239670000LL };
+        const clock_iface_t iface = {
+            .now_monotonic_ns = rpc_fake_now_mono,
+            .now_wall_ms = rpc_fake_now_wall,
+            .self = &fake,
+        };
+        bool clock_installed = false;
+
+        struct json_value params;
+        json_init(&params);
+        struct json_value result;
+        json_init(&result);
+
+        if (ok) {
+            clock_set_default(&iface);
+            clock_installed = true;
+            diagnostics_controller_set_state(NULL, dir);
+
+            json_set_array(&params);
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, "node_log_since");
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 60);
+            ok = ok && json_push_back(&params, &v);
+            json_set_int(&v, 10);
+            ok = ok && json_push_back(&params, &v);
+            json_set_str(&v, "all");
+            ok = ok && json_push_back(&params, &v);
+            json_free(&v);
+        }
+
+        if (ok) {
+            struct rpc_table tbl;
+            rpc_table_init(&tbl);
+            register_diagnostics_rpc_commands(&tbl);
+            ok = rpc_table_execute(&tbl, "getnodelog", &params, &result);
+        }
+
+        if (ok) {
+            const struct json_value *lines = json_get(&result, "lines");
+            const struct json_value *skipped =
+                json_get(&result, "timestamped_lines_skipped");
+            const struct json_value *undated =
+                json_get(&result, "undated_lines_included");
+            const struct json_value *complete =
+                json_get(&result, "since_filter_complete");
+            ok = lines && lines->type == JSON_ARR && json_size(lines) == 2;
+            ok = ok && strstr(json_get_str(json_at(lines, 0)),
+                              "node_log_since_recent") != NULL;
+            ok = ok && strstr(json_get_str(json_at(lines, 1)),
+                              "node_log_since_undated") != NULL;
+            ok = ok && skipped && json_get_int(skipped) == 1;
+            ok = ok && undated && json_get_int(undated) == 1;
+            ok = ok && complete && !json_get_bool(complete);
+        }
+
+        json_free(&params);
+        json_free(&result);
+        diagnostics_controller_set_state(NULL, "");
+        if (clock_installed)
+            clock_reset_default();
+        if (dir) {
+            unlink(log_path);
+            rmdir(dir);
+        }
+
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

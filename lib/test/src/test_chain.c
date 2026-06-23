@@ -1291,6 +1291,57 @@ int test_chain(void)
         else { printf("FAIL (got N=%u K=%u)\n", n, k); failures++; }
     }
 
+    printf("Equihash solution size gate: Bubbles boundary... ");
+    {
+        const struct chain_params *p = chain_params_get();
+        struct block_index prev;
+        block_index_init(&prev);
+        prev.nHeight = 585317;
+        prev.nTime = 1700000000;
+        prev.nBits = 0x2007ffff;
+
+        struct block_header hdr;
+        block_header_init(&hdr);
+        hdr.nVersion = 4;
+        hdr.nTime = (uint32_t)(prev.nTime + 1);
+        hdr.nBits = GetNextWorkRequired(&prev, &hdr, &p->consensus);
+        hdr.nSolutionSize = 400;
+
+        struct validation_state state;
+        validation_state_init(&state);
+        bool ok_post = contextual_check_block_header(&hdr, &state, p,
+                                                     &prev, false);
+
+        hdr.nSolutionSize = 1344;
+        validation_state_init(&state);
+        bool reject_old = !contextual_check_block_header(&hdr, &state, p,
+                                                         &prev, false) &&
+                          strcmp(state.reject_reason,
+                                 "bad-equihash-solution-size") == 0;
+
+        prev.nHeight = 585316;
+        hdr.nBits = GetNextWorkRequired(&prev, &hdr, &p->consensus);
+        hdr.nSolutionSize = 1344;
+        validation_state_init(&state);
+        bool ok_pre = contextual_check_block_header(&hdr, &state, p,
+                                                    &prev, false);
+
+        hdr.nSolutionSize = 400;
+        validation_state_init(&state);
+        bool reject_new_early =
+            !contextual_check_block_header(&hdr, &state, p, &prev, false) &&
+            strcmp(state.reject_reason, "bad-equihash-solution-size") == 0;
+
+        if (ok_post && reject_old && ok_pre && reject_new_early)
+            printf("OK\n");
+        else {
+            printf("FAIL (post=%d old=%d pre=%d early=%d reason=%s)\n",
+                   ok_post, reject_old, ok_pre, reject_new_early,
+                   state.reject_reason);
+            failures++;
+        }
+    }
+
     printf("Founders reward last height... ");
     {
         const struct chain_params *p = chain_params_get();
