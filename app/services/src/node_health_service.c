@@ -496,7 +496,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     {
         struct legacy_mirror_sync_stats ms = {0};
         legacy_mirror_sync_stats_snapshot(&ms);
-        snapshot->mirror_lag_blocks = ms.lag;
+        snapshot->mirror_lag_blocks = ms.lag_known ? ms.lag : -1;
         snapshot->mirror_lag_breach_seconds = ms.lag_breach_seconds;
         snapshot->mirror_lag_critical_seconds = ms.lag_critical_seconds;
         snprintf(snapshot->mirror_lag_breach_severity,

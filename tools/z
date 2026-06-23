@@ -52,17 +52,44 @@ json_put_string() {
 json_put_number() {
     local json="$1" key="$2" value="$3"
     if printf '%s\n' "$json" | grep -q "\"$key\"[[:space:]]*:"; then
-        printf '%s\n' "$json" | sed "s/\"$key\"[[:space:]]*:[[:space:]]*[-0-9][0-9]*/\"$key\":$value/g"
+        printf '%s\n' "$json" | sed "s/\"$key\"[[:space:]]*:[[:space:]]*[-0-9][0-9]*/\"$key\":$value/g; s/\"$key\"[[:space:]]*:[[:space:]]*null/\"$key\":$value/g"
     else
         printf '%s\n' "$json" | sed "s/}$/,\"$key\":$value}/"
     fi
 }
 
+json_put_bool() {
+    local json="$1" key="$2" value="$3"
+    if printf '%s\n' "$json" | grep -q "\"$key\"[[:space:]]*:"; then
+        printf '%s\n' "$json" | sed "s/\"$key\"[[:space:]]*:[[:space:]]*\\(true\\|false\\|null\\)/\"$key\":$value/g"
+    else
+        printf '%s\n' "$json" | sed "s/}$/,\"$key\":$value}/"
+    fi
+}
+
+json_put_null() {
+    local json="$1" key="$2"
+    if printf '%s\n' "$json" | grep -q "\"$key\"[[:space:]]*:"; then
+        printf '%s\n' "$json" | sed "s/\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"$key\":null/g; s/\"$key\"[[:space:]]*:[[:space:]]*[-0-9][0-9]*/\"$key\":null/g; s/\"$key\"[[:space:]]*:[[:space:]]*\\(true\\|false\\|null\\)/\"$key\":null/g"
+    else
+        printf '%s\n' "$json" | sed "s/}$/,\"$key\":null}/"
+    fi
+}
+
 normalize_mirror_status_json() {
-    local json="$1" lag blocker
+    local json="$1" lag blocker reachable lag_known
+    reachable="$(json_field "$json" reachable)"
     lag="$(json_field "$json" candidate_lag)"
     [ -n "$lag" ] || lag="$(json_field "$json" lag)"
     [ -n "$lag" ] || lag=0
+    lag_known="$(json_field "$json" lag_known)"
+    [ -n "$lag_known" ] || lag_known="$(json_field "$json" lag_valid)"
+    if [ "$reachable" != "true" ]; then
+        lag=0
+        lag_known=false
+    elif [ -z "$lag_known" ]; then
+        lag_known=true
+    fi
     blocker="$(json_field "$json" candidate_blocker)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" last_blocker_code)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" activation_blocker)"
@@ -70,8 +97,24 @@ normalize_mirror_status_json() {
     json="$(json_put_string "$json" consensus_authority local_consensus_validation)"
     json="$(json_put_string "$json" candidate_source legacy_advisory)"
     json="$(json_put_string "$json" candidate_trust bounded_advisory_fallback)"
+    json="$(json_put_bool "$json" lag_known "$lag_known")"
+    json="$(json_put_bool "$json" lag_valid "$lag_known")"
+    json="$(json_put_bool "$json" candidate_lag_known "$lag_known")"
+    json="$(json_put_bool "$json" candidate_lag_valid "$lag_known")"
+    json="$(json_put_bool "$json" legacy_advisory_height_known "$lag_known")"
+    json="$(json_put_bool "$json" target_height_known "$lag_known")"
     json="$(json_put_number "$json" candidate_lag "$lag")"
+    json="$(json_put_number "$json" lag "$lag")"
+    if [ "$lag_known" = "true" ]; then
+        json="$(json_put_number "$json" lag_observed "$lag")"
+        json="$(json_put_number "$json" candidate_lag_observed "$lag")"
+    else
+        json="$(json_put_null "$json" lag_observed)"
+        json="$(json_put_null "$json" candidate_lag_observed)"
+    fi
     json="$(json_put_string "$json" candidate_blocker "$blocker")"
+    json="$(json_put_string "$json" active_error_code "$blocker")"
+    json="$(json_put_string "$json" active_error_detail "$(json_field "$json" last_error)")"
     printf '%s\n' "$json"
 }
 
@@ -109,7 +152,7 @@ rpc_result() {
 }
 
 mirror_fallback_json() {
-    local c23_h c23_hash zd_resp zd_h zd_hash lag reachable
+    local c23_h c23_hash zd_resp zd_h zd_hash lag reachable observed_lag blocker
     c23_h="$(rpc_result getblockcount)"
     c23_hash=""
     if [ -n "$c23_h" ]; then
@@ -126,11 +169,19 @@ mirror_fallback_json() {
     fi
     if [ -n "$c23_h" ] && [ -n "$zd_h" ]; then
         lag=$((zd_h - c23_h))
+        observed_lag="$lag"
     else
         lag=0
+        observed_lag=null
     fi
-    printf '{"zclassic23_height":%s,"zclassic23_hash":"%s","zclassicd_height":%s,"zclassicd_hash":"%s","lag":%s,"reachable":%s,"mirror_running":false,"last_catchup":0,"last_error":"fallback: getmirrorstatus unavailable","headers_added":0,"blocks_applied":0,"target_height":0,"authority_rewind_target":0,"last_advanced_height":0,"last_progress_blocks":0,"local_recovery_active":false,"legacy_advisory_gated_by_native_retries":false,"mirror_repair_gated_by_local_retries":false,"local_retries_exhausted":false,"local_missing_height":0,"local_retry_count":0,"local_distinct_peer_count":0,"local_peer_rotation_count":0,"stuck_height":0,"stuck_status_flags":0,"stuck_reason":"","stalls_total":0,"last_blocker_code":"","consensus_authority":"local_consensus_validation","candidate_source":"legacy_advisory","candidate_trust":"bounded_advisory_fallback","candidate_lag":%s,"candidate_blocker":"","override_active":false,"overrides_total":0,"unsafe_overrides_total":0,"blockers_total":0,"last_override_height":0,"last_override_safe":false,"last_override_scope":"","last_override_reason":"","activation_blocker":"","csr_sqlite_rc":0,"csr_failure_reason":""}\n' \
-        "${c23_h:-0}" "$c23_hash" "${zd_h:-0}" "$zd_hash" "$lag" "$reachable" "$lag"
+    blocker=""
+    [ "$reachable" = "true" ] || blocker="rpc-unreachable"
+    printf '{"zclassic23_height":%s,"zclassic23_hash":"%s","zclassicd_height":%s,"zclassicd_hash":"%s","legacy_advisory_height_known":%s,"target_height_known":%s,"lag_known":%s,"lag_valid":%s,"lag":%s,"lag_observed":%s,"reachable":%s,"mirror_running":false,"last_catchup":0,"last_error":"fallback: getmirrorstatus unavailable","headers_added":0,"blocks_applied":0,"target_height":0,"authority_rewind_target":0,"last_advanced_height":0,"last_progress_blocks":0,"local_recovery_active":false,"legacy_advisory_gated_by_native_retries":false,"mirror_repair_gated_by_local_retries":false,"local_retries_exhausted":false,"local_missing_height":0,"local_retry_count":0,"local_distinct_peer_count":0,"local_peer_rotation_count":0,"stuck_height":0,"stuck_status_flags":0,"stuck_reason":"","stalls_total":0,"last_blocker_code":"%s","consensus_authority":"local_consensus_validation","candidate_source":"legacy_advisory","candidate_trust":"bounded_advisory_fallback","candidate_lag_known":%s,"candidate_lag_valid":%s,"candidate_lag":%s,"candidate_lag_observed":%s,"candidate_blocker":"%s","active_error_code":"%s","active_error_detail":"fallback: getmirrorstatus unavailable","override_active":false,"overrides_total":0,"unsafe_overrides_total":0,"blockers_total":0,"last_override_height":0,"last_override_safe":false,"last_override_scope":"","last_override_reason":"","activation_blocker":"%s","csr_sqlite_rc":0,"csr_failure_reason":""}\n' \
+        "${c23_h:-0}" "$c23_hash" "${zd_h:-0}" "$zd_hash" \
+        "$reachable" "$reachable" "$reachable" "$reachable" \
+        "$lag" "$observed_lag" "$reachable" "$blocker" \
+        "$reachable" "$reachable" "$lag" "$observed_lag" \
+        "$blocker" "$blocker" "$blocker"
 }
 
 mirror_status_json() {
@@ -224,11 +275,12 @@ mirror)
             "$(json_field "$JSON" lag)" \
             "$(json_field "$JSON" reachable)" \
             "$(json_field "$JSON" mirror_running)"
-        printf 'authority=%s trust=%s candidate_source=%s candidate_lag=%s overrides=%s unsafe_overrides=%s blockers=%s last_override_height=%s last_override_safe=%s activation_blocker=%s\n' \
+        printf 'authority=%s trust=%s candidate_source=%s candidate_lag=%s candidate_lag_known=%s overrides=%s unsafe_overrides=%s blockers=%s last_override_height=%s last_override_safe=%s activation_blocker=%s\n' \
             "$(json_field "$JSON" consensus_authority)" \
             "$(json_field "$JSON" candidate_trust)" \
             "$(json_field "$JSON" candidate_source)" \
             "$(json_field "$JSON" candidate_lag)" \
+            "$(json_field "$JSON" candidate_lag_known)" \
             "$(json_field "$JSON" overrides_total)" \
             "$(json_field "$JSON" unsafe_overrides_total)" \
             "$(json_field "$JSON" blockers_total)" \

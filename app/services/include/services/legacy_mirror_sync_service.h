@@ -64,6 +64,10 @@ struct legacy_mirror_sync_stats {
     int     legacy_headers;
     int     local_height;
     int     best_header_height;
+    bool    legacy_advisory_height_known;
+    bool    target_height_known;
+    bool    lag_known;
+    bool    lag_valid;
     int     lag;
     int     target_height;
     int     authority_rewind_target;

@@ -573,6 +573,9 @@ int test_zclassicd_oracle(void)
         const struct json_value *authority;
         const struct json_value *mirror_enabled;
         const struct json_value *trust;
+        const struct json_value *lag_known;
+        const struct json_value *candidate_lag_known;
+        const struct json_value *lag_observed;
         const struct json_value *overrides;
         const struct json_value *blockers_total;
         const struct json_value *override_height;
@@ -587,6 +590,7 @@ int test_zclassicd_oracle(void)
         const struct json_value *local_retries_exhausted;
 
         sync_monitor_init();
+        zo_build_fixture(AGREE_HEX);
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_override(123, "body-hash-mismatch");
@@ -596,17 +600,17 @@ int test_zclassicd_oracle(void)
         stats.enabled = true;
         stats.running = true;
         stats.reachable = true;
-        stats.legacy_height = 1000;
-        stats.legacy_headers = 1000;
-        stats.local_height = 999;
-        stats.best_header_height = 1000;
-        stats.target_height = 1000;
+        stats.legacy_height = 8;
+        stats.legacy_headers = 8;
+        stats.local_height = 7;
+        stats.best_header_height = 8;
+        stats.target_height = 8;
         stats.stalls_total = 2;
         snprintf(stats.stuck_reason, sizeof(stats.stuck_reason),
                  "%s", "no-authorized-child");
         snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "body-hash-mismatch");
-        legacy_mirror_sync_test_set_stats(&stats, NULL);
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
 
         json_init(&root);
         json_set_object(&root);
@@ -616,6 +620,9 @@ int test_zclassicd_oracle(void)
         authority = json_get(&root, "consensus_authority");
         mirror_enabled = json_get(&root, "mirror_authorization_enabled");
         trust = json_get(&root, "candidate_trust");
+        lag_known = json_get(&root, "lag_known");
+        candidate_lag_known = json_get(&root, "candidate_lag_known");
+        lag_observed = json_get(&root, "lag_observed");
         overrides = json_get(&root, "overrides_total");
         unsafe_overrides = json_get(&root, "unsafe_overrides_total");
         blockers_total = json_get(&root, "blockers_total");
@@ -641,6 +648,13 @@ int test_zclassicd_oracle(void)
                  trust &&
                  strcmp(json_get_str(trust),
                         "bounded_advisory_fallback") == 0);
+        ZO_CHECK("legacy mirror dump lag is known when reachable",
+                 lag_known && json_get_bool(lag_known));
+        ZO_CHECK("legacy mirror dump candidate lag is known when reachable",
+                 candidate_lag_known && json_get_bool(candidate_lag_known));
+        ZO_CHECK("legacy mirror dump observed lag is numeric when reachable",
+                 lag_observed && !json_is_null(lag_observed) &&
+                 json_get_int(lag_observed) == 1);
         ZO_CHECK("legacy mirror dump override count",
                  overrides && json_get_int(overrides) == 1);
         ZO_CHECK("legacy mirror dump unsafe override count",
@@ -677,6 +691,7 @@ int test_zclassicd_oracle(void)
                  !json_get_bool(local_retries_exhausted));
         json_free(&root);
         legacy_mirror_sync_reset_for_test();
+        zo_teardown();
     }
 
     {
@@ -702,6 +717,8 @@ int test_zclassicd_oracle(void)
                  snap.last_blocker_id[0] == '\0');
         ZO_CHECK("legacy mirror at tip reports healthy after catchup",
                  strcmp(snap.state, "healthy") == 0);
+        ZO_CHECK("legacy mirror at tip has known lag",
+                 snap.lag_known && snap.lag_valid && snap.lag == 0);
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
         zo_teardown();
@@ -722,10 +739,61 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror behind local observes",
                  strcmp(snap.state, "observing") == 0);
         ZO_CHECK("legacy mirror behind local has negative lag",
-                 snap.lag < 0);
+                 snap.lag_known && snap.lag_valid && snap.lag < 0);
         ZO_CHECK("legacy mirror behind local not blocked",
                  snap.activation_blocker_reason[0] == '\0' &&
                  snap.last_blocker_id[0] == '\0');
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = false;
+        stats.legacy_height = 0;
+        stats.legacy_headers = 0;
+        stats.local_height = 3157703;
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "rpc-unreachable");
+        snprintf(stats.last_error, sizeof(stats.last_error),
+                 "%s", "connect failed");
+        legacy_mirror_sync_test_set_stats(&stats, NULL);
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror unreachable marks lag unknown",
+                 !snap.lag_known && !snap.lag_valid);
+        ZO_CHECK("legacy mirror unreachable clamps compatibility lag",
+                 snap.lag == 0);
+        ZO_CHECK("legacy mirror unreachable keeps rpc blocker",
+                 strcmp(snap.last_blocker_id, "rpc-unreachable") == 0);
+        ZO_CHECK("legacy mirror unreachable remains blocked",
+                 strcmp(snap.state, "blocked") == 0);
+
+        struct json_value root;
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("legacy mirror unreachable dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&root, NULL));
+        ZO_CHECK("legacy mirror unreachable dump lag_known=false",
+                 !json_get_bool(json_get(&root, "lag_known")));
+        ZO_CHECK("legacy mirror unreachable dump candidate_lag_known=false",
+                 !json_get_bool(json_get(&root, "candidate_lag_known")));
+        ZO_CHECK("legacy mirror unreachable dump observed lag null",
+                 json_is_null(json_get(&root, "lag_observed")));
+        ZO_CHECK("legacy mirror unreachable dump candidate observed lag null",
+                 json_is_null(json_get(&root, "candidate_lag_observed")));
+        ZO_CHECK("legacy mirror unreachable dump active code",
+                 strcmp(json_get_str(json_get(&root, "active_error_code")),
+                        "rpc-unreachable") == 0);
+        ZO_CHECK("legacy mirror unreachable dump active detail",
+                 strcmp(json_get_str(json_get(&root, "active_error_detail")),
+                        "connect failed") == 0);
+        ZO_CHECK("legacy mirror unreachable dump lag zero",
+                 json_get_int(json_get(&root, "lag")) == 0 &&
+                 json_get_int(json_get(&root, "candidate_lag")) == 0);
+        json_free(&root);
         legacy_mirror_sync_reset_for_test();
         zo_teardown();
     }

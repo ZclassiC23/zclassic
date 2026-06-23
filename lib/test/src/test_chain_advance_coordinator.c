@@ -1192,6 +1192,9 @@ static int test_cac_dump_populates_live_mirror_source(void)
         const struct json_value *blocked;
         const struct json_value *blocker;
         const struct json_value *healthy;
+        const struct json_value *available;
+        const struct json_value *height;
+        const struct json_value *reason;
 
         memset(&ms, 0, sizeof(ms));
         memset(&tip, 0, sizeof(tip));
@@ -1253,6 +1256,40 @@ static int test_cac_dump_populates_live_mirror_source(void)
         ASSERT(json_get_bool(blocked));
         ASSERT(!json_get_bool(healthy));
         ASSERT_STR_EQ(json_get_str(blocker), "body-hash-mismatch");
+        json_free(&root);
+
+        mirror_consensus_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = false;
+        stats.legacy_height = 0;
+        stats.target_height = 0;
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "rpc-unreachable");
+        legacy_mirror_sync_test_set_stats(&stats, &ms);
+
+        json_init(&root);
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
+        sources = json_get(&root, "sources");
+        ASSERT(sources != NULL);
+        mirror = json_at(sources, 3);
+        ASSERT(mirror != NULL);
+        available = json_get(mirror, "available");
+        healthy = json_get(mirror, "healthy");
+        height = json_get(mirror, "height");
+        lag = json_get(mirror, "lag");
+        reason = json_get(mirror, "reason");
+        ASSERT(available != NULL);
+        ASSERT(healthy != NULL);
+        ASSERT(height != NULL);
+        ASSERT(lag != NULL);
+        ASSERT(reason != NULL);
+        ASSERT(!json_get_bool(available));
+        ASSERT(!json_get_bool(healthy));
+        ASSERT(json_get_int(height) == -1);
+        ASSERT(json_get_int(lag) == -1);
+        ASSERT(strstr(json_get_str(reason), "lag=unknown") != NULL);
         json_free(&root);
 
         block_source_policy_reset_for_test();

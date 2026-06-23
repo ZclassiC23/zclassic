@@ -362,6 +362,8 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                          "local_consensus_validation");
         json_push_kv_str(result, "candidate_source", "legacy_advisory");
         json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
+        json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
+        json_push_kv_bool(result, "candidate_lag_valid", ms.lag_valid);
         json_push_kv_int(result, "candidate_lag", ms.lag);
         json_push_kv_str(result, "candidate_blocker",
                          ms.activation_blocker_reason[0] ? ms.activation_blocker_reason

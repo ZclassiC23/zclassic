@@ -27,24 +27,43 @@ static const char *lms_state_name(const struct legacy_mirror_sync_stats *s)
     if (s->activation_blocker_reason[0] || s->last_blocker_id[0] ||
         s->csr_sqlite_rc != 0)
         return "blocked";
-    if (s->reachable &&
+    if (s->lag_known &&
         s->lag_sla_breach_blocks > 0 &&
         s->lag >= s->lag_sla_breach_blocks)
         return "concurrent_catchup";
     if (s->mirror_repair_gated_by_local_retries)
         return "gated_by_local_retries";
-    if (s->reachable && s->lag < 0)
+    if (s->lag_known && s->lag < 0)
         return "observing";
-    if (s->in_flight || s->last_progress_blocks > 0 || s->lag > 1)
+    if (s->in_flight || s->last_progress_blocks > 0 ||
+        (s->lag_known && s->lag > 1))
         return "catching_up";
-    if (s->reachable && s->lag <= 1)
+    if (s->lag_known && s->lag <= 1)
         return "healthy";
     return "observing";
 }
 
-static bool lms_blocker_cleared_by_catchup(const char *code, int lag)
+static bool lms_blocker_cleared_by_catchup(const char *code,
+                                           bool lag_known,
+                                           int lag)
 {
-    return code && strcmp(code, "activation-no-progress") == 0 && lag <= 0;
+    return code && lag_known &&
+           strcmp(code, "activation-no-progress") == 0 && lag <= 0;
+}
+
+static void lms_json_push_observed_lag(struct json_value *out,
+                                       const char *key,
+                                       const struct legacy_mirror_sync_stats *s)
+{
+    if (s && s->lag_known) {
+        json_push_kv_int(out, key, s->lag);
+        return;
+    }
+    struct json_value nullv;
+    json_init(&nullv);
+    json_set_null(&nullv);
+    json_push_kv(out, key, &nullv);
+    json_free(&nullv);
 }
 
 struct zcl_result legacy_mirror_sync_request_catchup_result(const char *reason)
@@ -227,13 +246,19 @@ void legacy_mirror_sync_stats_snapshot(
     out->legacy_headers = atomic_load(&g_lms.legacy_headers);
     out->local_height = atomic_load(&g_lms.local_height);
     out->best_header_height = atomic_load(&g_lms.best_header_height);
+    out->legacy_advisory_height_known =
+        out->enabled && out->reachable && out->legacy_height >= 0;
+    out->target_height_known = out->legacy_advisory_height_known;
+    out->lag_known = out->legacy_advisory_height_known &&
+                     out->local_height >= 0;
+    out->lag_valid = out->lag_known;
     if (!lms_local_hash_at(out->local_height, out->zclassic23_hash)) {
         pthread_mutex_lock(&g_lms.lock);
         snprintf(out->zclassic23_hash, sizeof(out->zclassic23_hash), "%s",
                  g_lms.zclassic23_hash);
         pthread_mutex_unlock(&g_lms.lock);
     }
-    out->lag = out->legacy_height - out->local_height;
+    out->lag = out->lag_known ? out->legacy_height - out->local_height : 0;
     out->target_height = atomic_load(&g_lms.target_height);
     out->authority_rewind_target =
         atomic_load(&g_lms.authority_rewind_target);
@@ -288,9 +313,12 @@ void legacy_mirror_sync_stats_snapshot(
                  mcs.activation_blocker_reason);
     }
     if (lms_blocker_cleared_by_catchup(out->activation_blocker_reason,
+                                       out->lag_known,
                                        out->lag))
         out->activation_blocker_reason[0] = '\0';
-    if (lms_blocker_cleared_by_catchup(out->last_blocker_id, out->lag))
+    if (lms_blocker_cleared_by_catchup(out->last_blocker_id,
+                                       out->lag_known,
+                                       out->lag))
         out->last_blocker_id[0] = '\0';
     if (!out->activation_blocker_reason[0])
         out->activation_blocker_class = BLOCKER_TRANSIENT;
@@ -305,22 +333,26 @@ void legacy_mirror_sync_stats_snapshot(
     {
         int64_t now = (int64_t)platform_time_wall_time_t();
         out->lag_breach_seconds =
+            out->lag_known &&
             out->lag_breach_since > 0 && now >= out->lag_breach_since
                 ? now - out->lag_breach_since : 0;
         out->lag_critical_seconds =
+            out->lag_known &&
             out->lag_critical_since > 0 && now >= out->lag_critical_since
                 ? now - out->lag_critical_since : 0;
     }
     const char *sev = "none";
-    if (out->lag_critical_since > 0 &&
+    if (out->lag_known &&
+        out->lag_critical_since > 0 &&
         out->lag_critical_seconds >= out->lag_sla_critical_secs)
         sev = "fatal";
-    else if (out->lag_critical_since > 0)
+    else if (out->lag_known && out->lag_critical_since > 0)
         sev = "critical";
-    else if (out->lag_breach_since > 0 &&
+    else if (out->lag_known &&
+             out->lag_breach_since > 0 &&
              out->lag_breach_seconds >= out->lag_sla_breach_secs)
         sev = "critical";
-    else if (out->lag_breach_since > 0)
+    else if (out->lag_known && out->lag_breach_since > 0)
         sev = "warn";
     snprintf(out->lag_breach_severity, sizeof(out->lag_breach_severity),
              "%s", sev);
@@ -349,10 +381,19 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "legacy_headers", s.legacy_headers);
     json_push_kv_int(out, "local_height", s.local_height);
     json_push_kv_int(out, "best_header_height", s.best_header_height);
+    json_push_kv_bool(out, "legacy_advisory_height_known",
+                      s.legacy_advisory_height_known);
+    json_push_kv_bool(out, "target_height_known", s.target_height_known);
+    json_push_kv_bool(out, "lag_known", s.lag_known);
+    json_push_kv_bool(out, "lag_valid", s.lag_valid);
     json_push_kv_int(out, "lag", s.lag);
+    lms_json_push_observed_lag(out, "lag_observed", &s);
     json_push_kv_str(out, "candidate_source", "legacy_advisory");
     json_push_kv_str(out, "candidate_trust", s.candidate_trust);
+    json_push_kv_bool(out, "candidate_lag_known", s.lag_known);
+    json_push_kv_bool(out, "candidate_lag_valid", s.lag_valid);
     json_push_kv_int(out, "candidate_lag", s.lag);
+    lms_json_push_observed_lag(out, "candidate_lag_observed", &s);
     json_push_kv_str(out, "candidate_blocker",
                      s.activation_blocker_reason[0] ? s.activation_blocker_reason
                                              : s.last_blocker_id);
@@ -401,6 +442,12 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
                      blocker_class_name(s.last_blocker_class));
     json_push_kv_str(out, "activation_blocker", s.activation_blocker_reason);
     json_push_kv_str(out, "last_blocker_code", s.last_blocker_id);
+    json_push_kv_str(out, "active_error_code",
+                     s.activation_blocker_reason[0] ? s.activation_blocker_reason
+                                             : s.last_blocker_id);
+    json_push_kv_str(out, "active_error_detail",
+                     (s.activation_blocker_reason[0] || s.last_blocker_id[0])
+                         ? s.last_error : "");
     json_push_kv_int(out, "csr_sqlite_rc", s.csr_sqlite_rc);
     json_push_kv_str(out, "csr_failure_reason", s.csr_failure_reason);
     json_push_kv_str(out, "last_error", s.last_error);

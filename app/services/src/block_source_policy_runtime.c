@@ -336,15 +336,16 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     struct cac_source_status *mir = &in->sources[CAC_SOURCE_ZCLASSICD_MIRROR];
     mir->source = CAC_SOURCE_ZCLASSICD_MIRROR;
     mir->available = msnap.enabled && msnap.reachable;
-    mir->healthy = msnap.enabled && msnap.reachable && msnap.lag >= 0 &&
+    mir->healthy = msnap.enabled && msnap.lag_known && msnap.lag >= 0 &&
                    (msnap.state[0] == '\0' ||
                     strcmp(msnap.state, "blocked") != 0);
     mir->authorized = true;
-    mir->height = msnap.legacy_height;
+    mir->height = msnap.legacy_advisory_height_known
+                      ? msnap.legacy_height : -1;
     mir->failures = msnap.rpc_errors;
     mir->progress_current = msnap.blocks_applied;
     mir->progress_total = msnap.target_height;
-    mir->lag = msnap.lag;
+    mir->lag = msnap.lag_known ? msnap.lag : -1;
     mir->retry_count = msnap.local_retry_count;
     mir->distinct_peer_count = msnap.local_distinct_peer_count;
     bsp_copy_text(mir->state, sizeof(mir->state),
@@ -360,14 +361,22 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     } else {
         mir->blocked_class = BLOCKER_TRANSIENT;
     }
-    snprintf(mir->reason, sizeof(mir->reason),
-             "state=%s lag=%d local_retries_exhausted=%s",
-             msnap.state, msnap.lag,
-             msnap.local_retries_exhausted ? "true" : "false");
+    if (msnap.lag_known) {
+        snprintf(mir->reason, sizeof(mir->reason),
+                 "state=%s lag=%d local_retries_exhausted=%s",
+                 msnap.state, msnap.lag,
+                 msnap.local_retries_exhausted ? "true" : "false");
+    } else {
+        snprintf(mir->reason, sizeof(mir->reason),
+                 "state=%s lag=unknown local_retries_exhausted=%s",
+                 msnap.state,
+                 msnap.local_retries_exhausted ? "true" : "false");
+    }
     in->mirror_lag_sla_breach_blocks = msnap.lag_sla_breach_blocks;
-    if (msnap.target_height > in->target_height)
+    if (msnap.target_height_known && msnap.target_height > in->target_height)
         in->target_height = msnap.target_height;
-    if (msnap.legacy_height > in->target_height)
+    if (msnap.legacy_advisory_height_known &&
+        msnap.legacy_height > in->target_height)
         in->target_height = msnap.legacy_height;
 
     if (p2p->height > in->target_height)

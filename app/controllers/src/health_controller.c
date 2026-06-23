@@ -69,11 +69,17 @@ static void push_mirror_sync_fields(struct json_value *result)
                      "local_consensus_validation");
     json_push_kv_str(result, "candidate_source", "legacy_advisory");
     json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
+    json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
+    json_push_kv_bool(result, "candidate_lag_valid", ms.lag_valid);
     json_push_kv_int(result, "candidate_lag", ms.lag);
     json_push_kv_str(result, "candidate_blocker",
                      ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
                                               : ms.last_blocker_id);
     json_push_kv_int(result, "legacy_height", ms.legacy_height);
+    json_push_kv_bool(result, "legacy_advisory_height_known",
+                      ms.legacy_advisory_height_known);
+    json_push_kv_bool(result, "mirror_lag_known", ms.lag_known);
+    json_push_kv_bool(result, "mirror_lag_valid", ms.lag_valid);
     json_push_kv_int(result, "mirror_lag", ms.lag);
     json_push_kv_str(result, "mirror_activation_blocker",
                      ms.activation_blocker_reason);
@@ -332,12 +338,16 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_str(&svc, "candidate_source", "legacy_advisory");
         json_push_kv_str(&svc, "candidate_trust",
                          ms.candidate_trust);
+        json_push_kv_bool(&svc, "candidate_lag_known", ms.lag_known);
+        json_push_kv_bool(&svc, "candidate_lag_valid", ms.lag_valid);
         json_push_kv_int(&svc, "candidate_lag", ms.lag);
         json_push_kv_str(&svc, "candidate_blocker",
                          ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
                                                   : ms.last_blocker_id);
         json_push_kv_int(&svc, "legacy_height", ms.legacy_height);
         json_push_kv_int(&svc, "local_height", ms.local_height);
+        json_push_kv_bool(&svc, "lag_known", ms.lag_known);
+        json_push_kv_bool(&svc, "lag_valid", ms.lag_valid);
         json_push_kv_int(&svc, "lag", ms.lag);
         json_push_kv_bool(&svc, "local_recovery_active",
                           ms.local_recovery_active);

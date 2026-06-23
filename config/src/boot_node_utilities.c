@@ -55,7 +55,8 @@ static void boot_metrics_external_gauges(
     out->tip_advance_age_seconds = sync_monitor_tip_advance_age();
 
     legacy_mirror_sync_stats_snapshot(&lms);
-    out->mirror_lag_blocks = lms.enabled ? (int64_t)lms.lag : -1;
+    out->mirror_lag_blocks = lms.enabled && lms.lag_known
+                                  ? (int64_t)lms.lag : -1;
     out->mirror_lag_breach_seconds = lms.lag_breach_seconds;
     out->mirror_lag_critical_seconds = lms.lag_critical_seconds;
 
