@@ -362,17 +362,37 @@ bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
 
     int tip_height = active_chain_height(&ctx->main_state->chain_active);
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    uint8_t coins_best_hash[32] = {0};
+    bool coins_best_hash_found = false;
+    int32_t coins_best_height = -1;
+    if (reducer_frontier_derive_coins_best_now(&coins_best_height,
+                                               coins_best_hash,
+                                               &coins_best_hash_found) &&
+        coins_best_height >= 0) {
+        tip_height = coins_best_height;
+        tip = active_chain_at(&ctx->main_state->chain_active,
+                              (int)coins_best_height);
+    }
 
     int64_t total_amount = 0;
     int64_t num_txs = 0;
     int64_t num_txouts = 0;
 
     /* UTXO set statistics from the authoritative atomic coins set. */
-    coins_kv_setinfo(cdb, &num_txs, &num_txouts, &total_amount);
+    if (!coins_kv_setinfo(cdb, &num_txs, &num_txouts, &total_amount)) {
+        json_set_str(result, "coins setinfo failed");
+        LOG_FAIL("blockchain", "gettxoutsetinfo: coins setinfo failed");
+    }
 
     json_set_object(result);
     json_push_kv_int(result, "height", tip_height);
-    if (tip && tip->phashBlock) {
+    if (coins_best_hash_found) {
+        struct uint256 h;
+        memcpy(h.data, coins_best_hash, 32);
+        char hex[65];
+        uint256_get_hex(&h, hex);
+        json_push_kv_str(result, "bestblock", hex);
+    } else if (tip && tip->phashBlock) {
         char hex[65];
         uint256_get_hex(tip->phashBlock, hex);
         json_push_kv_str(result, "bestblock", hex);
@@ -420,6 +440,11 @@ bool rpc_getutxocommitment(const struct json_value *params, bool help,
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
+    int32_t coins_best_height = -1;
+    if (reducer_frontier_derive_coins_best_now(&coins_best_height, NULL,
+                                               NULL) &&
+        coins_best_height >= 0)
+        tip = coins_best_height;
 
     /* Save checkpoint (harmless node.db metadata; not load-bearing for reads). */
     if (ctx->node_db && ctx->node_db->open)

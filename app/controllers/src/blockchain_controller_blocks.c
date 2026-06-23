@@ -27,6 +27,17 @@
 #include <stdio.h>
 #include <time.h>
 
+static struct block_index *rpc_provable_tip(struct blockchain_context *ctx,
+                                            int32_t *out_hstar)
+{
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    if (out_hstar)
+        *out_hstar = hstar;
+    if (!ctx || !ctx->main_state)
+        return NULL;
+    return active_chain_at(&ctx->main_state->chain_active, (int)hstar);
+}
+
 bool rpc_getblockcount(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -56,10 +67,15 @@ bool rpc_getbestblockhash(const struct json_value *params, bool help,
         json_set_str(result, "Not initialized");
         LOG_FAIL("blockchain", "getbestblockhash: main_state not initialized");
     }
-    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    /* Match getblockcount/getblockchaininfo: the public "best block" is H*,
+     * not the active sync-window tip that can run ahead mid-fold. */
+    int32_t hstar = -1;
+    struct block_index *tip = rpc_provable_tip(ctx, &hstar);
     if (!tip || !tip->phashBlock) {
-        json_set_str(result, "No tip");
-        LOG_FAIL("blockchain", "getbestblockhash: chain tip or phashBlock is NULL");
+        json_set_str(result, "No provable tip");
+        LOG_FAIL("blockchain",
+                 "getbestblockhash: provable tip hstar=%d unresolved",
+                 hstar);
     }
     char hex[65];
     uint256_get_hex(tip->phashBlock, hex);
@@ -77,16 +93,18 @@ bool rpc_getchaintip(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "getchaintip\n"
-        "\nReturns the active chain tip in one shot.\n"
+        "\nReturns the provable chain tip in one shot.\n"
         "Result: { hash, height, time, age_seconds, work, bits, difficulty }");
     if (!ctx->main_state) {
         json_set_str(result, "Not initialized");
         LOG_FAIL("blockchain", "getchaintip: main_state not initialized");
     }
-    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    int32_t hstar = -1;
+    struct block_index *tip = rpc_provable_tip(ctx, &hstar);
     if (!tip || !tip->phashBlock) {
-        json_set_str(result, "No tip");
-        LOG_FAIL("blockchain", "getchaintip: chain tip or phashBlock is NULL");
+        json_set_str(result, "No provable tip");
+        LOG_FAIL("blockchain", "getchaintip: provable tip hstar=%d unresolved",
+                 hstar);
     }
     char hex[65];
     uint256_get_hex(tip->phashBlock, hex);
@@ -117,7 +135,13 @@ bool rpc_getdifficulty(const struct json_value *params, bool help,
         json_set_str(result, "Not initialized");
         LOG_FAIL("blockchain", "getdifficulty: main_state not initialized");
     }
-    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    int32_t hstar = -1;
+    struct block_index *tip = rpc_provable_tip(ctx, &hstar);
+    if (!tip) {
+        json_set_str(result, "No provable tip");
+        LOG_FAIL("blockchain", "getdifficulty: provable tip hstar=%d unresolved",
+                 hstar);
+    }
     json_set_real(result, difficulty_from_index(tip));
     return true;
 }
