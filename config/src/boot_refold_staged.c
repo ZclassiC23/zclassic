@@ -548,14 +548,34 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
      * mismatch — never stamp a coin against a forged anchor. */
     if (ms) {
         const struct block_index *bi = active_chain_at(&ms->chain_active, seed_h);
+        if (!bi && ms->pindex_best_header &&
+            ms->pindex_best_header->nHeight >= seed_h) {
+            /* seed_h is above the coins-best active-chain WINDOW but within
+             * this node's PoW-proven header chain. The block_index map + the
+             * on-disk bodies span to the header tip (pindex_best_header); only
+             * the VISIBLE active window was pinned to coins-best by the boot
+             * restore (utxo_recovery_restore_chain_tip -> csr_commit_tip).
+             * Widen the window forward to the header tip with the SAME
+             * primitive the reducer uses for its lookahead: it fills chain[]
+             * by walking pprev and NEVER publishes finalized authority, so the
+             * consensus anchor-hash cross-check below reads the real
+             * PoW-proven block_index at seed_h. A pprev gap leaves the slot
+             * NULL and the FATAL below still fires (never bind against a
+             * missing/forged anchor). The loader's header docstring assumed
+             * `--importblockindex` supplies this slot; it does NOT (header
+             * import sets only pindex_best_header, never c->chain[]), so the
+             * window is extended here. */
+            active_chain_extend_window(&ms->chain_active, ms->pindex_best_header);
+            bi = active_chain_at(&ms->chain_active, seed_h);
+        }
         if (!bi) {
             fprintf(stderr,
                     "FATAL: -load-snapshot-at-own-height: the in-memory active "
                     "chain has NO block at the snapshot height h=%d — cannot "
-                    "consensus-bind the snapshot's anchor hash. Run "
-                    "`--importblockindex <datadir>` FIRST so the header chain "
-                    "spans h=%d, then retry. REFUSING to seed.\n",
-                    seed_h, seed_h);
+                    "consensus-bind the snapshot's anchor hash (header tip h=%d). "
+                    "REFUSING to seed.\n",
+                    seed_h,
+                    ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1);
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "load_snapshot_at_own_height no_index_block seed_h=%d",
                         seed_h);
