@@ -11,6 +11,7 @@
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "json/json.h"
 #include "models/database.h"
 #include "platform/clock.h"
 #include "net/snapshot_sync_contract.h"
@@ -123,6 +124,22 @@ static struct block_index *insert_test_block(struct main_state *ms,
     if (height > 0)
         bi->pprev = block_map_find(&ms->map_block_index, &hashes[height - 1]);
     return bi;
+}
+
+static const struct json_value *uap_json_condition(
+    const struct json_value *root,
+    const char *name)
+{
+    const struct json_value *conditions = json_get(root, "conditions");
+    if (!conditions || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = json_get(cond, "name");
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return cond;
+    }
+    return NULL;
 }
 
 static void persist_snapshot_roots(struct node_db *ndb,
@@ -361,6 +378,25 @@ int test_utxo_activation_paused(void)
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 1;
         ok = ok && block_failed_mask_at_tip_test_stall_type() == 2;
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            uap_json_condition(&dump, "block_failed_mask_at_tip");
+        const struct json_value *detail = json_get(cond, "detail");
+        ok = ok && detail != NULL;
+        ok = ok &&
+             json_get_int(json_get(detail, "block_target_height")) == 1;
+        ok = ok &&
+             json_get_int(json_get(detail, "tip_height_at_detect")) == 0;
+        ok = ok &&
+             strcmp(json_get_str(json_get(detail, "stall_type")),
+                    "no_advance") == 0;
+        ok = ok &&
+             strcmp(json_get_str(json_get(detail, "delegated_owner")),
+                    "none") == 0;
+        json_free(&dump);
         ok = ok && active_chain_move_window_tip(&ms.chain_active, next);
         fake_clock_set(&clock, 1302);
         condition_engine_tick();
@@ -531,6 +567,25 @@ int test_utxo_activation_paused(void)
         ok = ok &&
              block_failed_mask_at_tip_test_reducer_owner_reason() != 0;
         ok = ok && block_failed_mask_at_tip_test_target_height() == -1;
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            uap_json_condition(&dump, "block_failed_mask_at_tip");
+        const struct json_value *detail = json_get(cond, "detail");
+        ok = ok && detail != NULL;
+        ok = ok &&
+             strcmp(json_get_str(json_get(detail, "delegated_owner")),
+                    "reducer_frontier_reconcile_light") == 0;
+        ok = ok &&
+             json_get_int(json_get(detail, "reducer_frontier_owner_target")) ==
+             a + 2;
+        ok = ok &&
+             strcmp(json_get_str(json_get(
+                        detail, "reducer_frontier_owner_reason")),
+                    "frontier_repair") == 0;
+        json_free(&dump);
         UAP_CHECK("reducer frontier owns generic no-advance stall", ok);
 
         condition_engine_set_main_state(NULL);

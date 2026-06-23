@@ -34,6 +34,7 @@ enum condition_remedy_result {
 typedef bool (*condition_detect_fn)(void);
 typedef enum condition_remedy_result (*condition_remedy_fn)(void);
 typedef bool (*condition_witness_fn)(int64_t target_at_detect);
+typedef bool (*condition_detail_fn)(struct json_value *out);
 
 struct condition_state {
     _Atomic int64_t first_detect_unix;
@@ -57,6 +58,7 @@ struct condition {
     condition_detect_fn detect;
     condition_remedy_fn remedy;
     condition_witness_fn witness;
+    condition_detail_fn detail;
     int witness_window_secs;
     struct condition_state state;
 };

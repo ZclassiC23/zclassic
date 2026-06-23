@@ -20,6 +20,7 @@ static _Atomic bool g_detect;
 static _Atomic bool g_witness;
 static _Atomic int g_detect_calls;
 static _Atomic int g_remedy_calls;
+static _Atomic int g_detail_calls;
 static _Atomic int g_operator_events;
 
 static bool ce_detect(void)
@@ -38,6 +39,12 @@ static bool ce_witness(int64_t target_at_detect)
 {
     (void)target_at_detect;
     return atomic_load(&g_witness);
+}
+
+static bool ce_detail(struct json_value *out)
+{
+    atomic_fetch_add(&g_detail_calls, 1);
+    return out && json_push_kv_int(out, "fixture_detail", 42);
 }
 
 static void operator_observer(enum event_type type, uint32_t peer_id,
@@ -60,6 +67,7 @@ static void reset_fixture(void)
     atomic_store(&g_witness, false);
     atomic_store(&g_detect_calls, 0);
     atomic_store(&g_remedy_calls, 0);
+    atomic_store(&g_detail_calls, 0);
     atomic_store(&g_operator_events, 0);
 }
 
@@ -106,6 +114,7 @@ int test_condition_engine(void)
         .detect = ce_detect,
         .remedy = ce_remedy,
         .witness = ce_witness,
+        .detail = ce_detail,
         .witness_window_secs = 60,
     };
 
@@ -300,8 +309,12 @@ int test_condition_engine(void)
         ok = ok && json_get(basic, "last_operator_needed_unix") != NULL;
         ok = ok && json_get(basic, "target_at_detect") != NULL;
         ok = ok && json_get(basic, "operator_needed_emitted") != NULL;
+        const struct json_value *detail = json_get(basic, "detail");
+        ok = ok && detail != NULL;
+        ok = ok && json_get_int(json_get(detail, "fixture_detail")) == 42;
+        ok = ok && atomic_load(&g_detail_calls) == 1;
         json_free(&out);
-        CE_CHECK("dump json includes registry and liveness fields", ok);
+        CE_CHECK("dump json includes registry, liveness, and details", ok);
     }
 
     {

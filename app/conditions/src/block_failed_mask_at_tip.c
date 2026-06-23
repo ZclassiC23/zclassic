@@ -65,6 +65,16 @@ static const char *reducer_owner_reason_name(int reason)
     return "unknown";
 }
 
+static const char *stall_type_name(int stall_type)
+{
+    switch ((enum block_failed_stall_type)stall_type) {
+    case BF_STALL_NONE:        return "none";
+    case BF_STALL_FAILED_MASK: return "failed_mask";
+    case BF_STALL_NO_ADVANCE:  return "no_advance";
+    }
+    return "unknown";
+}
+
 static bool validate_repairable_mode(
     enum stage_repair_header_solution_poison mode)
 {
@@ -328,6 +338,44 @@ static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
     return find_failed_next(ms, (int)target) == NULL;
 }
 
+static bool detail_block_failed_mask_at_tip(struct json_value *out)
+{
+    if (!out)
+        return false;
+
+    int validate_owner = atomic_load(&g_validate_repair_owner_height);
+    int reducer_target = atomic_load(&g_reducer_owner_target);
+    const char *delegated_owner = "none";
+    if (reducer_target >= 0)
+        delegated_owner = "reducer_frontier_reconcile_light";
+    else if (validate_owner >= 0)
+        delegated_owner = "stale_validate_headers_repair";
+
+    bool ok = true;
+    ok = ok && json_push_kv_int(out, "block_target_height",
+                                atomic_load(&g_target_at_detect));
+    ok = ok && json_push_kv_int(out, "tip_height_at_detect",
+                                atomic_load(&g_tip_at_detect));
+    ok = ok && json_push_kv_int(out, "tip_age_s",
+                                atomic_load(&g_tip_age_at_detect));
+    ok = ok && json_push_kv_str(
+        out, "stall_type",
+        stall_type_name(atomic_load(&g_stall_type_at_detect)));
+    ok = ok && json_push_kv_int(out, "validate_repair_owner_height",
+                                validate_owner);
+    ok = ok && json_push_kv_int(out, "validate_repair_owner_mode",
+                                atomic_load(&g_validate_repair_owner_mode));
+    ok = ok && json_push_kv_str(out, "delegated_owner", delegated_owner);
+    ok = ok && json_push_kv_int(out, "reducer_frontier_owner_target",
+                                reducer_target);
+    ok = ok && json_push_kv_int(out, "reducer_frontier_owner_hstar",
+                                atomic_load(&g_reducer_owner_hstar));
+    ok = ok && json_push_kv_str(
+        out, "reducer_frontier_owner_reason",
+        reducer_owner_reason_name(atomic_load(&g_reducer_owner_reason)));
+    return ok;
+}
+
 static struct condition c_block_failed_mask_at_tip = {
     .name = "block_failed_mask_at_tip",
     .severity = COND_CRITICAL,
@@ -337,6 +385,7 @@ static struct condition c_block_failed_mask_at_tip = {
     .detect = detect_block_failed_mask_at_tip,
     .remedy = remedy_block_failed_mask_at_tip,
     .witness = witness_block_failed_mask_at_tip,
+    .detail = detail_block_failed_mask_at_tip,
     .witness_window_secs = 60,
 };
 

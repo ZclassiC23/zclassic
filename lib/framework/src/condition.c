@@ -375,7 +375,16 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
     if (!out) return false;
-    json_push_kv_int(out, "registered_count", g_condition_count);
+
+    const struct condition *snapshot[CONDITION_MAX_REGISTRY];
+    int count;
+    pthread_mutex_lock(&g_condition_mu);
+    count = g_condition_count;
+    for (int i = 0; i < count; i++)
+        snapshot[i] = g_conditions[i];
+    pthread_mutex_unlock(&g_condition_mu);
+
+    json_push_kv_int(out, "registered_count", count);
     json_push_kv_int(out, "active_count", condition_engine_get_active_count());
     json_push_kv_int(out, "unresolved_count",
                      condition_engine_get_unresolved_count());
@@ -384,9 +393,8 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
     json_init(&arr);
     json_set_array(&arr);
 
-    pthread_mutex_lock(&g_condition_mu);
-    for (int i = 0; i < g_condition_count; i++) {
-        const struct condition *c = g_conditions[i];
+    for (int i = 0; i < count; i++) {
+        const struct condition *c = snapshot[i];
         const struct condition_state *s = &c->state;
         struct json_value obj;
         json_init(&obj);
@@ -415,6 +423,15 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_int(&obj, "cleared_count",
                          atomic_load(&s->cleared_count));
 
+        if (c->detail) {
+            struct json_value detail;
+            json_init(&detail);
+            json_set_object(&detail);
+            if (c->detail(&detail))
+                json_push_kv(&obj, "detail", &detail);
+            json_free(&detail);
+        }
+
         struct json_value thr;
         json_init(&thr);
         json_set_object(&thr);
@@ -427,7 +444,6 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
         json_push_back(&arr, &obj);
         json_free(&obj);
     }
-    pthread_mutex_unlock(&g_condition_mu);
 
     bool ok = json_push_kv(out, "conditions", &arr);
     json_free(&arr);
