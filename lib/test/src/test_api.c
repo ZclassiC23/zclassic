@@ -5,10 +5,54 @@
 #include "test/test_helpers.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
+#include "jobs/reducer_frontier.h"
 #include "models/file_service.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 #include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
+
+static struct block_index *api_test_insert_block(struct main_state *ms,
+                                                 struct uint256 *hash,
+                                                 int height,
+                                                 struct block_index *prev)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = (uint8_t)(height & 0xff);
+    hash->data[1] = (uint8_t)((height >> 8) & 0xff);
+    hash->data[2] = 0x41;
+
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = height;
+    bi->nTime = 1000000 + (uint32_t)height * 150;
+    bi->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+    bi->pprev = prev;
+    return bi;
+}
+
+static bool api_test_build_chain(struct main_state *ms,
+                                 struct block_index **out,
+                                 int count)
+{
+    static struct uint256 hashes[16];
+    if (count <= 0 || count > (int)(sizeof(hashes) / sizeof(hashes[0])))
+        return false;
+
+    main_state_init(ms);
+    struct block_index *prev = NULL;
+    for (int h = 0; h < count; h++) {
+        out[h] = api_test_insert_block(ms, &hashes[h], h, prev);
+        if (!out[h])
+            return false;
+        prev = out[h];
+    }
+    ms->pindex_best_header = out[count - 1];
+    return active_chain_move_window_tip(&ms->chain_active, out[count - 1]);
+}
 
 int test_api(void)
 {
@@ -70,6 +114,45 @@ int test_api(void)
     {
         size_t n = api_handle_request("GET", "/api/blocks", NULL, 0, resp, 0);
         bool ok = (n == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: node status tip identity follows provable tip... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct block_index *blocks[4] = {0};
+        bool ok = api_test_build_chain(&ms, blocks, 4);
+        reducer_frontier_provable_tip_set(1);
+        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+        char hstar_hex[65] = {0};
+        char active_hex[65] = {0};
+        if (blocks[1] && blocks[1]->phashBlock)
+            uint256_get_hex(blocks[1]->phashBlock, hstar_hex);
+        if (blocks[3] && blocks[3]->phashBlock)
+            uint256_get_hex(blocks[3]->phashBlock, active_hex);
+        char expected[96];
+        char forbidden[96];
+        snprintf(expected, sizeof(expected), "\"tip_hash\":\"%s\"",
+                 hstar_hex);
+        snprintf(forbidden, sizeof(forbidden), "\"tip_hash\":\"%s\"",
+                 active_hex);
+
+        size_t n = api_handle_request("GET", "/api/node/status", NULL, 0,
+                                      resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        ok = ok && n > 0;
+        ok = ok && strstr((char *)resp, "\"tip_height\":1") != NULL;
+        ok = ok && strstr((char *)resp, expected) != NULL;
+        ok = ok && strstr((char *)resp, forbidden) == NULL;
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

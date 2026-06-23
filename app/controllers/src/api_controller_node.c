@@ -19,6 +19,7 @@
 #include "config/runtime.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "sync/sync_state.h"
 #include "keys/key_io.h"
 #include "models/database.h"
@@ -377,10 +378,10 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
 
     struct main_state *ms = g_api_ctx.main_state;
     if (ms) {
+        tip_height = reducer_frontier_provable_tip_cached();
         const struct block_index *tip =
-            active_chain_tip(&ms->chain_active);
+            active_chain_at(&ms->chain_active, tip_height);
         if (tip) {
-            tip_height = tip->nHeight;
             tip_time = (int64_t)tip->nTime;
             if (tip->phashBlock) {
                 uint256_get_hex(tip->phashBlock, tip_hash_hex);
