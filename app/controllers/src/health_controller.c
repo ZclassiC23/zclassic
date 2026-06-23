@@ -174,8 +174,9 @@ static bool rpc_getsyncdetail(const struct json_value *params, bool help,
             reducer_frontier_provable_tip_cached() : -1;
         json_push_kv_int(&chain, "height", tip_h);
 
-        struct block_index *tip = ctx->main_state ?
-            active_chain_tip(&ctx->main_state->chain_active) : NULL;
+        struct block_index *tip = NULL;
+        if (ctx->main_state && tip_h >= 0)
+            tip = active_chain_at(&ctx->main_state->chain_active, tip_h);
         if (tip && tip->phashBlock) {
             char hex[65];
             uint256_get_hex(tip->phashBlock, hex);

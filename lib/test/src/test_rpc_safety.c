@@ -6,6 +6,7 @@
 #include "test/test_helpers.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/chain_inspect_controller.h"
+#include "controllers/health_controller.h"
 #include "controllers/mining_controller.h"
 #include "controllers/misc_controller.h"
 #include "controllers/repair_controller.h"
@@ -250,6 +251,11 @@ int test_rpc_safety(void)
         rpc_table_init(&tbl);
         register_blockchain_rpc_commands(&tbl);
 
+        struct rpc_table health_tbl;
+        rpc_table_init(&health_tbl);
+        rpc_health_set_state(&ms, NULL, NULL, NULL);
+        register_health_rpc_commands(&health_tbl);
+
         struct json_value params = {0};
         struct json_value result = {0};
         json_init(&params);
@@ -325,6 +331,21 @@ int test_rpc_safety(void)
         json_free(&result);
         json_free(&params);
 
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&health_tbl, "getsyncdetail", &params,
+                                     &result);
+        const struct json_value *chain = json_get(&result, "chain");
+        const struct json_value *chain_height = json_get(chain, "height");
+        const struct json_value *best_block = json_get(chain, "best_block");
+        ok = ok && chain && chain_height && json_get_int(chain_height) == 1;
+        ok = ok && best_block && best_block->type == JSON_STR &&
+             strcmp(json_get_str(best_block), hstar_hex) == 0 &&
+             strcmp(json_get_str(best_block), active_hex) != 0;
+        json_free(&result);
+        json_free(&params);
+
         init_single_str_param(&params, active_hex);
         json_init(&result);
         ok = ok && !rpc_table_execute(&tbl, "getblock", &params, &result);
@@ -334,6 +355,7 @@ int test_rpc_safety(void)
         json_free(&params);
         json_free(&result);
         reducer_frontier_provable_tip_reset();
+        rpc_health_set_state(NULL, NULL, NULL, NULL);
         rpc_blockchain_set_state(NULL, NULL, NULL);
         main_state_free(&ms);
         test_reset_shared_globals();
