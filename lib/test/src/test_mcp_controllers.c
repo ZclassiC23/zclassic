@@ -572,7 +572,9 @@ static char *mock_status_rpc(const char *method, const char *params_json)
         return strdup("{\"best_header_height\":3117074}");
     if (strcmp(method, "dumpstate") == 0 &&
         params_json && strstr(params_json, "reducer_frontier") != NULL)
-        return strdup("{\"open\":true,"
+        return strdup("{\"subsystem\":\"reducer_frontier\","
+                      "\"captured_at\":1782240001,"
+                      "\"state\":{\"open\":true,"
                       "\"authority\":\"reducer_frontier_hstar\","
                       "\"hstar\":3157646,"
                       "\"served_floor\":3157646,"
@@ -581,10 +583,12 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"first_validate_failure_reason\":"
                       "\"header-source-hash-mismatch\","
                       "\"first_validate_failure_repair_owner\":"
-                      "\"stale_validate_headers_repair\"}");
+                      "\"stale_validate_headers_repair\"}}");
     if (strcmp(method, "dumpstate") == 0 &&
         params_json && strstr(params_json, "condition_engine") != NULL)
-        return strdup("{\"registered_count\":28,"
+        return strdup("{\"subsystem\":\"condition_engine\","
+                      "\"captured_at\":1782240002,"
+                      "\"state\":{\"registered_count\":28,"
                       "\"active_count\":2,"
                       "\"unresolved_count\":1,"
                       "\"conditions\":[{"
@@ -593,9 +597,11 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"attempts\":5,"
                       "\"operator_needed_emitted\":true,"
                       "\"last_operator_needed_unix\":1782240000,"
-                      "\"target_at_detect\":1782239000}]}");
+                      "\"target_at_detect\":1782239000}]}}");
     if (strcmp(method, "dumpstate") == 0)
-        return strdup("{\"initialized\":true,"
+        return strdup("{\"subsystem\":\"chain_advance_coordinator\","
+                      "\"captured_at\":1782240003,"
+                      "\"state\":{\"initialized\":true,"
                       "\"has_connman\":true,"
                       "\"has_main_state\":true,"
                       "\"has_node_db\":true,"
@@ -647,8 +653,18 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"score_base\":100,"
                       "\"score_target_lag_penalty\":0,"
                       "\"score_failure_penalty\":0,"
-                      "\"healthy_peers\":3}]}");
+                      "\"healthy_peers\":3}]}}");
     return strdup("null");
+}
+
+static char *mock_status_rpc_dumpstate_error(const char *method,
+                                             const char *params_json)
+{
+    if (strcmp(method, "dumpstate") == 0 &&
+        params_json && strstr(params_json, "reducer_frontier") != NULL)
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"reducer frontier unavailable\"}}");
+    return mock_status_rpc(method, params_json);
 }
 
 static int test_zcl_status_includes_chain_advance_dump(void)
@@ -686,6 +702,7 @@ static int test_zcl_status_includes_chain_advance_dump(void)
             json_get(&root, "chain_advance");
         ASSERT(chain_advance != NULL);
         ASSERT(json_get_bool(json_get(chain_advance, "initialized")));
+        ASSERT(json_get(chain_advance, "state") == NULL);
         ASSERT(json_get_bool(json_get(chain_advance, "has_connman")));
         ASSERT(json_get_bool(json_get(chain_advance, "has_main_state")));
         ASSERT(json_get_bool(json_get(chain_advance, "has_node_db")));
@@ -791,6 +808,7 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT(frontier != NULL);
         ASSERT_STR_EQ(json_get_str(json_get(frontier, "authority")),
                       "reducer_frontier_hstar");
+        ASSERT(json_get(frontier, "state") == NULL);
         ASSERT(json_get_int(json_get(frontier, "hstar")) == 3157646);
         ASSERT(json_get_int(json_get(frontier,
                                      "first_validate_failure_height"))
@@ -806,6 +824,7 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT(condition_engine != NULL);
         ASSERT(json_get_int(json_get(condition_engine,
                                      "registered_count")) == 28);
+        ASSERT(json_get(condition_engine, "state") == NULL);
         ASSERT(json_get_int(json_get(condition_engine,
                                      "active_count")) == 2);
         ASSERT(json_get_int(json_get(condition_engine,
@@ -818,6 +837,40 @@ static int test_zcl_status_includes_chain_advance_dump(void)
                       "stale_validate_headers_repair");
         ASSERT(json_get_bool(json_get(json_at(conditions, 0),
                                       "operator_needed_emitted")));
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_reports_dumpstate_error(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status reports dumpstate error metadata") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_dumpstate_error);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *frontier =
+            json_get(&root, "reducer_frontier");
+        const struct json_value *err =
+            json_get(&root, "reducer_frontier_error");
+        ASSERT(frontier != NULL);
+        ASSERT(json_is_null(frontier));
+        ASSERT(err != NULL);
+        ASSERT(json_get_int(json_get(err, "code")) == -32603);
+        ASSERT_STR_EQ(json_get_str(json_get(err, "message")),
+                      "reducer frontier unavailable");
         json_free(&root);
         json_free(&args);
         free(body);
@@ -1602,6 +1655,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_no_params();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_status_includes_chain_advance_dump();
+    failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();

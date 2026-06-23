@@ -56,6 +56,66 @@ static void status_push_raw_json(struct json_value *obj, const char *key,
     json_free(&child);
 }
 
+static void status_push_json_error(struct json_value *obj,
+                                   const char *key,
+                                   const char *message,
+                                   const struct json_value *error_obj)
+{
+    char err_key[96];
+    snprintf(err_key, sizeof(err_key), "%s_error", key ? key : "rpc");
+    if (error_obj && error_obj->type == JSON_OBJ) {
+        json_push_kv(obj, err_key, error_obj);
+        return;
+    }
+
+    struct json_value err;
+    json_init(&err);
+    json_set_object(&err);
+    json_push_kv_str(&err, "message", message ? message : "unknown error");
+    json_push_kv(obj, err_key, &err);
+    json_free(&err);
+}
+
+static void status_push_dumpstate_json(struct json_value *obj,
+                                       const char *key,
+                                       const char *raw)
+{
+    struct json_value child;
+    json_init(&child);
+    if (!raw || !json_read(&child, raw, strlen(raw))) {
+        struct json_value nullv;
+        json_init(&nullv);
+        json_set_null(&nullv);
+        json_push_kv(obj, key, &nullv);
+        status_push_json_error(obj, key,
+                               raw ? "invalid dumpstate JSON"
+                                   : "dumpstate RPC returned null",
+                               NULL);
+        json_free(&nullv);
+        json_free(&child);
+        return;
+    }
+
+    const struct json_value *error = json_get(&child, "error");
+    if (error && error->type == JSON_OBJ) {
+        struct json_value nullv;
+        json_init(&nullv);
+        json_set_null(&nullv);
+        json_push_kv(obj, key, &nullv);
+        status_push_json_error(obj, key, NULL, error);
+        json_free(&nullv);
+        json_free(&child);
+        return;
+    }
+
+    const struct json_value *state = json_get(&child, "state");
+    if (state && state->type == JSON_OBJ)
+        json_push_kv(obj, key, state);
+    else
+        json_push_kv(obj, key, &child);
+    json_free(&child);
+}
+
 /* Pull a top-level quoted-string field out of a raw JSON response without
  * parsing the whole document (matches the strstr style used for the numeric
  * scrapes above). Returns false if the key is absent or not a string. */
@@ -286,9 +346,9 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     status_push_raw_json(&root, "sync", s);
     status_push_raw_json(&root, "validation", v);
     status_push_raw_json(&root, "health", hc);
-    status_push_raw_json(&root, "chain_advance", cac);
-    status_push_raw_json(&root, "reducer_frontier", rf);
-    status_push_raw_json(&root, "condition_engine", ce);
+    status_push_dumpstate_json(&root, "chain_advance", cac);
+    status_push_dumpstate_json(&root, "reducer_frontier", rf);
+    status_push_dumpstate_json(&root, "condition_engine", ce);
     status_push_blocker_summary(&root);
 
     char *out = json_value_to_body(&root, "status_body");
