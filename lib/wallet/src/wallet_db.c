@@ -191,6 +191,10 @@ bool wallet_db_read_txs(struct wallet_db *wdb, struct wallet *w)
         if (transaction_deserialize(&wtx.tx, &s)) {
             wtx.used = true;
             wallet_add_to_wallet(w, &wtx);
+            /* wallet_add_to_wallet deep-copies the tx; free this orphaned load
+             * copy (same leak as the SQLite loader). Failed deserialize already
+             * frees internally. */
+            transaction_free(&wtx.tx);
         }
 
         stream_free(&s);

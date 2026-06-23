@@ -693,6 +693,11 @@ bool wallet_sqlite_read_txs(struct wallet_sqlite *ws, struct wallet *w)
         if (transaction_deserialize(&wtx.tx, &bs)) {
             wtx.used = true;
             wallet_add_to_wallet(w, &wtx);
+            /* wallet_add_to_wallet deep-copies the tx into its own slot, so the
+             * vin/vout/shielded arrays allocated by transaction_deserialize here
+             * are otherwise orphaned — a leak on every wallet-tx loaded. (A
+             * failed deserialize already frees its partial state internally.) */
+            transaction_free(&wtx.tx);
         }
         stream_free(&bs);
     }
