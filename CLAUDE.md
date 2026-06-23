@@ -36,8 +36,9 @@ posture + the sovereign-cure path: [`docs/HANDOFF.md`](./docs/HANDOFF.md).
 **Current bootstrap = the consolidated daily-driver loader** — a snapshot whose
 anchor hash is consensus-bound to the in-binary PoW header re-seeds `coins_kv`
 and raises the reducer trusted base to the seed height, so the node reaches tip
-(a borrowed-but-consensus-bound stopgap; the sovereign `-refold-from-anchor`
-cure that deletes the borrow is in flight — see HANDOFF §3).
+(deployed via `-load-snapshot-at-own-height` + commit `ab512d577`, verified live
+2026-06-23; a borrowed-but-consensus-bound stopgap — the sovereign
+`-refold-from-anchor` cure that deletes the borrow is in flight, see HANDOFF §3).
 
 **The legacy TWO-step recipe still works** (verified 2026-06-11: hash-identical
 tip vs zclassicd at multiple heights, ~25 min total, warm-reboot-proven; this is
@@ -70,9 +71,9 @@ is a regression floor, not a liveness proof.
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 > **Check the live node before treating MVP/soak as the active mission.** The
-> forward-sync wedge class is **FIXED** — the consolidated daily-driver loader
-> reaches the network tip via a borrowed-but-consensus-bound stopgap, so soak
-> time can now accrue. The remaining gate is the **sovereign cure**
+> forward-sync wedge class is **FIXED** (commit `ab512d577`, verified live
+> 2026-06-23) — the consolidated daily-driver loader reaches the network tip via a
+> borrowed-but-consensus-bound stopgap, so soak time can now accrue. The remaining gate is the **sovereign cure**
 > (`-refold-from-anchor` cutover that deletes the borrowed seed) **+ accumulated
 > soak hours**, not un-wedging. Verify live state with `zcl_status` /
 > [`docs/HANDOFF.md`](./docs/HANDOFF.md) — never assume "synced" from a doc.

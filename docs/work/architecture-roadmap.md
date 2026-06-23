@@ -24,9 +24,10 @@ spawn/join in bg_validation_scripts.c) into it — delete the duplicates. **Move
 from under `progress_store_tx_lock`** (verify lock-free; acquire the lock only for the short
 atomic *_log + cursor UPSERT). Batch Groth16 (Zebra/librustzcash BatchValidator) with a
 per-proof serial fallback. Size from `-par` (default `nproc-1`; `-par=1` = serial bisection
-oracle). `utxo_apply` stays serial (ordered mutation). Promote `refold_driver_main`
-(reducer_ingest_service.c:142) to the default IBD driver; demote the supervisor to observer
-(keep heartbeats + named stalls, drop `period_secs=2` as the throughput gate).
+oracle). `utxo_apply` stays serial (ordered mutation). Promote the refold driver in
+`reducer_ingest_service.c` to the default IBD driver (the `refold_driver_main` symbol/line
+cited here has moved/changed since 2026-06-20 — locate it fresh); demote the supervisor to
+observer (keep heartbeats + named stalls, drop `period_secs=2` as the throughput gate).
 
 ### LB-2 — Self-mint the checkpoint in-binary; stop borrowing zclassicd's chainstate.
 Today coins_kv is SEEDED by `cp -a` of zclassicd's LevelDB chainstate (utxo_recovery_restore.c),
@@ -59,12 +60,13 @@ of divergence-repair collapses to ~2–3k.
   touched; parity preserved by construction.
 
 ## FIX — right shape, needs work (ranked by leverage)
-1. **Wire H\* to served APIs** (highest correctness leverage, low risk, INDEPENDENT). `getblockcount`
-   (blockchain_controller_blocks.c:39) + P2P `start_height` (msg_version.c:148) serve
-   `active_chain_height` (window/header tip), which can sit ABOVE the proven frontier → serves
-   an unproven height (violates the north star). `reducer_frontier_derive_coins_best` already
-   computes H*; it's just not wired. Split at the type level: provable_tip=H* (external readers)
-   vs window_tip=c->height (internal lookahead only).
+1. **Wire H\* to served APIs** (DONE — H* now served at blockchain_controller_blocks.c:45 and
+   msg_version.c:155 via `reducer_frontier_provable_tip_cached`). (Highest correctness leverage,
+   low risk, INDEPENDENT.) `getblockcount` (blockchain_controller_blocks.c) + P2P `start_height`
+   (msg_version.c) previously served `active_chain_height` (window/header tip), which can sit
+   ABOVE the proven frontier → would serve an unproven height (violates the north star). H* is
+   now wired through `reducer_frontier_provable_tip_cached` at both call sites. Split at the type
+   level: provable_tip=H* (external readers) vs window_tip=c->height (internal lookahead only).
 2. **Collapse the 7 redundant UTXO representations** to coins_kv + replayable indexes. Delete
    utxo_mirror_sync_service.c (O(n) DELETE+reinsert on every drift tick), the abandoned
    utxo_projection.db, and the consensus_snapshot.db clone export. (Mostly downstream of LB-2.)
@@ -94,8 +96,9 @@ of divergence-repair collapses to ~2–3k.
 Dependencies: LB-1 gates LB-2's mint (can't self-mint from genesis in acceptable time serially);
 LB-2's mint gates the recovery-LOC deletion (the fabric is the safety net). H*-serving is independent.
 
-- **Phase 0 (ship now, no LB dependency):** FIX-1 (wire H*; replay-check advertised height first),
-  FIX-5 (drop line cap), FIX-6 (dedup), promote domain-purity+lib-layering to HARD, FIX-3 reads.
+- **Phase 0 (ship now, no LB dependency):** FIX-1 (wire H*; replay-check advertised height first) —
+  DONE (H* served at both call sites via `reducer_frontier_provable_tip_cached`); FIX-5 (drop line
+  cap), FIX-6 (dedup), promote domain-purity+lib-layering to HARD, FIX-3 reads.
 - **Phase 1 — LB-1 (parallel engine), behind default-on `-par`, `-par=1` oracle:** build the pool +
   queue with a determinism test (parallel result == serial over a fixed height range) + the
   test_consensus_parity goldens; subsume the ad-hoc pools; shrink the tx-lock scope (crypto out,
@@ -130,4 +133,5 @@ LB-2's mint gates the recovery-LOC deletion (the fabric is the safety net). H*-s
 **Bottom line:** two load-bearing changes — (1) a core-saturating verification engine that owns
 the hot path with the supervisor as observer, and (2) a self-minted in-binary checkpoint that ends
 the borrowed-copy dependency and lets ~12k LOC of compensation be deleted. (1) precedes (2). Wiring
-H* to the served APIs is the cheap independent correctness win that lands first.
+H* to the served APIs was the cheap independent correctness win and has landed (H* now served at
+blockchain_controller_blocks.c:45 and msg_version.c:155).

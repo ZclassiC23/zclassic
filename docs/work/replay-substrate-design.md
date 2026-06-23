@@ -1,3 +1,5 @@
+> NOTE 2026-06-23: the forward-sync wedge this doc's Convergence note treats as live was RESOLVED by commit ab512d577 (a complete SHA3-verified snapshot at h=3,156,809 bound above the wedge; node now at tip). The from-genesis refold described here remains the sovereign cure (still-borrowed snapshot), and the D2 replay GATE below is unaffected and still valid.
+
 # Full-history replay substrate — design (2026-06-21)
 
 > The gate the consensus-parity doctrine (h=478544) requires: before TIGHTENING a

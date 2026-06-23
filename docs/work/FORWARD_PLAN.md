@@ -13,10 +13,21 @@
 
 ## #1 PRIORITY — CI-enforce the MVP criteria + accumulate soak/canary/seal evidence
 
-> **The forward-sync wedge class is FIXED.** The consolidated daily-driver loader
-> re-seeds `coins_kv` from a consensus-bound snapshot and raises the reducer
-> trusted base to the seed height, so the node **reaches the network tip** (a
-> borrowed-but-consensus-bound STOPGAP). Verify live state with `zcl_status` — do
+> **The forward-sync wedge class is FIXED.** The fix is commit `ab512d577`
+> ("fix(boot): bind a snapshot above coins-best by extending the active-chain
+> window"). On boot, `-load-snapshot-at-own-height` loads a COMPLETE,
+> SHA3-verified UTXO snapshot at a height ABOVE coins-best (live: h=3,156,809,
+> file `utxo-seed-3156809.snapshot`); when the seed height is above coins-best
+> the loader now calls `active_chain_extend_window(&ms->chain_active,
+> ms->pindex_best_header)` (`config/src/boot_refold_staged.c` ~line 568) to widen
+> the active-chain window forward to the PoW-proven header tip instead of
+> FATAL-ing "Run --importblockindex". Seeding the full set above the old wedge
+> block (3,156,171) and folding FORWARD never re-touches it, so the node now
+> **REACHES AND STAYS at the network tip** (proven on a datadir copy + the live
+> deploy). This is still a borrowed-but-consensus-bound STOPGAP: the snapshot's
+> block hash is consensus-bound to the in-binary PoW header, but its UTXO-set
+> CONTENT is still minted from the zclassicd oracle, not yet re-derived from
+> genesis. Verify live state with `zcl_status` — do
 > not assume from a doc. The remaining work is the **sovereign cure** = fold real
 > block bodies forward from the verified checkpoint, cut over, then delete the
 > borrowed-seed machinery (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)

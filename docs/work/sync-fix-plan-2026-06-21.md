@@ -1,27 +1,37 @@
 ## ONE ordered fix plan — collapse the second authority, match zclassicd's one-writer-per-block model
 
-> **STATUS (2026-06-22): the live node is NO LONGER wedged** — the consolidated
+> **STATUS (2026-06-23): the live node is NO LONGER wedged** — the consolidated
 > daily-driver loader reaches tip via a consensus-bound stopgap
-> (`docs/HANDOFF.md`). STEP 0/1 (the `-refold-from-anchor` un-wedge runbook + the
-> loader-owns-seed / consensus cross-check) are **DONE / superseded** by the
-> deployed fixes. This doc is **retained as the subtraction worksheet** for the
-> sovereign cure — the file:line decomposition of the ~715-LOC permanent deletion
-> (HANDOFF P2-3). **Re-verify every line number against the current
-> `deploy/daily-driver` tree before deleting**, and re-frame STEP 0 from
-> "un-wedge" to "cut the live node over from the stopgap to the self-folded
+> (`docs/HANDOFF.md`). The forward-sync wedge analysed below is now **RESOLVED
+> LIVE** by commit `ab512d577` ("fix(boot): bind a snapshot above coins-best by
+> extending the active-chain window"), which seeds a COMPLETE SHA3-verified
+> snapshot at h=3,156,809 ABOVE the wedge block and folds forward — the node holds
+> the network tip (`getblockcount` ~3,156,9xx, `verificationprogress=1`; the former
+> wedge block 3,156,171 is now active). STEP 0/1 (the `-refold-from-anchor`
+> un-wedge runbook + the loader-owns-seed / consensus cross-check) are **DONE /
+> superseded** by the deployed fixes. **The snapshot is STILL BORROWED** (minted
+> from the zclassicd oracle; block hash consensus-bound to the in-binary PoW
+> header, but its UTXO-set content not yet re-derived from genesis) — the sovereign
+> cure (`-refold-from-anchor` cutover at compiled checkpoint 3,056,758 that DELETES
+> the borrowed loader) remains the END GOAL, **NOT done**. This doc is **retained
+> as the subtraction worksheet** for that cure — the file:line decomposition of the
+> deletable foundation (~400 LOC deletable now, ~3,330 LOC production total once the
+> replay-gate clears — see the "Deletable LOC" section below). **Re-verify every line number against
+> the current `deploy/daily-driver` tree before deleting**, and re-frame STEP 0
+> from "un-wedge" to "cut the live node over from the stopgap to the self-folded
 > foundation."
 
 **Root (verified):** cold import bulk-copies zclassicd's `node.db.utxos` into `coins_kv`, stamps `COINS_KV_MIGRATION_COMPLETE_KEY` (so `coins_kv_is_proven_authority` at `lib/storage/src/coins_kv.c:396-427` reads it as a proven authority), and stamps the 8 stage cursors + `coins_applied_height` forward over a span with NO per-height log rows. `reducer_frontier` then pins H* at the compiled checkpoint (3,056,758) because the contiguous ok=1 log prefix has a hole at anchor+1, and forward finalization halts. The cure mechanism already exists and is proven: `boot_refold_from_anchor_reset` / `refold_from_anchor_active` (`config/src/boot_refold_staged.c:419-465`) forces the 8 cursors to the SHA3-verified anchor + sets `coins_applied_height=anchor+1` in one txn, then the live single fold (`app/jobs/src/utxo_apply_stage.c:520-563`) re-derives forward, co-committing coins + cursor + ok=1 log row per height.
 
 ---
 
-### STEP 0 — Migrate the already-wedged live datadir FIRST (READ-ONLY today; the owner runs this after the build lands)
-This is NOT a code change — it un-wedges the existing `~/.zclassic-c23` without re-investigation. The proven un-wedge runbook (MEMORY `project_unwedge_runbook_verified_2026-06-21`):
+### STEP 0 — RECOVERY runbook for any datadir carrying the stamped contaminated seed (no longer the live node)
+This is NOT a code change. The live `~/.zclassic-c23` is already unwedged and at tip via the `ab512d577` stopgap, so this no longer targets the live node — it is retained as the recovery / cutover runbook for any datadir still carrying the stamped contaminated seed. The proven un-wedge runbook (MEMORY `project_unwedge_runbook_verified_2026-06-21`):
 1. Ensure a SHA3-verified anchor snapshot is reachable at `<datadir>/utxo-anchor.snapshot` (or `$ZCL_MINT_ANCHOR_OUT`). If absent, mint it: `build/bin/zclassic23 -mint-anchor-fast` (writes the snapshot bound to the compiled checkpoint root, count 1,354,771). Have one at `/tmp/utxo-anchor-3056758.snapshot` per MEMORY — copy it into the datadir.
 2. Un-wedge with `build/bin/zclassic23 -refold-from-anchor` (NOT `-load-verify-boot`, which no-ops on the stamped contaminated `coins_kv` = false-green per the verified runbook). This calls `boot_refold_from_anchor_reset` → forces cursors to anchor, clears `COINS_KV_MIGRATION_COMPLETE_KEY` trust (via `utxo_recovery_clear_cold_import_seed`, `boot_refold_staged.c:324`), re-seeds from the verified snapshot, folds anchor+1..tip.
 3. Gate success on H* CLIMBING past the anchor (`zcl_state subsystem=reducer` / `reducer_frontier_compute_hstar`), NOT merely "booted without FATAL". Cross-check the resulting tip hash vs zclassicd at the same height before declaring done.
 
-Copy-prove on the frozen wedge fixture `~/.zclassic-c23-postrestore-wedge-20260611` (CLAUDE.md Tenacity rule: never live surgery) before touching `~/.zclassic-c23`. **Note:** a from-genesis fold is currently running on a copy — do not touch any `~/.zclassic-c23*` until it finishes (prompt constraint).
+Copy-prove on the frozen wedge fixture `~/.zclassic-c23-postrestore-wedge-20260611` (CLAUDE.md Tenacity rule: never live surgery) before touching `~/.zclassic-c23`.
 
 After STEP 6 lands, a *fresh* `-refold-from-anchor` is unnecessary because the cold-start default itself never plants the contaminated seed (STEP 6) — but the migration above remains the recovery path for any datadir already carrying the stamped seed.
 
@@ -134,7 +144,7 @@ int32_t applied=-1; bool found=false; coins_kv_get_applied_height(progress_store
 RFP_CHECK("H*==tip==coins_applied-1 (zclassicd one-cursor invariant)",
           ok && found && hstar==RFP_N && applied==RFP_N+1);
 ```
-This is the literal "coins-applied == finalizable == provable tip, no rowless span" condition — FALSE on the live wedge (hstar pinned at 3,056,758 while coins_applied stamped to 3,150,489), TRUE post-fix. Already wired: `make mvp-forward-progress` (Makefile:850,892, selector `reducer_forward`, sentinel `=== reducer-forward subset complete:`), `ZCL_TEST_ONLY=reducer_forward` (test.c:124-127), opt-in via `ZCL_STRESS_TESTS=1`.
+This is the literal "coins-applied == finalizable == provable tip, no rowless span" condition — FALSE on the former live wedge state (hstar pinned at 3,056,758 while coins_applied stamped to 3,150,489), TRUE post-fix. Already wired: `make mvp-forward-progress` (Makefile:850,892, selector `reducer_forward`, sentinel `=== reducer-forward subset complete:`), `ZCL_TEST_ONLY=reducer_forward` (test.c:124-127), opt-in via `ZCL_STRESS_TESTS=1`.
 
 **PROOF #2 — NEGATIVE (new `lib/test/src/test_seed_no_log_hole.c`, fork-child harness mirroring `test_refold_auto_arm.c:399-417 raa_run_child`):**
 - Reuse `raa_seed_torn_progress` / `raa_set_applied` (`test_refold_auto_arm.c:144-198`) to stamp `coins_applied_height` to a frontier above a rowless span (the exact "coins ahead of log" state the deleted seed created).

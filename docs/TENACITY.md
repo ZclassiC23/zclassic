@@ -11,15 +11,20 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).
 
-The cold-import wedge **class is FIXED** (2026-06-22): the consolidated
-daily-driver loader re-seeds `coins_kv` from a consensus-bound snapshot and
-raises the reducer trusted base to the seed height, so the node reaches tip — a
-borrowed-but-consensus-bound stopgap. The remaining work is the **sovereign cure**
-(fold the UTXO set forward from our OWN cryptographic checkpoint, then delete the
-borrowed-seed machinery), in flight — design `docs/work/never-stuck-plan.md`,
-current posture `docs/HANDOFF.md`. Verify live state from `zcl_status`, never from
-this doc. The six principles below are timeless doctrine, independent of that
-status.
+The cold-import wedge **class is FIXED** (2026-06-23): commit `ab512d577`
+("bind a snapshot above coins-best by extending the active-chain window") plus a
+complete, SHA3-verified snapshot at h=3,156,809 loaded via
+`-load-snapshot-at-own-height` seed the full UTXO set ABOVE the old torn-seed
+wedge and fold FORWARD, so the loader never re-touches block 3,156,171 — the node
+now reaches and holds the network tip. Still BORROWED, not full sovereignty: that
+3,156,809 snapshot is minted from the zclassicd oracle; its block hash is
+consensus-bound to the in-binary PoW header, but its UTXO-set CONTENT is not yet
+re-derived from genesis. The remaining work is the **sovereign cure** — self-mint
+a from-genesis SHA3 anchor at compiled checkpoint h=3,056,758, cut over via
+`-refold-from-anchor`, then delete the borrowed-seed loader — in flight: design
+`docs/work/never-stuck-plan.md`, current posture `docs/HANDOFF.md`. Verify live
+state from `zcl_status`, never from this doc. The six principles below are timeless
+doctrine, independent of that status.
 
 ---
 

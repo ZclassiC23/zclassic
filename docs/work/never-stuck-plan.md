@@ -1,14 +1,24 @@
 # THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
 
-> **STATUS (2026-06-22): the forward-sync wedge is FIXED** — the consolidated
-> daily-driver loader reaches tip via a consensus-bound stopgap
-> (`docs/HANDOFF.md`). This doc is **retained as the design of record for the
+> **STATUS (2026-06-23): the forward-sync wedge is RESOLVED on main** — commit
+> `ab512d577` ("fix(boot): bind a snapshot above coins-best by extending the
+> active-chain window") loads a COMPLETE, SHA3-verified snapshot at h=3,156,809
+> (count 1,344,918) via `-load-snapshot-at-own-height` and folds FORWARD, so the
+> fold never re-touches the block (3,156,171) that wedged the older TORN seed
+> (`utxo-stopgap-3151901.snapshot`, missing prevout `21876e8b`). The live node
+> `~/.zclassic-c23` is at the network tip (getblockcount ~3,156,944,
+> verificationprogress=1). This doc is **retained as the design of record for the
 > sovereign cure** (fold forward from our own checkpoint, then delete the
 > borrowed-seed machinery) + the never-stuck hardening map + the per-100-block
-> UTXO-ladder/keystone design. The dated "LIVE RE-VERIFICATION" section below
-> (pinned tip 3,151,411, H\*=3,056,759, the prevout_unresolved false-rejects) is
-> **historical** — that wedge instance is fixed; treat those numbers as the
-> diagnosis behind the cure, not the live node.
+> UTXO-ladder/keystone design. **Still BORROWED — not full sovereignty:** the
+> 3,156,809 snapshot is minted from the zclassicd oracle; its block hash is
+> consensus-bound to the in-binary PoW header, but its UTXO-set content is not yet
+> re-derived from genesis. So the sovereign cure (self-mint a from-genesis SHA3
+> anchor at compiled checkpoint 3,056,758 → `-refold-from-anchor` cutover → DELETE
+> the borrowed loader) remains the END GOAL, not done. The dated "LIVE
+> RE-VERIFICATION" section below (pinned tip 3,151,411, H\*=3,056,759, the
+> prevout_unresolved false-rejects) is **historical** — that wedge instance is
+> fixed; treat those numbers as the diagnosis behind the cure, not the live node.
 
 Status: PLAN (owner-review). The cure design verified by a 12-agent pass (4 deep
 gating questions + 7 lighter-model LOC census). Supersedes earlier framings.
@@ -377,11 +387,13 @@ doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
 
 ## 3. Step 0 — immediate live recovery (no new code, copy-prove first)
 
-Live: tip pinned 3,151,411, `degraded_reason: utxo_apply log hole, first hole h=3056759`,
-P2P healthy. The honest engine refusing the borrowed foundation. Recover with the proven
-two-step on a COPY first (`cp -a`, `--importblockindex` then normal boot), verify
-tip==network + healthy + hash-match vs zclassicd at ≥2 heights, then deploy to live.
-`rm -f build/bin/zclassic23` + verify build_commit. Band-aid to unblock soak, NOT the cure.
+The live node is now UNWEDGED at the network tip (commit `ab512d577` loads a complete
+SHA3-verified snapshot at h=3,156,809 above the former wedge and folds forward), so this
+Step-0 two-step cold-import recovery is **no longer the live posture** — it stays here as a
+still-available fallback. The recipe (prior live recovery, now resolved): on a COPY first
+(`cp -a`, `--importblockindex` then normal boot), verify tip==network + healthy + hash-match
+vs zclassicd at ≥2 heights, then deploy to live. `rm -f build/bin/zclassic23` + verify
+build_commit. Band-aid to unblock soak, NOT the cure.
 
 ## 4. The build (ordered, each copy-proven + replayed before live)
 
@@ -479,7 +491,11 @@ real-history replay, D2's fork-HOLD stub edits.
    stage folded it; cold import stamped cursors/`coins_applied_height` to 3,151,412. The
    concrete blocker is a real spend at h=3,151,412 (tx 4e9565…, vin=17) of a coin born in the
    unfolded gap → absent from the snapshot-seeded `coins_kv` → `coin_backfill` latched
-   `REFUSED_SPENT` (durable, survives reboot). On-disk UNDO is also missing for the top ~14k
+   `REFUSED_SPENT` (durable, survives reboot). **This specific 3,151,412 blocker is no longer
+   live** — it was dissolved by the `ab512d577` complete-snapshot-at-3,156,809-and-fold-forward
+   approach, which never re-touches the wedge block; the analysis is kept because it documents
+   why the fold cost is still unmeasured (the from-anchor/from-genesis fold wall-clock remains
+   estimated, not measured). On-disk UNDO is also missing for the top ~14k
    blocks (present only checkpoint..~3,137,000), so a forward re-fold (bodies-only) is the
    viable path; rewind-from-undo is not.
 2. **B1 is design work, not wiring** — where the UTXO commitment binds is unresolved +
@@ -492,8 +508,9 @@ real-history replay, D2's fork-HOLD stub edits.
 
 ## 8. First concrete step
 
-(a) `cp -a ~/.zclassic-c23 ~/.zclassic-c23-step0-copy-…` and run the proven recovery to
-unblock the live node (still valid as the band-aid). (b) ~~`rebuild_recent 3056758` to time
+(a) `cp -a ~/.zclassic-c23 ~/.zclassic-c23-step0-copy-…` and run the proven recovery — note
+the live node is already unwedged at tip (`ab512d577`), so this is now a fallback recovery
+rather than a currently-needed action. (b) ~~`rebuild_recent 3056758` to time
 the fold~~ — **invalid; deleted** (verified 2026-06-18). There is no offline from-checkpoint
 fold verb, so the fold can't be timed yet (see Residual #1). The real first build step is
 therefore **B2**: wire a snapshot-seed-then-fold trigger that rewinds the reducer to the

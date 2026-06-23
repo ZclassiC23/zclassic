@@ -12,10 +12,11 @@ utxo_apply → tip_finalize`) **never calls `connect_block`**
 (`lib/validation/src/connect_block.c`), the only site with shielded-consensus
 enforcement. The `connect_block.c` stub
 `coins_view_cache_have_joinsplit_requirements`
-(`lib/coins/src/coins_view.c:485`) is still a hardcoded `return true;`, but that
+(`lib/coins/src/coins_view.c:468`, hardcoded `return true;` at `:476`) is still a
+structural stub, but that
 no longer matters for the reducer: nullifier double-spend enforcement (Part A
 below) already lives on the reducer path — `utxo_apply_check_and_insert_nullifiers`
-(`app/jobs/src/utxo_apply_nullifiers.c:83`), called from `utxo_apply_stage.c:418`.
+(`app/jobs/src/utxo_apply_nullifiers.c:83`), called from `utxo_apply_stage.c:501`.
 `proof_validate_stage.c` only verifies the zk-SNARK against the anchor the tx
 *claims* (`sd->anchor` at :161, `js->anchor` at :204/:215) — what the reducer
 still does NOT check:
@@ -31,8 +32,8 @@ is now rejected on the reducer path — see (a) above).
 ## 2. Load-bearing atomicity fact
 
 The reducer's atomic unit is **`progress.kv`** (`progress_store.c:28`), written
-under `progress_store_tx_lock()` + `stage_run_once` `BEGIN IMMEDIATE`
-(`utxo_apply_stage.c:355-365`). `utxo_apply_log` / `utxo_apply_delta` /
+under `progress_store_tx_lock()` (`utxo_apply_stage.c:848`) + `stage_run_once`
+`BEGIN IMMEDIATE` (`:857`). `utxo_apply_log` / `utxo_apply_delta` /
 `stage_cursor` all live there. The pre-existing `sapling_nullifiers` /
 `sapling_anchors` tables (`database_schema.c:90-97`) live in **node.db — a
 different sqlite handle**, and are wallet/index-scoped (written post-finalize by
@@ -61,27 +62,28 @@ beside `ensure_log_schema`/`ensure_delta_schema`):
    anchor_added_blob BLOB, prev_sprout_total INT, prev_sapling_total INT)` — the
    per-block INVERSE record, **same shape/keying as `utxo_apply_delta`**
    (`branch_hash = bi->phashBlock`, the same value used at
-   `utxo_apply_stage.c:252`). Pruned below the finality floor with
+   `utxo_apply_stage.c:528`). Pruned below the finality floor with
    `utxo_apply_delta`.
 
 ## 4. Single enforcement point
 
 A new sibling pass `utxo_apply_check_shielded(db, &blk, next_h, bi, &res)` called
 inside `step_apply` (`utxo_apply_stage.c`) **after** the transparent delta
-succeeds (after the `if (summary.ok)` block at :251) and **before**
-`utxo_apply_delta_persist` at :252 — inside the same stage txn. Keep
-`utxo_apply_compute_block_delta` transparent-only. Per tx, block order
+succeeds (after the `if (summary.ok)` author gate at :500) and **before**
+`utxo_apply_delta_persist` at :528 — inside the same stage txn. Keep
+`utxo_apply_compute_block_delta` (`:460`) transparent-only. Per tx, block order
 (mirroring connect_block):
 
-- **A. NULLIFIER** (replaces the `coins_view.c:482` stub): reject if any
+- **A. NULLIFIER** (replaces the `coins_view.c:476` stub): reject if any
   `sd->nullifier`/`js->nullifiers[i]` is already in `shielded_nullifiers` OR seen
   earlier in this block (intra-block dup, mirroring
   `utxo_apply_delta.c:166`). On pass, stage `(nf,pool)` for insert.
 - **B. ANCHOR**: reject unless `sd->anchor`/`js->anchor` ∈ `shielded_anchors`.
   proof_validate already proved the spend *against* that anchor — this closes
   "is the anchor real?".
-- **C. TURNSTILE**: verbatim port of `connect_block.c:175-217`
-  (`sprout_value += vpub_old - vpub_new`, `sapling_value += value_balance`),
+- **C. TURNSTILE**: verbatim port of `connect_block.c:230-280`
+  (`sprout_value += vpub_old - vpub_new`, `sapling_value += value_balance`, the
+  pool arithmetic at `:248-251`),
   new totals = prev + delta, **reject if either pool total < 0**.
 
 A reject sets `summary.ok=false` → `upstream_failed` → `tip_finalize` does not
@@ -118,10 +120,18 @@ the single trusted UTXO commitment).
 
 ## 7. Sequencing
 
-1. **After the live-wedge fix** — shadow mode needs a chain that finalizes
-   forward so a log-only gate can ride a healthy tip and be diffed vs zclassicd.
-   Adding a reject path while tip_finalize already can't advance is untestable
-   and risks compounding the oscillation.
+1. **Live-wedge precondition — MET by `ab512d577`.** Shadow mode needs a chain
+   that finalizes forward so a log-only gate can ride a healthy tip and be diffed
+   vs zclassicd. That precondition is now satisfied: the forward-sync wedge is
+   fixed by commit `ab512d577` ("fix(boot): bind a snapshot above coins-best by
+   extending the active-chain window") — the live node `~/.zclassic-c23` reaches
+   the network tip (h≈3,156,944, climbing, verificationprogress=1) and finalizes
+   forward, so shadow mode can ride a healthy tip. (The rationale this gate
+   guarded still holds: adding a reject path while tip_finalize can't advance is
+   untestable and risks compounding the oscillation.) NOTE: the at-tip state still
+   relies on a borrowed — zclassicd-minted, consensus-bound — snapshot at
+   h=3,156,809; the sovereign from-genesis `-refold-from-anchor` cutover remains
+   the end goal, not done.
 2. **After fork single-sourcing** — this rides `reorg_is_allowed` /
    `branch_hash` / `active_chain_at`; land after any chain[]-window/fork-decision
    unification so the reorg rail is stable.
@@ -139,7 +149,7 @@ These are the three §8 gaps behind the `consensus_safe=false` verdict:
    intermediate roots to the accepted anchor set, matching zcashd ConnectBlock.
 2. **Sprout vs Sapling asymmetry.** node.db has only `sapling_nullifiers` /
    `sapling_anchors` — **no Sprout nullifier or anchor table**, and the legacy
-   tree is Sapling-only (`connect_block.c:80-84` has `g_sapling_tree`, no Sprout
+   tree is Sapling-only (`connect_block.c:86-90` has `g_sapling_tree`, no Sprout
    tree, and never appends). The Phase-4 "seed from legacy tree" plan has no
    Sprout source. The refinement must specify how Sprout anchors are
    built/seeded (the reducer owning the Sprout incremental tree from genesis).

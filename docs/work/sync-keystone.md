@@ -1,14 +1,21 @@
 # The Sync Keystone — bind the UTXO set to the PoW-proven chain
 
-> **STATUS (2026-06-22):** the forward-sync wedge is FIXED (the consolidated
-> stopgap reaches tip — `docs/HANDOFF.md`), and **B1 has landed** — the MMB-leaf
-> preimage now carries a `utxo_root` and the anchor snapshot is bound to the
-> in-binary root. This keystone (a non-forgeable per-height SHA3 `utxo_root` bound
-> into the PoW-proven leaf) is **NOT the wedge** and is the substrate of the
-> sovereign cure's verified-anchor trust — still load-bearing for the remaining
-> negative-path gate + IBD back-fill. The "Live truth" section's pinned
-> H\*=3,056,758 / active-chain 3,151,411 numbers are **historical**, not the live
-> node. Refresh those, keep the binding design.
+> **STATUS (2026-06-23):** the forward-sync wedge is FIXED by commit
+> `ab512d577` (HEAD), which binds a snapshot **above** coins-best by extending the
+> active-chain window to the PoW-proven header tip; the live node
+> `~/.zclassic-c23` is now at the network tip (`getblockcount`=3,156,944,
+> verificationprogress=1, the former wedge block 3,156,171 active). This is **still
+> borrowed**: the unwedging snapshot at h=3,156,809 is minted from the zclassicd
+> oracle (block-hash consensus-bound to the in-binary PoW header, but its UTXO-set
+> content is not yet re-derived from genesis), so the keystone + the self-minted
+> from-genesis anchor at 3,056,758 remain the **END GOAL, not done**. **B1 has
+> landed** — the MMB-leaf preimage now carries a `utxo_root` and the anchor
+> snapshot is bound to the in-binary root. This keystone (a non-forgeable
+> per-height SHA3 `utxo_root` bound into the PoW-proven leaf) is **NOT the wedge**
+> and is the substrate of the sovereign cure's verified-anchor trust — still
+> load-bearing for the remaining negative-path gate + IBD back-fill. The "Live
+> truth" section's pinned H\*=3,056,758 / active-chain 3,151,411 numbers are
+> **historical** (the section is now a dated 2026-06-20 snapshot, superseded).
 >
 > Built 2026-06-20 from a grounded, adversarially-verified research pass. Every
 > claim here is file:line-checked or a live measurement.
@@ -43,13 +50,22 @@ connect path (`app/controllers/src/blockchain_controller.c:266`,
 (b) **not** the FlyClient-proven object. The real SHA3 root
 (`utxo_commitment_sha3_compute`) is computed only on the snapshot-OFFER path.
 
-## Live truth (grounded 2026-06-20, not a stale story)
+## Live truth (historical snapshot, 2026-06-20 — superseded; node now at tip)
 
+Prior (2026-06-20) state, kept as a dated record:
 - H\* served `getblockcount` = **3,056,758** (the MIN-prefix provable frontier,
-  `reducer_frontier.c`) — pinned at the anchor by the hole at h=3,056,759.
+  `reducer_frontier.c`) — was pinned at the anchor by the hole at h=3,056,759.
 - active chain = **3,151,411**, stuck there (not closing the gap to header tip
   3,154,459). verificationprogress 0.9975.
-- The node honestly NAMES its halt. **Honest paralysis is still paralysis.**
+- The node honestly NAMED its halt. **Honest paralysis was still paralysis.**
+
+Current (2026-06-23): the node is **unwedged at the network tip** — commit
+`ab512d577` loads a complete SHA3-verified snapshot at h=3,156,809 and folds
+forward, so `getblockcount`=3,156,944 and climbing, verificationprogress=1; the
+wedge described above is resolved. `reducer_frontier.c` still serves H\* as the
+MIN-prefix provable frontier — it now advances with the chain instead of pinning
+at the anchor. (Still borrowed: the 3,156,809 snapshot is minted from zclassicd,
+not re-derived from genesis — see the STATUS banner.)
 
 ## The impressive-sync architecture (what "fast + trustless" actually is)
 

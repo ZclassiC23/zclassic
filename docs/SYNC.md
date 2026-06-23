@@ -77,7 +77,8 @@ build/bin/zclassic23 -addnode=<any_peer>
 ```
 
 Headers → blocks → connect. Scripts/signatures below deferred proof validation
-height (h=3,054,000) are accepted; full validation runs above that. Background
+height (h=3,100,000, the latest mainnet checkpoint) are accepted; full validation
+runs above that. Background
 services then re-verify every hash, signature, and proof end to end.
 
 Use when no snapshot source is available, or to validate from scratch.
@@ -118,16 +119,24 @@ The robust path for a known-good datadir is to copy one onto the target lane.
 
 ### Consolidated daily-driver loader (the current bootstrap)
 
-The deployed path re-seeds `coins_kv` from a UTXO snapshot whose
-`anchor_block_hash` is consensus-bound to the in-binary PoW header at the seed
-height (FATAL on mismatch), and raises the reducer trusted base to the seed
-height so the provable tip H\* starts there instead of pinning at the compiled
-checkpoint. The node then reaches the network tip. This is a **borrowed-but-
-consensus-bound stopgap** — it trusts the seed set instead of folding it from our
-own checkpoint. The **sovereign cure** (`-refold-from-anchor`: fold forward from
-the verified checkpoint, then make it the default and delete the borrowed-seed
-machinery) is in flight — design `work/never-stuck-plan.md`, posture
-`HANDOFF.md`.
+The deployed path is `-load-snapshot-at-own-height`: it loads a COMPLETE,
+SHA3-verified UTXO snapshot taken at a height ABOVE the current coins-best tip
+and folds FORWARD from there to the network tip (the live snapshot is at
+h=3,156,809, count 1,344,918). The snapshot's `anchor_block_hash` must
+byte-equal this node's in-binary PoW header at the seed height or boot FATALs —
+a forged or missing anchor still fails closed (`config/src/boot_refold_staged.c`,
+the load-snapshot-at-own-height path; the anchor-hash cross-check is at ~line
+585). When the seed height is above the coins-best active-chain window, the
+loader extends that window forward to the PoW-proven header tip
+(`active_chain_extend_window`, line 568) instead of FATAL-ing "Run
+--importblockindex" — the fix in commit `ab512d577` that let the node reach tip
+by seeding ABOVE the older torn-seed wedge. This is a **borrowed-but-consensus-
+bound stopgap** — the snapshot is minted from the zclassicd oracle, so it trusts
+the seed set instead of folding it from our own checkpoint (the UTXO-set content
+is not yet re-derived from genesis). The **sovereign cure**
+(`-refold-from-anchor`: fold forward from the verified checkpoint, then make it
+the default and delete the borrowed-seed machinery) is in flight — design
+`work/never-stuck-plan.md`, posture `HANDOFF.md`.
 
 Rules:
 - The import flags **only run on an empty datadir** (or one below the legacy

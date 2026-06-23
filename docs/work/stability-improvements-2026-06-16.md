@@ -1,5 +1,7 @@
 # Stability improvements — 2026-06-16
 
+> **UPDATE 2026-06-23:** the import-time torn-UTXO failure this doc treats as the recurring live cause (Deferred hardening preamble below) is RESOLVED on the live node — now unwedged at the network tip — by commit `ab512d577` (bind a snapshot above coins-best by extending the active-chain window); a complete SHA3-verified snapshot at h=3,156,809 seeds the full UTXO set and folds forward past the block that wedged the older torn seed. Still borrowed: that snapshot is consensus-bound to the in-binary PoW header but its UTXO-set content is not yet re-derived from genesis, so the from-genesis self-mint anchor cure remains the end goal. The orthogonal hardening items below remain valid backlog.
+
 Source: post-recovery review (5-dimension workflow, every finding grep-verified at
 HEAD `fdc1f3a30`). Prioritized, safety-classified hardening work.
 

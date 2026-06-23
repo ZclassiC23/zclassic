@@ -1,4 +1,4 @@
-# FUTURE-CLAUDE — FIX THIS (canonical work list, 2026-06-22)
+# FUTURE-CLAUDE — FIX THIS (canonical work list, 2026-06-23 — UPDATED: node is UNWEDGED at tip (commit ab512d577); the forward-sync wedge is RESOLVED. The remaining mission is the SOVEREIGN CURE (delete the borrowed loader), NOT un-wedging. Items below that present the wedge as live are HISTORICAL until corrected.)
 
 Grounded in four FRESH analyses done this session (NOT recycled narrative — the
 owner purged 55 story files because recycled narratives caused ~103 re-halts).
@@ -12,21 +12,30 @@ the wedge to the moving tip), NEVER "booted without FATAL." Copy-prove on a
 
 ## 1. TL;DR (read this, then §2)
 
-1. The node is HARD-WEDGED at `blocks=3,156,170` (headers ~3,156,491, peers mining
-   ahead) — NOT slow sync. A RESTART re-seeds the same incomplete snapshot and
-   re-wedges at the same height; restart is NOT a recovery path.
-2. Root: the borrowed seed (`utxo-stopgap-3151901.snapshot`, count 1,344,817) is
-   MISSING prevout `21876e8b…` that block 3,156,171 legitimately spends;
-   `script_validate_log[3156171].ok=0 prevout_unresolved` caps the MIN-fold; H\*
-   pins at 3,156,169; `coin_backfill` refusal is CORRECTLY terminal (a UTXO-set
-   membership disagreement, not a fetchable body).
+1. RESOLVED (was HARD-WEDGED at `blocks=3,156,170` under the OLD torn seed). The node
+   is now UNWEDGED at the network tip (>3,156,900, climbing; `verificationprogress=1`),
+   fixed by commit `ab512d577` (extends the active-chain WINDOW above coins-best in
+   `config/src/boot_refold_staged.c:568`) PLUS loading a COMPLETE SHA3-verified snapshot
+   at h=3,156,809 (`utxo-seed-3156809.snapshot`, count 1,344,918) that folds FORWARD
+   and never re-touches block 3,156,171. RESTART now SELF-HEALS: it re-seeds 3,156,809
+   + folds forward (~13 min). STILL BORROWED — the 3,156,809 snapshot is minted from
+   the zclassicd oracle (consensus-bound to the in-binary PoW header, UTXO content not
+   yet re-derived from genesis); the cure below remains the goal.
+2. Historical root (the OLD wedge): the torn seed `utxo-stopgap-3151901.snapshot`
+   (count 1,344,817) was MISSING prevout `21876e8b…` that block 3,156,171 legitimately
+   spends; `script_validate_log[3156171].ok=0 prevout_unresolved` capped the MIN-fold,
+   H\* pinned at 3,156,169, and `coin_backfill` refusal was CORRECTLY terminal (a
+   UTXO-set membership disagreement, not a fetchable body). The live loader NO LONGER
+   uses that torn seed, so this specific hole is gone.
 3. The ONLY cure is SUBTRACTION: re-seed `coins_kv` by FOLDING from a SHA3-verified
    anchor at h=3,056,758 via `-refold-from-anchor`, then DELETE the ~715 LOC
    borrowed-seed loader (`-load-snapshot-at-own-height`).
 4. The from-genesis MINT (the sole cure-path artifact, no real anchor snapshot
-   exists on disk yet) is the sole gate, and it is on VOLATILE storage — it needs
-   durability (the one owner action). NO verified anchor exists today;
-   `/tmp/utxo-anchor-3056758.snapshot` is MISNAMED (it is the 3,151,901 stopgap).
+   exists on disk yet) is the gate FOR SOVEREIGNTY (not for liveness — the node
+   already reaches tip via the borrowed 3,156,809 snapshot), and it is on VOLATILE
+   storage — it needs durability (the one owner action). No SOVEREIGN anchor exists
+   today; `/tmp/utxo-anchor-3056758.snapshot` is MISNAMED (byte-identical to the
+   3,151,901 stopgap on disk).
 5. Everything else (climb-proof test, cutover-defect fixes, regression gates,
    lint hardening, the full backlog) is PARALLEL-ABLE NOW with no owner dependency.
 
@@ -34,8 +43,10 @@ the wedge to the moving tip), NEVER "booted without FATAL." Copy-prove on a
 
 ## 2. THE ONE OWNER ACTION — make the mint DURABLE
 
-**This is the only step future-Claude cannot do alone.** The from-genesis mint
-(the mint process, datadir `/dev/shm/fmram`, flags `-mint-anchor
+**This is the only step future-Claude cannot do alone.** The node ALREADY serves the
+network tip (via the borrowed 3,156,809 snapshot) — the mint is NOT a liveness gate;
+it is the SOVEREIGNTY gate that lets us DELETE the borrowed loader. The from-genesis
+mint (the mint process, datadir `/dev/shm/fmram`, flags `-mint-anchor
 -mint-anchor-fast -nobgvalidation`) is ~10% done (h ~308,993 / 3,056,758) and
 writes to VOLATILE `/dev/shm` + a `/tmp` output path (`ZCL_MINT_ANCHOR_OUT`). A
 host reboot loses ALL progress. It is the sole artifact on the cure path and runs
@@ -60,9 +71,10 @@ Each step: file:line + how it is PROVEN + tag.
 Tags: `[blocks-daily-driver]` `[blocks-sovereignty]` `[nice-to-have]`.
 
 ### CP-1 — [OWNER, blocks-sovereignty] Make the mint durable
-See §2. Proof: `[mint-anchor] SUCCESS`; then `uss_open(<path>,
-expected_sha3=cp->sha3_hash)` returns non-NULL with `count==1,354,771
-height==3,056,758`.
+See §2. The node already serves tip via the borrowed 3,156,809 snapshot, so this
+unblocks SOVEREIGNTY (deleting the borrowed loader), not liveness. Proof:
+`[mint-anchor] SUCCESS`; then `uss_open(<path>, expected_sha3=cp->sha3_hash)` returns
+non-NULL with `count==1,354,771 height==3,056,758`.
 
 ### CP-2 — [I-OWN, blocks-sovereignty, gated on nothing] Make the fold observable
 The mint log is ~88% `db: current schema version` spam with NO per-block
@@ -80,34 +92,33 @@ asserts `reducer_frontier_compute_hstar` CLIMBS M→N + retro commitment-equalit
 Do NOT rewrite it — read, cherry-pick into main, register in
 `lib/test/src/test_parallel.c` (~`:193`, alongside `refold_progress_floor`).
 File: `.claude/worktrees/wf_70f4640d-454-2/lib/test/src/test_refold_retro_validate.c`.
-ALSO wire the 3 ORPHANED tests (compiled via wildcard, dispatched by NEITHER
-`test.c` NOR `test_parallel.c` TEST_LIST → never execute): `X(refold_from_anchor_fatal)`
-`X(refold_auto_arm)` `X(anchor_selfmint)`; fix the stale claim at
-`test_coins_kv.c:151` only AFTER they actually run. Proof: named tests green in
-test_parallel; the climb gate the 3 existing refold tests do NOT cover.
+The 3 formerly-ORPHANED tests are NOW WIRED [LANDED — `test_parallel.c:194`]:
+`X(refold_from_anchor_fatal)` `X(refold_auto_arm)` `X(anchor_selfmint)` (the retro
+climb gate `refold_retro_validate` + `refold_body_span_contiguous` are wired at
+`:196`). Remaining: confirm the stale claim at `test_coins_kv.c:151` is corrected now
+that they run. Proof: named tests green in test_parallel; the climb gate the 3 prior
+refold tests did NOT cover.
 
 ### CP-4 — [I-OWN, blocks-sovereignty] Close BOTH cutover defects (or the wedge relocates)
 Both REAL; copy-prove each with a named test.
-- **Defect (1) FROZEN resume_target.** `resume_target = (int32_t)active_chain_height(...)`
-  is captured ONCE at boot (`config/src/boot_refold_staged.c:971`);
-  `refold_progress_clear_if_reached` (`app/jobs/src/refold_progress.c:173-227`)
-  clears the moment `utxo_apply_cursor >= that frozen target` → a multi-hour fold
-  "completes at boot-time tip" and hands the accrued gap back to the same forward
-  path that wedged (THE recurring catch-up symptom). Fix: re-read LIVE
-  `active_chain_height` each pass, clear only when the cursor catches the moving
-  tip within `ZCL_FINALITY_DEPTH`. Proof: inject 200+ headers/bodies WHILE the
-  fold runs; gate on H\* reaching the NEW tip; named test asserts
-  `clear_if_reached` does NOT fire while live tip is ahead by > finality depth.
-- **Defect (2) NO body-span contiguity precheck.** Before
-  `boot_refold_from_anchor_reset` (`:970`) there is no assertion that body_persist
-  holds a CONTIGUOUS body span 3,056,759..tip. A pruned/missing body pins
-  utxo_apply mid-fold (same `prevout_unresolved` wedge relocated). Fix: precheck
-  the span; a gap must raise a NAMED blocker `refold.body_gap at h=<x>` and trigger
-  peer re-fetch — NEVER a silent stall. Files: body_persist lower-bound query;
-  `block_pruning_service` (`lib/storage/src/disk_block_io.c:101`),
-  `seal_kv.c:309 seal_prune_below_in_tx`. Proof: named test
-  `test_refold_body_span_contiguous` — a datadir missing a body in (3056759,tip)
-  returns false + raises `refold.body_gap` (no fold start).
+- **Defect (1) FROZEN resume_target.** [LANDED 584789165] `refold_progress_bump_target`
+  (`app/jobs/src/refold_progress.c:230`) now raises the resume target to the LIVE tip
+  each tick (never lowers it, `:253`), so a multi-hour fold no longer "completes at
+  boot-time tip" and hands the accrued gap back to the forward path that wedged. The
+  prior bug: `resume_target = (int32_t)active_chain_height(...)` was captured ONCE at
+  boot and `refold_progress_clear_if_reached` cleared the moment the cursor reached
+  that frozen target. Keep the named test that asserts `clear_if_reached` does NOT fire
+  while the live tip is ahead by > `ZCL_FINALITY_DEPTH`.
+- **Defect (2) body-span contiguity precheck — [LANDED; auto-recovery still open].**
+  `boot_refold_body_span_contiguous` (`config/src/boot_refold_staged.c:928`, called
+  at `:1056` before `boot_refold_from_anchor_reset` at `:1080`) asserts body_persist
+  holds a CONTIGUOUS body span 3,056,759..tip and raises the NAMED blocker
+  `refold.body_gap at h=<x>` on a hole — instead of pinning utxo_apply mid-fold (the
+  same `prevout_unresolved` wedge relocated). Proven by `test_refold_body_span_contiguous`
+  (wired `test_parallel.c:196`). STILL OPEN: a gap only HALTS-with-a-name; it does not
+  yet trigger peer re-fetch to auto-heal. Files for the re-fetch: body_persist
+  lower-bound query; `block_pruning_service` (`lib/storage/src/disk_block_io.c:101`),
+  `seal_kv.c:309 seal_prune_below_in_tx`.
 - Also register a supervisor liveness child for the fold ("cannot halt without
   saying so" applies to the cure): assert `utxo_apply_cursor` strictly increases
   during an active from-anchor refold with a deadline; on stall raise
@@ -116,22 +127,27 @@ Both REAL; copy-prove each with a named test.
 ### CP-5 — [I-OWN, blocks-daily-driver] Regression gates for the 5 deployed fixes + restart-stays-synced
 None of these can ship a revert green today. Each: add a named test in
 test_parallel.
-- **FIX 1 loader_owns_seed** (`app/services/src/boot_services.c:1512-1521`) — ZERO
-  coverage. Test: with `load_snapshot_at_own_height` set, `armed_from_anchor==true`
-  and `block_index_loader_seed_stages_from_cold_import` is NOT called; trusted base
-  stays at `seed_h`, not the checkpoint. Negative control: `loader_owns_seed=false`
-  re-pins and fails.
-- **FIX 3 anchor-hash FATAL** (`config/src/boot_refold_staged.c:554-568` memcmp
-  `anchor_block_hash` → `_exit(FAILURE)`; `:540-553` no-index-block FATAL) — ZERO
-  coverage (the existing `test_refold_from_anchor_fatal` covers a DIFFERENT FATAL,
-  the `-refold-from-anchor` reset at `:305-468/:369`). Refactor the cross-check into
-  a pure bool predicate returning a reject reason; forked-child test asserts FATAL
+- **FIX 1 loader_owns_seed** (`app/services/src/boot_services.c:1512-1521`) — [LANDED]
+  covered by `test_loader_owns_seed_gate.c` (wired `test_parallel.c:195`): with
+  `load_snapshot_at_own_height` set, `armed_from_anchor==true` and
+  `block_index_loader_seed_stages_from_cold_import` is NOT called; trusted base stays
+  at `seed_h`, not the checkpoint, with `loader_owns_seed=false` as the negative
+  control.
+- **FIX 3 anchor-hash FATAL** (`config/src/boot_refold_staged.c:585-597` memcmp
+  `anchor_block_hash` → `_exit(FAILURE)`; `:571-583` no-index-block FATAL — line
+  ranges per commit `ab512d577`, which inserted the window-extension at `:551-569`) —
+  PARTIAL coverage: `test_boot_refold_window_extend` (wired `test_parallel.c:195`,
+  added with `ab512d577`) now pins the window-extend seam + the no-index-block
+  NULL→FATAL trigger (Cases A/B); the existing `test_refold_from_anchor_fatal` covers
+  a DIFFERENT FATAL (the `-refold-from-anchor` reset at `:305-468/:369`). STILL
+  UNCOVERED: the `anchor_block_hash` memcmp byte-flip itself. Refactor the cross-check
+  into a pure bool predicate returning a reject reason; forked-child test asserts FATAL
   on a 1-byte-flipped hash, ACCEPT on byte-equal.
-- **FIX 5 block_parse_cache** (`lib/storage/src/block_parse_cache.c:122-191`) — ZERO
-  tests anywhere. New `test_block_parse_cache`: (a) `bpc_encode`↔`bpc_decode`
-  round-trip byte-identical for a multi-tx block; (b) HIT byte-equals
-  `read_block_from_disk_pread`; (c) SAME height + DIFFERENT hash is a MISS (no stale
-  body across a reorg); (d) LRU eviction at `BPC_CAPACITY` does not corrupt
+- **FIX 5 block_parse_cache** (`lib/storage/src/block_parse_cache.c:122-191`) —
+  [LANDED] covered by `test_block_parse_cache.c` (wired `test_parallel.c:257`): (a)
+  `bpc_encode`↔`bpc_decode` round-trip byte-identical for a multi-tx block; (b) HIT
+  byte-equals `read_block_from_disk_pread`; (c) SAME height + DIFFERENT hash is a MISS
+  (no stale body across a reorg); (d) LRU eviction at `BPC_CAPACITY` does not corrupt
   survivors. This guards a consensus-critical fold input.
 - **FIX 2 header forward-only** — already VERIFIED COVERED
   (`test_chain_state_repo.c:720-775`, fix at `chain_state_service.c:453`). Keep; no
@@ -219,7 +235,14 @@ proof. Items already on the CRITICAL PATH are referenced, not repeated.
 
 ### P0 — halt / nudge / fork (all collapse onto the §3 cutover)
 
-- **forward-sync HARD HALT — borrowed seed incomplete.** See TL;DR + CP-7.
+> NOTE 2026-06-23: the forward-sync HARD HALT below is RESOLVED on the live node
+> (now at the network tip) by commit `ab512d577` + the COMPLETE 3,156,809 snapshot.
+> These entries are retained as the HISTORICAL root and the still-relevant
+> SOVEREIGNTY rationale (they motivate the CP-8 cutover/idempotency reasoning); the
+> node is NOT currently halted.
+
+- **forward-sync HARD HALT — borrowed seed incomplete (HISTORICAL, now RESOLVED).**
+  See TL;DR + CP-7.
   `app/jobs/src/utxo_apply_stage.c:358` (upstream.ok==0 → JOB_BLOCKED holds cursor);
   `script_validate_log[3156171]=0/prevout_unresolved`. Fix = the cutover (subtraction);
   do NOT add an in-place repair branch (coin_backfill correctly refuses terminal).
@@ -233,18 +256,21 @@ proof. Items already on the CRITICAL PATH are referenced, not repeated.
   candidate is byte-identical to the stopgap (h=3,151,901, misnamed). See §2 + CP-1.
 - **every restart wipes the UTXO set + re-seeds (no idempotency guard).**
   `boot_load_snapshot_at_own_height_reset` unconditionally `DELETE FROM coins`
-  (1.34M rows) + re-seeds @3,151,901 + forces cursors down EVERY boot
-  (`config/src/boot.c:3320`, `boot_refold_staged.c:585`,
-  `coins_kv_reset_for_reseed`). Contrast the guarded `do_from_anchor`
+  (1.34M rows) + re-seeds + forces cursors down EVERY boot (`config/src/boot.c:3320`,
+  `boot_refold_staged.c:585`, `coins_kv_reset_for_reseed`). Under the OLD torn seed
+  this re-seeded @3,151,901 + re-wedged; under the current COMPLETE 3,156,809 seed it
+  re-seeds + folds FORWARD to tip and self-heals (~13 min), so the consequence is
+  slow-but-recovering, not a wedge. Contrast the guarded `do_from_anchor`
   (`boot.c:3336-3339`, `coins_kv_is_proven_authority`). Fix = the cutover (CP-8);
   interim subtraction: add the `coins_kv_is_proven_authority` short-circuit at the
-  top of the loader so a folded-forward node is never reset to 3,151,901. Proof:
-  restart twice, getblockcount stays at tip, no `seeded coins_kv at h=3151901` on
-  the 2nd boot.
-- **restart is NOT a recovery path for the tip wedge.** Re-seeds + re-folds straight
-  back into the same `not_script_valid` stall (`tip_finalize_stage.c:249`,
-  `script_validate_stage.c:283`). WATCHDOG clears BLOCK_FAILED every ~313s and
-  re-fails. Fix = the cutover.
+  top of the loader so a folded-forward node is never reset + re-seeded. Proof:
+  restart twice, getblockcount stays at tip, no re-seed on the 2nd boot.
+- **restart was NOT a recovery path for the tip wedge (HISTORICAL — under the OLD
+  torn seed).** It re-seeded + re-folded straight back into the same
+  `not_script_valid` stall (`tip_finalize_stage.c:249`, `script_validate_stage.c:283`);
+  WATCHDOG cleared BLOCK_FAILED every ~313s and re-failed. With the current COMPLETE
+  3,156,809 seed, restart re-seeds + folds FORWARD to tip and self-heals. Fix toward
+  sovereignty = the cutover.
 
 ### P1 — blocks daily-driver / sovereignty
 

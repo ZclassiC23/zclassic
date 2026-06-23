@@ -1,3 +1,5 @@
+> **UPDATE 2026-06-23:** the coins-wedge / boot-FATAL blocker noted in the intro below is RESOLVED by commit ab512d577 (a complete snapshot bound above coins-best by extending the active-chain window); the live node now reaches the network tip (~3,156,944, snapshot still borrowed from zclassicd), so these four hazards can finally be boot-validated under live reorg. Body retained as the prior code-read analysis.
+
 # Consensus-gated concurrency hazards (boot-validation blocked)
 
 Status: **root-caused + verified by direct code reads (2026-06-03).** These are

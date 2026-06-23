@@ -1,7 +1,22 @@
 # The sync organism — the whole picture, grounded in code
 
-> **STATUS (2026-06-22): the wedge is FIXED** (consolidated daily-driver loader
-> reaches tip via a consensus-bound stopgap — `docs/HANDOFF.md`). The
+> **STATUS (2026-06-23): the wedge is RESOLVED** by commit `ab512d577`
+> ("fix(boot): bind a snapshot above coins-best by extending the active-chain
+> window"). A COMPLETE, SHA3-verified snapshot at h=3,156,809 is loaded via
+> `-load-snapshot-at-own-height`; the loader extends the active-chain window
+> forward to the PoW-proven header tip (`config/src/boot_refold_staged.c`
+> ~line 549, `active_chain_extend_window`), then folds FORWARD — never
+> re-touching the block (3,156,171) that wedged the older TORN seed
+> (`utxo-stopgap-3151901.snapshot`, missing prevout `21876e8b`). The live node
+> `~/.zclassic-c23` is at the network tip (getblockcount ~3,156,944,
+> verificationprogress=1); proven twice (a throwaway copy reached 3,156,937, the
+> live deploy reached 3,156,944). **Still BORROWED:** the 3,156,809 snapshot is
+> MINTED from the zclassicd oracle — its block hash is consensus-bound to the
+> in-binary PoW header, but its UTXO-set CONTENT is not yet independently
+> re-derived from genesis, so the borrowed foundation (Wound 1 below) is STILL
+> the live posture and the sovereign cure (self-mint a from-genesis SHA3 anchor
+> at compiled checkpoint 3,056,758 → `-refold-from-anchor` cutover → delete the
+> borrowed loader) remains the END GOAL, not done. The
 > "keystone experiment" below ("nobody has run the bodies-only refold to tip")
 > HAS since been run on a copy and H\* climbs anchor→tip; the fold-speedup
 > (parse-cache + batch apply) has landed. This map is **retained for its

@@ -1,9 +1,21 @@
-> ## CURRENT STATE (2026-06-22)
-> Node is HARD-WEDGED at blocks=3,156,170 (headers ~3,156,491, peers mining ahead) —
-> this is borrowed-seed INCOMPLETENESS, NOT slow sync. A RESTART re-seeds the same
-> incomplete snapshot and re-wedges at the same height (restart does NOT recover).
-> Cure = mint a SHA3-verified anchor at h=3,056,758 → `-refold-from-anchor` cutover →
-> DELETE the borrowed loader. See **docs/work/FUTURE-CLAUDE-FIX-THIS.md** (canonical).
+> ## CURRENT STATE (2026-06-23)
+> Node is UNWEDGED and at the network tip: `getblockcount` ~3,156,986 (climbing with
+> the network), `verificationprogress=1`. The former wedge block 3,156,171
+> (hash `00000bbf1e98fe6058189d193f54f6497a841ccfd5185a360e3f4a2a850079a2`) is now ACTIVE.
+> Fixed by commit `ab512d577` "fix(boot): bind a snapshot above coins-best by extending
+> the active-chain window": when the `-load-snapshot-at-own-height` seed height is ABOVE
+> coins-best, the loader extends the active-chain window forward to the PoW-proven header
+> tip (`active_chain_extend_window`, `config/src/boot_refold_staged.c:568`) instead of
+> FATAL-ing. HOW it unwedged: a COMPLETE, SHA3-verified snapshot at h=3,156,809
+> (`utxo-seed-3156809.snapshot`) seeds the full UTXO set ABOVE the height that wedged the
+> older TORN 3,151,901 seed, then folds forward (never re-touches 3,156,171).
+> STILL BORROWED — the 3,156,809 snapshot is minted from the zclassicd oracle: its block
+> hash is consensus-bound to the in-binary PoW header, but its UTXO-set CONTENT is not yet
+> independently re-derived from genesis. The sovereign cure (self-mint a from-genesis SHA3
+> anchor at compiled checkpoint 3,056,758 → `-refold-from-anchor` cutover → DELETE the
+> borrowed loader) remains the END GOAL, NOT done.
+> **docs/work/FUTURE-CLAUDE-FIX-THIS.md** must now be read as historical (it analysed the
+> prior wedge, since resolved).
 
 # HANDOFF — read this first
 
@@ -22,16 +34,18 @@ with `zcl_status` — never assume "synced"/"wedged" from a doc.
 
 ---
 
-## 1. Where things stand (2026-06-22) — wedge FIXED, node reaches tip
+## 1. Where things stand (2026-06-23) — wedge FIXED, node reaches tip
 
 The forward-sync **wedge class is FIXED**. The node runs a **consolidated
-daily-driver binary** and **reaches the real network tip**. It does so via a
+daily-driver binary** and **reaches and HOLDS the real network tip** — verified
+live (`getblockcount` ~3,156,986, climbing; `verificationprogress=1`; the former
+wedge block 3,156,171 is now active). It does so via a
 **borrowed-but-consensus-bound STOPGAP**: it trusts the reference node's UTXO set
 at a near-tip height (provenance proven, anchor hash bound to the in-binary
 PoW header), instead of folding that set from its own checkpoint. It is a
 **labeled, time-boxed bridge — not the cure.**
 
-Five proven, consensus-audited fixes make up the consolidated binary:
+Six proven, consensus-audited fixes make up the consolidated binary:
 
 1. **loader-owns-seed** — `-load-snapshot-at-own-height` re-seeds `coins_kv` from
    a checkpoint-OR-anchor-bound snapshot and raises the reducer trusted base to
@@ -49,6 +63,18 @@ Five proven, consensus-audited fixes make up the consolidated binary:
 5. **fold-speedup** — a block-parse cache (dedup the repeated per-block parse) +
    `coins_kv` batch apply. Proven **bit-identical**
    (`test_reducer_forward_progress_gate`).
+6. **snapshot-above-coins-best window extension** (`ab512d577`) — when the
+   snapshot seed height is ABOVE coins-best, the loader widens the active-chain
+   window forward to `pindex_best_header` (`active_chain_extend_window`,
+   `boot_refold_staged.c:568`) so the consensus anchor-hash cross-check reads the
+   real PoW-proven `block_index` at the seed height, instead of FATAL-ing
+   "Run --importblockindex". A pprev gap still leaves the slot NULL and the
+   downstream FATAL still fires (a forged/missing anchor fails closed). This is
+   the fix that actually unwedged the live node: a COMPLETE SHA3-verified seed at
+   h=3,156,809 (`utxo-seed-3156809.snapshot`, count 1,344,918, sha3
+   `040bde49…692bd125`, block_hash `00000933f7…b039ea074`) sits above the height
+   that wedged the older torn 3,151,901 seed, and folds forward without
+   re-touching it.
 
 **Resilience posture (red-team verdict 2026-06-22, `docs/work/recovery-selfheal-redteam-2026-06-21.md`):**
 the deployed config self-heals UNATTENDED from **3 of 4** corruption classes —
@@ -179,6 +205,11 @@ embedded Tor, MCP/RPC, P2P ping/latency.
 | **dev** | `$HOME/.zclassic-c23-dev` | `make deploy-dev` |
 | **soak** | `$HOME/.zclassic-c23-soak` | deliberate re-baseline |
 
+The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and
+folding forward, so each restart is a ~13 min self-healing boot (cold `node.db`
+read + Sapling tree rebuild + fold); a plain boot serving the persisted
+`coins_kv` is likely faster but is NOT yet proven live.
+
 `zclassicd` (the C++ reference) runs as a co-located service — **never stop it.**
 The default ports and the operator runbook specifics live in `docs/SYNC.md` and
 the dev notes; re-pull live state yourself (`zcl_status`, `zcl_state`) before
@@ -197,10 +228,12 @@ h=478544 lesson — `docs/CONSENSUS_PARITY_DOCTRINE.md`).
 
 ## 7. MVP status
 
-**MRS 4/8** on the stopgap: **C1** single-binary install, **C2** Tor onion <60s,
-**C4** receive shielded, **C7** kill-9 recovery all pass their local operator
-proof. **C3** cold-start (<10min), **C5** file market, **C6** 7-day soak, **C8**
-exact parity are gated on the **sovereign foundation + accumulated soak time**.
+**MRS 4/8** (do NOT bump without proof): **C1** single-binary install, **C2** Tor
+onion <60s, **C4** receive shielded, **C7** kill-9 recovery all pass their local
+operator proof. **C3** cold-start (<10min), **C5** file market, **C6** 7-day soak,
+**C8** exact parity are gated on the **sovereign foundation + accumulated soak
+time** — soak hours can now ACCRUE since the node reaches and holds tip, so the
+remaining gate is the sovereign cure + soak, not un-wedging.
 The v1 contract is [`docs/MVP.md`](./MVP.md); THE plan is
 [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). Live scorer:
 `tools/mvp_gate.sh`.

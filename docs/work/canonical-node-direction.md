@@ -83,15 +83,20 @@ for a week** — while **continuously proving it still equals zclassicd**.
 | Dimension | Solid? | Blocks daily-driver? | Pri |
 |---|:---:|:---:|:---:|
 | Consensus parity (bit-for-bit vs zclassicd) | partial | yes | **P0** |
-| Restart-durability (reboot without dropping the chain) | **no** | yes | **P0** |
+| Restart-durability (reboot without dropping the chain — now self-heals via re-seed; plain-boot-serves-coins_kv unproven) | partial | yes | **P0** |
 | Cold-import correctness (no silent coin tears) | **no** | yes | **P0** |
 | Liveness / no-silent-wedge | partial | no | P1 |
 | Kill-9 recovery + crash-safety | **yes** | no | P1 |
 | Soak / unattended-for-weeks (168h) | **no** | yes | P1 |
 
-Steady-state at tip is proven; every remaining gap is a cold-import / restart
-correctness gap — the node holds tip fine; the reboot and the cold-import are what
-bite. None require new consensus logic; the hard part is *proving*, not coding.
+The live node now REACHES and holds the network tip (the former 3,156,171 wedge is
+active), fixed by `ab512d577` which binds a COMPLETE SHA3-verified snapshot at
+h=3,156,809 loaded ABOVE the former wedge and folds forward; the restart path now
+self-heals by re-seeding that snapshot (~13 min, proven twice). The remaining
+daily-driver gaps are (1) proving a plain boot that serves the persisted coins_kv
+without re-seeding, (2) the snapshot is still BORROWED from the zclassicd oracle
+(UTXO content not yet re-derived from genesis — sovereign cure pending), and (3) the
+byte-exact UTXO parity gap (P0-C). None require new consensus logic; the hard part is *proving*, not coding.
 Distance ≈ 3 copy-proven fixes + one 168h soak clock. Rule for all P0 fixes: clone to
 `/tmp`, isolated 39xxx ports, dead-sink `-connect`; never start/stop/mutate the live
 main node, dev lane, soak node, or zclassicd.

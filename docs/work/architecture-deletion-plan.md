@@ -1,7 +1,12 @@
 # Architecture tree + deletion plan (less is more)
 
-> **STATUS (2026-06-22): the forward-sync wedge is FIXED** (consolidated stopgap
-> reaches tip — `docs/HANDOFF.md`). This is **retained as the deletion map for
+> **STATUS (2026-06-23): the forward-sync wedge is FIXED** by commit `ab512d577`
+> (bind a snapshot above coins-best by extending the active-chain window): the
+> loader seeds a COMPLETE SHA3-verified snapshot at **h=3,156,809** and folds
+> forward past the former wedge (3,156,171) to the network tip — `docs/HANDOFF.md`.
+> (The older torn 3,151,901 stopgap actually HARD-WEDGED — see the LIVE-VERIFIED
+> correction block below — so the prior "consolidated stopgap reaches tip" framing
+> was misleading.) This is **retained as the deletion map for
 > the sovereign cure** — the file-by-file deletion order for the borrowed-seed /
 > repair machinery the cure removes, plus the KEPT/deletable classification. Any
 > dated "LIVE-VERIFIED" block below (node pinned, L1 refused N reps, the 1-coin

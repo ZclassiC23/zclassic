@@ -1,5 +1,7 @@
 # Why zclassic23 wedges on forward sync when zclassicd does not — root-cause dissection (2026-06-21)
 
+> **UPDATE (2026-06-23): RESOLVED on the live node.** The forward-sync wedge analyzed below is fixed by commit `ab512d577` ("bind a snapshot above coins-best by extending the active-chain window") + a complete SHA3-verified snapshot at h=3,156,809 loaded ABOVE the wedge via `-load-snapshot-at-own-height`, so the fold never re-touches block 3,156,171. Live node `~/.zclassic-c23` is at the network tip (getblockcount 3,156,944+, verificationprogress=1). The UTXO snapshot is still BORROWED from the zclassicd oracle (its block hash is consensus-bound but its content is not yet re-derived from genesis); the sovereign cure (`-refold-from-anchor` cutover at checkpoint 3,056,758 → delete the borrowed loader) remains the end goal. The existing STATUS(2026-06-22) banner below describes an EARLIER stopgap and is superseded by this line. The rest of this document is retained unchanged as historical analysis.
+
 > **STATUS (2026-06-22): the wedge is FIXED** — the consolidated daily-driver
 > loader re-seeds `coins_kv` from a consensus-bound snapshot and raises the
 > reducer trusted base to the seed height, so the node reaches tip (a
