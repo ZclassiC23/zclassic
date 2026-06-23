@@ -257,6 +257,47 @@ int test_sync_watchdog_conditions(void)
         cleanup_sync_watchdog();
     }
 
+    {
+        struct fake_clock clock;
+        fake_clock_install(&clock, 4500);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        bool ok = true;
+        register_local_header_refill_needed();
+
+        struct block_index tip = {0};
+        tip.nHeight = 10;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        struct p2p_node inbound = {0};
+        inbound.id = 7;
+        inbound.inbound = true;
+        inbound.starting_height = 20;
+        inbound.state = PEER_ACTIVE;
+        inbound.last_getheaders_time = 4499;
+        struct p2p_node *peers[1] = { &inbound };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+        ok = ok && local_header_refill_needed_test_remedy_calls() == 1;
+        ok = ok && inbound.state == PEER_ACTIVE;
+        ok = ok && inbound.last_getheaders_time == 4499;
+        ok = ok && sync_get_state() == SYNC_BLOCKS_DOWNLOAD;
+        struct watchdog_local_recovery_stats lr;
+        sync_monitor_get_local_recovery_stats(&lr);
+        ok = ok && lr.active && lr.missing_height == 11;
+        ok = ok && lr.retry_count == 1;
+        ok = ok && lr.distinct_peer_count == 0;
+        ok = ok && !lr.retries_exhausted;
+        ok = ok && lr.mirror_repair_gated;
+        SYNC_WATCHDOG_CHECK("local header refill waits for outbound peer", ok);
+        cleanup_sync_watchdog();
+    }
+
     cleanup_sync_watchdog();
     return failures;
 }

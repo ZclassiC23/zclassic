@@ -441,6 +441,26 @@ static int test_cac_local_header_refill_helper_records_retry(void)
     return failures;
 }
 
+static int test_cac_local_header_refill_helper_waits_for_peers(void)
+{
+    int failures = 0;
+    TEST_CASE("chain_advance_coordinator: local header refill helper waits for eligible peers")
+    {
+        struct cac_decision out;
+        ASSERT(!block_source_policy_local_header_refill_needed(
+            100, 101, 130, 0, 1, false, &out));
+        ASSERT(out.result == CAC_DECISION_WAIT);
+        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT_STR_EQ(out.reason, "local_retries_pending");
+        ASSERT_STR_EQ(out.blocker, "local_recovery_gate");
+        ASSERT_STR_EQ(out.sources[CAC_SOURCE_LOCAL_IMPORT].selection_reason,
+                      "unhealthy");
+        ASSERT_STR_EQ(out.sources[CAC_SOURCE_LOCAL_IMPORT].reason,
+                      "missing_height=101 eligible_peers=0 retry=1");
+    } TEST_END
+    return failures;
+}
+
 static int test_cac_local_header_refill_helper_recovers_without_peers(void)
 {
     int failures = 0;
@@ -1726,6 +1746,7 @@ int test_chain_advance_coordinator(void)
     failures += test_cac_snapshot_offer_helper_allows_valid_offer();
     failures += test_cac_snapshot_offer_helper_blocks_invalid_offer();
     failures += test_cac_local_header_refill_helper_records_retry();
+    failures += test_cac_local_header_refill_helper_waits_for_peers();
     failures += test_cac_local_header_refill_helper_recovers_without_peers();
     failures += test_cac_dump_json_contract();
     failures += test_cac_dump_reports_projection_lag();

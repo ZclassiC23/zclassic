@@ -57,14 +57,16 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
     int next_h = atomic_load(&g_missing_height);
     int peers = sync_monitor_local_header_refill(
         cm, next_h, "condition:local_header_refill_needed");
+    struct watchdog_local_recovery_stats lr;
+    sync_monitor_get_local_recovery_stats(&lr);
     struct cac_decision decision;
     bool proceed = block_source_policy_local_header_refill_needed(
         atomic_load(&g_tip_at_detect),
         next_h,
         atomic_load(&g_peer_max_at_detect),
         peers,
-        1,
-        peers >= 3,
+        lr.retry_count,
+        lr.retries_exhausted,
         &decision);
     LOG_WARN("condition", "[condition:local_header_refill_needed] missing=%d peer_max=%d " "eligible=%d decision=%s reason=%s", next_h, atomic_load(&g_peer_max_at_detect), peers, proceed ? "proceed" : "wait", decision.reason);
     if (proceed) {

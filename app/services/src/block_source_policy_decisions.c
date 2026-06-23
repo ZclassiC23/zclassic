@@ -248,7 +248,8 @@ bool block_source_policy_local_header_refill_needed(
         LOG_WARN("bsp", "record local_header_refill decision: %s",
                  rec.message);
 
-    bool proceed = decision->result != CAC_DECISION_BLOCKED;
+    bool proceed = decision->result == CAC_DECISION_USE_SOURCE ||
+                   decision->result == CAC_DECISION_RECOVER;
     emit_decision_event(
         "local_header_refill", "proceed", proceed, decision,
         "local=%d missing=%d peer=%d eligible=%d retry=%d",
