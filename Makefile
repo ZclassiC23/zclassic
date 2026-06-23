@@ -97,13 +97,16 @@ WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
 CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
-	-fstack-protector-strong \
+	-fstack-protector-strong -fstack-clash-protection -fcf-protection=full \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
-LDFLAGS = -pthread -flto=auto -rdynamic
+# Hardened link: full RELRO + BIND_NOW (GOT/PLT read-only after relocation) and
+# a non-executable stack. Pure linker flags — no codegen diagnostics, and
+# deterministic, so reproducible-build byte-identity is preserved.
+LDFLAGS = -pthread -flto=auto -rdynamic -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \
