@@ -315,6 +315,12 @@ static bool handle_zfilelist(struct msg_processor *mp, struct p2p_node *node,
         if (!file_offer_deserialize(&offer, s))
             break;
 
+        /* Clamp the peer-supplied hop count: an attacker could set ttl=255 to
+         * drive a ~255-hop re-gossip amplification across the network. Cap it
+         * to the protocol maximum so propagation is bounded regardless of input. */
+        if (offer.ttl > FILE_MARKET_MAX_TTL)
+            offer.ttl = FILE_MARKET_MAX_TTL;
+
         /* Reject expired TTL */
         if (offer.ttl == 0) continue;
 
