@@ -3,6 +3,7 @@
 #include "test/test_helpers.h"
 
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
@@ -22,6 +23,7 @@ void register_stale_validate_headers_repair(void);
 void stale_validate_headers_repair_test_reset(void);
 int stale_validate_headers_repair_test_remedy_calls(void);
 void stale_validate_headers_repair_test_clear_backoff(void);
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
 static bool exec_sql(sqlite3 *db, const char *sql)
 {
@@ -53,7 +55,8 @@ static bool seed_schema(sqlite3 *db)
             "persisted_at INTEGER)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS script_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER, "
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
@@ -138,6 +141,27 @@ static bool seed_finalized_tip(sqlite3 *db, int height)
     snprintf(sql, sizeof(sql),
         "INSERT OR REPLACE INTO tip_finalize_log(height,status,ok) "
         "VALUES(%d,'finalized',1)", height);
+    return exec_sql(db, sql);
+}
+
+static bool seed_reducer_success(sqlite3 *db, int height)
+{
+    char sql[1024];
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO validate_headers_log"
+        "(height,hash,ok,fail_reason,validated_at) "
+        "VALUES(%d,zeroblob(32),1,NULL,1);"
+        "INSERT OR REPLACE INTO body_persist_log"
+        "(height,source,ok,persisted_at) VALUES(%d,'test',1,1);"
+        "INSERT OR REPLACE INTO script_validate_log"
+        "(height,status,ok,block_hash) VALUES(%d,'ok',1,zeroblob(32));"
+        "INSERT OR REPLACE INTO proof_validate_log"
+        "(height,status,ok) VALUES(%d,'ok',1);"
+        "INSERT OR REPLACE INTO utxo_apply_log"
+        "(height,status,ok) VALUES(%d,'ok',1);"
+        "INSERT OR REPLACE INTO tip_finalize_log"
+        "(height,status,ok) VALUES(%d,'finalized',1);",
+        height, height, height, height, height, height);
     return exec_sql(db, sql);
 }
 
@@ -234,6 +258,7 @@ static bool setup_condition_case(const char *tag, char *dir, size_t dir_n,
 {
     condition_engine_reset_for_testing();
     stale_validate_headers_repair_test_reset();
+    reducer_frontier_test_set_compiled_anchor(1);
     test_make_tmpdir(dir, dir_n, "stale_vh_repair", tag);
     if (!progress_store_open(dir))
         return false;
@@ -249,6 +274,7 @@ static void teardown_condition_case(const char *dir, struct main_state *ms)
     main_state_free(ms);
     progress_store_close();
     test_cleanup_tmpdir(dir);
+    reducer_frontier_test_set_compiled_anchor(-1);
     condition_engine_reset_for_testing();
 }
 
@@ -271,9 +297,9 @@ int test_stale_validate_headers_repair_condition(void)
         condition_engine_tick();
 
         ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
-        /* W2: the witness is now FORWARD-TIP-ONLY. The rewind deleted the
-         * downstream poison + rewound cursors but did NOT advance the
-         * finalized tip (active_chain_height stays at 1, target=2), so the
+        /* W2: the witness is now H*-ONLY. The rewind deleted the downstream
+         * poison + rewound cursors but did NOT advance the reducer frontier,
+         * so the
          * condition stays ACTIVE (was ==0 under the old poison-gone witness
          * shortcut — this flip IS the regression proof). */
         ok = ok && condition_engine_get_active_count() == 1;
@@ -285,7 +311,7 @@ int test_stale_validate_headers_repair_condition(void)
          * forbids deleting them. The cursor is rewound; the (ok=0) row stays. */
         ok = ok && row_exists(db, "tip_finalize_log", 2);
         SVHR_CHECK("stale downstream poison rewinds downstream, preserves "
-                   "tip_finalize_log, stays active until tip advances", ok);
+                   "tip_finalize_log, stays active until H* advances", ok);
         teardown_condition_case(dir, &ms);
     }
 
@@ -335,8 +361,8 @@ int test_stale_validate_headers_repair_condition(void)
          * self-heals the ok=0 row forward via recheck_failed_rows (060a5cb4c),
          * so the remedy returns SKIP and PRESERVES all forward progress: the
          * validate_headers + downstream cursors are NOT rewound and the log rows
-         * survive. The condition stays ACTIVE because the tip did NOT advance
-         * (active_chain_height stays at 1, target=2); the honest forward-tip
+         * survive. The condition stays ACTIVE because H* did NOT advance;
+         * the honest reducer-frontier
          * witness governs the clear. A destructive rewind here would delete the
          * forward validate work and re-starve the recheck — the churn that
          * produced the 5x-unwitnessed → operator_needed loop. */
@@ -348,7 +374,63 @@ int test_stale_validate_headers_repair_condition(void)
         ok = ok && row_exists(db, "tip_finalize_log", 2);
         SVHR_CHECK("solutionless poison WITH repair header defers to "
                    "non-destructive recheck (no rewind, progress preserved, "
-                   "stays active until tip advances)",
+                   "stays active until H* advances)",
+                   ok);
+        teardown_condition_case(dir, &ms);
+    }
+
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[2];
+        struct uint256 hashes[2];
+        bool ok = setup_condition_case("hash_mismatch", dir, sizeof(dir),
+                                       &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_poison_rows(
+            db, 2, "'header-source-hash-mismatch'", 0);
+
+        condition_engine_tick();
+
+        ok = ok && stage_repair_header_solution_poison_mode(
+                         db, 2) ==
+                     STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH;
+        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && cursor_for(db, "validate_headers") == 5;
+        ok = ok && cursor_for(db, "body_fetch") == 5;
+        ok = ok && row_exists(db, "validate_headers_log", 2);
+        ok = ok && row_exists(db, "body_fetch_log", 2);
+        SVHR_CHECK("header-source hash mismatch activates validate-header "
+                   "repair without destructive rewind",
+                   ok);
+        teardown_condition_case(dir, &ms);
+    }
+
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[2];
+        struct uint256 hashes[2];
+        bool ok = setup_condition_case("served_above_hstar", dir,
+                                       sizeof(dir),
+                                       &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+        ok = ok && seed_cursors(db, 9, 9);
+        ok = ok && seed_poison_rows(
+            db, 2, "'header-source-hash-mismatch'", 0);
+        ok = ok && seed_finalized_tip(db, 8);
+
+        condition_engine_tick();
+
+        ok = ok && active_chain_height(&ms.chain_active) == 8;
+        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && row_exists(db, "tip_finalize_log", 8);
+        ok = ok && row_exists(db, "tip_finalize_log", 2);
+        SVHR_CHECK("served tip above H* does not hide or witness-clear the "
+                   "repairable validate frontier",
                    ok);
         teardown_condition_case(dir, &ms);
     }
@@ -376,8 +458,8 @@ int test_stale_validate_headers_repair_condition(void)
 
     /* ── W2 NEW1: a non-advancing remedy escalates to EV_OPERATOR_NEEDED ──
      * Model a frontier that never advances: the pipeline keeps re-poisoning it
-     * (solutionless) and the remedy keeps running but the finalized tip never
-     * moves. Under the honest witness this accrues attempts to max_attempts=5
+     * (solutionless) and the remedy keeps running but H* never moves. Under
+     * the honest witness this accrues attempts to max_attempts=5
      * and pages the operator (the Law-7 lie is ended) — REGARDLESS of whether
      * the remedy was the (now non-destructive) SKIP-defer or a destructive
      * rewind: every due remedy increments the attempt counter (condition.c),
@@ -423,14 +505,11 @@ int test_stale_validate_headers_repair_condition(void)
         teardown_condition_case(dir, &ms);
     }
 
-    /* ── W2 NEW2: a remedy that ADVANCES the finalized tip clears ─────────
-     * The honest witness's sole success predicate is forward tip movement.
-     * After the remedy, we publish a genuine finalized tip at target (an
-     * ok=1 tip_finalize_log row at height 2, which active_chain_height reads
-     * as MAX(height) WHERE ok=1) — the un-fakeable signal the rewind never
-     * moves. The next tick witnesses the advance, clears the condition, and
-     * does NOT re-run the remedy. (g_chain_authority is left UNSET so
-     * active_chain_height reads tip_finalize_log / c->height.) */
+    /* ── W2 NEW2: a remedy that ADVANCES H* clears ───────────────────────
+     * The honest witness's sole success predicate is reducer-frontier
+     * movement. After the remedy, we publish a full success-checked reducer
+     * row at target; the next tick witnesses H* >= target, clears the
+     * condition, and does NOT re-run the remedy. */
     {
         char dir[256];
         struct main_state ms;
@@ -444,22 +523,22 @@ int test_stale_validate_headers_repair_condition(void)
             db, 2, "'no-header-solution-backfill-required'", 0);
         ok = ok && seed_repair_header(db, 2);
 
-        /* Tick 1: remedy runs, tip frozen → witness false → still active. */
+        /* Tick 1: remedy runs, H* frozen → witness false → still active. */
         condition_engine_tick();
         ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
         ok = ok && condition_engine_get_active_count() == 1;
 
-        /* Publish a real finalized tip at target=2 → forward progress. */
-        ok = ok && seed_finalized_tip(db, 2);
+        /* Publish a real success-checked reducer row at target=2 → H* moves. */
+        ok = ok && seed_reducer_success(db, 2);
 
-        /* Tick 2: witness now true (active_chain_height>=target) → cleared,
+        /* Tick 2: witness now true (H*>=target) → cleared,
          * remedy NOT re-run. Clear backoff so a remedy WOULD run if the
          * witness hadn't cleared — proving the clear, not the backoff. */
         stale_validate_headers_repair_test_clear_backoff();
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
-        SVHR_CHECK("forward tip advance witnesses the clear "
+        SVHR_CHECK("forward reducer frontier advance witnesses the clear "
                    "(remedy not re-run)", ok);
         teardown_condition_case(dir, &ms);
     }

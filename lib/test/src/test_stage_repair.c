@@ -138,6 +138,21 @@ static bool seed_downstream_poison(sqlite3 *db, int height)
     return exec_sql(db, sql);
 }
 
+static bool seed_validate_poison(sqlite3 *db, int height, const char *reason)
+{
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO validate_headers_log"
+        "(height,hash,ok,fail_reason,validated_at) "
+        "VALUES(%d,zeroblob(32),0,%s,1);"
+        "INSERT OR REPLACE INTO body_fetch_log"
+        "(height,hash,source,bytes,fetched_at,ok,fail_reason) "
+        "VALUES(%d,zeroblob(32),'skipped_invalid',0,1,0,"
+        "'header_validation_failed');",
+        height, reason ? reason : "NULL", height);
+    return exec_sql(db, sql);
+}
+
 static int cursor_for(sqlite3 *db, const char *name)
 {
     sqlite3_stmt *st = NULL;
@@ -336,6 +351,43 @@ int test_stage_repair(void)
         ok = ok && cursor_for(db, "validate_headers") == 5;
         STR_CHECK("downstream rewind deletes downstream, keeps tip_finalize_log",
                   ok);
+        teardown_case(dir);
+    }
+
+    /* --- Classifier: source-hash mismatch is repairable; invalid is not. --- */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("validate_source_mismatch", dir, sizeof(dir), &db);
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_validate_poison(
+            db, 2, "'header-source-hash-mismatch'");
+
+        ok = ok && stage_repair_header_solution_poison_mode(db, 2) ==
+                   STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH;
+
+        struct stage_repair_header_solution_result res;
+        bool rv = stage_repair_header_solution_poison_rewind(db, 2, 1, &res);
+        ok = ok && rv == true;
+        ok = ok && res.repaired == false;
+        ok = ok && row_exists(db, "validate_headers_log", 2);
+        ok = ok && row_exists(db, "body_fetch_log", 2);
+        STR_CHECK("header-source hash mismatch is non-destructive repairable "
+                  "validate poison",
+                  ok);
+        teardown_case(dir);
+    }
+
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("validate_invalid_solution", dir, sizeof(dir), &db);
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_validate_poison(db, 2, "'invalid-solution'");
+
+        ok = ok && stage_repair_header_solution_poison_mode(db, 2) ==
+                   STAGE_REPAIR_POISON_NONE;
+        STR_CHECK("invalid validate failure stays non-repairable", ok);
         teardown_case(dir);
     }
 

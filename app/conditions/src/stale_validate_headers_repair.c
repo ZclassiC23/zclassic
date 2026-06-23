@@ -2,6 +2,7 @@
 
 #include "framework/condition.h"
 
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "services/header_probe.h"
 #include "storage/progress_store.h"
@@ -17,20 +18,48 @@ static _Atomic int g_target_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
 
-static int repair_target_height(void)
+static bool validate_repairable_mode(
+    enum stage_repair_header_solution_poison mode)
 {
-    struct main_state *ms = condition_engine_main_state();
-    if (!ms)
-        return -1; // raw-return-ok:engine-not-ready
-    int tip = active_chain_height(&ms->chain_active);
-    return tip >= 0 ? tip + 1 : -1;
+    return mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS ||
+           mode == STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH;
+}
+
+static int reducer_frontier_height(sqlite3 *db)
+{
+    if (!db)
+        return -1; // raw-return-ok:progress-db-not-open
+
+    progress_store_tx_lock();
+    int32_t hstar = -1;
+    int32_t served_floor = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served_floor);
+    progress_store_tx_unlock();
+    if (!ok)
+        return -1; // raw-return-ok:hstar-read-failed
+    return (int)hstar;
+}
+
+static int repair_target_height(sqlite3 *db)
+{
+    int hstar = reducer_frontier_height(db);
+    if (hstar >= 0)
+        return hstar + 1;
+
+    int scan = -1;
+    if (stage_repair_header_solution_repairable_validate_frontier(db, &scan) &&
+        scan >= 0)
+        return scan;
+    return -1; // raw-return-ok:no-repairable-frontier
 }
 
 static bool detect_stale_validate_headers_repair(void)
 {
     sqlite3 *db = progress_store_db();
-    int target = repair_target_height();
-    if (!db || target < 0)
+    if (!db)
+        return false;
+    int target = repair_target_height(db);
+    if (target < 0)
         return false;
 
     enum stage_repair_header_solution_poison mode =
@@ -49,7 +78,7 @@ static bool detect_stale_validate_headers_repair(void)
      * so a stale wrong-block row does not masquerade as "present". A
      * DOWNSTREAM_STALE poison (validate ok=1 but a skipped-invalid body) has no
      * non-destructive heal and always fires. */
-    if (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS) {
+    if (validate_repairable_mode(mode)) {
         struct main_state *ms = condition_engine_main_state();
         struct block_index *bi =
             ms ? active_chain_at(&ms->chain_active, target) : NULL;
@@ -76,18 +105,22 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
     enum stage_repair_header_solution_poison mode =
         stage_repair_header_solution_poison_mode(db, target);
 
-    if (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS) {
+    if (validate_repairable_mode(mode)) {
         struct main_state *ms0 = condition_engine_main_state();
         struct block_index *bi0 =
             ms0 ? active_chain_at(&ms0->chain_active, target) : NULL;
         const struct uint256 *canon = bi0 ? bi0->phashBlock : NULL;
+        bool solution_present = canon
+            ? stage_repair_header_solution_available(db, target, canon)
+            : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
+               stage_repair_header_solution_available(db, target, NULL));
 
         /* Step 1 — backfill the CORRECT (canonical) solution from the oracle if
          * it is not already present. header_probe_pull_range re-validates the
          * fetched header and writes it hash-bound into header_solution_repair
          * (INSERT OR REPLACE by height — it OVERWRITES any stale wrong-block
          * row, which the hash-aware availability check above does not accept). */
-        if (!stage_repair_header_solution_available(db, target, canon)) {
+        if (!solution_present) {
             int added = 0;
             struct zcl_result r = header_probe_pull_range(target, 128, &added);
             if (!r.ok) {
@@ -102,6 +135,10 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
                      "header probe h=%d added=%d",
                      target, added);
         }
+        solution_present = canon
+            ? stage_repair_header_solution_available(db, target, canon)
+            : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
+               stage_repair_header_solution_available(db, target, NULL));
 
         /* Step 2 — if the correct solution is now present, DEFER to the
          * non-destructive validate_headers recheck. Do NOT poison_rewind: the
@@ -111,9 +148,9 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
          * and re-starve the recheck (forcing a long forward re-drain that parks
          * the recheck) — the precise churn that produced the 5x-unwitnessed
          * poison_rewind → operator_needed loop. Return SKIP and let the witness
-         * (durable tip advanced past the frontier) govern success; detect()
+         * (H* advanced past the frontier) govern success; detect()
          * deactivates next tick and resets the attempt counter. */
-        if (stage_repair_header_solution_available(db, target, canon)) {
+        if (solution_present) {
             LOG_WARN("condition",
                      "[condition:stale_validate_headers_repair] "
                      "solution present h=%d — deferring to non-destructive "
@@ -135,14 +172,12 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
     /* DOWNSTREAM_STALE: validate_headers is ok=1 but a body was skipped-invalid
      * at the frontier. There is no non-destructive heal for this, so the
      * sanctioned frontier poison_rewind is the correct tool. Its guards in
-     * stage_repair_rewind.c are unchanged (frontier-only == active_tip+1;
+     * stage_repair_rewind.c are unchanged (frontier-only == H*+1;
      * refuses if any ok=1 success_checked row sits at/above the frontier; never
      * deletes tip_finalize_log), so the Tier-2 public-tip floor is preserved. */
     struct stage_repair_header_solution_result rr;
-    struct main_state *ms = condition_engine_main_state();
-    int active_tip = ms ? active_chain_height(&ms->chain_active) : -2;
-    if (!stage_repair_header_solution_poison_rewind(db, target,
-                                                    active_tip, &rr))
+    int hstar = reducer_frontier_height(db);
+    if (!stage_repair_header_solution_poison_rewind(db, target, hstar, &rr))
         return COND_REMEDY_FAILED;
 
     LOG_WARN("condition",
@@ -159,7 +194,7 @@ static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
      * own captured frontier height. */
     (void)target_at_detect;
 
-    /* SOLE success predicate: the durable public tip advanced PAST the
+    /* SOLE success predicate: the durable reducer frontier advanced PAST the
      * frontier captured at detect time. Anything less is NOT cleared.
      *
      * The old witness also returned true the instant the poison rows were
@@ -167,19 +202,16 @@ static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
      * rewind itself deletes those rows / writes that header WITHOUT moving
      * the tip, so it could self-certify "cleared" on every ~5s tick while
      * the tip stayed frozen (the Law-7 lie). Those shortcuts are gone:
-     * active_chain_height reads MAX(height) FROM tip_finalize_log WHERE
-     * ok=1 (or the chain-authority shim), which the rewind never moves, so
+     * reducer_frontier_compute_hstar reads the provable reducer prefix, which
+     * the rewind cannot fake by leaving a higher served-tip anchor behind, so
      * a non-advancing remedy now leaves the witness false, accrues
      * attempts, trips max_attempts, and pages EV_OPERATOR_NEEDED. */
     int target = atomic_load(&g_target_at_detect);
     if (target < 0)
         return false;
 
-    struct main_state *ms = condition_engine_main_state();
-    if (!ms)
-        return false;
-
-    return active_chain_height(&ms->chain_active) >= target;
+    sqlite3 *db = progress_store_db();
+    return reducer_frontier_height(db) >= target;
 }
 
 static struct condition c_stale_validate_headers_repair = {

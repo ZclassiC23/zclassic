@@ -20,6 +20,7 @@ struct main_state;
 enum stage_repair_header_solution_poison {
     STAGE_REPAIR_POISON_NONE = 0,
     STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS,
+    STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH,
     STAGE_REPAIR_POISON_DOWNSTREAM_STALE,
 };
 
@@ -41,6 +42,10 @@ struct stage_repair_body_fetch_gap {
 
 enum stage_repair_header_solution_poison
 stage_repair_header_solution_poison_mode(struct sqlite3 *db, int height);
+
+bool stage_repair_header_solution_repairable_validate_frontier(
+    struct sqlite3 *db,
+    int *out_height);
 
 bool stage_repair_header_solution_save(struct sqlite3 *db,
                                        int height,

@@ -27,9 +27,12 @@
 #include "util/stage.h"
 
 #include <sqlite3.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+
+#define STAGE_REPAIR_HASH_MISMATCH_REASON "header-source-hash-mismatch"
 
 static bool body_fetch_skipped_invalid(sqlite3 *db, int height, bool *out)
 {
@@ -78,6 +81,9 @@ poison_mode_unlocked(sqlite3 *db, int height)
     if (vh.found && vh.ok == 0 &&
         strcmp(vh.fail_reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0)
         return STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS;
+    if (vh.found && vh.ok == 0 &&
+        strcmp(vh.fail_reason, STAGE_REPAIR_HASH_MISMATCH_REASON) == 0)
+        return STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH;
 
     bool skipped = false;
     if (!body_fetch_skipped_invalid(db, height, &skipped))
@@ -90,6 +96,9 @@ poison_mode_unlocked(sqlite3 *db, int height)
     if (vh.found && vh.ok == 0 &&
         strcmp(vh.fail_reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0)
         return STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS;
+    if (vh.found && vh.ok == 0 &&
+        strcmp(vh.fail_reason, STAGE_REPAIR_HASH_MISMATCH_REASON) == 0)
+        return STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH;
     return STAGE_REPAIR_POISON_NONE;
 }
 
@@ -101,6 +110,72 @@ stage_repair_header_solution_poison_mode(sqlite3 *db, int height)
         poison_mode_unlocked(db, height);
     progress_store_tx_unlock();
     return mode;
+}
+
+bool stage_repair_header_solution_repairable_validate_frontier(
+    sqlite3 *db,
+    int *out_height)
+{
+    if (out_height)
+        *out_height = -1;
+    if (!db || !out_height)
+        LOG_FAIL("stage_repair", "repairable validate frontier invalid args");
+
+    progress_store_tx_lock();
+
+    int tip_finalize_cursor = -1;
+    int validate_cursor = -1;
+    bool ok = stage_repair_cursor_at_unlocked(db, "tip_finalize",
+                                              &tip_finalize_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "validate_headers",
+                                              &validate_cursor);
+    if (!ok) {
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    int start_height = tip_finalize_cursor >= 0 ? tip_finalize_cursor + 1 : 0;
+    int end_height = validate_cursor > 0 ? validate_cursor - 1 : INT_MAX;
+    if (end_height < start_height) {
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT height FROM validate_headers_log "
+            "WHERE height >= ? AND height <= ? AND ok = 0 "
+            "AND fail_reason IN (?, ?) "
+            "ORDER BY height ASC LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] repairable validate frontier prepare "
+                 "failed: %s",
+                 sqlite3_errmsg(db));
+        progress_store_tx_unlock();
+        return false;
+    }
+    sqlite3_bind_int(st, 1, start_height);
+    sqlite3_bind_int(st, 2, end_height);
+    sqlite3_bind_text(st, 3, STAGE_REPAIR_SOLUTIONLESS_REASON, -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_text(st, 4, STAGE_REPAIR_HASH_MISMATCH_REASON, -1,
+                      SQLITE_STATIC);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out_height = sqlite3_column_int(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] repairable validate frontier step "
+                 "failed rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        progress_store_tx_unlock();
+        return false;
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+    return true;
 }
 
 /* Returns rows deleted, or -1 on failure (callers `goto rollback` on n < 0).
@@ -278,6 +353,16 @@ bool stage_repair_header_solution_poison_rewind(
     if (mode == STAGE_REPAIR_POISON_NONE) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         progress_store_tx_unlock();
+        return true;
+    }
+    if (mode == STAGE_REPAIR_POISON_VALIDATE_HASH_MISMATCH) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        LOG_WARN("stage_repair",
+                 "[stage_repair] source-hash mismatch h=%d is repaired by "
+                 "hash-bound header backfill + validate_headers recheck, "
+                 "not destructive poison_rewind",
+                 height);
         return true;
     }
 
