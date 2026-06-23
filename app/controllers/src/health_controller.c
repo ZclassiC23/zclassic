@@ -606,8 +606,7 @@ static bool rpc_getsyncdiag(const struct json_value *params, bool help,
     int chain_h = 0;
     int best_header_h = 0;
     if (g_health_ctx.main_state) {
-        chain_h = active_chain_height(
-            &g_health_ctx.main_state->chain_active);
+        chain_h = reducer_frontier_provable_tip_cached();
         if (g_health_ctx.main_state->pindex_best_header)
             best_header_h =
                 g_health_ctx.main_state->pindex_best_header->nHeight;

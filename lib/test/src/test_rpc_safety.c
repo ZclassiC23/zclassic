@@ -346,6 +346,22 @@ int test_rpc_safety(void)
         json_free(&result);
         json_free(&params);
 
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&health_tbl, "getsyncdiag", &params,
+                                     &result);
+        const struct json_value *diag_chain_height =
+            json_get(&result, "chain_height");
+        const struct json_value *diag_header_height =
+            json_get(&result, "best_header_height");
+        ok = ok && diag_chain_height &&
+             json_get_int(diag_chain_height) == 1;
+        ok = ok && diag_header_height &&
+             json_get_int(diag_header_height) == 3;
+        json_free(&result);
+        json_free(&params);
+
         init_single_str_param(&params, active_hex);
         json_init(&result);
         ok = ok && !rpc_table_execute(&tbl, "getblock", &params, &result);
