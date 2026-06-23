@@ -823,6 +823,60 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
+    {
+        /* A coin-backfill refusal is a named, actionable self-heal failure,
+         * not a quiet no-op. The fixture block is intentionally unreadable
+         * (nFile == -1), so the prevout_unresolved hole refuses through the
+         * backfill ladder and the condition must report FAILED rather than
+         * SKIP. */
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup coin-backfill refusal condition fixture",
+                   setup_fixture(&fx, "coin_backfill_refusal"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("coin-backfill refusal: seed prevout hole below cursor",
+                   put_script_status(db, A + 2, 0, "prevout_unresolved",
+                                     &fx.hashes[2]));
+        RFRL_CHECK("coin-backfill refusal: pre-align benign cursors",
+                   seed_cursor(db, "body_fetch", A + 2) &&
+                   seed_cursor(db, "tip_finalize", A + 1));
+
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        bool ok = got &&
+                  reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
+                  snap.currently_active &&
+                  snap.attempts == 1 &&
+                  snap.last_outcome == COND_REMEDY_FAILED &&
+                  !snap.operator_needed_emitted &&
+                  cursor_value(db, "body_fetch") == A + 2 &&
+                  cursor_value(db, "tip_finalize") == A + 1 &&
+                  cursor_value(db, "script_validate") == A + 4 &&
+                  cursor_value(db, "utxo_apply") == A + 4;
+        RFRL_CHECK("coin-backfill refusal condition is failed, not skipped",
+                   ok);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
     /* ── non-canonical residue purge (the 2026-06-10 -2 relabel class) ──
      * Rows recorded for the WRONG block at their height (hash != the
      * canonical active-chain block) must be purged — including the false

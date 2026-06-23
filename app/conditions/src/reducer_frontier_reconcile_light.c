@@ -6,6 +6,7 @@
 #include "framework/condition.h"
 #include "jobs/refold_progress.h"
 #include "jobs/stage_repair.h"
+#include "jobs/stage_repair_coin_backfill.h"
 #include "net/connman.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
@@ -56,6 +57,31 @@ static struct log_throttle g_gate_suppress = LOG_THROTTLE_INIT;
  * engine without that package. */
 static void (*g_test_post_remedy_hook)(void);
 #endif
+
+static const char *coin_backfill_status_label(int status)
+{
+    switch ((enum coin_backfill_status)status) {
+    case COIN_BACKFILL_NOT_APPLICABLE:     return "not_applicable";
+    case COIN_BACKFILL_SCANNING:           return "scanning";
+    case COIN_BACKFILL_REPAIRED:           return "repaired";
+    case COIN_BACKFILL_OWNER_REFUSED:      return "owner_refused";
+    case COIN_BACKFILL_REFUSED_SPENT:      return "refused_spent";
+    case COIN_BACKFILL_REFUSED_UNPROVABLE: return "refused_unprovable";
+    case COIN_BACKFILL_MARKER_SEEN:        return "marker_seen";
+    }
+    return "unknown";
+}
+
+static bool coin_backfill_refused_reconcile(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (!rr || !rr->coin_backfill_attempted)
+        return false;
+    return rr->coin_backfill_status != COIN_BACKFILL_NOT_APPLICABLE &&
+           rr->coin_backfill_status != COIN_BACKFILL_SCANNING &&
+           rr->coin_backfill_status != COIN_BACKFILL_REPAIRED &&
+           rr->coin_backfill_status != COIN_BACKFILL_OWNER_REFUSED;
+}
 
 static bool read_reducer_cursor(sqlite3 *db, const char *name, int *out)
 {
@@ -572,6 +598,24 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                  "[condition:reducer_frontier_reconcile_light] refused "
                  "coin backfill h=%d: owner ack missing",
                  rr.coin_backfill_hole_height);
+        return COND_REMEDY_FAILED;
+    }
+    if (coin_backfill_refused_reconcile(&rr)) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] refused "
+                 "coin backfill h=%d status=%s unresolved=%d inserted=%d "
+                 "scan_next=%d",
+                 rr.coin_backfill_hole_height,
+                 coin_backfill_status_label(rr.coin_backfill_status),
+                 rr.coin_backfill_unresolved, rr.coin_backfill_inserted,
+                 rr.coin_backfill_scan_next);
+        return COND_REMEDY_FAILED;
+    }
+    if (rr.stale_script_repair_genuinely_invalid) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] refused "
+                 "stale script replay h=%d: dry-run still invalid",
+                 rr.stale_script_repair_height);
         return COND_REMEDY_FAILED;
     }
     if (!rr.repaired)
