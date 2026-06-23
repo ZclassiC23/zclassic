@@ -224,9 +224,11 @@ size_t serve_factoids(uint8_t *r, size_t max)
 
 /* ── ZSLP Tokens Page ─────────────────────────────────────── */
 
-/* Tokens page cache — precomputed in background */
+/* Tokens page cache — precomputed in background. Published with release after
+ * the bytes are in place and read with acquire in serve_tokens() (same publish
+ * contract as g_stats_cache_len / g_factoids_cache_len). */
 static char g_tokens_cache[131072] = "";
-static size_t g_tokens_cache_len = 0;
+static _Atomic size_t g_tokens_cache_len = 0;
 
 void *tokens_compute_thread(void *arg)
 {
@@ -247,7 +249,9 @@ void *tokens_compute_thread(void *arg)
     /* Cache result */
     if (off > 0 && off < sizeof(g_tokens_cache)) {
         memcpy(g_tokens_cache, r, off);
-        g_tokens_cache_len = off;
+        /* Release: publish the length only after the bytes are in place,
+         * pairing with the acquire-load in serve_tokens(). */
+        atomic_store_explicit(&g_tokens_cache_len, off, memory_order_release);
     }
     free(r);
     g_tokens_computing = 0;
@@ -258,8 +262,9 @@ void *tokens_compute_thread(void *arg)
 
 size_t serve_tokens(uint8_t *r, size_t max)
 {
-    if (g_tokens_cache_len > 0) {
-        size_t copy = g_tokens_cache_len < max ? g_tokens_cache_len : max;
+    size_t cached = atomic_load_explicit(&g_tokens_cache_len, memory_order_acquire);
+    if (cached > 0) {
+        size_t copy = cached < max ? cached : max;
         memcpy(r, g_tokens_cache, copy);
         return copy;
     }
