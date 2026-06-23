@@ -321,8 +321,10 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     } else if (msg_block_validation_is_retryable(&state)) {
         char hex[65];
         uint256_get_hex(&hash, hex);
-        LOG_INFO("net", "block %s pending reducer finalization; leaving retryable",
-                 hex);
+        LOG_INFO("net",
+                 "block %s pending reducer finalization; leaving retryable%s%s",
+                 hex, state.debug_message[0] ? " " : "",
+                 state.debug_message);
     }
 
     if (validation_state_is_valid(&state)) {

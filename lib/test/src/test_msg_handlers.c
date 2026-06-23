@@ -237,8 +237,10 @@ static int test_block_validation_retryable_classifier(void)
         struct validation_state st;
         validation_state_init(&st);
         validation_state_invalid(&st, false, REJECT_INVALID,
-                                 "block-not-finalized-by-reducer", NULL);
+                                 "block-not-finalized-by-reducer",
+                                 "h=7 tf_cursor=6 ua_ok=1");
         ASSERT(msg_block_validation_is_retryable(&st));
+        ASSERT(strstr(st.debug_message, "tf_cursor=6") != NULL);
 
         validation_state_init(&st);
         validation_state_invalid(&st, false, REJECT_INVALID,

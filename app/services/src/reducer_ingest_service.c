@@ -52,6 +52,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/stage_helpers.h"
 #include "jobs/stage_repair.h"  /* header-solution repair-table backfill */
 
 /* ── Reducer-as-ingest: synchronous wrapper driving the staged Job pipeline.
@@ -207,8 +208,26 @@ static bool reducer_read_back_verdict(int height,
         return true; /* out left MODE_VALID by the caller's init */
     }
 
+    uint64_t tf_cursor = pdb ? stage_cursor_persisted(
+        pdb, "tip_finalize", "reducer") : tip_finalize_stage_cursor();
+    uint64_t ua_cursor = pdb ? stage_cursor_persisted(
+        pdb, "utxo_apply", "reducer") : 0;
+    int64_t tf_published = tip_finalize_stage_last_height();
+    bool ua_ok = utxo_apply_stage_succeeded_at(height);
+    uint8_t witness_hash[32];
+    bool tf_hash_witness = pdb &&
+        tip_finalize_stage_block_hash_at(pdb, height, witness_hash);
+    const char *tf_blocked = tip_finalize_stage_last_blocked_reason();
+    char debug[MAX_REJECT_REASON];
+    snprintf(debug, sizeof(debug),
+             "h=%d tf_cursor=%llu tf_published=%lld ua_cursor=%llu "
+             "ua_ok=%d tf_hash_witness=%d tf_blocked=%s",
+             height, (unsigned long long)tf_cursor,
+             (long long)tf_published, (unsigned long long)ua_cursor,
+             ua_ok ? 1 : 0, tf_hash_witness ? 1 : 0,
+             tf_blocked && tf_blocked[0] ? tf_blocked : "none");
     validation_state_invalid(out, false, REJECT_INVALID,
-                             "block-not-finalized-by-reducer", NULL);
+                             "block-not-finalized-by-reducer", debug);
     return false;
 }
 
