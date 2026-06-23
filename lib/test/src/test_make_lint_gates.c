@@ -1558,6 +1558,12 @@ static int t_tools_z_mirror_fallback_contract(void)
         ASSERT(strstr(buf, "\"unsafe_overrides_total\":0") != NULL);
         ASSERT(strstr(buf, "\"last_override_safe\":false") != NULL);
         ASSERT(strstr(buf, "\"last_override_scope\":\"\"") != NULL);
+        ASSERT(strstr(buf, "active_detail=\"\"") != NULL);
+        ASSERT(strstr(buf,
+                      "active_detail=\"$(json_field \"$json\" last_error)\"")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "active_error_detail \"$active_detail\"") != NULL);
         ASSERT(strstr(buf, "blockers=%s") != NULL);
         ASSERT(strstr(buf, "stalls=%s") != NULL);
         ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);

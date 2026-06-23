@@ -93,6 +93,10 @@ normalize_mirror_status_json() {
     blocker="$(json_field "$json" candidate_blocker)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" last_blocker_code)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" activation_blocker)"
+    active_detail=""
+    if [ -n "$blocker" ]; then
+        active_detail="$(json_field "$json" last_error)"
+    fi
 
     json="$(json_put_string "$json" consensus_authority local_consensus_validation)"
     json="$(json_put_string "$json" candidate_source legacy_advisory)"
@@ -114,7 +118,7 @@ normalize_mirror_status_json() {
     fi
     json="$(json_put_string "$json" candidate_blocker "$blocker")"
     json="$(json_put_string "$json" active_error_code "$blocker")"
-    json="$(json_put_string "$json" active_error_detail "$(json_field "$json" last_error)")"
+    json="$(json_put_string "$json" active_error_detail "$active_detail")"
     printf '%s\n' "$json"
 }
 
