@@ -1571,6 +1571,10 @@ static int t_tools_z_mirror_fallback_contract(void)
         ASSERT(strstr(buf, "candidate_lag_display=unknown") != NULL);
         ASSERT(strstr(buf, "\"$lag_display\"") != NULL);
         ASSERT(strstr(buf, "\"$candidate_lag_display\"") != NULL);
+        ASSERT(strstr(buf,
+                      "active_error_detail=\"$(json_field \"$JSON\" active_error_detail)\"")
+               != NULL);
+        ASSERT(strstr(buf, "active_error_detail=%s") != NULL);
         ASSERT(strstr(buf, "blockers=%s") != NULL);
         ASSERT(strstr(buf, "stalls=%s") != NULL);
         ASSERT(strstr(buf, "unsafe_overrides=%s") != NULL);

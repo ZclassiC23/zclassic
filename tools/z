@@ -299,6 +299,10 @@ mirror)
             "$(json_field "$JSON" last_override_height)" \
             "$(json_field "$JSON" last_override_safe)" \
             "$(json_field "$JSON" activation_blocker)"
+        active_error_detail="$(json_field "$JSON" active_error_detail)"
+        if [ -n "$active_error_detail" ]; then
+            printf 'active_error_detail=%s\n' "$active_error_detail"
+        fi
         if [ "$(json_field "$JSON" local_recovery_active)" = "true" ]; then
             legacy_gate="$(json_field "$JSON" legacy_advisory_gated_by_native_retries)"
             [ -n "$legacy_gate" ] || legacy_gate="$(json_field "$JSON" mirror_repair_gated_by_local_retries)"
