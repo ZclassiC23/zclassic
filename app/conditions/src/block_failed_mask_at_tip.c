@@ -23,6 +23,9 @@ static _Atomic int64_t g_tip_at_detect = -1;
 static _Atomic int64_t g_tip_age_at_detect = 0;
 static _Atomic int g_validate_repair_owner_height = -1;
 static _Atomic int g_validate_repair_owner_mode = STAGE_REPAIR_POISON_NONE;
+static _Atomic int g_reducer_owner_target = -1;
+static _Atomic int g_reducer_owner_hstar = -1;
+static _Atomic int g_reducer_owner_reason = 0;
 
 enum block_failed_stall_type {
     BF_STALL_NONE = 0,
@@ -31,6 +34,36 @@ enum block_failed_stall_type {
 };
 
 static _Atomic int g_stall_type_at_detect = BF_STALL_NONE;
+
+enum reducer_frontier_owner_reason {
+    RFO_NONE = 0,
+    RFO_REPAIR,
+    RFO_COIN_TEAR,
+    RFO_COIN_UNKNOWN,
+    RFO_VALUE_OVERFLOW,
+    RFO_STALE_SCRIPT,
+    RFO_COIN_BACKFILL,
+    RFO_TIPFIN_BACKFILL,
+    RFO_NONCANONICAL,
+    RFO_REORG_RESIDUE_TIPFIN,
+};
+
+static const char *reducer_owner_reason_name(int reason)
+{
+    switch ((enum reducer_frontier_owner_reason)reason) {
+    case RFO_NONE:                 return "none";
+    case RFO_REPAIR:               return "frontier_repair";
+    case RFO_COIN_TEAR:            return "coin_tear";
+    case RFO_COIN_UNKNOWN:         return "coin_unknown";
+    case RFO_VALUE_OVERFLOW:       return "value_overflow";
+    case RFO_STALE_SCRIPT:         return "stale_script";
+    case RFO_COIN_BACKFILL:        return "coin_backfill";
+    case RFO_TIPFIN_BACKFILL:      return "tipfin_backfill";
+    case RFO_NONCANONICAL:         return "noncanonical_rows";
+    case RFO_REORG_RESIDUE_TIPFIN: return "reorg_residue_tipfin";
+    }
+    return "unknown";
+}
 
 static bool validate_repairable_mode(
     enum stage_repair_header_solution_poison mode)
@@ -84,6 +117,84 @@ static void remember_validate_repair_owner(int repair_height, int mode,
     }
 }
 
+static int reducer_frontier_owner_reason(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    if (!rr)
+        return RFO_NONE;
+    if (rr->refused_coin_tear)
+        return RFO_COIN_TEAR;
+    if (rr->refused_coin_unknown)
+        return RFO_COIN_UNKNOWN;
+    if (rr->value_overflow_repair_owner_refused ||
+        rr->value_overflow_repair_genuinely_invalid ||
+        rr->value_overflow_repair_marker_seen)
+        return RFO_VALUE_OVERFLOW;
+    if (rr->stale_script_repair_attempted ||
+        rr->stale_script_repair_genuinely_invalid ||
+        rr->stale_script_repair_marker_seen)
+        return RFO_STALE_SCRIPT;
+    if (rr->coin_backfill_attempted || rr->coin_backfill_owner_refused ||
+        rr->coin_backfill_genuinely_invalid)
+        return RFO_COIN_BACKFILL;
+    if (rr->tipfin_backfill_refused_reason != 0 ||
+        rr->tipfin_backfill_count > 0 ||
+        rr->tipfin_backfill_marker_seen)
+        return RFO_TIPFIN_BACKFILL;
+    if (rr->noncanonical_found > 0)
+        return RFO_NONCANONICAL;
+    if (rr->reorg_residue_tipfin_found > 0)
+        return RFO_REORG_RESIDUE_TIPFIN;
+    if (rr->repaired)
+        return RFO_REPAIR;
+    return RFO_NONE;
+}
+
+static void remember_reducer_frontier_owner(
+    int64_t stall_target,
+    int stall_type,
+    const struct stage_reducer_frontier_reconcile_result *rr,
+    int reason)
+{
+    atomic_store(&g_reducer_owner_hstar, rr ? rr->hstar : -1);
+    atomic_store(&g_reducer_owner_reason, reason);
+    int prev_target = atomic_exchange(&g_reducer_owner_target,
+                                      (int)stall_target);
+    if (prev_target != (int)stall_target) {
+        LOG_WARN("condition",
+                 "[condition:block_failed_mask_at_tip] delegated %s "
+                 "stall_target=%lld hstar=%d coins_applied=%d sweep_top=%d "
+                 "reason=%s owner=reducer_frontier_reconcile_light",
+                 stall_type == BF_STALL_NO_ADVANCE ? "no_advance" :
+                                                      "failed_mask",
+                 (long long)stall_target,
+                 rr ? rr->hstar : -1,
+                 rr ? rr->coins_applied_height : -1,
+                 rr ? rr->sweep_top : -1,
+                 reducer_owner_reason_name(reason));
+    }
+}
+
+static bool reducer_frontier_owns_stall(struct main_state *ms,
+                                        int64_t stall_target,
+                                        int stall_type)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db || !ms || stall_target < 0)
+        return false;
+
+    struct stage_reducer_frontier_reconcile_result rr;
+    if (!stage_reducer_frontier_reconcile_light_needed(db, ms, &rr))
+        return false;
+
+    int reason = reducer_frontier_owner_reason(&rr);
+    if (reason == RFO_NONE)
+        return false;
+
+    remember_reducer_frontier_owner(stall_target, stall_type, &rr, reason);
+    return true;
+}
+
 static struct block_index *find_failed_next(struct main_state *ms, int target)
 {
     if (!ms) return NULL;
@@ -127,6 +238,8 @@ static bool detect_block_failed_mask_at_tip(void)
     struct main_state *ms = condition_engine_main_state();
     int64_t target = target_height();
     if (target >= 0 && find_failed_next(ms, (int)target) != NULL) {
+        if (reducer_frontier_owns_stall(ms, target, BF_STALL_FAILED_MASK))
+            return false;
         atomic_store(&g_target_at_detect, target);
         atomic_store(&g_tip_at_detect, current_tip_height(ms));
         atomic_store(&g_tip_age_at_detect, 0);
@@ -159,6 +272,8 @@ static bool detect_block_failed_mask_at_tip(void)
             remember_validate_repair_owner(repair_height, repair_mode, target);
             return false;
         }
+        if (reducer_frontier_owns_stall(ms, target, BF_STALL_NO_ADVANCE))
+            return false;
         atomic_store(&g_validate_repair_owner_height, -1);
         atomic_store(&g_validate_repair_owner_mode, STAGE_REPAIR_POISON_NONE);
         atomic_store(&g_target_at_detect, target);
@@ -198,6 +313,8 @@ static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
     int stall_type = atomic_load(&g_stall_type_at_detect);
     if (!ms || target < 0)
         return false;
+    if (reducer_frontier_owns_stall(ms, target, stall_type))
+        return true;
     if (stall_type == BF_STALL_NO_ADVANCE) {
         int repair_height = -1;
         int repair_mode = STAGE_REPAIR_POISON_NONE;
@@ -266,6 +383,9 @@ void block_failed_mask_at_tip_test_reset(void)
     atomic_store(&g_tip_age_at_detect, 0);
     atomic_store(&g_validate_repair_owner_height, -1);
     atomic_store(&g_validate_repair_owner_mode, STAGE_REPAIR_POISON_NONE);
+    atomic_store(&g_reducer_owner_target, -1);
+    atomic_store(&g_reducer_owner_hstar, -1);
+    atomic_store(&g_reducer_owner_reason, RFO_NONE);
     atomic_store(&g_stall_type_at_detect, BF_STALL_NONE);
     condition_reset_state(&c_block_failed_mask_at_tip);
 }
@@ -283,6 +403,21 @@ int block_failed_mask_at_tip_test_target_height(void)
 int block_failed_mask_at_tip_test_validate_repair_owner_height(void)
 {
     return atomic_load(&g_validate_repair_owner_height);
+}
+
+int block_failed_mask_at_tip_test_reducer_owner_target(void)
+{
+    return atomic_load(&g_reducer_owner_target);
+}
+
+int block_failed_mask_at_tip_test_reducer_owner_hstar(void)
+{
+    return atomic_load(&g_reducer_owner_hstar);
+}
+
+int block_failed_mask_at_tip_test_reducer_owner_reason(void)
+{
+    return atomic_load(&g_reducer_owner_reason);
 }
 
 void block_failed_mask_at_tip_test_mark_exhausted(int target_height)

@@ -9,6 +9,7 @@
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "models/database.h"
 #include "platform/clock.h"
@@ -33,6 +34,9 @@ void block_failed_mask_at_tip_test_reset(void);
 int block_failed_mask_at_tip_test_stall_type(void);
 int block_failed_mask_at_tip_test_target_height(void);
 int block_failed_mask_at_tip_test_validate_repair_owner_height(void);
+int block_failed_mask_at_tip_test_reducer_owner_target(void);
+int block_failed_mask_at_tip_test_reducer_owner_hstar(void);
+int block_failed_mask_at_tip_test_reducer_owner_reason(void);
 void block_failed_mask_at_tip_test_mark_exhausted(int target_height);
 void block_failed_mask_at_tip_test_mark_no_advance_exhausted(
     int target_height,
@@ -222,6 +226,114 @@ static bool seed_validate_repair_frontier(sqlite3 *db, int repair_height)
     return exec_progress_sql(db, sql);
 }
 
+static bool seed_reducer_frontier_owner_schema(sqlite3 *db)
+{
+    return
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS header_admit_log ("
+            "height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+            "parent_hash BLOB, admitted_at INTEGER NOT NULL);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+            "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+            "fail_reason TEXT, validated_at INTEGER NOT NULL);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS script_validate_log ("
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS body_persist_log ("
+            "height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS body_fetch_log ("
+            "height INTEGER PRIMARY KEY, hash BLOB, source TEXT,"
+            "bytes INTEGER, fetched_at INTEGER, ok INTEGER,"
+            "fail_reason TEXT);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "tip_hash BLOB);");
+}
+
+static bool seed_reducer_frontier_owner_rows(sqlite3 *db)
+{
+    int a = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    char sql[4096];
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) VALUES"
+        "('validate_headers',%d,1),('body_fetch',%d,1),"
+        "('body_persist',%d,1),('script_validate',%d,1),"
+        "('proof_validate',%d,1),('utxo_apply',%d,1),"
+        "('tip_finalize',%d,1);"
+        "INSERT OR REPLACE INTO header_admit_log"
+        "(height,hash,parent_hash,admitted_at) VALUES"
+        "(%d,zeroblob(32),NULL,1),(%d,zeroblob(32),zeroblob(32),1),"
+        "(%d,zeroblob(32),zeroblob(32),1);"
+        "INSERT OR REPLACE INTO validate_headers_log"
+        "(height,hash,ok,fail_reason,validated_at) "
+        "VALUES(%d,zeroblob(32),1,NULL,1);"
+        "INSERT OR REPLACE INTO script_validate_log"
+        "(height,status,ok,block_hash) VALUES(%d,'verified',1,zeroblob(32));"
+        "INSERT OR REPLACE INTO body_persist_log"
+        "(height,source,ok) VALUES(%d,'fixture',1);"
+        "INSERT OR REPLACE INTO proof_validate_log"
+        "(height,status,ok) VALUES(%d,'verified',1);"
+        "INSERT OR REPLACE INTO utxo_apply_log"
+        "(height,status,ok) VALUES(%d,'verified',1);"
+        "INSERT OR REPLACE INTO tip_finalize_log"
+        "(height,status,ok,tip_hash) VALUES(%d,'finalized',1,zeroblob(32));",
+        a + 4, a + 4, a + 4, a + 4, a + 4, a + 4, a + 4,
+        a + 1, a + 2, a + 3,
+        a + 1, a + 1, a + 1, a + 1, a + 1, a + 1);
+    if (!exec_progress_sql(db, sql))
+        return false;
+
+    uint8_t blob[8];
+    uint64_t coins = (uint64_t)(a + 2);
+    for (int i = 0; i < 8; i++)
+        blob[i] = (uint8_t)(coins >> (8 * i));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_applied_height", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static struct block_index *insert_reducer_owner_block(
+    struct main_state *ms,
+    struct uint256 *hash,
+    int height,
+    struct block_index *prev,
+    unsigned status)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = (uint8_t)(height & 0xff);
+    hash->data[1] = (uint8_t)((height >> 8) & 0xff);
+    hash->data[2] = (uint8_t)((height >> 16) & 0xff);
+    hash->data[31] = 0x5a;
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = height;
+    bi->pprev = prev;
+    bi->nStatus = status;
+    bi->nTx = 1;
+    bi->nChainTx = prev ? prev->nChainTx + 1 : 1;
+    return bi;
+}
+
 int test_utxo_activation_paused(void)
 {
     printf("\n=== utxo activation paused condition tests ===\n");
@@ -369,6 +481,57 @@ int test_utxo_activation_paused(void)
         ok = ok && block_failed_mask_at_tip_test_target_height() == -1;
         UAP_CHECK("repairable validate frontier owns generic no-advance stall",
                   ok);
+
+        condition_engine_set_main_state(NULL);
+        main_state_free(&ms);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 2500);
+        bool ok = true;
+        char dir[256];
+        int a = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+
+        progress_store_close();
+        test_make_tmpdir(dir, sizeof(dir), "block_failed_mask",
+                         "reducer_owner");
+        ok = ok && progress_store_open(dir);
+        ok = ok && seed_reducer_frontier_owner_schema(progress_store_db());
+        ok = ok && seed_reducer_frontier_owner_rows(progress_store_db());
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 h1, h2, h3;
+        struct block_index *b1 = insert_reducer_owner_block(
+            &ms, &h1, a + 1, NULL, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *b2 = insert_reducer_owner_block(
+            &ms, &h2, a + 2, b1, BLOCK_HAVE_DATA);
+        struct block_index *b3 = insert_reducer_owner_block(
+            &ms, &h3, a + 3, b2,
+            BLOCK_VALID_TREE | BLOCK_HAVE_DATA | BLOCK_FAILED_VALID);
+        ok = ok && b1 && b2 && b3 &&
+             active_chain_move_window_tip(&ms.chain_active, b1);
+
+        condition_engine_set_main_state(&ms);
+        register_block_failed_mask_at_tip();
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 2801);
+        condition_engine_tick();
+
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok &&
+             block_failed_mask_at_tip_test_reducer_owner_target() == a + 2;
+        ok = ok && block_failed_mask_at_tip_test_reducer_owner_hstar() >= 0;
+        ok = ok &&
+             block_failed_mask_at_tip_test_reducer_owner_reason() != 0;
+        ok = ok && block_failed_mask_at_tip_test_target_height() == -1;
+        UAP_CHECK("reducer frontier owns generic no-advance stall", ok);
 
         condition_engine_set_main_state(NULL);
         main_state_free(&ms);
