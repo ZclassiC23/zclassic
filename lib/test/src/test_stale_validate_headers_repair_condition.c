@@ -504,14 +504,16 @@ int test_stale_validate_headers_repair_condition(void)
         stale_validate_headers_repair_test_set_hstar_override(8);
 
         ok = ok && stale_validate_headers_repair_test_repair_target(db) == 2;
-        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 0;
-        ok = ok && condition_engine_get_active_count() == 0;
+        condition_engine_tick();
+
+        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
         ok = ok && cursor_for(db, "validate_headers") == 10;
         ok = ok && cursor_for(db, "body_fetch") == 1;
         ok = ok && row_exists(db, "validate_headers_log", 2);
         ok = ok && row_exists(db, "body_fetch_log", 2);
         SVHR_CHECK("repairable validate scan below H* is targeted before "
-                   "H*+1",
+                   "H*+1 and does not self-clear while poison remains",
                    ok);
         teardown_condition_case(dir, &ms);
     }

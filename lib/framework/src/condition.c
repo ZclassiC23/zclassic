@@ -400,10 +400,18 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
                          atomic_load(&s->first_detect_unix));
         json_push_kv_int(&obj, "last_poll_unix",
                          atomic_load(&s->last_poll_unix));
+        json_push_kv_int(&obj, "last_remedy_unix",
+                         atomic_load(&s->last_remedy_unix));
+        json_push_kv_int(&obj, "last_operator_needed_unix",
+                         atomic_load(&s->last_operator_needed_unix));
+        json_push_kv_int(&obj, "target_at_detect",
+                         atomic_load(&s->target_at_detect));
         json_push_kv_int(&obj, "attempts", atomic_load(&s->attempts));
         json_push_kv_str(&obj, "last_outcome",
                          condition_remedy_result_name(
                              atomic_load(&s->last_outcome)));
+        json_push_kv_bool(&obj, "operator_needed_emitted",
+                          atomic_load(&s->operator_needed_emitted));
         json_push_kv_int(&obj, "cleared_count",
                          atomic_load(&s->cleared_count));
 

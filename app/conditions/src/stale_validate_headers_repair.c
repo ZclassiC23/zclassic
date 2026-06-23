@@ -16,6 +16,7 @@
 #include <limits.h>
 
 static _Atomic int g_target_at_detect = -1;
+static _Atomic int g_hstar_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
 
@@ -113,6 +114,7 @@ static bool detect_stale_validate_headers_repair(void)
      * keeping detect=true makes a stuck recheck page instead of going quiet. */
 
     atomic_store(&g_target_at_detect, target);
+    atomic_store(&g_hstar_at_detect, reducer_frontier_height(db));
     atomic_store(&g_mode_at_detect, (int)mode);
     return true;
 }
@@ -235,6 +237,11 @@ static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
         return false;
 
     sqlite3 *db = progress_store_db();
+    int hstar_at_detect = atomic_load(&g_hstar_at_detect);
+    if (db && hstar_at_detect >= 0 && target <= hstar_at_detect) {
+        return stage_repair_header_solution_poison_mode(db, target) ==
+               STAGE_REPAIR_POISON_NONE;
+    }
     return reducer_frontier_height(db) >= target;
 }
 
@@ -260,6 +267,7 @@ void stale_validate_headers_repair_test_reset(void)
 {
     struct condition_state *s = &c_stale_validate_headers_repair.state;
     atomic_store(&g_target_at_detect, -1);
+    atomic_store(&g_hstar_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_mode_at_detect, STAGE_REPAIR_POISON_NONE);
 #ifdef ZCL_TESTING

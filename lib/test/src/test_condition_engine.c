@@ -77,6 +77,21 @@ static bool ce_json_conditions_has(const struct json_value *conditions,
     return false;
 }
 
+static const struct json_value *ce_json_condition(
+    const struct json_value *conditions,
+    const char *name)
+{
+    if (!conditions || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = cond ? json_get(cond, "name") : NULL;
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return cond;
+    }
+    return NULL;
+}
+
 int test_condition_engine(void)
 {
     printf("\n=== condition engine tests ===\n");
@@ -277,8 +292,16 @@ int test_condition_engine(void)
         ok = ok && condition_engine_dump_state_json(&out, NULL);
         ok = ok && json_get(&out, "registered_count") != NULL;
         ok = ok && json_get(&out, "conditions") != NULL;
+        const struct json_value *conditions = json_get(&out, "conditions");
+        const struct json_value *basic =
+            ce_json_condition(conditions, "ce_basic");
+        ok = ok && basic != NULL;
+        ok = ok && json_get(basic, "last_remedy_unix") != NULL;
+        ok = ok && json_get(basic, "last_operator_needed_unix") != NULL;
+        ok = ok && json_get(basic, "target_at_detect") != NULL;
+        ok = ok && json_get(basic, "operator_needed_emitted") != NULL;
         json_free(&out);
-        CE_CHECK("dump json includes registry", ok);
+        CE_CHECK("dump json includes registry and liveness fields", ok);
     }
 
     {
