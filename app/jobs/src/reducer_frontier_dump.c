@@ -24,6 +24,23 @@ struct dump_log {
     bool served_tip_cursor;
 };
 
+struct dump_frontier {
+    bool cursor_ok;
+    bool frontier_ok;
+    int64_t raw_cursor;
+    int64_t next_cursor;
+    int32_t contiguous_frontier;
+};
+
+struct hstar_blocker {
+    bool found;
+    const char *stage;
+    const char *log_table;
+    int32_t height;
+    const char *kind;
+    char reason[128];
+};
+
 static const struct dump_log k_logs[] = {
     { "validate_headers", "validate_headers_log", "validate_headers", false },
     { "script_validate",  "script_validate_log",  "script_validate",  false },
@@ -179,6 +196,161 @@ static bool first_validate_failure(sqlite3 *db,
     return true;
 }
 
+static const char *blocker_row_sql(const struct dump_log *log)
+{
+    if (!log)
+        return NULL;
+    if (strcmp(log->log_table, "validate_headers_log") == 0)
+        return "SELECT ok, COALESCE(fail_reason, '') "
+               "FROM validate_headers_log WHERE height = ?";
+    if (strcmp(log->log_table, "script_validate_log") == 0)
+        return "SELECT ok, COALESCE(status, '') "
+               "FROM script_validate_log WHERE height = ?";
+    if (strcmp(log->log_table, "body_persist_log") == 0)
+        return "SELECT ok, COALESCE(source, '') "
+               "FROM body_persist_log WHERE height = ?";
+    if (strcmp(log->log_table, "proof_validate_log") == 0)
+        return "SELECT ok, '' FROM proof_validate_log WHERE height = ?";
+    if (strcmp(log->log_table, "utxo_apply_log") == 0)
+        return "SELECT ok, '' FROM utxo_apply_log WHERE height = ?";
+    if (strcmp(log->log_table, "tip_finalize_log") == 0)
+        return "SELECT ok, COALESCE(status, '') "
+               "FROM tip_finalize_log WHERE height = ?";
+    return NULL;
+}
+
+static bool blocker_row_at(sqlite3 *db,
+                           const struct dump_log *log,
+                           int32_t height,
+                           bool *found,
+                           bool *ok,
+                           char *reason,
+                           size_t reason_sz)
+{
+    *found = false;
+    *ok = false;
+    if (reason && reason_sz > 0)
+        reason[0] = '\0';
+
+    const char *sql = blocker_row_sql(log);
+    if (!sql)
+        LOG_FAIL("reducer", "dump blocker row has unknown log table");
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "dump blocker row prepare failed table=%s: %s",
+                 log->log_table, sqlite3_errmsg(db));
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *found = true;
+        *ok = sqlite3_column_int(st, 0) != 0;
+        const unsigned char *txt = sqlite3_column_text(st, 1);
+        if (reason && reason_sz > 0)
+            snprintf(reason, reason_sz, "%s", txt ? (const char *)txt : "");
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "dump blocker row step failed table=%s h=%d: %s",
+                 log->log_table, height, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+static bool hash_split_at(sqlite3 *db, int32_t height, bool *split)
+{
+    *split = false;
+    uint8_t validate_hash[32] = {0};
+    uint8_t script_hash[32] = {0};
+    bool validate_found = false;
+    bool script_found = false;
+
+    if (!reducer_frontier_log_hash_at(db, "validate_headers_log", "hash",
+                                      height, validate_hash, &validate_found))
+        return false;
+    if (!reducer_frontier_log_hash_at(db, "script_validate_log", "block_hash",
+                                      height, script_hash, &script_found))
+        return false;
+
+    *split = validate_found && script_found &&
+        memcmp(validate_hash, script_hash, sizeof(validate_hash)) != 0;
+    return true;
+}
+
+static bool first_hstar_blocker(sqlite3 *db,
+                                int32_t hstar,
+                                const struct dump_frontier *frontiers,
+                                size_t frontier_count,
+                                struct hstar_blocker *out)
+{
+    if (!out)
+        LOG_FAIL("reducer", "dump hstar blocker missing out param");
+    memset(out, 0, sizeof(*out));
+    out->height = -1;
+    out->kind = "";
+    out->stage = "";
+    out->log_table = "";
+
+    int64_t block_height = (int64_t)hstar + 1;
+    if (block_height < 0 || block_height > INT32_MAX)
+        return true;
+    out->height = (int32_t)block_height;
+
+    size_t log_count = sizeof(k_logs) / sizeof(k_logs[0]);
+    if (frontier_count < log_count)
+        LOG_FAIL("reducer", "dump hstar blocker frontier count too small");
+    for (size_t i = 0; i < log_count; i++) {
+        const struct dump_frontier *fr = &frontiers[i];
+        if (!fr->cursor_ok || !fr->frontier_ok)
+            continue;
+        if (fr->contiguous_frontier != hstar)
+            continue;
+        if (fr->next_cursor <= block_height)
+            continue;
+
+        bool row_found = false;
+        bool row_ok = false;
+        char reason[128] = "";
+        if (!blocker_row_at(db, &k_logs[i], out->height, &row_found, &row_ok,
+                            reason, sizeof(reason)))
+            return false;
+        if (!row_found) {
+            out->found = true;
+            out->stage = k_logs[i].stage;
+            out->log_table = k_logs[i].log_table;
+            out->kind = "log_hole";
+            snprintf(out->reason, sizeof(out->reason),
+                     "%s", "missing-success-row");
+            return true;
+        }
+        if (!row_ok) {
+            out->found = true;
+            out->stage = k_logs[i].stage;
+            out->log_table = k_logs[i].log_table;
+            out->kind = "ok0_failure";
+            snprintf(out->reason, sizeof(out->reason),
+                     "%s", reason[0] ? reason : "ok=0");
+            return true;
+        }
+    }
+
+    bool split = false;
+    if (!hash_split_at(db, out->height, &split))
+        return false;
+    if (split) {
+        out->found = true;
+        out->stage = "script_validate";
+        out->log_table = "script_validate_log";
+        out->kind = "hash_split";
+        snprintf(out->reason, sizeof(out->reason),
+                 "%s", "validate-script-hash-mismatch");
+        return true;
+    }
+
+    out->height = -1;
+    return true;
+}
+
 bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -260,6 +432,10 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_set_array(&frontiers);
     int32_t validate_frontier = hstar;
     int32_t validate_cursor_next = INT32_MAX;
+    struct dump_frontier frontier_state[
+        sizeof(k_logs) / sizeof(k_logs[0])
+    ];
+    memset(frontier_state, 0, sizeof(frontier_state));
     for (size_t i = 0; i < sizeof(k_logs) / sizeof(k_logs[0]); i++) {
         int64_t raw_cursor = 0;
         bool cursor_ok = cursor_at(db, k_logs[i].cursor_name, &raw_cursor);
@@ -269,6 +445,11 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
         int32_t frontier = -1;
         bool frontier_ok = reducer_frontier_log_frontier(
             db, k_logs[i].log_table, k_logs[i].cursor_name, &frontier);
+        frontier_state[i].cursor_ok = cursor_ok;
+        frontier_state[i].frontier_ok = frontier_ok;
+        frontier_state[i].raw_cursor = raw_cursor;
+        frontier_state[i].next_cursor = next_cursor;
+        frontier_state[i].contiguous_frontier = frontier;
         if (strcmp(k_logs[i].log_table, "validate_headers_log") == 0) {
             validate_frontier = frontier_ok ? frontier : hstar;
             validate_cursor_next = (next_cursor > INT32_MAX)
@@ -292,6 +473,47 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     }
     json_push_kv(out, "success_checked_frontiers", &frontiers);
     json_free(&frontiers);
+
+    struct hstar_blocker blocker;
+    if (!first_hstar_blocker(db, hstar, frontier_state,
+                             sizeof(frontier_state) /
+                             sizeof(frontier_state[0]),
+                             &blocker)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    int64_t hstar_next = (hstar < INT32_MAX) ? (int64_t)hstar + 1 : -1;
+    json_push_kv_int(out, "hstar_next_height", hstar_next);
+    json_push_kv_bool(out, "hstar_next_blocked", blocker.found);
+    json_push_kv_str(out, "hstar_next_primary_kind",
+                     blocker.found ? blocker.kind : "none");
+    json_push_kv_str(out, "hstar_next_primary_stage",
+                     blocker.found ? blocker.stage : "");
+    json_push_kv_str(out, "hstar_next_primary_log_table",
+                     blocker.found ? blocker.log_table : "");
+    json_push_kv_str(out, "hstar_next_primary_detail",
+                     blocker.found ? blocker.reason : "");
+    json_push_kv_str(out, "hstar_next_primary_repair_owner",
+                     blocker.found
+                         ? diagnostic_repair_hint(blocker.reason)
+                         : "");
+    json_push_kv_int(out, "hstar_next_blocker_count",
+                     blocker.found ? 1 : 0);
+    json_push_kv_bool(out, "first_hstar_blocker_found", blocker.found);
+    json_push_kv_str(out, "first_hstar_blocker_stage",
+                     blocker.found ? blocker.stage : "");
+    json_push_kv_str(out, "first_hstar_blocker_log_table",
+                     blocker.found ? blocker.log_table : "");
+    json_push_kv_int(out, "first_hstar_blocker_height",
+                     blocker.found ? blocker.height : -1);
+    json_push_kv_str(out, "first_hstar_blocker_kind",
+                     blocker.found ? blocker.kind : "");
+    json_push_kv_str(out, "first_hstar_blocker_reason",
+                     blocker.found ? blocker.reason : "");
+    json_push_kv_str(out, "first_hstar_blocker_repair_owner",
+                     blocker.found
+                         ? diagnostic_repair_hint(blocker.reason)
+                         : "");
 
     bool fail_found = false;
     int32_t fail_height = -1;

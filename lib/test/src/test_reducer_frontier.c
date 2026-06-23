@@ -641,6 +641,242 @@ static int case_dump_reports_validate_failure_owner(void)
                  strcmp(json_get_str(json_get(&out,
                            "first_validate_failure_repair_owner")),
                         "stale_validate_headers_repair") == 0);
+        RF_CHECK("dump: hstar blocker found",
+                 json_get_bool(json_get(&out,
+                                        "first_hstar_blocker_found")));
+        RF_CHECK("dump: hstar blocker stage",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_stage")),
+                        "validate_headers") == 0);
+        RF_CHECK("dump: hstar blocker height",
+                 json_get_int(json_get(&out,
+                                       "first_hstar_blocker_height"))
+                     == fail_h);
+        RF_CHECK("dump: hstar blocker kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_kind")),
+                        "ok0_failure") == 0);
+        RF_CHECK("dump: hstar blocker reason",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_reason")),
+                        "header-source-hash-mismatch") == 0);
+        RF_CHECK("dump: hstar blocker owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_repair_owner")),
+                        "stale_validate_headers_repair") == 0);
+        RF_CHECK("dump: hstar next height",
+                 json_get_int(json_get(&out, "hstar_next_height")) == fail_h);
+        RF_CHECK("dump: hstar next blocked",
+                 json_get_bool(json_get(&out, "hstar_next_blocked")));
+        RF_CHECK("dump: hstar next primary kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_kind")),
+                        "ok0_failure") == 0);
+        RF_CHECK("dump: hstar next primary table",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_log_table")),
+                        "validate_headers_log") == 0);
+    }
+    json_free(&out);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int case_dump_reports_unavailable_store(void)
+{
+    int failures = 0;
+
+    progress_store_close();
+    struct json_value closed;
+    json_init(&closed);
+    bool dumped_closed = reducer_frontier_dump_state_json(&closed, NULL);
+    RF_CHECK("dump-unavailable: closed store returns true", dumped_closed);
+    if (dumped_closed) {
+        RF_CHECK("dump-unavailable: closed store open=false",
+                 !json_get_bool(json_get(&closed, "open")));
+        RF_CHECK("dump-unavailable: closed store schema_ready=false",
+                 !json_get_bool(json_get(&closed, "schema_ready")));
+        RF_CHECK("dump-unavailable: closed store missing=progress_store",
+                 strcmp(json_get_str(json_get(&closed, "schema_missing")),
+                        "progress_store") == 0);
+    }
+    json_free(&closed);
+
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "dump_empty");
+    bool opened = progress_store_open(dir);
+    RF_CHECK("dump-unavailable: empty store opens", opened);
+    if (opened) {
+        struct json_value empty;
+        json_init(&empty);
+        bool dumped_empty = reducer_frontier_dump_state_json(&empty, NULL);
+        RF_CHECK("dump-unavailable: empty store returns true", dumped_empty);
+        if (dumped_empty) {
+            RF_CHECK("dump-unavailable: empty store open=true",
+                     json_get_bool(json_get(&empty, "open")));
+            RF_CHECK("dump-unavailable: empty store schema_ready=false",
+                     !json_get_bool(json_get(&empty, "schema_ready")));
+            RF_CHECK("dump-unavailable: empty store missing=validate log",
+                     strcmp(json_get_str(json_get(&empty, "schema_missing")),
+                            "validate_headers_log") == 0);
+        }
+        json_free(&empty);
+    }
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int case_dump_reports_hstar_log_hole(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "dump_hole");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("dump-hole: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("dump-hole: schema", db && build_schema(db));
+
+    const int32_t hole_h = A + 3;
+    bool built = put_consistent_height(db, A + 1)
+              && put_consistent_height(db, A + 2);
+    uint8_t hh[32];
+    synth_hash(hh, hole_h, 0);
+    built = built
+        && put_log_row(db, "validate_headers_log", "hash", hole_h, 1,
+                       hh, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", hole_h, 1,
+                       hh, "ok")
+        /* body_persist_log intentionally has NO row at hole_h. */
+        && put_log_row(db, "proof_validate_log", NULL, hole_h, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, hole_h, 1, NULL, NULL)
+        && put_log_row(db, "tip_finalize_log", NULL, hole_h, 1, NULL, "ok");
+    RF_CHECK("dump-hole: rows built", built);
+    RF_CHECK("dump-hole: cursors", set_all_cursors(db, hole_h + 1));
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("dump-hole: returns true", dumped);
+    if (dumped) {
+        RF_CHECK("dump-hole: hstar before hole",
+                 json_get_int(json_get(&out, "hstar")) == hole_h - 1);
+        RF_CHECK("dump-hole: blocker found",
+                 json_get_bool(json_get(&out,
+                                        "first_hstar_blocker_found")));
+        RF_CHECK("dump-hole: blocker stage",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_stage")),
+                        "body_persist") == 0);
+        RF_CHECK("dump-hole: blocker height",
+                 json_get_int(json_get(&out,
+                                       "first_hstar_blocker_height"))
+                     == hole_h);
+        RF_CHECK("dump-hole: blocker kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_kind")),
+                        "log_hole") == 0);
+        RF_CHECK("dump-hole: blocker reason",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_reason")),
+                        "missing-success-row") == 0);
+        RF_CHECK("dump-hole: hstar next kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_kind")),
+                        "log_hole") == 0);
+        RF_CHECK("dump-hole: hstar next table",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_log_table")),
+                        "body_persist_log") == 0);
+    }
+    json_free(&out);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int case_dump_reports_hstar_hash_split(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "dump_split");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("dump-split: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("dump-split: schema", db && build_schema(db));
+
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 2; h++)
+        built = built && put_consistent_height(db, h);
+
+    const int32_t split_h = A + 3;
+    uint8_t hv[32], hs[32];
+    synth_hash(hv, split_h, 0);
+    synth_hash(hs, split_h, 9);
+    built = built
+        && put_log_row(db, "validate_headers_log", "hash", split_h, 1,
+                       hv, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", split_h, 1,
+                       hs, "ok")
+        && put_log_row(db, "body_persist_log", NULL, split_h, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, split_h, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, split_h, 1, NULL, NULL)
+        && put_log_row(db, "tip_finalize_log", NULL, split_h, 1, NULL, "ok");
+    RF_CHECK("dump-split: rows built", built);
+    RF_CHECK("dump-split: cursors", set_all_cursors(db, split_h + 1));
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("dump-split: returns true", dumped);
+    if (dumped) {
+        RF_CHECK("dump-split: hstar before split",
+                 json_get_int(json_get(&out, "hstar")) == split_h - 1);
+        RF_CHECK("dump-split: blocker found",
+                 json_get_bool(json_get(&out,
+                                        "first_hstar_blocker_found")));
+        RF_CHECK("dump-split: blocker stage",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_stage")),
+                        "script_validate") == 0);
+        RF_CHECK("dump-split: blocker height",
+                 json_get_int(json_get(&out,
+                                       "first_hstar_blocker_height"))
+                     == split_h);
+        RF_CHECK("dump-split: blocker kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_kind")),
+                        "hash_split") == 0);
+        RF_CHECK("dump-split: blocker reason",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_reason")),
+                        "validate-script-hash-mismatch") == 0);
+        RF_CHECK("dump-split: hstar next kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_kind")),
+                        "hash_split") == 0);
+        RF_CHECK("dump-split: hstar next table",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_log_table")),
+                        "script_validate_log") == 0);
     }
     json_free(&out);
 
@@ -661,6 +897,9 @@ int test_reducer_frontier(void)
     failures += case_hash_split();
     failures += case_split_at_floor();
     failures += case_dump_reports_validate_failure_owner();
+    failures += case_dump_reports_unavailable_store();
+    failures += case_dump_reports_hstar_log_hole();
+    failures += case_dump_reports_hstar_hash_split();
     if (failures == 0)
         printf("reducer_frontier: all cases passed\n");
     else
