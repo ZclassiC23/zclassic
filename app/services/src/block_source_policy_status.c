@@ -36,6 +36,38 @@ const char *bsp_source_class_name(enum cac_source source)
     return "unknown";
 }
 
+static bool bsp_source_lag_known(const struct cac_source_status *s)
+{
+    if (!s)
+        return false;
+    if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR)
+        return s->lag_known;
+    return true;
+}
+
+static bool bsp_source_lag_valid(const struct cac_source_status *s)
+{
+    if (!s)
+        return false;
+    if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR)
+        return s->lag_valid;
+    return true;
+}
+
+static void bsp_push_source_observed_lag(const struct cac_source_status *s,
+                                         struct json_value *out,
+                                         const char *key)
+{
+    if (bsp_source_lag_known(s)) {
+        json_push_kv_int(out, key, s ? s->lag : -1);
+        return;
+    }
+    struct json_value nullv = {0};
+    json_set_null(&nullv);
+    json_push_kv(out, key, &nullv);
+    json_free(&nullv);
+}
+
 void bsp_source_to_json(const struct cac_source_status *s,
                         struct json_value *out)
 {
@@ -94,8 +126,16 @@ void bsp_source_to_json(const struct cac_source_status *s,
                      s->addnode_protocol_failures);
     json_push_kv_int(out, "progress_current", s->progress_current);
     json_push_kv_int(out, "progress_total", s->progress_total);
+    bool lag_known = bsp_source_lag_known(s);
+    bool lag_valid = bsp_source_lag_valid(s);
+    json_push_kv_bool(out, "lag_known", lag_known);
+    json_push_kv_bool(out, "lag_valid", lag_valid);
     json_push_kv_int(out, "lag", s->lag);
+    bsp_push_source_observed_lag(s, out, "lag_observed");
+    json_push_kv_bool(out, "candidate_lag_known", lag_known);
+    json_push_kv_bool(out, "candidate_lag_valid", lag_valid);
     json_push_kv_int(out, "candidate_lag", s->lag);
+    bsp_push_source_observed_lag(s, out, "candidate_lag_observed");
     json_push_kv_int(out, "retry_count", s->retry_count);
     json_push_kv_int(out, "distinct_peer_count", s->distinct_peer_count);
     json_push_kv_int(out, "serving_peer_id", s->serving_peer_id);

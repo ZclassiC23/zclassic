@@ -346,6 +346,8 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     mir->progress_current = msnap.blocks_applied;
     mir->progress_total = msnap.target_height;
     mir->lag = msnap.lag_known ? msnap.lag : -1;
+    mir->lag_known = msnap.lag_known;
+    mir->lag_valid = msnap.lag_valid;
     mir->retry_count = msnap.local_retry_count;
     mir->distinct_peer_count = msnap.local_distinct_peer_count;
     bsp_copy_text(mir->state, sizeof(mir->state),

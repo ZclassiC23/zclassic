@@ -74,6 +74,8 @@ struct cac_source_status {
     int64_t progress_current;
     int64_t progress_total;
     int64_t lag;
+    bool lag_known;
+    bool lag_valid;
     int64_t retry_count;
     int64_t distinct_peer_count;
     int64_t serving_peer_id;

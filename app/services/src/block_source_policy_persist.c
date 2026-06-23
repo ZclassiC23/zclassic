@@ -161,6 +161,8 @@ static void persist_source_snapshot(struct node_db *ndb,
                        s->progress_current);
     persist_source_int(ndb, source, "progress_total", s->progress_total);
     persist_source_int(ndb, source, "lag", s->lag);
+    persist_source_int(ndb, source, "lag_known", s->lag_known ? 1 : 0);
+    persist_source_int(ndb, source, "lag_valid", s->lag_valid ? 1 : 0);
     persist_source_int(ndb, source, "retry_count", s->retry_count);
     persist_source_int(ndb, source, "distinct_peer_count",
                        s->distinct_peer_count);
@@ -255,6 +257,10 @@ static void restore_source_snapshot(struct node_db *ndb,
                        &s->progress_current);
     restore_source_int(ndb, source, "progress_total", &s->progress_total);
     restore_source_int(ndb, source, "lag", &s->lag);
+    restore_source_int(ndb, source, "lag_known", &v);
+    s->lag_known = v != 0;
+    restore_source_int(ndb, source, "lag_valid", &v);
+    s->lag_valid = v != 0;
     restore_source_int(ndb, source, "retry_count", &s->retry_count);
     restore_source_int(ndb, source, "distinct_peer_count",
                        &s->distinct_peer_count);
