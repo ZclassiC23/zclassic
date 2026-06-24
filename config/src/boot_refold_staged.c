@@ -4,11 +4,17 @@
  * forward over on-disk block BODIES. Contract declared in config/boot.h. */
 #include "config/boot.h"
 
+#include "platform/time_compat.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>          /* EXIT_FAILURE */
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>          /* _exit */
 #include <sqlite3.h>
 
@@ -123,8 +129,10 @@ void boot_refold_staged_reset(struct node_db *ndb)
         refold_ok = false;
     if (!refold_ok)
         sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
-    if (refold_err)
+    if (refold_err) {
         sqlite3_free(refold_err);
+        refold_err = NULL;
+    }
     progress_store_tx_unlock();
 
     fprintf(stderr,
@@ -438,8 +446,10 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
         refold_ok = false;
     if (!refold_ok)
         sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
-    if (refold_err)
+    if (refold_err) {
         sqlite3_free(refold_err);
+        refold_err = NULL;
+    }
     progress_store_tx_unlock();
 
     if (!refold_ok) {
@@ -498,18 +508,142 @@ bool boot_snapshot_anchor_hash_matches(const unsigned char *index_block_hash,
     return memcmp(index_block_hash, snapshot_anchor_hash, 32) == 0;
 }
 
+static bool snapshot_headers_equal(const struct uss_header *a,
+                                   const struct uss_header *b)
+{
+    return a && b &&
+           a->version == b->version &&
+           a->height == b->height &&
+           a->count == b->count &&
+           a->total_supply == b->total_supply &&
+           memcmp(a->anchor_block_hash, b->anchor_block_hash, 32) == 0 &&
+           memcmp(a->sha3_hash, b->sha3_hash, 32) == 0;
+}
+
+static bool quarantine_progress_file(const char *datadir, const char *suffix,
+                                     int64_t stamp, unsigned seq,
+                                     bool *moved_any)
+{
+    char src[PATH_MAX];
+    int n = snprintf(src, sizeof(src), "%s/progress.kv%s", datadir, suffix);
+    if (n <= 0 || (size_t)n >= sizeof(src)) {
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: progress.kv quarantine "
+                "path too long for suffix %s\n", suffix);
+        return false;
+    }
+
+    struct stat st;
+    if (stat(src, &st) != 0) {
+        if (errno == ENOENT)
+            return true;
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: stat(%s) before "
+                "progress.kv quarantine failed: %s\n", src, strerror(errno));
+        return false;
+    }
+
+    char dst[PATH_MAX];
+    n = snprintf(dst, sizeof(dst), "%s/progress.kv%s.quarantine.%lld.%ld.%u",
+                 datadir, suffix, (long long)stamp, (long)getpid(), seq);
+    if (n <= 0 || (size_t)n >= sizeof(dst)) {
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: progress.kv quarantine "
+                "destination too long for %s\n", src);
+        return false;
+    }
+    if (rename(src, dst) != 0) {
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: rename(%s -> %s) "
+                "failed: %s\n", src, dst, strerror(errno));
+        return false;
+    }
+    if (moved_any)
+        *moved_any = true;
+    fprintf(stderr,
+            "[boot] -load-snapshot-at-own-height: quarantined broken "
+            "authority-store file %s -> %s\n", src, dst);
+    return true;
+}
+
+static void fsync_datadir_best_effort(const char *datadir)
+{
+#ifdef O_DIRECTORY
+    int fd = open(datadir, O_RDONLY | O_DIRECTORY);
+#else
+    int fd = open(datadir, O_RDONLY);
+#endif
+    if (fd < 0)
+        return;
+    (void)fsync(fd);
+    close(fd);
+}
+
+static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
+                                                          sqlite3 **db_out,
+                                                          const char *reason)
+{
+    if (db_out)
+        *db_out = NULL;
+    if (!datadir || !datadir[0]) {
+        fprintf(stderr,
+                "FATAL: -load-snapshot-at-own-height: no datadir available "
+                "to rebuild progress.kv after %s\n", reason);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "load_snapshot_at_own_height no_datadir reason=%s", reason);
+        return false;
+    }
+
+    progress_store_close();
+    int64_t stamp = (int64_t)platform_time_wall_time_t();
+    static unsigned quarantine_seq;
+    unsigned seq = ++quarantine_seq;
+    bool moved_any = false;
+    bool ok =
+        quarantine_progress_file(datadir, "", stamp, seq, &moved_any) &&
+        quarantine_progress_file(datadir, "-wal", stamp, seq, &moved_any) &&
+        quarantine_progress_file(datadir, "-shm", stamp, seq, &moved_any);
+    if (!ok) {
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "load_snapshot_at_own_height progress_store_quarantine_failed "
+                    "reason=%s", reason);
+        return false;
+    }
+    if (moved_any)
+        fsync_datadir_best_effort(datadir);
+
+    if (!progress_store_open(datadir)) {
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "load_snapshot_at_own_height progress_store_reopen_failed "
+                    "reason=%s", reason);
+        return false;
+    }
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "load_snapshot_at_own_height progress_store_reopen_null "
+                    "reason=%s", reason);
+        return false;
+    }
+    fprintf(stderr,
+            "[boot] -load-snapshot-at-own-height: progress.kv reopened after "
+            "quarantine (reason=%s); snapshot was already SHA3-verified and "
+            "passed the loader proof gate before the old authority store was "
+            "moved\n",
+            reason);
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "progress_store_quarantined_for_snapshot_reseed reason=%s "
+                "moved=%d", reason, moved_any ? 1 : 0);
+    if (db_out)
+        *db_out = db;
+    return true;
+}
+
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
+                                            const char *datadir,
                                             struct main_state *ms)
 {
-    sqlite3 *rpdb = progress_store_db();
-    if (!rpdb) {
-        fprintf(stderr, "FATAL: -load-snapshot-at-own-height: progress store not "
-                "open; cannot seed\n");
-        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-                    "load_snapshot_at_own_height progress_store_not_open");
-        _exit(EXIT_FAILURE);
-    }
     if (!path || !path[0]) {
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: empty path\n");
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
@@ -606,6 +740,27 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                  "cross-check; the loaded set is NOT bound to a PoW header");
     }
 
+    uss_close(h);
+    h = NULL;
+
+    bool authority_retry_used = false;
+
+retry_authority_store:
+    sqlite3 *rpdb = progress_store_db();
+    if (!rpdb) {
+        if (!authority_retry_used) {
+            authority_retry_used = true;
+            if (reopen_progress_store_after_verified_snapshot(
+                    datadir, &rpdb, "progress_store_not_open"))
+                goto retry_authority_store;
+        }
+        fprintf(stderr, "FATAL: -load-snapshot-at-own-height: progress store not "
+                "open after verified snapshot; cannot seed\n");
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "load_snapshot_at_own_height progress_store_not_open");
+        _exit(EXIT_FAILURE);
+    }
+
     /* Neutralize the cold-import seed provenance so the later stage init
      * (block_index_loader_seed_stages_from_cold_import) does not re-stamp the
      * trusted anchor forward to the checkpoint. */
@@ -615,15 +770,49 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
     /* Phase 1 (own transactions): FULL coins_kv reset, then RE-SEED from the
      * snapshot. Bulk-load under ONE transaction so a crash mid-load rolls back. */
     if (!coins_kv_reset_for_reseed(rpdb)) {
+        if (!authority_retry_used) {
+            authority_retry_used = true;
+            if (reopen_progress_store_after_verified_snapshot(
+                    datadir, &rpdb, "coins_kv_reset_failed"))
+                goto retry_authority_store;
+        }
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: "
                 "coins_kv_reset_for_reseed failed\n");
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "load_snapshot_at_own_height coins_kv_reset_failed");
-        uss_close(h);
         _exit(EXIT_FAILURE);
     }
+
+    char err2[256] = {0};
+    struct uss_header hdr2;
+    h = uss_open(path, /*verify_full_sha3=*/true,
+                 /*expected_sha3=*/NULL, &hdr2, err2, sizeof(err2));
+    if (!h || !snapshot_headers_equal(&hdr, &hdr2)) {
+        fprintf(stderr,
+                "FATAL: -load-snapshot-at-own-height: snapshot changed after "
+                "verification (%s) — refusing to seed\n",
+                h ? "header mismatch" : err2);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "load_snapshot_at_own_height snapshot_changed_after_verify");
+        if (h)
+            uss_close(h);
+        _exit(EXIT_FAILURE);
+    }
+
     char *terr = NULL;
     if (sqlite3_exec(rpdb, "BEGIN IMMEDIATE", NULL, NULL, &terr) != SQLITE_OK) {
+        if (!authority_retry_used) {
+            if (terr) {
+                sqlite3_free(terr);
+                terr = NULL;
+            }
+            uss_close(h);
+            h = NULL;
+            authority_retry_used = true;
+            if (reopen_progress_store_after_verified_snapshot(
+                    datadir, &rpdb, "progress_begin_failed"))
+                goto retry_authority_store;
+        }
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: BEGIN failed: %s\n",
                 terr ? terr : "(no msg)");
         if (terr) sqlite3_free(terr);
@@ -649,8 +838,15 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
         sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
     if (terr) sqlite3_free(terr);
     uss_close(h);
+    h = NULL;
 
     if (!load_ok) {
+        if (!authority_retry_used) {
+            authority_retry_used = true;
+            if (reopen_progress_store_after_verified_snapshot(
+                    datadir, &rpdb, "snapshot_load_failed"))
+                goto retry_authority_store;
+        }
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: load FAILED "
                 "(inserted=%llu emitted=%lld want count=%llu, insert_failed=%d) "
                 "— REFUSING to seed\n",
@@ -831,6 +1027,16 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
     progress_store_tx_unlock();
 
     if (!refold_ok) {
+        if (!authority_retry_used) {
+            if (refold_err) {
+                sqlite3_free(refold_err);
+                refold_err = NULL;
+            }
+            authority_retry_used = true;
+            if (reopen_progress_store_after_verified_snapshot(
+                    datadir, &rpdb, "stage_cursor_arm_failed"))
+                goto retry_authority_store;
+        }
         fprintf(stderr,
                 "FATAL: -load-snapshot-at-own-height: failed to force the 8 stage "
                 "cursors to h=%d — refusing to start a half-armed fold\n", seed_h);

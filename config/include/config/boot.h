@@ -234,6 +234,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb);
 struct main_state;
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
+                                            const char *datadir,
                                             struct main_state *ms);
 
 /* FIX 3 seam — PURE consensus cross-check for the forged-snapshot FATAL inside

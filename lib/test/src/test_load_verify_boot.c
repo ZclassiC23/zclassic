@@ -29,6 +29,7 @@
 #include "chain/utxo_snapshot_loader.h"
 #include "crypto/sha3.h"
 
+#include <dirent.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,6 +119,78 @@ static bool lv_write(const char *path, const struct lv_built *b)
     size_t w = fwrite(b->file, 1, b->file_len, f);
     fclose(f);
     return w == b->file_len;
+}
+
+static bool lv_progress_path(char *out, size_t cap, const char *dir,
+                             const char *suffix)
+{
+    int n = snprintf(out, cap, "%s/progress.kv%s", dir, suffix);
+    return n > 0 && (size_t)n < cap;
+}
+
+static void lv_unlink_progress_store_files(const char *dir)
+{
+    char path[512];
+    if (lv_progress_path(path, sizeof(path), dir, ""))
+        unlink(path);
+    if (lv_progress_path(path, sizeof(path), dir, "-wal"))
+        unlink(path);
+    if (lv_progress_path(path, sizeof(path), dir, "-shm"))
+        unlink(path);
+}
+
+static bool lv_write_junk_progress_store(const char *dir)
+{
+    lv_unlink_progress_store_files(dir);
+    char path[512];
+    if (!lv_progress_path(path, sizeof(path), dir, ""))
+        return false;
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    const char junk[] = "not sqlite";
+    bool ok = fwrite(junk, 1, sizeof(junk) - 1, f) == sizeof(junk) - 1;
+    ok = fclose(f) == 0 && ok;
+    return ok;
+}
+
+static bool lv_write_bad_stage_cursor_store(const char *dir)
+{
+    lv_unlink_progress_store_files(dir);
+    char path[512];
+    if (!lv_progress_path(path, sizeof(path), dir, ""))
+        return false;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return false;
+    }
+    char *err = NULL;
+    bool ok = sqlite3_exec(db,
+        "CREATE TABLE stage_cursor (name TEXT PRIMARY KEY, bad TEXT);",
+        NULL, NULL, &err) == SQLITE_OK;
+    if (err)
+        sqlite3_free(err);
+    ok = sqlite3_close(db) == SQLITE_OK && ok;
+    return ok;
+}
+
+static bool lv_has_quarantined_progress_store(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d)
+        return false;
+    bool found = false;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strncmp(de->d_name, "progress.kv.quarantine.", 23) == 0) {
+            found = true;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
 }
 
 /* File-scope seed callback (mirrors config/src/boot_refold_staged.c
@@ -271,9 +344,49 @@ int test_load_verify_boot(void)
         LV_CHECK("(b2) coins_kv still untouched", coins_kv_count(pdb) == 0);
     }
 
+    /* (e) P1-6: after a snapshot is SELF-SHA3 verified, the explicit
+     * -load-snapshot-at-own-height loader may quarantine a broken local
+     * authority store and rebuild it from that verified set. */
+    {
+        checkpoints_set_sha3_override_for_test(&cp_ovr);
+        LV_CHECK("(e) rewrite matching snapshot for authority-store recovery",
+                 lv_write(snap_path, &ok_snap));
+
+        progress_store_close();
+        LV_CHECK("(e1) corrupt progress.kv fixture written",
+                 lv_write_junk_progress_store(dir));
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL);
+        pdb = progress_store_db();
+        int32_t applied = -1;
+        bool found = false;
+        LV_CHECK("(e1) corrupt progress.kv quarantined",
+                 lv_has_quarantined_progress_store(dir));
+        LV_CHECK("(e1) loader rebuilt coins_kv from verified snapshot",
+                 pdb && coins_kv_count(pdb) == (int64_t)ok_snap.count &&
+                 coins_kv_get_applied_height(pdb, &applied, &found) &&
+                 found && applied == 1235);
+
+        progress_store_close();
+        LV_CHECK("(e2) bad stage_cursor fixture written",
+                 lv_write_bad_stage_cursor_store(dir));
+        LV_CHECK("(e2) bad schema progress_store opens",
+                 progress_store_open(dir));
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL);
+        pdb = progress_store_db();
+        applied = -1;
+        found = false;
+        LV_CHECK("(e2) bad schema progress.kv quarantined",
+                 lv_has_quarantined_progress_store(dir));
+        LV_CHECK("(e2) loader rebuilt stage cursors and coins_kv",
+                 pdb && coins_kv_count(pdb) == (int64_t)ok_snap.count &&
+                 coins_kv_get_applied_height(pdb, &applied, &found) &&
+                 found && applied == 1235);
+    }
+
     /* Teardown. */
     checkpoints_set_sha3_override_for_test(NULL);
     unsetenv("ZCL_MINT_ANCHOR_OUT");
+    progress_store_close();
     node_db_close(&ndb);
     unlink(snap_path);
     return failures;
