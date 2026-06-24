@@ -232,11 +232,13 @@ uint64_t onion_ann_projection_catch_up(onion_ann_projection_t *p)
     if (ctx.ok && !meta_set_u64(p->db, "last_consumed_offset",
                                 ctx.next_offset))
         ctx.ok = false;
-    if (!exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
-                  ctx.ok ? "commit catch_up" : "rollback catch_up"))
+    bool finish_ok = exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
+                              ctx.ok ? "commit catch_up" :
+                                       "rollback catch_up");
+    if (!ctx.ok || !finish_ok) {
+        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
         return UINT64_MAX;
-    if (!ctx.ok)
-        return UINT64_MAX;
+    }
     int64_t elapsed = now_ms() - start_ms;
     p->last_catch_up_ms = elapsed > 0 ? (uint64_t)elapsed : 0;
     return p->last_consumed_offset;

@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 
+#include "json/json.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
 #include "storage/znam_projection.h"
@@ -136,6 +137,12 @@ static bool append_expire(event_log_t *log, const char *name,
     if (!ev_znam_expire_serialize(&ev, payload, sizeof(payload), &len))
         return false;
     return event_log_append(log, EV_ZNAM_EXPIRE, payload, len) != UINT64_MAX;
+}
+
+static int64_t znam_dump_int(struct json_value *dump, const char *key)
+{
+    const struct json_value *v = json_get(dump, key);
+    return v ? json_get_int(v) : -1;
 }
 
 static int t_payload_roundtrip(void)
@@ -440,6 +447,39 @@ static int t_persists_across_reopen(void)
     return failures;
 }
 
+static int t_rollback_restores_cached_offset(void)
+{
+    int failures = 0;
+    char dir[256], elog_path[300], proj_path[300];
+    test_make_tmpdir(dir, sizeof(dir), "znam_projection", "rollback");
+    test_projection_paths(dir, "znam", elog_path, sizeof(elog_path),
+                          proj_path, sizeof(proj_path));
+
+    event_log_t *log = event_log_open(elog_path);
+    znam_projection_t *p = znam_projection_open(proj_path, log);
+    const uint8_t malformed[] = {0x01};
+    ZP_CHECK("rollback append valid",
+             append_register(log, "erin", "t1OwnerErin", 1,
+                             "erin.onion", 21, 500, 80000));
+    ZP_CHECK("rollback append malformed",
+             event_log_append(log, EV_ZNAM_UPDATE, malformed,
+                              sizeof(malformed)) != UINT64_MAX);
+    ZP_CHECK("rollback catch up fails",
+             znam_projection_catch_up(p) == UINT64_MAX);
+    ZP_CHECK("rollback table empty", znam_projection_name_count(p) == 0);
+
+    struct json_value dump = {0};
+    ZP_CHECK("rollback dump", znam_projection_dump_state_json(&dump, NULL));
+    ZP_CHECK("rollback cached offset restored",
+             znam_dump_int(&dump, "last_consumed_offset") == 0);
+    json_free(&dump);
+
+    znam_projection_close(p);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_znam_projection(void)
 {
     int failures = 0;
@@ -450,6 +490,7 @@ int test_znam_projection(void)
     failures += t_update_addr_and_text();
     failures += t_transfer_renew_expire();
     failures += t_persists_across_reopen();
+    failures += t_rollback_restores_cached_offset();
     printf("znam_projection: %d failures\n", failures);
     return failures;
 }

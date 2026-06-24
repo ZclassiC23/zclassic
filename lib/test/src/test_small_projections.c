@@ -610,6 +610,71 @@ static int t_projection_catchup_mixed(void)
     return failures;
 }
 
+static int t_projection_rollback_restores_cached_offsets(void)
+{
+    int failures = 0;
+    char dir[256];
+    char elog_path[320];
+    char onion_path[320];
+    char hodl_path[320];
+    test_make_tmpdir(dir, sizeof(dir), "small_projections", "rollback");
+    snprintf(elog_path, sizeof(elog_path), "%s/event_log.dat", dir);
+    snprintf(onion_path, sizeof(onion_path), "%s/onion_announcements.db",
+             dir);
+    snprintf(hodl_path, sizeof(hodl_path), "%s/hodl_history.db", dir);
+
+    event_log_t *log = event_log_open(elog_path);
+    const uint8_t malformed[] = {0x01};
+    const char *onion =
+        "defghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghi.onion";
+    SP_CHECK("rollback append onion valid",
+             append_onion_announcement_event(log, onion, "6a045a434c23",
+                                             1764444444u));
+    SP_CHECK("rollback append onion malformed",
+             event_log_append(log, EV_ONION_ANNOUNCEMENT, malformed,
+                              sizeof(malformed)) != UINT64_MAX);
+    SP_CHECK("rollback append hodl valid",
+             append_hodl_snapshot_event(log, 300));
+    SP_CHECK("rollback append hodl malformed",
+             event_log_append(log, EV_HODL_SNAPSHOT, malformed,
+                              sizeof(malformed)) != UINT64_MAX);
+
+    onion_ann_projection_t *onion_p =
+        onion_ann_projection_open(onion_path, log);
+    hodl_history_projection_t *hodl =
+        hodl_history_projection_open(hodl_path, log);
+
+    SP_CHECK("rollback onion catch up fails",
+             onion_p &&
+             onion_ann_projection_catch_up(onion_p) == UINT64_MAX);
+    SP_CHECK("rollback onion table empty",
+             onion_p && onion_ann_projection_count(onion_p) == 0);
+    struct json_value dump = {0};
+    SP_CHECK("rollback onion dump",
+             onion_ann_projection_dump_state_json(&dump, NULL));
+    SP_CHECK("rollback onion cached offset restored",
+             dump_int(&dump, "last_consumed_offset") == 0);
+    json_free(&dump);
+
+    memset(&dump, 0, sizeof(dump));
+    SP_CHECK("rollback hodl catch up fails",
+             hodl &&
+             hodl_history_projection_catch_up(hodl) == UINT64_MAX);
+    SP_CHECK("rollback hodl table empty",
+             hodl && hodl_history_projection_count(hodl) == 0);
+    SP_CHECK("rollback hodl dump",
+             hodl_history_projection_dump_state_json(&dump, NULL));
+    SP_CHECK("rollback hodl cached offset restored",
+             dump_int(&dump, "last_consumed_offset") == 0);
+    json_free(&dump);
+
+    onion_ann_projection_close(onion_p);
+    hodl_history_projection_close(hodl);
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int t_projection_emit_helpers(void)
 {
     int failures = 0;
@@ -794,6 +859,7 @@ int test_small_projections(void)
     failures += t_hodl_payload_roundtrip();
     failures += t_projection_skeletons_fresh();
     failures += t_projection_catchup_mixed();
+    failures += t_projection_rollback_restores_cached_offsets();
     failures += t_projection_emit_helpers();
     printf("small_projections: %d failures\n", failures);
     return failures;
