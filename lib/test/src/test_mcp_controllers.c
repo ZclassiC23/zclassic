@@ -1153,6 +1153,46 @@ static int test_meta_tools_in_ops_domain(void)
     return failures;
 }
 
+static char *mock_null_eventlog_rpc(const char *method,
+                                    const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "eventlog") == 0)
+        return NULL;
+    return strdup("null");
+}
+
+static int test_zcl_logtail_handles_null_eventlog_rpc(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_logtail handles null eventlog RPC") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_null_eventlog_rpc);
+
+        const char *args_src = "{\"domain\":\"sync\",\"count\":5}";
+        struct json_value args = {0};
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+
+        char *body = mcp_router_dispatch("zcl_logtail", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "\"error\":{"));
+        ASSERT(contains(body, "\"code\":\"HANDLER_FAILED\""));
+        ASSERT(contains(body, "RPC eventlog returned null"));
+
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get(&root, "error") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_tools_list_json_well_formed(void)
 {
     int failures = 0;
@@ -1751,6 +1791,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_includes_dominant_blocker();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();
+    failures += test_zcl_logtail_handles_null_eventlog_rpc();
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();
     failures += test_destructive_tools_registered();

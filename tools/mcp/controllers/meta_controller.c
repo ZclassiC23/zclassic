@@ -168,6 +168,7 @@ static int h_zcl_logtail(const struct mcp_request *req,
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),
                  "RPC eventlog returned null");
+        /* LOG_ERR returns -1; keep this terminal before parsing raw. */
         LOG_ERR("mcp.meta", "logtail: eventlog returned null");
     }
     if (!dom || !dom[0]) { res->body = raw; return 0; }
