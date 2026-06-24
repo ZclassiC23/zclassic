@@ -878,8 +878,19 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
     if (!stream_read_i32_le(s, &nUBuckets)) LOG_FAIL("addrman", "deserialize: failed to read bucket count");
     if (nVersion != 0) nUBuckets ^= (1 << 30);
 
-    if (nNew < 0 || nNew > ADDRMAN_NEW_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nNew=%d out of range", nNew);
-    if (nTried < 0 || nTried > ADDRMAN_TRIED_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) LOG_FAIL("addrman", "deserialize: nTried=%d out of range", nTried);
+    /* Reject out-of-range counts BEFORE the (size_t) cast: a negative nNew/
+     * nTried (corrupt/hostile peers.dat) would wrap to a huge need and force a
+     * multi-GB zcl_realloc. LOG_FAIL alone (the prior form) logged but continued
+     * into the overflow, so this must return false. A valid peers.dat never has
+     * negative or over-cap counts, so this rejects only corrupt input. */
+    if (nNew < 0 || nNew > ADDRMAN_NEW_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) {
+        LOG_FAIL("addrman", "deserialize: nNew=%d out of range", nNew);
+        return false;
+    }
+    if (nTried < 0 || nTried > ADDRMAN_TRIED_BUCKET_COUNT * ADDRMAN_BUCKET_SIZE) {
+        LOG_FAIL("addrman", "deserialize: nTried=%d out of range", nTried);
+        return false;
+    }
 
     size_t need = (size_t)(nNew + nTried);
     if (need > am->entries_cap) {

@@ -101,6 +101,39 @@ void block_get_hash(const struct block *b, struct uint256 *out)
     block_header_get_hash(&b->header, out);
 }
 
+bool block_clone(struct block *dst, const struct block *src)
+{
+    block_init(dst);
+    /* The header is a flat POD struct (fixed nSolution[] buffer, no pointers),
+     * so a struct copy is a complete deep copy of it. */
+    dst->header = src->header;
+
+    if (src->num_vtx == 0)
+        return true; /* no vtx array to allocate; dst stays block_free-safe */
+
+    dst->vtx = zcl_calloc(src->num_vtx, sizeof(struct transaction),
+                          "block_clone_vtx");
+    if (!dst->vtx) {
+        block_free(dst);
+        LOG_FAIL("block", "block_clone alloc failed for %zu tx slots",
+                 src->num_vtx);
+        return false; /* dst is block_free-safe; do NOT fall into the copy loop
+                       * with dst->vtx == NULL (SIGSEGV on dst->vtx[0]). */
+    }
+    /* Set num_vtx incrementally so a mid-loop failure leaves dst with exactly
+     * the entries that were successfully transaction_copy'd — block_free then
+     * frees precisely those and the array, with no read of an uninitialized
+     * (calloc-zeroed but not transaction_init'd) slot. */
+    for (size_t i = 0; i < src->num_vtx; i++) {
+        if (!transaction_copy(&dst->vtx[i], &src->vtx[i])) {
+            block_free(dst);
+            return false; /* transaction_copy already logged the cause */
+        }
+        dst->num_vtx = i + 1;
+    }
+    return true;
+}
+
 bool block_locator_serialize(const struct block_locator *loc,
                              struct byte_stream *s)
 {

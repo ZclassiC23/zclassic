@@ -159,4 +159,16 @@ bool block_deserialize(struct block *b, struct byte_stream *s);
  * only through hashMerkleRoot inside the header). */
 void block_get_hash(const struct block *b, struct uint256 *out);
 
+/* Deep copy: `dst` is re-initialized (block_init), the header is copied
+ * verbatim (it is a flat POD struct — fixed nSolution[] buffer, no pointers),
+ * and `dst->vtx` is a freshly zcl_calloc'd array of `src->num_vtx`
+ * transactions each produced by transaction_copy (a deep copy that allocates
+ * its own vin/vout/shielded/joinsplit arrays). The result is byte-identical
+ * under block_serialize to `src` (transaction_copy preserves every
+ * wire-affecting field and copies tx->hash verbatim) and owns nothing in
+ * common with `src` — caller releases `dst` with block_free exactly as for a
+ * freshly block_deserialize'd block. Returns false on any allocation failure
+ * with `dst` already freed to an empty, block_free-safe record. */
+bool block_clone(struct block *dst, const struct block *src);
+
 #endif
