@@ -179,6 +179,40 @@ static size_t get_system_ram(void)
     return (size_t)si.totalram * (size_t)si.mem_unit;
 }
 
+static bool boot_link_or_copy_import_block_file(const char *src,
+                                                const char *dst,
+                                                const char *prefix,
+                                                int file_index,
+                                                long long bytes,
+                                                bool announce)
+{
+    if (link(src, dst) == 0) {
+        if (announce && file_index % 10 == 0)
+            printf("  linked %s%05d.dat (%lld MB)\n",
+                   prefix, file_index, bytes >> 20);
+        return true;
+    }
+
+    int link_errno = errno;
+    if (announce) {
+        printf("  copying %s%05d.dat (%lld MB)...\n",
+               prefix, file_index, bytes >> 20);
+        fflush(stdout);
+    }
+
+    if (file_copy(src, dst))
+        return true;
+
+    int copy_errno = errno;
+    LOG_WARN("boot",
+             "[boot] failed to link/copy %s%05d.dat from %s to %s "
+             "(link errno=%d %s, copy errno=%d %s)",
+             prefix, file_index, src, dst,
+             link_errno, strerror(link_errno),
+             copy_errno, strerror(copy_errno));
+    return false;
+}
+
 /* ── PID lock file for data directory ─────────────────────────── */
 
 static char g_pidfile_path[1024];
@@ -2199,6 +2233,7 @@ bool app_init(struct app_context *ctx)
                     snprintf(c23_blk_dir, sizeof(c23_blk_dir),
                              "%s/blocks", ctx->datadir);
 
+                    int copy_failures = 0;
                     for (int fi = 0; fi < 256; fi++) {
                         char src_path[1200], dst_path[1200];
                         snprintf(src_path, sizeof(src_path),
@@ -2214,36 +2249,36 @@ bool app_init(struct app_context *ctx)
                         if (stat(dst_path, &dst_st) == 0 &&
                             dst_st.st_size == src_st.st_size)
                             continue;
-                        /* Hard link first (instant, same filesystem) */
-                        if (link(src_path, dst_path) == 0) {
-                            if (fi % 10 == 0)
-                                printf("  linked blk%05d.dat (%lld MB)\n",
-                                       fi, (long long)(src_st.st_size >> 20));
-                        } else {
-                            /* Different filesystem — fall back to copy */
-                            char cmd[2500];
-                            snprintf(cmd, sizeof(cmd), "cp '%s' '%s'",
-                                     src_path, dst_path);
-                            printf("  copying blk%05d.dat (%lld MB)...\n",
-                                   fi, (long long)(src_st.st_size >> 20));
-                            fflush(stdout);
-                            system(cmd);
-                        }
+                        int index_failures = 0;
+                        if (!boot_link_or_copy_import_block_file(
+                                src_path, dst_path, "blk", fi,
+                                (long long)src_st.st_size, true))
+                            index_failures++;
                         /* Also link/copy rev (undo) files */
                         snprintf(src_path, sizeof(src_path),
                                  "%s/rev%05d.dat", zcd_blk_dir, fi);
                         snprintf(dst_path, sizeof(dst_path),
                                  "%s/rev%05d.dat", c23_blk_dir, fi);
                         if (stat(src_path, &src_st) == 0) {
-                            if (link(src_path, dst_path) != 0) {
-                                char cmd[2500];
-                                snprintf(cmd, sizeof(cmd), "cp '%s' '%s'",
-                                         src_path, dst_path);
-                                system(cmd);
-                            }
+                            if (!boot_link_or_copy_import_block_file(
+                                    src_path, dst_path, "rev", fi,
+                                    (long long)src_st.st_size, false))
+                                index_failures++;
+                        }
+                        if (index_failures > 0) {
+                            copy_failures += index_failures;
+                            LOG_WARN("boot",
+                                     "[boot] %d zclassicd block-file import "
+                                     "operation(s) failed for file index %d",
+                                     index_failures, fi);
                         }
                     }
-                    printf("Block files linked/copied from zclassicd\n");
+                    if (copy_failures > 0)
+                        printf("Block files linked/copied from zclassicd "
+                               "with %d failure(s); see node.log\n",
+                               copy_failures);
+                    else
+                        printf("Block files linked/copied from zclassicd\n");
                     fflush(stdout);
                 }
             }

@@ -59,6 +59,38 @@ static int test_dir_copy_success(void)
     return failures;
 }
 
+static int test_file_copy_overwrites_regular_files(void)
+{
+    int failures = 0;
+
+    TEST("file_ops file_copy overwrites files and rejects directories") {
+        char root[] = "/tmp/zcl_file_copy_XXXXXX";
+        char *dir = mkdtemp(root);
+        char src[1024], dst[1024], bad_src[1024];
+        char buf[64];
+        bool ok = dir != NULL;
+
+        snprintf(src, sizeof(src), "%s/src.txt", dir ? dir : "");
+        snprintf(dst, sizeof(dst), "%s/dst.txt", dir ? dir : "");
+        snprintf(bad_src, sizeof(bad_src), "%s/not-a-file", dir ? dir : "");
+
+        ok = ok && write_text_file(src, "new");
+        ok = ok && write_text_file(dst, "old");
+        ok = ok && file_copy(src, dst);
+        ok = ok && read_text_file(dst, buf, sizeof(buf));
+        ok = ok && strcmp(buf, "new") == 0;
+        ok = ok && mkdir(bad_src, 0700) == 0;
+        ok = ok && !file_copy(bad_src, dst);
+
+        if (dir)
+            dir_remove_tree(dir);
+        ASSERT(ok);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_dir_copy_partial_failure(void)
 {
     int failures = 0;
@@ -124,6 +156,7 @@ int test_file_ops(void)
 {
     int failures = 0;
 
+    failures += test_file_copy_overwrites_regular_files();
     failures += test_dir_copy_success();
     failures += test_dir_copy_partial_failure();
     failures += test_block_files_copy_rev_failure();
