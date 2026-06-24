@@ -268,6 +268,36 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
     return total;
 }
 
+static size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body)
+{
+    if (!r || max == 0 || !body)
+        return 0;
+
+    size_t blen = json_write(body, NULL, 0);
+    char headers[256];
+    int hn = snprintf(headers, sizeof(headers),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %zu\r\n\r\n", blen);
+    if (hn < 0 || (size_t)hn >= sizeof(headers))
+        return 0;
+
+    size_t hlen = (size_t)hn;
+    if (blen > SIZE_MAX - hlen || hlen + blen > max) {
+        LOG_WARN("api", "api_json_ok: response too large body=%zu max=%zu",
+                 blen, max);
+        return api_json_error(r, max, JSON_500_HEADERS,
+                              "Response too large");
+    }
+
+    memcpy(r, headers, hlen);
+    json_write(body, (char *)r + hlen, max - hlen);
+    return hlen + blen;
+}
+
 /* ── Compute functions (called ONLY from background thread) ── */
 
 static void *api_cache_refresh_thread(void *arg)
@@ -667,19 +697,9 @@ size_t api_handle_request(const char *method, const char *path,
     if (strcmp(clean_path, path_str) == 0) { \
         struct json_value jr = {0}; \
         if (api_fn(&jr)) { \
-            char body[16384]; \
-            size_t blen = json_write(&jr, body, sizeof(body)); \
+            size_t n = api_json_ok(response, response_max, &jr); \
             json_free(&jr); \
-            size_t off = (size_t)snprintf((char *)response, response_max, \
-                "HTTP/1.1 200 OK\r\n" \
-                "Content-Type: application/json\r\n" \
-                "Access-Control-Allow-Origin: *\r\n" \
-                "Cache-Control: no-cache\r\n" \
-                "Connection: close\r\n" \
-                "Content-Length: %zu\r\n\r\n", blen); \
-            if (off + blen <= response_max) \
-                memcpy(response + off, body, blen); \
-            return off + blen < response_max ? off + blen : response_max; \
+            return n; \
         } \
         json_free(&jr); \
         return api_json_error(response, response_max, JSON_500_HEADERS, \
@@ -697,19 +717,9 @@ size_t api_handle_request(const char *method, const char *path,
         extern bool rpc_name_resolve_api(const char *name, struct json_value *result);
         struct json_value jr = {0};
         if (rpc_name_resolve_api(clean_path + 10, &jr)) {
-            char body[4096];
-            size_t blen = json_write(&jr, body, sizeof(body));
+            size_t n = api_json_ok(response, response_max, &jr);
             json_free(&jr);
-            size_t off = (size_t)snprintf((char *)response, response_max,
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: application/json\r\n"
-                "Access-Control-Allow-Origin: *\r\n"
-                "Cache-Control: no-cache\r\n"
-                "Connection: close\r\n"
-                "Content-Length: %zu\r\n\r\n", blen);
-            if (off + blen <= response_max)
-                memcpy(response + off, body, blen);
-            return off + blen < response_max ? off + blen : response_max;
+            return n;
         }
         json_free(&jr);
         return api_json_error(response, response_max, JSON_404_HEADERS, "Name not found");

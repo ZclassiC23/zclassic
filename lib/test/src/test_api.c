@@ -5,9 +5,11 @@
 #include "test/test_helpers.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
+#include "controllers/name_controller.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "models/file_service.h"
+#include "models/znam.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include <string.h>
@@ -123,6 +125,53 @@ int test_api(void)
                               msg) == 0;
         }
         json_free(&root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: json route emits oversized names payload safely... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_names_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = node_db_open(&ndb, dbpath);
+        for (int i = 0; ok && i < 100; i++) {
+            struct znam_entry e;
+            memset(&e, 0, sizeof(e));
+            snprintf(e.name, sizeof(e.name), "api-name-%03d", i);
+            snprintf(e.owner_address, sizeof(e.owner_address),
+                     "owner-address-for-api-route-%03d", i);
+            e.target_type = ZNAM_TYPE_CONTENT;
+            snprintf(e.target_value, sizeof(e.target_value),
+                     "sha3:%064d:%064d", i, 1000 + i);
+            memset(e.reg_txid, (uint8_t)(i + 1), sizeof(e.reg_txid));
+            e.reg_height = i + 1;
+            ok = db_znam_save(&ndb, &e);
+        }
+
+        if (ok) {
+            uint8_t big_resp[65536];
+            rpc_name_set_state(&ndb);
+            size_t n = api_handle_request("GET", "/api/names", NULL, 0,
+                                          big_resp, sizeof(big_resp));
+            big_resp[n < sizeof(big_resp) ? n : sizeof(big_resp) - 1] = '\0';
+            ok = n > 16384 &&
+                 strstr((char *)big_resp, "HTTP/1.1 200 OK") != NULL &&
+                 strstr((char *)big_resp, "\"api-name-099\"") != NULL;
+            rpc_name_set_state(NULL);
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
