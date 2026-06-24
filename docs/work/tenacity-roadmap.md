@@ -203,10 +203,11 @@ these harden the bridge.
   against HEAD, dated verdict = local CI. Pair with the dev lane staying up to accrue
   soak time toward MVP-C (7-day soak).
 - **(4.3) Get the replay canary GREEN and scheduled.** Masking fix already landed
-  (poll loop `kill -0` + `node_crashed_signal_N`). Remaining: land (c) so anchor-replay
-  no longer SEGVs, land (d1) so a stale cross-binary sentinel can't latch a false FAIL,
-  then schedule on the §4.2 timer and require a PASS sentinel for the running
-  build_commit before declaring the node soak-healthy.
+  (poll loop `kill -0` + `node_crashed_signal_N`). Stale sentinel scoping (d1)
+  is now landed for both cross-build and pre-process-start FAILs. Remaining:
+  land (c) so anchor-replay no longer SEGVs, then schedule on the §4.2 timer
+  and require a PASS sentinel for the running build_commit before declaring the
+  node soak-healthy.
 - **(4.4) MVP-C8 parity oracle — keep it continuous.** Make the tip-hash-vs-zclassicd
   probe a continuous timer on live + soak lanes, alerting on `match:false`, so a future
   tear is caught the moment it diverges, not 2.85 days later. The live node had NO
