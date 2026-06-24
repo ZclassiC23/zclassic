@@ -88,6 +88,32 @@ static bool stale_script_hole_unlocked(sqlite3 *db, int cursor,
         "stale script", cursor, out_height);
 }
 
+/* Lowest proof_validate_log internal_error row strictly below `cursor`.
+ *
+ * An internal_error from proof_validate is "could not determine validity"
+ * (a transient infra failure — the Groth16/PHGR13/binding-sig verifier could
+ * not run), NOT "proof_invalid" (a consensus verdict). It must be re-derived
+ * on retry, never persisted as a terminal ok=0. This is the proof-stage twin
+ * of stale_script_hole_unlocked, restoring Law-7 symmetry: the healer must not
+ * treat "couldn't tell" as "invalid" on EITHER validator stage.
+ *
+ * Unlike the script hole this filters to status='internal_error' ONLY.
+ * proof_validate's other ok=0 statuses are 'proof_invalid' (a genuine
+ * consensus reject — keep it terminal) and 'upstream_failed' (owned by the
+ * script/upstream rewind, not a proof-stage transient). Caller holds the
+ * progress_store tx lock. */
+static bool stale_proof_hole_unlocked(sqlite3 *db, int cursor,
+                                      int *out_height)
+{
+    return log_hole_below_unlocked(db,
+        "SELECT height FROM proof_validate_log "
+        "WHERE ok = 0 "
+        "  AND status = 'internal_error' "
+        "  AND height < ? "
+        "ORDER BY height LIMIT 1",
+        "stale proof", cursor, out_height);
+}
+
 bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
                                             struct block *blk,
                                             struct uint256 *block_hash)
@@ -486,6 +512,93 @@ static bool stale_script_replay_tx(
     return true;
 }
 
+/* Read script_validate_log.ok at `height`: 1 (passed), 0 (failed), -1 (no
+ * row). The proof-internal_error rewind only fires when script PASSED at the
+ * hole (ok==1): a script hole at the same height is the script path's domain
+ * (it deletes proof_validate_log down to its replay_first as part of the same
+ * transaction), so the proof path must not double-own it. Caller holds the
+ * progress_store tx lock. */
+static bool script_ok_at_unlocked(sqlite3 *db, int height, int *out_ok)
+{
+    *out_ok = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok FROM script_validate_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] script_ok prepare failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out_ok = sqlite3_column_int(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] script_ok step failed h=%d rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+/* One-shot rewind of a transient proof_validate internal_error at the lowest
+ * such hole. The proof verdict at every height in [replay_first, proof_cursor)
+ * is dropped so proof_validate re-derives it; script_validate_log is NEVER
+ * touched (those verdicts passed and stay authoritative — that is what makes
+ * this the PROOF-only twin of stale_script_replay_tx). utxo_apply / tip_finalize
+ * are rewound to replay_first, and (only if coins advanced past replay_first)
+ * the inverse deltas are applied and the coins cursor rolled back, identical to
+ * the script path. A one-shot marker bounds the retry to exactly one rewind per
+ * (height, block_hash). Mirrors stale_script_replay_tx. */
+static bool stale_proof_replay_tx(
+    sqlite3 *db,
+    int height,
+    int replay_first,
+    int proof_cursor,
+    int utxo_cursor,
+    const char *marker)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale proof repair BEGIN failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+
+    bool rewind_coins = utxo_cursor > replay_first;
+    if ((rewind_coins && !inverse_checked(db, replay_first, utxo_cursor)) ||
+        !delete_log_range(db, "proof_validate_log", replay_first,
+                          proof_cursor) ||
+        (rewind_coins &&
+         !utxo_apply_delete_rows_above(db, replay_first, utxo_cursor - 1)) ||
+        !stage_repair_force_stage_cursor(db, "proof_validate", replay_first) ||
+        !stage_repair_force_stage_cursor(db, "tip_finalize", replay_first) ||
+        (rewind_coins &&
+         !utxo_apply_unwind_write_cursor(db, (uint64_t)replay_first)) ||
+        (rewind_coins &&
+         !coins_kv_set_applied_height_in_tx(db, replay_first)) ||
+        !reducer_repair_marker_record_in_tx(db, marker)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale proof repair COMMIT failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    return true;
+}
+
 static bool maybe_repair_value_overflow(
     sqlite3 *db,
     struct main_state *ms,
@@ -718,6 +831,185 @@ static bool maybe_repair_stale_script(
     return true;
 }
 
+/* Core proof internal_error one-shot rewind, parameterized by the block_hash
+ * used for the marker key. Holds the progress lock across the snapshot and the
+ * rewind COMMIT (same contract as maybe_repair_stale_script: a drain advancing
+ * utxo_apply/coins in an unlock gap would commit a stale rewind). Detects the
+ * lowest proof-only internal_error hole (script ok=1 there), confirms it is not
+ * already owned by an upstream/script hole, and — unless the one-shot marker is
+ * present — drops the proof verdict(s) so proof_validate re-derives them. Sets
+ * out->stale_script_* fields (the heal is symmetric; the result surface is
+ * shared). *out_repaired / *out_height report the witness for tests. */
+static bool maybe_repair_stale_proof_core(
+    sqlite3 *db,
+    bool apply,
+    const struct uint256 *block_hash,
+    struct stage_reducer_frontier_reconcile_result *out,
+    bool *out_repaired,
+    int *out_height)
+{
+    int script_cursor = -1;
+    int proof_cursor = -1;
+    int utxo_cursor = -1;
+    int height = -1;
+    int script_ok = -1;
+
+    progress_store_tx_lock();
+    bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
+                                              &script_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "proof_validate",
+                                              &proof_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "utxo_apply",
+                                              &utxo_cursor) &&
+              stale_proof_hole_unlocked(db, proof_cursor, &height);
+    if (!ok) {
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    if (out_height) *out_height = height;
+    if (out) {
+        out->stale_script_repair_height = height;
+        out->stale_script_cursor_before = proof_cursor;
+        out->stale_script_cursor_after = proof_cursor;
+        out->stale_script_utxo_cursor_before = utxo_cursor;
+    }
+
+    /* No transient proof hole, or it sits at/above the cursor: nothing to do.
+     * Also require script PASSED at the hole — a script hole at the same
+     * height is the script path's domain (it deletes proof_validate_log down
+     * to its own replay_first in the same tx), so the proof path must not
+     * double-own it. script_validate must have advanced past the hole too. */
+    if (height < 0 || proof_cursor <= 0 || height >= proof_cursor ||
+        script_cursor <= height) {
+        progress_store_tx_unlock();
+        return true;
+    }
+    if (!script_ok_at_unlocked(db, height, &script_ok)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (script_ok != 1) {
+        /* script failed / has no verdict at the hole: the script-stage rewind
+         * owns this height. Leave it to maybe_repair_stale_script. */
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    if (out) out->stale_script_repair_attempted = true;
+    if (!apply) {
+        if (out) out->repaired = true;
+        if (out_repaired) *out_repaired = true;
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    /* A proof verdict gates no coin SET (utxo_apply is the state transition;
+     * proofs only authorize shielded value). A transient proof internal_error
+     * should leave utxo_apply pinned at the hole, so replay_first == height
+     * with no coins rewind in the common case; the rewind logic below still
+     * handles utxo_cursor > height defensively (identical to the script path). */
+    int replay_first = height;
+
+    char marker[192];
+    if (!reducer_repair_marker_key(marker, "proof_replay", height,
+                                   block_hash)) {
+        progress_store_tx_unlock();
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale proof repair marker overflow h=%d",
+                 height);
+        return false;
+    }
+    bool marker_seen = false;
+    if (!reducer_repair_marker_seen(db, marker, &marker_seen)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (marker_seen) {
+        if (out) out->stale_script_repair_marker_seen = true;
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale proof repair skipped h=%d: "
+                 "one-shot marker already present",
+                 height);
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    ok = stale_proof_replay_tx(db, height, replay_first, proof_cursor,
+                               utxo_cursor, marker);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;
+
+    if (out) {
+        out->stale_script_repaired = true;
+        out->stale_script_cursor_after = replay_first;
+        out->refused_coin_tear = false;
+        out->repaired = true;
+    }
+    if (out_repaired) *out_repaired = true;
+    LOG_WARN("stage_repair",
+             "[stage_repair] stale proof repair rewound proof/utxo/tip cursors "
+             "to h=%d for transient proof internal_error hole h=%d "
+             "(proof=%d utxo=%d) — one-shot re-validation",
+             replay_first, height, proof_cursor, utxo_cursor);
+    return true;
+}
+
+/* Production proof internal_error symmetry: read the canonical block at the
+ * hole (for the reorg-bound marker hash) and run the one-shot rewind. */
+static bool maybe_repair_stale_proof(
+    sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    /* Peek the hole height first (lock-free read is fine for the marker block
+     * read; maybe_repair_stale_proof_core re-snapshots under the lock and is
+     * authoritative). */
+    int proof_cursor = -1;
+    int height = -1;
+    progress_store_tx_lock();
+    bool ok = stage_repair_cursor_at_unlocked(db, "proof_validate",
+                                              &proof_cursor) &&
+              stale_proof_hole_unlocked(db, proof_cursor, &height);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;
+    if (height < 0 || proof_cursor <= 0 || height >= proof_cursor)
+        return true;
+
+    struct block blk;
+    struct uint256 block_hash;
+    block_init(&blk);
+    if (!stage_repair_read_active_block_checked(ms, height, &blk,
+                                                &block_hash)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale proof repair refused: cannot read "
+                 "canonical block h=%d",
+                 height);
+        block_free(&blk);
+        return true;
+    }
+    block_free(&blk);
+
+    return maybe_repair_stale_proof_core(db, apply, &block_hash, out, NULL,
+                                         NULL);
+}
+
+#ifdef ZCL_TESTING
+bool stage_repair_proof_internal_error_rewind_for_testing(
+    sqlite3 *db, bool *repaired, int *out_height)
+{
+    if (repaired) *repaired = false;
+    if (out_height) *out_height = -1;
+    struct uint256 zero_hash;
+    memset(&zero_hash, 0, sizeof(zero_hash));
+    return maybe_repair_stale_proof_core(db, /*apply=*/true, &zero_hash, NULL,
+                                         repaired, out_height);
+}
+#endif
+
 /* Production coin_backfill_io.read_block: user is the main_state. */
 static bool repair_read_block_thunk(void *user, int height, struct block *blk,
                                     struct uint256 *hash)
@@ -792,6 +1084,23 @@ bool stage_reducer_frontier_try_replay_repairs(
                  "[stage_repair] reducer_frontier repaired stale script "
                  "hole h=%d; forward stages must replay from the hole "
                  "before L1 continues",
+                 out->stale_script_repair_height);
+        *handled = true;
+        return true;
+    }
+
+    /* Proof-stage symmetry (self-verified-tip-plan Act 1): a transient
+     * proof_validate internal_error at a height where script already passed is
+     * NOT caught by the script hole sweep (it scans script_validate_log only).
+     * Without this it would stay a permanent ok=0 — "couldn't determine
+     * validity" frozen as "invalid", the inverse Law-7 lie. Re-derive it. */
+    if (!maybe_repair_stale_proof(db, ms, apply, out))
+        return false;
+    if (out->stale_script_repaired) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier repaired transient proof "
+                 "internal_error hole h=%d; proof_validate must re-derive the "
+                 "verdict before L1 continues",
                  out->stale_script_repair_height);
         *handled = true;
         return true;
