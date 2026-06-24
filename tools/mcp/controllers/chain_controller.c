@@ -10,7 +10,6 @@
 #include "../rpc_params.h"
 
 #include "chain/chain.h"
-#include "controllers/chain_projection.h"
 #include "json/json.h"
 #include "services/replay_verify_service.h"
 #include "util/log_macros.h"
@@ -27,23 +26,6 @@ static int h_zcl_getblockcount(const struct mcp_request *req,
                                struct mcp_response *res)
 {
     (void)req;
-
-    int64_t height = chain_projection_best_block_height();
-    if (height >= 0) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%lld", (long long)height);
-        res->body = strdup(buf);
-        if (!res->body) {
-            res->error = MCP_ERR_HANDLER_FAILED;
-            snprintf(res->error_message, sizeof(res->error_message),
-                     "getblockcount projection response alloc failed");
-            LOG_ERR("mcp.chain", "getblockcount projection response alloc failed");
-        }
-        return 0;
-    }
-
-    fprintf(stderr,  // obs-ok:mcp-chain-projection-fallback
-            "[mcp.chain] projection miss: getblockcount rpc fallback\n");
     return mcp_return_rpc_body(res, mcp_node_rpc("getblockcount", NULL),
                                "getblockcount", "mcp.chain");
 }

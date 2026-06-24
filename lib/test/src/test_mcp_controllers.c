@@ -41,6 +41,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sqlite3.h>
 #include "util/safe_alloc.h"
 
 /* Expected tool counts.  If a future commit intentionally adds or
@@ -118,6 +119,43 @@ static bool is_known_domain(const char *d)
 static bool contains(const char *haystack, const char *needle)
 {
     return haystack && needle && strstr(haystack, needle) != NULL;
+}
+
+static bool mcp_test_exec_sql(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, sql, NULL, NULL, &err) == SQLITE_OK;
+    if (err)
+        sqlite3_free(err);
+    return ok;
+}
+
+static bool seed_mcp_projection_height(const char *dir, int64_t height)
+{
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/node.db", dir);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                        NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return false;
+    }
+
+    char insert_sql[160];
+    snprintf(insert_sql, sizeof(insert_sql),
+             "INSERT INTO blocks(height,status) VALUES (%lld,3)",
+             (long long)height);
+    bool ok =
+        mcp_test_exec_sql(db,
+            "CREATE TABLE blocks(height INTEGER NOT NULL, status INTEGER NOT NULL)") &&
+        mcp_test_exec_sql(db, insert_sql);
+    ok = sqlite3_close(db) == SQLITE_OK && ok;
+    return ok;
 }
 
 /* ── Tests ──────────────────────────────────────────────────── */
@@ -664,6 +702,38 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"score_failure_penalty\":0,"
                       "\"healthy_peers\":3}]}}");
     return strdup("null");
+}
+
+static int test_zcl_getblockcount_uses_node_hstar_rpc(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_getblockcount uses node RPC H*") {
+        register_all();
+
+        char tmpl[] = "/tmp/zcl-mcp-blockcount-XXXXXX";
+        char *dir = mkdtemp(tmpl);
+        ASSERT(dir != NULL);
+        ASSERT(seed_mcp_projection_height(dir, 100));
+        mcp_rpc_client_init(dir, 0);
+        mcp_rpc_client_set_test_hook(mock_status_rpc);
+
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_getblockcount", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT_STR_EQ(body, "3117073");
+
+        json_free(&args);
+        free(body);
+        test_rm_rf_recursive(dir);
+        mcp_rpc_client_init("", 0);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    mcp_rpc_client_init("", 0);
+    return failures;
 }
 
 static char *mock_status_rpc_dumpstate_error(const char *method,
@@ -1675,6 +1745,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
     failures += test_postmortem_tools_list_and_replay();
+    failures += test_zcl_getblockcount_uses_node_hstar_rpc();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();
