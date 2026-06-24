@@ -1046,6 +1046,58 @@ static int test_zcl_status_includes_dominant_blocker(void)
     return failures;
 }
 
+static int test_zcl_blockers_escapes_blocker_strings(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_blockers escapes typed blocker strings") {
+        register_all();
+        blocker_module_init();
+        blocker_reset_for_testing();
+        blocker_set_rate_limit_ms_for_testing(0);
+        blocker_set_clock_for_testing(1000000);
+
+        struct blocker_record resource;
+        ASSERT(blocker_init(&resource, "disk-full", "storage",
+                            BLOCKER_RESOURCE,
+                            "disk \"full\"\nmanual check"));
+        snprintf(resource.escape_action, sizeof(resource.escape_action),
+                 "%s", "page_operator");
+        ASSERT(blocker_set(&resource) == 0);
+        blocker_advance_clock_for_testing(5000000);
+
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_blockers", &args);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root, "active_count")) == 1);
+        ASSERT(json_get_int(json_get(&root, "resource_count")) == 1);
+
+        const struct json_value *blockers = json_get(&root, "blockers");
+        ASSERT(blockers != NULL);
+        ASSERT(blockers->type == JSON_ARR);
+        ASSERT(json_size(blockers) == 1);
+        const struct json_value *first = json_at(blockers, 0);
+        ASSERT(first != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(first, "id")), "disk-full");
+        ASSERT_STR_EQ(json_get_str(json_get(first, "reason")),
+                      "disk \"full\"\nmanual check");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(0);
+        PASS();
+    } _test_next:;
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(0);
+    return failures;
+}
+
 static char *mock_networkinfo_rpc(const char *method, const char *params_json)
 {
     (void)params_json;
@@ -1789,6 +1841,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();
+    failures += test_zcl_blockers_escapes_blocker_strings();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();
     failures += test_zcl_logtail_handles_null_eventlog_rpc();

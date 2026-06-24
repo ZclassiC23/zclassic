@@ -583,78 +583,25 @@ static int h_zcl_blockers(const struct mcp_request *req,
 {
     (void)req;
 
-    struct blocker_snapshot snaps[BLOCKER_CAP];
-    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
-    if (n < 0) n = 0;
-
-    int counts[4] = {0};
-    for (int i = 0; i < n; i++) {
-        int c = snaps[i].class;
-        if (c >= 0 && c < 4) counts[c]++;
+    struct json_value root;
+    json_init(&root);
+    if (!blocker_dump_state_json(&root, NULL)) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "failed to dump blocker state");
+        LOG_ERR("mcp.ops", "failed to dump blocker state");
+        return 0;
     }
 
-    /* 1 KB header + per-record budget (id/owner/reason/action all
-     * bounded). 768 B per record is safely larger than the worst
-     * stringified record. */
-    size_t cap = 4096 + (size_t)n * 768;
-    char *out = zcl_malloc(cap, "zcl_blockers_body");
+    char *out = json_value_to_body(&root, "zcl_blockers_body");
+    json_free(&root);
     if (!out) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for blockers body");
-        LOG_ERR("mcp.ops",
-                "malloc failed for zcl_blockers body (cap=%zu, n=%d)",
-                cap, n);
+        LOG_ERR("mcp.ops", "malloc failed for zcl_blockers body");
         return 0;
     }
-
-    size_t pos = 0;
-    pos += (size_t)snprintf(out + pos, cap - pos,
-        "{"
-        "\"active_count\":%d,"
-        "\"permanent_count\":%d,"
-        "\"transient_count\":%d,"
-        "\"dependency_count\":%d,"
-        "\"resource_count\":%d,"
-        "\"escape_dispatched_total\":%d,"
-        "\"rate_limit_ms\":%d,"
-        "\"blockers\":[",
-        n,
-        counts[BLOCKER_PERMANENT], counts[BLOCKER_TRANSIENT],
-        counts[BLOCKER_DEPENDENCY], counts[BLOCKER_RESOURCE],
-        blocker_escape_dispatched_count(),
-        BLOCKER_DEFAULT_RATE_LIMIT_MS);
-
-    for (int i = 0; i < n && pos < cap; i++) {
-        const struct blocker_snapshot *s = &snaps[i];
-        pos += (size_t)snprintf(out + pos, cap - pos,
-            "%s{"
-            "\"id\":\"%s\","
-            "\"owner\":\"%s\","
-            "\"class\":\"%s\","
-            "\"age_us\":%lld,"
-            "\"escape_action\":\"%s\","
-            "\"deadline_remaining_us\":%lld,"
-            "\"retry_count\":%d,"
-            "\"retry_budget\":%d,"
-            "\"fire_count\":%u,"
-            "\"reason\":\"%s\""
-            "}",
-            (i == 0) ? "" : ",",
-            s->id, s->owner_subsystem,
-            blocker_class_name((enum blocker_class)s->class),
-            (long long)s->age_us,
-            s->escape_action,
-            (long long)s->deadline_remaining_us,
-            s->retry_count, s->retry_budget, s->fire_count,
-            s->reason);
-    }
-
-    if (pos < cap)
-        pos += (size_t)snprintf(out + pos, cap - pos, "]}");
-    else
-        out[cap - 1] = '\0';
-
     res->body = out;
     return 0;
 }
