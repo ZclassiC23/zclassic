@@ -838,6 +838,7 @@ static int run_gate_script_with_worker_files(const char *script_rel,
 #define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
+#define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
 #define E10_SHAPE_FIXTURE_DST "app/_e10_shape_fixture_tmp.c"
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
@@ -987,6 +988,25 @@ static int t_e9_operator_needed_sink(void)
     int failures = 0;
     TEST("[lint-gate] E9 operator-needed sink pairing present in tree") {
         ASSERT(run_gate_script(E9_SCRIPT_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* P1-3 — systemd memory budget: the live repo units must fit under the host
+ * budget, and the script's parser self-test covers over-budget, infinity,
+ * invalid-size, absent-cap, and drop-in override behavior. */
+static int t_systemd_memory_budget(void)
+{
+    int failures = 0;
+    int baseline_rc = run_gate_script(SYSMEM_SCRIPT_REL, NULL);
+    int env_rc = setenv("ZCL_SYSTEMD_MEMORY_BUDGET_SELFTEST", "1", 1);
+    int selftest_rc = env_rc == 0 ? run_gate_script(SYSMEM_SCRIPT_REL, NULL) : -1;
+    (void)unsetenv("ZCL_SYSTEMD_MEMORY_BUDGET_SELFTEST");
+    TEST("[lint-gate] P1-3 systemd memory budget: baseline and selftest pass") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(env_rc == 0);
+        ASSERT(selftest_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -3210,6 +3230,7 @@ int test_make_lint_gates(void)
     failures += t_e1_file_size_ceiling();
     failures += t_no_new_repair_rung();
     failures += t_e9_operator_needed_sink();
+    failures += t_systemd_memory_budget();
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_gate22_framework_filename_suffix();
