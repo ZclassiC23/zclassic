@@ -24,6 +24,13 @@
 #include <string.h>
 #include <sys/mman.h>
 
+static bool sapling_header_root_known(const struct block_index *bi)
+{
+    static const uint8_t zeros32[32] = {0};
+
+    return bi && memcmp(bi->hashFinalSaplingRoot.data, zeros32, 32) != 0;
+}
+
 int sapling_tree_rebuild(struct node_db *ndb,
                          const struct active_chain *chain,
                          const char *datadir)
@@ -41,6 +48,8 @@ int sapling_tree_rebuild(struct node_db *ndb,
     int total_commitments = 0;
     int mismatches = 0;
     int start_height = sapling_height;
+    const char *fail_reason = NULL;
+    int fail_height = -1;
 
     /* Try to resume from a persisted checkpoint to avoid replaying
      * 2.6M blocks on every crash recovery. Two candidates, most
@@ -64,16 +73,19 @@ int sapling_tree_rebuild(struct node_db *ndb,
                 && flat_h > sapling_height && flat_h <= chain_tip) {
                 const struct block_index *ckpt_bi =
                     active_chain_at(chain, (int)flat_h);
-                static const uint8_t zeros32[32] = {0};
-                bool root_known = ckpt_bi &&
-                    memcmp(ckpt_bi->hashFinalSaplingRoot.data,
-                           zeros32, 32) != 0;
                 bool root_match = true;
-                if (root_known) {
+                if (sapling_header_root_known(ckpt_bi)) {
                     struct uint256 ffr;
                     incremental_tree_root(&ff_tree, &ffr);
                     root_match = memcmp(ffr.data,
                         ckpt_bi->hashFinalSaplingRoot.data, 32) == 0;
+                } else {
+                    root_match = false;
+                    LOG_WARN("sapling_tree_rebuild",
+                             "sapling_tree_rebuild: refusing unverified "
+                             "flat-file checkpoint h=%lld (missing "
+                             "hashFinalSaplingRoot)",
+                             (long long)flat_h);
                 }
                 if (root_match) {
                     tree = ff_tree;
@@ -100,9 +112,7 @@ int sapling_tree_rebuild(struct node_db *ndb,
             if (incremental_tree_deserialize(&tree, &ts)) {
                 const struct block_index *ckpt_bi =
                     active_chain_at(chain, (int)ckpt_h);
-                if (ckpt_bi &&
-                    memcmp(ckpt_bi->hashFinalSaplingRoot.data,
-                           (uint8_t[32]){0}, 32) != 0) {
+                if (sapling_header_root_known(ckpt_bi)) {
                     struct uint256 ckpt_root;
                     incremental_tree_root(&tree, &ckpt_root);
                     if (memcmp(ckpt_root.data,
@@ -114,18 +124,19 @@ int sapling_tree_rebuild(struct node_db *ndb,
                         LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: resuming " "from checkpoint h=%d (%d commitments)", (int)ckpt_h, total_commitments);
                         fflush(stderr);
                     } else {
+                        LOG_WARN("sapling_tree_rebuild",
+                                 "sapling_tree_rebuild: checkpoint h=%d "
+                                 "root mismatch; replaying from activation",
+                                 (int)ckpt_h);
                         sapling_tree_init(&tree);
                     }
                 } else {
-                    if ((ckpt_h - sapling_height) % 100000 == 0) {
-                        start_height = (int)ckpt_h + 1;
-                        total_commitments =
-                            (int)incremental_tree_size(&tree);
-                        LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: resuming " "from unverified checkpoint h=%d " "(%d commitments)", (int)ckpt_h, total_commitments);
-                        fflush(stderr);
-                    } else {
-                        sapling_tree_init(&tree);
-                    }
+                    LOG_WARN("sapling_tree_rebuild",
+                             "sapling_tree_rebuild: refusing unverified "
+                             "node_state checkpoint h=%d (missing "
+                             "hashFinalSaplingRoot)",
+                             (int)ckpt_h);
+                    sapling_tree_init(&tree);
                 }
             }
         }
@@ -180,12 +191,21 @@ int sapling_tree_rebuild(struct node_db *ndb,
         if (is_checkpoint) {
             struct uint256 computed;
             incremental_tree_root(&tree, &computed);
-            if (memcmp(computed.data,
-                       blk.header.hashFinalSaplingRoot.data, 32) != 0)
+            if (!sapling_header_root_known(bi)) {
+                fail_reason = "checkpoint_missing_sapling_root";
+                fail_height = h;
+            } else if (memcmp(computed.data,
+                       blk.header.hashFinalSaplingRoot.data, 32) != 0) {
                 mismatches++;
+                fail_reason = "checkpoint_sapling_root_mismatch";
+                fail_height = h;
+            }
         }
 
         block_free(&blk);
+
+        if (fail_reason)
+            goto fail;
 
         if (is_checkpoint) {
             LOG_WARN("sapling_tree_rebuild", "  sapling_tree_rebuild: h=%d/%d " "commitments=%d mismatches=%d", h, chain_tip, total_commitments, mismatches);
@@ -193,30 +213,40 @@ int sapling_tree_rebuild(struct node_db *ndb,
 
             struct byte_stream ts;
             stream_init(&ts, 4096);
-            incremental_tree_serialize(&tree, &ts);
-            node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
-            node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                                  (int64_t)h);
+            if (!incremental_tree_serialize(&tree, &ts)) {
+                stream_free(&ts);
+                fail_reason = "serialize_checkpoint_tree_failed";
+                fail_height = h;
+                goto fail;
+            }
+            if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size)) {
+                stream_free(&ts);
+                fail_reason = "persist_checkpoint_tree_failed";
+                fail_height = h;
+                goto fail;
+            }
+            if (!node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                                       (int64_t)h)) {
+                stream_free(&ts);
+                fail_reason = "persist_checkpoint_height_failed";
+                fail_height = h;
+                goto fail;
+            }
             stream_free(&ts);
         }
     }
 
-    if (cached_data) munmap(cached_data, cached_size);
-
-    {
-        struct byte_stream ts;
-        stream_init(&ts, 4096);
-        incremental_tree_serialize(&tree, &ts);
-        node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
-        node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
-                              (int64_t)chain_tip);
-        stream_free(&ts);
+    if (cached_data) {
+        munmap(cached_data, cached_size);
+        cached_data = NULL;
+        cached_size = 0;
     }
 
     const struct block_index *tip = active_chain_tip(chain);
     struct uint256 final_root;
     incremental_tree_root(&tree, &final_root);
-    bool match = tip && memcmp(final_root.data,
+    bool tip_root_known = sapling_header_root_known(tip);
+    bool match = tip_root_known && memcmp(final_root.data,
                                tip->hashFinalSaplingRoot.data, 32) == 0;
 
     char root_hex[65];
@@ -229,6 +259,46 @@ int sapling_tree_rebuild(struct node_db *ndb,
     LOG_WARN("sapling_tree_rebuild", "sapling_tree_rebuild: DONE commitments=%d " "mismatches=%d root=%s match=%s", total_commitments, mismatches, root_hex, match ? "YES" : "NO");
     fflush(stderr);
 
+    if (!match) {
+        fail_reason = tip_root_known ? "tip_sapling_root_mismatch"
+                                     : "tip_missing_sapling_root";
+        fail_height = tip ? tip->nHeight : -1;
+        goto fail;
+    }
+
+    {
+        struct byte_stream ts;
+        stream_init(&ts, 4096);
+        if (!incremental_tree_serialize(&tree, &ts)) {
+            stream_free(&ts);
+            fail_reason = "serialize_final_tree_failed";
+            fail_height = chain_tip;
+            goto fail;
+        }
+        if (!node_db_state_set(ndb, "sapling_tree", ts.data, ts.size)) {
+            stream_free(&ts);
+            fail_reason = "persist_final_tree_failed";
+            fail_height = chain_tip;
+            goto fail;
+        }
+        if (!node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                                   (int64_t)chain_tip)) {
+            stream_free(&ts);
+            fail_reason = "persist_final_height_failed";
+            fail_height = chain_tip;
+            goto fail;
+        }
+        stream_free(&ts);
+    }
+
     (void)tree;
     return total_commitments;
+
+fail:
+    if (cached_data) munmap(cached_data, cached_size);
+    LOG_ERR("sapling_tree_rebuild",
+            "sapling_tree_rebuild: fail-closed reason=%s height=%d "
+            "commitments=%d mismatches=%d",
+            fail_reason ? fail_reason : "unknown", fail_height,
+            total_commitments, mismatches);
 }

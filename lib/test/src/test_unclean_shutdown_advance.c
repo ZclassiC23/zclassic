@@ -4,7 +4,10 @@
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "controllers/sync_controller.h"
+#include "core/serialize.h"
 #include "event/event.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "validation/chainstate.h"
 #include "validation/process_block.h"
 
 #include <stdatomic.h>
@@ -23,6 +26,69 @@ static void unclean_shutdown_event_observer(enum event_type type,
     (void)payload_len;
     (void)ctx;
     atomic_fetch_add(&g_sapling_persist_events, 1);
+}
+
+static void init_sapling_rebuild_index(struct block_index *bi, int height,
+                                       uint8_t tag)
+{
+    block_index_init(bi);
+    bi->nHeight = height;
+    memset(bi->hashBlock.data, tag, 32);
+    bi->phashBlock = &bi->hashBlock;
+}
+
+static int test_sapling_rebuild_rejects_unverified_checkpoint(void)
+{
+    int failures = 0;
+    const int sapling_height = 476969;
+    const int checkpoint_height = sapling_height + 100000;
+    char dir[256];
+    char dbpath[512];
+
+    printf("sapling rebuild rejects unverified legacy checkpoint... ");
+
+    test_make_tmpdir(dir, sizeof(dir), "sapling_rebuild", "unverified");
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool ok = node_db_open(&ndb, dbpath);
+
+    struct incremental_merkle_tree tree;
+    sapling_tree_init(&tree);
+    struct byte_stream ts;
+    stream_init(&ts, 4096);
+    ok = ok && incremental_tree_serialize(&tree, &ts);
+    ok = ok && node_db_state_set(&ndb, "sapling_tree", ts.data, ts.size);
+    ok = ok && node_db_state_set_int(&ndb, "sapling_tree_rebuild_height",
+                                     checkpoint_height);
+
+    struct active_chain chain;
+    active_chain_init(&chain);
+    struct block_index sapling;
+    struct block_index checkpoint;
+    init_sapling_rebuild_index(&sapling, sapling_height, 0xa5);
+    init_sapling_rebuild_index(&checkpoint, checkpoint_height, 0xc5);
+    /* Leave checkpoint.hashFinalSaplingRoot all-zero: the legacy resume
+     * checkpoint is therefore unverified and must not be accepted. */
+    ok = ok && active_chain_install_tip_slot(&chain, &sapling);
+    ok = ok && active_chain_install_tip_slot(&chain, &checkpoint);
+
+    int appended = ok ? sapling_tree_rebuild(&ndb, &chain, dir) : 0;
+    ok = ok && appended < 0;
+
+    active_chain_free(&chain);
+    stream_free(&ts);
+    node_db_close(&ndb);
+    test_rm_rf_recursive(dir);
+
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (appended=%d)\n", appended);
+        failures++;
+    }
+    return failures;
 }
 
 int test_unclean_shutdown_advance(void)
@@ -88,6 +154,8 @@ int test_unclean_shutdown_advance(void)
                atomic_load(&g_sapling_tree_rebuilding));
         failures++;
     }
+
+    failures += test_sapling_rebuild_rejects_unverified_checkpoint();
 
     return failures;
 }

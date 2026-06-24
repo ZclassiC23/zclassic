@@ -704,11 +704,14 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
         GetDataDir(true, datadir, sizeof(datadir));
         int appended = sapling_tree_rebuild(ndb, &ms->chain_active, datadir);
         if (appended < 0) {
-            LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: "
-                     "sapling_tree_rebuild failed (returned %d) — wallet note "
-                     "witnesses / MMR may be stale until the catchup service "
-                     "rebuilds; the consensus coins-fold is unaffected",
-                     appended);
+            fprintf(stderr,
+                    "FATAL: -load-snapshot-at-own-height: "
+                    "sapling_tree_rebuild failed (returned %d) — refusing "
+                    "to claim coherent wallet/MMR state\n", appended);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height sapling_tree_rebuild_failed "
+                        "rc=%d", appended);
+            _exit(EXIT_FAILURE);
         } else {
             fprintf(stderr,
                     "[boot] -load-snapshot-at-own-height: Sapling commitment "
