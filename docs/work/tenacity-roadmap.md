@@ -172,14 +172,14 @@ these harden the bridge.
   `tip_window_holes`; confirm both sanitizers clean + the canary survives. Review the
   lock change against the LOCK-ORDER LAW (do NOT take `cs_main` while holding a leaf
   lock the drive path holds).
-- **(d1) Scope the replay-canary FAIL sentinel.** `canary_sentinel_watch.c:191-205`
-  reads only `verdict` and latches `fail` on `"FAIL"` without filtering by
-  `build_commit` (vs the running build) or `started_ts` (vs process start) — both
-  fields ARE present in the sentinel JSON. A 3-day-old FAIL from an OLD wedged binary
-  in the shared `~/.local/state/zclassic23-canary/` dir latches `replay_canary_failed`
-  forever on a healthy node. Fix: in `fold_sentinel` ignore any sentinel whose
-  `build_commit` != the running build or whose `started_ts` predates process start.
-  Unit test + dev-lane restart showing the condition clears.
+- **(d1) Scope the replay-canary FAIL sentinel *(LANDED 2026-06-24)*.**
+  `canary_sentinel_watch.c` now filters both stale dimensions in the shared
+  `~/.local/state/zclassic23-canary/` verdict dir: cross-build FAILs do not page
+  (already present before this pass), and FAILs whose `started_ts` predates the
+  watcher process start are recorded as `stale_run` but do not latch
+  `replay_canary_failed`. Both stale drops log once per mtime, and
+  `test_canary_sentinel_watch` proves stale-run suppression plus fresh same-build
+  FAIL paging.
 - **(d2) Make `contradiction_frozen` self-clearing once reconciled.** The freeze is
   raised on a transient `active_tip_hash != csr_tip_hash` at boot
   (`chain_evidence_reconstruct.c:178-184`) but the remedy returns

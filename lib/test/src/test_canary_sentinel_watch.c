@@ -19,6 +19,8 @@
  *                        same-build FAIL still pages.
  *   (h) -dirty norm    → a bare-hash FAIL from the same SOURCE still pages even
  *                        when the binary is a dirty build (dev-lane default).
+ *   (i) pre-start run  → a FAIL from a run started before this process is
+ *                        ignored; a fresh same-build FAIL still pages.
  * Plus the documented absence policy: a FAIL stays latched when its
  * sentinel disappears (a re-running canary must not un-page the node). */
 
@@ -109,6 +111,7 @@ static void watch_test_setup(const char *dir)
 {
     condition_engine_reset_for_testing();
     canary_sentinel_watch_test_reset();
+    canary_sentinel_watch_test_set_process_start(1717000000LL);
     replay_canary_failed_test_reset();
     register_replay_canary_failed();
     setenv("ZCL_CANARY_VERDICT_DIR", dir, 1);
@@ -367,6 +370,36 @@ int test_canary_sentinel_watch(void)
         ok = ok && canary_sentinel_watch_fail_active();
         CSW_CHECK("same-source FAIL pages even when binary is -dirty "
                   "(bare-hash sentinel)", ok);
+        watch_test_teardown(dir);
+    }
+
+    /* (i) Run-start staleness: the shared verdict dir can contain a FAIL from
+     * this same build, but from a canary run that started before this node
+     * process. It is not evidence about the running process, so it must not
+     * page. A fresh same-build FAIL still pages. */
+    {
+        watch_test_setup(dir);
+        canary_sentinel_watch_test_set_process_start(1718000000LL);
+        bool ok = write_sentinel(dir, "anchor", "FAIL", "old_process_fail",
+                                 1718000500LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && !canary_sentinel_watch_fail_active();
+        ok = ok && dump_bool("fail_latched") == false;
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && replay_canary_failed_test_remedy_calls() == 0;
+
+        ok = ok && write_sentinel(dir, "genesis", "FAIL", "fresh_fail",
+                                  1718002000LL);
+        canary_sentinel_watch_tick_once();
+        ok = ok && canary_sentinel_watch_fail_active();
+        char detail[256];
+        int fails = canary_sentinel_watch_fail_detail(detail, sizeof(detail));
+        ok = ok && fails == 1;
+        ok = ok && strstr(detail, "kind=genesis") != NULL;
+        ok = ok && strstr(detail, "kind=anchor") == NULL;
+        CSW_CHECK("pre-start FAIL ignored; fresh same-build FAIL still pages",
+                  ok);
         watch_test_teardown(dir);
     }
 

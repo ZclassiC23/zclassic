@@ -11,7 +11,7 @@
  *   - Sentinels: replay_canary_<kind>.json (<kind> = anchor | genesis | ...),
  *     each atomically replaced (tmp + rename) by every run — file content IS
  *     the latest verdict for that kind. Fields read: verdict, from, ts,
- *     reason, build_commit.
+ *     started_ts, reason, build_commit.
  *
  * Cross-build staleness (load-bearing): the verdict dir is SHARED across
  * lanes and restarts. A sentinel whose build_commit differs from the running
@@ -20,6 +20,12 @@
  * FAIL is recorded for display (stale_build=true in the dump) but does not
  * raise; only a SAME-build (or no-build_commit legacy) FAIL pages. The drop
  * is logged once per mtime (never a silent swallow).
+ *
+ * Pre-start staleness (load-bearing): a sentinel whose started_ts predates
+ * this process is likewise not evidence about this process. It is recorded
+ * for display (stale_run=true in the dump) but does not raise. Sentinels
+ * missing started_ts retain legacy behavior rather than being silently
+ * discarded.
  *
  * Absence/staleness policy (explicit, load-bearing): a sentinel can be
  * legitimately ABSENT — every canary run deletes its sentinel first, so a
@@ -42,6 +48,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* One supervised scan of the verdict dir. Updates the per-kind slots and the
  * FAIL latch. Quiet no-op when the dir is absent/unreadable or empty. */
@@ -67,6 +74,7 @@ bool canary_watch_dump_state_json(struct json_value *out, const char *key);
 #ifdef ZCL_TESTING
 /* Clear all per-kind slots, counters, and the FAIL latch. */
 void canary_sentinel_watch_test_reset(void);
+void canary_sentinel_watch_test_set_process_start(int64_t start_unix);
 #endif
 
 #endif /* ZCL_SERVICES_CANARY_SENTINEL_WATCH_H */

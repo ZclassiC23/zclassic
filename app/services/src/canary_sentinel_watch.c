@@ -54,9 +54,13 @@ struct canary_kind_slot {
     char    build_commit[CANARY_COMMIT_MAX]; /* sentinel's own build_commit */
     bool    stale_build;                /* verdict==FAIL but a DIFFERENT build
                                          * than the one running → not our page */
+    bool    stale_run;                  /* verdict==FAIL but the run started
+                                         * before this process → not our page */
     int64_t ts;                         /* sentinel's own write-time epoch */
+    int64_t started_ts;                 /* sentinel's own run-start epoch */
     int64_t parse_fail_logged_mtime;    /* log-once-per-mtime for torn JSON */
-    int64_t stale_logged_mtime;         /* log-once-per-mtime for stale-build */
+    int64_t stale_build_logged_mtime;   /* log-once-per-mtime for stale-build */
+    int64_t stale_run_logged_mtime;     /* log-once-per-mtime for stale-run */
 };
 
 static struct {
@@ -66,8 +70,17 @@ static struct {
     _Atomic int64_t scans_total;
     _Atomic int64_t files_seen_last;
     _Atomic int64_t parse_failures_logged;
+    _Atomic int64_t process_start_unix;
     _Atomic bool    fail_latched;
 } g_watch = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+__attribute__((constructor))
+static void canary_sentinel_watch_init_process_start(void)
+{
+    int64_t now = platform_time_wall_unix();
+    if (now > 0)
+        atomic_store(&g_watch.process_start_unix, now);
+}
 
 bool canary_sentinel_watch_resolve_dir(char *out, size_t cap)
 {
@@ -222,6 +235,7 @@ static void process_sentinel(const char *dir, const char *name)
     const char *reason  = json_get_str(json_get(&v, "reason"));
     const char *scommit = json_get_str(json_get(&v, "build_commit"));
     int64_t ts          = json_get_int(json_get(&v, "ts"));
+    int64_t started_ts  = json_get_int(json_get(&v, "started_ts"));
 
     /* Cross-build staleness (2026-06-16): the verdict dir is SHARED across
      * lanes and restarts, so a sentinel written by a DIFFERENT binary than
@@ -234,6 +248,11 @@ static void process_sentinel(const char *dir, const char *name)
     const char *my_commit = zcl_build_commit();
     bool cross_build = scommit && scommit[0] && my_commit && my_commit[0] &&
                        !commit_same_source(scommit, my_commit);
+    int64_t process_start =
+        atomic_load_explicit(&g_watch.process_start_unix,
+                             memory_order_relaxed);
+    bool stale_run = started_ts > 0 && process_start > 0 &&
+                     started_ts < process_start;
     bool is_fail = strcmp(verdict, "FAIL") == 0;
 
     snprintf(slot->verdict, sizeof(slot->verdict), "%s", verdict);
@@ -246,30 +265,48 @@ static void process_sentinel(const char *dir, const char *name)
      * display only. */
     snprintf(slot->from, sizeof(slot->from), "%s", from);
     slot->ts = ts;
+    slot->started_ts = started_ts;
     slot->stale_build = is_fail && cross_build;
-    slot->fail = is_fail && !cross_build;
+    slot->stale_run = is_fail && stale_run;
+    slot->fail = is_fail && !cross_build && !stale_run;
     slot->parse_fail_logged_mtime = 0; /* readable again: re-arm log-once */
 
     /* A dropped cross-build FAIL must never be a SILENT swallow (fail-loud
      * doctrine): say so once per mtime, with the build mismatch named. */
-    bool log_stale = slot->stale_build && slot->stale_logged_mtime != mtime;
+    bool log_stale_build = slot->stale_build &&
+                           slot->stale_build_logged_mtime != mtime;
+    bool log_stale_run = slot->stale_run &&
+                         slot->stale_run_logged_mtime != mtime;
     char log_kind[CANARY_KIND_NAME_MAX] = {0};
     char log_reason[CANARY_REASON_MAX] = {0};
     char log_scommit[CANARY_COMMIT_MAX] = {0};
-    if (log_stale) {
-        slot->stale_logged_mtime = mtime;
+    int64_t log_started_ts = 0;
+    int64_t log_process_start = 0;
+    if (log_stale_build || log_stale_run) {
+        if (log_stale_build)
+            slot->stale_build_logged_mtime = mtime;
+        if (log_stale_run)
+            slot->stale_run_logged_mtime = mtime;
         snprintf(log_kind, sizeof(log_kind), "%s", slot->kind);
         snprintf(log_reason, sizeof(log_reason), "%s", slot->reason);
         snprintf(log_scommit, sizeof(log_scommit), "%s", slot->build_commit);
+        log_started_ts = slot->started_ts;
+        log_process_start = process_start;
     }
     pthread_mutex_unlock(&g_watch.lock);
     json_free(&v);
 
-    if (log_stale)
+    if (log_stale_build)
         LOG_INFO("canary_watch", "[canary_watch] ignoring STALE cross-build "
                  "FAIL sentinel kind=%s build=%s (running=%s) reason=%s — not "
                  "paging", log_kind, log_scommit,
                  my_commit ? my_commit : "-", log_reason);
+    if (log_stale_run)
+        LOG_INFO("canary_watch", "[canary_watch] ignoring STALE pre-start "
+                 "FAIL sentinel kind=%s started_ts=%lld process_start=%lld "
+                 "reason=%s — not paging", log_kind,
+                 (long long)log_started_ts, (long long)log_process_start,
+                 log_reason);
 }
 
 /* Recompute the OR of all per-kind FAIL latches. */
@@ -399,8 +436,10 @@ bool canary_watch_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_str(&obj, "build_commit",
                          s->build_commit[0] ? s->build_commit : "-");
         json_push_kv_int(&obj, "ts", s->ts);
+        json_push_kv_int(&obj, "started_ts", s->started_ts);
         json_push_kv_bool(&obj, "fail", s->fail);
         json_push_kv_bool(&obj, "stale_build", s->stale_build);
+        json_push_kv_bool(&obj, "stale_run", s->stale_run);
         json_push_back(&arr, &obj);
         json_free(&obj);
     }
@@ -421,5 +460,11 @@ void canary_sentinel_watch_test_reset(void)
     atomic_store(&g_watch.files_seen_last, 0);
     atomic_store(&g_watch.parse_failures_logged, 0);
     atomic_store(&g_watch.fail_latched, false);
+    canary_sentinel_watch_init_process_start();
+}
+
+void canary_sentinel_watch_test_set_process_start(int64_t start_unix)
+{
+    atomic_store(&g_watch.process_start_unix, start_unix);
 }
 #endif
