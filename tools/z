@@ -18,6 +18,9 @@
 #   z mempool                     Mempool status
 #   z peers                       Connected peers
 #   z chain                       Chain summary stats
+#   z state <subsystem> [key]     Generic dumpstate diagnostics
+#   z log <pattern> [since max level]  Tail node.log via server-side regex
+#   z sql <select> [limit]        SELECT-only node.db query
 #   z tree                        Sapling tree state
 #   z scan <start> <end>          Scan for commitments
 #
@@ -268,6 +271,18 @@ peerlife|peer-lifecycle)
     rpc dumpstate peer_lifecycle
     ;;
 
+state|dumpstate)
+    rpc dumpstate "$2" ${3:+"$3"}
+    ;;
+
+log|nodelog|node-log)
+    rpc getnodelog "$2" ${3:+"$3"} ${4:+"$4"} ${5:+"$5"}
+    ;;
+
+sql|dbquery)
+    rpc dbquery "$2" ${3:+"$3"}
+    ;;
+
 mirror)
     JSON="$(mirror_status_json)"
     if [ "${2:-}" = "--json" ] || [ "${2:-}" = "-j" ]; then
@@ -416,6 +431,9 @@ READ:
   z status              Healthcheck with chain advance diagnostics
   z advance             Chain advance source scoring and selection blockers
   z peerlife            Peer lifecycle attempts, handshakes, failures by source
+  z state <subsystem>   Generic dumpstate diagnostics
+  z log <regex>         Server-side node.log regex tail
+  z sql 'SELECT ...'    SELECT-only node.db query
   z mirror [--json]     zclassic23/zclassicd mirror status
   z tree                Sapling commitment tree state
   z scan 476969 486969  Scan blocks for commitments

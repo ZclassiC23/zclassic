@@ -1652,6 +1652,12 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "rpc dumpstate chain_advance_coordinator") != NULL);
         ASSERT(strstr(buf, "peerlife|peer-lifecycle)") != NULL);
         ASSERT(strstr(buf, "rpc dumpstate peer_lifecycle") != NULL);
+        ASSERT(strstr(buf, "state|dumpstate)") != NULL);
+        ASSERT(strstr(buf, "rpc dumpstate \"$2\"") != NULL);
+        ASSERT(strstr(buf, "log|nodelog|node-log)") != NULL);
+        ASSERT(strstr(buf, "rpc getnodelog \"$2\"") != NULL);
+        ASSERT(strstr(buf, "sql|dbquery)") != NULL);
+        ASSERT(strstr(buf, "rpc dbquery \"$2\"") != NULL);
         ASSERT(strstr(buf, "P2P reachability and handshake summary") != NULL);
         ASSERT(strstr(buf,
                       "Chain advance source scoring and selection blockers")
@@ -1659,6 +1665,9 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf,
                       "Peer lifecycle attempts, handshakes, failures by source")
                != NULL);
+        ASSERT(strstr(buf, "Generic dumpstate diagnostics") != NULL);
+        ASSERT(strstr(buf, "Server-side node.log regex tail") != NULL);
+        ASSERT(strstr(buf, "SELECT-only node.db query") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "docs/RUNBOOK.md") == 0);
