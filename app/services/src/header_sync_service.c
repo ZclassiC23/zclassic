@@ -103,74 +103,23 @@ bool syncsvc_begin_peer_sync(struct p2p_node *node,
     return true;
 }
 
-static void syncsvc_build_locator_from_chain(struct block_locator *loc,
-                                             const struct active_chain *chain)
+static void syncsvc_build_locator_from_tip(struct block_locator *loc,
+                                           const struct block_index *tip,
+                                           const char *alloc_label,
+                                           const char *realloc_label)
 {
-    const struct block_index *tip;
-    struct block_index *walk;
+    const struct block_index *walk = tip;
     size_t alloc = 0;
     size_t idx = 0;
     int step = 1;
     int counter = 0;
-    if (!loc || !chain)
-        return;
 
-    tip = active_chain_tip(chain);
-    if (!tip || !tip->phashBlock)
+    if (!loc || !tip || !tip->phashBlock)
         return;
 
     alloc = 32;
-    loc->vhave = zcl_malloc(alloc * sizeof(struct uint256), "header_sync locator chain");
-    if (!loc->vhave)
-        return;
-
-    walk = (struct block_index *)tip;
-    while (walk && walk->phashBlock && idx < MAX_LOCATOR_HASHES) {
-        if (idx == alloc) {
-            if (alloc >= MAX_LOCATOR_HASHES)
-                break;
-            size_t next_alloc = alloc * 2;
-            if (next_alloc > MAX_LOCATOR_HASHES)
-                next_alloc = MAX_LOCATOR_HASHES;
-            struct uint256 *nv = zcl_realloc(loc->vhave,
-                                         next_alloc * sizeof(struct uint256),
-                                         "header_sync.locator_chain");
-            if (!nv)
-                break;
-            loc->vhave = nv;
-            alloc = next_alloc;
-        }
-        loc->vhave[idx++] = *walk->phashBlock;
-
-        struct block_index *prev = walk;
-        for (int i = 0; i < step && walk; i++)
-            walk = walk->pprev;
-        if (walk == prev)
-            break;
-
-        /* Keep the first 12 hashes dense (step=1) for better fork
-         * detection near the tip, then double every step after. */
-        if (++counter > 12 && step < 1048576)
-            step *= 2;
-    }
-
-    loc->num_hashes = idx;
-}
-
-static void syncsvc_build_locator_from_index(struct block_locator *loc,
-                                             const struct block_index *from)
-{
-    size_t alloc = 0;
-    size_t idx = 0;
-    int step = 1;
-    int counter = 0;
-    const struct block_index *walk = from;
-
-    if (!loc || !from || !from->phashBlock)
-        return;
-
-    alloc = 32;
-    loc->vhave = zcl_malloc(alloc * sizeof(struct uint256), "header_sync locator index");
+    loc->vhave = zcl_malloc(alloc * sizeof(struct uint256),
+                            alloc_label);
     if (!loc->vhave)
         return;
 
@@ -183,7 +132,7 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
                 next_alloc = MAX_LOCATOR_HASHES;
             struct uint256 *nv = zcl_realloc(loc->vhave,
                                          next_alloc * sizeof(struct uint256),
-                                         "header_sync.locator_index");
+                                         realloc_label);
             if (!nv)
                 break;
             loc->vhave = nv;
@@ -197,6 +146,8 @@ static void syncsvc_build_locator_from_index(struct block_locator *loc,
         if (walk == prev)
             break;
 
+        /* Keep the first 12 hashes dense (step=1) for better fork
+         * detection near the tip, then double every step after. */
         if (++counter > 12 && step < 1048576)
             step *= 2;
     }
@@ -557,10 +508,15 @@ struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
         return ZCL_ERR(-1, "null loc=%d genesis_hash=%d", !loc, !genesis_hash);
 
     block_locator_init(loc);
-    if (from)
-        syncsvc_build_locator_from_index(loc, from);
-    else
-        syncsvc_build_locator_from_chain(loc, chain);
+    if (from) {
+        syncsvc_build_locator_from_tip(loc, from,
+                                       "header_sync locator index",
+                                       "header_sync.locator_index");
+    } else if (chain) {
+        syncsvc_build_locator_from_tip(loc, active_chain_tip(chain),
+                                       "header_sync locator chain",
+                                       "header_sync.locator_chain");
+    }
 
     if (loc->num_hashes == 0) {
         loc->vhave = zcl_malloc(sizeof(struct uint256), "header_sync genesis locator");
