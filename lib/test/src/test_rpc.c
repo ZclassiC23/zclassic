@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/diagnostics_controller.h"
+#include "controllers/diagnostics_internal.h"
 #include "platform/clock.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_rpc_client.h"
@@ -181,6 +182,50 @@ int test_rpc(void) {
         bool ok = code && json_get_int(code) == RPC_METHOD_NOT_FOUND;
         ok = ok && msg && strcmp(json_get_str(msg), "Method not found") == 0;
         json_free(&err);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dumpstate unknown subsystem lists registry... ");
+    {
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value sub;
+        json_init(&sub);
+        json_set_str(&sub, "missing_test_subsystem");
+        bool ok = json_push_back(&params, &sub);
+        json_free(&sub);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && !diag_rpc_dumpstate(&params, false, &result);
+        const char *msg = json_get_str(&result);
+        ok = ok && msg && strstr(msg, "unknown subsystem") != NULL;
+        ok = ok && strstr(msg, "known_subsystems=") != NULL;
+        ok = ok && strstr(msg, "reducer_frontier") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dumpstate help lists registry... ");
+    {
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value result;
+        json_init(&result);
+
+        bool ok = diag_rpc_dumpstate(&params, true, &result);
+        const char *msg = json_get_str(&result);
+        ok = ok && msg && strstr(msg, "Known subsystems:") != NULL;
+        ok = ok && strstr(msg, "reducer_frontier") != NULL;
+        ok = ok && strstr(msg, "block_index") != NULL;
+
+        json_free(&params);
+        json_free(&result);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

@@ -683,17 +683,42 @@ int diagnostics_subsystems_csv(char *out, size_t out_sz)
     return unclamped;
 }
 
+static void diagnostics_dumpstate_help(struct json_value *result)
+{
+    char known[4096];
+    diagnostics_subsystems_csv(known, sizeof(known));
+
+    char text[8192];
+    snprintf(text, sizeof(text),
+             "dumpstate <subsystem> [key]\n"
+             "\nDump in-process state for a subsystem. Known subsystems:\n"
+             "  %s\n"
+             "\nResult: { subsystem, description, captured_at, state: {...} }",
+             known);
+    json_set_str(result, text);
+}
+
+static bool diagnostics_dumpstate_unknown(struct json_value *result,
+                                          const char *sub)
+{
+    char known[4096];
+    diagnostics_subsystems_csv(known, sizeof(known));
+
+    char msg[8192];
+    snprintf(msg, sizeof(msg),
+             "dumpstate: unknown subsystem '%s'; known_subsystems=%s",
+             sub ? sub : "", known);
+    json_set_str(result, msg);
+    LOG_FAIL("diag", "%s", msg);
+}
+
 bool diag_rpc_dumpstate(const struct json_value *params, bool help,
                         struct json_value *result)
 {
-    RPC_HELP(help, result,
-        "dumpstate <subsystem> [key]\n"
-        "\nDump in-process state for a subsystem. Subsystems:\n"
-        "  watchdog     — sync watchdog status + stats\n"
-        "  chain_advance_coordinator — source scoring + fallback policy\n"
-        "  boot         — last boot's integrity + backfill counters\n"
-        "  block_index  — block_index entry (key = height or hex hash)\n"
-        "\nResult: { subsystem, captured_at, state: {...} }");
+    if (help) {
+        diagnostics_dumpstate_help(result);
+        return true;
+    }
 
     const char *sub = json_get_str(json_at(params, 0));
     const struct json_value *key_val = json_at(params, 1);
@@ -729,10 +754,7 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
         domain_key = sub + strlen("supervisor.");
     }
     if (!e) {
-        json_set_str(result, "dumpstate: unknown subsystem");
-        LOG_FAIL("diag",
-                 "dumpstate: unknown subsystem '%s' (try watchdog/boot/block_index)",
-                 sub);
+        return diagnostics_dumpstate_unknown(result, sub);
     }
 
     json_set_object(result);
