@@ -72,6 +72,8 @@ void sync_monitor_init(void)
     pthread_mutex_unlock(&g_local_recovery_lock);
     memset(g_last_recovery_reason, 0, sizeof(g_last_recovery_reason));
     memset(g_last_recovery_trigger, 0, sizeof(g_last_recovery_trigger));
+    atomic_store(&g_last_block_connected_ts, 0);
+    atomic_store(&g_last_block_connected_height, -1);
     atomic_store(&g_recoveries_total, 0);
     atomic_store(&g_last_recovery_time, 0);
     atomic_store(&g_last_recovery_type, WATCHDOG_NONE);
@@ -510,6 +512,12 @@ bool sync_monitor_dump_state_json(struct json_value *out, const char *key)
 
     struct watchdog_stats wd;
     sync_monitor_get_stats(&wd);
+    json_push_kv_int (out, "last_block_connected_height",
+                      atomic_load(&g_last_block_connected_height));
+    json_push_kv_int (out, "last_block_connected_time",
+                      atomic_load(&g_last_block_connected_ts));
+    json_push_kv_int (out, "tip_advance_age_seconds",
+                      sync_monitor_tip_advance_age());
     json_push_kv_int (out, "recoveries_total", wd.recoveries_total);
     json_push_kv_str (out, "last_recovery",
                       watchdog_recovery_type_name(wd.last_recovery));

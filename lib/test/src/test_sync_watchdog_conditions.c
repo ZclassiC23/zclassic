@@ -7,6 +7,7 @@
 #include "conditions/local_header_refill_needed.h"
 #include "conditions/sync_state_stuck.h"
 #include "framework/condition.h"
+#include "json/json.h"
 #include "net/download.h"
 #include "platform/clock.h"
 #include "services/sync_monitor.h"
@@ -65,9 +66,9 @@ static void reset_sync_watchdog(struct connman *cm,
     zcl_mutex_init(&cm->manager.cs_nodes);
     zcl_mutex_init(&dm->cs);
     zcl_mutex_init(&ms->cs_main);
+    sync_monitor_init();
     sync_monitor_set_context(cm, dm, ms);
     condition_engine_set_main_state(ms);
-    sync_monitor_init();
 }
 
 static void cleanup_sync_watchdog(void)
@@ -81,6 +82,42 @@ int test_sync_watchdog_conditions(void)
 {
     printf("\n=== sync watchdog condition tests ===\n");
     int failures = 0;
+
+    {
+        struct fake_clock clock;
+        fake_clock_install(&clock, 6000);
+        sync_monitor_init();
+
+        struct json_value state;
+        json_init(&state);
+        bool ok = sync_monitor_dump_state_json(&state, NULL);
+        ok = ok && json_get(&state, "last_block_connected_height") != NULL;
+        ok = ok && json_get(&state, "last_block_connected_time") != NULL;
+        ok = ok && json_get(&state, "tip_advance_age_seconds") != NULL;
+        ok = ok && json_get_int(json_get(
+            &state, "last_block_connected_height")) == -1;
+        ok = ok && json_get_int(json_get(
+            &state, "last_block_connected_time")) == 0;
+        ok = ok && json_get_int(json_get(
+            &state, "tip_advance_age_seconds")) == -1;
+        json_free(&state);
+
+        sync_monitor_on_block_connected(42);
+        fake_clock_set(&clock, 6015);
+        json_init(&state);
+        ok = ok && sync_monitor_dump_state_json(&state, NULL);
+        ok = ok && json_get_int(json_get(
+            &state, "last_block_connected_height")) == 42;
+        ok = ok && json_get_int(json_get(
+            &state, "last_block_connected_time")) == 6000;
+        ok = ok && json_get_int(json_get(
+            &state, "tip_advance_age_seconds")) == 15;
+        json_free(&state);
+
+        SYNC_WATCHDOG_CHECK("sync monitor dump exposes tip advance input",
+                            ok);
+        cleanup_sync_watchdog();
+    }
 
     {
         struct fake_clock clock;
