@@ -353,10 +353,9 @@ int snapsync_activate_verified_tip(const struct snapshot_sync_service *svc,
     }
 
     /* g_snapshot_anchor is intentionally NOT set here: when snap_bi
-     * comes from block_map_find, ownership stays with the block map.
-     * The "not in map" path above already allocated and registered a
-     * heap-owned anchor — that is the only object reset/free is allowed
-     * to drop. */
+     * comes from block_map_find, ancestry is already known. The
+     * "not in map" path above registers a block-map-owned metadata
+     * anchor and stores a non-owning locator hint. */
     g_deferred_proof_validation_below_height = snap_bi->nHeight;
 
     if (!chain_restore_block_is_consensus_backed(snap_bi)) {

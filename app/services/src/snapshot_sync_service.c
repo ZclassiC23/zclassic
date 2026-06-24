@@ -51,9 +51,10 @@ static struct snapshot_sync_service g_snapsync_instance;
 static bool g_snapsync_init_done = false;
 static pthread_mutex_t g_snapsync_service_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Snapshot anchor: placeholder block_index at verified snapshot height.
- * Used by getheaders locator to resume header sync from snapshot height
- * instead of from the (much lower) locally-indexed chain tip. */
+/* Snapshot anchor: non-owning pointer to a placeholder block_index at
+ * verified snapshot height. The pointed-to block_index is owned by the
+ * block map; this slot only lets getheaders locators resume from the
+ * snapshot height instead of the lower locally-indexed chain tip. */
 static struct block_index *g_snapshot_anchor = NULL;
 
 void snapsync_service_lock_internal(void)
@@ -260,12 +261,9 @@ void snapsync_reset(struct snapshot_sync_service *svc)
     svc->offered_schema_version = 0;
     svc->last_progress_time_us = 0;
     svc->last_progress_utxos = 0;
-    /* Clear snapshot anchor — its pprev=NULL blocks backward chain
-     * walks in header_sync_service after snapshot completes. */
-    if (g_snapshot_anchor) {
-        free(g_snapshot_anchor);
-        g_snapshot_anchor = NULL;
-    }
+    /* Clear only the non-owning anchor slot. The anchor itself belongs
+     * to main_state.map_block_index (or a caller-owned test object). */
+    g_snapshot_anchor = NULL;
     svc->state = SNAPSYNC_IDLE;
     snapsync_set_state(SNAPSYNC_IDLE, "reset");
     snapsync_service_unlock_internal();
@@ -577,10 +575,9 @@ bool snapsync_check_stall(void)
 
 struct block_index *snapsync_get_anchor(void)
 {
-    /* Guard g_snapshot_anchor with the service lock: snapsync_reset()
-     * frees and NULLs it while holding g_snapsync_service_lock (see
-     * lines ~263-265), and chain walkers (header_sync_service) deref the
-     * returned pointer — an unlocked read could return a freed pointer. */
+    /* Guard g_snapshot_anchor with the service lock: reset/set update
+     * the slot under this mutex. The returned block_index is non-owned
+     * and remains the caller's responsibility. */
     snapsync_service_lock_internal();
     struct block_index *result = g_snapshot_anchor;
     snapsync_service_unlock_internal();

@@ -405,11 +405,11 @@ bool snapsync_is_peer_blacklisted(const struct snapshot_sync_service *svc,
 void snapsync_blacklist_peer(struct snapshot_sync_service *svc,
                              uint32_t peer_id);
 
-/* Snapshot anchor: after verified snapshot sync, this points to a placeholder
- * block_index at the snapshot height. The getheaders locator should use this
- * as the starting point so header sync resumes from snapshot height, not
- * from the (much lower) locally-indexed chain tip. Returns NULL if no
- * snapshot anchor is set. */
+/* Snapshot anchor: non-owning pointer to a placeholder block_index at the
+ * snapshot height. The block_index is owned by the block map or caller; this
+ * slot is only a locator hint so header sync resumes from snapshot height,
+ * not from the lower locally-indexed chain tip. Returns NULL if no snapshot
+ * anchor is set. */
 struct block_index *snapsync_get_anchor(void);
 void snapsync_set_anchor(struct block_index *anchor);
 

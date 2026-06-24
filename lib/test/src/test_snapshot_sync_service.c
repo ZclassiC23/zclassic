@@ -653,6 +653,33 @@ static int test_snapshot_sync_service_activates_fallback_tip(void)
     return failures;
 }
 
+static int test_snapshot_reset_clears_non_owned_anchor(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync reset clears non-owned anchor slot") {
+        struct snapshot_sync_service svc;
+        struct block_index anchor;
+
+        memset(&svc, 0, sizeof(svc));
+        memset(&anchor, 0, sizeof(anchor));
+        block_index_init(&anchor);
+        anchor.nHeight = 12345;
+
+        snapsync_set_anchor(&anchor);
+        ASSERT(snapsync_get_anchor() == &anchor);
+
+        snapsync_reset(&svc);
+        ASSERT(snapsync_get_anchor() == NULL);
+        ASSERT(anchor.nHeight == 12345);
+
+        PASS();
+    } _test_next:;
+
+    snapsync_set_anchor(NULL);
+    return failures;
+}
+
 static int test_snapshot_sync_service_prepare_serve_step(void)
 {
     int failures = 0;
@@ -1787,6 +1814,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_fc_roundtrip();
     failures += test_snapshot_sync_service_activates_tip();
     failures += test_snapshot_sync_service_activates_fallback_tip();
+    failures += test_snapshot_reset_clears_non_owned_anchor();
     failures += test_snapshot_sync_service_prepare_serve_step();
     failures += test_snapshot_sync_service_transition_results();
     failures += test_snapshot_sync_service_handle_offer_requires_v2();
