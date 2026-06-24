@@ -607,6 +607,8 @@ int test_syncdiag_rpc(void)
                    "bounded_advisory_fallback") == 0;
         ok = ok && json_get(svc, "candidate_lag_observed") != NULL &&
             json_is_null(json_get(svc, "candidate_lag_observed"));
+        ok = ok && json_get(svc, "candidate_lag") != NULL &&
+            json_get_int(json_get(svc, "candidate_lag")) == 0;
         ok = ok && json_get(svc, "activation_blocker") != NULL &&
             strcmp(json_get_str(json_get(svc, "activation_blocker")),
                    "body-hash-mismatch") == 0;
@@ -633,6 +635,8 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(svc, "stalls_total")) == 3;
         ok = ok && json_get(svc, "lag_observed") != NULL &&
             json_is_null(json_get(svc, "lag_observed"));
+        ok = ok && json_get(svc, "lag") != NULL &&
+            json_get_int(json_get(svc, "lag")) == 0;
 
         json_free(&result);
         legacy_mirror_sync_reset_for_test();
@@ -704,6 +708,10 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(&result, "candidate_lag")) == 0;
         ok = ok && json_get(&result, "candidate_lag_observed") != NULL &&
             json_is_null(json_get(&result, "candidate_lag_observed"));
+        ok = ok && json_get(&result, "mirror_lag") != NULL &&
+            json_get_int(json_get(&result, "mirror_lag")) == 0;
+        ok = ok && json_get(&result, "mirror_lag_observed") != NULL &&
+            json_is_null(json_get(&result, "mirror_lag_observed"));
         ok = ok && json_get(&result, "mirror_blockers_total") != NULL &&
             json_get_int(json_get(&result, "mirror_blockers_total")) == 1;
         ok = ok && json_get(&result, "mirror_stalls_total") != NULL &&

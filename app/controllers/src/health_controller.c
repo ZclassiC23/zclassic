@@ -28,18 +28,6 @@ struct health_context {
 
 static struct health_context g_health_ctx = {0};
 
-static void push_observed_lag_json(struct json_value *out, const char *key,
-                                   bool known, int64_t lag)
-{
-    struct json_value v = {0};
-    if (known)
-        json_set_int(&v, lag);
-    else
-        json_set_null(&v);
-    json_push_kv(out, key, &v);
-    json_free(&v);
-}
-
 static void push_watchdog_recovery_fields(struct json_value *result)
 {
     if (!result)
@@ -83,9 +71,10 @@ static void push_mirror_sync_fields(struct json_value *result)
     json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
     json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
     json_push_kv_bool(result, "candidate_lag_valid", ms.lag_valid);
-    json_push_kv_int(result, "candidate_lag", ms.lag);
-    push_observed_lag_json(result, "candidate_lag_observed",
-                           ms.lag_known, ms.lag);
+    json_push_kv_int(result, "candidate_lag",
+                     legacy_mirror_sync_reported_lag(&ms));
+    legacy_mirror_sync_push_observed_lag_json(result,
+                                              "candidate_lag_observed", &ms);
     json_push_kv_str(result, "candidate_blocker",
                      ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
                                               : ms.last_blocker_id);
@@ -94,9 +83,10 @@ static void push_mirror_sync_fields(struct json_value *result)
                       ms.legacy_advisory_height_known);
     json_push_kv_bool(result, "mirror_lag_known", ms.lag_known);
     json_push_kv_bool(result, "mirror_lag_valid", ms.lag_valid);
-    json_push_kv_int(result, "mirror_lag", ms.lag);
-    push_observed_lag_json(result, "mirror_lag_observed",
-                           ms.lag_known, ms.lag);
+    json_push_kv_int(result, "mirror_lag",
+                     legacy_mirror_sync_reported_lag(&ms));
+    legacy_mirror_sync_push_observed_lag_json(result,
+                                              "mirror_lag_observed", &ms);
     json_push_kv_str(result, "mirror_activation_blocker",
                      ms.activation_blocker_reason);
     json_push_kv_str(result, "mirror_last_blocker_code",
@@ -357,9 +347,10 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
                          ms.candidate_trust);
         json_push_kv_bool(&svc, "candidate_lag_known", ms.lag_known);
         json_push_kv_bool(&svc, "candidate_lag_valid", ms.lag_valid);
-        json_push_kv_int(&svc, "candidate_lag", ms.lag);
-        push_observed_lag_json(&svc, "candidate_lag_observed",
-                               ms.lag_known, ms.lag);
+        json_push_kv_int(&svc, "candidate_lag",
+                         legacy_mirror_sync_reported_lag(&ms));
+        legacy_mirror_sync_push_observed_lag_json(
+            &svc, "candidate_lag_observed", &ms);
         json_push_kv_str(&svc, "candidate_blocker",
                          ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
                                                   : ms.last_blocker_id);
@@ -367,9 +358,9 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_int(&svc, "local_height", ms.local_height);
         json_push_kv_bool(&svc, "lag_known", ms.lag_known);
         json_push_kv_bool(&svc, "lag_valid", ms.lag_valid);
-        json_push_kv_int(&svc, "lag", ms.lag);
-        push_observed_lag_json(&svc, "lag_observed",
-                               ms.lag_known, ms.lag);
+        json_push_kv_int(&svc, "lag",
+                         legacy_mirror_sync_reported_lag(&ms));
+        legacy_mirror_sync_push_observed_lag_json(&svc, "lag_observed", &ms);
         json_push_kv_bool(&svc, "local_recovery_active",
                           ms.local_recovery_active);
         json_push_kv_bool(&svc, "legacy_advisory_gated_by_native_retries",

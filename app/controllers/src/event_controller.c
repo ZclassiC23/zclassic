@@ -74,18 +74,6 @@ static void push_chain_evidence_health_json(struct json_value *checks)
     json_free(&ce);
 }
 
-static void push_observed_lag_json(struct json_value *out, const char *key,
-                                   bool known, int64_t lag)
-{
-    struct json_value v = {0};
-    if (known)
-        json_set_int(&v, lag);
-    else
-        json_set_null(&v);
-    json_push_kv(out, key, &v);
-    json_free(&v);
-}
-
 static bool rpc_eventlog(const struct json_value *params, bool help,
                          struct json_value *result)
 {
@@ -384,9 +372,16 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
         json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
         json_push_kv_bool(result, "candidate_lag_valid", ms.lag_valid);
-        json_push_kv_int(result, "candidate_lag", ms.lag);
-        push_observed_lag_json(result, "candidate_lag_observed",
-                               ms.lag_known, ms.lag);
+        json_push_kv_int(result, "candidate_lag",
+                         legacy_mirror_sync_reported_lag(&ms));
+        legacy_mirror_sync_push_observed_lag_json(
+            result, "candidate_lag_observed", &ms);
+        json_push_kv_bool(result, "mirror_lag_known", ms.lag_known);
+        json_push_kv_bool(result, "mirror_lag_valid", ms.lag_valid);
+        json_push_kv_int(result, "mirror_lag",
+                         legacy_mirror_sync_reported_lag(&ms));
+        legacy_mirror_sync_push_observed_lag_json(
+            result, "mirror_lag_observed", &ms);
         json_push_kv_str(result, "candidate_blocker",
                          ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
                                                   : ms.last_blocker_id);

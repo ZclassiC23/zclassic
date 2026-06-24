@@ -51,10 +51,19 @@ static bool lms_blocker_cleared_by_catchup(const char *code,
            strcmp(code, "activation-no-progress") == 0 && lag <= 0;
 }
 
-static void lms_json_push_observed_lag(struct json_value *out,
-                                       const char *key,
-                                       const struct legacy_mirror_sync_stats *s)
+int legacy_mirror_sync_reported_lag(
+    const struct legacy_mirror_sync_stats *s)
 {
+    return (s && s->lag_known) ? s->lag : 0;
+}
+
+void legacy_mirror_sync_push_observed_lag_json(
+    struct json_value *out,
+    const char *key,
+    const struct legacy_mirror_sync_stats *s)
+{
+    if (!out || !key)
+        return;
     if (s && s->lag_known) {
         json_push_kv_int(out, key, s->lag);
         return;
@@ -386,14 +395,16 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_bool(out, "target_height_known", s.target_height_known);
     json_push_kv_bool(out, "lag_known", s.lag_known);
     json_push_kv_bool(out, "lag_valid", s.lag_valid);
-    json_push_kv_int(out, "lag", s.lag);
-    lms_json_push_observed_lag(out, "lag_observed", &s);
+    json_push_kv_int(out, "lag", legacy_mirror_sync_reported_lag(&s));
+    legacy_mirror_sync_push_observed_lag_json(out, "lag_observed", &s);
     json_push_kv_str(out, "candidate_source", "legacy_advisory");
     json_push_kv_str(out, "candidate_trust", s.candidate_trust);
     json_push_kv_bool(out, "candidate_lag_known", s.lag_known);
     json_push_kv_bool(out, "candidate_lag_valid", s.lag_valid);
-    json_push_kv_int(out, "candidate_lag", s.lag);
-    lms_json_push_observed_lag(out, "candidate_lag_observed", &s);
+    json_push_kv_int(out, "candidate_lag",
+                     legacy_mirror_sync_reported_lag(&s));
+    legacy_mirror_sync_push_observed_lag_json(out,
+                                              "candidate_lag_observed", &s);
     json_push_kv_str(out, "candidate_blocker",
                      s.activation_blocker_reason[0] ? s.activation_blocker_reason
                                              : s.last_blocker_id);

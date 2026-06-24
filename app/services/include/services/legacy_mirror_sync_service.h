@@ -126,6 +126,15 @@ struct legacy_mirror_sync_stats {
 
 void legacy_mirror_sync_stats_snapshot(
     struct legacy_mirror_sync_stats *out);
+/* API compatibility helper: legacy numeric lag fields report 0 when the
+ * mirror height is unknown. Use the paired *_observed JSON fields to
+ * distinguish "unknown" (null) from a real zero-block lag. */
+int legacy_mirror_sync_reported_lag(
+    const struct legacy_mirror_sync_stats *stats);
+void legacy_mirror_sync_push_observed_lag_json(
+    struct json_value *out,
+    const char *key,
+    const struct legacy_mirror_sync_stats *stats);
 bool legacy_mirror_sync_dump_state_json(struct json_value *out,
                                         const char *key);
 
