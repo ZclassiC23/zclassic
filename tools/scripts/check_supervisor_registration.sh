@@ -36,6 +36,16 @@
 # does), delete the baseline line, re-run `make lint`.
 set -euo pipefail
 
+cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
+
+# Services dir is overridable via ZCL_SERVICES_DIR so the lint-gate self-test
+# can point the gate at an EMPTY dir and prove the non-empty-floor preflight
+# fires (exit 2) instead of the `for f in glob` silently iterating the literal
+# unmatched pattern and passing hollow.
+SERVICES_DIR="${ZCL_SERVICES_DIR:-app/services/src}"
+
 BASELINE=tools/scripts/supervisor_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
@@ -71,9 +81,18 @@ file_is_long_running() {
     done | grep -q unmarked
 }
 
+# Fail-loud preflight: the service file set MUST be non-empty. A bare
+# `for f in app/services/src/*.c` with no match iterates the LITERAL unmatched
+# glob, `[ -f "$f" ]` skips it, the loop body runs zero times, `fail` stays 0,
+# and the gate prints "clean" exit 0 — a hollow pass when the dir is
+# renamed/moved/emptied. Discover the set with find + assert a floor instead.
+mapfile -t scan_files < <(find "$SERVICES_DIR" -maxdepth 1 -type f -name '*.c' 2>/dev/null | sort)
+gate_require_scanned "${#scan_files[@]}" 1 check_supervisor_registration \
+    "no *.c under '$SERVICES_DIR' — was the services dir renamed/moved?"
+
 fail=0
 new_violations=()
-for f in app/services/src/*.c; do
+for f in "${scan_files[@]}"; do
     [ -f "$f" ] || continue
     # Long-running? Check for spawn / periodic-subscriber markers.
     file_is_long_running "$f" || continue

@@ -3,11 +3,43 @@
 
 set -e
 
-HITS=$(grep -rnE '(^|[^A-Za-z0-9_])supervisor_register\s*\(' app/ lib/ config/ --include='*.c' \
+cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
+
+# Scan roots are overridable via ZCL_SUPDOM_SCAN_ROOTS so the lint-gate
+# self-test can point the gate at an EMPTY dir and prove the non-empty-floor
+# preflight fires (exit 2). Production scans app/ lib/ config/.
+read -r -a SUPDOM_ROOTS <<< "${ZCL_SUPDOM_SCAN_ROOTS:-app lib config}"
+
+# Fail-loud preflight: the .c surface across the scan roots must be non-empty.
+# A renamed/moved core dir would empty the grep surface; combined with the old
+# `|| true` masking grep's exit, the gate would print PASS over zero files — a
+# hollow pass. Assert a floor first.
+mapfile -t supdom_files < <(find "${SUPDOM_ROOTS[@]}" -type f -name '*.c' 2>/dev/null)
+gate_require_scanned "${#supdom_files[@]}" 1 check_supervisor_domain \
+    "no *.c under: ${SUPDOM_ROOTS[*]}"
+
+# First grep: 0=match, 1=no-match, >=2=real error. The old `... || true`
+# masked >=2 (a non-GNU grep rejecting \s, an unreadable file) as "no hits"
+# → PASS off a broken scan. Check the exit explicitly.
+set +e
+RAW=$(grep -rnE '(^|[^A-Za-z0-9_])supervisor_register\s*\(' "${SUPDOM_ROOTS[@]}" --include='*.c')
+grc=$?
+set -e
+if [ "$grc" -ge 2 ]; then
+    echo "check_supervisor_domain: FATAL — scan grep failed (exit $grc); refusing" >&2
+    echo "  to report PASS off a broken scan." >&2
+    exit 2
+fi
+HITS=$(printf '%s\n' "$RAW" \
     | grep -v 'supervisor_register_in_domain' \
     | grep -v 'lib/util/src/supervisor.c' \
     | grep -v 'lib/test/' \
     | grep -v '// supervisor-root-ok:' || true)
+# The filter chain above may legitimately empty HITS (every hit was an
+# in_domain call); printf of an empty RAW yields a blank line that the wc -l
+# below already strips via sed '/^$/d'.
 
 # Note: '%s\n' (not '%s') so a lone unterminated final hit is still counted
 # by wc -l — otherwise a single violation undercounts to 0 and slips through.

@@ -26,6 +26,13 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
+
+# Scan dir is overridable via ZCL_PROJ_SCAN_DIR so the lint-gate self-test can
+# point the gate at an EMPTY dir and prove the non-empty-floor preflight fires
+# (exit 2). Production scans lib/storage/src.
+PROJ_SCAN_DIR="${ZCL_PROJ_SCAN_DIR:-lib/storage/src}"
 
 fail=0
 violations=()
@@ -34,14 +41,23 @@ line_overridden() {
     echo "$1" | grep -qE '//[[:space:]]*projection-cache-ok:[A-Za-z][A-Za-z0-9_-]*'
 }
 
-while IFS= read -r f; do
+# Fail-loud preflight: discover the projection set and assert it is non-empty.
+# A renamed *_projection.c suffix (build stays green via glob) would empty this
+# set, run the loops zero times, and pass hollow. The floor catches that LOUD.
+# find's nonzero exit (a missing dir) is not swallowed into a silent pass: it
+# empties scan_files, which the floor below trips.
+mapfile -t scan_files < <(find "$PROJ_SCAN_DIR" -type f -name '*_projection.c' 2>/dev/null | sort)
+gate_require_scanned "${#scan_files[@]}" 1 check_projections_pure \
+    "no *_projection.c found under '$PROJ_SCAN_DIR' — a projection file was renamed/moved?"
+
+for f in "${scan_files[@]}"; do
     # 1. upward includes into the app layer.
     while IFS= read -r match; do
         content="${match#*:}"
         line_overridden "$content" && continue
         violations+=("$f: projection includes an app-layer header (services/ or controllers/): ${content#"${content%%[![:space:]]*}"}")
         fail=1
-    done < <(grep -nE '^[[:space:]]*#include[[:space:]]+"(services|controllers)/' "$f" || true)
+    done < <(gate_grep -nE '^[[:space:]]*#include[[:space:]]+"(services|controllers)/' "$f")
 
     # 2. ActiveRecord model save path inside a projection.
     while IFS= read -r match; do
@@ -49,8 +65,8 @@ while IFS= read -r f; do
         line_overridden "$content" && continue
         violations+=("$f: projection uses the AR model save path: ${content#"${content%%[![:space:]]*}"}")
         fail=1
-    done < <(grep -nE 'AR_(ADHOC|CACHED|BEGIN)_SAVE[[:space:]]*\(' "$f" || true)
-done < <(find lib/storage/src -type f -name '*_projection.c' | sort)
+    done < <(gate_grep -nE 'AR_(ADHOC|CACHED|BEGIN)_SAVE[[:space:]]*\(' "$f")
+done
 
 if [ "$fail" = "0" ]; then
     echo "check_projections_pure: clean — every *_projection.c is a pure fold (no app includes, no AR model saves)"
