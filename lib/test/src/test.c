@@ -744,6 +744,8 @@ int main(void)
     failures += test_mmb();
     { extern int test_keystone_utxo_binding(void);
       failures += test_keystone_utxo_binding(); }
+    { extern int test_self_folded_anchor(void);
+      failures += test_self_folded_anchor(); }
     { extern int test_sha3_windows(void);
       failures += test_sha3_windows(); }
     failures += test_flyclient();
