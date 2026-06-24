@@ -121,6 +121,25 @@ static int log_row_count(sqlite3 *db)
     return n;
 }
 
+static int deny_second_stage_cursor_read(void *user, int action,
+                                         const char *arg1,
+                                         const char *arg2,
+                                         const char *db_name,
+                                         const char *trigger)
+{
+    (void)db_name;
+    (void)trigger;
+    if (action == SQLITE_READ &&
+        arg1 && strcmp(arg1, "stage_cursor") == 0 &&
+        arg2 && strcmp(arg2, "cursor") == 0) {
+        int *reads = (int *)user;
+        (*reads)++;
+        if (*reads > 1)
+            return SQLITE_DENY;
+    }
+    return SQLITE_OK;
+}
+
 static bool log_row_at(sqlite3 *db, int height,
                         int *out_ok, char *out_source, size_t source_size)
 {
@@ -248,6 +267,26 @@ int test_body_fetch_stage(void)
         /* Caught up — next step IDLE. */
         BF_CHECK("happy: next step IDLE",
                  body_fetch_stage_step_once() == JOB_IDLE);
+
+        bf_teardown(dir, &ms, &sc);
+    }
+
+    /* ── upstream cursor read errors are FATAL, not cursor-0 IDLE ───── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_bf sc;
+        BF_CHECK("cursor_read_error: setup",
+                 bf_setup("cursor_read_error", 3, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+
+        sqlite3 *db = progress_store_db();
+        int reads = 0;
+        BF_CHECK("cursor_read_error: install authorizer",
+                 sqlite3_set_authorizer(db, deny_second_stage_cursor_read,
+                                        &reads) == SQLITE_OK);
+        job_result_t r = body_fetch_stage_step_once();
+        sqlite3_set_authorizer(db, NULL, NULL);
+        BF_CHECK("cursor_read_error: upstream read returns fatal",
+                 r == JOB_FATAL && reads >= 2);
 
         bf_teardown(dir, &ms, &sc);
     }

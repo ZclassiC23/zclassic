@@ -97,6 +97,48 @@ int test_stage_anchor(void)
     printf("\n=== stage_anchor tests ===\n");
     int failures = 0;
 
+    /* ── Typed cursor reader distinguishes missing row from schema error ─ */
+    {
+        const char *path = "test_stage_cursor_read_contract.db";
+        unlink(path);
+        sqlite3 *db = NULL;
+        SA_CHECK("cursor_read_contract: sqlite open",
+                 sqlite3_open(path, &db) == SQLITE_OK);
+        SA_CHECK("cursor_read_contract: create malformed table",
+                 sqlite3_exec(db,
+                    "CREATE TABLE stage_cursor(name TEXT PRIMARY KEY,"
+                    " bad INTEGER)",
+                    NULL, NULL, NULL) == SQLITE_OK);
+
+        struct stage_cursor_read_result bad =
+            stage_cursor_read_persisted(db, "header_admit",
+                                        "test_stage_anchor");
+        SA_CHECK("cursor_read_contract: schema error is not ok",
+                 !bad.ok && !bad.found && bad.cursor == 0);
+
+        sqlite3_close(db);
+        unlink(path);
+        db = sa_open(path);
+        SA_CHECK("cursor_read_contract: reopen valid schema", db != NULL);
+
+        struct stage_cursor_read_result missing =
+            stage_cursor_read_persisted(db, "missing_stage",
+                                        "test_stage_anchor");
+        SA_CHECK("cursor_read_contract: missing row is ok zero",
+                 missing.ok && !missing.found && missing.cursor == 0);
+
+        SA_CHECK("cursor_read_contract: set row",
+                 stage_set_named_cursor_if_behind(db, "header_admit", 77));
+        struct stage_cursor_read_result found =
+            stage_cursor_read_persisted(db, "header_admit",
+                                        "test_stage_anchor");
+        SA_CHECK("cursor_read_contract: found row returns cursor",
+                 found.ok && found.found && found.cursor == 77);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
     /* ── ATOMIC advance of multiple behind cursors to the target ──── */
     {
         const char *path = "test_stage_anchor_advance.db";

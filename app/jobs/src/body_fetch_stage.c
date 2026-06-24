@@ -71,8 +71,10 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
      * Reading from disk (vs the in-memory accessor) means body_fetch
      * never advances past what is actually committed upstream, and
      * keeps body_fetch testable in isolation. */
-    uint64_t vh_cursor = stage_cursor_persisted(db, "validate_headers",
-                                                STAGE_NAME);
+    uint64_t vh_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, "validate_headers", STAGE_NAME,
+                                   &vh_cursor))
+        return JOB_FATAL;
     if ((uint64_t)next_h >= vh_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;  /* not BLOCKED — validate will catch up */

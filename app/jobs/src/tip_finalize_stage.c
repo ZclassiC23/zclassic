@@ -145,7 +145,10 @@ static bool publish_resolved_durable_tip(sqlite3 *db, const char *reason)
 
 static bool has_no_durable_tip_history(sqlite3 *db)
 {
-    return stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME) == 0 &&
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        return false;
+    return cursor == 0 &&
            stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") <= 0;
 }
 
@@ -154,7 +157,9 @@ static bool hydrate_stage_cursor_from_store(sqlite3 *db, stage_t *stage,
 {
     if (!stage)
         return true;
-    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        return false;
     if (!stage_set_cursor(stage, db, cursor)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] cursor hydrate failed cursor=%llu reason=%s",
@@ -406,7 +411,10 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
 
-    uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply", STAGE_NAME);
+    uint64_t uv_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, "utxo_apply", STAGE_NAME,
+                                   &uv_cursor))
+        return JOB_FATAL;
     if ((uint64_t)next_h > uv_cursor) {
         int64_t now = platform_time_wall_unix();
         /* Key the de-storm on the (cursor_in, utxo_apply) height pair: a

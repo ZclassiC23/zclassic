@@ -348,8 +348,10 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
 
-    uint64_t pv_cursor = stage_cursor_persisted(db, "proof_validate",
-                                               STAGE_NAME);
+    uint64_t pv_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, "proof_validate", STAGE_NAME,
+                                   &pv_cursor))
+        return JOB_FATAL;
     if ((uint64_t)next_h >= pv_cursor) {
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

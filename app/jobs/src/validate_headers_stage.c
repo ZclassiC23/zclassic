@@ -308,10 +308,15 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
      * floor's boot value (converges identically after kill-9). Verdict-
      * preserving: only narrows WHICH heights reach the unchanged validator. */
     {
-        int64_t fin_cur = (int64_t)stage_cursor_persisted(db, "tip_finalize",
-                                                          STAGE_NAME);
-        int64_t bf_cur  = (int64_t)stage_cursor_persisted(db, "body_fetch",
-                                                          STAGE_NAME);
+        uint64_t fin_cursor = 0;
+        uint64_t bf_cursor = 0;
+        if (!stage_cursor_read_or_zero(db, "tip_finalize", STAGE_NAME,
+                                       &fin_cursor) ||
+            !stage_cursor_read_or_zero(db, "body_fetch", STAGE_NAME,
+                                       &bf_cursor))
+            return JOB_FATAL;
+        int64_t fin_cur = (int64_t)fin_cursor;
+        int64_t bf_cur  = (int64_t)bf_cursor;
         int64_t frontier = fin_cur;
         if (bf_cur > 0 && (frontier <= 0 || bf_cur < frontier))
             frontier = bf_cur;
@@ -481,8 +486,10 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     /* Floor: never get ahead of header_admit. The header_admit cursor
      * is "next height to admit" — so heights [0, ha_cursor-1] are
      * admitted. We can validate up to ha_cursor-1. */
-    uint64_t ha_cursor = stage_cursor_persisted(db, "header_admit",
-                                                STAGE_NAME);
+    uint64_t ha_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, "header_admit", STAGE_NAME,
+                                   &ha_cursor))
+        return JOB_FATAL;
     if ((uint64_t)next_h >= ha_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;  /* not BLOCKED — header_admit will catch up */
@@ -650,8 +657,12 @@ job_result_t validate_headers_stage_step_once(void)
         return r;
     }
 
-    uint64_t validated_cursor = stage_cursor_persisted(db, STAGE_NAME,
-                                                       STAGE_NAME);
+    uint64_t validated_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME,
+                                   &validated_cursor)) {
+        progress_store_tx_unlock();
+        return JOB_FATAL;
+    }
     job_result_t recheck = recheck_failed_rows(g_ms, db, validated_cursor);
     progress_store_tx_unlock();
     return recheck;

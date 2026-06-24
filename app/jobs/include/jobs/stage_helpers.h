@@ -31,33 +31,108 @@
 #include <stdint.h>
 #include <stdio.h>
 
+struct stage_cursor_read_result {
+    bool ok;        /* false = sqlite/read error; caller must not trust cursor */
+    bool found;     /* false + ok = no durable row yet; cursor is 0 */
+    uint64_t cursor;
+    int sqlite_rc;
+};
+
 /* Read the persisted cursor of an upstream stage. Query the stage_cursor
  * table directly rather than the in-memory accessor so the floor reflects
  * what is DURABLY committed, not the in-memory value (0 on fresh init
  * until the first stage_run_once). `tag` is the calling stage's name for
- * log attribution. Returns 0 on prepare failure or no row. */
-static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
-                                              const char *tag)
+ * log attribution. Missing row is a valid fresh-stage result
+ * (ok=true/found=false/cursor=0); sqlite/schema/read failures are explicit
+ * (ok=false) so stage gates cannot silently reinterpret corruption as
+ * cursor 0. */
+static inline struct stage_cursor_read_result
+stage_cursor_read_persisted(sqlite3 *db, const char *name, const char *tag)
 {
-    if (!db || !name || !name[0])
-        return 0;
+    struct stage_cursor_read_result r = {
+        .ok = false,
+        .found = false,
+        .cursor = 0,
+        .sqlite_rc = SQLITE_MISUSE,
+    };
+    const char *log_tag = (tag && tag[0]) ? tag : "stage_cursor";
+
+    if (!db || !name || !name[0]) {
+        LOG_WARN(log_tag, "[%s] upstream cursor read invalid args db=%p name=%s",
+                 log_tag, (void *)db, name ? name : "(null)");
+        return r;
+    }
 
     progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
+    int rc = sqlite3_prepare_v2(db,
         "SELECT cursor FROM stage_cursor WHERE name = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN(tag, "[%s] upstream cursor prepare failed: %s",
-                 tag, sqlite3_errmsg(db));
+        -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        r.sqlite_rc = rc;
+        LOG_WARN(log_tag, "[%s] upstream cursor prepare failed stage=%s rc=%d: %s",
+                 log_tag, name, rc, sqlite3_errmsg(db));
         progress_store_tx_unlock();
-        return 0;
+        return r;
     }
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    uint64_t out = 0;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
-        out = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
+
+    rc = sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
+    if (rc != SQLITE_OK) {
+        r.sqlite_rc = rc;
+        LOG_WARN(log_tag, "[%s] upstream cursor bind failed stage=%s rc=%d: %s",
+                 log_tag, name, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        progress_store_tx_unlock();
+        return r;
+    }
+
+    rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    r.sqlite_rc = rc;
+    if (rc == SQLITE_ROW) {
+        r.ok = true;
+        r.found = true;
+        r.cursor = (uint64_t)sqlite3_column_int64(st, 0);
+    } else if (rc == SQLITE_DONE) {
+        r.ok = true;
+    } else {
+        LOG_WARN(log_tag, "[%s] upstream cursor step failed stage=%s rc=%d: %s",
+                 log_tag, name, rc, sqlite3_errmsg(db));
+    }
+
+    int frc = sqlite3_finalize(st);
+    if (r.ok && frc != SQLITE_OK) {
+        r.ok = false;
+        r.sqlite_rc = frc;
+        LOG_WARN(log_tag,
+                 "[%s] upstream cursor finalize failed stage=%s rc=%d: %s",
+                 log_tag, name, frc, sqlite3_errmsg(db));
+    }
     progress_store_tx_unlock();
+    return r;
+}
+
+static inline bool stage_cursor_read_or_zero(sqlite3 *db, const char *name,
+                                             const char *tag, uint64_t *out)
+{
+    if (out)
+        *out = 0;
+    struct stage_cursor_read_result r =
+        stage_cursor_read_persisted(db, name, tag);
+    if (!r.ok)
+        return false;
+    if (out)
+        *out = r.found ? r.cursor : 0;
+    return true;
+}
+
+/* Compatibility wrapper for non-critical observers/tests that still want
+ * the historical scalar contract. New liveness gates should call
+ * stage_cursor_read_or_zero() and handle ok=false explicitly. */
+static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
+                                              const char *tag)
+{
+    uint64_t out = 0;
+    (void)stage_cursor_read_or_zero(db, name, tag, &out);
     return out;
 }
 
