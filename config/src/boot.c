@@ -3223,7 +3223,30 @@ bool app_init(struct app_context *ctx)
      * Skip if hashFinalSaplingRoot is all-zeros (block_index.bin doesn't
      * store this field yet, so it will be zero after flat file load). */
     if (g_state.sapling_tree_loaded && g_datadir) {
+        /* Resolve the comparison endpoint from coins-applied state, NOT the
+         * pre-fold header tip. On a wedged node (active/header tip >> the
+         * durable coins frontier) the loaded sapling tree corresponds to the
+         * APPLIED frontier, so comparing it against the HEADER tip's
+         * hashFinalSaplingRoot would (a) spuriously mismatch even when the
+         * tree is correct for the applied state, and (b) feed the rebuild a
+         * header-tip endpoint whose root may be absent and FATAL on
+         * `tip_missing_sapling_root` before the forward fold runs. Cap to
+         * coins_applied_height - 1 (coins-best) when present and lower; the
+         * rebuild itself independently re-derives the same coins-applied
+         * endpoint if a mismatch here triggers it. */
         const struct block_index *tip = active_chain_tip(&g_state.chain_active);
+        struct boot_derived_coins_best sap_dcb;
+        if (boot_derive_coins_best(&sap_dcb) && sap_dcb.height >= 0
+            && (!tip || sap_dcb.height < tip->nHeight)) {
+            const struct block_index *coins_tip =
+                active_chain_at(&g_state.chain_active, sap_dcb.height);
+            if (coins_tip) {
+                printf("Sapling tree check: using coins-applied height %d "
+                       "(header tip %d)\n", sap_dcb.height,
+                       tip ? tip->nHeight : -1);
+                tip = coins_tip;
+            }
+        }
         static const uint8_t zeros[32] = {0};
         bool tip_has_sapling_root = tip && tip->nHeight > 476969 &&
             memcmp(tip->hashFinalSaplingRoot.data, zeros, 32) != 0;
@@ -3380,6 +3403,41 @@ sapling_tree_boot_check_done:
          * self-repair is suspended until utxo_apply reaches the resume target
          * (the active tip we are about to fold up to). */
         boot_refold_from_anchor_reset(&g_node_db);
+        /* The from-anchor reset cleared node_state["sapling_tree"] to NULL.
+         * Carry the fail-closed guard from the snapshot-loader path: re-derive
+         * + VERIFY the Sapling commitment tree against the chain BEFORE the
+         * forward fold runs, so a corrupt/incoherent seed tree FATALs here
+         * rather than silently rebuilding wrong downstream. sapling_tree_rebuild
+         * resolves its own endpoint from coins-applied state and returns < 0
+         * (fail-closed) on any per-height root mismatch; it is a no-op below
+         * Sapling activation. g_datadir is the active datadir. */
+        if (g_datadir) {
+            atomic_store(&g_sapling_tree_rebuilding, true);
+            int sret = sapling_tree_rebuild(&g_node_db, &g_state.chain_active,
+                                            g_datadir);
+            atomic_store(&g_sapling_tree_rebuilding, false);
+            if (sret < 0) {
+                fprintf(stderr,
+                        "FATAL: -refold-from-anchor: sapling_tree_rebuild "
+                        "failed (returned %d) — refusing to fold on an "
+                        "unverified Sapling commitment tree\n", sret);
+                event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                            "refold_from_anchor sapling_tree_rebuild_failed "
+                            "rc=%d", sret);
+                _exit(EXIT_FAILURE);
+            }
+            /* Reload the verified tree into the live in-memory state. */
+            uint8_t tbuf[8192];
+            size_t tlen = 0;
+            if (node_db_state_get(&g_node_db, "sapling_tree",
+                                  tbuf, sizeof(tbuf), &tlen) && tlen > 0) {
+                struct byte_stream ts2;
+                stream_init_from_data(&ts2, tbuf, tlen);
+                sapling_tree_init(&g_state.sapling_tree);
+                if (incremental_tree_deserialize(&g_state.sapling_tree, &ts2))
+                    set_sapling_tree_for_flush(&g_state.sapling_tree);
+            }
+        }
         int32_t resume_target = (int32_t)active_chain_height(&g_state.chain_active);
         (void)refold_progress_mark_started_from_anchor(progress_store_db(),
                                                        resume_target);
