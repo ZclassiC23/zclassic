@@ -1098,6 +1098,107 @@ static int test_zcl_blockers_escapes_blocker_strings(void)
     return failures;
 }
 
+static char *mock_composite_invalid_child_rpc(const char *method,
+                                              const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getblockcount") == 0)
+        return strdup("3157703");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"startingheight\":3157800},"
+                      "{\"startingheight\":3157901}]");
+    if (strcmp(method, "syncstate") == 0)
+        return strdup("{\"state\":\"syncing\"}");
+    if (strcmp(method, "validationstatus") == 0)
+        return strdup("{\"ok\":true}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":true}");
+    if (strcmp(method, "getmempoolinfo") == 0)
+        return strdup("{broken");
+    if (strcmp(method, "getwalletinfo") == 0)
+        return strdup("{\"balance\":0}");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"best_header_height\":3157901}");
+    if (strcmp(method, "getnetworkinfo") == 0)
+        return strdup("{\"connections\":2}");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"syncing\"");
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{broken");
+    return strdup("null");
+}
+
+static int test_zcl_kpi_invalid_child_stays_parseable(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_kpi invalid child RPC stays parseable") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_composite_invalid_child_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_kpi", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root, "height")) == 3157703);
+        ASSERT(json_get_int(json_get(&root, "peer_count")) == 2);
+        ASSERT(json_is_null(json_get(&root, "mempool")));
+        const struct json_value *err = json_get(&root, "mempool_error");
+        ASSERT(err != NULL);
+        ASSERT(contains(json_get_str(json_get(err, "message")),
+                        "getmempoolinfo RPC returned invalid JSON"));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_syncdiag_invalid_children_stay_parseable(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_syncdiag invalid children stay parseable") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_composite_invalid_child_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_syncdiag", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "error")),
+                      "getsyncdiag RPC failed");
+        ASSERT(json_get_int(json_get(&root, "peer_max_height")) == 3157901);
+        ASSERT(json_is_null(json_get(&root, "download")));
+        const struct json_value *diag_err =
+            json_get(&root, "getsyncdiag_error");
+        const struct json_value *dl_err =
+            json_get(&root, "download_error");
+        ASSERT(diag_err != NULL);
+        ASSERT(dl_err != NULL);
+        ASSERT(contains(json_get_str(json_get(diag_err, "message")),
+                        "getsyncdiag RPC returned invalid JSON"));
+        ASSERT(contains(json_get_str(json_get(dl_err, "message")),
+                        "downloadstats RPC returned invalid JSON"));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static char *mock_networkinfo_rpc(const char *method, const char *params_json)
 {
     (void)params_json;
@@ -1842,6 +1943,8 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();
     failures += test_zcl_blockers_escapes_blocker_strings();
+    failures += test_zcl_kpi_invalid_child_stays_parseable();
+    failures += test_zcl_syncdiag_invalid_children_stay_parseable();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_meta_tools_in_ops_domain();
     failures += test_zcl_logtail_handles_null_eventlog_rpc();

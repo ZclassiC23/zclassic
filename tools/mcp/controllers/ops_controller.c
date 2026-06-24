@@ -76,6 +76,28 @@ static void status_push_json_error(struct json_value *obj,
     json_free(&err);
 }
 
+static void status_push_rpc_json(struct json_value *obj, const char *key,
+                                 const char *raw, const char *rpc_name)
+{
+    struct json_value child;
+    json_init(&child);
+    if (raw && json_read(&child, raw, strlen(raw))) {
+        json_push_kv(obj, key, &child);
+        json_free(&child);
+        return;
+    }
+
+    json_set_null(&child);
+    json_push_kv(obj, key, &child);
+    json_free(&child);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "%s RPC returned %s",
+             rpc_name ? rpc_name : key,
+             raw ? "invalid JSON" : "null");
+    status_push_json_error(obj, key, msg, NULL);
+}
+
 static void status_push_dumpstate_json(struct json_value *obj,
                                        const char *key,
                                        const char *raw)
@@ -414,42 +436,30 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
 
     int peer_count = status_count_json_objects(peers);
 
-    size_t cap = 65536;
-    char *out = zcl_malloc(cap, "kpi_body");
-    if (!out) {
-        free(height); free(peers); free(sync); free(val); free(health);
-        free(mempool); free(wallet); free(chain); free(network);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for KPI response");
-        LOG_ERR("mcp.ops", "malloc failed for kpi body (%zu bytes)", cap);
-        return -1; // raw-return-ok:logged-oom
-    }
-
-    snprintf(out, cap,
-        "{"
-        "\"height\":%s,"
-        "\"peer_count\":%d,"
-        "\"sync\":%s,"
-        "\"validation\":%s,"
-        "\"health\":%s,"
-        "\"mempool\":%s,"
-        "\"wallet\":%s,"
-        "\"chain\":%s,"
-        "\"network\":%s"
-        "}",
-        height  ? height  : "null",
-        peer_count,
-        sync    ? sync    : "null",
-        val     ? val     : "null",
-        health  ? health  : "null",
-        mempool ? mempool : "null",
-        wallet  ? wallet  : "null",
-        chain   ? chain   : "null",
-        network ? network : "null");
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    status_push_rpc_json(&root, "height", height, "getblockcount");
+    json_push_kv_int(&root, "peer_count", peer_count);
+    status_push_rpc_json(&root, "sync", sync, "syncstate");
+    status_push_rpc_json(&root, "validation", val, "validationstatus");
+    status_push_rpc_json(&root, "health", health, "healthcheck");
+    status_push_rpc_json(&root, "mempool", mempool, "getmempoolinfo");
+    status_push_rpc_json(&root, "wallet", wallet, "getwalletinfo");
+    status_push_rpc_json(&root, "chain", chain, "getblockchaininfo");
+    status_push_rpc_json(&root, "network", network, "getnetworkinfo");
 
     free(height); free(peers); free(sync); free(val); free(health);
     free(mempool); free(wallet); free(chain); free(network);
+    char *out = json_value_to_body(&root, "kpi_body");
+    json_free(&root);
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for KPI response");
+        LOG_ERR("mcp.ops", "malloc failed for kpi body");
+        return -1; // raw-return-ok:logged-oom
+    }
     res->body = out;
     return 0;
 }
@@ -513,41 +523,42 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
         }
     }
 
-    size_t cap = 16384;
-    char *out = zcl_malloc(cap, "syncdiag_body");
+    struct json_value root;
+    struct json_value diag_json;
+    json_init(&root);
+    json_init(&diag_json);
+    json_set_object(&root);
+
+    if (diag && json_read(&diag_json, diag, strlen(diag)) &&
+        diag_json.type == JSON_OBJ) {
+        for (size_t i = 0; i < diag_json.num_children; i++) {
+            const char *key = diag_json.keys[i];
+            if (strcmp(key, "peer_max_height") == 0 ||
+                strcmp(key, "download") == 0)
+                continue;
+            json_push_kv(&root, key, &diag_json.children[i]);
+        }
+    } else {
+        json_push_kv_str(&root, "error", "getsyncdiag RPC failed");
+        status_push_json_error(&root, "getsyncdiag",
+            diag ? "getsyncdiag RPC returned invalid JSON"
+                 : "getsyncdiag RPC returned null",
+            NULL);
+    }
+
+    json_push_kv_int(&root, "peer_max_height", peer_max_height);
+    status_push_rpc_json(&root, "download", dl, "downloadstats");
+    json_free(&diag_json);
+    free(diag); free(dl); free(pi);
+    char *out = json_value_to_body(&root, "syncdiag_body");
+    json_free(&root);
     if (!out) {
-        free(diag); free(dl); free(pi);
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for syncdiag response");
-        LOG_ERR("mcp.ops", "malloc failed for syncdiag body (%zu bytes)", cap); return -1;
+        LOG_ERR("mcp.ops", "malloc failed for syncdiag body");
+        return -1; // raw-return-ok:logged-oom
     }
-
-    /* Merge diag object with download stats and peer_max_height.
-     * diag is a JSON object like {...} — strip the trailing '}',
-     * append the extra fields, re-close. */
-    if (diag) {
-        size_t dlen = strlen(diag);
-        /* Find last '}' */
-        while (dlen > 0 && diag[dlen - 1] != '}') dlen--;
-        if (dlen > 0) diag[dlen - 1] = '\0';  /* strip trailing } */
-
-        snprintf(out, cap,
-            "%s,\"peer_max_height\":%d,"
-            "\"download\":%s}",
-            diag,
-            peer_max_height,
-            dl ? dl : "null");
-    } else {
-        snprintf(out, cap,
-            "{\"error\":\"getsyncdiag RPC failed\","
-            "\"peer_max_height\":%d,"
-            "\"download\":%s}",
-            peer_max_height,
-            dl ? dl : "null");
-    }
-
-    free(diag); free(dl); free(pi);
     res->body = out;
     return 0;
 }
