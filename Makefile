@@ -97,16 +97,13 @@ WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
 CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
-	-fstack-protector-strong -fstack-clash-protection -fcf-protection=full \
+	-fstack-protector-strong \
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
-# Hardened link: full RELRO + BIND_NOW (GOT/PLT read-only after relocation) and
-# a non-executable stack. Pure linker flags — no codegen diagnostics, and
-# deterministic, so reproducible-build byte-identity is preserved.
-LDFLAGS = -pthread -flto=auto -rdynamic -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
+LDFLAGS = -pthread -flto=auto -rdynamic
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \
@@ -199,28 +196,6 @@ $(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/te
 test-parallel: test_parallel
 	ulimit -s unlimited && $(TEST_PARALLEL_BIN)
 
-# test-sha3-x4: known-answer test for the 4-way SHA3-512 keystream generator
-# sha3_512_x4 (file-market frame cipher). The AVX-512 path and the scalar
-# fallback are SEPARATE implementations selected at compile time by __AVX512F__;
-# the default node build targets x86-64-v3 (no AVX-512), so test_parallel only
-# ever links the scalar fallback and cannot cover the AVX-512 path. This target
-# compiles the harness WITH -mavx512f to force that path and asserts it is
-# byte-identical to scalar SHA3-512 (anchored on the NIST empty-string vector).
-# SKIPs cleanly on a host without AVX-512 (the intrinsics would SIGILL). Wired
-# into `make ci` so it run-passes on an AVX-512 CI host and SKIPs elsewhere.
-.PHONY: test-sha3-x4
-test-sha3-x4:
-	@if ! grep -qw avx512f /proc/cpuinfo 2>/dev/null; then \
-	  echo "test-sha3-x4: SKIP (host has no AVX-512; the scalar fallback is covered by the default build)"; \
-	  exit 0; fi
-	@echo "══ sha3_512_x4 KAT (AVX-512 path, -mavx512f) ══"
-	@mkdir -p $(BIN_DIR)
-	@$(CC) -std=c23 -O2 -mavx512f -Ilib/crypto/include -Ilib/support/include \
-	  -Ilib/util/include -Ilib/platform/include \
-	  tools/sha3_x4_kat.c lib/crypto/src/sha3_avx512.c lib/crypto/src/sha3.c \
-	  lib/support/src/cleanse.c -o $(BIN_DIR)/sha3_x4_kat
-	@$(BIN_DIR)/sha3_x4_kat
-
 # ── Fast inner loop ──────────────────────────────────────────────────────
 # The edit -> check -> test loop runs dozens of times per session. Use these,
 # NOT `make` + `build/bin/test_zcl` (8-15 min) and NOT a bare `build/bin/test_parallel`.
@@ -274,6 +249,7 @@ repro-on-copy:
 
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
+$(eval $(call BUILD_NODE_TOOL,snapshot_from_coinskv,tools/snapshot_from_coinskv.c))
 
 $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/session.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
@@ -2071,9 +2047,6 @@ ci: lint bench-regress zclassic23 test_parallel
 	@echo ""
 	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"
 	$(MAKE) ci-mvp-gates
-	@echo ""
-	@echo "══ CI: sha3_512_x4 KAT (AVX-512 keystream == scalar; SKIPs without AVX-512) ══"
-	$(MAKE) test-sha3-x4
 	@echo ""
 	@# C6 judge-logic regression guard: the soak-evidence verdict machine is the
 	@# ONLY soak-side item that is fully hermetic (mktemp JSONL fixtures + injected

@@ -22,6 +22,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
+#include "storage/coins_ram.h"
 #include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
@@ -336,6 +337,37 @@ static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
     return JOB_BLOCKED;
 }
 
+/* Surface a genuine permanent store-corruption / unrecoverable-read failure as
+ * a NAMED typed blocker before the JOB_FATAL verdict. Without this, a torn
+ * progress.kv makes step_apply return JOB_FATAL every boot: stage_run_once
+ * latches the FATAL and the drain emits one EV_OPERATOR_NEEDED, but that alert
+ * is in-memory and is CLEARED on every process restart, so
+ * wd_deterministic_stall_cause() finds no PERMANENT blocker and the
+ * chain_tip_watchdog treats the stall as genuine liveness loss — burning its
+ * bounded restart budget power-cycling against the same wedge. A
+ * PERMANENT blocker is re-derived from the same torn store on the first tick
+ * of every boot (before the watchdog's restart threshold), so the stall is
+ * immediately classified "permanent_blocker_active" and the node stays up
+ * degraded with a named halt an operator can see via zcl_blockers instead of
+ * crash-looping. blocker_set's token bucket dedups the per-tick re-fire.
+ * Transient conditions are NOT routed here — they stay JOB_IDLE/JOB_BLOCKED. */
+static void ua_fatal_permanent_blocker(int height, const char *reason_tail)
+{
+    struct blocker_record rec;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "utxo_apply permanent store failure at height=%d: %s "
+             "(cursor held; progress.kv / coins_kv is torn or unreadable — "
+             "a restart re-derives the identical failure; operator must "
+             "repair/reindex the store, then clear this blocker)",
+             height, reason_tail ? reason_tail : "unrecoverable error");
+    if (!blocker_init(&rec, "utxo_apply.fatal_store", STAGE_NAME,
+                      BLOCKER_PERMANENT, reason))
+        return;   /* blocker_init logged the overflow */
+    blocker_set(&rec);  /* -1 (cap exhausted) / 1 (rate-limited dup) already
+                         * logged by blocker_set; the fact persists */
+}
+
 static job_result_t step_apply(struct stage_step_ctx *c)
 {
     atomic_store(&g_ua_last_step_unix, platform_time_wall_unix());
@@ -346,12 +378,19 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (!db) return JOB_IDLE;
 
     int next_h = (int)c->cursor_in;
-    if (next_h < 0) return JOB_FATAL;
+    if (next_h < 0) {
+        ua_fatal_permanent_blocker((int)c->cursor_in,
+                                   "stage cursor persisted negative");
+        return JOB_FATAL;
+    }
 
     uint64_t pv_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "proof_validate", STAGE_NAME,
-                                   &pv_cursor))
+                                   &pv_cursor)) {
+        ua_fatal_permanent_blocker(next_h,
+                                   "proof_validate cursor read failed");
         return JOB_FATAL;
+    }
     if ((uint64_t)next_h >= pv_cursor) {
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
@@ -359,7 +398,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 
     struct proof_validate_row upstream;
     int found = utxo_apply_proof_validate_log_at(db, next_h, &upstream);
-    if (found < 0) return JOB_FATAL;
+    if (found < 0) {
+        ua_fatal_permanent_blocker(next_h,
+                                   "proof_validate_log read returned error");
+        return JOB_FATAL;
+    }
     if (found == 0) {
         /* Reaching here implies next_h < pv_cursor (the >= guard above
          * returned otherwise), so this is a DURABLE upstream hole — a
@@ -400,8 +443,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * passes through — the proof_validate cursor guard above covers ordering. */
     struct script_validate_verdict_row sv_row;
     int sv_found = script_validate_log_verdict_at(db, next_h, &sv_row);
-    if (sv_found < 0)
+    if (sv_found < 0) {
+        ua_fatal_permanent_blocker(next_h,
+                                   "script_validate_log verdict read returned error");
         return JOB_FATAL;
+    }
     if (sv_found == 1 && sv_row.has_block_hash &&
         !uint256_eq(&sv_row.block_hash, bi->phashBlock)) {
         char want_hex[65] = {0}, got_hex[65] = {0};
@@ -501,6 +547,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         if (!utxo_apply_check_and_insert_nullifiers(db, &blk, next_h,
                                                     &summary)) {
+            ua_fatal_permanent_blocker(next_h,
+                                       "nullifier_kv insert store failure");
             free_delta(&summary);
             block_free(&blk);
             return JOB_FATAL;
@@ -514,6 +562,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * alias into `blk`, so apply before block_free. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         if (!apply_coins_kv(db, &summary, (uint32_t)next_h)) {
+            ua_fatal_permanent_blocker(next_h,
+                                       "coins_kv author store failure");
             free_delta(&summary);
             block_free(&blk);
             return JOB_FATAL;
@@ -527,6 +577,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * have nothing to invert). */
     if (summary.ok) {
         if (!utxo_apply_delta_persist(db, next_h, bi->phashBlock, &summary)) {
+            ua_fatal_permanent_blocker(next_h,
+                                       "inverse-delta persist store failure");
             free_delta(&summary);
             block_free(&blk);
             return JOB_FATAL;
@@ -570,6 +622,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
                     summary.ok ? NULL : summary.failure_detail)) {
+        ua_fatal_permanent_blocker(next_h,
+                                   "utxo_apply_log insert store failure");
         free_delta(&summary);
         block_free(&blk);
         return JOB_FATAL;
@@ -595,8 +649,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
      * unresolved height (scratch log row rolled back) — fail-closed, never a
      * mixed coins window over a hole. The seal hook rides THIS txn, never fails it. */
     uint64_t next_cursor = c->cursor_in + 1;
-    if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
+    if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor)) {
+        ua_fatal_permanent_blocker(next_h,
+                                   "coins_applied_height co-commit store failure");
         return JOB_FATAL;
+    }
     seal_candidate_hook_in_tx(db, g_ms, (int32_t)next_cursor);
     /* SELF-MINT the SHA3-verified anchor snapshot the first time the fold lands
      * the compiled checkpoint height — coins_kv provably holds the
@@ -684,6 +741,38 @@ static bool projection_live_lookup(const struct uint256 *txid, uint32_t vout,
         return true;   /* store not open yet → treat as absent (found=0),
                         * matching the lookup==NULL "all external absent"
                         * contract; never a false-accept. */
+
+    /* Fast path: when the in-RAM overlay is active, resolve the ONE prevout
+     * directly via coins_ram_get_prevout (O(1) probe + point read-through) and
+     * AVOID coins_kv_get_coins → coins_ram_get_coins, which reconstructs the
+     * ENTIRE struct coins (two O(cap=8M) linear scans) per call. The resolver
+     * only reads one vout, so the reconstruction is pure waste on the per-input
+     * hot path. The four fields returned here (value/script/height/is_coinbase)
+     * are exactly what the inverse-delta restore-ADD needs, matching what
+     * the reconstruction path would yield for the same live coin. */
+    if (coins_ram_active()) {
+        int64_t  value = 0;
+        int32_t  height = 0;
+        bool     is_coinbase = false;
+        size_t   slen = 0;
+        if (!coins_ram_get_prevout(txid->data, vout, &value, out->script,
+                                    UTXO_APPLY_SCRIPT_MAX, &slen,
+                                    &height, &is_coinbase))
+            return true;  /* absent in the effective set → found stays false */
+        if (slen > UTXO_APPLY_SCRIPT_MAX) {
+            /* Contract violation (script > MAX_SCRIPT_SIZE). Fail the resolver
+             * rather than truncate or over-read a consensus script — same gate
+             * as the reconstruction path below. */
+            return false;
+        }
+        out->found       = true;
+        out->value       = value;
+        out->height      = (uint32_t)(height < 0 ? 0 : height);
+        out->is_coinbase = is_coinbase;
+        out->script_len  = (uint32_t)slen;
+        /* script already copied into out->script by coins_ram_get_prevout. */
+        return true;
+    }
 
     struct coins c;
     coins_init(&c);
@@ -792,6 +881,22 @@ bool utxo_apply_stage_init(struct main_state *ms)
         return false;
     }
 
+    /* Bulk-fold in-RAM hot store (flag-gated, ZCL_FOLD_INRAM). BOTH calls are
+     * no-ops (return true) when the flag is off, so steady-state init is
+     * unchanged. reconcile_boot runs FIRST: if a prior bulk fold crashed
+     * between flushes, the durable utxo_apply cursor is ahead of the last
+     * coins_kv flush watermark — rewind it so the fold re-applies the
+     * un-flushed tail (the from-genesis self-verify still gates correctness).
+     * Then init allocates the overlay and binds it to the coins_kv handle. */
+    if (!coins_ram_reconcile_boot(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    if (!coins_ram_init(db, 0)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
     GetDataDir(true, g_datadir, sizeof(g_datadir));
 
     stage_t *s = stage_create(STAGE_NAME, step_apply, NULL);
@@ -844,6 +949,21 @@ job_result_t utxo_apply_stage_step_once(void)
     /* No projection catch_up fold needed: projection_live_lookup reads the
      * coins_kv rows apply_coins_kv writes IN this stage's BEGIN IMMEDIATE
      * (see its FRESHNESS CONTRACT). */
+
+    /* Bulk-fold in-RAM hot store (flag-gated): after the stage txn COMMITS, the
+     * just-applied height's coins live in the RAM overlay (apply_coins_kv routed
+     * through coins_kv_*_many → coins_ram_*). coins_ram_note_applied bumps the
+     * since-flush counter and, every K blocks, drains the overlay into coins_kv
+     * in its OWN BEGIN IMMEDIATE (which is why it CANNOT run inside the stage
+     * txn). A no-op (returns true) when the flag is off / store inactive. The
+     * flush co-writes the cursor + frontier + watermark so the durable state
+     * stays self-consistent; a crash between flushes is rewound by
+     * coins_ram_reconcile_boot at the next boot. */
+    if (r == JOB_ADVANCED && coins_ram_active()) {
+        int64_t applied = atomic_load(&g_ua_last_advance_height);
+        if (applied >= 0 && !coins_ram_note_applied((int32_t)applied))
+            return JOB_FATAL;
+    }
     return r;
 }
 
@@ -851,6 +971,18 @@ STAGE_DRAIN_IMPL(utxo_apply)
 
 void utxo_apply_stage_shutdown(void)
 {
+    /* Clean-stop flush of the in-RAM bulk-fold overlay BEFORE we tear down (and
+     * before the progress store closes): persist the un-flushed tail so a
+     * graceful stop does not force a crash-replay rewind on the next boot.
+     * No-op when the flag is off / store inactive / overlay empty. Done before
+     * taking g_lock since the flush takes progress_store_tx_lock internally. */
+    if (coins_ram_active() && !coins_ram_flush_final())
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] shutdown: coins_ram final flush failed; the "
+                 "un-flushed tail will be re-applied on next boot via the "
+                 "crash-replay watermark");
+    coins_ram_shutdown();
+
     pthread_mutex_lock(&g_lock);
     /* Registry hygiene (tests re-init in-process): init re-registers the
      * gap blocker from the durable marker, so clearing here loses nothing. */

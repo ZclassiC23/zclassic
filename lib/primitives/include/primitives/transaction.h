@@ -167,6 +167,7 @@ bool transaction_copy(struct transaction *dst, const struct transaction *src);
  * total leaves the MoneyRange [0, MAX_MONEY] (logged) — a consensus
  * overflow guard, so -1 means "reject", not a valid amount. */
 int64_t transaction_get_value_out(const struct transaction *tx);
+void outpoint_to_string(const struct outpoint *op, char *buf, size_t buflen);
 
 struct byte_stream;
 

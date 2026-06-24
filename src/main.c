@@ -1796,6 +1796,15 @@ int main(int argc, char **argv)
                          sizeof("-load-snapshot-at-own-height=") - 1) == 0)
             ctx.load_snapshot_at_own_height =
                 argv[i] + sizeof("-load-snapshot-at-own-height=") - 1;
+        else if (strcmp(argv[i], "-fold-inram") == 0) {
+            /* Bulk-fold in-RAM UTXO hot store (storage/coins_ram.h). The
+             * storage layer reads ZCL_FOLD_INRAM as the single source of truth
+             * (decided once, cached), so the flag just sets the env before any
+             * coins_ram_* call. STRICTLY for the bulk fold (from-genesis mint /
+             * -refold-from-anchor catch-up): the at-tip steady state (1 block /
+             * 2.5 min) does NOT benefit and should run plain SQLite coins_kv. */
+            setenv("ZCL_FOLD_INRAM", "1", 1);
+        }
         else if (strcmp(argv[i], "-mint-anchor") == 0) ctx.mint_anchor = true;
         else if (strcmp(argv[i], "-mint-anchor-fast") == 0) ctx.mint_anchor_fast = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;

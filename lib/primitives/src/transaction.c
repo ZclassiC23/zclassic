@@ -225,6 +225,13 @@ int64_t transaction_get_shielded_value_in(const struct transaction *tx)
     return total;
 }
 
+void outpoint_to_string(const struct outpoint *op, char *buf, size_t buflen)
+{
+    char hex[65];
+    uint256_get_hex(&op->hash, hex);
+    snprintf(buf, buflen, "%s:%u", hex, op->n);
+}
+
 bool outpoint_serialize(const struct outpoint *op, struct byte_stream *s)
 {
     return stream_write_bytes(s, op->hash.data, 32) &&

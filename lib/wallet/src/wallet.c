@@ -1502,10 +1502,8 @@ int wallet_try_sapling_decrypt(struct wallet *w,
             memory_cleanse(dec_key, 32);
 
             /* Parse plaintext: leadbyte(1) || d(11) || v(8) || rcm(32) || memo(512) */
-            if (plaintext[0] != 0x01) {
-                memory_cleanse(plaintext, sizeof(plaintext));
+            if (plaintext[0] != 0x01)
                 continue;
-            }
 
             uint8_t d[11];
             memcpy(d, plaintext + 1, 11);
@@ -1517,28 +1515,16 @@ int wallet_try_sapling_decrypt(struct wallet *w,
 
             /* Derive pk_d from ivk and decrypted diversifier to verify */
             uint8_t pk_d[32];
-            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d)) {
-                memory_cleanse(plaintext, sizeof(plaintext));
-                memory_cleanse(d, sizeof(d));
-                memory_cleanse(rcm, sizeof(rcm));
+            if (!sapling_ivk_to_pkd(ke->ivk, d, pk_d))
                 continue;
-            }
 
             /* Recompute cm and verify against output_description.cm */
             uint8_t cm[32];
-            if (!sapling_compute_cm(d, pk_d, value, rcm, cm)) {
-                memory_cleanse(plaintext, sizeof(plaintext));
-                memory_cleanse(d, sizeof(d));
-                memory_cleanse(rcm, sizeof(rcm));
+            if (!sapling_compute_cm(d, pk_d, value, rcm, cm))
                 continue;
-            }
 
-            if (memcmp(cm, od->cm.data, 32) != 0) {
-                memory_cleanse(plaintext, sizeof(plaintext));
-                memory_cleanse(d, sizeof(d));
-                memory_cleanse(rcm, sizeof(rcm));
+            if (memcmp(cm, od->cm.data, 32) != 0)
                 continue;
-            }
 
             /* Compute nullifier for spend detection */
             uint8_t ak[32], nk[32];

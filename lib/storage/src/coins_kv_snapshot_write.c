@@ -19,6 +19,7 @@
 
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
+#include "storage/coins_ram.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -54,6 +55,14 @@ bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
         LOG_NULL("coins_kv", "snapshot_write: null db/path");
         return false;
     }
+
+    /* Bulk-fold in-RAM overlay active (e.g. the anchor self-mint runs while the
+     * fold's un-flushed tail still lives in RAM): stream the EFFECTIVE set so
+     * the artifact is complete and its body SHA3 still equals the compiled
+     * checkpoint. With the flag off this is a single bool load that is false. */
+    if (coins_ram_active())
+        return coins_ram_snapshot_write(out_path, height, anchor_block_hash,
+                                        out_sha3, out_count, out_total_supply);
 
     char tmp_path[1100];
     int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);

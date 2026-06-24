@@ -531,6 +531,7 @@ int test_body_fetch_stage(void);
 int test_body_persist_stage(void);
 int test_created_outputs_index(void);
 int test_coins_kv(void);
+int test_coins_ram(void);
 int test_seal_kv(void);
 int test_seal_ratify(void);
 int test_nullifier_kv(void);

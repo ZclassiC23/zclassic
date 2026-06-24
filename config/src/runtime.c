@@ -63,6 +63,15 @@ bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb)
     return node_db_wal_checkpoint(ndb);
 }
 
+bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb)
+{
+    if (!app_runtime_node_db_handle_open(ndb) || !ndb->db)
+        return false;
+    return sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+                                     SQLITE_CHECKPOINT_PASSIVE,
+                                     NULL, NULL) == SQLITE_OK;
+}
+
 int app_runtime_node_db_utxo_max_height(struct node_db *ndb)
 {
     if (!app_runtime_node_db_handle_open(ndb) || !ndb->db)

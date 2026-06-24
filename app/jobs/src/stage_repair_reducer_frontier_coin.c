@@ -644,7 +644,7 @@ static bool maybe_repair_stale_script(
         block_free(&blk);
         return false;
     }
-    if (!dry.ok) {
+    if (!dry.ok && !dry.internal_error) {
         out->stale_script_repair_genuinely_invalid = true;
         LOG_WARN("stage_repair",
                  "[stage_repair] stale script repair: H genuinely invalid "
@@ -653,6 +653,21 @@ static bool maybe_repair_stale_script(
         progress_store_tx_unlock();
         block_free(&blk);
         return true;
+    }
+    if (!dry.ok && dry.internal_error) {
+        /* A transient infra failure (internal_error) is NOT a consensus
+         * verdict — "could not determine validity," not "invalid." The
+         * dry-run reproducing it means the transient has not yet cleared.
+         * Fall through to the one-shot rewind so the stages re-attempt the
+         * height; the marker guard below bounds the retry to exactly one
+         * rewind per (height, block_hash), after which a still-present
+         * internal_error surfaces as a named marker-seen refusal instead
+         * of a permanent silent wedge. */
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair: transient "
+                 "internal_error retriable height=%d status=%s — rewinding "
+                 "for one-shot re-validation",
+                 height, dry.status);
     }
 
     char marker[192];

@@ -28,6 +28,7 @@
 #include "crypto/sha3.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
+#include "storage/coins_ram.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
@@ -64,6 +65,12 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   const uint8_t *script, size_t script_len)
 {
     if (!db || !txid) return false;
+    /* Bulk-fold hot store (flag-gated). With the flag off this is a single
+     * bool load that is false, so the original SQLite path below runs
+     * byte-for-byte unchanged. */
+    if (coins_ram_active())
+        return coins_ram_add(txid, vout, value, height, is_coinbase,
+                             script, script_len);
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO coins"
@@ -93,6 +100,8 @@ bool coins_kv_add(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
 bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
 {
     if (!db || !txid) return false;
+    if (coins_ram_active())
+        return coins_ram_spend(txid, vout);
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,
         "DELETE FROM coins WHERE txid=? AND vout=?",
@@ -112,8 +121,8 @@ bool coins_kv_spend(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
     return rc == SQLITE_DONE;
 }
 
-bool coins_kv_add_many(sqlite3 *db, const struct coins_kv_add_row *rows,
-                       size_t count)
+bool coins_kv_add_many_sqlite(sqlite3 *db, const struct coins_kv_add_row *rows,
+                              size_t count)
 {
     if (!db) return false;
     if (count == 0) return true;
@@ -163,8 +172,29 @@ bool coins_kv_add_many(sqlite3 *db, const struct coins_kv_add_row *rows,
     return ok;
 }
 
-bool coins_kv_spend_many(sqlite3 *db, const struct coins_kv_spend_row *rows,
-                         size_t count)
+bool coins_kv_add_many(sqlite3 *db, const struct coins_kv_add_row *rows,
+                       size_t count)
+{
+    if (coins_ram_active()) {
+        if (count == 0) return true;
+        if (!rows) return false;
+        for (size_t i = 0; i < count; i++) {
+            const struct coins_kv_add_row *r = &rows[i];
+            if (!r->txid) {
+                LOG_WARN("coins_kv", "add_many row %zu has NULL txid", i);
+                return false;
+            }
+            if (!coins_ram_add(r->txid, r->vout, r->value, r->height,
+                               r->is_coinbase, r->script, r->script_len))
+                return false;
+        }
+        return true;
+    }
+    return coins_kv_add_many_sqlite(db, rows, count);
+}
+
+bool coins_kv_spend_many_sqlite(sqlite3 *db, const struct coins_kv_spend_row *rows,
+                                size_t count)
 {
     if (!db) return false;
     if (count == 0) return true;
@@ -205,7 +235,27 @@ bool coins_kv_spend_many(sqlite3 *db, const struct coins_kv_spend_row *rows,
     return ok;
 }
 
-bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
+bool coins_kv_spend_many(sqlite3 *db, const struct coins_kv_spend_row *rows,
+                         size_t count)
+{
+    if (coins_ram_active()) {
+        if (count == 0) return true;
+        if (!rows) return false;
+        for (size_t i = 0; i < count; i++) {
+            const struct coins_kv_spend_row *r = &rows[i];
+            if (!r->txid) {
+                LOG_WARN("coins_kv", "spend_many row %zu has NULL txid", i);
+                return false;
+            }
+            if (!coins_ram_spend(r->txid, r->vout))
+                return false;
+        }
+        return true;
+    }
+    return coins_kv_spend_many_sqlite(db, rows, count);
+}
+
+bool coins_kv_exists_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
 {
     if (!db || !txid) return false;
     sqlite3_stmt *s = NULL;
@@ -220,7 +270,14 @@ bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
     return found;
 }
 
-bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
+{
+    if (coins_ram_active())
+        return coins_ram_exists(txid, vout);
+    return coins_kv_exists_sqlite(db, txid, vout);
+}
+
+bool coins_kv_get_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t *value_out, uint8_t *script_out, size_t script_cap,
                   size_t *script_len_out)
 {
@@ -250,7 +307,18 @@ bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
     return found;
 }
 
-int64_t coins_kv_count(sqlite3 *db)
+bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+                  int64_t *value_out, uint8_t *script_out, size_t script_cap,
+                  size_t *script_len_out)
+{
+    if (coins_ram_active())
+        return coins_ram_get(txid, vout, value_out, script_out, script_cap,
+                             script_len_out);
+    return coins_kv_get_sqlite(db, txid, vout, value_out, script_out,
+                               script_cap, script_len_out);
+}
+
+int64_t coins_kv_count_sqlite(sqlite3 *db)
 {
     if (!db) return -1;
     sqlite3_stmt *s = NULL;
@@ -264,7 +332,15 @@ int64_t coins_kv_count(sqlite3 *db)
     return n;
 }
 
-bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
+int64_t coins_kv_count(sqlite3 *db)
+{
+    if (coins_ram_active())
+        return coins_ram_count();
+    return coins_kv_count_sqlite(db);
+}
+
+bool coins_kv_get_coins_sqlite(sqlite3 *db, const uint8_t txid[32],
+                               struct coins *out)
 {
     if (!out) return false;
     coins_init(out);
@@ -322,8 +398,15 @@ bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
     return true;
 }
 
-bool coins_kv_setinfo(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
-                      int64_t *total_amount)
+bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
+{
+    if (coins_ram_active())
+        return coins_ram_get_coins(txid, out);
+    return coins_kv_get_coins_sqlite(db, txid, out);
+}
+
+bool coins_kv_setinfo_sqlite(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
+                             int64_t *total_amount)
 {
     if (!db) return false;
     sqlite3_stmt *s = NULL;
@@ -342,8 +425,18 @@ bool coins_kv_setinfo(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
     return ok;
 }
 
+bool coins_kv_setinfo(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
+                      int64_t *total_amount)
+{
+    if (coins_ram_active())
+        return coins_ram_setinfo(num_txs, num_txouts, total_amount);
+    return coins_kv_setinfo_sqlite(db, num_txs, num_txouts, total_amount);
+}
+
 int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
 {
+    if (coins_ram_active())
+        return coins_ram_commitment(out);
     if (!db || !out) return -1;
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db,

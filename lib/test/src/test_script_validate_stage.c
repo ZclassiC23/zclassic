@@ -406,6 +406,26 @@ int test_script_validate_stage(void)
     }
 
     {
+        /* Regression for wedge-retry: a transient internal_error dry-run
+         * (missing prevout / sapling-ctx race) must report
+         * dry.internal_error == true so the stale-script repair treats it
+         * as retriable rather than a permanent "genuinely invalid" verdict.
+         * If this flag were false, the repair would refuse to rewind and H*
+         * would terminate on the first transient ok=0 row forever. */
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("internal_error_dry_run: setup",
+                 sv_setup("internal_dry", 3, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        sc.missing_prevout_height = 1;
+        struct script_validate_dry_run_report dry;
+        SV_CHECK("internal_error_dry_run: dry-run flags internal_error",
+                 script_validate_stage_dry_run_block(&sc.bodies[1], 1,
+                                                     &dry) &&
+                 !dry.ok && dry.internal_error);
+        sv_teardown(dir, &ms, &sc);
+    }
+
+    {
         char dir[256]; struct synth_chain_sv sc;
         test_fmt_tmpdir(dir, sizeof(dir), "script_validate",
                         "bounded_created");

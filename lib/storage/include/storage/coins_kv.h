@@ -100,6 +100,35 @@ bool coins_kv_get(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
 /* Count of live outputs. Returns -1 on error. */
 int64_t coins_kv_count(struct sqlite3 *db);
 
+/* ── RAW (overlay-bypassing) accessors ──────────────────────────────────
+ *
+ * The in-RAM bulk-fold overlay (storage/coins_ram.h) fronts coins_kv_get /
+ * coins_kv_exists / coins_kv_get_coins / coins_kv_count when active. Those
+ * shims must read THROUGH to the durable SQLite set on a cold miss WITHOUT
+ * re-entering the overlay (infinite recursion). These _sqlite variants are the
+ * raw SQLite implementations, called by the overlay's read-through path and by
+ * the public shims when the overlay is inactive. App code should keep calling
+ * the public coins_kv_* functions. */
+bool    coins_kv_get_sqlite(struct sqlite3 *db, const uint8_t txid[32],
+                            uint32_t vout, int64_t *value_out,
+                            uint8_t *script_out, size_t script_cap,
+                            size_t *script_len_out);
+bool    coins_kv_exists_sqlite(struct sqlite3 *db, const uint8_t txid[32],
+                               uint32_t vout);
+bool    coins_kv_get_coins_sqlite(struct sqlite3 *db, const uint8_t txid[32],
+                                  struct coins *out);
+int64_t coins_kv_count_sqlite(struct sqlite3 *db);
+bool    coins_kv_setinfo_sqlite(struct sqlite3 *db, int64_t *num_txs,
+                                int64_t *num_txouts, int64_t *total_amount);
+/* RAW batched write variants — the overlay's flush drains into the durable
+ * SQLite set THROUGH these (the public _many shims would re-enter the overlay). */
+bool    coins_kv_add_many_sqlite(struct sqlite3 *db,
+                                 const struct coins_kv_add_row *rows,
+                                 size_t count);
+bool    coins_kv_spend_many_sqlite(struct sqlite3 *db,
+                                   const struct coins_kv_spend_row *rows,
+                                   size_t count);
+
 /* Reconstruct a `struct coins` for `txid` from live rows (`out` is coins_init'd
  * by this call). Returns false (num_vout==0) if the txid has no live outputs.
  * Same two-pass shape as utxo_projection_get_coins / coins_view_sqlite. */

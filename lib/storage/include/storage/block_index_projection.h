@@ -104,6 +104,17 @@ uint64_t block_index_projection_count(block_index_projection_t *p);
 int block_index_projection_commitment(block_index_projection_t *p,
                                       uint8_t out[32]);
 
+/* One-time historical-backfill flag (projection_meta key
+ * "block_index_backfilled"). Persisted in the projection's own SQLite so
+ * wiping the projection resets the flag atomically with the data it gates.
+ *
+ * A backfill pass gates SOLELY on this flag — never on a row count —
+ * because the live projection already carries tail rows, so a count guard
+ * would brick a never-backfilled store. Returns false if `p` is NULL or not
+ * open. */
+bool block_index_projection_backfill_done(block_index_projection_t *p);
+bool block_index_projection_mark_backfilled(block_index_projection_t *p);
+
 /* Diagnostics — see CLAUDE.md "Adding state introspection". */
 struct json_value;
 bool block_index_projection_dump_state_json(struct json_value *out,

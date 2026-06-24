@@ -60,6 +60,19 @@ static bool apply_pragmas(sqlite3 *db)
         "PRAGMA synchronous=NORMAL",
         "PRAGMA foreign_keys=ON",
         "PRAGMA busy_timeout=5000",
+        /* Page cache + mmap sizing for the fold/progress DB. Both are pure
+         * read-path / memory-residency controls — they change ONLY how much of
+         * the DB SQLite keeps resident, NOT the WAL journaling, the fsync
+         * timing (synchronous=NORMAL above), or the on-disk format, so they do
+         * not weaken crash-replay durability. cache_size is in KiB when
+         * negative: -1048576 == a 1 GiB page cache (vs the ~2 MB default), which
+         * keeps the hot stage_cursor / coins_kv pages resident across the
+         * serial stages instead of re-faulting them from the OS cache each
+         * step. mmap_size=2 GiB lets reads come straight from the mmap'd file
+         * region, avoiding a read() syscall + buffer copy per page on the
+         * read-heavy fold. */
+        "PRAGMA cache_size=-1048576",
+        "PRAGMA mmap_size=2147483648",
         NULL,
     };
     for (size_t i = 0; pragmas[i]; i++) {
