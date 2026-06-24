@@ -23,6 +23,36 @@
 Verify HEAD with `git status --short --branch`; detect your worktree with `pwd`
 (`main` = orchestrator; `wt2`/`wt3` = workers — `docs/work/README.md`).
 
+## Night wrap — 2026-06-24
+
+`origin/main` is current at `011b3f2f7` (`mcp: harden profile response
+building`). The local `main` branch was fast-forwarded to `origin/main` with the
+working tree preserved; there are still unrelated WIP files in the worktree.
+Treat those remaining edits as **uncommitted and unreviewed** until you inspect
+them. Do not revert them blindly.
+
+Safe commits pushed tonight, in order:
+
+- `5704b8c08` `jobs: distinguish missing cursor from read failure`
+- `80bdffb24` `jobs: fail loud on cursor hydrate errors`
+- `ca0599291` `api: stream json routes without stack body caps`
+- `3cd9ebfe2` `sync: expose monitor tip advance input`
+- `011b3f2f7` `mcp: harden profile response building`
+
+Verification run for those commits: staged-sync cursor/stage groups,
+`body_fetch_stage`, `stage_anchor`, `api`, `sync_watchdog_conditions`,
+`syncdiag_rpc`, `node_health_service`, `mcp_controllers`, plus focused lint
+gates (`check-raw-sqlite`, `check-long-functions`, `check-silent-errors*` where
+applicable). Live node was **not** restarted or deployed.
+
+Remaining dirty WIP after the fast-forward was concentrated in:
+`Makefile`, API resource/page controllers, `utxo_apply_stage`,
+runtime flags, SHA3 AVX512, block/transaction serializers, block index /
+coins_kv / progress-store code, wallet files, `src/main.c`, plus untracked
+`coins_ram.*`, `test_coins_ram.c`, and `tools/snapshot_from_coinskv.c`.
+Re-run `git status --short --branch` and `git diff --stat origin/main` before
+touching any of it.
+
 ---
 
 ## 0. Meta-discipline (read before you trust ANY claim, including this file)
