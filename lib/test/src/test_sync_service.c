@@ -3,6 +3,9 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "controllers/diagnostics_controller.h"
+#include "controllers/diagnostics_internal.h"
+#include "json/json.h"
 #include "sync/sync_planner.h"
 #include "validation/main_state.h"
 #include "net/download.h"
@@ -802,6 +805,72 @@ static int test_sync_service_band_backfill_anchor_selects_frontier(void)
         syncsvc_header_band_reset_for_testing();
         active_chain_free(&chain);
         active_chain_free(&rooted);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_header_band_dumpstate(void)
+{
+    int failures = 0;
+
+    TEST("sync_service exposes header band backfill via dumpstate") {
+        struct main_state ms;
+        struct block_index f0, f1, f2;
+        struct block_index is[6];
+        struct blocker_record br;
+        const int32_t anchor = band_anchor_height();
+
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+        main_state_init(&ms);
+
+        band_make_block(&f0, anchor + 1, NULL, 1, 0x10);
+        band_make_block(&f1, anchor + 2, &f0, 2, 0x11);
+        band_make_block(&f2, anchor + 3, &f1, 3, 0x12);
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &f2));
+        for (int k = 0; k < 6; k++)
+            band_make_block(&is[k], anchor + 100 + k,
+                            k ? &is[k - 1] : NULL, 0,
+                            (uint8_t)(0x20 + k));
+        ASSERT(active_chain_install_tip_slot(&ms.chain_active, &is[5]));
+        ASSERT(blocker_init(&br, HEADER_BAND_BLOCKER_ID, "unit",
+                            BLOCKER_DEPENDENCY, "unit fixture"));
+        ASSERT(blocker_set(&br) >= 0);
+
+        diagnostics_controller_set_state(&ms, "");
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value sub;
+        json_init(&sub);
+        json_set_str(&sub, "header_band");
+        ASSERT(json_push_back(&params, &sub));
+        json_free(&sub);
+
+        struct json_value result;
+        json_init(&result);
+        ASSERT(diag_rpc_dumpstate(&params, false, &result));
+        const struct json_value *state = json_get(&result, "state");
+        ASSERT(state != NULL && state->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(state, "state")), "backfilling");
+        ASSERT(json_get_bool(json_get(state, "blocker_recorded")));
+        ASSERT(json_get_bool(json_get(state, "band_open")));
+        ASSERT(json_get_int(json_get(state, "active_tip_height")) ==
+               anchor + 105);
+        ASSERT(json_get_int(json_get(state, "island_root_height")) ==
+               anchor + 100);
+        ASSERT(json_get_int(json_get(state, "backfill_anchor_height")) ==
+               anchor + 3);
+        ASSERT(json_get_int(json_get(state, "remaining_headers")) == 97);
+
+        json_free(&result);
+        json_free(&params);
+        diagnostics_controller_set_state(NULL, "");
+        blocker_reset_for_testing();
+        syncsvc_header_band_reset_for_testing();
+        main_state_free(&ms);
         PASS();
     } _test_next:;
 
@@ -1669,6 +1738,7 @@ int test_sync_service(void)
     failures += test_sync_service_restarts_low_header_batches_from_tip();
     failures += test_sync_service_band_continue_is_progress_not_restart();
     failures += test_sync_service_band_backfill_anchor_selects_frontier();
+    failures += test_sync_service_header_band_dumpstate();
     failures += test_sync_service_band_anchor_follows_index_frontier();
     failures += test_sync_service_band_closed_after_relink();
     failures += test_sync_service_band_producer_derives_from_ancestry();

@@ -46,6 +46,8 @@
 #include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_authority_service.h"
+#include "services/utxo_recovery_service.h"
+#include "sync/sync_planner.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/validate_headers_stage.h"
@@ -143,6 +145,75 @@ static const char *block_validity_level_name(unsigned nStatus)
         case BLOCK_VALID_SCRIPTS:      return "BLOCK_VALID_SCRIPTS";
     }
     return "UNKNOWN";
+}
+
+static void push_block_ref(struct json_value *out, const char *prefix,
+                           const struct block_index *bi)
+{
+    char key[64];
+    snprintf(key, sizeof(key), "%s_height", prefix);
+    json_push_kv_int(out, key, bi ? bi->nHeight : -1);
+
+    snprintf(key, sizeof(key), "%s_hash", prefix);
+    if (bi && bi->phashBlock) {
+        char hex[65];
+        uint256_get_hex(bi->phashBlock, hex);
+        json_push_kv_str(out, key, hex);
+    } else {
+        json_push_kv_str(out, key, "");
+    }
+}
+
+static bool header_band_dump_state_json(struct json_value *out,
+                                        const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct main_state *ms = g_diag.main_state;
+    bool blocker = blocker_exists(HEADER_BAND_BLOCKER_ID);
+    json_push_kv_bool(out, "has_main_state", ms != NULL);
+    json_push_kv_bool(out, "blocker_recorded", blocker);
+
+    if (!ms) {
+        json_push_kv_str(out, "state", blocker ? "blocker_without_state"
+                                                : "unknown_no_state");
+        json_push_kv_int(out, "remaining_headers", -1);
+        return true;
+    }
+
+    struct active_chain *chain = &ms->chain_active;
+    struct block_index *tip = active_chain_tip(chain);
+    const struct block_index *island_root =
+        tip ? utxo_recovery_block_ancestry_break(tip) : NULL;
+    struct block_index *anchor =
+        blocker ? syncsvc_header_band_backfill_anchor(chain) : NULL;
+
+    push_block_ref(out, "active_tip", tip);
+    push_block_ref(out, "island_root", island_root);
+    push_block_ref(out, "backfill_anchor", anchor);
+    json_push_kv_bool(out, "band_open", island_root != NULL);
+
+    int remaining = -1;
+    if (island_root && anchor && island_root->nHeight > anchor->nHeight)
+        remaining = island_root->nHeight - anchor->nHeight;
+    else if (!island_root)
+        remaining = 0;
+    json_push_kv_int(out, "remaining_headers", remaining);
+
+    const char *state = "healthy";
+    if (blocker && island_root && anchor)
+        state = "backfilling";
+    else if (blocker && island_root)
+        state = "blocked_no_anchor";
+    else if (blocker && !island_root)
+        state = "closing_or_stale_blocker";
+    else if (!blocker && island_root)
+        state = "derived_band_without_blocker";
+    json_push_kv_str(out, "state", state);
+    return true;
 }
 
 static struct block_index *find_block_index_by_key(struct main_state *ms,
@@ -472,6 +543,8 @@ static const struct dump_entry g_dumpers[] = {
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "header_probe", header_probe_dump_state_json,
                      "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
+    { "header_band", header_band_dump_state_json,
+                     "header band backfill: derived island root, current getheaders anchor, remaining span, and blocker state" },
     { "utxo_parity", utxo_parity_dump_state_json,
                      "standing UTXO-set parity vs reference commitment at the finalized frontier: checks/matches/mismatches, finalized_frontier, last_checked_height, source name+exact flag" },
     { "legacy_mirror", legacy_mirror_sync_dump_state_json,
