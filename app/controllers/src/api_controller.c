@@ -38,6 +38,7 @@
 #include "models/onion_announcement.h"
 #include "models/peer.h"
 #include "models/zslp.h"
+#include "json/json.h"
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -241,8 +242,30 @@ static size_t cors_preflight(uint8_t *r, size_t max)
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                           const char *message)
 {
-    return (size_t)snprintf((char *)r, max,
-        "%s{\"error\":\"%s\"}", headers, message);
+    if (!r || max == 0)
+        return 0;
+
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "error", message ? message : "error");
+
+    const char *h = headers ? headers : "";
+    size_t hlen = strlen(h);
+    size_t blen = json_write(&body, NULL, 0);
+    size_t total = hlen + blen;
+
+    if (hlen >= max) {
+        memcpy(r, h, max - 1);
+        r[max - 1] = '\0';
+        json_free(&body);
+        return total;
+    }
+
+    memcpy(r, h, hlen);
+    json_write(&body, (char *)r + hlen, max - hlen);
+    json_free(&body);
+    return total;
 }
 
 /* ── Compute functions (called ONLY from background thread) ── */

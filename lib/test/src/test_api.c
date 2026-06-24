@@ -6,12 +6,16 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "jobs/reducer_frontier.h"
+#include "json/json.h"
 #include "models/file_service.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
+
+size_t api_json_error(uint8_t *r, size_t max, const char *headers,
+                      const char *message);
 
 static struct block_index *api_test_insert_block(struct main_state *ms,
                                                  struct uint256 *hash,
@@ -96,6 +100,29 @@ int test_api(void)
                                        resp, sizeof(resp));
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         bool ok = (n > 0 && strstr((char *)resp, "404") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: json error escapes runtime message... ");
+    {
+        const char *headers =
+            "HTTP/1.1 500 Internal Server Error\r\n"
+            "Content-Type: application/json\r\n\r\n";
+        const char *msg = "bad \"msg\"\nretry";
+        size_t n = api_json_error(resp, sizeof(resp), headers, msg);
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        const char *body = strstr((char *)resp, "\r\n\r\n");
+        bool ok = n > 0 && body != NULL;
+        struct json_value root;
+        json_init(&root);
+        if (ok) {
+            body += 4;
+            ok = json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "error")),
+                              msg) == 0;
+        }
+        json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
