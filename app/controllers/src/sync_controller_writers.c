@@ -400,12 +400,20 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
                  (void *)spend, (void *)ndb);
 
     s = ndb->stmt_nullifier_insert;
-    sqlite3_reset(s);
-    sqlite3_bind_blob(s, 1,
-                      spend->nullifier,
-                      sizeof(spend->nullifier),
-                      SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
+    if (!s)
+        LOG_FAIL("sync", "sapling_spend_write: nullifier insert stmt missing");
+    if (sqlite3_reset(s) != SQLITE_OK)
+        LOG_FAIL("sync", "sapling_spend_write: reset failed: %s",
+                 sqlite3_errmsg(ndb->db));
+    if (sqlite3_bind_blob(s, 1,
+                          spend->nullifier,
+                          sizeof(spend->nullifier),
+                          SQLITE_STATIC) != SQLITE_OK)
+        LOG_FAIL("sync", "sapling_spend_write: bind failed: %s",
+                 sqlite3_errmsg(ndb->db));
+    if (AR_STEP_WRITE(s) != SQLITE_DONE)
+        LOG_FAIL("sync", "sapling_spend_write: nullifier insert failed: %s",
+                 sqlite3_errmsg(ndb->db));
 
     spend->result = db_sapling_note_mark_spent_ex(ndb,
                                                   spend->nullifier,

@@ -673,6 +673,28 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* Sapling spend sync fails loudly when nullifier projection insert fails */
+    {
+        printf("SQLite sapling spend reports nullifier insert failure... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        uint8_t nullifier[32];
+        uint8_t spending_txid[32];
+
+        memset(nullifier, 0x0A, sizeof(nullifier));
+        memset(spending_txid, 0x0B, sizeof(spending_txid));
+        ok = ok && node_db_exec(&ndb, "DROP TABLE sapling_nullifiers");
+        if (ok) {
+            enum db_mark_spent_result r =
+                node_db_sync_sapling_spend_ex(&ndb, nullifier, spending_txid);
+            ok = ok && r == DB_MARK_SPENT_ERROR;
+        }
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* DB block CRUD */
     {
         printf("SQLite block save/find... ");
