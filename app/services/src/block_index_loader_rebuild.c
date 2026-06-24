@@ -225,15 +225,17 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     if (!tip)
         return 0;
 
-    /* R3: branch selection is STRUCTURAL — active_chain_tip()==NULL ONLY.
-     * Never trust active_chain_height/cur_h to mean "no tip": its SQL
-     * fallback (MAX(height) FROM tip_finalize_log WHERE ok=1) returns a
-     * positive value even when active_chain_tip() is NULL. */
-    struct block_index *cur_tip = active_chain_tip(&ms->chain_active);
-    int cur_h = active_chain_height(&ms->chain_active);
+    /* R3: branch selection is STRUCTURAL over the cached active-chain window.
+     * active_chain_tip()/active_chain_height() are authority-aware and can
+     * report the durable finalized target we are trying to adopt. The repair
+     * floor must instead be the locally cached window tip; otherwise a valid
+     * forward seed no-ops as "already at target" while the window remains
+     * stale or sparse. */
+    struct block_index *cur_tip = active_chain_cached_tip(&ms->chain_active);
+    int cur_h = cur_tip ? cur_tip->nHeight : -1;
 
     /* R1: ONE effective_floor drives BOTH the bound check and the walk.
-     *   - extend-live-chain branch (cur_tip != NULL) : floor = cur_h
+     *   - extend-live-chain branch (cur_tip != NULL) : floor = cached cur_h
      *   - genesis-root branch       (cur_tip == NULL) : floor = 0 */
     int effective_floor = cur_tip ? cur_h : 0;
 

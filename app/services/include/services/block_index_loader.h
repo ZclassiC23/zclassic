@@ -143,21 +143,22 @@ bool load_block_index_from_projection(struct main_state *ms,
  * strictly-higher, CONTIGUOUS forward extension — every intermediate block
  * HAVE_DATA + script-valid + failure-free.
  *
- * TWO structural branches, selected SOLELY on active_chain_tip()==NULL:
- *   - cur_tip != NULL (extend-live-chain): the pprev walk down to the current
- *     tip's height MUST land pointer-equal on the current active tip — a pure
+ * TWO structural branches, selected SOLELY on active_chain_cached_tip()==NULL:
+ *   - cached tip != NULL (extend-live-chain): the pprev walk down to the cached
+ *     tip's height MUST land pointer-equal on that cached active tip — a pure
  *     forward extension, never a fork.
- *   - cur_tip == NULL (genesis-root): the durable finalized tip exists but the
- *     coins authority never installed a tip (the kill-9-at-genesis class). Walk
- *     pprev all the way to height 0, requiring the terminus to be the CANONICAL
- *     genesis (params->consensus.hashGenesisBlock), then install + densify the
- *     [0..tip] window. This is the load-bearing recovery for a fresh node that
- *     mined N blocks, was kill-9'd, and rebooted to a NULL active tip.
+ *   - cached tip == NULL (genesis-root): the durable finalized tip exists but
+ *     the coins authority never installed a cached tip (the kill-9-at-genesis
+ *     class). Walk pprev all the way to height 0, requiring the terminus to be
+ *     the CANONICAL genesis (params->consensus.hashGenesisBlock), then install
+ *     + densify the [0..tip] window. This is the load-bearing recovery for a
+ *     fresh node that mined N blocks, was kill-9'd, and rebooted to a NULL
+ *     cached active tip.
  *
  * Both branches are bounded by BLOCK_INDEX_LOADER_SEED_MAX_GAP against the
- * SAME effective_floor that drives the walk (cur_h for extend, 0 for
- * genesis-root) — so a pathological NULL-tip mainnet boot (tip≈3.1M, floor=0)
- * REFUSES rather than walking millions of pprev links. A runtime
+ * SAME effective_floor that drives the walk (cached tip height for extend, 0
+ * for genesis-root) — so a pathological NULL-tip mainnet boot (tip≈3.1M,
+ * floor=0) REFUSES rather than walking millions of pprev links. A runtime
  * finalized<=coins precondition (coins_kv_get_applied_height >= tip_height)
  * gates install so a height with no coins behind it is never published.
  *
