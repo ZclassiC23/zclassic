@@ -362,6 +362,10 @@ static bool rfrl_push_reconcile_snapshot(struct json_value *out)
     return ok;
 }
 
+#ifdef ZCL_TESTING
+/* Test-only: the sole caller (the reset hook at the ZCL_TESTING block below)
+ * is compiled out of the production binary, so the definition must be too, or
+ * -Werror=unused-function breaks the prod whole-program build. */
 static void rfrl_reconcile_snapshot_reset(void)
 {
     atomic_store(&g_last_rr_seen, 0);
@@ -369,6 +373,7 @@ static void rfrl_reconcile_snapshot_reset(void)
     for (int i = 0; i < RFRL_RR_FIELD_N; i++)
         atomic_store(&g_last_rr_values[i], 0);
 }
+#endif
 
 static bool coin_backfill_refused_reconcile(
     const struct stage_reducer_frontier_reconcile_result *rr)
