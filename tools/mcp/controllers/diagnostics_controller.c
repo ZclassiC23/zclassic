@@ -286,6 +286,7 @@ static int h_zcl_profile(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "failed to read /proc/self/task (no threads found)");
         LOG_ERR("mcp.diag", "profile: read_task_snapshot returned 0 (pre-sample)");
+        return 0;
     }
 
     struct timespec ts = {
@@ -300,6 +301,7 @@ static int h_zcl_profile(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "failed to read /proc/self/task (no threads found post-sample)");
         LOG_ERR("mcp.diag", "profile: read_task_snapshot returned 0 (post-sample)");
+        return 0;
     }
 
     static struct profile_delta deltas[PROFILE_MAX_THREADS];
@@ -327,36 +329,45 @@ static int h_zcl_profile(const struct mcp_request *req,
     long clk_tck = sysconf(_SC_CLK_TCK);
     if (clk_tck <= 0) clk_tck = 100;
 
-    size_t cap = 16384;
-    char *out = zcl_malloc(cap, "profile_body");
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for profile response");
-        LOG_ERR("mcp.diag", "malloc failed for profile body (%zu bytes)", cap);
-        return 0;
-    }
-    size_t pos = 0;
-    pos += (size_t)snprintf(out + pos, cap - pos,
-        "{\"duration_ms\":%lld,\"sampled_threads\":%zu,\"top_threads\":[",
-        (long long)duration_ms, nd);
+    struct json_value root = {0};
+    json_set_object(&root);
+    json_push_kv_int(&root, "duration_ms", duration_ms);
+    json_push_kv_int(&root, "sampled_threads", (int64_t)nd);
 
+    struct json_value top = {0};
+    json_set_array(&top);
     size_t emit = (nd < (size_t)top_n) ? nd : (size_t)top_n;
     for (size_t i = 0; i < emit; i++) {
         int64_t user_ms = deltas[i].utime_ticks * 1000 / clk_tck;
         int64_t sys_ms  = deltas[i].stime_ticks * 1000 / clk_tck;
-        if (pos + 256 >= cap) break;
-        pos += (size_t)snprintf(out + pos, cap - pos,
-            "%s{\"tid\":%d,\"name\":\"%s\","
-            "\"user_ms\":%lld,\"sys_ms\":%lld,"
-            "\"cpu_pct\":%.1f}",
-            i == 0 ? "" : ",",
-            deltas[i].tid, deltas[i].name,
-            (long long)user_ms, (long long)sys_ms,
-            100.0 * (double)(user_ms + sys_ms) / (double)duration_ms);
+        struct json_value item = {0};
+        json_set_object(&item);
+        json_push_kv_int(&item, "tid", deltas[i].tid);
+        json_push_kv_str(&item, "name", deltas[i].name);
+        json_push_kv_int(&item, "user_ms", user_ms);
+        json_push_kv_int(&item, "sys_ms", sys_ms);
+        json_push_kv_real(&item, "cpu_pct",
+                          100.0 * (double)(user_ms + sys_ms) /
+                              (double)duration_ms);
+        json_push_back(&top, &item);
+        json_free(&item);
     }
-    pos += (size_t)snprintf(out + pos, cap - pos, "]}");
+    json_push_kv(&root, "top_threads", &top);
+    json_free(&top);
 
+    size_t need = json_write(&root, NULL, 0);
+    char *out = zcl_malloc(need + 1, "profile_body");
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for profile response");
+        LOG_ERR("mcp.diag", "malloc failed for profile body (%zu bytes)",
+                need + 1);
+        json_free(&root);
+        return 0;
+    }
+    json_write(&root, out, need + 1);
+    json_free(&root);
     res->body = out;
     return 0;
 }
