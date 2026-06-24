@@ -70,6 +70,28 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks);
  * never called init (e.g. steady-state at-tip) still runs the SQLite path. */
 bool coins_ram_active(void);
 
+/* ── single-writer guard (the phashBlock-into-bucket UAF class) ──
+ *
+ * coins_ram is NOT internally locked — it relies on the reducer's single-writer
+ * discipline (utxo_apply_stage_step_once holds progress_store_tx_lock for the
+ * fold step). But the coins_kv_* READ shims route to coins_ram_* whenever
+ * coins_ram_active(), and those shims are called from OTHER threads (bg-
+ * validation worker pthreads, the RPC thread pool's gettxoutsetinfo, the
+ * seal_service background thread). A reader loading s->script or holding a slot
+ * pointer races the writer's free()+repoint / the grow() free(old_slots).
+ *
+ * The guard: a _Thread_local "am-the-writer" counter. coins_ram_writer_enter/
+ * exit bracket the reducer's fold step (utxo_apply_stage_step_once).
+ * coins_ram_writer_thread() reports whether the CALLING thread is inside that
+ * bracket. The coins_kv.c READ shims gate overlay use on
+ * (coins_ram_active() && coins_ram_writer_thread()); a non-writer thread
+ * transparently takes the SQLite path (no UAF — SQLite is the FULLMUTEX shared
+ * store). Counter form so nested/recursive entry is safe. NO-OP on the hot
+ * path when the overlay is inactive (one relaxed load). */
+void coins_ram_writer_enter(void);
+void coins_ram_writer_exit(void);
+bool coins_ram_writer_thread(void);
+
 /* ── overlay mutations (mirror coins_kv_add_many / coins_kv_spend_many) ── */
 
 /* Insert/replace one output into the RAM overlay. Mirrors coins_kv_add. */

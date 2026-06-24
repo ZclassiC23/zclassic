@@ -89,6 +89,33 @@ bool coins_ram_enabled(void)
 
 bool coins_ram_active(void) { return G.active && G.slots != NULL; }
 
+/* ── single-writer guard (the phashBlock-into-bucket UAF class) ──
+ *
+ * _Thread_local: each thread sees its OWN counter. The reducer fold thread
+ * brackets its step with coins_ram_writer_enter/exit; coins_ram_writer_thread()
+ * returns true ONLY for that thread while inside the bracket. A reader on a
+ * DIFFERENT thread (bg-validation pthread, RPC pool, seal_service) sees its own
+ * counter at 0 → the coins_kv.c READ shims route to the SQLite path instead of
+ * touching the lock-free overlay. The overlay store is only mutated from inside
+ * the writer bracket, so a true return means "the overlay is safe for THIS
+ * thread to read". Counter form (not bool) so a nested/recursive enter is
+ * balanced by the matching number of exits. */
+static _Thread_local int t_writer_depth = 0;
+
+void coins_ram_writer_enter(void) { t_writer_depth++; }
+void coins_ram_writer_exit(void)
+{
+    if (t_writer_depth > 0) t_writer_depth--;
+}
+
+bool coins_ram_writer_thread(void)
+{
+    /* A plain load is correct: the flag is _Thread_local, so only the calling
+     * thread reads/writes its own instance — no cross-thread access, no torn
+     * read, no memory-ordering hazard. */
+    return t_writer_depth > 0;
+}
+
 /* ── hashing / probing ───────────────────────────────────────────────── */
 
 /* FNV-1a over txid||vout — txid is already a random hash so this is plenty. */

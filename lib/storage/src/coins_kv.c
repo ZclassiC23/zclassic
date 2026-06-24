@@ -36,6 +36,23 @@
 #include <stdint.h>
 #include <string.h>
 
+/* UAF guard (the phashBlock-into-bucket class): the coins_ram overlay is a
+ * process-global lock-free map mutated in place by the reducer writer (free +
+ * repoint / grow). The READ shims below route to coins_ram_* whenever
+ * coins_ram_active(), but those shims are called from OTHER threads (bg-
+ * validation worker pthreads, the RPC pool's gettxoutsetinfo, the seal_service
+ * background thread). A reader loading s->script or holding a slot pointer
+ * races the writer. The guard: route to the overlay ONLY when the CALLING
+ * thread is the one inside the coins_ram_writer_enter/exit bracket the reducer
+ * folds under; a non-writer thread transparently takes the SQLite path
+ * (FULLMUTEX-protected, no UAF). The WRITE shims (coins_kv_add / _spend /
+ * _many) are NOT gated: they run inside the writer bracket (or the
+ * progress_store_tx_lock-serialized backfill). */
+static bool coins_kv_overlay_safe(void)
+{
+    return coins_ram_active() && coins_ram_writer_thread();
+}
+
 bool coins_kv_ensure_schema(sqlite3 *db)
 {
     if (!db) return false;
@@ -272,7 +289,7 @@ bool coins_kv_exists_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
 
 bool coins_kv_exists(sqlite3 *db, const uint8_t txid[32], uint32_t vout)
 {
-    if (coins_ram_active())
+    if (coins_kv_overlay_safe())
         return coins_ram_exists(txid, vout);
     return coins_kv_exists_sqlite(db, txid, vout);
 }
@@ -311,7 +328,7 @@ bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t *value_out, uint8_t *script_out, size_t script_cap,
                   size_t *script_len_out)
 {
-    if (coins_ram_active())
+    if (coins_kv_overlay_safe())
         return coins_ram_get(txid, vout, value_out, script_out, script_cap,
                              script_len_out);
     return coins_kv_get_sqlite(db, txid, vout, value_out, script_out,
@@ -334,7 +351,7 @@ int64_t coins_kv_count_sqlite(sqlite3 *db)
 
 int64_t coins_kv_count(sqlite3 *db)
 {
-    if (coins_ram_active())
+    if (coins_kv_overlay_safe())
         return coins_ram_count();
     return coins_kv_count_sqlite(db);
 }
@@ -400,7 +417,7 @@ bool coins_kv_get_coins_sqlite(sqlite3 *db, const uint8_t txid[32],
 
 bool coins_kv_get_coins(sqlite3 *db, const uint8_t txid[32], struct coins *out)
 {
-    if (coins_ram_active())
+    if (coins_kv_overlay_safe())
         return coins_ram_get_coins(txid, out);
     return coins_kv_get_coins_sqlite(db, txid, out);
 }
@@ -428,14 +445,14 @@ bool coins_kv_setinfo_sqlite(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
 bool coins_kv_setinfo(sqlite3 *db, int64_t *num_txs, int64_t *num_txouts,
                       int64_t *total_amount)
 {
-    if (coins_ram_active())
+    if (coins_kv_overlay_safe())
         return coins_ram_setinfo(num_txs, num_txouts, total_amount);
     return coins_kv_setinfo_sqlite(db, num_txs, num_txouts, total_amount);
 }
 
 int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
 {
-    if (coins_ram_active())
+    if (coins_kv_overlay_safe())
         return coins_ram_commitment(out);
     if (!db || !out) return -1;
     sqlite3_stmt *s = NULL;

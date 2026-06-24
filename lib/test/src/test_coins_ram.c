@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 #define CR_CHECK(name, expr) do {                                       \
     if (expr) { printf("  coins_ram: %s... OK\n", (name)); }            \
@@ -158,6 +159,20 @@ static int ab_apply_all(sqlite3 *db, const struct ab_op *ops, size_t n,
     return fails;
 }
 
+/* Cross-thread reader for the UAF-guard test (section d): spawns a fresh
+ * pthread, reads coins_ram_writer_thread() on THAT thread (whose _Thread_local
+ * counter is 0 because the new thread never called _enter), and reports the
+ * result back. Models the bg-validation / RPC-pool reader that must take the
+ * SQLite path, not the lock-free overlay. */
+struct cr_reader_arg { bool is_writer; };
+
+static void *cr_reader_thread(void *p)
+{
+    struct cr_reader_arg *a = p;
+    a->is_writer = coins_ram_writer_thread();
+    return NULL;
+}
+
 int test_coins_ram(void);
 int test_coins_ram(void)
 {
@@ -178,6 +193,11 @@ int test_coins_ram(void)
     CR_CHECK("ov: init", coins_ram_init(db, 1000000 /* never auto-flush */));
     CR_CHECK("ov: active", coins_ram_active());
 
+    /* This test thread is the SINGLE WRITER driving the overlay (it mirrors the
+     * reducer's fold). Bracket the overlay-driving region so the coins_kv_*
+     * READ shims route to the overlay (the UAF guard's contract — a non-writer
+     * thread transparently takes the SQLite path). */
+    coins_ram_writer_enter();
     apply_script_public(db);
 
     /* The overlay is the effective set. Compute its commitment. */
@@ -319,6 +339,7 @@ int test_coins_ram(void)
         CR_CHECK("reconcile: cursor rewound to watermark+1 (21)", cur == 21);
     }
 
+    coins_ram_writer_exit();
     coins_ram_shutdown();
     progress_store_close();
     test_rm_rf_recursive(dir);
@@ -379,6 +400,9 @@ int test_coins_ram(void)
         CR_CHECK("ab.B: schema", coins_kv_ensure_schema(dbB));
         CR_CHECK("ab.B: init", coins_ram_init(dbB, 1000000 /* manual flush */));
         CR_CHECK("ab.B: overlay active", coins_ram_active());
+        /* This thread is the single writer driving the overlay leg (mirrors the
+         * reducer). Bracket so the coins_kv_* READ shims route to the overlay. */
+        coins_ram_writer_enter();
         CR_CHECK("ab.B: apply clean", ab_apply_all(dbB, AB, AB_N, true) == 0);
 
         /* Commitment with the overlay STILL holding everything (nothing
@@ -394,6 +418,7 @@ int test_coins_ram(void)
         CR_CHECK("ab.B: commitment (flushed) ok",
                  coins_kv_commitment(dbB, rootB_flushed) == 0);
         int64_t cntB_flushed = coins_kv_count(dbB);
+        coins_ram_writer_exit();
 
         coins_ram_shutdown();
         progress_store_close();
@@ -500,6 +525,8 @@ int test_coins_ram(void)
         CR_CHECK("mf.O: schema", coins_kv_ensure_schema(dbO));
         CR_CHECK("mf.O: init", coins_ram_init(dbO, 1000000));
         CR_CHECK("mf.O: overlay active", coins_ram_active());
+        /* Single writer driving the overlay leg (mirrors the reducer). */
+        coins_ram_writer_enter();
         CR_CHECK("mf.O: apply clean", ab_apply_all(dbO, MF, MF_N, true) == 0);
 
         /* Final commitment taken with a NON-EMPTY overlay over a populated
@@ -512,6 +539,7 @@ int test_coins_ram(void)
         bool oex_repl  = coins_kv_get(dbO, q_repl.data,  0, &ov_repl, NULL, 0, NULL);
         bool oex_spent = coins_kv_exists(dbO, q_spent.data, 0);
         bool oex_xtomb = coins_kv_exists(dbO, q_xtomb.data, 0);
+        coins_ram_writer_exit();
 
         coins_ram_shutdown();
         progress_store_close();
@@ -623,6 +651,69 @@ int test_coins_ram(void)
             progress_store_close();
         }
         test_rm_rf_recursive(dirP);
+    }
+
+    /* ──────────────────────────────────────────────────────────────────────
+     * (d) UAF GUARD contract: coins_ram_writer_thread() is the per-thread
+     *     "am-the-writer" flag the coins_kv.c READ shims gate overlay use on.
+     *     It MUST be false on ANY thread that did not bracket with
+     *     coins_ram_writer_enter (the cross-thread reader case: bg-validation
+     *     pthreads, RPC pool, seal_service), true only inside the bracket, and
+     *     balanced on exit. This pins the exact contract the shim gating relies
+     *     on — if this ever regresses, a cross-thread reader would touch the
+     *     lock-free overlay concurrently with the writer's free()+repoint. */
+    {
+        /* (1) The main test thread never entered the bracket → false. */
+        CR_CHECK("uaf: main thread not a writer", !coins_ram_writer_thread());
+
+        /* (2) A FRESH pthread that never called _enter is also NOT a writer —
+         *    this is the precise cross-thread-reader scenario (a bg-validation
+         *    worker pthread). The guard is _Thread_local, so the new thread's
+         *    counter is 0 regardless of overlay activity or what the main
+         *    thread did. */
+        struct cr_reader_arg ra = { .is_writer = true /* expect false */ };
+        pthread_t rt;
+        int pc = pthread_create(&rt, NULL, cr_reader_thread, &ra);
+        CR_CHECK("uaf: reader pthread spawned", pc == 0);
+        if (pc == 0) {
+            pthread_join(rt, NULL);
+            CR_CHECK("uaf: fresh pthread is NOT a writer", !ra.is_writer);
+        }
+
+        /* (3) After _enter, the CALLING (main) thread IS the writer. */
+        coins_ram_writer_enter();
+        CR_CHECK("uaf: enter -> is writer", coins_ram_writer_thread());
+
+        /* (4) A nested _enter keeps it true (counter form, re-entrancy-safe). */
+        coins_ram_writer_enter();
+        CR_CHECK("uaf: nested enter -> still writer",
+                 coins_ram_writer_thread());
+        coins_ram_writer_exit();
+        CR_CHECK("uaf: one exit -> still writer (counter)",
+                 coins_ram_writer_thread());
+
+        /* (5) After the matching final _exit, it is false again. */
+        coins_ram_writer_exit();
+        CR_CHECK("uaf: final exit -> not writer", !coins_ram_writer_thread());
+
+        /* (6) While the main thread is the writer, a fresh pthread is STILL NOT
+         *    — the flag is _Thread_local, so the writer's bracket does not leak
+         *    into another thread. This is the crux: the guard isolates the
+         *    writer from concurrent readers. */
+        coins_ram_writer_enter();
+        struct cr_reader_arg ra2 = { .is_writer = false /* expect false */ };
+        pthread_t rt2;
+        pc = pthread_create(&rt2, NULL, cr_reader_thread, &ra2);
+        CR_CHECK("uaf: 2nd reader pthread spawned", pc == 0);
+        if (pc == 0) {
+            pthread_join(rt2, NULL);
+            CR_CHECK("uaf: pthread NOT writer while main is writer",
+                     !ra2.is_writer);
+        }
+        CR_CHECK("uaf: main still writer after pthread join",
+                 coins_ram_writer_thread());
+        coins_ram_writer_exit();
+        CR_CHECK("uaf: main exits cleanly", !coins_ram_writer_thread());
     }
 
     printf("test_coins_ram: %d failures\n", failures);

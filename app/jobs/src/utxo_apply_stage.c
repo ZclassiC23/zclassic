@@ -931,6 +931,16 @@ job_result_t utxo_apply_stage_step_once(void)
      * otherwise it leaves the active-chain window untouched. */
     reducer_extend_window_to_candidate(
         g_ms, utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
+
+    /* Mark THIS thread as the coins_ram writer for the fold step (the UAF
+     * guard — see coins_ram.h). The overlay is mutated by apply_coins_kv →
+     * coins_ram_* inside stage_run_once AND by coins_ram_note_applied below,
+     * so the bracket covers the whole critical region: from progress_store_tx
+     * lock acquisition through the post-commit note_applied. Every return path
+     * out of this region calls coins_ram_writer_exit() so the counter balances.
+     * A no-op (one relaxed load) when the overlay is inactive. */
+    coins_ram_writer_enter();
+
     /* Drain any pending stage-side reorg disconnect BEFORE the next
      * forward apply (and before tip_finalize, which the supervisor drains
      * after us, reads our cursor). Self-contained txn; on failure the
@@ -942,6 +952,7 @@ job_result_t utxo_apply_stage_step_once(void)
                                           &g_ua_last_blocked_unix);
     if (!unwind_ok) {
         progress_store_tx_unlock();
+        coins_ram_writer_exit();
         return JOB_FATAL;
     }
     job_result_t r = stage_run_once(g_stage, db);
@@ -961,9 +972,12 @@ job_result_t utxo_apply_stage_step_once(void)
      * coins_ram_reconcile_boot at the next boot. */
     if (r == JOB_ADVANCED && coins_ram_active()) {
         int64_t applied = atomic_load(&g_ua_last_advance_height);
-        if (applied >= 0 && !coins_ram_note_applied((int32_t)applied))
+        if (applied >= 0 && !coins_ram_note_applied((int32_t)applied)) {
+            coins_ram_writer_exit();
             return JOB_FATAL;
+        }
     }
+    coins_ram_writer_exit();
     return r;
 }
 

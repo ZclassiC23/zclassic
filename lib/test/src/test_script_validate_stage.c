@@ -425,6 +425,37 @@ int test_script_validate_stage(void)
         sv_teardown(dir, &ms, &sc);
     }
 
+    /* FIX A regression pin (wedge-retry, stage_repair_reducer_frontier_coin.c
+     * maybe_repair_stale_script): the repair discriminates a TRANSIENT
+     * internal_error (ok=0 + internal_error=true → one-shot rewind, retriable)
+     * from a GENUINE consensus failure (ok=0 + internal_error=false →
+     * stale_script_repair_genuinely_invalid refusal) on exactly this dry-run
+     * contract. The block above pins the transient→rewind side; this block
+     * pins the complementary genuine-invalid side: a block whose prevout
+     * resolves to a failing script (OP_FALSE) must report internal_error=FALSE
+     * so the repair takes the genuinely_invalid refusal branch, NOT the rewind.
+     * If a regression ever set internal_error on a real script failure, the
+     * repair would wrongly rewind a permanently-invalid block forever,
+     * re-introducing the silent wedge class this fix deleted. An end-to-end
+     * on-disk rewind fixture is not constructible in this unit-test infra
+     * (stage_repair_read_active_block_checked preads real block files), so the
+     * load-bearing dry-run contract that DRIVES the branch is pinned instead. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("script_invalid_dry_run: setup",
+                 sv_setup("invalid_dry", 3, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        sc.invalid_height = 1;   /* prevout resolves to OP_FALSE */
+        struct script_validate_dry_run_report dry;
+        SV_CHECK("script_invalid_dry_run: dry-run is NOT ok",
+                 script_validate_stage_dry_run_block(&sc.bodies[1], 1,
+                                                     &dry) &&
+                 !dry.ok);
+        SV_CHECK("script_invalid_dry_run: internal_error FALSE (genuine)",
+                 !dry.internal_error);
+        sv_teardown(dir, &ms, &sc);
+    }
+
     {
         char dir[256]; struct synth_chain_sv sc;
         test_fmt_tmpdir(dir, sizeof(dir), "script_validate",

@@ -956,6 +956,63 @@ int test_utxo_apply_stage(void)
         uv_teardown(dir, &ms, &sc);
     }
 
+    /* FIX C regression pin (job-fatal-blocker, utxo_apply_stage.c step_apply
+     * ua_fatal_permanent_blocker): a genuine permanent store-corruption /
+     * unrecoverable-read site inside step_apply must surface a NAMED PERMANENT
+     * typed blocker (utxo_apply.fatal_store) AND return JOB_FATAL, never
+     * crash-loop with an anonymous halt. Without the blocker,
+     * wd_deterministic_stall_cause() finds no PERMANENT blocker on a torn
+     * store and the chain_tip_watchdog burns its restart budget power-cycling
+     * the same wedge; the blocker is re-derived on the first tick of every
+     * boot so the stall is immediately classified "permanent_blocker_active"
+     * and the node stays up degraded with a halt an operator can see via
+     * zcl_blockers.
+     *
+     * The site exercised is the script_validate_log verdict read
+     * (script_validate_log_verdict_at < 0 → ua_fatal_permanent_blocker): a
+     * small positive utxo_apply cursor (1) below the proof_validate cursor (2,
+     * seeded by uv_setup) with a proof_validate_log row at h=1 reaches the
+     * verdict read; dropping the script_validate_log table makes its prepare
+     * fail (SQLite error), so step_apply routes through the permanent blocker
+     * before the JOB_FATAL return. (The ~L350 negative-persisted-cursor site
+     * is defense-in-depth inside step_apply but is currently shadowed by
+     * utxo_apply_reorg_unwind_if_needed's own `cursor > INT32_MAX` guard,
+     * which intercepts a huge cursor earlier in utxo_apply_stage_step_once and
+     * returns JOB_FATAL without the blocker — a separate gap; this test pins
+     * the step_apply permanent-blocker mechanism at a site that IS reachable
+     * through the public entry point.) */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.fatal_store");
+        UV_CHECK("fatal_store: setup",
+                 uv_setup("fatal_store", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        /* Hold the utxo_apply cursor at h=1 (next height to apply), with
+         * proof_validate already at 2 so step_apply's pv_cursor guard passes
+         * next_h=1 through to the verdict read. proof_validate_log already
+         * holds an ok row at h=1 (seeded by uv_setup), so the L400 read does
+         * not fatal first. */
+        UV_CHECK("fatal_store: hold utxo_apply cursor at h=1",
+                 exec_sql(progress_store_db(),
+                          "INSERT OR REPLACE INTO stage_cursor(name,cursor,"
+                          "updated_at) VALUES('utxo_apply',1,1)"));
+        /* Corrupt the store: drop script_validate_log so the verdict-read
+         * prepare fails (returns < 0), routing step_apply through
+         * ua_fatal_permanent_blocker. */
+        UV_CHECK("fatal_store: drop script_validate_log (torn store)",
+                 exec_sql(progress_store_db(),
+                          "DROP TABLE script_validate_log"));
+        job_result_t r = utxo_apply_stage_step_once();
+        UV_CHECK("fatal_store: step returns JOB_FATAL", r == JOB_FATAL);
+        UV_CHECK("fatal_store: permanent blocker registered",
+                 blocker_exists("utxo_apply.fatal_store"));
+        UV_CHECK("fatal_store: blocker class is PERMANENT",
+                 blocker_class_for("utxo_apply.fatal_store") ==
+                     BLOCKER_PERMANENT);
+        blocker_clear("utxo_apply.fatal_store");
+        uv_teardown(dir, &ms, &sc);
+    }
+
     printf("utxo_apply_stage tests: %s\n", failures ? "FAILED" : "PASSED");
     return failures;
 }
