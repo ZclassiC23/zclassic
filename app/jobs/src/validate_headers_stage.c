@@ -605,6 +605,13 @@ bool validate_headers_stage_init(struct main_state *ms)
         g_validator_user = NULL;
     }
 
+    uint64_t persisted_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME,
+                                   &persisted_cursor)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
     if (!pool_start()) {
         pthread_mutex_unlock(&g_lock);
         return false;
@@ -616,8 +623,6 @@ bool validate_headers_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         LOG_FAIL("validate_headers", "init: stage_create failed");
     }
-    uint64_t persisted_cursor = stage_cursor_persisted(db, STAGE_NAME,
-                                                       STAGE_NAME);
     if (!stage_set_cursor(s, db, persisted_cursor)) {
         stage_destroy(s);
         pool_stop();

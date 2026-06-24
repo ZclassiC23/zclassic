@@ -337,7 +337,9 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
     if (!g_stage || !g_ms)
         return true;
 
-    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        return false;
     if (cursor == 0)
         return true;
     if (cursor > (uint64_t)INT32_MAX) {
@@ -837,7 +839,9 @@ bool tip_finalize_stage_resolve_durable_tip(sqlite3 *db, int *out_height,
 {
     if (!db || !out_height || !out_hash)
         return false;
-    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        return false;
     if (cursor == 0)
         return false;
     /* Try cursor (anchor-at-cursor steady state), then cursor-1 (legacy +1

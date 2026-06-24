@@ -300,7 +300,9 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
     if (!g_stage || !g_ms)
         return true;
 
-    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        return false;
     if (cursor == 0)
         return true;
     if (cursor > (uint64_t)INT32_MAX) {
@@ -492,13 +494,18 @@ bool header_admit_stage_init(struct main_state *ms)
         return false;
     }
 
+    uint64_t persisted_cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME,
+                                   &persisted_cursor)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
     stage_t *s = stage_create(STAGE_NAME, step_admit, NULL);
     if (!s) {
         pthread_mutex_unlock(&g_lock);
         LOG_FAIL("header_admit", "init: stage_create failed");
     }
-    uint64_t persisted_cursor = stage_cursor_persisted(db, STAGE_NAME,
-                                                       STAGE_NAME);
     if (!stage_set_cursor(s, db, persisted_cursor)) {
         stage_destroy(s);
         pthread_mutex_unlock(&g_lock);

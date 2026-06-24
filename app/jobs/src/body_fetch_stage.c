@@ -47,9 +47,10 @@ static _Atomic int64_t  g_last_blocked_unix = 0;
  * The body_fetch_log schema, its insert, and the upstream
  * validate_headers_log ok-flag reader live in body_fetch_log_store.c
  * (pure sqlite kernel helpers below the AR layer). The upstream cursor is
- * read via stage_cursor_persisted() (jobs/stage_helpers.h) so body_fetch's
- * floor check reflects what is DURABLY committed, not the in-memory value
- * which is 0 on a fresh init until the first stage_run_once. */
+ * read via stage_cursor_read_or_zero() (jobs/stage_helpers.h) so
+ * body_fetch's floor check reflects what is DURABLY committed, not the
+ * in-memory value which is 0 on a fresh init until the first
+ * stage_run_once. */
 
 /* ── Step body ─────────────────────────────────────────────────────── */
 
