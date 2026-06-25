@@ -1,11 +1,20 @@
 # Build artifacts
 build/
 
-# Vendor (built from source, not tracked)
+# Vendor (built from source by `make vendor`, not tracked)
+# Exception: libsecp256k1.a is committed (custom Bitcoin Core fork build).
 vendor/lib/
+!vendor/lib/libsecp256k1.a
 vendor/zclassic-ref/
 vendor/sqlite3.c
 vendor/tor/
+# `make vendor` scratch: pinned source downloads + per-lib build trees.
+vendor/.cache/
+vendor/.build/
+# Vendored OpenSSL/zlib headers installed by `make vendor` (regenerated).
+vendor/include/openssl/
+vendor/include/zlib.h
+vendor/include/zconf.h
 
 # Data / runtime
 *.db
