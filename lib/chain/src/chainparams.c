@@ -153,9 +153,13 @@ static void init_main_params(void)
     uint256_set_hex(&p->consensus.hashGenesisBlock,
         "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602");
 
-    p->vSeeds[0] = (struct dns_seed){ "zslp.org", "dnsseed.zslp.org" };
-    p->vSeeds[1] = (struct dns_seed){ "zclassic.org", "mainnet.zclassic.org" };
-    p->nSeeds = 2;
+    /* DNS seeders: BOTH historical names (dnsseed.zslp.org, mainnet.zclassic.org)
+     * fail to resolve today, so a DNS-seed query is wasted work / a misleading
+     * bootstrap dependency. Bootstrap via the hardcoded fixed-IP peers below,
+     * the .onion directory seeds, and the operator runtime onion-seeds file
+     * (~/.config/zclassic23/onion-seeds, loaded by connman). Re-add a name here
+     * only when a live ZCL DNS seeder exists. */
+    p->nSeeds = 0;
 
     /* Hardcoded seed nodes — known-good as of 2026-04 */
     p->nFixedSeeds = 0;
