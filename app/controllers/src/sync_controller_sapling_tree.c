@@ -14,6 +14,7 @@
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "core/utiltime.h"
+#include "jobs/reducer_frontier.h"
 #include "models/database.h"
 #include "primitives/block.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -39,8 +40,36 @@ int sapling_tree_rebuild(struct node_db *ndb,
         LOG_ERR("sync", "sapling_tree_rebuild: invalid args (ndb=%p, chain=%p, datadir=%p)",
                 (void *)ndb, (void *)chain, (void *)datadir);
 
-    int chain_tip = active_chain_height(chain);
+    int header_tip = active_chain_height(chain);
     int sapling_height = 476969; /* ZClassic Sapling activation */
+
+    /* Resolve the rebuild endpoint from coins-applied state, NOT the
+     * pre-fold header tip. On a wedged node the active/header tip can run
+     * far ahead of the durable coins frontier (active tip << header tip);
+     * the persisted hashFinalSaplingRoot above the applied frontier may be
+     * absent, so verifying the rebuilt tree against the HEADER tip would
+     * FATAL on `tip_missing_sapling_root` before the forward fold even runs.
+     * Cap the endpoint to coins-best (coins_applied_height - 1, the durable
+     * applied frontier) when that is present and lower than the header tip:
+     * coins-best is by construction a block the node has APPLIED, so its body
+     * is on disk (BLOCK_HAVE_DATA) and its hashFinalSaplingRoot is known, so
+     * the final tip-root check has a real block to verify against. When the
+     * coins frontier is ABSENT (a fresh/legacy datadir, or a unit test with no
+     * progress store) the header tip is kept unchanged — the per-block replay
+     * already skips header-only (non-HAVE_DATA) blocks (see :BLOCK_HAVE_DATA
+     * check below), so the existing legacy-resume behavior is preserved. */
+    int chain_tip = header_tip;
+    {
+        int32_t coins_best = -1;
+        if (reducer_frontier_derive_coins_best_now(&coins_best, NULL, NULL)
+            && coins_best >= 0 && coins_best < chain_tip) {
+            LOG_INFO("sapling_tree_rebuild",
+                     "sapling_tree_rebuild: capping endpoint to coins-applied "
+                     "height %d (header tip %d)", coins_best, header_tip);
+            chain_tip = coins_best;
+        }
+    }
+
     if (chain_tip < sapling_height) return 0;
 
     struct incremental_merkle_tree tree;
@@ -242,7 +271,14 @@ int sapling_tree_rebuild(struct node_db *ndb,
         cached_size = 0;
     }
 
-    const struct block_index *tip = active_chain_tip(chain);
+    /* Verify against the RESOLVED endpoint (the coins-applied frontier, or the
+     * header tip when no coins frontier exists), not active_chain_tip() which
+     * is always the header tip — using the header tip on a wedged node would
+     * compare the rebuilt tree against a block above the applied frontier whose
+     * hashFinalSaplingRoot may be absent and FATAL on `tip_missing_sapling_root`
+     * before the fold runs. When the frontier is absent, active_chain_at(chain,
+     * chain_tip) == active_chain_tip(chain), so the legacy path is unchanged. */
+    const struct block_index *tip = active_chain_at(chain, chain_tip);
     struct uint256 final_root;
     incremental_tree_root(&tree, &final_root);
     bool tip_root_known = sapling_header_root_known(tip);
