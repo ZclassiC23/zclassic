@@ -863,6 +863,71 @@ retry_authority_store:
             "(body SHA3 OK, height=%d, count=%llu) — seeded coins_kv\n",
             path, seed_h, (unsigned long long)hdr.count);
 
+    /* Lane S OPTION A: publish the durable applied frontier BEFORE the Sapling
+     * rebuild runs, in its own committed transaction (the snapshot-load tx
+     * above already COMMITted, and the Phase-2 stage-cursor tx below has not
+     * begun yet — no tx is open here). sapling_tree_rebuild reads the durable
+     * applied height to cap its endpoint; without this write it would still see
+     * a stale/contaminated applied height and could rebuild past the seed. The
+     * Phase-2 write at ~line 1014 sets the same value and is now idempotent. */
+    {
+        char *aherr = NULL;
+        if (sqlite3_exec(rpdb, "BEGIN IMMEDIATE", NULL, NULL, &aherr)
+            != SQLITE_OK) {
+            if (!authority_retry_used) {
+                if (aherr) { sqlite3_free(aherr); aherr = NULL; }
+                authority_retry_used = true;
+                if (reopen_progress_store_after_verified_snapshot(
+                        datadir, &rpdb, "applied_height_begin_failed"))
+                    goto retry_authority_store;
+            }
+            fprintf(stderr, "FATAL: -load-snapshot-at-own-height: pre-rebuild "
+                    "applied-height BEGIN failed: %s\n",
+                    aherr ? aherr : "(no msg)");
+            if (aherr) sqlite3_free(aherr);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height applied_height_begin_failed");
+            _exit(EXIT_FAILURE);
+        }
+        if (!coins_kv_set_applied_height_in_tx(rpdb, seed_h + 1)) {
+            sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
+            if (!authority_retry_used) {
+                authority_retry_used = true;
+                if (reopen_progress_store_after_verified_snapshot(
+                        datadir, &rpdb, "applied_height_set_failed"))
+                    goto retry_authority_store;
+            }
+            fprintf(stderr, "FATAL: -load-snapshot-at-own-height: failed to set "
+                    "pre-rebuild applied-height=%d — refusing to run the Sapling "
+                    "rebuild with an uncapped endpoint\n", seed_h + 1);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height applied_height_set_failed "
+                        "h=%d", seed_h + 1);
+            _exit(EXIT_FAILURE);
+        }
+        if (sqlite3_exec(rpdb, "COMMIT", NULL, NULL, &aherr) != SQLITE_OK) {
+            sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
+            if (!authority_retry_used) {
+                if (aherr) { sqlite3_free(aherr); aherr = NULL; }
+                authority_retry_used = true;
+                if (reopen_progress_store_after_verified_snapshot(
+                        datadir, &rpdb, "applied_height_commit_failed"))
+                    goto retry_authority_store;
+            }
+            fprintf(stderr, "FATAL: -load-snapshot-at-own-height: pre-rebuild "
+                    "applied-height COMMIT failed: %s\n",
+                    aherr ? aherr : "(no msg)");
+            if (aherr) sqlite3_free(aherr);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height applied_height_commit_failed");
+            _exit(EXIT_FAILURE);
+        }
+        if (aherr) sqlite3_free(aherr);
+        LOG_INFO("boot", "[boot] -load-snapshot-at-own-height: pre-rebuild "
+                 "applied-height=%d (seed_h+1) committed so the Sapling "
+                 "rebuild endpoint caps to the seed", seed_h + 1);
+    }
+
     (void)boot_index_clear_coins_state(ndb);
 
     /* SAPLING COMMITMENT-TREE RE-SEED at the seed height.
