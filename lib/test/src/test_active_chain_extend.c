@@ -6,11 +6,13 @@
  * caused on the live node.
  *
  * The extender must:
- *   - extend the window along the CONTIGUOUS have-data + script-validated
- *     frontier above the finalized tip, up to max_height;
+ *   - extend the window along the CONTIGUOUS have-data frontier above the
+ *     finalized tip, up to max_height (gate is BLOCK_HAVE_DATA, NOT
+ *     BLOCK_VALID_SCRIPTS — the body stages must see a have-data block before
+ *     it is script-validated; per-stage validity is enforced by each stage);
  *   - REFUSE to cross a gap, a fork (pprev not pointer-equal to the parent),
- *     a missing-body, or a not-yet-script-validated block — never exposing a
- *     divergent block that would overwrite a finalized slot;
+ *     or a missing-body / header-only block — never exposing a divergent or
+ *     bodiless block that would overwrite a finalized slot;
  *   - be a no-op when there is no gap (max_height <= window height).
  *
  * Chain build mirrors test_tip_fork_stale.c: a minimal in-RAM main_state with
@@ -139,17 +141,25 @@ int test_active_chain_extend(void)
         main_state_free(&ms);
     }
 
-    /* 5. Not script-validated at 5 -> stop at 4 (only VALID_TREE). */
+    /* 5. Have-data but NOT yet script-validated at 5 -> still EXPOSED. The gate
+     * is BLOCK_HAVE_DATA, not BLOCK_VALID_SCRIPTS: the body-dependent stages
+     * (body_fetch / body_persist / script_validate) read active_chain_at(their
+     * cursor + 1) and MUST see a have-data block before it is script-validated
+     * (script validation is exactly what that stage is about to do). Requiring
+     * VALID_SCRIPTS here was a chicken-and-egg that wedged the body pipeline.
+     * The remaining heights (6,7) retain BLOCK_VALID_SCRIPTS, so with a
+     * contiguous have-data frontier the window extends all the way to 7. */
     {
         struct main_state ms; main_state_init(&ms);
         struct block_index *b[8];
         bool ok = ace_build(&ms, b, N, 3);
-        b[5]->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        b[5]->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE; /* body, no scripts */
         active_chain_extend_window_have_data(&ms.chain_active,
                                              &ms.map_block_index, 7);
         ok = ok && active_chain_at(&ms.chain_active, 4) == b[4];
-        ok = ok && active_chain_at(&ms.chain_active, 5) == NULL;
-        ACE_CHECK("not-yet-script-validated successor refused", ok);
+        ok = ok && active_chain_at(&ms.chain_active, 5) == b[5]; /* exposed */
+        ok = ok && active_chain_at(&ms.chain_active, 7) == b[7];
+        ACE_CHECK("have-data not-yet-script-validated successor IS exposed", ok);
         main_state_free(&ms);
     }
 

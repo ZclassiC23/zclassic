@@ -221,18 +221,22 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * window back to the finalized height via active_chain_move_window_tip, then
  * publishes the authority through the reducer's explicit tip publication.
  * This helper forward-extends the visible chain[] window along the CONTIGUOUS
- * have-data, script-validated frontier WITHOUT moving the authoritative tip.
- * Stages that read active_chain_at() call it at the top of step_once so the
- * window is supplied to the height they are about to process.
+ * have-data frontier WITHOUT moving the authoritative tip. Stages that read
+ * active_chain_at() call it at the top of step_once so the window is supplied
+ * to the height they are about to process.
  *
  * The SCAN RANGE is bounded by the best-known header height (a generous upper
- * bound), but the window only ever extends to the CONTIGUOUS have-data,
- * script-validated frontier that active_chain_extend_window_have_data discovers
- * internally — bodiless / header-only / not-yet-validated slots are excluded by
- * construction (it accepts a successor only when its pprev is pointer-equal to
- * the prior accepted block AND that successor has BLOCK_HAVE_DATA +
- * BLOCK_VALID_SCRIPTS). So this never pins a bodiless slot even though the scan
- * bound sits at the header tip.
+ * bound), but the window only ever extends to the CONTIGUOUS have-data frontier
+ * that active_chain_extend_window_have_data discovers internally — bodiless /
+ * header-only slots are excluded by construction (it accepts a successor only
+ * when its pprev is pointer-equal to the prior accepted block AND that
+ * successor has BLOCK_HAVE_DATA). It is gated on HAVE_DATA, NOT
+ * BLOCK_VALID_SCRIPTS: the body-dependent stages (body_fetch, body_persist,
+ * script_validate) must SEE a have-data block before it is script-validated —
+ * requiring VALID_SCRIPTS to widen the window is a chicken-and-egg that wedges
+ * the body pipeline. Per-stage validity is enforced by each stage on its own
+ * cursor, not by what the window happens to expose. So this never pins a
+ * bodiless slot even though the scan bound sits at the header tip.
  *
  * Why NOT bound by utxo_apply's cursor (the previous attempt): utxo_apply is
  * the LOWEST of the eight stage cursors. The upstream stages (body_persist,
@@ -267,16 +271,35 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
 {
     if (!authoritative || !ms)
         return;
-    /* Scan up to the best-known header height — a GENEROUS upper bound, not a
-     * per-stage cap. The have-data extender then fills the window only to the
-     * contiguous have-data + script-validated frontier it discovers within that
-     * range (bodiless / header-only slots excluded by construction), so the
-     * window exposes each upstream stage's next block (letting bodies lead
-     * utxo_apply) without ever pinning a bodiless orphan. A NULL best-header or
-     * a window already at/above that height makes the extender a cheap no-op. */
-    int max_h = ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1;
-    (void)active_chain_extend_window_have_data(&ms->chain_active,
-                                               &ms->map_block_index, max_h);
+    /* The wrong-fork wedge this rework fixes is specific to the best-KNOWN
+     * HEADER possibly sitting above the have-data frontier on a forked /
+     * not-yet-downloaded branch: scanning up to that header height while the
+     * have-data extender refuses to fill a header-only slot keeps the window on
+     * the contiguous body frontier and never pins a bodiless orphan. So that
+     * path uses the header height as a GENEROUS scan bound. A window already
+     * at/above that height makes the extender a cheap no-op. */
+    if (ms->pindex_best_header) {
+        (void)active_chain_extend_window_have_data(
+            &ms->chain_active, &ms->map_block_index,
+            ms->pindex_best_header->nHeight);
+        return;
+    }
+
+    /* No header-ingest writer has run yet (the boot-fold / submitblock /
+     * rebuild PRODUCER paths and most unit harnesses leave pindex_best_header
+     * NULL). There is no best-header orphan to guard against here, so fall back
+     * to the most-work candidate + the plain pprev-walk extender — exactly the
+     * pre-rework behaviour (proven safe on origin/main). The candidate selector
+     * already requires BLOCK_VALID_TREE + data availability and a failure-free
+     * ancestry, so it never names a bodiless orphan; active_chain_extend_window
+     * then assembles ONLY that candidate's own pprev path. Skipping this leaves
+     * the bound at -1 -> the extender always no-ops -> tip_finalize's lookahead
+     * block is never exposed -> the tip stops advancing. */
+    struct block_index *cand =
+        active_chain_most_work_candidate(&ms->chain_active,
+                                         &ms->map_block_index);
+    if (cand)
+        (void)active_chain_extend_window(&ms->chain_active, cand);
 }
 
 /* Emit the four generic stage-machine counters (advanced/blocked/idle/error)

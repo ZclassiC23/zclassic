@@ -477,11 +477,23 @@ bool active_chain_extend_window(struct active_chain *c,
  * blocks; the lookahead lead is normally a handful. */
 #define ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP 8192
 
-/* Forward-extend the visible window ONLY along the CONTIGUOUS have-data,
- * script-validated frontier above the finalized tip, bounded by max_height
- * (the caller passes utxo_apply's cursor so the scan never looks past the
- * durable have-data floor and the window never exposes header-only or
- * not-yet-validated successors).
+/* Forward-extend the visible window ONLY along the CONTIGUOUS have-data
+ * frontier above the finalized tip, bounded by max_height (the caller passes
+ * the best-known header height so every upstream stage can see its next block,
+ * while the have-data gate keeps the window from ever exposing a header-only /
+ * bodiless successor).
+ *
+ * The gate is BLOCK_HAVE_DATA, NOT BLOCK_VALID_SCRIPTS: the body-dependent
+ * stages (body_fetch, body_persist, script_validate) each read
+ * active_chain_at(their_cursor + 1) and MUST see a block that has a body but is
+ * NOT yet script-validated — script validation is exactly what script_validate
+ * is about to do to that very block. Requiring BLOCK_VALID_SCRIPTS here is a
+ * chicken-and-egg: the window can't expose a block until it's validated, but it
+ * can't be validated until the body stages (which read it through the window)
+ * run -> the whole body-dependent pipeline goes JOB_IDLE and the tip never
+ * advances. The have-data gate alone is the correct anti-bodiless-orphan guard;
+ * per-stage validity is enforced by each stage on its own cursor, not by what
+ * the window happens to expose.
  *
  * Unlike active_chain_extend_window(best_header / most-work candidate), this
  * CANNOT trigger the false-reorg cascade that wedged the chain when a generic
@@ -515,8 +527,10 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
     if ((int64_t)hi - (int64_t)lo + 1 > ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP)
         hi = lo + ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP - 1;
 
-    /* One bounded scan: collect eligible (have-data, script-validated,
-     * failure-free) block_index entries in (c->height, hi]. */
+    /* One bounded scan: collect eligible (have-data, failure-free) block_index
+     * entries in (c->height, hi]. NOT gated on BLOCK_VALID_SCRIPTS — see the
+     * function comment: the body stages must see a have-data block BEFORE it is
+     * script-validated. */
     int span = hi - lo + 1;
     struct block_index **elig =
         zcl_malloc((size_t)span * sizeof(*elig), "achd_elig");
@@ -534,8 +548,6 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
         if (block_has_any_failure(p))
             continue;
         if (!(p->nStatus & BLOCK_HAVE_DATA))
-            continue;
-        if (!block_index_is_valid(p, BLOCK_VALID_SCRIPTS))
             continue;
         elig[n++] = p;
     }
