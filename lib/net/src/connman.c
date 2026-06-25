@@ -227,6 +227,71 @@ static void try_onion_seed_fetch(struct connman *cm, const char *onion)
     free(result.body);
 }
 
+/* Run the onion-directory bootstrap pass: operator-curated seeds first
+ * (~/.config/zclassic23/onion-seeds), then the chainparams onionSeeds, then
+ * any known zcl23 .onion peers. Shared by the discovery thread's below-floor
+ * branch and the public connman_kick_onion_seeds() peer-of-last-resort entry
+ * so both reach an identical supplier set. Requires Tor ready; otherwise a
+ * no-op (the clearnet fixed/DNS paths remain the fallback). */
+static void run_onion_seed_pass(struct connman *cm)
+{
+    if (!cm || !cm->params || g_stop) return;
+    if (g_connect_only) return;
+    if (!tor_integration_is_ready()) return;
+
+    /* Operator-curated onion seeds (one .onion per line, # comments). */
+    const char *home = getenv("HOME");
+    if (home) {
+        char path[512];
+        snprintf(path, sizeof(path),
+                 "%s/.config/zclassic23/onion-seeds", home);
+        FILE *fp = fopen(path, "re");
+        if (fp) {
+            char line[256];
+            int n = 0;
+            while (n < 32 && !g_stop && fgets(line, sizeof(line), fp)) {
+                char *p = line;
+                while (*p == ' ' || *p == '\t') p++;
+                if (*p == '#' || *p == '\n' || *p == '\0') continue;
+                char *end = strpbrk(p, " \t\r\n#");
+                if (end) *end = '\0';
+                if (strstr(p, ".onion")) {
+                    try_onion_seed_fetch(cm, p);
+                    n++;
+                }
+            }
+            fclose(fp);
+        }
+    }
+
+    /* Hardcoded chainparams onion seeds. */
+    for (size_t i = 0; i < cm->params->nOnionSeeds && !g_stop; i++)
+        try_onion_seed_fetch(cm, cm->params->onionSeeds[i]);
+
+    /* .onion peers discovered on-chain (ZSLP scan) — same Tor-native
+     * source the boot-time discovery pass uses. */
+    if (cm->onion_peer_discover && cm->onion_peer_datadir) {
+        struct onion_peer peers[16];
+        int found = cm->onion_peer_discover(cm->onion_peer_datadir,
+                                            peers, 16);
+        for (int i = 0; i < found && i < 8 && !g_stop; i++) {
+            if (peers[i].hostname[0] && strstr(peers[i].hostname, ".onion"))
+                try_onion_seed_fetch(cm, peers[i].hostname);
+        }
+    }
+}
+
+void connman_kick_onion_seeds(struct connman *cm)
+{
+    if (!cm || g_stop || g_connect_only) return;
+    printf("[connman] peer-of-last-resort: querying onion-directory seeds\n");
+    fflush(stdout);
+    run_onion_seed_pass(cm);
+    /* Persist whatever clearnet hosts we just harvested so a subsequent
+     * crash/restart before the periodic flush does not lose them. */
+    connman_save_addrman(cm);
+}
+
 static void *thread_dns_seed(void *arg)
 {
     struct connman *cm = (struct connman *)arg;
@@ -324,6 +389,12 @@ static void *thread_dns_seed(void *arg)
      * a first-class observable signal. */
     const int PEER_FLOOR_MIN = 3;
     const int PEER_FLOOR_GRACE_SECS = 120;
+    /* Persist addrman on a periodic cadence (~12 min) AND after every seed
+     * round, not only on clean shutdown. A kill-9 / OOM before connman_free
+     * otherwise discards every host learned this session, forcing the next
+     * boot back to fixed/DNS seeds — anti-sticky for a recovering node. */
+    const int64_t ADDRMAN_FLUSH_SECS = 12 * 60;
+    int64_t last_addrman_flush = (int64_t)platform_time_wall_time_t();
     int64_t start_ts = (int64_t)platform_time_wall_time_t();
     int64_t floor_below_since = 0;
     while (!g_stop) {
@@ -348,15 +419,21 @@ static void *thread_dns_seed(void *arg)
             dns_seed_resolve(cm);
             /* Onion-directory fallback: Tor may not have been ready
              * during the boot-time pass, so retry the chainparams
-             * seeds while below the floor. Blocking fetches are fine
-             * on this dedicated discovery thread. */
-            if (tor_integration_is_ready()) {
-                for (size_t si = 0;
-                     si < cm->params->nOnionSeeds && !g_stop; si++)
-                    try_onion_seed_fetch(cm, cm->params->onionSeeds[si]);
-            }
+             * + operator + known-peer seeds while below the floor.
+             * Blocking fetches are fine on this dedicated discovery
+             * thread. */
+            run_onion_seed_pass(cm);
+            /* Persist immediately after a seed round: we just learned a
+             * fresh host set and the node is degraded — protect it. */
+            connman_save_addrman(cm);
+            last_addrman_flush = (int64_t)platform_time_wall_time_t();
         } else {
             floor_below_since = 0;
+        }
+        /* Periodic flush regardless of floor state. */
+        if (now - last_addrman_flush >= ADDRMAN_FLUSH_SECS && !g_stop) {
+            connman_save_addrman(cm);
+            last_addrman_flush = now;
         }
     }
 

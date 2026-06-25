@@ -126,6 +126,21 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
         }
     }
     connman_kick_seed_discovery(cm);
+
+    /* Peer-of-last-resort. When there is NOTHING outbound, the clearnet
+     * fixed/DNS kick above can stay dry (eclipsed, DNS down, IPs stale).
+     * Before this remedy can ever accrue toward operator_needed, exhaust
+     * the onion-directory supplier set: fetch /directory.json from the
+     * operator-curated + chainparams onion seeds + known zcl23 .onion
+     * peers and harvest their clearnet IPs into addrman. This keeps the
+     * remedy ladder always-terminating for the partitioned-node class —
+     * a recovering node always has a >1 bootstrap path that does NOT
+     * depend on a co-located oracle or legacy datadir. Blocking onion
+     * fetches are safe here: the condition engine runs remedies on its
+     * own thread, off the chain hot path. */
+    if (zero_outbound)
+        connman_kick_onion_seeds(cm);
+
     sync_monitor_kick_local_sync("condition:peer_floor_violated");
     sync_monitor_record_recovery(WATCHDOG_PEER_FLOOR,
                                  atomic_load(&g_local_height_at_detect),
