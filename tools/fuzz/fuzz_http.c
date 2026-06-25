@@ -161,7 +161,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
      * fresh malloc per call so ASan catches any out-of-bounds write
      * by the handlers into the response buffer. */
     enum { RESP_CAP = 512 * 1024 };
-    uint8_t *resp = (uint8_t *)malloc(RESP_CAP);
+    uint8_t *resp = (uint8_t *)malloc(RESP_CAP); // raw-alloc-ok:fuzz-harness-wants-bare-per-call-heap-alloc-so-asan-redzones-catch-oob-writes
     if (!resp) return 0;
 
     /* ── Primary target: explorer router (no threads, no rate
