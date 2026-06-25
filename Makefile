@@ -34,6 +34,14 @@ CRASH_RECOVERY_TEST_BIN = $(BIN_DIR)/crash_recovery_test
 P2_INVARIANT_CHECK_BIN = $(BIN_DIR)/p2_invariant_check
 ZCLASSIC23_CHAOS_BIN = $(BIN_DIR)/zclassic23-chaos
 
+# The make-vendor merge introduced the `vendor:` target ahead of `all:`, which
+# made `vendor` the implicit first target (and thus the default goal). A bare
+# `make` would then only build the vendored libs, never the binary. Pin the
+# default goal back to `all` so `git clone && make vendor && make` (and a plain
+# `make`) builds the node as expected; the auto-vendor prerequisite machinery
+# still pulls missing archives in transparently.
+.DEFAULT_GOAL := all
+
 # App layer (MVC)
 APP_DIRS = models controllers views services supervisors conditions jobs events
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
