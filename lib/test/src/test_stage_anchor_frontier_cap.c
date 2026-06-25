@@ -61,6 +61,44 @@ static bool fc_exec(sqlite3 *db, const char *sql)
     return true;
 }
 
+/* Stamp coins_kv proven-authority (the 3 rungs coins_kv_is_proven_authority
+ * checks) so compute_hstar honors the seeded anchor as a REAL finality floor.
+ * compute_hstar's phantom-anchor guard drops the floor to 0 when the store is
+ * NOT proven authority — correct for a bare datadir, but the fresh-seed case
+ * models a cold-sync seed whose seed path stamps proven authority. Raw SQL
+ * (this TU has no coins_kv.h). Returns false on any SQLite error. */
+static bool fc_stamp_proven_authority(sqlite3 *db, int64_t applied_height)
+{
+    if (!fc_exec(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
+            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');"))
+        return false;
+    uint8_t ah[8];
+    for (int i = 0; i < 8; i++)
+        ah[i] = (uint8_t)((uint64_t)applied_height >> (8 * i));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_applied_height", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, ah, 8, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok) return false;
+    uint8_t one = 1;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* Minimal mirror of a stage log table — the cap only reads `height`. The
  * `ok` column makes the "any-ok row counts" assertion meaningful. */
 static bool fc_make_log(sqlite3 *db, const char *table)
@@ -313,6 +351,11 @@ static int fc_case_fresh_seed(void)
     FC_CHECK("T5b: anchor row written at H",
              fc_tip_row(db, H, status, sizeof(status)) == 1 &&
              strcmp(status, "anchor") == 0);
+
+    /* Model the cold-sync seed's proven-authority stamp so compute_hstar's
+     * phantom-anchor guard honors the seeded anchor (applied frontier == H). */
+    FC_CHECK("T5b: coins_kv proven authority stamped",
+             fc_stamp_proven_authority(db, H));
 
     /* The reducer trusted-anchor scan must ACCEPT the seed: H* anchors at
      * H (not back at the compiled checkpoint). */

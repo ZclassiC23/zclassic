@@ -73,6 +73,48 @@ static bool build_schema(sqlite3 *db)
     return true;
 }
 
+/* Stamp coins_kv proven-authority (the 3 rungs coins_kv_is_proven_authority
+ * checks) so compute_hstar treats the anchor as a REAL finality floor. The new
+ * phantom-anchor guard in compute_hstar drops the floor to 0 when the store is
+ * NOT proven authority — correct for a fresh datadir, but the NORMAL-boot
+ * sub-case below models a real seeded datadir whose H* clamps at the anchor.
+ * Raw SQL (this TU has no coins_kv.h). Returns false on any SQLite error. */
+static bool rp_stamp_proven_authority(sqlite3 *db, int64_t applied_height)
+{
+    uint8_t ah[8];
+    for (int i = 0; i < 8; i++)
+        ah[i] = (uint8_t)((uint64_t)applied_height >> (8 * i));
+    char *err = NULL;
+    if (sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
+            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');",
+            NULL, NULL, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        return false;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_applied_height", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, ah, 8, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok) return false;
+    uint8_t one = 1;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool set_cursor(sqlite3 *db, const char *name, int64_t cursor)
 {
     sqlite3_stmt *st = NULL;
@@ -162,6 +204,9 @@ static int case_floor_scoping(void)
     if (sqlite3_open(":memory:", &db) != SQLITE_OK)
         return 1;
     RP_CHECK("schema", build_schema(db));
+    /* Real seeded datadir: proven authority so the anchor floor is honored on
+     * the normal-boot sub-cases (the guard leaves refold's floor=0 untouched). */
+    RP_CHECK("proven authority", rp_stamp_proven_authority(db, TEST_ANCHOR));
 
     reducer_frontier_test_set_compiled_anchor(TEST_ANCHOR);
 

@@ -73,6 +73,47 @@ static bool seed_schema(sqlite3 *db)
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)");
 }
 
+/* Stamp coins_kv proven-authority (the 3 rungs coins_kv_is_proven_authority
+ * checks) so compute_hstar honors the (overridden) anchor floor. The new
+ * phantom-anchor guard in compute_hstar drops the floor to 0 when the store is
+ * NOT proven authority — correct for a fresh datadir, but these condition
+ * fixtures model a seeded datadir whose H* sits at the overridden anchor. Raw
+ * SQL (this TU has no coins_kv.h); progress_meta is created by the store open.
+ * Returns false on any SQLite error. */
+static bool seed_proven_authority(sqlite3 *db, int64_t applied_height)
+{
+    if (!exec_sql(db, "CREATE TABLE IF NOT EXISTS progress_meta "
+                      "(key TEXT PRIMARY KEY, value BLOB)") ||
+        !exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB)") ||
+        !exec_sql(db, "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00')"))
+        return false;
+    uint8_t ah[8];
+    for (int i = 0; i < 8; i++)
+        ah[i] = (uint8_t)((uint64_t)applied_height >> (8 * i));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_applied_height", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, ah, 8, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok) return false;
+    uint8_t one = 1;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool seed_cursors(sqlite3 *db, int validate_cursor,
                          int downstream_cursor)
 {
@@ -275,7 +316,11 @@ static bool setup_condition_case(const char *tag, char *dir, size_t dir_n,
     setup_main_state(ms, blocks, hashes);
     condition_engine_set_main_state(ms);
     register_stale_validate_headers_repair();
-    return seed_schema(progress_store_db());
+    /* Anchor floor was overridden to 1 above; stamp proven authority so the
+     * phantom-anchor guard in compute_hstar honors it (applied frontier == the
+     * overridden anchor). */
+    return seed_schema(progress_store_db()) &&
+           seed_proven_authority(progress_store_db(), 1);
 }
 
 static void teardown_condition_case(const char *dir, struct main_state *ms)

@@ -250,6 +250,31 @@ static bool seed_coins_applied(sqlite3 *db, int64_t height)
     sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
+    if (!ok) return false;
+    /* Stamp full coins_kv proven-authority so compute_hstar treats the baked
+     * TRUSTED_ANCHOR as a REAL finality floor (these fixtures model a seeded
+     * datadir). compute_hstar's phantom-anchor guard drops the floor to 0 when
+     * coins_kv is NOT proven authority — correct for a fresh datadir, wrong for
+     * these. Proven authority needs all three rungs: the applied_height above,
+     * the migration-complete stamp, and a non-empty `coins` table. */
+    char *err = NULL;
+    if (sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
+            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');",
+            NULL, NULL, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        return false;
+    }
+    uint8_t one = 1;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
     return ok;
 }
 

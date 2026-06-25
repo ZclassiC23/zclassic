@@ -167,6 +167,15 @@ static bool cca_set_applied(sqlite3 *db, int32_t height)
         if (err) sqlite3_free(err);
         return false;
     }
+    /* Stamp the migration-complete rung so coins_kv_is_proven_authority returns
+     * true (coins_kv_add already seeded a coin row; this set applied_height).
+     * compute_hstar's phantom-anchor guard drops the floor to 0 when the store
+     * is not proven authority — correct for a fresh datadir, but this fixture
+     * models a real seeded datadir whose H* must clamp at the anchor. */
+    if (ok) {
+        uint8_t one = 1;
+        ok = progress_meta_set(db, COINS_KV_MIGRATION_COMPLETE_KEY, &one, 1);
+    }
     return ok;
 }
 

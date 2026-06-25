@@ -472,10 +472,20 @@ int test_rpc_safety(void)
         json_set_array(&params);
         json_init(&result);
 
-        ok = ok && !rpc_table_execute(&chain_tbl, "getblockchaininfo",
-                                      &params, &result);
-        ok = ok && result.type == JSON_STR &&
-             strstr(json_get_str(&result), "No provable tip") != NULL;
+        /* getblockchaininfo must NOT borrow the unresolved active tip (height
+         * 3). When the H* slot is unresolved it now returns a VALID IBD-shaped
+         * object (parseable JSON) rather than the old bare "No provable tip"
+         * error string — but it still reports the PROVABLE height (H* == 1),
+         * never the active/lookahead tip, with initialblockdownload=true. */
+        ok = ok && rpc_table_execute(&chain_tbl, "getblockchaininfo",
+                                     &params, &result);
+        {
+            const struct json_value *gbi_blocks = json_get(&result, "blocks");
+            const struct json_value *gbi_ibd =
+                json_get(&result, "initialblockdownload");
+            ok = ok && gbi_blocks && json_get_int(gbi_blocks) == 1;
+            ok = ok && gbi_ibd && json_get_bool(gbi_ibd);
+        }
         json_free(&result);
 
         json_init(&result);

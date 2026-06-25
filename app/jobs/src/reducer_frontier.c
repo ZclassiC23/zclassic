@@ -94,17 +94,27 @@ int32_t reducer_frontier_floor(void)
     return refold_in_progress() ? 0 : reducer_frontier_compiled_anchor();
 }
 
-/* The PROVABLE TIP cache (H*) served to external consumers. Init to the
- * irreversible finality anchor so a read before the first finalize advance
- * returns a sane >= anchor floor (never -1 / never a stale high). Refreshed
- * by reducer_frontier_provable_tip_set at the finalize-advance and reorg-rewind
- * chokepoints (both under progress_store_tx_lock); read lock-free by the
- * external accessors. See reducer_frontier.h. */
-static _Atomic int_least32_t g_provable_tip = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+/* The PROVABLE TIP cache (H*) served to external consumers. Init to a -1
+ * SENTINEL meaning "not yet published" — NOT the baked finality anchor. The
+ * old anchor-init was a PHANTOM on a fresh / empty datadir: tip_finalize never
+ * advances there, so the cache stayed at REDUCER_FRONTIER_TRUSTED_ANCHOR and
+ * getblockcount falsely reported the anchor height (e.g. 3056758) on a node
+ * that has resolved nothing. The accessor maps the sentinel to 0 (honest
+ * "nothing proven yet"). On a REAL datadir the first finalize advance /
+ * reorg rewind immediately republishes the true H* through
+ * reducer_frontier_provable_tip_set (both under progress_store_tx_lock); the
+ * brief pre-first-advance boot window now reads 0 instead of the anchor, which
+ * is the honest IBD value (we have not proven the anchor on THIS datadir yet).
+ * Read lock-free by the external accessors. See reducer_frontier.h. */
+#define REDUCER_FRONTIER_TIP_UNPUBLISHED ((int_least32_t)-1)
+static _Atomic int_least32_t g_provable_tip = REDUCER_FRONTIER_TIP_UNPUBLISHED;
 
 int32_t reducer_frontier_provable_tip_cached(void)
 {
-    return (int32_t)atomic_load(&g_provable_tip);
+    int_least32_t v = atomic_load(&g_provable_tip);
+    /* Never serve the -1 sentinel to a consumer: before the first publish the
+     * honest provable height is 0 (nothing folded/finalized yet). */
+    return v < 0 ? 0 : (int32_t)v;
 }
 
 void reducer_frontier_provable_tip_set(int32_t hstar)
@@ -119,7 +129,10 @@ void reducer_frontier_provable_tip_set(int32_t hstar)
 
 void reducer_frontier_provable_tip_reset(void)
 {
-    atomic_store(&g_provable_tip, (int_least32_t)REDUCER_FRONTIER_TRUSTED_ANCHOR);
+    /* Reset to the "not yet published" sentinel (served as 0), mirroring the
+     * stage's g_last_advance_height=-1 reset. The next finalize advance
+     * republishes the true H*; until then 0 is the honest provable height. */
+    atomic_store(&g_provable_tip, REDUCER_FRONTIER_TIP_UNPUBLISHED);
 }
 
 /* Per-row reads return a tri-state so contiguity and discrimination can
@@ -520,6 +533,22 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     int32_t anchor = compiled_anchor;
     if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))
         LOG_FAIL("reducer", "trusted anchor read failed");
+
+    /* PHANTOM-ANCHOR GUARD — the baked REDUCER_FRONTIER_TRUSTED_ANCHOR is only
+     * a real finality floor when coins_kv was actually seeded/migrated on THIS
+     * datadir. On a fresh / empty datadir coins_kv is NOT the proven authority,
+     * so the anchor names a height this node has resolved NOTHING below — every
+     * empty log's contiguous prefix would otherwise return `anchor`, pinning
+     * H* (and getblockcount) to e.g. 3056758 on a node holding zero blocks.
+     * Drop the floor to 0 in that case so H* reports the honestly-resolved
+     * prefix (~0 on a bare node, or the real folded prefix mid-IBD) — the same
+     * 0-floor a from-genesis refold already uses. A real datadir (proven
+     * authority) keeps the anchor floor and the finality clamp below is exact.
+     * coins_kv_is_proven_authority is SELECT-only; the caller holds
+     * progress_store_tx_lock. */
+    if (anchor > 0 && !coins_kv_is_proven_authority(progress_db, NULL))
+        anchor = 0;
+
     *served_floor = 0;
     /* served_floor is independent of H* (C-served): report the deepest
      * finalized ok=1 even when it sits above the provable prefix. */

@@ -85,10 +85,29 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
     struct block_index *tip = active_chain_at(&ctx->main_state->chain_active,
                                               (int)hstar);
     if (!tip) {
-        json_set_str(result, "No provable tip");
-        LOG_FAIL("blockchain",
-                 "getblockchaininfo: provable tip hstar=%d unresolved",
-                 hstar);
+        /* No provable tip slot resolved yet (fresh / pre-resolve datadir, or
+         * mid-fold before the H* block is in the active window). Return a VALID
+         * IBD-shaped object instead of overwriting the result with a bare
+         * "No provable tip" string — an external getblockchaininfo must always
+         * be parseable JSON. blocks = the honest provable height (>=0), headers
+         * = the best header height we know, initialblockdownload = true, and
+         * bestblockhash when the header tip is available. */
+        struct block_index *bh = ctx->main_state->pindex_best_header;
+        int hdr_h = bh ? bh->nHeight : 0;
+        json_push_kv_int(result, "blocks", hstar > 0 ? hstar : 0);
+        json_push_kv_int(result, "headers", hdr_h);
+        json_push_kv_int(result, "best_header_height", hdr_h);
+        if (bh && bh->phashBlock) {
+            char hbhex[65];
+            uint256_get_hex(bh->phashBlock, hbhex);
+            json_push_kv_str(result, "bestblockhash", hbhex);
+        }
+        json_push_kv_bool(result, "initialblockdownload", true);
+        LOG_WARN("blockchain",
+                 "getblockchaininfo: provable tip hstar=%d unresolved — "
+                 "returning IBD object (blocks=%d headers=%d)",
+                 hstar, hstar > 0 ? hstar : 0, hdr_h);
+        return true;
     }
     json_push_kv_int(result, "blocks", tip ? tip->nHeight : 0);
     struct block_index *best_hdr = ctx->main_state->pindex_best_header;

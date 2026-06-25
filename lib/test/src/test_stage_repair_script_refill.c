@@ -325,6 +325,30 @@ static bool seed_coins_applied(sqlite3 *db, int64_t height)
     sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
     sqlite3_finalize(st);
+    if (!ok) return false;
+    /* Stamp full coins_kv proven-authority so compute_hstar honors the baked
+     * TRUSTED_ANCHOR floor (these fixtures model a seeded datadir whose H*
+     * clamps at the anchor with coins leading it). The phantom-anchor guard in
+     * compute_hstar otherwise drops the floor to 0 when the store is not proven
+     * authority — correct for a fresh datadir, wrong here. */
+    char *err = NULL;
+    if (sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
+            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');",
+            NULL, NULL, &err) != SQLITE_OK) {  // raw-sql-ok:test-seed
+        sqlite3_free(err);
+        return false;
+    }
+    uint8_t one = 1;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
     return ok;
 }
 

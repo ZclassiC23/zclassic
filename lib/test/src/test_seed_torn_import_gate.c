@@ -249,6 +249,15 @@ static bool stig_set_applied(sqlite3 *db, int32_t next_cursor)
         if (err) sqlite3_free(err);
         return false;
     }
+    /* Stamp the migration-complete rung so coins_kv_is_proven_authority returns
+     * true (stig_seed_coins already added the coins rows; stig_set_applied set
+     * the applied_height above). compute_hstar's phantom-anchor guard otherwise
+     * drops the floor to 0 when the store is not proven authority — correct for
+     * a fresh datadir, but these gate fixtures model a seeded one. */
+    if (ok) {
+        uint8_t one = 1;
+        ok = progress_meta_set(db, COINS_KV_MIGRATION_COMPLETE_KEY, &one, 1);
+    }
     return ok;
 }
 
@@ -397,6 +406,11 @@ int test_seed_torn_import_gate(void)
         int64_t live_ck = pk ? coins_kv_count(pk) : -1;
         STIG_CHECK("clean: coins_kv seeded (no ok=0 row)",
                    fixt && live_ck == 8);
+        /* A completed clean seed stamps proven authority (applied frontier +
+         * migration). Without it compute_hstar's phantom-anchor guard would
+         * drop H* to 0, blowing the loader's H-H*<=trigger gap check below. */
+        STIG_CHECK("clean: coins_applied + migration stamped",
+                   pk && stig_set_applied(pk, STIG_ANCHOR));
 
         struct node_db ndb;
         STIG_CHECK("clean: node_db opens", node_db_open(&ndb, ":memory:"));

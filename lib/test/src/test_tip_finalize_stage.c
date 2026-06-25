@@ -845,11 +845,13 @@ int test_tip_finalize_stage(void)
         TF_CHECK("provable_tip: lowered cache holds at/above the anchor",
                  post_reorg >= 0);
 
-        /* Shutdown mirrors the served-tip reset back to the finality anchor. */
+        /* Shutdown resets the served-tip cache to the "not yet published"
+         * sentinel, which the accessor serves as 0 (the honest pre-publish
+         * provable height) — NOT the baked finality anchor. The next finalize
+         * advance republishes the true H*. */
         tf_teardown(dir, &ms, &sc);
-        TF_CHECK("provable_tip: shutdown reset cache to anchor",
-                 reducer_frontier_provable_tip_cached() ==
-                     REDUCER_FRONTIER_TRUSTED_ANCHOR);
+        TF_CHECK("provable_tip: shutdown reset cache to 0 (unpublished sentinel)",
+                 reducer_frontier_provable_tip_cached() == 0);
         reducer_frontier_test_set_compiled_anchor(-1); /* restore mainnet floor */
     }
 
