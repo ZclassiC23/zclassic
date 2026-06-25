@@ -703,13 +703,43 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
             bi = active_chain_at(&ms->chain_active, seed_h);
         }
         if (!bi) {
+            int32_t hdr_tip =
+                ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1;
+            /* Distinguish two NULL-slot causes:
+             *
+             *  (a) Headers simply not synced to seed_h yet (hdr_tip < seed_h) —
+             *      e.g. a FRESH datadir. We cannot consensus-bind the anchor
+             *      NOW, but a hard FATAL is the wrong answer: degrade to a WARN
+             *      and RETURN cleanly so the node falls back to normal P2P IBD
+             *      and downloads headers/blocks the usual way. (Auto-seeding the
+             *      snapshot once headers later reach seed_h is a follow-up — the
+             *      seed is simply skipped this run.)
+             *
+             *  (b) Headers ARE at/above seed_h but the slot is still NULL after
+             *      active_chain_extend_window (a real pprev/data gap below the
+             *      header tip) — genuine corruption. KEEP the fail-closed FATAL:
+             *      never stamp a coin against a missing/forged anchor. */
+            if (hdr_tip < seed_h) {
+                LOG_WARN("boot",
+                         "[boot] -load-snapshot-at-own-height: header tip h=%d "
+                         "< snapshot height h=%d — headers not synced yet; "
+                         "SKIPPING the snapshot seed and falling back to normal "
+                         "P2P IBD (re-run once headers reach the snapshot "
+                         "height).",
+                         hdr_tip, seed_h);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                            "load_snapshot_at_own_height deferred "
+                            "header_tip=%d seed_h=%d",
+                            hdr_tip, seed_h);
+                uss_close(h);
+                return;  /* normal boot continues; coins_kv left as-is for IBD */
+            }
             fprintf(stderr,
                     "FATAL: -load-snapshot-at-own-height: the in-memory active "
                     "chain has NO block at the snapshot height h=%d — cannot "
                     "consensus-bind the snapshot's anchor hash (header tip h=%d). "
                     "REFUSING to seed.\n",
-                    seed_h,
-                    ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1);
+                    seed_h, hdr_tip);
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "load_snapshot_at_own_height no_index_block seed_h=%d",
                         seed_h);
