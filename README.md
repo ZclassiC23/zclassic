@@ -51,22 +51,25 @@ TicTacToe).
 
 ## Quick start
 
-**Prerequisites:** gcc 14+ (or clang with `-std=c23`) and GNU make.
-
-> **Build note (known gap):** `vendor/lib/` tracks only `libsecp256k1.a`. The
-> other 10 static archives (OpenSSL, libevent ×3, leveldb, SQLite, zlib, the Tor
-> stub) are not yet in the repo, so a fresh clone **will not link**
-> `make zclassic23` until you supply them. [`docs/BUILD.md`](docs/BUILD.md) lists
-> each one's source, version, and build command; `make vendor` automation is on
-> the roadmap.
+**Prerequisites:** gcc 14+ (or clang with `-std=c23`), GNU make, plus
+`cmake`, `autoconf`, `curl`/`wget`, and `unzip` for the one-time vendored-library
+build.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
-# see docs/BUILD.md first — vendored libs are required to link
 make zclassic23     # main binary -> build/bin/zclassic23
 make test           # full suite (~430 parallel groups)
 make lint           # defensive-coding gates
 ```
+
+The first `make zclassic23` auto-runs **`make vendor`**, which builds the static
+third-party archives in `vendor/lib/` from source (OpenSSL, libevent ×3, LevelDB,
+SQLite, zlib) plus the in-tree Tor stub — sources are pulled from pinned URLs and
+verified against pinned SHA256 hashes, then compiled locally. Only
+`libsecp256k1.a` (a custom Bitcoin Core fork build) ships committed. `make vendor`
+is idempotent: once the archives exist it is a no-op (`make vendor-force`
+rebuilds). Per-library sources, versions, and hashes are in
+[`docs/BUILD.md`](docs/BUILD.md).
 
 ```bash
 build/bin/zclassic23                                  # start

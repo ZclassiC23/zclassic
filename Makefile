@@ -119,6 +119,30 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 
+# Vendored static archives the final link needs.  Only libsecp256k1.a is
+# committed to git; `make vendor` builds the rest from source (pinned URL +
+# SHA256), so `git clone && make zclassic23` links in one shot.  See
+# docs/BUILD.md and tools/scripts/build_vendor.sh.
+VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
+	libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a \
+	libz.a libtor_stub.a
+VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
+
+.PHONY: vendor vendor-force
+# Build every missing vendor/lib/*.a from source (idempotent: a present
+# archive is a no-op).  `make vendor-force` rebuilds all of them.
+vendor:
+	tools/scripts/build_vendor.sh
+vendor-force:
+	VENDOR_FORCE=1 tools/scripts/build_vendor.sh
+
+# Auto-vendor: if any required archive is absent, build it.  The per-archive
+# rule lets `make zclassic23` pull in `make vendor` transparently on a fresh
+# clone without re-running the whole script when the libs are already there.
+# libsecp256k1.a is tracked, so it has no recipe (git provides it).
+$(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
+	tools/scripts/build_vendor.sh $(notdir $@)
+
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
@@ -289,7 +313,7 @@ spec: spec_zcl
 
 .PHONY: zclassic23
 zclassic23: $(ZCLASSIC23_BIN)
-$(ZCLASSIC23_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) src/main.c tools/mcp_server.c $(ALL_SRCS)
+$(ZCLASSIC23_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) src/main.c tools/mcp_server.c $(ALL_SRCS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	strip -s $@
