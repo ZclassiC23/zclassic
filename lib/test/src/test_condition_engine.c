@@ -356,6 +356,8 @@ int test_condition_engine(void)
             "state_window_inconsistent",
             "mirror_divergence_located",
             "replay_canary_failed",
+            "disk_full_pause",
+            "clock_skew_reconcile",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

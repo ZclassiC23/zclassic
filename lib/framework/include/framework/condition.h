@@ -111,6 +111,14 @@ void condition_engine_tick(void);
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
 int condition_engine_get_active_count(void);
 int condition_engine_get_unresolved_count(void);
+
+/* Re-baseline the engine's wall-keyed cadence anchors (last_poll/last_remedy)
+ * to "now" for every registered condition. Called by the clock_skew_reconcile
+ * remedy after a wall-clock STEP so a backward jump cannot freeze backoff math
+ * and a forward jump cannot fire every condition at once. Idempotent and
+ * lock-safe; harmless to call when no skew occurred. */
+void condition_engine_rebaseline_clocks(void);
+
 void condition_engine_set_main_state(struct main_state *ms);
 struct main_state *condition_engine_main_state(void);
 

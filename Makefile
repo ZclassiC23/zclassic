@@ -566,6 +566,49 @@ test-reindex-killmid: zclassic23 zcl-rpc
 test-two-node-peer-tip: zclassic23 zcl-rpc
 	@bash tools/scripts/two_node_peer_tip.sh
 
+# ── STICKINESS fault-injection matrix (sticky-node-plan §4 metric) ──
+#
+# sticky-matrix: for each fault class, inject on a THROWAWAY /tmp datadir
+# copy, plain-restart the binary, gate on H* CLIMB to tip with the G-SOV
+# sub-gate green (recovered AND sovereign). Emits a JSON verdict sentinel
+# with AAR (auto-recovery %) + MTTUR. Default gate: AAR over ATTEMPTABLE
+# rows == 100% AND verdict is PASS|BLOCKED (BLOCKED = a row that cannot be
+# made hermetic yet — flagged, never a vacuous green). FRESH-sentinel guard
+# (anti-false-green, same discipline as replay-canary-anchor): the verdict
+# file must exist, be strictly newer than a marker dropped at run start, and
+# say verdict PASS|BLOCKED. DELIBERATELY out of hermetic `make ci` — it
+# SPAWNS a real isolated node (isolated_node_env.sh owns all isolation).
+.PHONY: sticky-matrix
+sticky-matrix: zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 vd="$${ZCL_STICKY_VERDICT_DIR:-$$HOME/.local/state/zclassic23-sticky}"; \
+	 mkdir -p "$$vd"; \
+	 marker="$$vd/.guard_started_matrix"; rm -f "$$marker"; : > "$$marker"; \
+	 export ISO_KIND=sticky ISO_PORT_BASE=$${ISO_PORT_BASE:-39060}; \
+	 set +e; bash tools/scripts/sticky_matrix.sh; rc=$$?; set -e; \
+	 f="$$vd/sticky_matrix.json"; \
+	 if [ ! -f "$$f" ] || [ ! "$$f" -nt "$$marker" ]; then \
+	     echo "sticky-matrix: FAIL (no FRESH verdict sentinel at $$f; harness rc=$$rc)"; \
+	     [ -f "$$f" ] && cat "$$f"; rm -f "$$marker"; exit 1; \
+	 fi; \
+	 rm -f "$$marker"; \
+	 if grep -Eq "\"verdict\":\"(PASS|BLOCKED)\"" "$$f"; then \
+	     echo "sticky-matrix: PASS (fresh verdict; AAR over attemptable rows == 100%)"; cat "$$f"; \
+	 else \
+	     echo "sticky-matrix: FAIL (verdict not PASS|BLOCKED)"; cat "$$f"; exit 1; \
+	 fi'
+
+# sticky-matrix-v1: the v1 STICKINESS BAR — AAR_strict == 100% (every row
+# passes, zero blocked, zero human/flag/legacy-datadir). Sets
+# ZCL_STICKY_REQUIRE_ALL=1 so a BLOCKED row is a HARD FAIL. This is the gate
+# that flips MVP stickiness once the regtest-durability + sibling-adopt
+# dependencies (rows 7/12) and the disk/clock mount/inject helpers (11/13)
+# land. Until then it is EXPECTED to fail loud — that is the honest signal.
+.PHONY: sticky-matrix-v1
+sticky-matrix-v1: zclassic23 zcl-rpc
+	@ZCL_STICKY_REQUIRE_ALL=1 ISO_PORT_BASE=$${ISO_PORT_BASE:-39064} \
+	    $(MAKE) sticky-matrix
+
 # C6 bounded compressed-soak PROXY: self-spawn an isolated /tmp regtest
 # node, drive 180 s of generate-load, and assert the soak runner exits
 # SOAK_OK (verdict=OK sentinel grepped so a no-op runner fails loud —
