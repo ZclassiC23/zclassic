@@ -55,6 +55,7 @@
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
+#include "chain/chainparams.h"
 
 /* Read the REAL hashFinalSaplingRoot from a block body on disk (node.db's
  * blocks.sapling_root is a zeroed projection artifact, so we cannot trust it).
