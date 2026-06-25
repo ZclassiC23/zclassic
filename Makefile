@@ -282,6 +282,7 @@ repro-on-copy:
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 $(eval $(call BUILD_NODE_TOOL,snapshot_from_coinskv,tools/snapshot_from_coinskv.c))
+$(eval $(call BUILD_NODE_TOOL,mint_v2_snapshot,tools/mint_v2_snapshot.c))
 
 $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/session.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
