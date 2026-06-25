@@ -283,7 +283,7 @@ human reviewer. The ladder is deliberate:
 - **HARD** — a law the tree already satisfies. One regression is one too many.
 
 Hygiene + adoption gates cover: no bare malloc, no raw `sqlite3_step`
-(compiler-poisoned), no silent error returns, no raw clock/RNG outside
+(text-scan lint gate), no silent error returns, no raw clock/RNG outside
 `lib/platform/`, threads only via the registry, observability-pairing,
 before/after-save hooks, function ≤500 LOC, `lib/`→`app/` layering, supervisor
 registration, typed blockers, framework-shape. The gates are themselves under

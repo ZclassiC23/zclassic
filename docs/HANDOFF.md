@@ -5,7 +5,7 @@
 > Fixed by commit `ab512d577` "fix(boot): bind a snapshot above coins-best by extending
 > the active-chain window": when the `-load-snapshot-at-own-height` seed height is ABOVE
 > coins-best, the loader extends the active-chain window forward to the PoW-proven header
-> tip (`active_chain_extend_window`, `config/src/boot_refold_staged.c:568`) instead of
+> tip (`active_chain_extend_window`, `config/src/boot_refold_staged.c:702`) instead of
 > FATAL-ing. HOW it unwedged: a COMPLETE, SHA3-verified snapshot at h=3,156,809
 > (`utxo-seed-3156809.snapshot`) seeds the full UTXO set ABOVE the height that wedged the
 > older TORN 3,151,901 seed, then folds forward (never re-touches 3,156,171).
@@ -96,7 +96,7 @@ Six proven, consensus-audited fixes make up the consolidated binary:
 6. **snapshot-above-coins-best window extension** (`ab512d577`) — when the
    snapshot seed height is ABOVE coins-best, the loader widens the active-chain
    window forward to `pindex_best_header` (`active_chain_extend_window`,
-   `boot_refold_staged.c:568`) so the consensus anchor-hash cross-check reads the
+   `boot_refold_staged.c:702`) so the consensus anchor-hash cross-check reads the
    real PoW-proven `block_index` at the seed height, instead of FATAL-ing
    "Run --importblockindex". A pprev gap still leaves the slot NULL and the
    downstream FATAL still fires (a forged/missing anchor fails closed). This is

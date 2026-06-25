@@ -32,6 +32,9 @@
 > block bodies forward from the verified checkpoint, cut over, then delete the
 > borrowed-seed machinery (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)
 > + the ordered worksheet [`sync-fix-plan-2026-06-21.md`](./sync-fix-plan-2026-06-21.md).
+> The **aesthetic-aligned canonical statement** (Prime Directive + Ten Laws, the
+> detective frame: Acts 0–4 + the `G-SOV` sovereignty gate) is
+> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md).
 > The P0/P1/P2 subtask backlog is in [`../HANDOFF.md`](../HANDOFF.md) §4. Hardening
 > program of record: [`tenacity-roadmap.md`](./tenacity-roadmap.md) (carries the
 > merged rock-solid recovery-program L1/L2 items) +
