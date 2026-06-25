@@ -220,17 +220,29 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * reading active_chain_at(H+1)) and then collapses the visible chain[]
  * window back to the finalized height via active_chain_move_window_tip, then
  * publishes the authority through the reducer's explicit tip publication.
- * This helper forward-extends the visible chain[] window to the already
- * tracked best-header pointer WITHOUT moving the authoritative tip. Stages
- * that read active_chain_at() call it at the top of step_once so the window is
- * supplied to the height they are about to process.
+ * This helper forward-extends the visible chain[] window along the CONTIGUOUS
+ * have-data, script-validated frontier WITHOUT moving the authoritative tip.
+ * Stages that read active_chain_at() call it at the top of step_once so the
+ * window is supplied to the height they are about to process.
+ *
+ * The window is bounded by utxo_apply's DURABLE cursor (read from the
+ * stage_cursor table), so the extender never pins a bodiless / header-only
+ * slot and never looks past the persisted have-data floor. This closes the
+ * wrong-fork wedge class: pindex_best_header tracks the best known HEADER,
+ * which may sit above the have-data frontier on a forked or not-yet-downloaded
+ * branch; extending the window to that header-only candidate exposed a
+ * bodiless slot (and, via a generic candidate, could trigger the finalized-row
+ * false-reorg cascade). active_chain_extend_window_have_data accepts a
+ * successor only when its pprev is pointer-equal to the prior accepted block,
+ * so it is provably continuous with the finalized chain and never overwrites a
+ * finalized slot. pindex_best_header stays the header-ingest / download target
+ * elsewhere — only the WINDOW extender changes here.
  *
  * Do not scan the full block map from a stage tick. The live map is millions
  * of entries; a full most-work sweep inside the supervisor can monopolize the
- * liveness thread and prevent repaired cursors from resuming. Header ingress
- * already maintains pindex_best_header as the current best known header, so
- * the reducer can use that O(delta) chain pointer directly and let the normal
- * downstream stages classify missing bodies, forks, and precondition failures.
+ * liveness thread and prevent repaired cursors from resuming. The have-data
+ * extender does a single bounded scan in (window, max_height], with a hard gap
+ * cap, so the cost stays O(delta).
  *
  * STRICTLY a no-op unless the caller owns the active-chain window for the
  * current stage step. */
@@ -239,12 +251,13 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
 {
     if (!authoritative || !ms)
         return;
-    struct block_index *cand = ms->pindex_best_header;
-    if (!cand)
-        cand = active_chain_most_work_candidate(&ms->chain_active,
-                                                &ms->map_block_index);
-    if (cand)
-        (void)active_chain_extend_window(&ms->chain_active, cand);
+    /* Bound the window by utxo_apply's durably-committed cursor: never extend
+     * to a slot above the persisted have-data frontier. A missing/zero cursor
+     * yields max_h <= window height, so the extender is a cheap no-op. */
+    int max_h = (int)stage_cursor_persisted(progress_store_db(),
+                                            "utxo_apply", NULL);
+    (void)active_chain_extend_window_have_data(&ms->chain_active,
+                                               &ms->map_block_index, max_h);
 }
 
 /* Emit the four generic stage-machine counters (advanced/blocked/idle/error)

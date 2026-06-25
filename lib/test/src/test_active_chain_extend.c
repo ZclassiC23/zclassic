@@ -219,5 +219,37 @@ int test_active_chain_extend(void)
         main_state_free(&ms); /* frees both retired arrays */
     }
 
+    /* 8. The wrong-fork wedge regression: pindex_best_header points at a
+     * BODILESS orphan above the have-data frontier (the header-only successor
+     * that the old reducer_extend_window_to_candidate would have extended the
+     * window to, pinning a bodiless slot). With the have-data extender bounded
+     * by the durable utxo_apply cursor, the window must extend ONLY to the
+     * contiguous have-data tip and must NOT pin the header-only candidate.
+     *
+     * Mirrors reducer_extend_window_to_candidate: bodies/scripts through 5,
+     * pindex_best_header set to a header-only block at 6 (no BLOCK_HAVE_DATA),
+     * max_height = the have-data frontier (5). */
+    {
+        struct main_state ms; main_state_init(&ms);
+        struct block_index *b[8];
+        bool ok = ace_build(&ms, b, N, 3);
+        /* Bodies + scripts only through 5; 6 is header-only (no body). */
+        b[6]->nStatus = BLOCK_VALID_TREE; /* header-only orphan, no HAVE_DATA */
+        b[7]->nStatus = BLOCK_VALID_TREE;
+        ms.pindex_best_header = b[6]; /* best HEADER sits above the body floor */
+
+        /* The window extender is bounded by the durable have-data cursor (5),
+         * exactly as reducer_extend_window_to_candidate passes it. */
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index, 5);
+        ok = ok && active_chain_at(&ms.chain_active, 5) == b[5]; /* reached body */
+        ok = ok && active_chain_at(&ms.chain_active, 6) == NULL; /* NOT pinned */
+        ok = ok && active_chain_at(&ms.chain_active, 7) == NULL;
+        ok = ok && active_chain_height(&ms.chain_active) == 5;
+        ACE_CHECK("bodiless best-header orphan NOT pinned (stays at have-data tip)",
+                  ok);
+        main_state_free(&ms);
+    }
+
     return failures;
 }
