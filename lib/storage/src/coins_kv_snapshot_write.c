@@ -51,8 +51,25 @@ bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
                              uint8_t out_sha3[32], uint64_t *out_count,
                              int64_t *out_total_supply)
 {
+    /* Back-compat thin wrapper: no Sapling frontier => writes a v1 file. */
+    return coins_kv_snapshot_write_v2(db, out_path, height, anchor_block_hash,
+                                      NULL, 0, out_sha3, out_count,
+                                      out_total_supply);
+}
+
+bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
+                                int32_t height,
+                                const uint8_t anchor_block_hash[32],
+                                const uint8_t *frontier, uint32_t frontier_len,
+                                uint8_t out_sha3[32], uint64_t *out_count,
+                                int64_t *out_total_supply)
+{
     if (!db || !out_path || !out_path[0]) {
         LOG_NULL("coins_kv", "snapshot_write: null db/path");
+        return false;
+    }
+    if (frontier_len > 0 && !frontier) {
+        LOG_NULL("coins_kv", "snapshot_write: frontier_len>0 with null blob");
         return false;
     }
 
@@ -61,8 +78,9 @@ bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
      * the artifact is complete and its body SHA3 still equals the compiled
      * checkpoint. With the flag off this is a single bool load that is false. */
     if (coins_ram_active())
-        return coins_ram_snapshot_write(out_path, height, anchor_block_hash,
-                                        out_sha3, out_count, out_total_supply);
+        return coins_ram_snapshot_write_v2(out_path, height, anchor_block_hash,
+                                           frontier, frontier_len,
+                                           out_sha3, out_count, out_total_supply);
 
     char tmp_path[1100];
     int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
@@ -169,12 +187,32 @@ bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
         return false;
     }
 
+    /* OPTIONAL Sapling-frontier section, appended AFTER the UTXO records and
+     * BEFORE the header rewrite so it falls inside the body SHA3 region
+     * (everything after offset 104). Layout: [u32 frontier_len LE][blob].
+     * Absent => v1 file (no section, version stays 1). Present => version 2. */
+    uint32_t snap_version = 1;
+    if (frontier_len > 0) {
+        uint8_t lenbuf[4];
+        le32(lenbuf, frontier_len);
+        if (fwrite(lenbuf, 1, 4, out) != 4 ||
+            fwrite(frontier, 1, frontier_len, out) != frontier_len) {
+            LOG_WARN("coins_kv", "snapshot_write: frontier write failed");
+            fclose(out);
+            unlink(tmp_path);
+            return false;
+        }
+        sha3_256_write(&ctx, lenbuf, 4);
+        sha3_256_write(&ctx, frontier, frontier_len);
+        snap_version = 2;
+    }
+
     uint8_t body_sha3[32];
     sha3_256_finalize(&ctx, body_sha3);
 
     /* Rewrite the header with the real values. */
     memcpy(header, "ZCLUTXO\x00", 8);
-    le32(header + 8, 1);                          /* version */
+    le32(header + 8, snap_version);               /* version (1 or 2) */
     le32(header + 16, (uint32_t)height);          /* anchor height */
     le64(header + 24, count);
     le64(header + 32, (uint64_t)total_supply);
