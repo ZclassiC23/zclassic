@@ -42,13 +42,45 @@ isolated fixtures, or consenting peers.
 
 | Component | Purpose | Safety boundary |
 |-----------|---------|-----------------|
-| Embedded Tor | Publish the operator's own explorer/API as a hidden service | `-tor` is explicit; test harnesses disable Tor |
+| Embedded Tor | Publish the operator's own explorer/API as a hidden service | `-tor` is explicit; opt-in build (default links a stub, onion off); test harnesses disable Tor |
 | P2P networking and peer scoring | Implement the public ZClassic node protocol | Peer policy protects consensus and network health |
 | Wallet and key code | Local transparent/Sapling wallet operation | Diagnostics must not return private key material |
 | MCP tools | Local typed operator API for AI-assisted node operation | Destructive tools are explicit and middleware-gated |
 | `zcl_sql` | Incident-response inspection of local `node.db` | SELECT-only, semicolon-rejected, limited, and rate-gated |
 | Fuzzers, chaos, kill-9 harnesses | Find crashes and recovery bugs in this codebase | Isolated datadirs and ports; no live-node mutation |
 | Atomic swap and market code | Application protocol scaffolding | Settlement gaps are documented; scaffolding is not claimed complete |
+
+## Shielded transaction validation posture
+
+This is stated explicitly because an auditor reading the source will find
+`return true` in a shielded-validation helper and should know what it does and
+does not mean.
+
+- **Nullifier double-spend is enforced** on the live block-application (reducer
+  fold) path — `utxo_apply_check_and_insert_nullifiers()`
+  (`app/jobs/src/utxo_apply_nullifiers.c`): a two-pass check rejects a nullifier
+  reused against the durable set or within the same block, then inserts the
+  block's nullifiers only after it validates. The
+  `coins_view_cache_have_joinsplit_requirements()` stub
+  (`lib/coins/src/coins_view.c`, `return true`) is an **interface placeholder**;
+  it is not the enforcement point.
+- **Groth16 spend/output proofs, the binding signature, and the JoinSplit
+  Ed25519 signature are checkpoint-gated**, equivalent to Bitcoin Core's
+  `-assumevalid`. Below the highest in-binary PoW checkpoint (height 3,100,000;
+  `lib/chain/src/chainparams.c`) the node trusts PoW-finalized history and does
+  not re-verify these proofs on the connect path; an optional background pass
+  (`-nobgvalidation` to disable) re-checks them. Above the checkpoint, near the
+  tip, proofs are verified.
+- **Anchor (note-commitment-tree root) membership is not checked independently.**
+  It is certified *implicitly* by the Groth16 proof, whose circuit constrains the
+  Merkle path of the commitment to equal the claimed anchor
+  (`lib/sapling/src/sapling_circuit.c`). It therefore carries the same gating as
+  proof verification above.
+
+Net: a reorg cannot exceed the bounded reorg depth, so checkpointed history is
+immutable by PoW; the practical exposure is the same as any `assumevalid`-style
+node. Independent (non-`assumevalid`) anchor-membership verification on the
+connect path is tracked as a hardening item, not a claimed property.
 
 ## Concrete safeguards
 

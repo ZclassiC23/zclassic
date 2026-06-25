@@ -255,7 +255,13 @@ systemctl --user start zclassic23
 
 ### Onion Hidden Service Hosting
 
-When `-tor` is enabled, zclassic23 embeds a modified Tor (RhettCreighton/tor fork with dynhost). The node:
+**Opt-in build:** the default binary links a Tor *stub* (`vendor/tor_stub.c`), so
+`-tor` runs the node without an onion and logs that Tor is disabled. The real
+onion requires building the `vendor/tor` submodule (`git submodule update --init
+vendor/tor`, then build per `docs/BUILD.md`); the Makefile auto-links
+`vendor/tor/libtor.a` when present. The owner's live node runs the real build.
+
+When `-tor` is enabled (with the real Tor built), zclassic23 embeds a modified Tor (RhettCreighton/tor fork with dynhost). The node:
 
 1. Bootstraps Tor as a pthread inside the process
 2. Generates an ephemeral .onion address (with optional vanity prefix)

@@ -73,12 +73,20 @@ rebuilds). Per-library sources, versions, and hashes are in
 
 ```bash
 build/bin/zclassic23                                  # start
-build/bin/zclassic23 -tor                             # + .onion
+build/bin/zclassic23 -tor                             # + .onion (opt-in build)
 build/bin/zclassic23 --importblockindex ~/.zclassic   # fast header import from
                                                       # legacy data, then a normal
                                                       # boot auto-links ~/.zclassic
                                                       # (opt out: -nolegacyimport)
 ```
+
+> **The onion service is an opt-in build.** The default binary links a Tor
+> *stub*, so `-tor` runs the node normally **without** an onion and logs that Tor
+> is disabled. To enable the real in-process hidden service, build the bundled
+> Tor fork — `git submodule update --init vendor/tor`, then build it per
+> [`docs/BUILD.md`](docs/BUILD.md) — and the Makefile auto-links it
+> (`build/bin/zclassic23 -tor` then publishes a `.onion`, visible in
+> `zcl_status`).
 
 Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
 `18232`. To run alongside a local `zclassicd` (which holds `8033`), use
@@ -162,8 +170,11 @@ Operator flags (`-externalip`, `-addnode`) go in `~/.config/zclassic23/env` (cop
 `deploy/zclassic23.env.example`), not the tracked unit. `zcl-rpc` honors
 `ZCL_RPCPORT` (default 18232) and `ZCL_DATADIR` (for the `.cookie`).
 
-**Bootstrap:** DNS seeds `dnsseed.zslp.org`, `mainnet.zclassic.org`
-(prefer DNS — hardcoded IP seeds rot).
+**Bootstrap:** no DNS seeders — the historical ZCL DNS names
+(`dnsseed.zslp.org`, `mainnet.zclassic.org`) no longer resolve, so the node
+ships with hardcoded MagicBean IP seed nodes plus Tor `.onion` directory seeds.
+Add your own onion seeds (one `.onion` per line) in
+`~/.config/zclassic23/onion-seeds` to bootstrap without DNS or fixed IPs.
 
 ## Documentation
 
