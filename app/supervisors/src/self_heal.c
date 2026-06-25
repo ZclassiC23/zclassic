@@ -5,6 +5,8 @@
 
 #include "framework/condition.h"
 #include "services/service_state_driver.h"
+#include "services/sticky_escalator.h"
+#include "util/blocker.h"
 #include "supervisors/domains.h"
 #include "util/supervisor.h"
 
@@ -25,6 +27,15 @@ static void self_heal_tick(struct liveness_contract *c)
     (void)c;
     if (!g_ms) return;
     condition_engine_tick();
+    /* Wire the previously-dead blocker escape edge: dispatch any blocker whose
+     * escape_deadline has lapsed (blocker_supervisor_sweep had ONLY test
+     * callers before this). Edge-triggered + rate-limited inside the sweep. */
+    (void)blocker_supervisor_sweep();
+    /* Drive the top-level always-terminating remedy ladder on the 5 s self-heal
+     * cadence (the escalator's own 30 s supervisor tick is the backstop if this
+     * driver stalls). No-op while the ladder is disarmed and there is no
+     * unresolved CRITICAL backlog. */
+    sticky_escalator_drive();
     /* Drive the canonical operational mode from real progress (sync gap +
      * active repair Conditions) right after the conditions run. Pure
      * observability/state — never touches the chain or a consensus gate. */

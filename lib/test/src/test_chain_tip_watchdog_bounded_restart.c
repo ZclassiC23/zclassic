@@ -136,12 +136,19 @@ int test_chain_tip_watchdog_bounded_restart(void)
         /* We paged on CAP+1 and CAP+2 (two over-cap escalations). */
         WD_CHECK("paged operator on each over-cap escalation",
                  operator_pages == 2);
-        /* The EV_OPERATOR_NEEDED event is emitted live on every page,
-         * regardless of the per-process counter resets, so the observer
-         * sees BOTH pages — this is the cross-restart paging signal a
-         * human/MCP would actually receive. */
-        WD_CHECK("EV_OPERATOR_NEEDED emitted once per over-cap page",
-                 atomic_load(&g_operator_events) == 2);
+        /* sticky-node-plan #1: the watchdog no longer EMITS a terminal
+         * EV_OPERATOR_NEEDED on an over-cap / deterministic stall. It hands
+         * the wedge to the always-terminating remedy escalator
+         * (sticky_escalator_note_stall → EV_RECOVERY_ACTION) instead of
+         * dead-ending at a human. The fires_operator_needed counter is kept
+         * as a diagnostic "ladder engaged" bit (asserted below), but the
+         * terminal page event is NOT emitted here — so the EV_OPERATOR_NEEDED
+         * observer sees ZERO. (The escalator's own non-latching cycling page
+         * is the only remaining EV_OPERATOR_NEEDED source, after the ladder
+         * cycles — out of scope for this watchdog-seam test.) */
+        WD_CHECK("watchdog does NOT emit terminal EV_OPERATOR_NEEDED "
+                 "(handed to escalator)",
+                 atomic_load(&g_operator_events) == 0);
 
         struct chain_tip_watchdog_stats s;
         chain_tip_watchdog_get_stats(&s);
@@ -364,8 +371,14 @@ int test_chain_tip_watchdog_bounded_restart(void)
                  s.fires_operator_needed == 1);
         WD_CHECK("deterministic stall requested no shutdown (0 restart fires)",
                  s.fires_restart == 0);
-        WD_CHECK("deterministic EV_OPERATOR_NEEDED emitted once",
-                 atomic_load(&g_operator_events) == 1);
+        /* sticky-node-plan #1: a deterministic stall is now HANDED to the
+         * always-terminating remedy escalator (no terminal EV_OPERATOR_NEEDED
+         * emitted by the watchdog — that was the human dead-end S2 forbids).
+         * The fires_operator_needed counter still bumps (diagnostic, asserted
+         * above), but the EV_OPERATOR_NEEDED observer sees ZERO from this seam. */
+        WD_CHECK("deterministic stall does NOT emit terminal "
+                 "EV_OPERATOR_NEEDED (handed to escalator)",
+                 atomic_load(&g_operator_events) == 0);
 
         progress_store_close();
         test_cleanup_tmpdir(dir);

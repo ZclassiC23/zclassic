@@ -37,6 +37,8 @@
 #include "chain/chainparams.h"
 #include "core/uint256.h"
 #include "coins/coins_view.h"
+#include "services/sticky_escalator.h"
+#include "util/blocker.h"
 #include "validation/process_block.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "storage/disk_block_io.h"
@@ -121,6 +123,24 @@ void worker_on_stall(struct liveness_contract *c)
     LOG_WARN("boot", "[supervisor] %s stall reason=%s", name, reason);
     event_emitf(EV_RECOVERY_ACTION, 0,
                 "action=worker-stall worker=%s reason=%s", name, reason);
+    /* Previously this handler ONLY logged + emitted an event (a dead remedy
+     * edge — sticky-node-plan #10). Now raise a TRANSIENT typed blocker for the
+     * stalled worker AND arm the always-terminating remedy escalator so the
+     * stall enters the ladder instead of dead-ending. The blocker is transient
+     * (a stalled helper thread is recoverable by re-derivation / restart), with
+     * a short escape deadline so blocker_supervisor_sweep (now driven from the
+     * self-heal tick) can dispatch an escape if one is registered. */
+    {
+        struct blocker_record br;
+        char id[BLOCKER_ID_MAX];
+        snprintf(id, sizeof(id), "worker.stall.%s", name);
+        if (blocker_init(&br, id, "boot.background_workers",
+                         BLOCKER_TRANSIENT, reason)) {
+            br.escape_deadline_secs = 60;
+            (void)blocker_set(&br);
+        }
+    }
+    sticky_escalator_note_stall(name);
 }
 
 /* Register a single worker contract. Idempotent: supervisor_start and
@@ -498,7 +518,13 @@ void boot_join_tx_index_service(struct boot_svc_ctx *svc)
 
 /* ── Helper threads ────────────────────────────────────────── */
 
-/* Watchdog: detect stuck chain and clear BLOCK_FAILED to allow retry. */
+/* Watchdog: detect a stuck chain and clear ONLY the TRANSIENT failure cause
+ * (BLOCK_FAILED_CHILD with no BLOCK_FAILED_VALID of its own) on the next
+ * block, so a child masked solely by an ancestor's now-cleared failure can be
+ * retried. A block carrying its OWN BLOCK_FAILED_VALID is a deterministic,
+ * self-attributed verdict (bad PoW / bad sapling root / consensus reject) that
+ * a blind retry every 300s would re-admit as a forgery — leave it for the
+ * re-derivation invariant (sticky-node plan #2/#11) to repair from peers. */
 static void watchdog_check_stuck(struct boot_svc_ctx *svc)
 {
     static int64_t last_height_change = 0;
@@ -513,12 +539,12 @@ static void watchdog_check_stuck(struct boot_svc_ctx *svc)
         return;
     }
 
-    /* No progress for 5 minutes — try clearing BLOCK_FAILED on next block */
+    /* No progress for 5 minutes — try clearing the TRANSIENT failure cause on
+     * the next block. We clear BLOCK_FAILED_CHILD only when the block does NOT
+     * carry BLOCK_FAILED_VALID: a child failure can be stale once its ancestor
+     * was repaired, whereas a self-attributed VALID failure is deterministic
+     * and must NOT be blindly un-failed (that re-admits a forgery). */
     if (last_height_change > 0 && now - last_height_change > 300 && h > 100) {
-        fprintf(stderr, "WATCHDOG: stuck at h=%d for %lld seconds. "
-                "Clearing BLOCK_FAILED on h=%d to retry.\n",
-                h, (long long)(now - last_height_change), h + 1);
-
         struct block_index *next = active_chain_at(
             &svc->state->chain_active, h + 1);
         if (!next) {
@@ -528,16 +554,30 @@ static void watchdog_check_stuck(struct boot_svc_ctx *svc)
             while (block_map_next(&svc->state->map_block_index,
                                    &iter, NULL, &bi)) {
                 if (bi && bi->nHeight == h + 1 &&
-                    (bi->nStatus & BLOCK_FAILED_MASK)) {
-                    bi->nStatus &= ~BLOCK_FAILED_MASK;
-                    fprintf(stderr, "WATCHDOG: cleared BLOCK_FAILED on "
-                            "h=%d\n", bi->nHeight);
+                    (bi->nStatus & BLOCK_FAILED_CHILD) &&
+                    !(bi->nStatus & BLOCK_FAILED_VALID)) {
+                    bi->nStatus &= ~BLOCK_FAILED_CHILD;
+                    fprintf(stderr, "WATCHDOG: stuck at h=%d for %llds; "
+                            "cleared transient BLOCK_FAILED_CHILD on h=%d "
+                            "to retry\n", h,
+                            (long long)(now - last_height_change),
+                            bi->nHeight);
                 }
             }
-        } else if (next->nStatus & BLOCK_FAILED_MASK) {
-            next->nStatus &= ~BLOCK_FAILED_MASK;
-            fprintf(stderr, "WATCHDOG: cleared BLOCK_FAILED on h=%d\n",
-                    next->nHeight);
+        } else if ((next->nStatus & BLOCK_FAILED_CHILD) &&
+                   !(next->nStatus & BLOCK_FAILED_VALID)) {
+            next->nStatus &= ~BLOCK_FAILED_CHILD;
+            fprintf(stderr, "WATCHDOG: stuck at h=%d for %llds; cleared "
+                    "transient BLOCK_FAILED_CHILD on h=%d to retry\n", h,
+                    (long long)(now - last_height_change), next->nHeight);
+        } else if (next->nStatus & BLOCK_FAILED_VALID) {
+            /* Deterministic self-attributed failure: a blind clear would
+             * re-admit a forgery. Leave it for the re-derivation invariant
+             * (re-pull bytes from peers + re-run the stage) to repair. */
+            fprintf(stderr, "WATCHDOG: stuck at h=%d for %llds; h=%d carries "
+                    "BLOCK_FAILED_VALID (deterministic) — NOT clearing; "
+                    "deferring to re-derivation\n", h,
+                    (long long)(now - last_height_change), next->nHeight);
         }
         last_height_change = now; /* don't spam — wait another 5 min */
     }

@@ -190,11 +190,33 @@ static void init_main_params(void)
         p->nFixedSeeds++;
     }
 
-    /* Tor .onion seed nodes — bootstrap without DNS */
-    memcpy(p->onionSeeds[0],
-           "zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion", 63);
-    p->onionSeedPorts[0] = 18033;
-    p->nOnionSeeds = 1;
+    /* Tor .onion seed nodes — bootstrap without DNS. Each serves
+     * /directory.json (its own .onion + advertised clearnet IP/height),
+     * so even ONE reachable onion seed re-seeds clearnet addrman. More
+     * than one removes the single-point-of-failure: a recovering or
+     * partitioned node still finds a supplier if any one seed is up.
+     * Operators can extend this set at runtime via
+     * ~/.config/zclassic23/onion-seeds (loaded first, no rebuild). */
+    {
+        static const char *const kOnionSeeds[] = {
+            "zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion",
+            /* Additional first-party onion-directory seeds are appended
+             * here as they come online; the operator-seed file above is
+             * the zero-rebuild path for community-run directory nodes. */
+        };
+        size_t n = 0;
+        for (size_t i = 0;
+             i < sizeof(kOnionSeeds) / sizeof(kOnionSeeds[0]) &&
+             n < MAX_FIXED_SEEDS; i++) {
+            size_t len = strlen(kOnionSeeds[i]);
+            if (len >= sizeof(p->onionSeeds[0])) continue;
+            memcpy(p->onionSeeds[n], kOnionSeeds[i], len);
+            p->onionSeeds[n][len] = '\0';
+            p->onionSeedPorts[n] = 18033;
+            n++;
+        }
+        p->nOnionSeeds = n;
+    }
 
     /* t1 addresses */
     p->base58Prefixes[B58_PUBKEY_ADDRESS][0] = 0x1C;

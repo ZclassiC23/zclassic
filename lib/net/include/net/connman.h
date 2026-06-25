@@ -120,6 +120,16 @@ void connman_open_connection(struct connman *cm,
  * the addrman selection without waiting for the adaptive timer. */
 void connman_kick_seed_discovery(struct connman *cm);
 
+/* Peer-of-last-resort: synchronously fetch /directory.json from every known
+ * onion-directory seed (operator file ~/.config/zclassic23/onion-seeds, then
+ * the chainparams onionSeeds) plus any known zcl23 .onion peers, harvesting
+ * their advertised clearnet IPs into addrman. Used by the peer_floor_violated
+ * remedy when outbound count has collapsed to zero: a recovering/partitioned
+ * node MUST still find a supplier without a human. Blocking (per-seed 60s);
+ * call only from a dedicated discovery/condition thread, never a hot path.
+ * No-op in -connect mode or when Tor is not ready. Safe from any thread. */
+void connman_kick_onion_seeds(struct connman *cm);
+
 void connman_set_onion_peer_discovery(struct connman *cm,
                                       const char *datadir,
                                       onion_peer_discover_fn discover);

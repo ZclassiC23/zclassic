@@ -106,25 +106,28 @@ static void *build_snapshot_offer_thread(void *arg)
 
     offer_checkpoint(&checkpoint);
 
-    /* Wave L (Goal 3 — fast secure sync): snapshot export defaults to
-     * ON when file_service is enabled. Every zclassic23 node that runs
-     * a file service contributes a shareable consensus_snapshot.db so
-     * fresh peers can fast-sync without a central download host.
+    /* Sticky/global-sync (Lane F #9c): ANY at-tip zclassic23 node builds
+     * and offers a snapshot, not only file_service-profile nodes. The more
+     * nodes that contribute a shareable consensus_snapshot.db, the more
+     * reliably a recovering/behind node finds a supplier from the P2P
+     * network alone — no central download host, no co-located oracle. The
+     * offer is still only PUBLISHED once a disk-backed serving buffer is
+     * ready (see snapshot_serving_ready below), so this only widens who
+     * BUILDS, never who falsely advertises.
      *
      * Cost: SQLite vacuum allocates transiently — typically a few GB
      * on archival nodes, sub-second to a few seconds on healthy hosts.
      * Operators on memory-constrained boxes can opt out by setting
      * ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=0.
-     *
-     * Build only fires when file_service is enabled (boot profile);
-     * other profiles still skip the export. */
+     */
     bool file_service_enabled =
         svc && boot_profile_has_file_service(svc->app_ctx);
     const char *export_snapshot =
         getenv("ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT");
     bool export_opt_out = export_snapshot &&
                           strcmp(export_snapshot, "0") == 0;
-    if (file_service_enabled && !export_opt_out) {
+    /* Build on any profile unless explicitly opted out. */
+    if (!export_opt_out) {
         printf("Exporting consensus snapshot (no wallet data)...\n");
         struct zcl_result export_result =
             consensus_snapshot_export_service_run(datadir);
@@ -136,10 +139,11 @@ static void *build_snapshot_offer_thread(void *arg)
             printf("Consensus snapshot export skipped/failed (%s)\n",
                    export_result.message);
         }
-    } else if (file_service_enabled) {
+    } else {
         printf("Consensus snapshot export skipped on boot "
                "(ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=0 — opt-out)\n");
     }
+    (void)file_service_enabled;
 
     offer_checkpoint(&checkpoint);
 
