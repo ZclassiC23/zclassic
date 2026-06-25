@@ -177,8 +177,46 @@ int reducer_kick_unbudgeted(struct chain_activation_controller *ctl)
     return advanced;
 }
 
+/* A failed validate_headers row whose reason is a pure header-source HASH
+ * disagreement (the on-disk/index header pinned at a height differs from the
+ * header source we validated) is NOT proof the peer is malicious — at a
+ * CONTESTED height it is exactly the signature of a competing valid-PoW fork.
+ * Distinguish it from genuinely-invalid reasons (high-hash, invalid-solution,
+ * bad-equihash-solution-size, ...) so the ban classification can be softened
+ * for the fork case ONLY. Validity is unaffected: a hash-mismatch row never
+ * adopts the block here regardless of this classification. */
+static bool reducer_reason_is_hash_mismatch(const char *reason)
+{
+    return reason && reason[0] && strstr(reason, "hash-mismatch") != NULL;
+}
+
+/* CONTESTED height = the block_index holds more than one entry at `height`
+ * AND at least one of those entries already carries BLOCK_HAVE_DATA (i.e. a
+ * real body for a competitor is on disk). That is the structural signature of
+ * a fork at the height, distinct from a single pinned bodiless/failed orphan.
+ * Read-only scan of the in-memory index; safe under the reducer drive. */
+static bool reducer_height_is_contested(struct main_state *ms, int height)
+{
+    if (!ms)
+        return false;
+
+    int entries = 0;
+    bool any_have_data = false;
+    size_t iter = 0;
+    struct block_index *bi = NULL;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+        if (!bi || bi->nHeight != height)
+            continue;
+        entries++;
+        if (bi->nStatus & BLOCK_HAVE_DATA)
+            any_have_data = true;
+    }
+    return entries > 1 && any_have_data;
+}
+
 /* Map freshly-written stage log rows for `height`/`hash` into `out`. */
-static bool reducer_read_back_verdict(int height,
+static bool reducer_read_back_verdict(struct main_state *ms,
+                                      int height,
                                       const struct uint256 *hash,
                                       struct validation_state *out)
 {
@@ -187,7 +225,20 @@ static bool reducer_read_back_verdict(int height,
     struct validate_headers_window_report rep;
     if (validate_headers_stage_window_report(height, height, &rep) &&
         rep.failed_count > 0) {
-        validation_state_dos(out, 100, false, REJECT_INVALID,
+        /* Part B ban softening: at a CONTESTED height (>1 index entry, one
+         * with a real body on disk) a header-source hash-mismatch is a
+         * competing valid-PoW FORK, not a malicious block. The body already
+         * passed the stateless check_block gate (step 1) before reaching this
+         * read-back, so PoW/malformedness is NOT the cause. Drop the DoS to 0
+         * so the peer serving the real chain is not banned. The block is still
+         * NOT adopted (return false) — only the ban classification changes.
+         * Genuinely-invalid reasons (high-hash, invalid-solution, ...) keep
+         * dos=100; this is download/peer-ban policy, not a validity predicate. */
+        int dos = 100;
+        if (reducer_reason_is_hash_mismatch(rep.first_fail_reason) &&
+            reducer_height_is_contested(ms, height))
+            dos = 0;
+        validation_state_dos(out, dos, false, REJECT_INVALID,
                              rep.first_fail_reason[0]
                                  ? rep.first_fail_reason
                                  : "header-validation-failed",
@@ -231,14 +282,23 @@ static bool reducer_read_back_verdict(int height,
     return false;
 }
 
-static bool reducer_header_rejected_at(int height, struct validation_state *out)
+static bool reducer_header_rejected_at(struct main_state *ms, int height,
+                                       struct validation_state *out)
 {
     struct validate_headers_window_report rep;
     if (!validate_headers_stage_window_report(height, height, &rep) ||
         rep.failed_count == 0)
         return false;
 
-    validation_state_dos(out, 100, false, REJECT_INVALID,
+    /* Part B ban softening (same rule as reducer_read_back_verdict): a
+     * header-source hash-mismatch at a contested height is a fork, not a
+     * malicious block — drop DoS to 0 so the real-chain peer is not banned.
+     * The header is still REJECTED (return true) — only ban policy changes. */
+    int dos = 100;
+    if (reducer_reason_is_hash_mismatch(rep.first_fail_reason) &&
+        reducer_height_is_contested(ms, height))
+        dos = 0;
+    validation_state_dos(out, dos, false, REJECT_INVALID,
                          rep.first_fail_reason[0]
                              ? rep.first_fail_reason
                              : "header-validation-failed",
@@ -247,6 +307,7 @@ static bool reducer_header_rejected_at(int height, struct validation_state *out)
 }
 
 static bool reducer_pending_body_is_accepted(
+        struct main_state *ms,
         const struct block_index *bi,
         struct validation_state *out)
 {
@@ -254,7 +315,7 @@ static bool reducer_pending_body_is_accepted(
         (bi->nStatus & BLOCK_FAILED_MASK))
         return false;
 
-    if (reducer_header_rejected_at(bi->nHeight, out))
+    if (reducer_header_rejected_at(ms, bi->nHeight, out))
         return false;
 
     /* Consensus gate: the live tip is accepted ONLY if it cleared utxo_apply
@@ -297,7 +358,7 @@ static bool reducer_persist_ingested_body_locked(
     if (bi->nStatus & BLOCK_HAVE_DATA)
         return true;
 
-    if (reducer_header_rejected_at(bi->nHeight, out))
+    if (reducer_header_rejected_at(ctl->ms, bi->nHeight, out))
         return false;
 
     if (!ctl->datadir || !ctl->datadir[0] || !ctl->params) {
@@ -529,13 +590,13 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     zcl_mutex_unlock(&ctl->mutex);
 
     /* (4) Read back the verdict from the freshly-written log rows. */
-    if (reducer_read_back_verdict(target_h, &block_hash, out))
+    if (reducer_read_back_verdict(ctl->ms, target_h, &block_hash, out))
         return true;
 
     /* Pending fallback: accept ONLY the live active tip (ingested == tip,
      * snapshotted under the lock) — a fork can't borrow another block's row. */
     if (ingested && ingested == tip &&
-        reducer_pending_body_is_accepted(ingested, out))
+        reducer_pending_body_is_accepted(ctl->ms, ingested, out))
         return true;
 
     /* On a regtest on-demand (generate/submitblock) REJECT, dump each stage's

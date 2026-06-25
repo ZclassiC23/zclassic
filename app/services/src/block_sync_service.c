@@ -405,6 +405,31 @@ void syncsvc_apply_stall_recovery(const struct sync_stall_recovery *recovery,
     (void)cleared_blocks;
 }
 
+/* Rank a tip-child candidate for gap-fill targeting. At a CONTESTED next
+ * height the block_index can hold more than one child of the tip — typically
+ * the real chain's block (a body already on disk) alongside a pinned bodiless
+ * orphan. Plain max-chainwork can pick the bodiless orphan and then gap-fill
+ * re-requests that un-fetchable hash forever. Prefer, in order:
+ *   1. an entry that ALREADY has a body (BLOCK_HAVE_DATA) — the data variant,
+ *   2. a non-FAILED entry over a FAILED one,
+ *   3. higher chain work.
+ * This is download-targeting policy only; it never changes block validity. */
+static int syncsvc_tip_child_rank(const struct block_index *bi)
+{
+    int rank = 0;
+    /* A FAILED entry (the pinned dead orphan at a contested height) is the
+     * worst target — it must never out-rank a fork that could still advance
+     * the chain, so not-failed dominates. Among non-failed candidates, prefer
+     * one that already has a body on disk (the real chain at a contested
+     * height) over a bodiless entry that still needs a (possibly un-fetchable)
+     * fetch. */
+    if (!(bi->nStatus & BLOCK_FAILED_MASK))
+        rank += 2;
+    if (bi->nStatus & BLOCK_HAVE_DATA)
+        rank += 1;
+    return rank;
+}
+
 static struct block_index *syncsvc_find_tip_child(struct main_state *ms,
                                                   struct block_index *tip)
 {
@@ -412,6 +437,7 @@ static struct block_index *syncsvc_find_tip_child(struct main_state *ms,
         return NULL;
 
     struct block_index *best = NULL;
+    int best_rank = -1;
     int next_height = tip->nHeight + 1;
     size_t iter = 0;
     struct block_index *bi = NULL;
@@ -419,9 +445,13 @@ static struct block_index *syncsvc_find_tip_child(struct main_state *ms,
         if (!bi || bi->nHeight != next_height || bi->pprev != tip ||
             !bi->phashBlock)
             continue;
-        if (!best || arith_uint256_compare(&bi->nChainWork,
-                                           &best->nChainWork) > 0)
+        int rank = syncsvc_tip_child_rank(bi);
+        if (!best || rank > best_rank ||
+            (rank == best_rank &&
+             arith_uint256_compare(&bi->nChainWork, &best->nChainWork) > 0)) {
             best = bi;
+            best_rank = rank;
+        }
     }
     return best;
 }
