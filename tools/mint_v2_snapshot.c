@@ -38,6 +38,12 @@
 #include <stdint.h>
 #include <signal.h>
 
+#include <sqlite3.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "validation/main_state.h"
@@ -47,6 +53,109 @@
 #include "services/block_index_loader.h"
 #include "controllers/sync_controller.h"
 #include "core/serialize.h"
+#include "core/uint256.h"
+#include "primitives/block.h"
+
+/* Read the REAL hashFinalSaplingRoot from a block body on disk (node.db's
+ * blocks.sapling_root is a zeroed projection artifact, so we cannot trust it).
+ * Returns true and fills root32 on success. */
+static bool read_body_sapling_root(const char *datadir, int file_num,
+                                   uint32_t data_pos, uint8_t root32[32])
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat", datadir, file_num);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || (off_t)data_pos >= st.st_size) {
+        close(fd);
+        return false;
+    }
+    void *mp = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (mp == MAP_FAILED) return false;
+    bool ok = false;
+    struct block blk;
+    block_init(&blk);
+    struct byte_stream s;
+    stream_init_from_data(&s, (uint8_t *)mp + data_pos,
+                          (size_t)st.st_size - data_pos);
+    if (block_deserialize(&blk, &s)) {
+        memcpy(root32, blk.header.hashFinalSaplingRoot.data, 32);
+        ok = true;
+    }
+    block_free(&blk);
+    munmap(mp, (size_t)st.st_size);
+    return ok;
+}
+
+/* Top up the in-memory block-index map by walking the CHILD chain FORWARD from
+ * `start` (the flat block-index tip) up to height `to_h`, using node.db `blocks`
+ * (the stale flat block_index.bin does not reach the live coins frontier).
+ *
+ * The contested wedge region makes node.db's stored `height` labels unreliable
+ * (a row at stored height H may have a parent that is NOT the row at stored
+ * H-1), so we follow prev_hash linkage instead: at each step find the child row
+ * whose prev_hash == the current block's hash, insert it with pprev linked + the
+ * REAL hashFinalSaplingRoot read from the body (node.db's is zeroed), and assign
+ * a sequential height. Returns the count inserted, -1 on error. */
+static long topup_forward_from_node_db(struct main_state *ms, struct node_db *ndb,
+                                       const char *datadir,
+                                       struct block_index *start, int to_h)
+{
+    if (!start || start->nHeight >= to_h) return 0;
+
+    sqlite3_stmt *child = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT hash, file_num, data_pos, status, num_tx "
+            "FROM blocks WHERE prev_hash = ? LIMIT 1",
+            -1, &child, NULL) != SQLITE_OK) {
+        fprintf(stderr, "topup: prepare failed: %s\n", sqlite3_errmsg(ndb->db));
+        return -1;
+    }
+
+    long inserted = 0;
+    struct block_index *cur = start;
+    int next_h = start->nHeight + 1;
+    while (next_h <= to_h) {
+        sqlite3_reset(child);
+        sqlite3_clear_bindings(child);
+        sqlite3_bind_blob(child, 1, cur->hashBlock.data, 32, SQLITE_STATIC);
+        if (sqlite3_step(child) != SQLITE_ROW) {
+            fprintf(stderr, "topup: no child of h=%d (hash chain ends before "
+                    "seed h=%d)\n", cur->nHeight, to_h);
+            inserted = -1;
+            break;
+        }
+        const void *hb = sqlite3_column_blob(child, 0);
+        if (!hb || sqlite3_column_bytes(child, 0) < 32) { inserted = -1; break; }
+        int file_num = sqlite3_column_int(child, 1);
+        uint32_t data_pos = (uint32_t)sqlite3_column_int64(child, 2);
+        int status = sqlite3_column_int(child, 3);
+        int num_tx = sqlite3_column_int(child, 4);
+
+        struct uint256 hash;
+        memcpy(hash.data, hb, 32);
+        struct block_index *bi =
+            chainstate_insert_block_index((struct chainstate *)ms, &hash);
+        if (!bi) { inserted = -1; break; }
+        bi->nHeight = next_h;
+        bi->nFile = file_num;
+        bi->nDataPos = data_pos;
+        bi->nStatus = (uint32_t)status;
+        bi->nTx = num_tx;
+        bi->pprev = cur;
+        uint8_t real_root[32];
+        if (read_body_sapling_root(datadir, file_num, data_pos, real_root))
+            memcpy(bi->hashFinalSaplingRoot.data, real_root, 32);
+
+        cur = bi;
+        next_h++;
+        inserted++;
+    }
+    sqlite3_finalize(child);
+    return inserted;
+}
 
 /* Provided by the node binary's main.c; this standalone tool defines its own
  * so the shared object set links. */
@@ -93,9 +202,46 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* (3) find the highest-work block in the map and install it as the active
-     * tip so active_chain_extend_window can densify the [..tip] window; then
-     * confirm the seed-height slot resolves. */
+    /* node_state home (opened early — the topup below reads node.db `blocks`). */
+    char ndb_path[1100];
+    snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", datadir);
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, ndb_path)) {
+        fprintf(stderr, "node_db_open(%s) failed\n", ndb_path);
+        return 1;
+    }
+
+    /* (3) the stale flat block_index.bin may stop below the coins frontier.
+     * Top up the [flat_tip+1 .. seed_h] window from node.db `blocks` (reading
+     * the REAL hashFinalSaplingRoot from each body) so the active chain reaches
+     * the seed height with verifiable roots. */
+    int flat_tip = -1;
+    struct block_index *flat_tip_bi = NULL;
+    {
+        size_t it = 0;
+        struct block_index *p = NULL;
+        while (block_map_next(&ms.map_block_index, &it, NULL, &p)) {
+            if (!p || !p->phashBlock) continue;
+            if (p->nHeight > flat_tip) { flat_tip = p->nHeight; flat_tip_bi = p; }
+        }
+    }
+    if (flat_tip < seed_h) {
+        fprintf(stderr, "[mint-v2] flat block_index tip h=%d < seed h=%d — "
+                "topping up FORWARD by prev_hash from node.db `blocks`...\n",
+                flat_tip, seed_h);
+        long up = topup_forward_from_node_db(&ms, &ndb, datadir,
+                                             flat_tip_bi, seed_h);
+        if (up < 0) {
+            fprintf(stderr, "topup failed\n");
+            node_db_close(&ndb);
+            return 1;
+        }
+        fprintf(stderr, "[mint-v2] topped up %ld block-index entries\n", up);
+    }
+
+    /* find the highest block in the map and install it as the active tip so
+     * active_chain_extend_window can densify the [..tip] window. */
     struct block_index *best = NULL;
     {
         size_t it = 0;
@@ -107,43 +253,64 @@ int main(int argc, char **argv)
     }
     if (!best) {
         fprintf(stderr, "block index map empty after load\n");
+        node_db_close(&ndb);
         return 1;
     }
     ms.pindex_best_header = best;
-    if (!active_chain_install_tip_slot(&ms.chain_active, best) ||
-        !active_chain_extend_window(&ms.chain_active, best)) {
-        fprintf(stderr, "failed to install/extend the active-chain window to "
-                "the header tip h=%d\n", best->nHeight);
-        return 1;
+
+    /* Diagnostic: walk pprev from the tip and report the first gap (a NULL
+     * pprev or a non-contiguous height step) so a densify failure is legible. */
+    {
+        struct block_index *w = best;
+        int prev_h = best->nHeight + 1;
+        while (w) {
+            if (w->nHeight != prev_h - 1) {
+                fprintf(stderr, "[mint-v2] pprev height step gap: %d -> %d\n",
+                        prev_h, w->nHeight);
+                break;
+            }
+            if (!w->pprev) {
+                if (w->nHeight != 0)
+                    fprintf(stderr, "[mint-v2] pprev chain breaks at h=%d "
+                            "(NULL pprev, not genesis)\n", w->nHeight);
+                break;
+            }
+            prev_h = w->nHeight;
+            w = w->pprev;
+        }
     }
 
-    const struct block_index *seed_bi =
-        active_chain_at(&ms.chain_active, seed_h);
-    if (!seed_bi) {
-        fprintf(stderr, "no block_index at seed height h=%d (header tip h=%d)\n",
+    /* Resolve the seed-height block by walking pprev from the map tip (no
+     * active-chain window needed yet). */
+    struct block_index *seed_bi_mut = best;
+    while (seed_bi_mut && seed_bi_mut->nHeight > seed_h)
+        seed_bi_mut = seed_bi_mut->pprev;
+    if (!seed_bi_mut || seed_bi_mut->nHeight != seed_h) {
+        fprintf(stderr, "no block_index at seed height h=%d (map tip h=%d)\n",
                 seed_h, best->nHeight);
+        node_db_close(&ndb);
         return 1;
     }
     uint8_t anchor_hash[32];
-    memcpy(anchor_hash, seed_bi->hashBlock.data, 32);
+    memcpy(anchor_hash, seed_bi_mut->hashBlock.data, 32);
 
-    /* Move the visible active tip DOWN to the seed height so
-     * sapling_tree_rebuild's endpoint resolves to seed_h (it caps to the
-     * coins-applied frontier when that is lower; the explicit window tip here
-     * ensures active_chain_height == seed_h). */
-    struct block_index *seed_bi_mut =
-        block_map_find(&ms.map_block_index, &seed_bi->hashBlock);
-    if (seed_bi_mut && !active_chain_move_window_tip(&ms.chain_active, seed_bi_mut))
-        fprintf(stderr, "WARN: could not move window tip to seed h=%d "
-                "(rebuild caps to coins-applied frontier)\n", seed_h);
-
-    /* (4) node_state home. */
-    char ndb_path[1100];
-    snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", datadir);
-    struct node_db ndb;
-    memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, ndb_path)) {
-        fprintf(stderr, "node_db_open(%s) failed\n", ndb_path);
+    /* Set the active tip AT the seed height and densify the full [0..seed_h]
+     * window (active_chain_move_window_tip -> active_chain_fill_window walks
+     * pprev to genesis). This is what sapling_tree_rebuild's per-height
+     * active_chain_at() reads, and it caps the rebuild endpoint to seed_h. */
+    if (!active_chain_move_window_tip(&ms.chain_active, seed_bi_mut)) {
+        fprintf(stderr, "failed to install+densify the active-chain window to "
+                "the seed height h=%d\n", seed_h);
+        node_db_close(&ndb);
+        return 1;
+    }
+    /* Sanity: a few historical slots must resolve (else the bodies would be
+     * skipped and the rebuild would produce a wrong root). */
+    if (!active_chain_at(&ms.chain_active, 476969) ||
+        !active_chain_at(&ms.chain_active, seed_h)) {
+        fprintf(stderr, "active-chain window did not densify (slot 476969 or "
+                "seed missing) — pprev chain incomplete\n");
+        node_db_close(&ndb);
         return 1;
     }
 
