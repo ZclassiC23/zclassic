@@ -414,6 +414,29 @@ int condition_engine_get_active_count(void)
     return n;
 }
 
+void condition_engine_rebaseline_clocks(void)
+{
+    int64_t now = now_unix();
+    pthread_mutex_lock(&g_condition_mu);
+    for (int i = 0; i < g_condition_count; i++) {
+        struct condition_state *s =
+            (struct condition_state *)&g_conditions[i]->state;
+        /* Re-anchor the wall-keyed cadence fields to the post-jump "now" so a
+         * backward step does not freeze condition_due_for_remedy()'s backoff
+         * comparison (now - last_remedy_unix < backoff stays true forever) and
+         * a forward step does not make every backoff instantly elapse. We do
+         * NOT touch first_detect_unix / attempts — those are episode identity,
+         * not cadence. last_poll only moves forward (never rewinds a pending
+         * poll into the past). */
+        if (atomic_load(&s->last_remedy_unix) != 0)
+            atomic_store(&s->last_remedy_unix, now);
+        int64_t lp = atomic_load(&s->last_poll_unix);
+        if (lp == 0 || lp > now)
+            atomic_store(&s->last_poll_unix, now);
+    }
+    pthread_mutex_unlock(&g_condition_mu);
+}
+
 int condition_engine_get_unresolved_count(void)
 {
     int n = 0;

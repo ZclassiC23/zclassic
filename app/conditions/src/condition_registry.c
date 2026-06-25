@@ -31,6 +31,9 @@ void register_state_window_inconsistent(void);
 void register_mirror_divergence_located(void);
 void register_replay_canary_failed(void);
 
+void register_disk_full_pause(void);
+void register_clock_skew_reconcile(void);
+
 void condition_registry_register_all(void)
 {
     register_block_failed_mask_at_tip();
@@ -61,4 +64,6 @@ void condition_registry_register_all(void)
     register_state_window_inconsistent();
     register_mirror_divergence_located();
     register_replay_canary_failed();
+    register_disk_full_pause();
+    register_clock_skew_reconcile();
 }

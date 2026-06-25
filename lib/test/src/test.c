@@ -994,6 +994,8 @@ int main(void)
     failures += test_condition_engine();
     failures += test_utxo_activation_paused();
     failures += test_sync_watchdog_conditions();
+    { extern int test_sticky_conditions(void);
+      failures += test_sticky_conditions(); }
     failures += test_peer_snapshot_conditions();
     failures += test_snapshot_receive_stalled_condition();
     failures += test_snapshot_negotiation_stalled_condition();

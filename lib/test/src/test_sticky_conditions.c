@@ -1,0 +1,145 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Hermetic engine test for the two stickiness conditions (sticky-node-plan
+ * #13): disk_full_pause and clock_skew_reconcile. Drives each through the
+ * real condition engine: detect -> remedy -> witness -> cleared, and proves
+ * NEITHER latches operator_needed on its recoverable class (constraint b:
+ * no new give-up). The fault-injection spawn MATRIX (rows that need a real
+ * node) lives in tools/scripts/sticky_matrix.sh; this is its unit-level
+ * complement for the two rows that cannot be injected from outside the
+ * process (binary clock, mounted tmpfs). */
+
+#include "test/test_helpers.h"
+
+#include "conditions/clock_skew_reconcile.h"
+#include "conditions/disk_full_pause.h"
+#include "framework/condition.h"
+#include "platform/clock.h"
+#include "services/disk_monitor.h"
+
+#include <stdatomic.h>
+#include <stdint.h>
+#include <time.h>
+
+#define SC_CHECK(name, expr) do { \
+    printf("sticky_conditions: %s... ", (name)); \
+    if (expr) printf("OK\n"); \
+    else { printf("FAIL\n"); failures++; } \
+} while (0)
+
+/* ── Injected wall clock: monotonic stays real; we step wall on demand. ──
+ * IMPORTANT: monotonic_us must read the RAW clock directly (clock_gettime),
+ * NOT clock_now_monotonic_ns() — once this source is installed the latter
+ * routes back through monotonic_us, which would recurse infinitely (stack
+ * overflow / SIGKILL). The injected source only overrides the WALL clock. */
+static _Atomic int64_t g_inj_wall_unix;
+static int64_t inj_wall(void *user) { (void)user; return atomic_load(&g_inj_wall_unix); }
+static int64_t inj_mono(void *user)
+{
+    (void)user;
+    struct timespec ts;
+    /* RAW clock by necessity: platform.clock's reader routes back through THIS
+     * source once installed (would recurse infinitely). This fixture only
+     * overrides the WALL clock; monotonic must stay the real syscall. */
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)  // platform-ok:test-injected-wall-clock-source-must-not-recurse-monotonic
+        return 0;
+    return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
+}
+static struct platform_clock_source g_inj_src = { .monotonic_us = inj_mono,
+                                                  .wall_unix = inj_wall };
+
+int test_sticky_conditions(void);
+int test_sticky_conditions(void)
+{
+    int failures = 0;
+
+    /* ───────────────── clock_skew_reconcile ───────────────── */
+    {
+        condition_engine_reset_for_testing();
+        clock_skew_reconcile_test_reset();
+
+        /* Seed the injected wall clock at a known epoch and install it. */
+        atomic_store(&g_inj_wall_unix, 1700000000);
+        platform_clock_set_source(&g_inj_src);
+
+        register_clock_skew_reconcile();
+
+        /* Poll 1: seeds the baseline, no skew yet. */
+        condition_engine_tick();
+        SC_CHECK("clock_skew: no false-positive on first poll",
+                 condition_engine_get_active_count() == 0);
+
+        /* Inject a +1 hour wall jump (monotonic barely moved): a real step. */
+        atomic_store(&g_inj_wall_unix, 1700000000 + 3600);
+        condition_engine_tick();   /* detect fires; remedy + witness run */
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+                       "clock_skew_reconcile", &snap);
+        SC_CHECK("clock_skew: remedy ran on the injected jump",
+                 clock_skew_reconcile_test_remedy_calls() >= 1);
+        SC_CHECK("clock_skew: did NOT latch operator_needed (recoverable class)",
+                 got && !snap.operator_needed_emitted);
+
+        /* Steady the clock; the condition must clear (witness Δwall≈Δmono). */
+        condition_engine_tick();
+        SC_CHECK("clock_skew: clears once the clock is stable again",
+                 condition_engine_get_active_count() == 0);
+
+        platform_clock_clear_source();
+        condition_engine_reset_for_testing();
+        clock_skew_reconcile_test_reset();
+    }
+
+    /* ───────────────── disk_full_pause ───────────────── */
+    {
+        condition_engine_reset_for_testing();
+        disk_full_pause_test_reset();
+
+        /* Drive disk_monitor against a temp dir with tiny thresholds so we can
+         * flip CRITICAL on/off deterministically. refuse=huge -> CRITICAL;
+         * refuse=1 -> OK (any real fs has >=1 byte free). */
+        struct disk_monitor_config cfg;
+        disk_monitor_config_defaults(&cfg);
+        cfg.datadir = "/tmp";
+        cfg.warn_free_bytes = (int64_t)1 << 62;   /* always warn */
+        cfg.refuse_free_bytes = (int64_t)1 << 62; /* always CRITICAL */
+        cfg.poll_seconds = 3600;                  /* we poll_now manually */
+        (void)disk_monitor_start(&cfg);
+        disk_monitor_poll_now();
+        SC_CHECK("disk_full: monitor reports CRITICAL under impossible threshold",
+                 disk_monitor_is_critical());
+
+        register_disk_full_pause();
+        condition_engine_tick();   /* detect CRITICAL -> remedy */
+        SC_CHECK("disk_full: remedy ran while disk critical",
+                 disk_full_pause_test_remedy_calls() >= 1);
+        struct condition_runtime_snapshot dsnap;
+        bool dgot = condition_engine_get_registered_snapshot(
+                        "disk_full_pause", &dsnap);
+        SC_CHECK("disk_full: did NOT latch operator_needed (transient resource)",
+                 dgot && !dsnap.operator_needed_emitted);
+
+        /* Free space: lower the refuse threshold so the next poll is OK. */
+        disk_monitor_stop();
+        disk_monitor_config_defaults(&cfg);
+        cfg.datadir = "/tmp";
+        cfg.warn_free_bytes = 1;
+        cfg.refuse_free_bytes = 1;
+        cfg.poll_seconds = 3600;
+        (void)disk_monitor_start(&cfg);
+        disk_monitor_poll_now();
+        SC_CHECK("disk_full: monitor reports OK once space returns",
+                 !disk_monitor_is_critical());
+
+        condition_engine_tick();   /* detect false + witness -> cleared */
+        SC_CHECK("disk_full: condition clears once space returns",
+                 condition_engine_get_active_count() == 0);
+
+        disk_monitor_stop();
+        condition_engine_reset_for_testing();
+        disk_full_pause_test_reset();
+    }
+
+    printf("\n=== sticky_conditions: %d failure(s) ===\n", failures);
+    return failures;
+}
