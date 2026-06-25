@@ -3,6 +3,7 @@
 #include "framework/condition.h"
 
 #include "jobs/reducer_frontier.h"
+#include "jobs/block_header_emit.h"
 #include "jobs/stage_repair.h"
 #include "services/header_probe.h"
 #include "storage/progress_store.h"
@@ -19,6 +20,13 @@ static _Atomic int g_target_at_detect = -1;
 static _Atomic int g_hstar_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
+
+/* LANE D / #3b — file-scope forward declaration; defined after the remedy.
+ * Drops BLOCK_HAVE_DATA on the canonical block_index entry at `height` so the
+ * normal P2P getheaders/getdata sync path re-downloads the canonical
+ * header+body when the zclassicd oracle is unreachable (oracle-independent
+ * always-terminating fallback). */
+static void cure_request_peer_refetch(int height);
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_hstar_override = -1;
@@ -188,11 +196,16 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
         /* Solution still unavailable after a backfill attempt. A poison_rewind
          * cannot help a solutionless row (the forward re-drain would re-yield
          * ok=0), so do not rewind — fail this attempt and retry backfill next
-         * tick (e.g. the oracle was briefly unreachable). */
+         * tick. With the oracle DEAD this would never recover via RPC, so fall
+         * back to a P2P re-fetch of the canonical bytes (LANE D / #3b) and SKIP
+         * rather than accrue toward the operator page — an always-terminating
+         * remedy given any honest peer. */
+        cure_request_peer_refetch(target);
         LOG_WARN("condition",
                  "[condition:stale_validate_headers_repair] "
-                 "no durable repair header available h=%d", target);
-        return COND_REMEDY_FAILED;
+                 "no durable repair header h=%d via oracle — requested P2P "
+                 "re-fetch, deferring (no operator page)", target);
+        return COND_REMEDY_SKIP;
     }
 
     /* DOWNSTREAM_STALE: validate_headers is ok=1 but a body was skipped-invalid
@@ -211,6 +224,33 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
              "deleted=%d rewound=%d",
              target, rr.mode, rr.deleted_rows, rr.rewound_cursors);
     return rr.repaired ? COND_REMEDY_OK : COND_REMEDY_SKIP;
+}
+
+/* LANE D / #3b — drop BLOCK_HAVE_DATA on the canonical block_index entry at
+ * `height` so the normal P2P getheaders/getdata sync path re-downloads the
+ * canonical header+body (oracle-independent). Same discipline as
+ * body_persist_stage.c:requeue_body_for_refetch: clear the bit, re-emit the
+ * header event so the cleared state persists across restarts, and let the sync
+ * scheduler re-request. No-op if the height/entry is unknown (nothing to
+ * re-fetch — the witness still governs and the next tick retries). */
+static void cure_request_peer_refetch(int height)
+{
+    if (height < 0)
+        return; // raw-return-ok:nothing-to-refetch
+    struct main_state *ms = condition_engine_main_state();
+    if (!ms)
+        return; // raw-return-ok:no-main-state
+    struct block_index *bi = active_chain_at(&ms->chain_active, height);
+    if (!bi || !bi->phashBlock)
+        return; // raw-return-ok:height-unindexed
+    if (!(bi->nStatus & BLOCK_HAVE_DATA))
+        return; // raw-return-ok:already-cleared-refetch-pending
+    bi->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+    block_index_emit_header_event(bi, "stale_validate_headers_repair",
+                                  NULL, NULL);
+    LOG_WARN("condition",
+             "[condition:stale_validate_headers_repair] cleared HAVE_DATA "
+             "h=%d — normal P2P sync will re-download canonical body", height);
 }
 
 static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
@@ -265,7 +305,27 @@ static struct condition c_stale_validate_headers_repair = {
     .severity = COND_CRITICAL,
     .poll_secs = 5,
     .backoff_secs = 30,
+    /* Finite fast ladder: 5 un-witnessed remedies page a human once per
+     * episode (the honest-witness escalation the W2 tests pin). */
     .max_attempts = 5,
+    /* Continue-with-cooldown (sticky-node plan #7), routed for LANE D / #3b.
+     * The repair frontier can be solutionless purely because an EXTERNAL
+     * dependency is absent (the zclassicd oracle is unreachable / a peer is
+     * forging the header page). In that case the remedy's oracle-independent
+     * fallback (cure_request_peer_refetch + COND_REMEDY_SKIP) still accrues an
+     * attempt — condition.c:321 increments attempts UNCONDITIONALLY regardless
+     * of result, so SKIP does NOT avoid the ladder — and would otherwise trip
+     * max_attempts and LATCH FOREVER at EV_OPERATOR_NEEDED (condition.c:259 +
+     * :353). That is a human dead-end on a RECOVERABLE class. With
+     * cooldown_secs > 0 the engine re-arms the remedy every 10 minutes after the
+     * page, UNBOUNDED (cooldown_max_rearms = 0), so an oracle-absent /
+     * forged-page stall keeps retrying the P2P re-fetch forever and can NEVER
+     * permanently give up healing on a recoverable cause. The episode resets
+     * (fresh ladder) the instant the fault identity (target_at_detect) moves or
+     * detect() goes false; the single per-episode page still fires once at
+     * max_attempts so a human is informed. */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
     .detect = detect_stale_validate_headers_repair,
     .remedy = remedy_stale_validate_headers_repair,
     .witness = witness_stale_validate_headers_repair,

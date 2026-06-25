@@ -450,8 +450,21 @@ static enum csr_result csr_validate_header_locked(
              * backward by an incoming headers batch; mirror that here.
              * A legitimate authorized reorg still rewinds via the
              * rollback_auth escape (checked at the top of this block). */
-            if (work_cmp == 0 && new_tip->nHeight < cur->nHeight)
-                return CSR_REJECTED_HEADER_REGRESSION;
+            if (work_cmp == 0 && new_tip->nHeight < cur->nHeight) {
+                /* LANE D / SELF-HEAL (S3): a strictly-lower-height equal-work
+                 * header is normally a best-header regression (clobbers
+                 * pindex_best_header downward). EXCEPTION: when the incumbent
+                 * best-header at new_tip's own height is FAILED, the canonical
+                 * equal-work sibling MUST be promotable so the body-downloader
+                 * follows it (otherwise sibling-adopt selects a chain whose
+                 * header the downloader never re-requests, re-wedging). Pure
+                 * read over our own FAILED status; parity-restoring. */
+                struct block_index *inc = csr->chain_active
+                    ? active_chain_at(csr->chain_active, new_tip->nHeight)
+                    : NULL;
+                if (!inc || !block_has_any_failure(inc))
+                    return CSR_REJECTED_HEADER_REGRESSION;
+            }
         } else if (new_tip->nHeight < cur->nHeight) {
             return CSR_REJECTED_HEADER_REGRESSION;
         }

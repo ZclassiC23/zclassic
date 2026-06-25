@@ -156,6 +156,23 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
  * side effects so it is safe to call every stage tick. See chainstate.c. */
 struct block_index *active_chain_most_work_candidate(struct active_chain *c,
                                                       struct block_map *m);
+
+/* LANE D / SELF-HEAL (S3 sibling-adopt) selection policy, shared by both
+ * most-work selectors (active_chain_most_work_candidate + find_most_work_chain)
+ * so the equal-work-when-incumbent-FAILED rule lives at exactly one site.
+ * Returns true iff `cand` should replace the running `best`: strictly-more-work
+ * always wins (unchanged); EQUAL work wins ONLY when the active-chain incumbent
+ * at cand's height is PRESENT and FAILED (the zeroed-Sapling-root / corrupt-
+ * incumbent self-heal, e.g. live 3157647). `cand` must already be a failure-
+ * free, eligible candidate (callers filter that first). Pure / read-only over
+ * our OWN block-index status — node-local policy, NOT a consensus rule (which
+ * block is valid is unchanged; only WHICH of two equal-work valid candidates we
+ * activate when the incumbent is locally FAILED). See chainstate.c. */
+bool active_chain_selection_candidate_beats_best(
+        const struct active_chain *c,
+        const struct block_index *cand,
+        const struct block_index *best);
+
 int active_chain_height(const struct active_chain *c);
 
 struct active_chain_authority {

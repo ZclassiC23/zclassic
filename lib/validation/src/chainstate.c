@@ -607,6 +607,55 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
     return active_chain_fill_window(c, cand);
 }
 
+/* LANE D / SELF-HEAL (S3 sibling-adopt) — does eligible candidate `cand` beat
+ * the running `best` for chain selection, given the active chain `c`?
+ *
+ * Default rule (unchanged): strictly MORE nChainWork wins. Two VALID equal-work
+ * siblings therefore never oscillate — the strict `>` keeps the incumbent.
+ *
+ * Self-heal extension: when the active-chain INCUMBENT at the candidate's own
+ * height EXISTS and is FAILED (BLOCK_FAILED_VALID/FAILED_CHILD/TRANSIENT), an
+ * EQUAL-work, non-failed candidate is allowed to win. This is exactly the
+ * zeroed-Sapling-root wedge (live 3157647): the incumbent at height H folded
+ * ok=0 and was marked FAILED_VALID; its canonical equal-work sibling carries the
+ * SAME nChainWork, so the strict `>` rule would never select it and the chain
+ * would wedge below H forever. cand itself is already known non-failed and
+ * eligible (the caller filters block_has_any_failure / BLOCK_VALID_TREE / data
+ * before calling this). This is a NODE-LOCAL selection policy over our own
+ * block-index status — NOT a consensus rule (which block is valid is unchanged;
+ * only WHICH of two equal-work valid candidates we activate when the incumbent
+ * is locally failed). Parity-restoring: matches zclassicd invalidateblock +
+ * FindMostWorkChain (a FAILED incumbent is not a valid tip).
+ *
+ * Scoped deliberately to a PRESENT, FAILED same-height incumbent — never an
+ * absent one — so it cannot drift the normal forward path: a higher-height
+ * candidate already carries strictly more cumulative work (cmp > 0) and wins
+ * via the unchanged strict rule, and an absent slot is left to that strict
+ * rule. So the only new selection this enables is the failed-sibling swap. */
+bool active_chain_selection_candidate_beats_best(
+        const struct active_chain *c,
+        const struct block_index *cand,
+        const struct block_index *best)
+{
+    if (!cand)
+        return false;
+    if (!best)
+        return true;
+    int cmp = arith_uint256_compare(&cand->nChainWork, &best->nChainWork);
+    if (cmp > 0)
+        return true;
+    if (cmp < 0 || !c)
+        return false;
+    /* Equal work: adopt ONLY when a DIFFERENT, FAILED incumbent currently
+     * occupies the active-chain slot at cand's height (otherwise keep the
+     * incumbent — strict `>` semantics preserved). */
+    struct block_index *incumbent =
+        active_chain_at((struct active_chain *)c, cand->nHeight);
+    if (!incumbent || incumbent == cand)
+        return false;
+    return block_has_any_failure(incumbent);
+}
+
 struct block_index *active_chain_most_work_candidate(struct active_chain *c,
                                                       struct block_map *m)
 {
@@ -631,8 +680,7 @@ struct block_index *active_chain_most_work_candidate(struct active_chain *c,
         if (pindex->nChainTx == 0 && !(pindex->nStatus & BLOCK_HAVE_DATA))
             continue;
 
-        if (!best || arith_uint256_compare(&pindex->nChainWork,
-                                           &best->nChainWork) > 0) {
+        if (active_chain_selection_candidate_beats_best(c, pindex, best)) {
             /* Ancestry must be failure-free up to the current best/tip. */
             bool chain_ok = true;
             struct block_index *check = pindex;

@@ -11,6 +11,7 @@
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
+#include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "process_block_internal.h"
 
@@ -62,8 +63,14 @@ struct block_index *find_most_work_chain(struct main_state *ms)
             continue;
         }
 
-        if (!best || arith_uint256_compare(&pindex->nChainWork,
-                                            &best->nChainWork) > 0) {
+        /* LANE D / SELF-HEAL (S3 sibling-adopt): strictly-more-work always wins;
+         * EQUAL work wins ONLY when the active-chain incumbent at pindex's height
+         * is PRESENT and FAILED (the zeroed-Sapling-root sibling case). Two VALID
+         * equal-work siblings keep the strict `>` rule and never oscillate.
+         * Shared with active_chain_most_work_candidate so the policy lives at one
+         * site. Parity-restoring (a FAILED incumbent is not a valid tip). */
+        if (active_chain_selection_candidate_beats_best(&ms->chain_active,
+                                                        pindex, best)) {
             /* Check ancestry for failed blocks */
             bool chain_ok = true;
             struct block_index *check = pindex;
