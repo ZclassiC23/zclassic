@@ -151,9 +151,21 @@ build_openssl() {      # FETCHED: OpenSSL -> libcrypto.a + libssl.a
     local d="$WORK/openssl-${OPENSSL_VER}"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
     # no-docs/no-apps don't exist in OpenSSL 3.0.x; build only the libs target.
+    #
+    # Use NEUTRAL, non-$HOME prefix/openssldir so libcrypto.a carries NO
+    # absolute build-machine path. OpenSSL bakes OPENSSLDIR / ENGINESDIR /
+    # MODULESDIR string constants — derived from --prefix/--openssldir — into
+    # the static library; with the old --prefix="$d/_install" (under the build
+    # tree, i.e. /home/<user>/...) those leaked the build user's $HOME into the
+    # final zclassic23 binary, failing test_no_hardcoded_home and breaking
+    # build-twice byte-reproducibility. We only ever copy the .a files (never
+    # `make install`), so these paths affect ONLY the embedded strings — the
+    # canonical /usr/local + /etc/ssl values are relocatable and operator-
+    # agnostic. (Do NOT pass -DOPENSSLDIR etc — Configure already defines them
+    # from --prefix/--openssldir, and a -D redefine errors the build.)
     ( cd "$d" \
         && ./Configure no-shared no-tests \
-             --prefix="$d/_install" --libdir=lib >/dev/null \
+             --prefix=/usr/local --openssldir=/etc/ssl --libdir=lib >/dev/null \
         && make -j"$JOBS" build_libs >/dev/null 2>&1 )
     cp -f "$d/libcrypto.a" "$LIB/libcrypto.a"
     cp -f "$d/libssl.a"    "$LIB/libssl.a"
