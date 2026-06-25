@@ -191,6 +191,15 @@ static struct condition c_peer_floor_violated = {
      * value (100000) meant a wedged-but-peered chain could never page anyone
      * — the engine just looped result=ok forever. */
     .max_attempts = 5,
+    /* Continue-with-cooldown (sticky-node plan #7): a peer shortage is an
+     * external-resource fault — peers can return at any time. After the 5
+     * fast attempts page a human once, the engine re-arms the recovery remedy
+     * every 10 minutes, UNBOUNDED (cooldown_max_rearms = 0), so a node that
+     * lost all peers keeps trying to re-discover them forever instead of
+     * permanently giving up. The episode resets (fresh page ladder, attempts)
+     * the instant detect() goes false, i.e. peers come back above the floor. */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
     .detect = detect_peer_floor_violated,
     .remedy = remedy_peer_floor_violated,
     .witness = witness_peer_floor_violated,

@@ -26,6 +26,7 @@
 #include "supervisors/domains.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "services/sticky_escalator.h"
 #include "jobs/tip_finalize_stage.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
@@ -192,18 +193,28 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
     int restarts = atomic_load(&g_no_progress_restarts);
 
     if (restarts >= CHAIN_TIP_WD_MAX_RESTARTS || deterministic_stall) {
-        /* Don't power-cycle when a restart cannot help: either restarting
-         * already failed CHAIN_TIP_WD_MAX_RESTARTS times, OR the stall is a
-         * DETERMINISTIC on-disk condition (a successor pinned on a persisted
-         * ok=0 precondition) that is byte-identical every boot. Either way a
-         * remedy that can't resolve the symptom must not be repeated — stop
-         * the power-cycle, stay up (degraded), and page a human/MCP. */
-        atomic_store(&g_operator_needed, true);
+        /* A power-cycle cannot help here: either restarting already failed
+         * CHAIN_TIP_WD_MAX_RESTARTS times, OR the stall is a DETERMINISTIC
+         * on-disk condition (byte-identical every boot — the class EVERY wedge
+         * produces). Previously this LATCHED g_operator_needed=true and emitted
+         * a TERMINAL EV_OPERATOR_NEEDED ("staying up degraded for manual
+         * intervention") — a human dead-end, violating sticky invariant S2.
+         *
+         * NEW (sticky-node-plan #1): hand the wedge to the top-level
+         * always-terminating remedy escalator instead of dead-ending. The
+         * escalator drives an ORDERED ladder (retry -> targeted re-derive ->
+         * resnapshot -> reindex -> self-mint refold -> widen peers ->
+         * re-bootstrap) and NEVER latches a permanent operator-needed state on
+         * a recoverable class. The genuine-local-unrecoverable page (if ever
+         * warranted) is now the escalator's non-latching last resort, AFTER the
+         * ladder exhausts — not this reflex. g_operator_needed is kept ONLY as a
+         * diagnostic "ladder engaged" bit (no longer a stop). */
+        atomic_store(&g_operator_needed, true); /* diagnostic flag, not a latch */
         atomic_fetch_add(&g_fires_operator_needed, 1u);
-        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] OPERATOR NEEDED: tip wedged at h=%lld " "for %llds; %s — NOT restarting, staying up degraded for " "manual intervention", (long long)h, (long long)age_s, deterministic_stall ? "deterministic stall, a restart cannot clear it" : "restarts did not help");
-        event_emitf(EV_OPERATOR_NEEDED, 0,
-            "condition=chain_tip_wedged height=%lld attempts=%d age_s=%lld deterministic=%d",
-            (long long)h, restarts, (long long)age_s, deterministic_stall ? 1 : 0);
+        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] tip wedged at h=%lld for %llds; %s — NOT " "power-cycling; handing to the always-terminating remedy escalator", (long long)h, (long long)age_s, deterministic_stall ? "deterministic stall, a restart cannot clear it" : "restarts exhausted");
+        sticky_escalator_note_stall(deterministic_stall
+            ? "chain_tip_deterministic_stall"
+            : "chain_tip_restarts_exhausted");
         return false;
     }
 

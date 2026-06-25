@@ -60,6 +60,7 @@
 #include "jobs/stage_repair_coin_backfill.h"
 #include "jobs/refold_progress.h"
 #include "services/chain_tip_watchdog.h"
+#include "services/sticky_escalator.h"
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
 #include "storage/block_index_projection.h"
@@ -592,6 +593,10 @@ static const struct dump_entry g_dumpers[] = {
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
     { "chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
                      "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts" },
+    { "sticky_escalator", sticky_escalator_dump_state_json,
+                     "always-terminating remedy ladder (sticky S2): armed state, "
+                     "current rung, per-rung dispatch counts, witness window, "
+                     "re-arm cooldown, ladder cycles, non-latching page count" },
     { "condition_engine", condition_engine_dump_state_json,
                      "self-heal engine: registered conditions with active/cleared status, attempts, thresholds" },
     { "long_op",     long_op_dump_state_json,

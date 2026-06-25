@@ -112,6 +112,9 @@ static void condition_state_reset(struct condition_state *s)
     atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
     atomic_store(&s->currently_active, false);
     atomic_store(&s->operator_needed_emitted, false);
+    atomic_store(&s->last_cooldown_unix, 0);
+    atomic_store(&s->cooldown_rearms, 0);
+    atomic_store(&s->cooldown_episode_key, 0);
 }
 
 static void condition_mark_cleared(const struct condition *cond,
@@ -200,14 +203,69 @@ bool condition_engine_get_registered_snapshot(
     return true;
 }
 
+/* Continue-with-cooldown re-arm (sticky-node plan #7). Called only when the
+ * condition has reached max_attempts. Returns true if the engine should clear
+ * the attempt counter and let the remedy run again. This NEVER fires for a
+ * legacy condition (cooldown_secs == 0): those latch as before, which is
+ * correct for a deterministic-unrecoverable local fault. For an external
+ * dependency (peers/oracle) it re-arms on a long backoff so the node keeps
+ * trying to self-heal instead of dead-ending at a human. The re-arm budget is
+ * keyed to the fault identity (target_at_detect): a moved target is a new
+ * episode with a fresh budget; cooldown_max_rearms == 0 means unbounded
+ * re-arm (the right default for a purely-transient external dependency). */
+static bool condition_cooldown_rearm(const struct condition *cond,
+                                     struct condition_state *s,
+                                     int64_t now)
+{
+    if (cond->cooldown_secs <= 0)
+        return false; /* legacy: latch permanently at max_attempts */
+
+    /* Episode keying (mirrors chain_tip_watchdog.c:183-190): a changed fault
+     * identity resets the re-arm budget; the same identity carries it. */
+    int64_t key = atomic_load(&s->target_at_detect);
+    int64_t prev_key = atomic_load(&s->cooldown_episode_key);
+    if (prev_key != key) {
+        atomic_store(&s->cooldown_episode_key, key);
+        atomic_store(&s->cooldown_rearms, 0);
+    }
+
+    if (cond->cooldown_max_rearms > 0 &&
+        atomic_load(&s->cooldown_rearms) >= cond->cooldown_max_rearms)
+        return false; /* exhausted this episode's bounded re-arm budget */
+
+    int64_t last = atomic_load(&s->last_cooldown_unix);
+    if (last != 0 && now - last < cond->cooldown_secs)
+        return false; /* still cooling down — do not re-arm yet */
+
+    atomic_store(&s->last_cooldown_unix, now);
+    atomic_store(&s->attempts, 0);
+    int rearms = atomic_fetch_add(&s->cooldown_rearms, 1) + 1;
+    fprintf(stderr,  // obs-ok:condition-remedy-paired
+            "[condition_engine] cooldown_rearm name=%s rearm=%d "
+            "cooldown_secs=%d\n",
+            cond->name, rearms, cond->cooldown_secs);
+    event_emitf(EV_CONDITION_REMEDY_ATTEMPTED, 0,
+                "name=%s cooldown_rearm=%d cooldown_secs=%d",
+                cond->name, rearms, cond->cooldown_secs);
+    return true;
+}
+
 static bool condition_due_for_remedy(const struct condition *cond,
                                      struct condition_state *s,
                                      int64_t now)
 {
     int attempts = atomic_load(&s->attempts);
     int max_attempts = cond->max_attempts > 0 ? cond->max_attempts : 1;
-    if (attempts >= max_attempts)
-        return false;
+    if (attempts >= max_attempts) {
+        /* At the cap. Legacy conditions stop here (deterministic-unrecoverable
+         * locals must not loop forever); external-dependency conditions
+         * re-arm on a long cooldown so a transient stall (no peers / dead
+         * oracle) is never a permanent give-up. */
+        if (!condition_cooldown_rearm(cond, s, now))
+            return false;
+        /* re-armed: attempts reset to 0; fall through to the backoff gate */
+    }
+    (void)attempts;
     int64_t last = atomic_load(&s->last_remedy_unix);
     int backoff = cond->backoff_secs > 0 ? cond->backoff_secs : 0;
     return last == 0 || now - last >= backoff;

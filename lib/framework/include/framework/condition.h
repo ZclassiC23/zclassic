@@ -47,6 +47,18 @@ struct condition_state {
     _Atomic bool currently_active;
     _Atomic bool operator_needed_emitted;
     _Atomic int cleared_count;
+    /* Continue-with-cooldown tier (sticky-node plan #7). For an
+     * external-resource-dependent condition (peers/oracle absent), giving
+     * up forever at max_attempts is a human dead-end on a RECOVERABLE class.
+     * When cooldown_secs > 0 the engine re-arms the remedy after that long
+     * backoff instead of latching: last_cooldown_unix gates the re-arm gap,
+     * cooldown_rearms counts re-arms in the current fault episode, and
+     * cooldown_episode_key is the fault identity at the last re-arm. A change
+     * in fault identity (the condition's target_at_detect moved) starts a
+     * fresh budget, exactly like chain_tip_watchdog.c's episode keying. */
+    _Atomic int64_t last_cooldown_unix;
+    _Atomic int cooldown_rearms;
+    _Atomic int64_t cooldown_episode_key;
 };
 
 struct condition {
@@ -55,6 +67,18 @@ struct condition {
     int poll_secs;
     int backoff_secs;
     int max_attempts;
+    /* Continue-with-cooldown (sticky-node plan #7). 0 = legacy behavior:
+     * latch permanently at max_attempts (correct for a genuinely-local,
+     * deterministic-unrecoverable condition). > 0 = after max_attempts the
+     * engine re-arms the remedy every cooldown_secs (a long 5-15 min backoff)
+     * so an external-resource stall (peers/oracle) never permanently gives
+     * up. cooldown_max_rearms bounds re-arms within ONE fault episode (a
+     * continuous active span with an unchanged fault identity); 0 = unbounded
+     * (the right default for a purely-transient external dependency). The
+     * operator page still fires once per episode at max_attempts so a human
+     * is informed, but the node keeps trying to self-heal. */
+    int cooldown_secs;
+    int cooldown_max_rearms;
     condition_detect_fn detect;
     condition_remedy_fn remedy;
     condition_witness_fn witness;

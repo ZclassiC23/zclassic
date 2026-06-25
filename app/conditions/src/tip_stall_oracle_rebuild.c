@@ -227,6 +227,17 @@ static struct condition c_tip_stall_oracle_rebuild = {
     .poll_secs = 15,
     .backoff_secs = 60,
     .max_attempts = 5,
+    /* Continue-with-cooldown (sticky-node plan #7): this remedy depends on an
+     * external rebuild source. After 5 fast attempts (one operator page per
+     * episode) re-arm every 15 minutes so the rebuild is retried when the
+     * source becomes reachable again. Bounded to 8 re-arms per fault episode
+     * (~2h of retries on one unchanged stall target) so a genuinely stuck
+     * height still eventually defers to the higher-tier escalator instead of
+     * spinning a heavy rebuild forever; a NEW stall target (the wedge moved)
+     * resets the budget. This is the right tier for a CRITICAL condition whose
+     * dependency is external but whose remedy is expensive. */
+    .cooldown_secs = 900,
+    .cooldown_max_rearms = 8,
     .detect = detect_tip_stall_oracle_rebuild,
     .remedy = remedy_tip_stall_oracle_rebuild,
     .witness = witness_tip_stall_oracle_rebuild,
