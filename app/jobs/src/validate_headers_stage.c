@@ -284,6 +284,21 @@ static void vh_job_bind_block(sqlite3 *db, struct vh_job *job,
     job->bi = &job->snapshot;
 }
 
+/* Undo the recheck's write transaction. Batched (an outer stage_batch txn is
+ * open): ROLLBACK TO then RELEASE the savepoint — undo only this recheck's
+ * writes while leaving the outer batch (and any earlier advanced blocks in it)
+ * open and the savepoint name free. Standalone: plain ROLLBACK of our own txn.
+ * Mirrors stage_step_rollback in lib/util/src/stage.c. Best-effort. */
+static void vh_recheck_rollback(sqlite3 *db, bool batched)
+{
+    if (batched) {
+        sqlite3_exec(db, "ROLLBACK TO SAVEPOINT vh_recheck", NULL, NULL, NULL);
+        sqlite3_exec(db, "RELEASE SAVEPOINT vh_recheck", NULL, NULL, NULL);
+    } else {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+}
+
 static job_result_t recheck_failed_rows(struct main_state *ms,
                                           sqlite3 *db,
                                           uint64_t validated_cursor)
@@ -397,7 +412,19 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     pool_run_batch(jobs, n);
     char *err = NULL;
     progress_store_tx_lock();
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+    /* This path runs both standalone (validate_headers_stage_step_once with no
+     * outer txn) and inside the bounded drain (STAGE_DRAIN_IMPL → stage_run_once
+     * → here), where stage_batch_begin has already opened a BEGIN IMMEDIATE on
+     * this same connection. A bare BEGIN here would nest a transaction inside
+     * that batch ("cannot start a transaction within a transaction") and the
+     * recheck/repair would never run — the failed-row self-heal silently
+     * disabled. Mirror stage_run_once's contract: open a SAVEPOINT when a batch
+     * is active (its writes stay enrolled in the batch, committed once by
+     * stage_batch_end), a fresh BEGIN IMMEDIATE only when standalone. */
+    const bool vh_batched = stage_batch_active();
+    const char *vh_open   = vh_batched ? "SAVEPOINT vh_recheck" : "BEGIN IMMEDIATE";
+    const char *vh_commit = vh_batched ? "RELEASE SAVEPOINT vh_recheck" : "COMMIT";
+    if (sqlite3_exec(db, vh_open, NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("validate_headers", "[validate_headers] failed-row recheck BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
@@ -407,14 +434,14 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         if (jobs[i].ok &&
             !mark_valid_header(jobs[i].mark_bi)) {
             LOG_WARN("validate_headers", "[validate_headers] recheck mark failed height=%d", jobs[i].height);
-            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            vh_recheck_rollback(db, vh_batched);
             progress_store_tx_unlock();
             return JOB_FATAL;
         }
         if (!validate_headers_log_insert(db, jobs[i].height,
                                          jobs[i].bi->phashBlock, jobs[i].ok,
                                          jobs[i].reason)) {
-            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            vh_recheck_rollback(db, vh_batched);
             progress_store_tx_unlock();
             return JOB_FATAL;
         }
@@ -423,10 +450,10 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         else
             atomic_fetch_add(&g_failed_total, 1);
     }
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, vh_commit, NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("validate_headers", "[validate_headers] failed-row recheck COMMIT failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        vh_recheck_rollback(db, vh_batched);
         progress_store_tx_unlock();
         return JOB_FATAL;
     }
