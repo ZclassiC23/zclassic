@@ -1179,7 +1179,7 @@ mvp: test_zcl zclassic23 zcl-rpc
 # exercises. -O1 + -g because aggressive optimisation confuses
 # sanitizer reports.
 #
-# `make fuzz` builds the three binaries. `make fuzz-ci` runs each
+# `make fuzz` builds the four binaries. `make fuzz-ci` runs each
 # for 60 seconds as a smoke test; CI uses this to detect already-
 # latent crashes without chasing exhaustive coverage. If clang is
 # unavailable, both targets print a skip message and exit 0 so
@@ -1187,21 +1187,24 @@ mvp: test_zcl zclassic23 zcl-rpc
 FUZZ_CC ?= clang
 FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-Wno-deprecated-declarations \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(MCP_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) \
+	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
+	$(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -Ivendor/include \
 	-fsanitize=fuzzer,address,undefined \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http
 
 .PHONY: fuzz fuzz-ci
 fuzz: $(FUZZ_TARGETS)
 
-.PHONY: fuzz_block fuzz_script fuzz_p2p
+.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http
 fuzz_block: $(BIN_DIR)/fuzz_block
 fuzz_script: $(BIN_DIR)/fuzz_script
 fuzz_p2p: $(BIN_DIR)/fuzz_p2p
+fuzz_http: $(BIN_DIR)/fuzz_http
 
 $(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
@@ -1231,6 +1234,16 @@ $(BIN_DIR)/fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_p2p.c $(ALL_SRCS) $(FUZZ_LIBS); \
+	fi
+
+$(BIN_DIR)/fuzz_http: tools/fuzz/fuzz_http.c $(TMPL_GEN) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz_http: $(FUZZ_CC) not found — SKIP"; \
+		touch $@; \
+	else \
+		echo "$(FUZZ_CC) ... -o $@"; \
+		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_http.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
 fuzz-ci: $(FUZZ_TARGETS)
@@ -1463,7 +1476,7 @@ clean:
 	    zclassic23-chaos p2_invariant_check crash_recovery_test rebuild_recent \
 	    shadow_replay_proof wallet_check spec_zcl session bot wallet_dump \
 	    wallet_sim wallet-wireframes mock_rpc export_snapshot bench_fresh_sync \
-	    fuzz_block fuzz_script fuzz_p2p test_zcl_cov
+	    fuzz_block fuzz_script fuzz_p2p fuzz_http test_zcl_cov
 	rm -f tools/gen_templates tools/inspect_html tools/wal_checkpoint \
 	    tools/check_observability_pairing tools/gen_sha3_windows \
 	    tools/soak/soak_runner
