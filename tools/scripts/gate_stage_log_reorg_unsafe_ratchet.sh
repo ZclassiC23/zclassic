@@ -41,6 +41,8 @@ else
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
 cd "$REPO_ROOT"
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
 
 # Baked baseline: the 8 known reorg-unsafe stage-log stores, one
 # height-keyed INSERT OR REPLACE each (verified this run).
@@ -57,6 +59,20 @@ FILES=(
     app/jobs/src/body_persist_log_store.c
 )
 
+# Optional override of the tracked FILES set (space-separated) so the lint-gate
+# self-test can point the gate at a planted/empty set and prove the
+# drifted-surface preflight fires (exit 2).
+if [ -n "${ZCL_REORG_RATCHET_FILES:-}" ]; then
+    read -r -a FILES <<< "$ZCL_REORG_RATCHET_FILES"
+fi
+
+# Fail-loud preflight: the tracked FILES list must itself be non-empty AND every
+# entry must exist. A moved/renamed/emptied stage-log store would otherwise let
+# the count loop run over a smaller (or empty) set and pass hollow under the
+# ceiling. Treat a drifted scan surface as FATAL (exit 2), matching the
+# consensus-parity gate's "refuse to pass off a partial scan" stance.
+gate_require_scanned "${#FILES[@]}" 1 gate_stage_log_reorg_unsafe_ratchet \
+    "the tracked stage-log store list is empty"
 missing=0
 for f in "${FILES[@]}"; do
     if [ ! -f "$f" ]; then
@@ -67,18 +83,21 @@ done
 if [ "$missing" != "0" ]; then
     echo "gate_stage_log_reorg_unsafe_ratchet: a stage-log store was moved/renamed." >&2
     echo "Update the FILES list (and re-verify the baseline) deliberately." >&2
-    exit 1
+    echo "Refusing to report a clean count off a drifted (partial) scan surface." >&2
+    exit 2
 fi
 
 count=0
 sites=()
 for f in "${FILES[@]}"; do
     # Case-insensitive: catch 'insert or replace' regardless of casing.
+    # grep exit 0=match/1=no-match pass through gate_grep; >=2 (unreadable file)
+    # is FATAL instead of being masked as "no UPSERT here" by `|| true`.
     while IFS=: read -r lineno _; do
         [ -n "$lineno" ] || continue
         sites+=("$f:$lineno")
         count=$((count + 1))
-    done < <(grep -ni 'INSERT OR REPLACE' "$f" || true)
+    done < <(gate_grep -ni 'INSERT OR REPLACE' "$f")
 done
 
 if [ "$count" -le "$BASELINE" ]; then

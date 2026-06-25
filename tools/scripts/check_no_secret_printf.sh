@@ -24,10 +24,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
 
 # Directories to scan — app + config + lib + tools, excluding vendor,
 # tests, and the audit corpus itself (which contains "priv" by design).
-SCAN_DIRS=(app config lib tools)
+# Overridable via ZCL_SECRET_PRINTF_SCAN_DIRS (space-separated) so the
+# lint-gate self-test can point the gate at an EMPTY dir and prove the
+# non-empty-floor preflight fires (exit 2).
+read -r -a SCAN_DIRS <<< "${ZCL_SECRET_PRINTF_SCAN_DIRS:-app config lib tools}"
 EXCLUDE_PATHS=(
     "lib/test"
     "tools/scripts/check_no_secret_printf.sh"
@@ -72,9 +77,29 @@ ALLOWLIST_RE=(
     'tools/wallet_dump\.c'
 )
 
+# Fail-loud preflight: the .c/.h file set across SCAN_DIRS must be non-empty.
+# A renamed/moved scan dir would empty the surface; combined with the old
+# `2>/dev/null || true` masking grep's exit, the gate would print "clean"
+# exit 0 over zero files — a hollow pass. Assert a floor first.
+mapfile -t scan_files < <(find "${SCAN_DIRS[@]}" -type f \( -name '*.c' -o -name '*.h' \) 2>/dev/null)
+gate_require_scanned "${#scan_files[@]}" 1 check_no_secret_printf \
+    "no *.c/*.h under: ${SCAN_DIRS[*]}"
+
+# Run the scan and check grep's exit EXPLICITLY: 0=match, 1=no-match,
+# >=2=real error (e.g. busybox grep rejecting --exclude-dir / a bad regex).
+# The old `2>/dev/null || true` masked >=2 as an empty result → "clean"
+# exit 0, a fail-silent hole. (gate_grep's own exit-2 can't propagate out of
+# a `$(...)` subshell, so we inline the explicit check here.)
 matches=$(grep -rEn $EXCLUDE_EXPR \
     --include='*.c' --include='*.h' \
-    "$PATTERN" "${SCAN_DIRS[@]}" 2>/dev/null || true)
+    "$PATTERN" "${SCAN_DIRS[@]}")
+grc=$?
+if [ "$grc" -ge 2 ]; then
+    echo "check_no_secret_printf: FATAL — scan grep failed (exit $grc); a grep" >&2
+    echo "  error (bad flag on a non-GNU grep, unreadable file) was about to be" >&2
+    echo "  masked as 'no secrets found'. Refusing to pass off a broken scan." >&2
+    exit 2
+fi
 
 if [[ -z "$matches" ]]; then
     echo "check_no_secret_printf: clean — no suspicious printf calls found"

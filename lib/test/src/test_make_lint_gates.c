@@ -835,6 +835,69 @@ static int run_gate_script_with_worker_files(const char *script_rel,
     return -1;
 }
 
+/* Like run_gate_script but exports ONE arbitrary env var (name=value) into the
+ * gate's environment. Used by the META-GATE that points each hardened gate at
+ * an empty scan dir (via its ZCL_*_SCAN_* override) and asserts exit 2 — the
+ * proof that a fail-silent gate is now fail-LOUD on an empty scan set.
+ * Mirrors run_gate_script's fork/exec/redirect plumbing. */
+static int run_gate_script_with_env(const char *script_rel,
+                                    const char *env_name,
+                                    const char *env_value)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (env_name && env_value)
+            (void)setenv(env_name, env_value, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
 #define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
@@ -1434,6 +1497,97 @@ static int t_gate21_supervisor_worker_lockin(void)
         ASSERT(pass_rc == 0);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* ── META-GATE: fail-silent gates are now fail-LOUD on an empty scan ──────────
+ *
+ * A hollow gate reports "clean" exit 0 while a real violation is present: its
+ * scan set silently emptied (a renamed/moved dir) and the violation loop ran
+ * zero times. The fix (docs/work/lint-gate-hollowness-audit.md) is a non-empty
+ * scan-set preflight that aborts exit 2 when the scan set is below a known
+ * floor. Each hardened gate exposes a ZCL_*_SCAN_* env override of its scan
+ * root so this meta-gate can feed it a GUARANTEED-EMPTY dir and assert exit 2
+ * — the direct proof that "scanned nothing" is no longer a quiet pass.
+ *
+ * For each gate: (1) point its scan override at an empty dir → assert exit 2;
+ * (2) run it with NO override → assert exit 0 (the real tree still passes).
+ * This is the "plant → assert trip → remove → assert green" pattern, with the
+ * empty scan dir as the planted fixture. */
+/* One gate's empty-scan check: feed the gate an empty scan dir via its
+ * override env var → assert exit 2 (fail-LOUD); run with no override → assert
+ * exit 0 (real tree still clean). One TEST block per call (the TEST macro
+ * defines a function-scoped `_test_next` label, so it must not repeat in a
+ * single function). Returns 0 on pass, nonzero on failure. */
+static int meta_gate_empty_scan_trips(const char *script_rel,
+                                      const char *env_name,
+                                      const char *empty_value)
+{
+    int failures = 0;
+    int trip_rc = run_gate_script_with_env(script_rel, env_name, empty_value);
+    int green_rc = run_gate_script(script_rel, NULL);
+    TEST("[lint-gate] META: empty/drifted scan trips gate exit 2, real tree passes") {
+        /* Empty scan set MUST be exit 2 (fail-LOUD), never 0 (hollow) and
+         * never 1 (a violation it could not actually have seen). */
+        if (trip_rc != 2) {
+            fprintf(stderr,
+                    "[lint-gate] %s with empty %s: expected exit 2, got %d "
+                    "(hollow gate?)\n", script_rel, env_name, trip_rc);
+        }
+        ASSERT(trip_rc == 2);
+        if (green_rc != 0) {
+            fprintf(stderr,
+                    "[lint-gate] %s with no override: expected exit 0, got %d\n",
+                    script_rel, green_rc);
+        }
+        ASSERT(green_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* META-GATE: every gate hardened this wave must FAIL LOUD (exit 2) on an empty
+ * scan set instead of reporting "clean" exit 0 (a hollow pass). Each gate
+ * exposes a ZCL_*_SCAN_* override of its scan root so we can point it at a
+ * guaranteed-empty dir (it EXISTS — a bare -d check would pass — but holds zero
+ * source files, the exact hollow vector). See
+ * docs/work/lint-gate-hollowness-audit.md. */
+static int t_lint_gates_fail_loud_on_empty_scan(void)
+{
+    int failures = 0;
+
+    /* A guaranteed-empty scan dir under the repo's test-tmp. mkdir is
+     * idempotent; we never write into it, so it stays empty. */
+    char empty_dir[PATH_MAX];
+    if (repo_path(empty_dir, sizeof(empty_dir),
+                  "test-tmp/_lint_empty_scan_dir") != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve empty-scan dir path\n");
+        return 1;
+    }
+    (void)mkdir(empty_dir, 0700);
+
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/check_one_write_path.sh", "ZCL_OWP_SCAN_ROOTS", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/check_projections_pure.sh", "ZCL_PROJ_SCAN_DIR", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/check_stage_advances_or_blocks.sh", "ZCL_JOBS_DIR", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/check_supervisor_registration.sh", "ZCL_SERVICES_DIR", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/check_no_secret_printf.sh", "ZCL_SECRET_PRINTF_SCAN_DIRS", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/lint/check_supervisor_domain.sh", "ZCL_SUPDOM_SCAN_ROOTS", empty_dir);
+
+    /* The reorg-ratchet gate's hollow vector is a DRIFTED file list (a tracked
+     * stage-log store moved/renamed), not an empty scan dir. Point its file
+     * override at a nonexistent path and assert the drifted-surface preflight
+     * fires exit 2 (the old code exit 1'd / a swallowed grep would mask it). */
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/gate_stage_log_reorg_unsafe_ratchet.sh",
+        "ZCL_REORG_RATCHET_FILES", "/nonexistent/_lint_missing_store.c");
+
+    (void)rmdir(empty_dir);
     return failures;
 }
 
@@ -3253,6 +3407,7 @@ int test_make_lint_gates(void)
     failures += t_e7_no_authoritative_ram_state();
     failures += t_e12_honest_witness();
     failures += t_gate21_supervisor_worker_lockin();
+    failures += t_lint_gates_fail_loud_on_empty_scan();
     return failures;
 }
 

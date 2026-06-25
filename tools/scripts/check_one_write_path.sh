@@ -15,6 +15,18 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
+
+# Scan roots are overridable via ZCL_OWP_SCAN_ROOTS (space-separated) so the
+# lint-gate self-test can point the gate at an EMPTY dir and prove the
+# non-empty-floor preflight trips (exit 2) instead of passing hollow.
+SCAN_ROOTS="${ZCL_OWP_SCAN_ROOTS:-app domain lib config tools}"
+# A custom (test) scan root has no 200-file production floor; the meta-gate's
+# whole point is to feed an empty/tiny root and watch the floor fire.
+if [ -n "${ZCL_OWP_SCAN_ROOTS:-}" ]; then
+    SCAN_FLOOR_OVERRIDE=1
+fi
 
 BASELINE=tools/scripts/one_write_path_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
@@ -36,18 +48,20 @@ pattern='active_chain_set_tip[[:space:]]*\(|coins_view_sqlite_batch_write(_ex)?[
 # produces nothing (a moved/renamed core dir), the loop runs zero times,
 # `violations` stays empty, and the gate would print "clean" exit 0 — a
 # hollow pass. Assert a known floor instead.
-mapfile -t scan_files < <(find app domain lib config tools -type f \( -name '*.c' -o -name '*.h' \) \
+#
+# find's nonzero exit (a missing root) is NOT swallowed: it would abort the
+# process substitution and leave scan_files empty, which the floor below
+# catches LOUD. We pass the roots through `find` directly so a renamed root
+# makes find error → empty array → floor trip.
+mapfile -t scan_files < <(find $SCAN_ROOTS -type f \( -name '*.c' -o -name '*.h' \) \
     ! -path '*/test/*' \
     ! -path 'tools/scripts/*' \
     ! -path 'tools/lint/*' \
-    | sort)
+    2>/dev/null | sort)
 SCAN_FLOOR=200
-if [ "${#scan_files[@]}" -lt "$SCAN_FLOOR" ]; then
-    echo "check_one_write_path: FATAL — scan set is ${#scan_files[@]} files (< floor $SCAN_FLOOR)." >&2
-    echo "  The find roots (app domain lib config tools) produced too few files;" >&2
-    echo "  a core dir was likely renamed/moved. Refusing to pass hollow." >&2
-    exit 2
-fi
+[ -n "${SCAN_FLOOR_OVERRIDE:-}" ] && SCAN_FLOOR=1
+gate_require_scanned "${#scan_files[@]}" "$SCAN_FLOOR" check_one_write_path \
+    "find roots: $SCAN_ROOTS"
 
 violations=()
 for f in "${scan_files[@]}"; do
@@ -66,7 +80,7 @@ for f in "${scan_files[@]}"; do
             continue
         fi
         violations+=("$key")
-    done < <(grep -nE "$pattern" "$f" || true)
+    done < <(gate_grep -nE "$pattern" "$f")
 done
 
 if [ "${#violations[@]}" -eq 0 ]; then
