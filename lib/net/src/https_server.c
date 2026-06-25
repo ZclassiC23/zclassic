@@ -153,6 +153,11 @@ static bool plain_read_line(int fd, char *buf, size_t max)
     return read_line(&fd, fd_read_byte, buf, max);
 }
 
+/* Bound the request-header count so an endless-header stream (a slowloris
+ * variant) cannot pin a server thread reading lines forever. Legitimate
+ * explorer/API clients send well under this. */
+#define HTTP_MAX_REQUEST_HEADERS 512
+
 /* ── HTTPS handler ────────────────────────────────────────── */
 
 static void handle_https_client(SSL *ssl)
@@ -165,9 +170,12 @@ static void handle_https_client(SSL *ssl)
     if (sscanf(line, "%15s %2047s", method, path) != 2)
         return;
 
-    /* Read remaining headers (discard) */
+    /* Read remaining headers (discard). Cap the count so a peer streaming
+     * endless headers cannot pin this thread. */
+    int hdr_count = 0;
     while (ssl_read_line(ssl, line, sizeof(line))) {
         if (line[0] == '\0') break;
+        if (++hdr_count > HTTP_MAX_REQUEST_HEADERS) return;
     }
 
     /* Only serve GET requests to explorer routes */
@@ -362,10 +370,13 @@ static void handle_http_client_fd(int fd)
     char method[16] = "", path[2048] = "";
     sscanf(line, "%15s %2047s", method, path);
 
-    /* Drain headers, capturing the request Host for a generic redirect. */
+    /* Drain headers, capturing the request Host for a generic redirect.
+     * Cap the count to bound an endless-header (slowloris) connection. */
     char req_host[256] = "";
+    int hdr_count = 0;
     while (plain_read_line(fd, line, sizeof(line))) {
         if (line[0] == '\0') break;
+        if (++hdr_count > HTTP_MAX_REQUEST_HEADERS) { close(fd); return; }
         if (req_host[0] == '\0' &&
             strncasecmp(line, "Host:", 5) == 0) {
             const char *v = line + 5;

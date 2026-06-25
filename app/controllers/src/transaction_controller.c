@@ -155,6 +155,7 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
             transaction_free(&tx);
             json_set_str(result, "Out of memory");
             LOG_FAIL("tx", "getrawtransaction: malloc failed for hex buffer");
+            return false;
         }
         size_t hex_len = encode_hex_tx(&tx, hex, 2 * 1024 * 1024);
         hex[hex_len] = '\0';
