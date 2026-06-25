@@ -220,34 +220,70 @@ int test_active_chain_extend(void)
     }
 
     /* 8. The wrong-fork wedge regression: pindex_best_header points at a
-     * BODILESS orphan above the have-data frontier (the header-only successor
-     * that the old reducer_extend_window_to_candidate would have extended the
-     * window to, pinning a bodiless slot). With the have-data extender bounded
-     * by the durable utxo_apply cursor, the window must extend ONLY to the
-     * contiguous have-data tip and must NOT pin the header-only candidate.
+     * BODILESS orphan above the have-data frontier. The fix scans the range UP
+     * TO the header tip (a generous upper bound, NOT a per-stage cap), but the
+     * have-data extender refuses to fill to a header-only candidate (no
+     * BLOCK_HAVE_DATA), so the window must extend ONLY to the contiguous
+     * have-data tip and must NOT pin the header-only orphan — even though the
+     * scan bound now sits ABOVE the body floor.
      *
-     * Mirrors reducer_extend_window_to_candidate: bodies/scripts through 5,
-     * pindex_best_header set to a header-only block at 6 (no BLOCK_HAVE_DATA),
-     * max_height = the have-data frontier (5). */
+     * Bodies/scripts through 5; 6 and 7 are header-only (no BLOCK_HAVE_DATA);
+     * max_height = the HEADER tip (7), proving the orphan-exclusion comes from
+     * the internal have-data gate, not from an artificially low scan bound. */
     {
         struct main_state ms; main_state_init(&ms);
         struct block_index *b[8];
         bool ok = ace_build(&ms, b, N, 3);
-        /* Bodies + scripts only through 5; 6 is header-only (no body). */
+        /* Bodies + scripts only through 5; 6,7 are header-only (no body). */
         b[6]->nStatus = BLOCK_VALID_TREE; /* header-only orphan, no HAVE_DATA */
         b[7]->nStatus = BLOCK_VALID_TREE;
-        ms.pindex_best_header = b[6]; /* best HEADER sits above the body floor */
+        ms.pindex_best_header = b[7]; /* best HEADER sits above the body floor */
 
-        /* The window extender is bounded by the durable have-data cursor (5),
-         * exactly as reducer_extend_window_to_candidate passes it. */
+        /* Scan all the way to the header tip (7), exactly as the fixed
+         * reducer_extend_window_to_candidate now passes pindex_best_header. */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 5);
+                                             &ms.map_block_index, 7);
         ok = ok && active_chain_at(&ms.chain_active, 5) == b[5]; /* reached body */
         ok = ok && active_chain_at(&ms.chain_active, 6) == NULL; /* NOT pinned */
         ok = ok && active_chain_at(&ms.chain_active, 7) == NULL;
         ok = ok && active_chain_height(&ms.chain_active) == 5;
-        ACE_CHECK("bodiless best-header orphan NOT pinned (stays at have-data tip)",
-                  ok);
+        ACE_CHECK("bodiless best-header orphan NOT pinned even with header-tip "
+                  "scan bound", ok);
+        main_state_free(&ms);
+    }
+
+    /* 9. Upstream-lookahead preservation (the bug this rework fixes): the
+     * previous bound was utxo_apply's cursor (the LOWEST stage cursor). An
+     * upstream stage (body_persist/script_validate/proof_validate) reads
+     * active_chain_at(its_cursor + 1); if the window stopped at utxo_apply's
+     * cursor, every height above it returned NULL -> JOB_IDLE -> bodies could
+     * never lead utxo_apply -> wedge.
+     *
+     * Model: utxo_apply finalized at the window tip (3); bodies+scripts present
+     * and contiguous through 7. With the header-tip scan bound, the window MUST
+     * expose heights 4..7 so an upstream stage at cursor=4,5,6 can read its
+     * next block. Concretely: active_chain_at(utxo_apply_cursor + k) for k>=1
+     * (i.e. the heights the leading stages consume) is non-NULL up to the
+     * have-data frontier — the starvation the cursor-bound caused is gone. */
+    {
+        struct main_state ms; main_state_init(&ms);
+        struct block_index *b[8];
+        int utxo_apply_cursor = 3;            /* lowest stage; == window tip */
+        bool ok = ace_build(&ms, b, N, utxo_apply_cursor);
+        ms.pindex_best_header = b[7];         /* header tip = body frontier here */
+
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index,
+                                             ms.pindex_best_header->nHeight);
+
+        /* Every height a leading upstream stage would consume (cursor+1 ..
+         * have-data tip) is now exposed — NOT NULL as it was under the
+         * utxo_apply-cursor cap. */
+        for (int h = utxo_apply_cursor + 1; h <= 7; h++)
+            ok = ok && active_chain_at(&ms.chain_active, h) == b[h];
+        ok = ok && active_chain_height(&ms.chain_active) == 7;
+        ACE_CHECK("upstream lookahead preserved (successors above utxo_apply "
+                  "cursor exposed)", ok);
         main_state_free(&ms);
     }
 

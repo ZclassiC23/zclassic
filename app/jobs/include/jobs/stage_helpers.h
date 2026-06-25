@@ -225,18 +225,34 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * Stages that read active_chain_at() call it at the top of step_once so the
  * window is supplied to the height they are about to process.
  *
- * The window is bounded by utxo_apply's DURABLE cursor (read from the
- * stage_cursor table), so the extender never pins a bodiless / header-only
- * slot and never looks past the persisted have-data floor. This closes the
- * wrong-fork wedge class: pindex_best_header tracks the best known HEADER,
- * which may sit above the have-data frontier on a forked or not-yet-downloaded
- * branch; extending the window to that header-only candidate exposed a
- * bodiless slot (and, via a generic candidate, could trigger the finalized-row
- * false-reorg cascade). active_chain_extend_window_have_data accepts a
- * successor only when its pprev is pointer-equal to the prior accepted block,
- * so it is provably continuous with the finalized chain and never overwrites a
- * finalized slot. pindex_best_header stays the header-ingest / download target
- * elsewhere — only the WINDOW extender changes here.
+ * The SCAN RANGE is bounded by the best-known header height (a generous upper
+ * bound), but the window only ever extends to the CONTIGUOUS have-data,
+ * script-validated frontier that active_chain_extend_window_have_data discovers
+ * internally — bodiless / header-only / not-yet-validated slots are excluded by
+ * construction (it accepts a successor only when its pprev is pointer-equal to
+ * the prior accepted block AND that successor has BLOCK_HAVE_DATA +
+ * BLOCK_VALID_SCRIPTS). So this never pins a bodiless slot even though the scan
+ * bound sits at the header tip.
+ *
+ * Why NOT bound by utxo_apply's cursor (the previous attempt): utxo_apply is
+ * the LOWEST of the eight stage cursors. The upstream stages (body_persist,
+ * script_validate, proof_validate) each read active_chain_at(their_cursor + 1)
+ * and MUST be able to lead utxo_apply for the pipeline to make forward
+ * progress. Capping the window at utxo_apply's cursor makes
+ * active_chain_at(their_next_h) return NULL for any height above utxo_apply,
+ * so bodies can never lead utxo_apply -> every upstream stage goes JOB_IDLE ->
+ * steady-state forward-sync wedge. The header-tip scan bound exposes each
+ * upstream stage's next block while the internal have-data gate keeps the
+ * window from ever crossing the body floor.
+ *
+ * This still closes the wrong-fork wedge class: pindex_best_header tracks the
+ * best known HEADER, which may sit above the have-data frontier on a forked or
+ * not-yet-downloaded branch. Even though we now SCAN up to that header height,
+ * the have-data extender refuses to fill to a header-only candidate (no
+ * BLOCK_HAVE_DATA), so the window stops at the contiguous body frontier and
+ * never exposes a bodiless slot (and never triggers the finalized-row
+ * false-reorg cascade). pindex_best_header stays the header-ingest / download
+ * target elsewhere — only the WINDOW extender changes here.
  *
  * Do not scan the full block map from a stage tick. The live map is millions
  * of entries; a full most-work sweep inside the supervisor can monopolize the
@@ -251,11 +267,14 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
 {
     if (!authoritative || !ms)
         return;
-    /* Bound the window by utxo_apply's durably-committed cursor: never extend
-     * to a slot above the persisted have-data frontier. A missing/zero cursor
-     * yields max_h <= window height, so the extender is a cheap no-op. */
-    int max_h = (int)stage_cursor_persisted(progress_store_db(),
-                                            "utxo_apply", NULL);
+    /* Scan up to the best-known header height — a GENEROUS upper bound, not a
+     * per-stage cap. The have-data extender then fills the window only to the
+     * contiguous have-data + script-validated frontier it discovers within that
+     * range (bodiless / header-only slots excluded by construction), so the
+     * window exposes each upstream stage's next block (letting bodies lead
+     * utxo_apply) without ever pinning a bodiless orphan. A NULL best-header or
+     * a window already at/above that height makes the extender a cheap no-op. */
+    int max_h = ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1;
     (void)active_chain_extend_window_have_data(&ms->chain_active,
                                                &ms->map_block_index, max_h);
 }
