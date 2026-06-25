@@ -833,8 +833,6 @@ int main(void)
     failures += test_block_index_integrity();
     failures += test_block_map_grow_phashblock();
     failures += test_block_successor();
-    failures += test_verify_engine();
-    failures += test_verify_engine_equiv();
     failures += test_key_hostile_wif();
     /* Subsection 5/6 finish-drive: defensive + consensus unit-test gaps. */
     failures += test_block_locator_bounds();

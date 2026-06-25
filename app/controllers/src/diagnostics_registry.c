@@ -19,7 +19,6 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/contextual_check_tx.h"
-#include "validation/verify_queue.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
@@ -660,11 +659,6 @@ static const struct dump_entry g_dumpers[] = {
     { "db_maintenance", db_maintenance_dump_state_json,
                      "WAL/ANALYZE/VACUUM worker: last-run times + durations, "
                      "total runs/failures, last error" },
-    { "verify_engine", verify_engine_dump_state_json,
-                     "parallel-verify engine (ADDITIVE, not on the consensus "
-                     "hot path): wired flag, would_be_workers, and lifetime "
-                     "batch/job counters (batches_submitted, serial/parallel "
-                     "split, jobs_processed)" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
