@@ -96,6 +96,18 @@ struct chain_tip_watchdog_stats {
 };
 void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out);
 
+/* Sticky liveness (#8 — systemd-decoupled recovery): true if the watchdog
+ * requested an orderly shutdown for a GENUINE-liveness stall (no named
+ * deterministic cause) AND no systemd notify socket was present at the time
+ * (sd_notify_is_active()==false). When set, the process is NOT under a
+ * Restart=always supervisor, so a plain exit would leave a directly-launched
+ * binary down — violating S7. main() reads this after app_shutdown() and
+ * re-execs /proc/self/exe so the node comes back in-process with fresh state,
+ * exactly as a systemd restart would. The bounded restart budget is shared
+ * (it lives in progress.kv, reloaded on the fresh boot), so self-respawn
+ * cannot loop unbounded any more than a systemd restart could. */
+bool chain_tip_watchdog_respawn_requested(void);
+
 /* `zcl_state subsystem=chain_tip_watchdog` dumper. `out` is an
  * already-initialized json object; `key` is ignored. */
 bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key);

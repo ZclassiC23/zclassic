@@ -27,6 +27,7 @@
 #include "jobs/stage_repair.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/utxo_reimport_flag.h"
+#include "storage/boot_auto_reindex.h"   /* #6 B1: terminal mark on dead-end */
 #include "config/boot_crashonly.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
@@ -39,6 +40,7 @@
 #include "controllers/wallet_scan.h"
 #include "util/blocker.h"
 #include "util/signal_handler.h"
+#include "util/thread_registry.h"
 #include "util/sync.h"
 #include "util/safe_alloc.h"
 #include "util/boot_phase.h"
@@ -1154,6 +1156,33 @@ void boot_stop_db_service_kernel(void)
     zcl_service_kernel_reset(&g_boot_db_kernel);
 }
 
+/* Park the process alive-but-degraded after a boot-storage gate exhausted its
+ * bounded re-derive budget. This is the TERMINATING end-state for a genuinely
+ * unrecoverable local-storage corruption: the operator was paged ONCE (the
+ * gate emitted EV_OPERATOR_NEEDED), and instead of _exit()ing into a
+ * Restart=always crash-loop the process stays alive so the halt is observable
+ * (the PID lock is held, the page stands) and never a silent power-cycle.
+ * Blocks until a shutdown is requested (SIGTERM/SIGINT → the signal handler
+ * calls thread_registry_request_shutdown), then returns false so the caller
+ * exits cleanly. This converts "crash-loop" into "named blocker, parked", honouring
+ * the stickiness law that a stall is never a silent stop. Never returns true.
+ *
+ * The wait condition is thread_registry_shutdown_requested() — the single
+ * source of truth set by the SIGINT/SIGTERM handler installed in main() before
+ * app_init (and re-installed inside it). It is NOT g_running (which is not yet
+ * set true at the pre-services boot-storage gates). Polls on a short sleep so a
+ * service-manager stop is honoured promptly. */
+static bool boot_park_until_shutdown(const char *gate_name)
+{
+    fprintf(stderr,
+        "[boot] PARKED alive-degraded at gate '%s' — bounded re-derive budget "
+        "exhausted; the operator was paged. NOT crash-looping; waiting for a "
+        "shutdown signal.\n", gate_name ? gate_name : "boot_storage_gate");
+    while (!thread_registry_shutdown_requested())
+        sleep(2);
+    return false;
+}
+
 bool app_init(struct app_context *ctx)
 {
     int64_t t_boot_start = boot_clock_ms();
@@ -1681,6 +1710,25 @@ bool app_init(struct app_context *ctx)
      * which commits node_db's batch before the coins flush runs
      * its own BEGIN/COMMIT. One connection = no WAL lock contention. */
     if (g_node_db.open) {
+        /* Sticky boot (#6 — B1 fix): CONSUME a prior boot's crash-only reindex
+         * request HERE, before the coins-clear and the coins-view integrity
+         * gate. boot_crashonly_storage_gate() (the coins_view / progress_kv /
+         * block_index gates below) records a -reindex-chainstate request and
+         * exits; the NEXT boot must turn that request into an ACTUAL reindex.
+         * The consume historically sat AFTER the coins-view gate, so on the
+         * consuming boot the gate re-fired (the corrupt coins state was never
+         * cleared) and just counted another strike — the bounded re-derive
+         * ladder dead-ended without ever rebuilding. Consuming up front sets
+         * ctx->reindex_chainstate so (1) boot_index_clear_coins_state wipes the
+         * stale/torn coins state, (2) coins_view_sqlite_open then opens cleanly
+         * (the gate does not re-fire), and (3) reindex_chainstate(...) actually
+         * re-derives the UTXO set from blocks/ at the post-block-index site.
+         * The request file is a top-level sentinel (no DB needed), so it is safe
+         * to read before the coins view opens. */
+        if (!ctx->reindex_chainstate &&
+            boot_crashonly_consume_reindex_request(ctx->datadir))
+            ctx->reindex_chainstate = true;
+
         /* -reindex-chainstate explicitly rebuilds the UTXO set from on-disk
          * block data, discarding the stored coins state. Clear that state
          * BEFORE the coins-integrity gate runs — otherwise a torn coins anchor
@@ -1717,15 +1765,38 @@ bool app_init(struct app_context *ctx)
                   &g_node_db, progress_store_db(), ctx->datadir) &&
               coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db))) {
             fprintf(stderr,
-                "FATAL: coins view integrity check failed — the "
-                "UTXO set is inconsistent with the stored tip "
-                "anchor and the auto-rewind guard did not recover "
-                "it.  The node will not start.  Operator action: "
-                "restore ~/.zclassic-c23/node.db from a known-good "
-                "backup, OR delete it and allow a full resync.\n");
+                "WARNING: coins view integrity check failed — the "
+                "UTXO set is inconsistent with the stored tip anchor and the "
+                "auto-rewind guard did not recover it. Entering bounded "
+                "crash-only re-derive instead of FATAL-crash-looping.\n");
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "coins_view tip mismatch exceeds auto-rewind guard");
-            _exit(EXIT_FAILURE);
+            /* Sticky boot (#6 — B1): if a reindex is ALREADY in flight (this is
+             * the consuming boot), do NOT re-arm the gate — the coins clear ran
+             * just above and the reindex_chainstate execution below re-derives
+             * the UTXO set from blocks/. Re-requesting here would exit before
+             * the reindex runs and dead-end the bounded ladder. Just continue. */
+            if (!ctx->reindex_chainstate) {
+                /* A derived coins-view incoherence is the reindex-recoverable
+                 * class — re-derive the UTXO set from blocks/ via a bounded
+                 * -reindex-chainstate request rather than _exit()ing into a
+                 * Restart=always crash-loop. While the budget allows, exit
+                 * cleanly so the restart consumes the request and rebuilds; once
+                 * exhausted, park alive-degraded (paged once), never power-cycle. */
+                if (boot_crashonly_storage_gate(ctx->datadir,
+                        "coins_view_integrity") == BOOT_GATE_PARK_DEGRADED)
+                    return boot_park_until_shutdown("coins_view_integrity");
+                return false;
+            }
+            /* Reindex pending but the coins view STILL won't open even after the
+             * clear — without g_coins_sqlite.db the reindex below cannot run.
+             * Park (paged) rather than continue into a NULL-coins reindex. */
+            fprintf(stderr, "[boot] coins_view_integrity: open failed even with "
+                    "reindex pending — parking alive-degraded.\n");
+            (void)boot_auto_reindex_mark_terminal(ctx->datadir, 0);
+            event_emitf(EV_OPERATOR_NEEDED, 0,
+                "condition=coins_view_open_failed_under_reindex");
+            return boot_park_until_shutdown("coins_view_integrity");
         }
     }
 
@@ -1773,9 +1844,11 @@ bool app_init(struct app_context *ctx)
         if (utxo_reimport_flag_check_and_clear(ctx->datadir))
             ctx->reimport_utxos = true;
 
-        /* Crash-only: consume a prior boot's self-rebuild request (reindex). */
-        if (boot_crashonly_consume_reindex_request(ctx->datadir))
-            ctx->reindex_chainstate = true;
+        /* (Crash-only reindex request is consumed EARLIER, above the coins
+         * clear + the coins-view integrity gate — see boot_index.c reorder
+         * note near the block-index open. Consuming it here would be too late:
+         * the coins-view gate already ran and would re-fire before the reindex,
+         * dead-ending the bounded re-derive ladder.) */
 
         /* -reimport-utxos: force re-import from LevelDB chainstate */
         if (ctx->reimport_utxos) {
@@ -1801,11 +1874,27 @@ bool app_init(struct app_context *ctx)
     if (!progress_store_db() ||
         !coins_view_kv_init(&g_coins_read_view)) {
         fprintf(stderr,
-                "FATAL: progress.kv (coins_kv) not open; cannot serve "
-                "coins reads\n");
+                "WARNING: progress.kv (coins_kv) not open; cannot serve coins "
+                "reads. Entering bounded crash-only re-derive instead of "
+                "FATAL-crash-looping.\n");
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "coins_kv unavailable for coins read view");
-        _exit(EXIT_FAILURE);
+        /* Sticky boot (#6): progress.kv (the coins_kv home) failing to open is
+         * NOT in-process reindex-recoverable — reindex_epilogue_derive REQUIRES
+         * progress_store_db() to be open to reseed coins_kv, and continuing here
+         * would also use an uninitialized read view. So drive the bounded ladder
+         * directly: request -reindex-chainstate and exit while the budget allows
+         * (the next boot retries the open after the restart re-opens progress.kv),
+         * and once the shared boot-storage budget is exhausted PARK alive-degraded
+         * (paged once). This does NOT dead-end: even on the consuming boot the
+         * gate re-fires and counts a strike against the SAME episode anchor (0),
+         * so it climbs 1→2→3 and parks rather than _exit()ing into a crash-loop.
+         * The reindex sentinel is harmless if progress.kv later opens — it is
+         * consumed up front and the reindex_chainstate execution rebuilds. */
+        if (boot_crashonly_storage_gate(ctx->datadir, "progress_kv_open")
+                == BOOT_GATE_PARK_DEGRADED)
+            return boot_park_until_shutdown("progress_kv_open");
+        return false;
     }
     coins_view_cache_init(&g_coins_tip, &g_coins_read_view.view);
 
@@ -2512,9 +2601,19 @@ bool app_init(struct app_context *ctx)
                 bii_record_recovery_status(v, BII_RECOVERY_QUARANTINED,
                                            err[0] ? err : bii_verdict_name(v),
                                            true, false);
-                fprintf(stderr, "FATAL: block index integrity: %s\n"
-                        "Set ZCL_ALLOW_CORRUPT_INDEX=1 to override.\n", err);
+                fprintf(stderr, "WARNING: block index integrity: %s\n"
+                        "Entering bounded crash-only re-derive (or set "
+                        "ZCL_ALLOW_CORRUPT_INDEX=1 to override).\n", err);
                 bii_quarantine_corrupt(ctx->datadir, v);
+                /* Sticky boot (#6): the quarantined-index class returned false
+                 * here, which under Restart=always is a crash-loop with no
+                 * in-binary remedy. Drive the SAME bounded re-derive ladder:
+                 * request -reindex-chainstate so the restart rebuilds the index
+                 * from blocks/; once the budget is exhausted, park
+                 * alive-degraded (paged once) instead of looping. */
+                if (boot_crashonly_storage_gate(ctx->datadir,
+                        "block_index_integrity") == BOOT_GATE_PARK_DEGRADED)
+                    return boot_park_until_shutdown("block_index_integrity");
                 return false;
             }
         }
@@ -3418,13 +3517,24 @@ sapling_tree_boot_check_done:
             atomic_store(&g_sapling_tree_rebuilding, false);
             if (sret < 0) {
                 fprintf(stderr,
-                        "FATAL: -refold-from-anchor: sapling_tree_rebuild "
+                        "WARNING: refold-from-anchor: sapling_tree_rebuild "
                         "failed (returned %d) — refusing to fold on an "
-                        "unverified Sapling commitment tree\n", sret);
+                        "unverified Sapling commitment tree. Entering bounded "
+                        "crash-only re-derive instead of FATAL-crash-looping.\n",
+                        sret);
                 event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                             "refold_from_anchor sapling_tree_rebuild_failed "
                             "rc=%d", sret);
-                _exit(EXIT_FAILURE);
+                /* Sticky boot (#6): a failed post-anchor sapling rebuild is a
+                 * derived-state incoherence (the re-seeded anchor's commitment
+                 * tree did not reproduce a per-height root). -reindex-chainstate
+                 * re-derives the chainstate (and the from-anchor reset re-runs)
+                 * on the restart; bounded so a genuinely corrupt base parks
+                 * alive-degraded rather than _exit()ing into a crash-loop. */
+                if (boot_crashonly_storage_gate(ctx->datadir,
+                        "refold_sapling_rebuild") == BOOT_GATE_PARK_DEGRADED)
+                    return boot_park_until_shutdown("refold_sapling_rebuild");
+                return false;
             }
             /* Reload the verified tree into the live in-memory state. */
             uint8_t tbuf[8192];

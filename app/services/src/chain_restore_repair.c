@@ -356,6 +356,7 @@ int chain_restore_clear_failed_above_tip(struct main_state *ms)
     int tip_h = active_chain_height(&ms->chain_active);
 
     int cleared = 0;
+    int refetch = 0;
     size_t iter = 0;
     struct block_index *p;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
@@ -365,11 +366,34 @@ int chain_restore_clear_failed_above_tip(struct main_state *ms)
         if (!failed) continue;
         p->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
         cleared++;
+
+        /* Sticky boot (#4a — restart must not deterministically re-wedge):
+         * the slot at EXACTLY tip+1 (H*+1) is the wedge slot. Clearing only
+         * BLOCK_FAILED while KEEPING the on-disk body re-admits the SAME body
+         * that just failed, so the reducer re-folds it into the identical
+         * failure and the restart re-wedges at the same height every boot.
+         * Break that loop at the source: drop BLOCK_HAVE_DATA for the H*+1
+         * slot so the body-fetch stage re-DOWNLOADS the body from a peer and
+         * re-validates the FRESH bytes through the full consensus path (parity
+         * preserved). If the peer returns a good body, H* climbs and the wedge
+         * clears for good; if it returns the same bad body, body_persist's own
+         * bounded re-fetch discipline handles it (a named blocker, never a
+         * crash). This is the boot half of the peer-sourced wedge cure; the
+         * higher successors keep only the FAILED clear (their bodies are
+         * re-validated forward and are not the immediate wedge). */
+        if (p->nHeight == tip_h + 1 &&
+            (p->nStatus & (unsigned)BLOCK_HAVE_DATA)) {
+            p->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+            refetch++;
+        }
     }
 
     if (cleared > 0)
         printf("[chain-restore] cleared %d stale BLOCK_FAILED_VALID "
-               "flags above tip h=%d\n", cleared, tip_h);
+               "flags above tip h=%d%s\n", cleared, tip_h,
+               refetch ? " (and dropped HAVE_DATA at H*+1 to force a peer "
+                         "body re-fetch instead of re-folding the same "
+                         "failed body)" : "");
 
     return cleared;
 }

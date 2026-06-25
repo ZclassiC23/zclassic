@@ -26,7 +26,9 @@
 #include "core/uint256.h"
 #include "controllers/explorer_internal.h"
 #include "services/wallet_backup_service.h"
+#include "services/chain_tip_watchdog.h"  /* #8: self-respawn when off-systemd */
 #include "util/clientversion.h"
+#include "util/sd_notify.h"               /* #8: detect NOTIFY_SOCKET */
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -664,6 +666,11 @@ static int cli_main(int argc, char **argv)
  * ════════════════════════════════════════════════════════════════ */
 
 volatile sig_atomic_t g_shutdown_requested = 0;
+
+/* #8 — saved argv for in-process self-respawn (off-systemd liveness recovery).
+ * Captured at the top of node mode (after the one-shot sub-modes return), used
+ * only by the self-respawn execv after a clean app_shutdown. */
+static char **g_saved_argv = NULL;
 
 /* Round 6 Part 3: alarm-based shutdown watchdog. Async-signal-safe.
  * Previous implementation used pthread_create from the signal handler
@@ -1946,6 +1953,10 @@ int main(int argc, char **argv)
 
     printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
 
+    /* #8 — capture argv for a possible in-process self-respawn (the watchdog
+     * sets the respawn flag for a genuine-liveness stall when off-systemd). */
+    g_saved_argv = argv;
+
     if (!app_init(&ctx)) {
         fprintf(stderr, "Initialization failed.\n");
         return 1;
@@ -2056,6 +2067,33 @@ int main(int argc, char **argv)
         g_shutdown_requested = 1;
 
     if (show_metrics) app_stop_metrics();
+
+    /* #8 — S7: if the tip-watchdog requested a self-respawn (genuine-liveness
+     * stall with NO systemd notify socket), shut down cleanly and then re-exec
+     * this binary in-process so liveness recovery does not depend on
+     * Restart=always. Under systemd the flag is never set (sd_notify_is_active
+     * was true), so this is a no-op there and the normal exit happens. The
+     * bounded restart budget persisted in progress.kv is reloaded by the fresh
+     * boot, so self-respawn is bounded exactly like a systemd restart and
+     * cannot loop unbounded. */
+    bool do_respawn = chain_tip_watchdog_respawn_requested() &&
+                      !sd_notify_is_active() && g_saved_argv;
     app_shutdown();
+    if (do_respawn) {
+        char exe[4096];
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (n > 0) {
+            exe[n] = '\0';
+            fprintf(stderr,
+                "[main] self-respawn: re-exec %s (off-systemd liveness "
+                "recovery; bounded by the persisted restart budget)\n", exe);
+            fflush(NULL);
+            execv(exe, g_saved_argv);
+            /* execv only returns on error — fall through to a normal exit so a
+             * failed re-exec is at worst a one-time DOWN, never a busy loop. */
+            fprintf(stderr, "[main] self-respawn execv failed: %s — exiting "
+                "(not looping)\n", strerror(errno));
+        }
+    }
     return 0;
 }

@@ -109,3 +109,56 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
         tip_h, zero_nbits, mismatches);
     return true;
 }
+
+/* Boot-storage episode anchor: these gates fire BEFORE a tip height is known,
+ * so they all share ONE bounded episode keyed on a fixed sentinel (0). The
+ * budget keying folds to the episode minimum, so repeated boots at any of these
+ * gates increment the SAME count toward BOOT_AUTO_REINDEX_MAX rather than each
+ * gate re-arming a fresh budget. */
+#define BOOT_STORAGE_EPISODE_ANCHOR 0
+
+enum boot_gate_action boot_crashonly_storage_gate(const char *datadir,
+                                                  const char *gate_name)
+{
+    if (!gate_name) gate_name = "boot_storage_gate";
+
+    /* No datadir (degenerate / unit-test path): there is nowhere to persist a
+     * bounded budget, so we cannot promise the restart will re-derive. Park
+     * rather than crash-loop — the safest terminating end-state. */
+    if (!datadir || !datadir[0]) {
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+            "condition=boot_storage_gate gate=%s reason=no_datadir", gate_name);
+        return BOOT_GATE_PARK_DEGRADED;
+    }
+
+    int n = boot_auto_reindex_request(datadir, BOOT_STORAGE_EPISODE_ANCHOR);
+    if (n >= 1 && n <= BOOT_AUTO_REINDEX_MAX) {
+        fprintf(stderr,
+            "[boot] crash-only recovery: boot-storage gate '%s' failed "
+            "(attempt %d/%d) — requesting -reindex-chainstate; restarting to "
+            "re-derive the UTXO set from blocks/ instead of re-hitting the "
+            "identical corrupt derived state (no FATAL, no data loss).\n",
+            gate_name, n, BOOT_AUTO_REINDEX_MAX);
+        event_emitf(EV_BOOT_ACTIVATE, 0,
+            "crashonly_boot_storage_reindex_requested gate=%s attempt=%d",
+            gate_name, n);
+        return BOOT_GATE_EXIT_FOR_REINDEX;
+    }
+
+    /* Budget exhausted (n == terminal, the marker already on disk, or a write
+     * error). PERSIST the exhausted state as a TERMINAL marker so the next boot
+     * does NOT re-arm a fresh count and crash-loop, page the operator ONCE, and
+     * tell the caller to PARK alive-degraded — matching chain_tip_watchdog's
+     * "stay up, paged, never power-cycle" terminal end-state. */
+    (void)boot_auto_reindex_mark_terminal(datadir, BOOT_STORAGE_EPISODE_ANCHOR);
+    fprintf(stderr,
+        "[boot] crash-only recovery EXHAUSTED at boot-storage gate '%s' after "
+        "%d reindex attempts — block data may be genuinely corrupt. NOT "
+        "crash-looping: parking alive-degraded for the operator (terminal "
+        "marker persisted so this does not re-arm the reindex budget).\n",
+        gate_name, BOOT_AUTO_REINDEX_MAX);
+    event_emitf(EV_OPERATOR_NEEDED, 0,
+        "condition=boot_storage_gate_exhausted gate=%s attempts=%d",
+        gate_name, BOOT_AUTO_REINDEX_MAX);
+    return BOOT_GATE_PARK_DEGRADED;
+}
