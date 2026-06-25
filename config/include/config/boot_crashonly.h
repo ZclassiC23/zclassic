@@ -43,4 +43,37 @@ bool boot_crashonly_handle_unrecoverable(const char *datadir, int tip_h,
                                          int first_mismatch_h,
                                          bool reindex_executable);
 
+/* Action a caller of boot_crashonly_storage_gate() must take. */
+enum boot_gate_action {
+    /* The bounded reindex budget allows another attempt: a self-rebuild
+     * request was recorded. The caller must return from app_init with a
+     * FAILURE so the process exits cleanly; the NEXT boot consumes the
+     * request, runs -reindex-chainstate, and re-derives the inconsistent
+     * state from blocks/. This is the crash-only re-derive rung. */
+    BOOT_GATE_EXIT_FOR_REINDEX = 0,
+    /* The bounded budget is EXHAUSTED at this boot-storage gate (or no
+     * datadir). A terminal marker was persisted (so the next boot does NOT
+     * re-arm and crash-loop) and an operator page fired. The caller must
+     * NOT _exit() into a Restart=always crash-loop: it parks the process
+     * alive-but-degraded (see boot_park_until_shutdown) so the halt is
+     * observable and named, never a silent power-cycle. */
+    BOOT_GATE_PARK_DEGRADED = 1,
+};
+
+/* Crash-only gate for a boot-phase storage incoherence that runs BEFORE the
+ * node can serve degraded (coins-view integrity, progress.kv open, the
+ * post-anchor sapling rebuild). These sites historically _exit(EXIT_FAILURE),
+ * which under systemd Restart=always is an unbounded crash-loop with no
+ * in-binary remedy. Convert that into the SAME bounded re-derive ladder the
+ * post-restore integrity gate uses: record a bounded -reindex-chainstate
+ * request keyed on a per-boot-storage episode (anchor 0 = "boot storage
+ * incoherence"), so the restart re-derives the UTXO set from blocks/ instead
+ * of re-hitting the identical corrupt derived state. Returns
+ * BOOT_GATE_EXIT_FOR_REINDEX while the budget allows (caller exits → restart
+ * reindexes), or BOOT_GATE_PARK_DEGRADED once the budget is spent (caller
+ * parks, never crash-loops). `gate_name` names the failing gate in the log +
+ * the EV_OPERATOR_NEEDED page. */
+enum boot_gate_action boot_crashonly_storage_gate(const char *datadir,
+                                                  const char *gate_name);
+
 #endif /* ZCL_CONFIG_BOOT_CRASHONLY_H */

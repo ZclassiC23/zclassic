@@ -30,6 +30,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
+#include "util/sd_notify.h"
 #include "util/log_macros.h"
 #include "util/alerts.h"
 #include "util/blocker.h"
@@ -83,6 +84,11 @@ static _Atomic int64_t  g_thr_restart  = CHAIN_TIP_WD_DEFAULT_RESTART_SECS;
 static _Atomic int64_t  g_persisted_stuck_height = -1;
 static _Atomic int      g_no_progress_restarts   = 0;
 static _Atomic bool     g_operator_needed        = false;
+
+/* #8 — set when a genuine-liveness restart was requested while NOT under a
+ * systemd notify socket, so main() self-re-execs instead of leaving a
+ * directly-launched binary down. Latched (only ever set true). */
+static _Atomic bool     g_respawn_requested      = false;
 
 static int64_t mono_us_now(void)
 {
@@ -232,9 +238,28 @@ static bool wd_decide_restart(int64_t h, int64_t age_s, bool do_shutdown,
         "chain_tip_watchdog request_shutdown h=%lld age=%llds restart=%d/%d",
         (long long)h, (long long)age_s, restarts, CHAIN_TIP_WD_MAX_RESTARTS);
 
+    /* #8 — S7: the restart remedy historically relied on systemd
+     * Restart=always to bring the process back. A directly-launched binary
+     * (no NOTIFY_SOCKET) would just exit and stay DOWN, so genuine-liveness
+     * recovery would never happen off systemd. When no notify socket is
+     * present, latch a self-respawn request: main() re-execs /proc/self/exe
+     * after the orderly shutdown so the node comes back in-process with fresh
+     * state, exactly as a systemd restart would. The bounded restart budget
+     * lives in progress.kv and is reloaded on the fresh boot, so self-respawn
+     * is bounded identically — it cannot loop unbounded. */
+    if (!sd_notify_is_active()) {
+        atomic_store(&g_respawn_requested, true);
+        LOG_WARN("chain_tip_watchdog", "[chain_tip_watchdog] no systemd notify socket — " "requesting in-process self-respawn so liveness recovery does " "not depend on Restart=always (S7)");
+    }
+
     if (do_shutdown)
         thread_registry_request_shutdown();
     return true;
+}
+
+bool chain_tip_watchdog_respawn_requested(void)
+{
+    return atomic_load(&g_respawn_requested);
 }
 
 /* ── Cause probe ───────────────────────────────────────────────────────
@@ -459,6 +484,7 @@ void chain_tip_watchdog_test_reset_runtime(void)
     atomic_store(&g_persisted_stuck_height, -1);
     atomic_store(&g_no_progress_restarts, 0);
     atomic_store(&g_operator_needed, false);
+    atomic_store(&g_respawn_requested, false);
 }
 
 void chain_tip_watchdog_test_load_persisted(void)
