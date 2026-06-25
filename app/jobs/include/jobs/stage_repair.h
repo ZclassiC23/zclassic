@@ -274,6 +274,17 @@ bool stage_reducer_frontier_reconcile_light(
 /* Test-only: drop the dry-run detect memo so the next reconcile re-sweeps. Call
  * between fixtures that close+reopen progress.kv (see the definition comment). */
 void stage_reducer_frontier_reset_detect_memo_for_testing(void);
+
+/* Test-only witness for the proof_validate internal_error symmetry
+ * (self-verified-tip-plan Act 1). The caller seeds the script/proof/utxo log +
+ * cursor shape; this runs the lowest proof-only internal_error detect + the
+ * one-shot rewind purely over the progress store (no main_state, no disk block
+ * read). On a fired rewind the proof_validate_log row(s) at the hole are
+ * DELETED so proof_validate re-derives the verdict (never re-reads the frozen
+ * ok=0). Returns false only on a store error; *repaired / *out_height report
+ * whether and where a rewind fired. Marker is keyed on a zero block hash. */
+bool stage_repair_proof_internal_error_rewind_for_testing(
+    struct sqlite3 *db, bool *repaired, int *out_height);
 #endif
 
 #endif /* ZCL_JOBS_STAGE_REPAIR_H */

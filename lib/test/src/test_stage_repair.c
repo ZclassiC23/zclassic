@@ -168,6 +168,40 @@ static int cursor_for(sqlite3 *db, const char *name)
     return out;
 }
 
+static bool set_one_cursor(sqlite3 *db, const char *name, int cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES(?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, cursor);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* INSERT OR REPLACE a (height,status,ok) row into a 3-column *_log table. */
+static bool put_log(sqlite3 *db, const char *table, int height,
+                    const char *status, int ok)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO %s(height,status,ok) VALUES(?,?,?)",
+             table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 3, ok);
+    bool done = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return done;
+}
+
 static bool row_exists(sqlite3 *db, const char *table, int height)
 {
     char sql[128];
@@ -506,6 +540,161 @@ int test_stage_repair(void)
         STR_CHECK("load rejects a mismatched expected hash", ok);
         teardown_case(dir);
     }
+
+    /* === proof_validate internal_error symmetry (self-verified-tip-plan
+     * Act 1) ===
+     *
+     * The script path already re-derives a transient script_validate
+     * internal_error instead of trusting it as a terminal ok=0. These pin the
+     * PROOF-stage twin: a transient proof_validate internal_error at a height
+     * where script PASSED must also be re-derived, never frozen as "invalid"
+     * (the inverse Law-7 lie). The witness: after the one-shot rewind the
+     * proof_validate_log row at the hole is DELETED (so proof_validate
+     * re-derives it with a fresh validated_at on the next step), the proof
+     * cursor is rewound to the hole, and a second pass is a one-shot no-op. */
+
+#ifdef ZCL_TESTING
+    /* --- Witness A: a transient proof internal_error (script ok=1) is
+     * re-derived: the verdict row is dropped and the proof cursor rewinds. --- */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("proof_internal_error", dir, sizeof(dir), &db);
+        /* script/proof advanced to cursor 5; utxo pinned at the hole (3) — a
+         * transient proof internal_error leaves utxo_apply stuck there, so no
+         * coins rewind is exercised (rewind_coins == false). */
+        ok = ok && set_one_cursor(db, "script_validate", 5);
+        ok = ok && set_one_cursor(db, "proof_validate", 5);
+        ok = ok && set_one_cursor(db, "utxo_apply", 3);
+        ok = ok && set_one_cursor(db, "tip_finalize", 3);
+        /* script PASSED at h=3 and h=4; proof recorded a transient
+         * internal_error at h=3 (ok=0) and verified h=4. */
+        ok = ok && put_log(db, "script_validate_log", 3, "verified", 1);
+        ok = ok && put_log(db, "script_validate_log", 4, "verified", 1);
+        ok = ok && put_log(db, "proof_validate_log", 3, "internal_error", 0);
+        ok = ok && put_log(db, "proof_validate_log", 4, "verified", 1);
+
+        bool repaired = false;
+        int height = -1;
+        bool rv = stage_repair_proof_internal_error_rewind_for_testing(
+            db, &repaired, &height);
+
+        ok = ok && rv == true;
+        ok = ok && repaired == true;
+        ok = ok && height == 3;
+        /* The "could not determine validity" verdict is GONE — proof_validate
+         * will re-derive it (a fresh row, not the frozen ok=0). This is the
+         * Law-7 witness: a transient is never persisted as terminal. */
+        ok = ok && !row_exists(db, "proof_validate_log", 3);
+        ok = ok && !row_exists(db, "proof_validate_log", 4);
+        /* script verdicts are untouched (they passed; the proof twin must NOT
+         * re-run script). */
+        ok = ok && row_exists(db, "script_validate_log", 3);
+        ok = ok && row_exists(db, "script_validate_log", 4);
+        /* cursors rewound to the hole so the forward stages replay it. */
+        ok = ok && cursor_for(db, "proof_validate") == 3;
+        ok = ok && cursor_for(db, "tip_finalize") == 3;
+        /* script cursor untouched. */
+        ok = ok && cursor_for(db, "script_validate") == 5;
+        STR_CHECK("transient proof internal_error is re-derived, not frozen",
+                  ok);
+        teardown_case(dir);
+    }
+
+    /* --- Witness B: a genuine proof_invalid (consensus reject) stays
+     * terminal — the symmetry must not erase real verdicts. --- */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("proof_invalid_terminal", dir, sizeof(dir), &db);
+        ok = ok && set_one_cursor(db, "script_validate", 5);
+        ok = ok && set_one_cursor(db, "proof_validate", 5);
+        ok = ok && set_one_cursor(db, "utxo_apply", 3);
+        ok = ok && set_one_cursor(db, "tip_finalize", 3);
+        ok = ok && put_log(db, "script_validate_log", 3, "verified", 1);
+        /* A real consensus reject, NOT a transient. */
+        ok = ok && put_log(db, "proof_validate_log", 3, "proof_invalid", 0);
+
+        bool repaired = false;
+        int height = -1;
+        bool rv = stage_repair_proof_internal_error_rewind_for_testing(
+            db, &repaired, &height);
+
+        ok = ok && rv == true;
+        ok = ok && repaired == false;       /* no transient hole found */
+        /* The genuine reject row survives; cursor unchanged. */
+        ok = ok && row_exists(db, "proof_validate_log", 3);
+        ok = ok && cursor_for(db, "proof_validate") == 5;
+        STR_CHECK("genuine proof_invalid stays terminal (not erased)", ok);
+        teardown_case(dir);
+    }
+
+    /* --- Witness C: a proof internal_error at a height where SCRIPT also
+     * failed is the script path's domain — the proof twin leaves it alone. --- */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("proof_script_codomain", dir, sizeof(dir), &db);
+        ok = ok && set_one_cursor(db, "script_validate", 5);
+        ok = ok && set_one_cursor(db, "proof_validate", 5);
+        ok = ok && set_one_cursor(db, "utxo_apply", 3);
+        ok = ok && set_one_cursor(db, "tip_finalize", 3);
+        /* script FAILED at h=3 (its own rewind owns this height). */
+        ok = ok && put_log(db, "script_validate_log", 3, "internal_error", 0);
+        ok = ok && put_log(db, "proof_validate_log", 3, "internal_error", 0);
+
+        bool repaired = false;
+        int height = -1;
+        bool rv = stage_repair_proof_internal_error_rewind_for_testing(
+            db, &repaired, &height);
+
+        ok = ok && rv == true;
+        ok = ok && repaired == false;       /* script owns the hole */
+        ok = ok && row_exists(db, "proof_validate_log", 3);
+        ok = ok && cursor_for(db, "proof_validate") == 5;
+        STR_CHECK("proof+script co-failure is left to the script rewind", ok);
+        teardown_case(dir);
+    }
+
+    /* --- Witness D: the one-shot marker bounds the retry. Re-inject the SAME
+     * transient hole after a rewind; the second pass must NOT rewind again
+     * (otherwise a persistently-failing transient loops forever). --- */
+    {
+        char dir[256];
+        sqlite3 *db = NULL;
+        bool ok = setup_case("proof_oneshot_marker", dir, sizeof(dir), &db);
+        ok = ok && set_one_cursor(db, "script_validate", 5);
+        ok = ok && set_one_cursor(db, "proof_validate", 5);
+        ok = ok && set_one_cursor(db, "utxo_apply", 3);
+        ok = ok && set_one_cursor(db, "tip_finalize", 3);
+        ok = ok && put_log(db, "script_validate_log", 3, "verified", 1);
+        ok = ok && put_log(db, "proof_validate_log", 3, "internal_error", 0);
+
+        bool repaired1 = false;
+        int height1 = -1;
+        ok = ok && stage_repair_proof_internal_error_rewind_for_testing(
+                       db, &repaired1, &height1);
+        ok = ok && repaired1 == true && height1 == 3;
+
+        /* Simulate the transient re-reproducing: proof re-records the same
+         * internal_error and the cursor re-advances. */
+        ok = ok && set_one_cursor(db, "proof_validate", 5);
+        ok = ok && put_log(db, "proof_validate_log", 3, "internal_error", 0);
+
+        bool repaired2 = false;
+        int height2 = -1;
+        ok = ok && stage_repair_proof_internal_error_rewind_for_testing(
+                       db, &repaired2, &height2);
+        /* Second pass is a marker-bounded no-op: the row survives, the cursor
+         * is not rewound a second time. The still-present internal_error
+         * surfaces as a named marker-seen refusal, never a silent loop. */
+        ok = ok && repaired2 == false;
+        ok = ok && row_exists(db, "proof_validate_log", 3);
+        ok = ok && cursor_for(db, "proof_validate") == 5;
+        STR_CHECK("one-shot marker bounds the proof rewind to one attempt", ok);
+        teardown_case(dir);
+    }
+#endif /* ZCL_TESTING */
 
     return failures;
 }
