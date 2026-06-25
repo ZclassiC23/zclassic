@@ -527,13 +527,40 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
     if ((int64_t)hi - (int64_t)lo + 1 > ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP)
         hi = lo + ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP - 1;
 
-    /* One bounded scan: collect eligible (have-data, failure-free) block_index
-     * entries in (c->height, hi]. NOT gated on BLOCK_VALID_SCRIPTS — see the
-     * function comment: the body stages must see a have-data block BEFORE it is
-     * script-validated. */
-    int span = hi - lo + 1;
+    /* Collect eligible (have-data, failure-free) block_index entries in
+     * (c->height, hi]. NOT gated on BLOCK_VALID_SCRIPTS — see the function
+     * comment: the body stages must see a have-data block BEFORE it is
+     * script-validated.
+     *
+     * The buffer is sized by a COUNT pass, not by `span = hi - lo + 1`: the map
+     * can hold MORE than one block_index at a given height (competing branches /
+     * forks within the gap window), so the count of in-range eligible entries
+     * legitimately exceeds the number of distinct heights. Sizing by `span`
+     * here was a heap overflow — `elig[n++]` ran past the allocation as soon as
+     * any forked sibling fell inside [lo, hi] (the reorg the forward-progress
+     * gate's PART 2 exercises). Count first, then fill exactly. */
+    int n_eligible = 0;
+    {
+        size_t iter0 = 0;
+        struct block_index *q = NULL;
+        while (block_map_next(m, &iter0, NULL, &q)) {
+            if (!q)
+                continue;
+            int h = q->nHeight;
+            if (h < lo || h > hi)
+                continue;
+            if (block_has_any_failure(q))
+                continue;
+            if (!(q->nStatus & BLOCK_HAVE_DATA))
+                continue;
+            n_eligible++;
+        }
+    }
+    if (n_eligible == 0)
+        return true; /* no have-data successor in range — leave window as-is */
+
     struct block_index **elig =
-        zcl_malloc((size_t)span * sizeof(*elig), "achd_elig");
+        zcl_malloc((size_t)n_eligible * sizeof(*elig), "achd_elig");
     if (!elig)
         return true; /* OOM -> no extension (safe; never a partial window) */
     int n = 0;
@@ -549,6 +576,8 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
             continue;
         if (!(p->nStatus & BLOCK_HAVE_DATA))
             continue;
+        if (n >= n_eligible)
+            break; /* defensive: map cannot grow between the two passes here */
         elig[n++] = p;
     }
 

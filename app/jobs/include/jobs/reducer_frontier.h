@@ -34,10 +34,20 @@
 struct json_value;
 
 /* The compiled-in SHA3 UTXO checkpoint height — the irreversible floor H*
- * may never fall below. Mirrors get_sha3_utxo_checkpoint()->height; exposed
- * as a named constant so callers and tests can assert the clamp without
- * pulling in lib/chain. Verified equal to the live checkpoint by the
- * regression test. */
+ * may never fall below ON MAINNET. Mirrors the MAINNET
+ * get_sha3_utxo_checkpoint()->height; exposed as a named constant so callers
+ * and tests can assert the mainnet clamp without pulling in lib/chain.
+ * Verified equal to the live mainnet checkpoint by the regression test.
+ *
+ * NETWORK NOTE: this constant is the MAINNET value. The SHA3 UTXO checkpoint
+ * is a mainnet artifact (a specific mainnet block at 3,056,758); testnet and
+ * regtest have no such checkpoint, so their finality floor is genesis (0).
+ * The RUNTIME floor every read site uses is reducer_frontier_floor() ->
+ * reducer_frontier_compiled_anchor(), which is network-derived: it returns
+ * this constant on mainnet and 0 on testnet/regtest. Code that must compute a
+ * floor without the runtime helper (e.g. the refold gate) keys the same
+ * network branch off chain_params_get()->strNetworkID. This macro stays the
+ * mainnet number so existing mainnet-only assertions/tests are unchanged. */
 #define REDUCER_FRONTIER_TRUSTED_ANCHOR ((int32_t)3056758)
 
 /* The FLOOR H* and the L1 reconcile operate at. On a NORMAL boot this is the

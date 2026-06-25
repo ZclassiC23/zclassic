@@ -15,6 +15,7 @@
 #include "jobs/refold_progress.h"
 #include "jobs/tip_finalize_stage.h"
 
+#include "chain/chainparams.h"
 #include "chain/checkpoints.h"
 #include "platform/time_compat.h"
 #include "storage/coins_kv.h"
@@ -51,7 +52,15 @@ void reducer_frontier_test_set_compiled_anchor(int32_t height)
 
 /* The compiled anchor floor (the SHA3 UTXO checkpoint height): the minimum
  * height H* and the L1 reconcile may operate at. Single source so a test
- * override (if any) covers every read site identically. */
+ * override (if any) covers every read site identically.
+ *
+ * NETWORK-DERIVED: the SHA3 UTXO checkpoint is a MAINNET artifact (a specific
+ * mainnet block at REDUCER_FRONTIER_TRUSTED_ANCHOR). On testnet/regtest there
+ * is no such trusted finality checkpoint, so the floor is genesis (0) — H* may
+ * legitimately sit anywhere from genesis up and a low cursor is NOT a defect.
+ * Mainnet behavior is byte-identical to before (returns the compiled
+ * checkpoint height). The runtime network is read from
+ * chain_params_get()->strNetworkID ("main" / "test" / "regtest"). */
 static int32_t reducer_frontier_compiled_anchor(void)
 {
 #ifdef ZCL_TESTING
@@ -59,6 +68,16 @@ static int32_t reducer_frontier_compiled_anchor(void)
     if (ov >= 0)
         return ov;
 #endif
+    /* Non-mainnet networks have no SHA3 UTXO checkpoint: the finality floor is
+     * genesis. get_sha3_utxo_checkpoint() returns the compiled MAINNET
+     * checkpoint unconditionally, so the network gate must live HERE (not in
+     * lib/chain). chain_params_get() is always valid post-select (lazy-inits
+     * to mainnet), so a NULL strNetworkID never reaches us. */
+    const struct chain_params *p = chain_params_get();
+    if (p && p->strNetworkID[0] != '\0' &&
+        strcmp(p->strNetworkID, "main") != 0)
+        return 0;
+
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     return cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
 }

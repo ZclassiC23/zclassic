@@ -493,9 +493,18 @@ int test_reducer_forward_progress_gate(void)
             int      hh = active_chain_height(&ms.chain_active);
             uint64_t fin = tip_finalize_stage_finalized_total();
 
-            /* Forward-progress invariant: the tip is exactly h, finalized_total
-             * strictly increased, and neither retreated (no oscillation). */
-            bool advanced  = (hh == h);
+            /* Forward-progress invariant (post-67062bbf6 "publish each block on
+             * arrival"): the tip must FINALIZE block h (hh >= h) without ever
+             * running past the visible window tip (the lookahead successor at
+             * h+1, so hh <= h+1), finalized_total must strictly increase (a
+             * stall would freeze it), and the tip must never retreat (an
+             * oscillation would). The retired convention held the served tip
+             * exactly at h with h+1 pending; since the reducer now publishes the
+             * successor on first arrival, the served tip legitimately sits at
+             * h+1. A stall (hh stuck below h) or oscillation (hh < reached_height
+             * / fin not increasing) is still reproduced — only the over-strict
+             * `hh == h` was calibrated to the dead +1-lattice. */
+            bool advanced  = (hh >= h) && (hh <= h + 1);
             bool monotone  = (hh >= reached_height) && (fin >= prev_finalized);
             bool fin_up    = (fin > prev_finalized);
             if (!advanced || !monotone || !fin_up) {
@@ -526,7 +535,7 @@ int test_reducer_forward_progress_gate(void)
 
         RFP_CHECK("PART1: tip advanced monotonically to N with no stall/"
                   "oscillation (live-wedge NOT reproduced)",
-                  reached_height == RFP_N && !wedge_reproduced);
+                  reached_height >= RFP_N && !wedge_reproduced);
         RFP_CHECK("PART1: tip_finalize finalized >= N blocks (reducer engine)",
                   tip_finalize_stage_finalized_total() >= (uint64_t)RFP_N);
         RFP_CHECK("PART1: utxo_apply succeeded at tip height N",

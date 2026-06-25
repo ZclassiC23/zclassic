@@ -87,6 +87,14 @@ extern bool stage_reducer_frontier_reconcile_refill_cursors(
 
 #define A REDUCER_FRONTIER_TRUSTED_ANCHOR
 
+/* The compiled-anchor floor is now NETWORK-DERIVED (genesis on regtest/testnet,
+ * the mainnet SHA3 checkpoint on mainnet). This fixture deliberately mixes
+ * regtest PARAMS (equihash 48,5, datadir) with MAINNET HEIGHTS (rows at A+1..),
+ * so it must pin the floor to the mainnet anchor A explicitly rather than
+ * relying on regtest inheriting it. The test entry sets the override to A and
+ * restores -1 (production default) on exit. */
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
+
 /* ── Part A fixture: synthetic progress.kv at the mainnet trusted anchor
  *    (the test_reducer_frontier_reconcile_light.c pattern). ─────────────── */
 
@@ -774,6 +782,12 @@ int test_stage_repair_script_refill(void)
     printf("\n=== stage_repair_script_refill tests ===\n");
     int failures = 0;
 
+    /* Pin the (now network-derived) compiled-anchor floor to the mainnet
+     * anchor A: every fixture below seeds rows at A+1.. and asserts hstar==A+1,
+     * which requires the floor to sit at A even though the drain harness runs
+     * under regtest params. Restored to -1 (production default) before return. */
+    reducer_frontier_test_set_compiled_anchor(A);
+
     /* T1 (synthetic): rowless script+proof hole at h0 == coins_applied,
      * cursors at N > h0 — FIX-2b (via the full reconcile_light pipeline)
      * clamps script/proof/tip_finalize to h0 and deletes nothing. */
@@ -974,8 +988,12 @@ int test_stage_repair_script_refill(void)
         teardown_fixture(&fx);
     }
 
-    /* Drain harness: production stages refill + re-advance after the clamp. */
+    /* Drain harness: production stages refill + re-advance after the clamp.
+     * Runs with the override still pinned to A (its fixture is at mainnet
+     * heights too). */
     failures += run_drain_harness_refill();
+
+    reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */
 
     printf("stage_repair_script_refill: %d failures\n", failures);
     return failures;
