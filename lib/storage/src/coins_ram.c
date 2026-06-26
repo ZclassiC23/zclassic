@@ -682,8 +682,22 @@ bool coins_ram_snapshot_write(const char *out_path, int32_t height,
                               uint8_t out_sha3[32], uint64_t *out_count,
                               int64_t *out_total_supply)
 {
+    /* Back-compat thin wrapper: no Sapling frontier => writes a v1 file. */
+    return coins_ram_snapshot_write_v2(out_path, height, anchor_block_hash,
+                                       NULL, 0, out_sha3, out_count,
+                                       out_total_supply);
+}
+
+bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
+                                 const uint8_t anchor_block_hash[32],
+                                 const uint8_t *frontier, uint32_t frontier_len,
+                                 uint8_t out_sha3[32], uint64_t *out_count,
+                                 int64_t *out_total_supply)
+{
     if (!coins_ram_active() || !out_path || !out_path[0])
         LOG_FAIL("coins_ram", "snapshot_write: inactive or null path");
+    if (frontier_len > 0 && !frontier)
+        LOG_FAIL("coins_ram", "snapshot_write: frontier_len>0 with null blob");
 
     struct comm_rec *recs = NULL; size_t n = 0; uint8_t *scr_pool = NULL;
     if (!build_effective_sorted(&recs, &n, &scr_pool))
@@ -744,13 +758,30 @@ bool coins_ram_snapshot_write(const char *out_path, int32_t height,
     if (!ok) { fclose(out); unlink(tmp_path);
         LOG_FAIL("coins_ram", "snapshot_write: body write failed"); }
 
+    /* OPTIONAL Sapling-frontier section (same layout as coins_kv_snapshot_write):
+     * appended after the UTXO records, inside the body SHA3 region. Present =>
+     * version 2; absent => version 1. */
+    uint32_t snap_version = 1;
+    if (frontier_len > 0) {
+        uint8_t lenbuf[4];
+        for (int i = 0; i < 4; i++) lenbuf[i] = (uint8_t)(frontier_len >> (8 * i));
+        if (fwrite(lenbuf, 1, 4, out) != 4 ||
+            fwrite(frontier, 1, frontier_len, out) != frontier_len) {
+            fclose(out); unlink(tmp_path);
+            LOG_FAIL("coins_ram", "snapshot_write: frontier write failed");
+        }
+        sha3_256_write(&ctx, lenbuf, 4);
+        sha3_256_write(&ctx, frontier, frontier_len);
+        snap_version = 2;
+    }
+
     uint8_t body_sha3[32];
     sha3_256_finalize(&ctx, body_sha3);
 
     memcpy(header, "ZCLUTXO\x00", 8);
-    /* version u32=1 at off 8; height u32 at off 16; count u64 at off 24;
+    /* version u32 at off 8 (1 or 2); height u32 at off 16; count u64 at off 24;
      * total_supply i64 at off 32; anchor hash at off 40; sha3 at off 72. */
-    header[8] = 1;
+    header[8] = (uint8_t)snap_version;
     header[16] = (uint8_t)height; header[17] = (uint8_t)(height >> 8);
     header[18] = (uint8_t)(height >> 16); header[19] = (uint8_t)(height >> 24);
     for (int i = 0; i < 8; i++) header[24 + i] = (uint8_t)(count >> (8 * i));

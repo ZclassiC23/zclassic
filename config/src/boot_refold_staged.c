@@ -41,7 +41,11 @@
 #include "validation/chainstate.h"       /* active_chain_height, active_chain_at */
 #include "chain/chain.h"                  /* struct block_index (hashBlock) */
 #include "controllers/sync_controller.h" /* sapling_tree_rebuild (re-seed tree) */
+#include "sapling/incremental_merkle_tree.h" /* incremental_tree_deserialize/root */
+#include "core/serialize.h"               /* struct byte_stream */
+#include "core/uint256.h"                 /* struct uint256 */
 #include "util/util.h"                   /* GetDataDir */
+#include "util/safe_alloc.h"              /* zcl_malloc */
 #include "util/blocker.h"                 /* refold.body_gap named blocker */
 #include "util/log_macros.h"
 
@@ -164,6 +168,101 @@ static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
     if (slash) *slash = '\0'; else snprintf(dir, sizeof(dir), ".");
     int m = snprintf(buf, cap, "%s/utxo-anchor.snapshot", dir);
     return m > 0 && (size_t)m < cap;
+}
+
+/* Blocks-less bundle repair (the v2 snapshot judge bundle: block_index.bin +
+ * snapshot, NO blocks/ dir). block_index.bin carries each entry's nStatus
+ * INCLUDING BLOCK_HAVE_DATA plus the SOURCE datadir's (nFile, nDataPos). When
+ * the bundle ships no bodies above the seed, those entries claim HAVE_DATA at a
+ * blk file that does not exist on THIS node, so:
+ *   - the have-data window extender (active_chain_extend_window_have_data) tries
+ *     to fill to the bodiless slot, every stage read_block_pread_fail's, and the
+ *     have_data_unreadable healer clears the flag one block at a time — but
+ *   - a P2P-delivered body is then SKIPPED on write (process_block treats the
+ *     entry as already-having-data from the stale flag), so the body never lands
+ *     at a readable position; the window never extends past seed_h+1, and
+ *     tip_finalize wedges on lookahead_tip_missing (H* frozen at the seed).
+ *
+ * Fix: BEFORE the staged pipeline starts, drop the borrowed have-data claim for
+ * every block ABOVE seed_h whose referenced blk file is NOT present on disk —
+ * reset (nFile=-1, nDataPos=0), clear BLOCK_HAVE_DATA, and floor validity at
+ * header-only (BLOCK_VALID_TREE) so chain selection still sees the header but
+ * the body is re-fetched + re-indexed cleanly via P2P. A blocks-PRESENT bundle
+ * (live / legacy import) keeps its real bodies untouched — the per-file stat
+ * gate only fires when the file is genuinely absent. Cheap: one stat() per
+ * distinct nFile (memoized), header-only walk, no body reads.
+ *
+ * Returns the number of blocks whose borrowed have-data was dropped (0 on a
+ * blocks-present bundle). The caller uses a non-zero return to retract the
+ * active-chain tip to the seed: the boot's earlier CSR restore promoted the
+ * active tip to the highest had-data block (the top of the borrowed span), and
+ * the P2P download window follows active_chain_height(), so without the
+ * retraction the node floods the TOP of the gap (header-tip successors) and
+ * never fetches the connectable bottom (seed_h+1) the staged fold needs next. */
+static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
+    struct main_state *ms, const char *datadir, int seed_h)
+{
+    if (!ms || !datadir || seed_h < 0)
+        return 0;
+
+    /* Memoize stat() per nFile so a ~3k-block forward window costs ~1 stat per
+     * blk file, not one per block. -1 = unknown, 0 = missing, 1 = present. */
+    int8_t file_present[4096];
+    memset(file_present, -1, sizeof(file_present));
+
+    size_t cleared = 0, kept = 0;
+    size_t iter = 0;
+    struct block_index *p = NULL;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (!p || p->nHeight <= seed_h)
+            continue;
+        if (!(p->nStatus & BLOCK_HAVE_DATA))
+            continue;
+
+        int present;
+        int fn = p->nFile;
+        if (fn < 0) {
+            present = 0;  /* HAVE_DATA but no file slot — definitionally absent */
+        } else if (fn < (int)(sizeof(file_present) / sizeof(file_present[0])) &&
+                   file_present[fn] >= 0) {
+            present = file_present[fn];
+        } else {
+            char path[PATH_MAX];
+            int n = snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                             datadir, fn);
+            struct stat st;
+            present = (n > 0 && (size_t)n < sizeof(path) &&
+                       stat(path, &st) == 0 && st.st_size > 0) ? 1 : 0;
+            if (fn < (int)(sizeof(file_present) / sizeof(file_present[0])))
+                file_present[fn] = (int8_t)present;
+        }
+
+        if (present) {
+            kept++;
+            continue;
+        }
+
+        /* Borrowed (bodiless) have-data claim: drop it so P2P re-fetch writes +
+         * indexes the body at a readable position. Header validity is preserved
+         * at BLOCK_VALID_TREE; the body stages re-run from a clean slot. */
+        p->nStatus = (p->nStatus & ~(unsigned)BLOCK_HAVE_DATA);
+        if ((p->nStatus & BLOCK_VALID_MASK) > BLOCK_VALID_TREE)
+            p->nStatus = (p->nStatus & ~(unsigned)BLOCK_VALID_MASK)
+                         | BLOCK_VALID_TREE;
+        p->nFile = -1;
+        p->nDataPos = 0;
+        p->nTx = 0;
+        cleared++;
+    }
+
+    if (cleared > 0)
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: blocks-less bundle — "
+                "dropped borrowed have-data on %zu block(s) above seed h=%d "
+                "(no body on disk; %zu kept with real bodies); P2P re-fetches "
+                "+ re-indexes them\n",
+                cleared, seed_h, kept);
+    return cleared;
 }
 
 /* Read-only probe: is a SHA3-verified anchor snapshot reachable for THIS
@@ -669,6 +768,15 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
     }
     const int32_t seed_h = (int32_t)hdr.height;
 
+    /* If this is a v2 snapshot it carries a Sapling commitment-tree frontier
+     * after the UTXO records. Capture a HEAP COPY now (the mmap'd handle is
+     * closed before the Sapling re-seed at the end of this function); the copy
+     * is installed + root-verified there to SKIP the block-replay rebuild,
+     * letting a fresh node seed WITHOUT a blocks/ directory. NULL on a v1 file
+     * (the existing rebuild runs unchanged). */
+    uint8_t *embedded_frontier = NULL;
+    uint32_t embedded_frontier_len = 0;
+
     /* (ii) CONSENSUS CROSS-CHECK — bind the snapshot to THIS node's PoW-proven
      * header chain. The self-SHA3 verify above proves the file is internally
      * consistent but binds it to NOTHING on the real chain: a self-consistent
@@ -867,6 +975,32 @@ retry_authority_store:
     if (!load_ok)
         sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
     if (terr) sqlite3_free(terr);
+
+    /* While the (re-opened) handle is still mapped, capture a heap copy of any
+     * embedded Sapling frontier (v2 snapshot). The section is inside the body
+     * SHA3 region uss_open already verified, so this blob is integrity-bound. */
+    if (load_ok && uss_version(h) == 2) {
+        const uint8_t *fblob = NULL;
+        uint32_t flen = 0;
+        if (uss_frontier(h, &fblob, &flen) && fblob && flen > 0) {
+            embedded_frontier = zcl_malloc(flen, "boot.embedded_frontier");
+            if (embedded_frontier) {
+                memcpy(embedded_frontier, fblob, flen);
+                embedded_frontier_len = flen;
+                LOG_INFO("boot", "[boot] -load-snapshot-at-own-height: v2 "
+                         "snapshot carries a %u-byte Sapling frontier", flen);
+            } else {
+                LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: OOM "
+                         "copying the embedded frontier (%u B) — will fall "
+                         "back to the block-replay rebuild", flen);
+            }
+        } else {
+            LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: v2 header "
+                     "but no readable frontier section — falling back to the "
+                     "block-replay rebuild");
+        }
+    }
+
     uss_close(h);
     h = NULL;
 
@@ -892,6 +1026,43 @@ retry_authority_store:
             "[boot] -load-snapshot-at-own-height: SELF-verified snapshot %s "
             "(body SHA3 OK, height=%d, count=%llu) — seeded coins_kv\n",
             path, seed_h, (unsigned long long)hdr.count);
+
+    /* Blocks-less bundle repair: the shipped block_index.bin claims HAVE_DATA at
+     * the SOURCE's blk file coordinates for blocks above the seed, but a
+     * blocks-less judge bundle has no bodies there. Drop the borrowed have-data
+     * for any above-seed block whose blk file is absent so P2P re-fetches +
+     * re-indexes the body cleanly (else the window never extends past seed_h+1
+     * and tip_finalize wedges on lookahead_tip_missing). No-op when the bodies
+     * are really present (live / legacy-import datadirs). */
+    if (ms) {
+        size_t bodiless = boot_snapshot_drop_bodiless_have_data_above_seed(
+            ms, datadir, seed_h);
+        /* On a blocks-less bundle, retract the active-chain tip to the seed. The
+         * boot's earlier CSR restore promoted the active tip to the top of the
+         * now-cleared borrowed span (e.g. 3,159,325), and the P2P download window
+         * follows active_chain_height(); without this the node floods the TOP of
+         * the gap and never fetches the connectable bottom (seed_h+1) the staged
+         * fold needs next. active_chain_move_window_tip re-pins chain[] to the
+         * seed block (walking pprev); it publishes NO finalized authority — the
+         * staged pipeline re-publishes the served tip as it folds forward. */
+        if (bodiless > 0) {
+            struct block_index *seed_bi =
+                active_chain_at(&ms->chain_active, seed_h);
+            if (seed_bi &&
+                active_chain_move_window_tip(&ms->chain_active, seed_bi)) {
+                fprintf(stderr,
+                        "[boot] -load-snapshot-at-own-height: blocks-less bundle "
+                        "— retracted active-chain tip to seed h=%d so P2P fills "
+                        "the gap bottom-up\n", seed_h);
+            } else {
+                LOG_WARN("boot",
+                         "[boot] -load-snapshot-at-own-height: blocks-less "
+                         "active-tip retract to seed h=%d failed (seed slot %s) "
+                         "— download may still target the gap top",
+                         seed_h, seed_bi ? "present" : "NULL");
+            }
+        }
+    }
 
     /* Lane S OPTION A: publish the durable applied frontier BEFORE the Sapling
      * rebuild runs, in its own committed transaction (the snapshot-load tx
@@ -990,7 +1161,73 @@ retry_authority_store:
     (void)node_db_state_set(ndb, "sapling_tree", NULL, 0);
     (void)node_db_state_set(ndb, "sapling_tree_rescan_height", NULL, 0);
     (void)node_db_state_set(ndb, "sapling_tree_rebuild_height", NULL, 0);
-    if (ms) {
+
+    /* FAST PATH (v2 snapshot, no blocks/ needed): if the snapshot carried a
+     * Sapling frontier, deserialize it, COMPUTE its root, and VERIFY it equals
+     * the PoW-proven hashFinalSaplingRoot at seed_h (the SAME endpoint check the
+     * block-replay rebuild does at its final height). On a match, persist the
+     * frontier + rebuild_height = seed_h and SKIP sapling_tree_rebuild — so a
+     * fresh node with NO blocks/ directory installs a verified Sapling tree.
+     * On ANY mismatch / parse failure / missing seed-slot root, fall through to
+     * the existing rebuild (never regress v1 / blocks-present behavior). */
+    bool sapling_installed_from_frontier = false;
+    if (ms && embedded_frontier && embedded_frontier_len > 0) {
+        const struct block_index *seed_bi =
+            active_chain_at(&ms->chain_active, seed_h);
+        static const uint8_t zeros32[32] = {0};
+        bool seed_root_known = seed_bi &&
+            memcmp(seed_bi->hashFinalSaplingRoot.data, zeros32, 32) != 0;
+
+        struct incremental_merkle_tree ftree;
+        sapling_tree_init(&ftree);
+        struct byte_stream fs;
+        stream_init_from_data(&fs, embedded_frontier, embedded_frontier_len);
+        bool parsed = incremental_tree_deserialize(&ftree, &fs);
+
+        if (parsed && seed_root_known) {
+            struct uint256 froot;
+            incremental_tree_root(&ftree, &froot);
+            if (memcmp(froot.data, seed_bi->hashFinalSaplingRoot.data, 32) == 0) {
+                struct byte_stream ts;
+                stream_init(&ts, 4096);
+                if (incremental_tree_serialize(&ftree, &ts) &&
+                    node_db_state_set(ndb, "sapling_tree", ts.data, ts.size) &&
+                    node_db_state_set_int(ndb, "sapling_tree_rebuild_height",
+                                          (int64_t)seed_h)) {
+                    sapling_installed_from_frontier = true;
+                    fprintf(stderr,
+                            "[boot] -load-snapshot-at-own-height: installed the "
+                            "EMBEDDED Sapling frontier at h=%d (root verified vs "
+                            "hashFinalSaplingRoot) — SKIPPED the block-replay "
+                            "rebuild (no blocks/ required)\n", seed_h);
+                } else {
+                    LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: "
+                             "failed to persist the embedded frontier — falling "
+                             "back to the block-replay rebuild");
+                }
+                stream_free(&ts);
+            } else {
+                LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: embedded "
+                         "frontier root MISMATCH vs hashFinalSaplingRoot at "
+                         "h=%d — falling back to the block-replay rebuild",
+                         seed_h);
+            }
+        } else {
+            LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: embedded "
+                     "frontier %s (parsed=%d seed_root_known=%d) — falling back "
+                     "to the block-replay rebuild",
+                     parsed ? "unverifiable" : "unparseable",
+                     parsed, seed_root_known);
+        }
+        /* Clear the half-set blob if we did NOT fully install, so the rebuild
+         * below starts from a clean node_state. */
+        if (!sapling_installed_from_frontier) {
+            (void)node_db_state_set(ndb, "sapling_tree", NULL, 0);
+            (void)node_db_state_set(ndb, "sapling_tree_rebuild_height", NULL, 0);
+        }
+    }
+
+    if (ms && !sapling_installed_from_frontier) {
         char datadir[1024] = {0};
         GetDataDir(true, datadir, sizeof(datadir));
         int appended = sapling_tree_rebuild(ndb, &ms->chain_active, datadir);
@@ -1148,6 +1385,9 @@ retry_authority_store:
         LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: tip_finalize anchor "
                  "seed returned false (stage not yet wired?) — the runtime "
                  "authority re-seeds from the coins tip");
+
+    free(embedded_frontier);
+    embedded_frontier = NULL;
 
     fprintf(stderr,
             "[boot] -load-snapshot-at-own-height: coin set RE-SEEDED + "

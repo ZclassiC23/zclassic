@@ -129,6 +129,75 @@ int test_utxo_snapshot_loader(void)
     else printf("OK\n");
     uss_close(h);
 
+    /* ── v2 round-trip: records + embedded Sapling frontier section ──
+     * Append [u32 frontier_len][blob] after the records (inside the body SHA3),
+     * stamp version 2, and confirm uss_version()==2 + uss_frontier() returns the
+     * exact blob, that records still iterate, and that the v1 file (still valid
+     * here) reports version 1 + NO frontier. Run BEFORE the corruption test
+     * below so `tmp` is uncorrupted. */
+    printf("uss: v2 frontier round-trip... ");
+    {
+        uint8_t frontier[71];
+        for (int i = 0; i < (int)sizeof(frontier); i++)
+            frontier[i] = (uint8_t)(0xA0 + (i & 0x1f));
+        uint32_t flen = (uint32_t)sizeof(frontier);
+
+        /* Body = the 3 records + [u32 len][blob]. */
+        uint8_t v2body[4096];
+        size_t v2off = 0;
+        memcpy(v2body, body, body_len); v2off = body_len;
+        wle32(v2body + v2off, flen); v2off += 4;
+        memcpy(v2body + v2off, frontier, flen); v2off += flen;
+
+        uint8_t v2sha3[32];
+        struct sha3_256_ctx c2;
+        sha3_256_init(&c2);
+        sha3_256_write(&c2, v2body, v2off);
+        sha3_256_finalize(&c2, v2sha3);
+
+        uint8_t v2hdr[104] = {0};
+        memcpy(v2hdr, "ZCLUTXO\x00", 8);
+        wle32(v2hdr + 8, 2);                 /* version 2 */
+        wle32(v2hdr + 16, 12345);
+        wle64(v2hdr + 24, 3);
+        wle64(v2hdr + 32, (uint64_t)(50000 + 12345 + 99999));
+        memcpy(v2hdr + 72, v2sha3, 32);
+
+        const char *tmp2 = "/tmp/zcl_test_uss_v2.dat";
+        FILE *fv = fopen(tmp2, "wb");
+        bool ok = (fv != NULL);
+        if (fv) {
+            fwrite(v2hdr, 1, 104, fv);
+            fwrite(v2body, 1, v2off, fv);
+            fclose(fv);
+        }
+
+        char e2[128] = {0};
+        struct uss_handle *hv = ok
+            ? uss_open(tmp2, true, NULL, NULL, e2, sizeof(e2)) : NULL;
+        ok = ok && hv != NULL;
+        ok = ok && uss_version(hv) == 2;
+        const uint8_t *gotb = NULL; uint32_t gotl = 0;
+        ok = ok && uss_frontier(hv, &gotb, &gotl);
+        ok = ok && gotb && gotl == flen && memcmp(gotb, frontier, flen) == 0;
+        struct cap_ctx cap2 = {0};
+        ok = ok && uss_iter(hv, cap_cb, &cap2) == 3 && cap2.n == 3;
+        if (hv) uss_close(hv);
+
+        /* v1 file (uncorrupted here) => version 1, no frontier. */
+        struct uss_handle *hv1 = uss_open(tmp, true, NULL, NULL, e2, sizeof(e2));
+        if (hv1) {
+            ok = ok && uss_version(hv1) == 1;
+            const uint8_t *nb = (const uint8_t *)1; uint32_t nl = 1;
+            ok = ok && !uss_frontier(hv1, &nb, &nl) && nb == NULL && nl == 0;
+            uss_close(hv1);
+        } else {
+            ok = false;
+        }
+        unlink(tmp2);
+        if (ok) printf("OK\n"); else { printf("FAIL (e=%s)\n", e2); failures++; }
+    }
+
     /* Corruption detection. */
     printf("uss: corruption detection... ");
     FILE *f2 = fopen(tmp, "rb+");

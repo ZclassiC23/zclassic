@@ -444,6 +444,17 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         msg.height = -1;
         (void)mailbox_header_admit_push(&msg);
     }
+    /* Runtime active-chain window extender: walk the visible window UP along the
+     * contiguous BLOCK_HAVE_DATA frontier so the body-dependent stages
+     * (body_fetch/body_persist/script_validate) can see active_chain_at(cursor+1)
+     * as bodies land. Without this, after a blocks-less snapshot boot retracts the
+     * window to the seed, the window never widens at runtime and the fold idles at
+     * seed+1 forever. No-op when there is no gap; takes only the active-chain +
+     * block-map rwlocks (no csr->lock); we are inside reducer_drive_enter(). */
+    if (ctl->ms->pindex_best_header)
+        (void)active_chain_extend_window_have_data(
+            &ctl->ms->chain_active, &ctl->ms->map_block_index,
+            ctl->ms->pindex_best_header->nHeight);
     (void)reducer_drain_to_convergence();
     /* The reducer reports its verdict through the tip advance + the typed
      * behind-blocker (registered below by activation_eval_tip_blocker) —

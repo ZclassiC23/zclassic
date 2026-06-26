@@ -257,17 +257,35 @@ int test_stage_anchor(void)
                                               "coins-cap", false);
         SA_CHECK("coins_cap: anchor returns true", ok);
 
+        /* The coins-INDEPENDENT stages (header_admit/validate_headers/body_fetch)
+         * track the header/body frontier and advance to the requested target.
+         * The coins-DEPENDENT stages — body_persist (the created_outputs index
+         * builder), script_validate, proof_validate, utxo_apply — are capped at
+         * coins_applied_height (700): they consume each other's per-height
+         * outputs, so jumping any of them past the coins frontier without
+         * producing the intervening rows/index manufactures the upstream
+         * hole/prevout-gap that wedges the tip at the snapshot seed. */
+        const char *coin_dep[] = { "body_persist", "script_validate",
+                                   "proof_validate", "utxo_apply" };
         bool non_coin_stages_at_target = true;
         for (size_t i = 0; i < SA_N; i++) {
-            if (strcmp(SA_UPSTREAM[i], "utxo_apply") == 0)
+            bool is_coin_dep = false;
+            for (size_t j = 0; j < sizeof(coin_dep) / sizeof(coin_dep[0]); j++)
+                if (strcmp(SA_UPSTREAM[i], coin_dep[j]) == 0)
+                    is_coin_dep = true;
+            if (is_coin_dep)
                 continue;
             if (sa_read(db, SA_UPSTREAM[i]) != 5000)
                 non_coin_stages_at_target = false;
         }
         SA_CHECK("coins_cap: non-coin cursors advanced",
                  non_coin_stages_at_target);
-        SA_CHECK("coins_cap: utxo_apply capped at coins frontier",
-                 sa_read(db, "utxo_apply") == 700);
+        bool coin_dep_capped = true;
+        for (size_t j = 0; j < sizeof(coin_dep) / sizeof(coin_dep[0]); j++)
+            if (sa_read(db, coin_dep[j]) != 700)
+                coin_dep_capped = false;
+        SA_CHECK("coins_cap: coins-dependent cursors capped at coins frontier",
+                 coin_dep_capped);
 
         sqlite3_close(db);
         unlink(path);

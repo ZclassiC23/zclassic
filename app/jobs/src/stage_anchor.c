@@ -12,6 +12,44 @@
 #include <stdio.h>
 #include <string.h>
 
+/* The coins-DEPENDENT stages whose anchor target is capped at coins_applied.
+ *
+ * utxo_apply consumes proof_validate_log[h] at exactly its own cursor h, which
+ * consumes script_validate_log[h], which consumes the per-height created_outputs
+ * index that BODY_PERSIST builds (created_outputs_index_put_block, the prevout
+ * source for transparent spends above the seed). coins_applied caps utxo_apply
+ * (it must re-derive every coin above the snapshot/import seed). If the stages
+ * that PRODUCE utxo_apply's per-height inputs are allowed to JUMP past
+ * coins_applied on an authority/seed re-anchor — e.g. when the active-chain
+ * cached tip sits far above the seed (snapshot seeded at H while the
+ * on-disk/header body frontier is H+N) — they stamp their cursors to H+N
+ * WITHOUT producing the [H+1 .. H+N-1] log rows / created_outputs entries. Two
+ * failure shapes result, both pinning the tip at the seed (getblockcount=0):
+ *   (a) proof_validate jumps -> utxo_apply (pinned at H+1) finds
+ *       proof_validate_log[H+1] ABSENT, a durable upstream HOLE, idles forever
+ *       ("proof_validate_log row ABSENT at height=H+1 while proof_validate
+ *       cursor=H+N already past it", utxo_apply_stage.c:215); and
+ *   (b) body_persist jumps -> it never builds created_outputs for [H+1..H+N-1],
+ *       so script_validate (capped at H+1) cannot resolve the transparent
+ *       prevouts those blocks create ("prevout_unresolved height=H+k").
+ * Capping ALL of body_persist/script_validate/proof_validate/utxo_apply at
+ * coins_applied keeps the whole coins-dependent sub-pipeline in lockstep with
+ * the coins frontier, so it re-folds CONTIGUOUSLY from the seed and never
+ * manufactures the hole / index gap — the SAME contiguous shape a small-gap
+ * (live) seed gets for free. The coins-INDEPENDENT stages
+ * (header_admit/validate_headers/body_fetch) are NOT capped; they legitimately
+ * track the header/body frontier (body_fetch only OBSERVES on-disk bodies; it
+ * builds no coins-derived index). The cap is on the re-anchor TARGET only — the
+ * stages still step FORWARD past coins_applied normally as the fold advances
+ * (e.g. proof_validate legitimately runs ahead of utxo_apply during IBD). */
+static bool stage_is_coins_dependent(const char *stage)
+{
+    return stage && (strcmp(stage, "body_persist") == 0 ||
+                     strcmp(stage, "script_validate") == 0 ||
+                     strcmp(stage, "proof_validate") == 0 ||
+                     strcmp(stage, "utxo_apply") == 0);
+}
+
 static bool anchor_target_for_stage(sqlite3 *db, const char *stage,
                                     uint64_t requested, const char *tag,
                                     const char *reason, uint64_t *out)
@@ -19,14 +57,14 @@ static bool anchor_target_for_stage(sqlite3 *db, const char *stage,
     if (!out)
         return false;
     *out = requested;
-    if (!stage || strcmp(stage, "utxo_apply") != 0)
+    if (!stage_is_coins_dependent(stage))
         return true;
 
     if (!progress_meta_table_ensure(db)) {
         LOG_WARN(tag,
                  "[%s] anchor upstream cursor failed "
-                 "stage=utxo_apply reason=coins_frontier_schema reason=%s",
-                 tag, reason ? reason : "");
+                 "stage=%s reason=coins_frontier_schema reason=%s",
+                 tag, stage, reason ? reason : "");
         return false;
     }
 
@@ -35,8 +73,8 @@ static bool anchor_target_for_stage(sqlite3 *db, const char *stage,
     if (!coins_kv_get_applied_height(db, &applied, &found)) {
         LOG_WARN(tag,
                  "[%s] anchor upstream cursor failed "
-                 "stage=utxo_apply reason=coins_frontier_read reason=%s",
-                 tag, reason ? reason : "");
+                 "stage=%s reason=coins_frontier_read reason=%s",
+                 tag, stage, reason ? reason : "");
         return false;
     }
     if (!found)
@@ -44,16 +82,16 @@ static bool anchor_target_for_stage(sqlite3 *db, const char *stage,
     if (applied < 0) {
         LOG_WARN(tag,
                  "[%s] anchor upstream cursor failed "
-                 "stage=utxo_apply malformed_coins_frontier=%d reason=%s",
-                 tag, applied, reason ? reason : "");
+                 "stage=%s malformed_coins_frontier=%d reason=%s",
+                 tag, stage, applied, reason ? reason : "");
         return false;
     }
     if (requested > (uint64_t)applied) {
         *out = (uint64_t)applied;
         LOG_WARN(tag,
                  "[%s] anchor upstream cursor capped "
-                 "stage=utxo_apply requested=%llu coins_applied=%d reason=%s",
-                 tag, (unsigned long long)requested, applied,
+                 "stage=%s requested=%llu coins_applied=%d reason=%s",
+                 tag, stage, (unsigned long long)requested, applied,
                  reason ? reason : "");
     }
     return true;

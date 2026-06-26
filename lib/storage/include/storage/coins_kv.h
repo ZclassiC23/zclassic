@@ -310,4 +310,20 @@ bool coins_kv_snapshot_write(struct sqlite3 *db, const char *out_path,
                              uint8_t out_sha3[32], uint64_t *out_count,
                              int64_t *out_total_supply);
 
+/* v2 writer: same as coins_kv_snapshot_write, but if `frontier_len` > 0 it
+ * appends a Sapling commitment-tree frontier section
+ * ([u32 frontier_len LE][blob]) after the UTXO records (still inside the body
+ * SHA3 region) and stamps header version = 2. `frontier` must be the output of
+ * incremental_tree_serialize for the tree AT `height` (the seed height). With
+ * frontier_len == 0 this is byte-identical to the v1 writer. This lets a fresh
+ * node seed from the snapshot WITHOUT the blocks/ dir: it deserializes + roots
+ * the embedded frontier and verifies it against the PoW-proven
+ * hashFinalSaplingRoot at the seed height, skipping the block-replay rebuild. */
+bool coins_kv_snapshot_write_v2(struct sqlite3 *db, const char *out_path,
+                                int32_t height,
+                                const uint8_t anchor_block_hash[32],
+                                const uint8_t *frontier, uint32_t frontier_len,
+                                uint8_t out_sha3[32], uint64_t *out_count,
+                                int64_t *out_total_supply);
+
 #endif /* STORAGE_COINS_KV_H */

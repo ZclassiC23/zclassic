@@ -26,6 +26,9 @@ struct uss_handle {
     struct uss_header hdr;
 };
 
+#define USS_VERSION_V1 1u
+#define USS_VERSION_V2 2u   /* v1 + trailing Sapling-frontier section */
+
 static uint32_t rd_le32(const uint8_t *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -106,7 +109,7 @@ struct uss_handle *uss_open(const char *path,
     memcpy(h->hdr.anchor_block_hash, base + 40, 32);
     memcpy(h->hdr.sha3_hash,         base + 72, 32);
 
-    if (h->hdr.version != 1) {
+    if (h->hdr.version != USS_VERSION_V1 && h->hdr.version != USS_VERSION_V2) {
         set_err(err, err_sz, "bad version %u", h->hdr.version);
         munmap(mp, (size_t)st.st_size);
         free(h);
@@ -168,4 +171,42 @@ int64_t uss_iter(struct uss_handle *h, uss_record_cb cb, void *ctx)
         n++;
     }
     return n;
+}
+
+uint32_t uss_version(const struct uss_handle *h)
+{
+    return h ? h->hdr.version : 0;
+}
+
+bool uss_frontier(struct uss_handle *h, const uint8_t **blob_out,
+                  uint32_t *len_out)
+{
+    if (blob_out) *blob_out = NULL;
+    if (len_out)  *len_out = 0;
+    if (!h) return false;
+    if (h->hdr.version != USS_VERSION_V2) return false;
+
+    /* Walk PAST the `count` UTXO records (identical decode to uss_iter) to find
+     * the trailing [u32 frontier_len LE][blob] section. The section lives inside
+     * the body SHA3 region, so uss_open's verify_full_sha3 already bound it. */
+    const uint8_t *p = h->base + h->body_off;
+    const uint8_t *end = h->base + h->size;
+    for (uint64_t i = 0; i < h->hdr.count; i++) {
+        if ((size_t)(end - p) < 32 + 4 + 8 + 4) return false;
+        p += 32;            /* txid   */
+        p += 4;             /* vout   */
+        p += 8;             /* value  */
+        uint32_t slen = rd_le32(p); p += 4;
+        if ((uint64_t)(end - p) < (uint64_t)slen + 4 + 1) return false;
+        p += slen;          /* script */
+        p += 4;             /* height */
+        p += 1;             /* is_coinbase */
+    }
+    /* p now points at the frontier section. */
+    if ((size_t)(end - p) < 4) return false;
+    uint32_t flen = rd_le32(p); p += 4;
+    if (flen == 0 || (uint64_t)(end - p) < (uint64_t)flen) return false;
+    if (blob_out) *blob_out = p;
+    if (len_out)  *len_out  = flen;
+    return true;
 }

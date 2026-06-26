@@ -81,4 +81,18 @@ typedef bool (*uss_record_cb)(const struct uss_record *r, void *ctx);
  * Returns count emitted, or -1 on truncation. */
 int64_t uss_iter(struct uss_handle *h, uss_record_cb cb, void *ctx);
 
+/* Snapshot format version (1 = UTXO-only, 2 = UTXO + Sapling frontier). 0 on
+ * NULL handle. */
+uint32_t uss_version(const struct uss_handle *h);
+
+/* Expose the trailing Sapling commitment-tree frontier section, present only in
+ * version-2 snapshots. On success sets *blob_out to a pointer INTO the mmap'd
+ * file (valid until uss_close) and *len_out to its length, returns true. For a
+ * v1 file (no section) or any truncation returns false with *blob_out=NULL,
+ * *len_out=0. The blob is the incremental_tree_serialize output for the Sapling
+ * tree at the snapshot's seed height; it is already covered by the body SHA3
+ * verified at uss_open time. */
+bool uss_frontier(struct uss_handle *h, const uint8_t **blob_out,
+                  uint32_t *len_out);
+
 #endif /* ZCL_CHAIN_UTXO_SNAPSHOT_LOADER_H */
