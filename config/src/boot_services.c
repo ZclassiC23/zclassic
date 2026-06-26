@@ -873,17 +873,36 @@ bool app_init_services(struct app_context *ctx,
                 }
             }
 
-            /* Fall back to hardcoded seeds unless the operator requested
-             * connect-only mode. In connect-only mode, all bootstrap data
-             * must come from the explicit peer set; otherwise a local-only
-             * zclassic23-to-zclassic23 sync silently downloads from public
-             * file-service seeds before P2P snapshot has a chance to run. */
+            /* Fall back to hardcoded clearnet seeds ONLY if the operator
+             * explicitly opted in with -allow-clearnet-snapshot-fetch.
+             *
+             * SECURITY: these seeds are unauthenticated (clearnet, no TLS, no
+             * in-binary PoW-root binding). The file_service per-chunk SHA3 only
+             * proves the bytes match the SERVING PEER's own manifest, NOT that
+             * the chainstate is the real consensus set — and boot_import_snapshot_db
+             * only consensus-verifies a snapshot AT the single compiled
+             * checkpoint, trusting anything above it on the peer's word. So a
+             * MITM or a malicious seed could otherwise seed a FORGED UTXO set
+             * into a default cold start (forged-money / consensus divergence).
+             * Default OFF: a fresh node falls back to safe P2P IBD or the
+             * operator bundle (-load-snapshot-at-own-height, which IS anchor-
+             * bound to the in-binary PoW header). An explicit -fileservice=PEER
+             * above is always honored (the operator chose that peer).
+             *
+             * Also skipped in connect-only mode, where all bootstrap data must
+             * come from the explicit peer set. */
             const char *file_seeds[] = {
                 "205.209.104.118",
                 "140.174.189.3",
                 NULL
             };
+            if (!ctx->allow_clearnet_snapshot_fetch && !file_sync_ok)
+                printf("=== Auto-fetch of chainstate from hardcoded clearnet "
+                       "seeds is DISABLED (unauthenticated; pass "
+                       "-allow-clearnet-snapshot-fetch to opt in) — using P2P "
+                       "snapshot sync / operator bundle ===\n");
             for (int round = 0;
+                 ctx->allow_clearnet_snapshot_fetch &&
                  !ctx->connect_only && round < 3 && !file_sync_ok;
                  round++) {
                 if (round > 0) {

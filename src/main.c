@@ -1841,6 +1841,7 @@ int main(int argc, char **argv)
         else if (strncmp(argv[i], "-filesync=", 10) == 0) { /* handled above */ }
         else if (strncmp(argv[i], "-fileservice=", 13) == 0) ctx.file_service_peer = argv[i]+13;
         else if (strcmp(argv[i], "-nofilesync") == 0) ctx.no_file_sync = true;
+        else if (strcmp(argv[i], "-allow-clearnet-snapshot-fetch") == 0) ctx.allow_clearnet_snapshot_fetch = true;
         else if (strcmp(argv[i], "-enforce-sapling-root") == 0) {
             /* DEFAULT-OFF Sapling-root parity reject (project_sapling_root
              * _parity_hole). Default behavior rejects ONLY an all-zeros

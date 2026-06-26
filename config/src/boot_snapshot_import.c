@@ -123,6 +123,33 @@ bool boot_import_snapshot_db(struct node_db *ndb,
                  "missing/invalid _snapshot_meta.height");
     }
 
+    /* PROVENANCE GATE (defense-in-depth for the peer-served path):
+     * this importer installs a `consensus_snapshot.db` that arrived over the
+     * unauthenticated file_service (file_index=254) — the per-chunk SHA3 only
+     * proves the bytes match the SERVING PEER's manifest, not that the coin set
+     * is the real consensus set. We only have an in-binary cryptographic ground
+     * truth AT the single compiled checkpoint (the WRITE-TIME SHA3 reject
+     * below). ABOVE the checkpoint there is no in-binary root and no anchor
+     * binding here, so a forged snapshot at an arbitrary height would otherwise
+     * be installed as ground truth (forged-money / consensus divergence).
+     * REFUSE to promote an above-checkpoint peer snapshot — fall back to safe
+     * P2P IBD. The anchor-bound operator bundle path
+     * (boot_load_snapshot_at_own_height_reset, which cross-checks the snapshot
+     * anchor against the PoW-proven block_index) is the supported way to seed
+     * above the checkpoint; it does NOT use this function. */
+    {
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        if (cp && snap_height > (int64_t)cp->height) {
+            sqlite3_close(src);
+            LOG_FAIL("boot_snapshot_import",
+                     "REFUSING peer snapshot at h=%lld (above compiled "
+                     "checkpoint h=%llu): no in-binary root to consensus-verify "
+                     "it against — falling back to P2P IBD / operator bundle",
+                     (long long)snap_height,
+                     (unsigned long long)cp->height);
+        }
+    }
+
     uint8_t best_hash[32] = {0};
     bool best_found = false;
     {

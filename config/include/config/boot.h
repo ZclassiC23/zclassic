@@ -120,6 +120,18 @@ struct app_context {
     const char *file_service_peer; /* -fileservice=addr : download from this peer */
     bool connect_only;         /* -connect= mode: only connect to addnodes, no seeds */
     bool no_file_sync;         /* -nofilesync : skip file service download, use P2P only */
+    bool allow_clearnet_snapshot_fetch; /* -allow-clearnet-snapshot-fetch :
+                                 * OPT-IN to auto-download a chainstate
+                                 * (consensus_snapshot.db) from the HARDCODED
+                                 * clearnet file-service seeds. OFF by default:
+                                 * those seeds are unauthenticated (no TLS, no
+                                 * in-binary root binding), so a MITM/forged seed
+                                 * could otherwise seed a fabricated UTXO set on a
+                                 * default cold start. With this off, a fresh node
+                                 * falls back to safe P2P IBD or the operator
+                                 * bundle (-load-snapshot-at-own-height). An
+                                 * explicit -fileservice=PEER is always honored
+                                 * (the operator chose that peer). */
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
     bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
     bool boot_from_log;        /* -rebuildfromlog : rebuild block index + tip from
