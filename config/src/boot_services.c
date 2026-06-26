@@ -852,7 +852,8 @@ bool app_init_services(struct app_context *ctx,
             goto skip_file_sync;
         }
         if (chain_height <= 0) {
-            printf("=== Fresh node — trying fast file sync ===\n");
+            printf("=== Fresh node — probing optional fast file sync "
+                   "(P2P sync is the fallback) ===\n");
             uint8_t utxo_root[32];
             memset(utxo_root, 0, 32);
             bool file_sync_ok = false;
@@ -886,12 +887,12 @@ bool app_init_services(struct app_context *ctx,
                  !ctx->connect_only && round < 3 && !file_sync_ok;
                  round++) {
                 if (round > 0) {
-                    printf("File sync: retrying in 10s (round %d/3)...\n",
-                           round + 1);
+                    printf("File sync: no seed reachable, retrying in 10s "
+                           "(optional, round %d/3)...\n", round + 1);
                     sleep(10);
                 }
                 for (int i = 0; file_seeds[i] && !file_sync_ok; i++) {
-                    printf("Trying file service at %s:%d...\n",
+                    printf("Probing optional file-sync seed %s:%d...\n",
                            file_seeds[i], FS_PORT);
                     int64_t t0 = (int64_t)platform_time_wall_time_t();
                     if (fs_client_sync(file_seeds[i], FS_PORT,
@@ -903,6 +904,9 @@ bool app_init_services(struct app_context *ctx,
                     }
                 }
             }
+            if (!ctx->connect_only && !file_sync_ok)
+                printf("=== Optional file sync unavailable — continuing "
+                       "with P2P snapshot sync (this is normal) ===\n");
             /* After file download: scan block files to populate block
              * index with BLOCK_HAVE_DATA + nChainTx. Without this,
              * 6 GB of blocks sit unused on disk.

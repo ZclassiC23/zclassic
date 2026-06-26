@@ -1017,7 +1017,11 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             if (rc <= 0) {
                 close(fd);
                 freeaddrinfo(res);
-                LOG_FAIL("filesvc", "client_sync: connect timeout to %s:%d", peer_addr, port);
+                /* Optional fast-sync seed not reachable — routine on a
+                 * fresh node; P2P snapshot sync is the fallback. Warn,
+                 * don't error. */
+                LOG_WARN("filesvc", "client_sync: connect timeout to %s:%d (optional seed; falling back to P2P)", peer_addr, port);
+                return false;
             }
             int err = 0;
             socklen_t elen = sizeof(err);
@@ -1025,12 +1029,14 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
             if (err) {
                 close(fd);
                 freeaddrinfo(res);
-                LOG_FAIL("filesvc", "client_sync: connect failed: %s", strerror(err));
+                LOG_WARN("filesvc", "client_sync: connect to %s:%d failed: %s (optional seed; falling back to P2P)", peer_addr, port, strerror(err));
+                return false;
             }
         } else if (rc < 0) {
             close(fd);
             freeaddrinfo(res);
-            LOG_FAIL("filesvc", "client_sync: connect failed: %s", strerror(errno));
+            LOG_WARN("filesvc", "client_sync: connect to %s:%d failed: %s (optional seed; falling back to P2P)", peer_addr, port, strerror(errno));
+            return false;
         }
         fcntl(fd, F_SETFL, flags);  /* restore blocking mode */
     }
