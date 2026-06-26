@@ -363,7 +363,11 @@ size_t json_write(const struct json_value *v, char *buf, size_t buflen)
         break;
     }
     }
+    /* Always NUL-terminate, even on truncation (pos >= buflen): callers pass
+     * fixed buffers and then %s-print or strlen the result, so leaving it
+     * unterminated is an over-read. On truncation, terminate at the last byte. */
     if (pos < buflen) buf[pos] = '\0';
+    else if (buflen)  buf[buflen - 1] = '\0';
     return pos;
 }
 

@@ -141,6 +141,10 @@ static void *db_service_worker_main(void *arg)
 
         job->success = db_service_perform_job(svc, job);
 
+        /* Capture before any free: the async branch frees `job`, so reading
+         * job->type afterward for the STOP check would be a use-after-free. */
+        bool is_stop = (job->type == DB_SERVICE_JOB_STOP);
+
         if (job->async) {
             if (job->free_ctx)
                 job->free_ctx(job->ctx);
@@ -152,7 +156,7 @@ static void *db_service_worker_main(void *arg)
             zcl_mutex_unlock(&svc->queue_mutex);
         }
 
-        if (job->type == DB_SERVICE_JOB_STOP)
+        if (is_stop)
             break;
     }
 
