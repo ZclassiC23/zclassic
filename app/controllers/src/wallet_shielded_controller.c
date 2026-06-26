@@ -312,9 +312,10 @@ bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    /* Transparent balance from SQLite model layer */
+    /* Transparent balance from SQLite model layer. Spendable balance EXCLUDES
+     * immature coinbase (matches listunspent + the coin selector). */
     int64_t t_balance = wallet_ctx_db_ready(ctx)
-        ? db_wallet_utxo_balance(ctx->node_db)
+        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
         : wallet_get_balance(ctx->wallet);
 
     /* Shielded balance: always from SQLite (authoritative source) */

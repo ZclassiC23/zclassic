@@ -100,13 +100,15 @@ static bool rpc_getbalance(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    /* Use SQLite model layer as authoritative source */
+    /* Use SQLite model layer as authoritative source. Spendable balance
+     * EXCLUDES immature coinbase (matches listunspent + the coin selector),
+     * so the reported number is what the user can actually send. */
     int64_t balance = wallet_ctx_db_ready(ctx)
-        ? db_wallet_utxo_balance(ctx->node_db)
+        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
         : wallet_get_balance(ctx->wallet);
     char buf[32];
     format_amount(balance, buf, sizeof(buf));
-    json_set_real(result, strtod(buf, NULL));
+    json_set_str(result, buf);
     return true;
 }
 
@@ -124,7 +126,7 @@ static bool rpc_getunconfirmedbalance(const struct json_value *params,
     int64_t balance = wallet_get_unconfirmed_balance(ctx->wallet);
     char buf[32];
     format_amount(balance, buf, sizeof(buf));
-    json_set_real(result, strtod(buf, NULL));
+    json_set_str(result, buf);
     return true;
 }
 
@@ -141,19 +143,22 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
 
     json_set_object(result);
     char bal[32], ubal[32], ibal[32], fee[32];
+    /* Spendable balance EXCLUDES immature coinbase (matches listunspent + the
+     * coin selector). Emit money fields as strings to preserve full precision
+     * (the JSON real serializer uses %.8g, which rounds large balances). */
     int64_t balance = wallet_ctx_db_ready(ctx)
-        ? db_wallet_utxo_balance(ctx->node_db)
+        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
         : wallet_get_balance(ctx->wallet);
     format_amount(balance, bal, sizeof(bal));
     format_amount(wallet_get_unconfirmed_balance(ctx->wallet), ubal, sizeof(ubal));
     format_amount(wallet_get_immature_balance(ctx->wallet), ibal, sizeof(ibal));
     format_amount(ctx->wallet->default_fee, fee, sizeof(fee));
-    json_push_kv_real(result, "balance", strtod(bal, NULL));
-    json_push_kv_real(result, "unconfirmed_balance", strtod(ubal, NULL));
-    json_push_kv_real(result, "immature_balance", strtod(ibal, NULL));
+    json_push_kv_str(result, "balance", bal);
+    json_push_kv_str(result, "unconfirmed_balance", ubal);
+    json_push_kv_str(result, "immature_balance", ibal);
     json_push_kv_int(result, "txcount", (int64_t)wallet_history_count());
     json_push_kv_int(result, "keypoolsize", (int64_t)ctx->wallet->key_pool_size);
-    json_push_kv_real(result, "paytxfee", strtod(fee, NULL));
+    json_push_kv_str(result, "paytxfee", fee);
 
     /* Persistence health block. Aggregates the canary status + a live
      * count query so operators and tooling can see at a glance whether

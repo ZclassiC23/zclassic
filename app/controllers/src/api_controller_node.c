@@ -546,8 +546,9 @@ size_t api_serve_wallet(uint8_t *response, size_t response_max)
                           "No database");
     }
 
-    /* Balance — use wallet_utxos (correct spent tracking) */
-    int64_t transparent = db_wallet_utxo_balance(ndb);
+    /* Balance — use wallet_utxos (correct spent tracking). Spendable balance
+     * EXCLUDES immature coinbase (matches listunspent + the coin selector). */
+    int64_t transparent = db_wallet_utxo_spendable_balance(ndb, NULL);
     int64_t shielded = db_sapling_note_balance(ndb);
 
     /* Address — encode the first wallet key's pubkey hash */
