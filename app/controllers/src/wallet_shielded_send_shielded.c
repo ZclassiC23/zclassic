@@ -315,6 +315,28 @@ shielded_cleanup:
             tx_mempool_add_unchecked(ctx->mempool, &wtx.tx.hash, &me);
         }
 
+        /* Mark the selected notes SPENT immediately at broadcast — by their
+         * stored nullifier, keyed to the new txid — both in SQLite (so the next
+         * db_sapling_note_list_unspent_for_ivk selection excludes them) and in
+         * the in-memory wallet. Without this, a second z_sendmany issued before
+         * this tx confirms re-selects the SAME notes and produces a conflicting
+         * transaction (double-spend of the user's own notes), so neither send
+         * confirms and the funds appear stuck. This mirrors the transparent
+         * path, which marks UTXOs spent at broadcast (wallet_commit_transaction
+         * + node_db_sync_wallet_tx). */
+        if (wallet_ctx_db_ready(ctx)) {
+            for (size_t i = 0; i < num_sel_notes; i++) {
+                if (node_db_sync_sapling_spend_ex(ctx->node_db,
+                        selected_notes[i].nullifier, wtx.tx.hash.data)
+                    == DB_MARK_SPENT_ERROR) {
+                    LOG_WARN("wallet_shielded",
+                             "z_sendmany: failed to mark note %zu spent at broadcast", i);
+                }
+            }
+        }
+        if (ctx->wallet)
+            wallet_mark_sapling_nullifiers_spent(ctx->wallet, &wtx.tx);
+
         char txid_hex[65];
         uint256_get_hex(&wtx.tx.hash, txid_hex);
         json_set_str(result, txid_hex);
