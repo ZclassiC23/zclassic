@@ -42,9 +42,10 @@ A complete rewrite of zclassicd in pure C23. One binary is at once a full node
 identically to zclassicd), a fast-sync server (FlyClient MMB + SHA3 UTXO
 snapshot — *the ~1-minute cold sync this enables is a design target, not the
 proven path today; see [Bootstrapping to tip](#bootstrapping-to-tip)*), an
-in-process Tor hidden service (`-tor`), a block explorer (`/api`), a shielded
-wallet (transparent + Sapling), and an MCP server. Full subsystem catalog in
-[`CLAUDE.md`](CLAUDE.md).
+in-process Tor hidden service (`-tor`), a block explorer (`/explorer` + `/api`,
+served over the onion or HTTPS — see [Block explorer](#block-explorer)), a
+shielded wallet (transparent + Sapling), and an MCP server. Full subsystem
+catalog in [`CLAUDE.md`](CLAUDE.md).
 
 Honestly labeled: **ZNAM** name registry (working); **ZMSG** messaging (on-chain
 shielded; off-chain P2P is plaintext on the wire); **ZCL Market** + **ZSWP**
@@ -55,7 +56,11 @@ TicTacToe).
 
 **Prerequisites:** gcc 14+ (or clang with `-std=c23`), GNU make, plus
 `cmake`, `autoconf`, `curl`/`wget`, and `unzip` for the one-time vendored-library
-build.
+build. **The first build needs internet** — it fetches pinned third-party source
+tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite) and verifies them against
+pinned SHA-256s before compiling locally; afterward the archives are cached in
+`vendor/lib/` and builds are offline. A clean `make vendor && make` takes ~1–2
+minutes on a modern multi-core box.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
@@ -165,34 +170,59 @@ as a growing `header_gap` or a named entry in `blockers` / `dominant_blocker`.
 
 ## Bootstrapping to tip
 
-Be precise about what is proven versus designed:
+**Fast path for a fresh clone — tip in one sitting (~minutes).** Download a
+published, prebuilt block index plus a SHA3-self-verified UTXO snapshot (the
+[`starterpack-3155842`](https://github.com/ZclassiC23/zclassic/releases/tag/starterpack-3155842)
+release), drop both into the datadir, and boot. The snapshot is **not blindly
+trusted**: at boot the node recomputes its SHA3 body hash and checks its anchor
+block hash against the PoW header compiled into the binary — a tampered or
+wrong-chain snapshot is refused (`config/src/boot_refold_staged.c`).
 
-- **Designed (not the proven path today):** native P2P fast sync — a fresh node
-  pulls a SHA3-verified UTXO snapshot from another zclassic23 peer (FlyClient/MMB
-  proof bound to the PoW chain), targeting an operational tip in ~a minute. This
-  is the intended default *once the native peer network is established*; it is
-  built but not the everyday cold-start proof. Details: [`docs/SYNC.md`](docs/SYNC.md)
-  "Method 1". A self-contained bootstrap **bundle** ("tip in a sitting") is in
-  flight.
-- **Proven (development bootstrap, ~25 min):** the two-step import from a synced
-  local `zclassicd` — **headers first, then a normal boot.** Order matters:
-  skipping step 1 leaves a ~3.1M-header hole and the node pins.
+```bash
+# 1. Download both assets from the release (block_index.bin 543 MB + snapshot 105 MB)
+gh release download starterpack-3155842 -R ZclassiC23/zclassic
+#    (or curl the two direct URLs listed in docs/BOOTSTRAPPING.md)
+
+# 2. Verify integrity — must print OK for both
+sha256sum -c <<'EOF'
+a40b184d0d52f91438762928abdadd151a8011efc0340485c690732988d5d6e0  block_index.bin
+46e4f6bd090e51417a4d8b70a1b7c8a218d9c8e3cded1bba812033117f5d9e9f  utxo-seed-3155842.snapshot
+EOF
+
+# 3. Drop BOTH into a fresh datadir and boot, pointing the loader at the snapshot
+DATADIR="$HOME/.zclassic-c23"
+mkdir -p "$DATADIR" && mv block_index.bin utxo-seed-3155842.snapshot "$DATADIR/"
+build/bin/zclassic23 -datadir="$DATADIR" \
+  -load-snapshot-at-own-height="$DATADIR/utxo-seed-3155842.snapshot"
+```
+
+`getblockcount` jumps to ~**3,155,842** within seconds, then climbs to the
+network tip in minutes as the node folds forward over P2P block bodies. Full
+walkthrough + expected boot log: [`docs/BOOTSTRAPPING.md`](docs/BOOTSTRAPPING.md).
+
+**Other paths:**
+
+- **Plain start, no starter pack** — a fresh node syncs honestly from genesis
+  over P2P; fully trustless but **long** (~hours). This is the default if you
+  skip the starter pack.
+- **Native P2P fast sync (designed, not yet the everyday proof):** pull the
+  SHA3-verified snapshot directly from another zclassic23 peer (FlyClient/MMB
+  proof bound to the PoW chain), targeting tip in ~a minute once the native peer
+  network is established. Details: [`docs/SYNC.md`](docs/SYNC.md) "Method 1".
+- **From a local `zclassicd` (~25 min, dev bootstrap):** if you already run the
+  C++ node, import headers first, then boot:
 
   ```bash
-  # 1. Headers FIRST — ~3.1M headers in ~60-74 s from a legacy zclassicd datadir.
-  build/bin/zclassic23 --importblockindex ~/.zclassic
-  # 2. Then a NORMAL boot — legacy import is on by default; it auto-reads/links
-  #    ~/.zclassic and reaches tip. Opt out with -nolegacyimport.
-  build/bin/zclassic23
+  build/bin/zclassic23 --importblockindex ~/.zclassic   # headers FIRST (~60-74 s)
+  build/bin/zclassic23                                  # then a normal boot
   ```
 
-  This path exists only while the native peer network is small — it reads data
-  from the old C++ `zclassicd` (leave it running). Full recipe + the canonical
-  authority model: [`docs/SYNC.md`](docs/SYNC.md) "Method 3".
+  Order matters: skipping step 1 leaves a ~3.1M-header hole and the node pins.
+  Leave `zclassicd` running. Full recipe: [`docs/SYNC.md`](docs/SYNC.md) "Method 3".
 
-For the current live bootstrap posture and the in-flight sovereign cold-start
-cure (fold real bodies forward from a self-minted checkpoint, then delete the
-borrowed seed), see [`docs/HANDOFF.md`](docs/HANDOFF.md).
+For the live bootstrap posture and the in-flight sovereign cold-start cure (fold
+real bodies forward from a self-minted checkpoint, then delete the borrowed
+seed), see [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## Claude integration (MCP)
 
@@ -209,6 +239,24 @@ peers, sync, onion, health in one call); `zcl_tools_list` enumerates the full
 ~100-tool catalog. The daily-driver reference is in [`CLAUDE.md`](CLAUDE.md).
 MCP is an operator interface (stdio, local client) — don't expose RPC/MCP to
 untrusted clients.
+
+## Block explorer
+
+The node serves a web block explorer (`/explorer`, with a JSON API under `/api`).
+It is **not** on the RPC port (`18232`) — a plain `GET` there returns
+`405 Method Not Allowed`, by design. The explorer is reachable two ways:
+
+- **Over the onion service** — build the bundled Tor fork (see the opt-in note in
+  [Quick start](#quick-start)) and run `-tor`; the explorer is then served on the
+  node's `.onion` (visible via `zcl_status`). No certificate needed.
+- **Over HTTPS on clearnet** — drop a TLS certificate and key at
+  `<datadir>/ssl/fullchain.pem` and `<datadir>/ssl/privkey.pem`. The HTTPS
+  explorer then starts once the node is near tip (default port `8443`). Without a
+  cert the node logs `HTTPS: no cert … block explorer not on clearnet` and skips
+  it — this is expected on a default build.
+
+A default build (Tor stub, no cert) intentionally has **no public explorer
+endpoint**. Use MCP / `zcl-rpc` for node data in that configuration.
 
 ## Architecture
 
@@ -253,6 +301,10 @@ zclassic23 (~15 MB, static)
   long loop on a supervisor liveness tree.
 - **Tests:** `make test` (460 parallel groups); bugs become 64-bit seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
+- **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
+  hermetic kill-9 / restart harness (`tools/crash_recovery_test.c`, isolated
+  self-seeded datadir) that proves the node folds back to its tip after being
+  killed mid-write — no manual repair.
 - **Gates are local:** `make lint` + `make ci` (not GitHub Actions).
 - **Deploy builds fresh:** `make deploy` rebuilds the binary and verifies the
   running `build_commit` — never ships stale code.
