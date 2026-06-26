@@ -1,0 +1,280 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * test_wallet_funds_safety — regression gates for the wallet funds-safety
+ * fixes on branch sticky/wallet-fixes. Each block proves, at the model layer
+ * (hermetic /tmp node.db), the exact defect the fix closes:
+ *
+ *  - MEDIUM: getbalance counted immature coinbase as spendable.
+ *  - MEDIUM/LOW: z_getbalance ignored minconf in the SQLite path.
+ *  - MEDIUM: transparent z_sendmany coin selection ignored the from-address.
+ *  - HIGH: witness/list paths capped at 256 notes by value (notes beyond #256
+ *    unspendable / invisible) — proven via the dynamic load helper.
+ *  - HIGH: z_sendmany shielded never marked notes spent at broadcast, so a
+ *    second send re-selected the same notes — proven via the selection query
+ *    after a nullifier mark-spent.
+ */
+
+#include "test/test_helpers.h"
+
+#include "models/database.h"
+#include "models/wallet_tx.h"
+#include "controllers/sync_controller.h"
+#include "util/safe_alloc.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+#define WFS_CHECK(name, expr) do {                       \
+    printf("wallet_funds_safety: %s... ", (name));       \
+    if ((expr)) printf("OK\n");                          \
+    else { printf("FAIL\n"); failures++; }               \
+} while (0)
+
+/* Save a block header at `height` so db_wallet_chain_tip_height() (MAX(height)
+ * FROM blocks) reflects a known tip. */
+static bool wfs_save_block(struct node_db *ndb, int height)
+{
+    struct db_block blk;
+    memset(&blk, 0, sizeof(blk));
+    memset(blk.hash, (uint8_t)(0x40 + (height & 0x0f)), 32);
+    memset(blk.prev_hash, 0x0b, 32);
+    memset(blk.merkle_root, 0x0c, 32);
+    memset(blk.chain_work, 0x0d, 32);
+    blk.height = height;
+    blk.time = 12345;
+    blk.bits = 0x1d00ffffU;
+    blk.status = 3;
+    static uint8_t sol[] = {0x01, 0x02};
+    blk.solution = sol;
+    blk.solution_len = sizeof(sol);
+    return db_block_save(ndb, &blk);
+}
+
+static bool wfs_save_utxo(struct node_db *ndb, uint8_t txid_seed,
+                          const uint8_t addr_hash[20], int64_t value,
+                          int height, bool is_coinbase)
+{
+    struct db_wallet_utxo u;
+    memset(&u, 0, sizeof(u));
+    memset(u.txid, txid_seed, 32);
+    u.vout = 0;
+    memcpy(u.address_hash, addr_hash, 20);
+    u.value = value;
+    u.height = height;
+    u.is_coinbase = is_coinbase;
+    u.script = (uint8_t *)"\x76\xa9\x14\x00\x88\xac";
+    u.script_len = 6;
+    return db_wallet_utxo_save(ndb, &u);
+}
+
+/* Persist a sapling note via the production sync path. nf_seed sets a distinct
+ * nullifier so notes can be individually mark-spent. */
+static bool wfs_save_note(struct node_db *ndb, uint8_t txid_seed,
+                          const uint8_t ivk[32], int64_t value,
+                          int block_height, uint8_t nf_seed)
+{
+    uint8_t txid[32], rcm[32], div[11], pk_d[32], cm[32], nf[32], memo[512];
+    memset(txid, txid_seed, 32);
+    memset(rcm, 0x05, 32);
+    memset(div, 0x07, 11);
+    memset(pk_d, 0x08, 32);
+    memset(cm, txid_seed, 32);   /* distinct cm per note */
+    memset(nf, nf_seed, 32);
+    memset(memo, 0xF6, 512);
+    return node_db_sync_sapling_note(ndb, txid, 0, value, rcm, memo, 512,
+                                     ivk, div, pk_d, cm, nf, block_height);
+}
+
+int test_wallet_funds_safety(void);
+int test_wallet_funds_safety(void)
+{
+    printf("\n=== wallet funds-safety regression gates ===\n");
+    int failures = 0;
+
+    char dbdir[256], dbpath[320];
+    snprintf(dbdir, sizeof(dbdir), ".zcl_test_funds_safety_%d", (int)getpid());
+    mkdir(dbdir, 0755);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool opened = node_db_open(&ndb, dbpath);
+    WFS_CHECK("node.db opened", opened);
+    if (!opened) {
+        char cmd[512]; snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        (void)system(cmd);
+        return failures + 1;
+    }
+
+    /* ── MEDIUM: immature coinbase excluded from SPENDABLE balance ──────── */
+    {
+        bool ok = wfs_save_block(&ndb, 200);  /* tip = 200; maturity cut = 100 */
+        uint8_t addr_a[20]; memset(addr_a, 0xA1, 20);
+        /* mature coinbase (height 50, 150 deep) — spendable */
+        ok = ok && wfs_save_utxo(&ndb, 0x10, addr_a, 1000, 50, true);
+        /* immature coinbase (height 150, 50 deep < 100) — NOT spendable */
+        ok = ok && wfs_save_utxo(&ndb, 0x11, addr_a, 2000, 150, true);
+        /* normal output (height 199) — spendable */
+        ok = ok && wfs_save_utxo(&ndb, 0x12, addr_a, 4000, 199, false);
+        WFS_CHECK("seeded coinbase + normal UTXOs", ok);
+
+        int64_t raw = db_wallet_utxo_balance(&ndb);
+        int64_t spend = db_wallet_utxo_spendable_balance(&ndb, NULL);
+        /* raw = all unspent = 1000+2000+4000 = 7000 (diagnostic total) */
+        WFS_CHECK("raw balance includes immature coinbase (7000)", raw == 7000);
+        /* spendable EXCLUDES the immature 2000 coinbase → 5000 */
+        WFS_CHECK("spendable balance excludes immature coinbase (5000)",
+                  spend == 5000);
+        WFS_CHECK("spendable < raw while a coinbase is immature", spend < raw);
+    }
+
+    /* ── MEDIUM: transparent coin selection honors the from-address ─────── */
+    {
+        uint8_t addr_small[20]; memset(addr_small, 0xB1, 20);  /* 5 ZCL on A */
+        uint8_t addr_big[20];   memset(addr_big,   0xB2, 20);  /* 100 on B  */
+        bool ok = wfs_save_utxo(&ndb, 0x20, addr_small, 500000000LL, 199, false);
+        ok = ok && wfs_save_utxo(&ndb, 0x21, addr_big, 10000000000LL, 199, false);
+        WFS_CHECK("seeded two addresses (A small, B big)", ok);
+
+        /* Send target 1 ZCL + fee from addr_small. The OLD global selector
+         * would pick B's 100-ZCL coin first (value DESC) and then find no A
+         * coins after post-filter. The address-scoped selector picks A's. */
+        struct db_wallet_utxo sel[16];
+        int n = db_wallet_utxo_select_coins_for_address(&ndb,
+            100000000LL + 1000, 200, addr_small, sel, 16);
+        int64_t sum = 0;
+        bool only_a = (n > 0);
+        for (int i = 0; i < n; i++) {
+            sum += sel[i].value;
+            if (memcmp(sel[i].address_hash, addr_small, 20) != 0)
+                only_a = false;
+        }
+        WFS_CHECK("from-address selection returns A's coin (funded)",
+                  n == 1 && only_a && sum == 500000000LL);
+        for (int i = 0; i < n; i++) db_wallet_utxo_free(&sel[i]);
+
+        /* And selection from the big address returns B's coin, not A's. */
+        struct db_wallet_utxo selb[16];
+        int nb = db_wallet_utxo_select_coins_for_address(&ndb,
+            100000000LL + 1000, 200, addr_big, selb, 16);
+        bool only_b = (nb == 1) &&
+            memcmp(selb[0].address_hash, addr_big, 20) == 0;
+        WFS_CHECK("from-address selection isolates the big address", only_b);
+        for (int i = 0; i < nb; i++) db_wallet_utxo_free(&selb[i]);
+    }
+
+    /* ── MEDIUM/LOW: z_getbalance per-ivk SQLite balance honors minconf ─── */
+    {
+        uint8_t ivk_m[32]; memset(ivk_m, 0x31, 32);
+        /* tip is 200 (from the earlier block save). Two notes for this ivk:
+         * one deeply confirmed (h=100 → 101 confs) and one fresh (h=200 →
+         * 1 conf). */
+        bool ok = wfs_save_note(&ndb, 0x32, ivk_m, 3000, 100, 0x91);
+        ok = ok && wfs_save_note(&ndb, 0x33, ivk_m, 7000, 200, 0x92);
+        WFS_CHECK("seeded two shielded notes (deep + fresh)", ok);
+
+        int tip = db_wallet_chain_tip_height(&ndb);
+        WFS_CHECK("chain tip height resolves to 200", tip == 200);
+
+        int64_t all_conf = db_sapling_note_balance_for_ivk(&ndb, ivk_m);
+        int64_t mc1 = db_sapling_note_balance_for_ivk_minconf(&ndb, ivk_m, tip, 1);
+        int64_t mc6 = db_sapling_note_balance_for_ivk_minconf(&ndb, ivk_m, tip, 6);
+        WFS_CHECK("unfiltered ivk balance == 10000", all_conf == 10000);
+        WFS_CHECK("minconf=1 counts both notes (10000)", mc1 == 10000);
+        /* minconf=6 excludes the 1-conf fresh note → only the deep 3000 */
+        WFS_CHECK("minconf=6 excludes the fresh 1-conf note (3000)",
+                  mc6 == 3000);
+    }
+
+    /* ── HIGH: dynamic note load returns ALL notes (no 256-by-value cap) ── */
+    {
+        uint8_t ivk_big[32]; memset(ivk_big, 0x41, 32);
+        const int N = 300;  /* > 256 */
+        /* Unique (txid,cm,nf) per note; ascending value so the LOWEST-value
+         * notes are exactly the ones a value-DESC top-256 cap would drop. */
+        bool ok = true;
+        for (int i = 0; i < N && ok; i++) {
+            uint8_t txid[32], rcm[32], div[11], pk_d[32], cm[32], nf[32], memo[512];
+            /* 4-byte little-endian counter embedded in txid/cm/nf to keep
+             * them unique across 300 notes. */
+            memset(txid, 0, 32); memset(cm, 0, 32); memset(nf, 0, 32);
+            txid[0] = (uint8_t)i; txid[1] = (uint8_t)(i >> 8); txid[2] = 0x77;
+            cm[0]   = (uint8_t)i; cm[1]   = (uint8_t)(i >> 8); cm[2]   = 0x78;
+            nf[0]   = (uint8_t)i; nf[1]   = (uint8_t)(i >> 8); nf[2]   = 0x79;
+            memset(rcm, 0x05, 32); memset(div, 0x07, 11);
+            memset(pk_d, 0x08, 32); memset(memo, 0xF6, 512);
+            ok = node_db_sync_sapling_note(&ndb, txid, 0, 1000 + i, rcm, memo,
+                                           512, ivk_big, div, pk_d, cm, nf, 200);
+        }
+        WFS_CHECK("seeded 300 unspent notes for one ivk", ok);
+
+        /* The fixed-cap load truncates at 256. */
+        struct db_sapling_note capped[256];
+        int n_capped = db_sapling_note_list_unspent(&ndb, capped, 256);
+        WFS_CHECK("fixed-cap list truncates at 256 (the OLD behavior)",
+                  n_capped == 256);
+
+        int count = db_sapling_note_count_unspent(&ndb);
+        WFS_CHECK("count_unspent sees all notes (>= 300)", count >= 300);
+
+        /* The dynamic load returns every note. */
+        struct db_sapling_note *all = NULL;
+        int n_all = db_sapling_note_list_unspent_alloc(&ndb, &all);
+        WFS_CHECK("dynamic list returns >= 300 notes (no value cap)",
+                  n_all >= 300 && all != NULL);
+        /* Confirm the lowest-value notes (rank > 256) are present. */
+        bool found_smallest = false;
+        for (int i = 0; i < n_all; i++)
+            if (all[i].value == 1000) { found_smallest = true; break; }
+        WFS_CHECK("smallest-value note (would be dropped by top-256) IS present",
+                  found_smallest);
+        free(all);
+    }
+
+    /* ── HIGH: marking a note spent excludes it from the SEND selection ─── */
+    {
+        uint8_t ivk_s[32]; memset(ivk_s, 0x61, 32);
+        uint8_t nf_a[32]; memset(nf_a, 0xDA, 32);
+        /* one spendable note for this ivk */
+        bool ok = true;
+        {
+            uint8_t txid[32], rcm[32], div[11], pk_d[32], cm[32], memo[512];
+            memset(txid, 0x62, 32); memset(rcm, 0x05, 32); memset(div, 0x07, 11);
+            memset(pk_d, 0x08, 32); memset(cm, 0x63, 32); memset(memo, 0xF6, 512);
+            ok = node_db_sync_sapling_note(&ndb, txid, 0, 9000, rcm, memo, 512,
+                                           ivk_s, div, pk_d, cm, nf_a, 200);
+        }
+        WFS_CHECK("seeded a single spendable note for the send ivk", ok);
+
+        struct db_sapling_note before[16];
+        int n_before = db_sapling_note_list_unspent_for_ivk(&ndb, ivk_s, before, 16);
+        WFS_CHECK("note is selectable BEFORE broadcast (1 note)", n_before == 1);
+
+        /* Simulate the at-broadcast mark-spent the fix adds to z_sendmany. */
+        uint8_t spending_txid[32]; memset(spending_txid, 0xEE, 32);
+        enum db_mark_spent_result r =
+            node_db_sync_sapling_spend_ex(&ndb, nf_a, spending_txid);
+        WFS_CHECK("mark-spent at broadcast succeeds (OK)", r == DB_MARK_SPENT_OK);
+
+        struct db_sapling_note after[16];
+        int n_after = db_sapling_note_list_unspent_for_ivk(&ndb, ivk_s, after, 16);
+        /* The SECOND z_sendmany would now find zero notes — no double-spend of
+         * the user's own note. */
+        WFS_CHECK("note is NOT re-selected after broadcast (0 notes)",
+                  n_after == 0);
+    }
+
+    node_db_close(&ndb);
+    {
+        char cmd[512]; snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        (void)system(cmd);
+    }
+
+    if (failures == 0)
+        printf("wallet_funds_safety: OK (all funds-safety gates pass)\n");
+    else
+        printf("=== wallet_funds_safety: %d failure(s) ===\n", failures);
+    return failures;
+}

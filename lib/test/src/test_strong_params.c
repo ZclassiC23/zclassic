@@ -445,6 +445,80 @@ int test_strong_params(void)
         json_free(&arr);
     }
 
+    /* Negative fractional string with integer part 0 ("-0.5"): the sign must
+     * NOT be dropped (regression — it used to parse to +0.5 ZCL and execute a
+     * real send). The result must be negative so the satoshis<0 guard fires. */
+    printf("rpc_require_amount: negative fractional string \"-0.5\" rejected... ");
+    {
+        struct json_value arr;
+        json_init(&arr);
+        make_arr_str(&arr, "-0.5");
+        struct rpc_params p;
+        rpc_params_init(&p, &arr);
+        int64_t val = rpc_require_amount(&p, 0, "amount");
+        if (val == 0 && rpc_params_invalid(&p))
+            printf("OK (rejected)\n");
+        else { printf("FAIL (%" PRId64 ", invalid=%d)\n", val, rpc_params_invalid(&p)); failures++; }
+        json_free(&arr);
+    }
+
+    printf("rpc_require_amount: negative fractional string \"-0.001\" rejected... ");
+    {
+        struct json_value arr;
+        json_init(&arr);
+        make_arr_str(&arr, "-0.001");
+        struct rpc_params p;
+        rpc_params_init(&p, &arr);
+        int64_t val = rpc_require_amount(&p, 0, "amount");
+        if (val == 0 && rpc_params_invalid(&p))
+            printf("OK (rejected)\n");
+        else { printf("FAIL (%" PRId64 ")\n", val); failures++; }
+        json_free(&arr);
+    }
+
+    printf("rpc_require_amount: negative whole string \"-1.5\" rejected... ");
+    {
+        struct json_value arr;
+        json_init(&arr);
+        make_arr_str(&arr, "-1.5");
+        struct rpc_params p;
+        rpc_params_init(&p, &arr);
+        int64_t val = rpc_require_amount(&p, 0, "amount");
+        if (val == 0 && rpc_params_invalid(&p))
+            printf("OK (rejected)\n");
+        else { printf("FAIL (%" PRId64 ")\n", val); failures++; }
+        json_free(&arr);
+    }
+
+    printf("rpc_require_amount: negative integer string \"-3\" rejected... ");
+    {
+        struct json_value arr;
+        json_init(&arr);
+        make_arr_str(&arr, "-3");
+        struct rpc_params p;
+        rpc_params_init(&p, &arr);
+        int64_t val = rpc_require_amount(&p, 0, "amount");
+        if (val == 0 && rpc_params_invalid(&p))
+            printf("OK (rejected)\n");
+        else { printf("FAIL (%" PRId64 ")\n", val); failures++; }
+        json_free(&arr);
+    }
+
+    /* Positive decimal still parses correctly (no sign regression). */
+    printf("rpc_require_amount: positive \"0.5\" still parses... ");
+    {
+        struct json_value arr;
+        json_init(&arr);
+        make_arr_str(&arr, "0.5");
+        struct rpc_params p;
+        rpc_params_init(&p, &arr);
+        int64_t val = rpc_require_amount(&p, 0, "amount");
+        if (val == 50000000LL && !rpc_params_invalid(&p))
+            printf("OK\n");
+        else { printf("FAIL (%" PRId64 ")\n", val); failures++; }
+        json_free(&arr);
+    }
+
     printf("rpc_require_amount: missing... ");
     {
         struct json_value arr;

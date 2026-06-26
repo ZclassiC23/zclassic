@@ -252,6 +252,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(canary_sentinel_watch) X(seed_torn_import_gate) \
     X(shielded_spend_slice) X(atomic_commit_ordering) \
     X(coldimport_restart_fragility) \
+    X(wallet_funds_safety) \
     X(block_parse_cache)
 
 #define SPEC_LIST(X) \

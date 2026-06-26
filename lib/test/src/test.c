@@ -719,6 +719,8 @@ int main(void)
     failures += test_htlc();
     failures += test_file_market();
     failures += test_strong_params();
+    { extern int test_wallet_funds_safety(void);
+      failures += test_wallet_funds_safety(); }
     failures += test_json();
     failures += test_robustness();
     failures += test_wallet();
