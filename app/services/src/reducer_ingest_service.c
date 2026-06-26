@@ -28,6 +28,7 @@
 
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
+#include "util/thread_registry.h"  /* thread_registry_shutdown_requested */
 #include "util/util.h"  /* GetDataDir */
 
 /* ── Reducer-as-ingest includes ─────────────────────────────────────
@@ -91,6 +92,13 @@ static int reducer_drain_core(int64_t budget_us, int hard_cap, int per_stage_bat
     int       total           = 0;
     if (per_stage_batch <= 0) per_stage_batch = 100;
     for (int round = 0; round < hard_cap; round++) {
+        /* On shutdown, return at this round boundary (a safe, committed point —
+         * each stage's batch has already COMMITted) so the P2P message thread's
+         * reducer activation exits promptly and connman_join succeeds instead of
+         * timing out and detaching the thread under the frees that follow. The
+         * fold is resumable, so stopping mid-drain loses no state. */
+        if (thread_registry_shutdown_requested())
+            break;
         int adv = reducer_drain_all_stages(per_stage_batch);
         total += adv;
         if (adv == 0)

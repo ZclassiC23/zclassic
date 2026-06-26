@@ -42,7 +42,9 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
     int64_t mp_bytes = zcl_json_int(buf, "bytes");
 
     int show = 25;
-    static struct explorer_dashboard_rpc_row rows[25];
+    /* Stack-local, NOT static: this handler runs concurrently on multiple
+     * HTTP/onion worker threads, so a process-global array would race. */
+    struct explorer_dashboard_rpc_row rows[25];
     int n = 0;
 
     for (int h = tip; h > tip - show && h >= 0 && n < show; h--) {
@@ -118,7 +120,9 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
     int end_height = start_height - per_page + 1;
     if (end_height < 0) end_height = 0;
 
-    static struct explorer_dashboard_native_row rows[25];
+    /* Stack-local, NOT static: this handler runs concurrently on multiple
+     * HTTP/onion worker threads, so a process-global array would race. */
+    struct explorer_dashboard_native_row rows[25];
     int n = 0;
 
     for (int h = start_height; h >= end_height && h >= 0; h--) {

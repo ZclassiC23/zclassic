@@ -1817,10 +1817,22 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     shutdown_persist_runtime_state(svc);
     {
         int stragglers = thread_registry_join_all(2);
-        if (stragglers > 0)
+        if (stragglers > 0) {
+            /* A worker thread's bounded join timed out and it was detached, so
+             * it may still be running. All durable state is already persisted
+             * above (coins flushed, WAL checkpointed, DBs closed), so running
+             * the destructive frees in shutdown_release_owned_resources would
+             * race that thread (use-after-free on main_state / Sapling params /
+             * caches it reads). Skip the frees and exit now — the OS reclaims
+             * everything microseconds later. */
             fprintf(stderr,
-                    "[shutdown] %d registered thread(s) still running after sweep\n",
+                    "[shutdown] %d registered thread(s) still running after sweep; "
+                    "exiting without final free to avoid teardown UAF\n",
                     stragglers);
+            fflush(stdout);
+            fflush(stderr);
+            _exit(0);
+        }
     }
     /* I-7b phase-2: net threads are joined; safe to destroy. */
     shutdown_release_owned_resources(svc);
