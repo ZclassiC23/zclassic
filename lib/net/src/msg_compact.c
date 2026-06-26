@@ -15,6 +15,7 @@
 #include "storage/disk_block_io.h"
 #include "validation/process_block.h"
 #include "consensus/validation.h"
+#include "chain/pow.h"
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -137,6 +138,25 @@ bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
     uint256_get_hex(&block_hash, hex);
     LOG_INFO("compact", "peer %s: cmpctblock %s (%zu short txids, %zu prefilled)",
              node->addr_name, hex, cb.num_short_txids, cb.num_prefilled);
+
+    /* Gate the expensive mempool collection + reconstruction below behind a
+     * cheap dedup and a proof-of-work check on the announced header. An
+     * unsolicited cmpctblock carries only a header + short txids; without this
+     * gate a peer could spray cheap cmpctblocks to force repeated full-mempool
+     * scans (CPU amplification). Mirrors Bitcoin Core's check of a cmpctblock
+     * header's PoW before attempting reconstruction. */
+    if (block_already_seen(&block_hash)) {
+        compact_block_msg_free(&cb);
+        return true;
+    }
+    if (!mp || !mp->params ||
+        !CheckProofOfWork(block_hash, cb.header.nBits, &mp->params->consensus)) {
+        if (mp)
+            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
+                                "cmpctblock failed pow gate");
+        compact_block_msg_free(&cb);
+        LOG_FAIL("compact", "cmpctblock from %s failed pow gate", node->addr_name);
+    }
 
     /* Discard any prior pending compact block for this peer */
     compact_pending_clear(node);

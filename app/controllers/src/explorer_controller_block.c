@@ -220,8 +220,13 @@ size_t serve_block(const char *param, uint8_t *r, size_t max)
             }
             if (is_slp) {
                 size_t tl = strlen(row->type_tags);
+                /* The ticker is attacker-controlled OP_RETURN bytes (not
+                 * charset-restricted); escape before embedding to prevent
+                 * stored XSS, mirroring the tx view (explorer_controller_tx.c). */
+                char esc_ticker[256];
+                html_escape(esc_ticker, sizeof(esc_ticker), slp.ticker);
                 snprintf(row->type_tags + tl, sizeof(row->type_tags) - tl,
-                    "<span class='tag tag-slp'>ZSLP: %s</span> ", slp.ticker);
+                    "<span class='tag tag-slp'>ZSLP: %s</span> ", esc_ticker);
             }
 
             /* Combined transparent + shielded counts */

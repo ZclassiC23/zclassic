@@ -301,6 +301,12 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         fprintf(stderr, "block_index_flat: count %u too large (max 10M)\n", count);
         munmap(data, file_size); return false;
     }
+    if (count == 0) {
+        /* An empty index is useless and would make entries[count-1] below an
+         * out-of-bounds read (entries[-1]); reject so the caller re-derives. */
+        fprintf(stderr, "block_index_flat: empty index (count 0)\n");
+        munmap(data, file_size); return false;
+    }
 
     size_t expected = payload_off + 8 + (size_t)count * sizeof(struct block_index_flat);
     if (file_size < expected) {
