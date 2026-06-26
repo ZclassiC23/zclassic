@@ -1076,16 +1076,38 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
 
         if (type == FS_DONE) break;
         if (type == FS_MANIFEST && plen >= 36) {
-            memcpy(chunks[num_chunks].sha3, payload, 32);
-            chunks[num_chunks].size =
+            struct file_chunk *c = &chunks[num_chunks];
+            memset(c, 0, sizeof(*c));   /* short form leaves file_index/offset
+                                         * unset — zero them, not stack garbage */
+            memcpy(c->sha3, payload, 32);
+            c->size =
                 (uint32_t)payload[32] |
                 ((uint32_t)payload[33] << 8) |
                 ((uint32_t)payload[34] << 16) |
                 ((uint32_t)payload[35] << 24);
             /* Extended manifest: file_index + offset */
             if (plen >= 45) {
-                chunks[num_chunks].file_index = payload[36];
-                memcpy(&chunks[num_chunks].offset, payload + 37, 8);
+                c->file_index = payload[36];
+                memcpy(&c->offset, payload + 37, 8);
+            }
+            /* SECURITY: every manifest field is peer-supplied. Bound the chunk
+             * size here at parse time (the recv path caps at 60MB on the wire,
+             * but the resume-verify malloc at line ~1137 trusted this size and a
+             * size=0xFFFFFFFF entry would attempt a ~4GB alloc → OOM/DoS on a
+             * fresh node). Reject the whole manifest on any out-of-range entry.
+             * file_index must address a real sink (0-252 block files, 253
+             * block_index.bin, 254 consensus_snapshot.db); 255 is invalid. */
+            if (c->size == 0 || c->size > 60 * 1024 * 1024) {
+                close(fd);
+                LOG_FAIL("filesvc", "client_sync: manifest chunk %u has invalid "
+                         "size=%u (peer-supplied) — rejecting manifest",
+                         num_chunks, c->size);
+            }
+            if (c->file_index > 254) {
+                close(fd);
+                LOG_FAIL("filesvc", "client_sync: manifest chunk %u has invalid "
+                         "file_index=%u — rejecting manifest",
+                         num_chunks, (unsigned)c->file_index);
             }
             num_chunks++;
         }
@@ -1096,10 +1118,20 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         LOG_FAIL("filesvc", "client_sync: manifest empty (server still building)");
     }
 
-    /* Compute total download size for progress reporting */
+    /* Compute total download size for progress reporting. Each chunk is already
+     * bounded at <=60MB and num_chunks at FILE_MAX_CHUNKS (1024), so the sum
+     * cannot overflow uint64; cap the cumulative total at the documented
+     * ~50GB ceiling so a maximal-but-individually-valid manifest can't request
+     * an absurd download. */
     uint64_t total_bytes = 0;
     for (uint32_t j = 0; j < num_chunks; j++)
         total_bytes += chunks[j].size;
+    if (total_bytes > (uint64_t)FILE_MAX_CHUNKS * FILE_CHUNK_SIZE) {
+        close(fd);
+        LOG_FAIL("filesvc", "client_sync: manifest total %llu bytes exceeds "
+                 "ceiling — rejecting manifest",
+                 (unsigned long long)total_bytes);
+    }
     printf("file_service: manifest has %u chunks (%.1f GB), downloading...\n",
            num_chunks, (double)total_bytes / (1024.0 * 1024.0 * 1024.0));
 
