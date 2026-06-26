@@ -249,6 +249,19 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *datadir,
                                             struct main_state *ms);
 
+/* Zero-flag starter-pack bootstrap. Scan `datadir` for a starter-pack bundle —
+ * block_index.bin (the PoW header index) plus a utxo-seed-<H>.snapshot (a
+ * SHA3-self-verified, anchor-bound UTXO seed) — and return a malloc'd absolute
+ * path to the snapshot the loader should seed from, or NULL when no usable
+ * bundle is present. The highest-height snapshot wins; a snapshot with no
+ * block_index.bin alongside it is declined (logged) because the loader needs the
+ * header chain for its consensus anchor cross-check. The CALLER must gate on
+ * coins_kv NOT yet being the proven authority so a synced node is never
+ * re-seeded; the loader itself still self-verifies + anchor-binds, so this only
+ * ever auto-selects a file the explicit -load-snapshot-at-own-height flag could
+ * have loaded. Caller owns the returned string (free()). */
+char *boot_autodetect_bundle_snapshot(const char *datadir);
+
 /* FIX 3 seam — PURE consensus cross-check for the forged-snapshot FATAL inside
  * boot_load_snapshot_at_own_height_reset. The loaded snapshot's
  * hdr.anchor_block_hash MUST byte-equal this node's PoW-proven header hash at

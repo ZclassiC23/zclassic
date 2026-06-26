@@ -16,6 +16,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>          /* _exit */
+#include <dirent.h>          /* opendir/readdir — bundle auto-detect */
 #include <sqlite3.h>
 
 #include "models/database.h"
@@ -736,6 +737,79 @@ static bool reopen_progress_store_after_verified_snapshot(const char *datadir,
     if (db_out)
         *db_out = db;
     return true;
+}
+
+char *boot_autodetect_bundle_snapshot(const char *datadir)
+{
+    if (!datadir || !datadir[0])
+        return NULL;
+
+    /* block_index.bin (the PoW header index) must be alongside the snapshot:
+     * the loader consensus-binds the snapshot's anchor to the in-memory header
+     * chain, which is populated from this file on a normal boot. */
+    char bi_path[1100];
+    int bn = snprintf(bi_path, sizeof(bi_path), "%s/block_index.bin", datadir);
+    if (bn < 0 || (size_t)bn >= sizeof(bi_path))
+        return NULL;
+    bool have_block_index = (access(bi_path, F_OK) == 0);
+
+    DIR *d = opendir(datadir);
+    if (!d)
+        return NULL;
+
+    /* Match utxo-seed-<digits>.snapshot; the highest height wins. */
+    static const char PFX[] = "utxo-seed-";
+    static const char SFX[] = ".snapshot";
+    const size_t plen = sizeof(PFX) - 1, slen = sizeof(SFX) - 1;
+    char best_name[256] = {0};
+    long long best_h = -1;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        const char *nm = ent->d_name;
+        size_t len = strlen(nm);
+        if (len <= plen + slen || len >= sizeof(best_name))
+            continue;
+        if (strncmp(nm, PFX, plen) != 0)
+            continue;
+        if (strcmp(nm + len - slen, SFX) != 0)
+            continue;
+        long long h = 0;
+        bool digits_ok = true;
+        for (size_t i = plen; i < len - slen; i++) {
+            if (nm[i] < '0' || nm[i] > '9') { digits_ok = false; break; }
+            h = h * 10 + (nm[i] - '0');
+        }
+        if (!digits_ok)
+            continue;
+        if (h > best_h) {
+            best_h = h;
+            snprintf(best_name, sizeof(best_name), "%s", nm);
+        }
+    }
+    closedir(d);
+
+    if (best_h < 0)
+        return NULL;  /* no starter-pack snapshot present */
+
+    if (!have_block_index) {
+        LOG_WARN("boot",
+                 "[boot] starter-pack snapshot %s is present but block_index.bin "
+                 "is NOT in the datadir — the snapshot seed needs the header "
+                 "index to consensus-bind its anchor. Download block_index.bin "
+                 "from the same release; using normal P2P sync this run.",
+                 best_name);
+        return NULL;
+    }
+
+    char *out = zcl_malloc(1100, "autodetect_bundle_snapshot");
+    if (!out)
+        return NULL;
+    int on = snprintf(out, 1100, "%s/%s", datadir, best_name);
+    if (on < 0 || on >= 1100) {
+        free(out);
+        return NULL;
+    }
+    return out;
 }
 
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,

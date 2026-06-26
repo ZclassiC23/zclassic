@@ -3469,6 +3469,25 @@ sapling_tree_boot_check_done:
 
     if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
     if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db, ctx->mint_anchor_fast); /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor; fast => crypto pass-through */
+    /* Zero-flag starter-pack bootstrap: if the operator dropped a bundle
+     * (block_index.bin + utxo-seed-<H>.snapshot) into a fresh datadir, auto-
+     * select the snapshot so a plain `zclassic23` reaches tip with no flags.
+     * Gated on coins_kv NOT yet being the proven authority, so a synced node is
+     * never re-seeded (after the first seed the loader stamps coins_kv proven,
+     * and subsequent boots short-circuit here). The loader below still SELF-
+     * SHA3-verifies + anchor-binds, so this only auto-selects a file the explicit
+     * flag could have loaded. No-op when no bundle is present. */
+    if (!ctx->load_snapshot_at_own_height &&
+        !coins_kv_is_proven_authority(progress_store_db(), NULL)) {
+        char *auto_snap = boot_autodetect_bundle_snapshot(ctx->datadir);
+        if (auto_snap) {
+            LOG_INFO("boot",
+                     "[boot] starter-pack bundle detected in datadir — auto-"
+                     "loading %s (no -load-snapshot-at-own-height flag needed)",
+                     auto_snap);
+            ctx->load_snapshot_at_own_height = auto_snap;
+        }
+    }
     /* -load-snapshot-at-own-height=PATH (EXPLICIT-ONLY recovery): seed coins_kv
      * from a SELF-SHA3-verified ZCLUTXO snapshot at the snapshot's OWN header
      * height and fold forward from there. NULL unless the operator set the flag,
