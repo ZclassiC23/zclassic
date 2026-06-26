@@ -126,6 +126,11 @@ bool advance_wallet_witnesses(struct node_db *ndb,
     if (nw > 0) {
         witnesses = zcl_calloc((size_t)nw, sizeof(struct incremental_witness), "sync witnesses");
         witness_idx = zcl_calloc((size_t)nw, sizeof(int), "sync witness_idx");
+        if (!witnesses || !witness_idx) {
+            free(witnesses); free(witness_idx);
+            free(has_witness); free(wnotes);
+            LOG_FAIL("sync", "advance_wallet_witnesses: witness array calloc failed (%d notes)", nw);
+        }
         for (int i = 0; i < nw; i++) {
             if (!has_witness[i]) continue;
             uint8_t *wblob = NULL;
