@@ -17,6 +17,7 @@
 #include "util/blocker.h"
 #include "util/stage.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -48,6 +49,23 @@ static job_result_t step_advance_by_one(struct stage_step_ctx *c)
 {
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
+}
+
+/* Count quarantine sidecar files (progress.kv*.corrupt.*) in dir. Used to
+ * assert the quick_check quarantine fired exactly when expected. */
+static int ps_count_corrupt(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "progress.kv", 11) == 0 &&
+            strstr(e->d_name, ".corrupt.") != NULL)
+            n++;
+    }
+    closedir(d);
+    return n;
 }
 
 int test_progress_store(void)
@@ -305,6 +323,124 @@ int test_progress_store(void)
                  found && got == strlen(persist_payload) &&
                  memcmp(out, persist_payload, got) == 0);
         progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── integrity quick_check + quarantine self-heal (competition
+     *    robustness) ─────────────────────────────────────────────────────
+     *
+     * A corrupt progress.kv must NOT pin the node silently. On open the store
+     * runs PRAGMA quick_check; a non-"ok" verdict quarantines the file aside
+     * (rename → progress.kv.corrupt.<ts>...) and reopens a FRESH, empty store
+     * so boot can re-seed coins_kv from the snapshot/anchor and re-fold. This
+     * mirrors node.db's db_quick_check_ok path. We prove three things:
+     *   (a) a HEALTHY store reopens with NO quarantine (no false positive),
+     *   (b) a deliberately page-garbled store is detected → quarantine file
+     *       appears → reopen succeeds with a fresh, queryable, EMPTY store,
+     *   (c) it is auto-terminating (one quarantine, not a loop). */
+    {
+        char dir[256];
+        ps_tmpdir(dir, sizeof(dir), "quarantine");
+        mkdir_p(dir);
+        char fpath[512];
+        snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
+
+        /* Seed a healthy store with a recognizable marker, then close so the
+         * WAL is checkpointed back into the main file (close TRUNCATEs WAL). */
+        PS_CHECK("quarantine: seed open", progress_store_open(dir));
+        const char *marker = "MARKER-PRE-CORRUPT";
+        PS_CHECK("quarantine: seed marker",
+                 progress_meta_set(progress_store_db(), "k.marker",
+                                   marker, strlen(marker)));
+        progress_store_close();
+
+        /* (a) Reopen the HEALTHY file — must NOT quarantine, marker survives. */
+        PS_CHECK("quarantine: healthy reopen OK", progress_store_open(dir));
+        {
+            uint8_t out[64] = {0};
+            size_t got = 0; bool found = false;
+            PS_CHECK("quarantine: healthy marker survives",
+                     progress_meta_get(progress_store_db(), "k.marker",
+                                       out, sizeof(out), &got, &found) &&
+                     found && got == strlen(marker) &&
+                     memcmp(out, marker, got) == 0);
+        }
+        PS_CHECK("quarantine: no false-positive .corrupt file",
+                 ps_count_corrupt(dir) == 0);
+        progress_store_close();
+
+        /* Deliberately corrupt a middle page of the main DB file. SQLite's
+         * default page size is 4096; page 1 is the header (offset 0). We
+         * scribble garbage well inside the file (offset 4096 onward) so the
+         * header still parses far enough for quick_check to walk the b-tree
+         * and report malformation rather than a bare "file is not a
+         * database". */
+        {
+            struct stat st;
+            PS_CHECK("quarantine: file exists pre-corrupt",
+                     stat(fpath, &st) == 0 && st.st_size > 4096);
+            FILE *f = fopen(fpath, "r+b");
+            PS_CHECK("quarantine: open file for corruption", f != NULL);
+            if (f) {
+                /* Overwrite from offset 4096 with 0xEE garbage across the
+                 * second page region so a b-tree page is clobbered. */
+                long start = 4096;
+                long span = st.st_size - start;
+                if (span > 4096) span = 4096;  /* one page is plenty */
+                if (span < 0) span = 0;
+                int seek_ok = (fseek(f, start, SEEK_SET) == 0);
+                PS_CHECK("quarantine: seek into file body", seek_ok);
+                uint8_t garbage[4096];
+                memset(garbage, 0xEE, sizeof(garbage));
+                size_t to_write = (size_t)span;
+                size_t wrote = fwrite(garbage, 1,
+                                      to_write < sizeof(garbage)
+                                          ? to_write : sizeof(garbage), f);
+                PS_CHECK("quarantine: wrote garbage page", wrote > 0);
+                fclose(f);
+            }
+        }
+
+        /* (b) Reopen the CORRUPT file — quick_check must fire the quarantine
+         *     and reopen a fresh store. open() returns true (self-healed). */
+        PS_CHECK("quarantine: corrupt reopen self-heals (returns true)",
+                 progress_store_open(dir));
+        PS_CHECK("quarantine: handle non-NULL after self-heal",
+                 progress_store_db() != NULL);
+        PS_CHECK("quarantine: .corrupt sidecar was created",
+                 ps_count_corrupt(dir) >= 1);
+        /* Fresh store is queryable (schema re-created) ... */
+        {
+            sqlite3_stmt *q = NULL;
+            int rc = sqlite3_prepare_v2(progress_store_db(),
+                "SELECT COUNT(*) FROM stage_cursor", -1, &q, NULL);
+            PS_CHECK("quarantine: fresh store stage_cursor queryable",
+                     rc == SQLITE_OK);
+            sqlite3_finalize(q);
+        }
+        /* ... and EMPTY: the pre-corrupt marker is GONE (state was derived,
+         * the snapshot/anchor is the real source of truth). */
+        {
+            uint8_t out[64] = {0};
+            size_t got = 99; bool found = true;
+            PS_CHECK("quarantine: fresh store dropped stale marker",
+                     progress_meta_get(progress_store_db(), "k.marker",
+                                       out, sizeof(out), &got, &found) &&
+                     !found && got == 0);
+        }
+        progress_store_close();
+
+        /* (c) A second reopen of the now-healthy fresh store does NOT create a
+         *     further .corrupt file (auto-terminating; one quarantine). */
+        {
+            int before = ps_count_corrupt(dir);
+            PS_CHECK("quarantine: post-heal reopen OK",
+                     progress_store_open(dir));
+            PS_CHECK("quarantine: no second quarantine (idempotent)",
+                     ps_count_corrupt(dir) == before);
+            progress_store_close();
+        }
+
         test_cleanup_tmpdir(dir);
     }
 

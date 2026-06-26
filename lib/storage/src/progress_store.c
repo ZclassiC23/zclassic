@@ -14,16 +14,20 @@
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
 
+#include "event/event.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #define PROGRESS_STORE_FILENAME  "progress.kv"
 /* PROGRESS_STORE_PATH_MAX comes from storage/progress_store.h. */
@@ -88,6 +92,95 @@ static bool apply_pragmas(sqlite3 *db)
     return true;
 }
 
+/* Integrity gate on open. Mirrors node.db's db_quick_check_ok
+ * (app/models/src/database.c). progress.kv hosts every stage cursor AND the
+ * coins_kv UTXO table; if SQLite reports a malformed file, a mid-fold
+ * SQLITE_CORRUPT turns into a permanent JOB_FATAL that pins H* forever with no
+ * named blocker. Detecting it here lets the open path quarantine + re-derive
+ * instead. Returns true only when PRAGMA quick_check reports exactly "ok". A
+ * prepare/step failure (the connection itself is wedged on a corrupt file) is
+ * treated as NOT ok so the caller quarantines. */
+static bool progress_store_quick_check_ok(sqlite3 *db)
+{
+    sqlite3_stmt *stmt = NULL;
+    bool ok = false;
+    int rc = sqlite3_prepare_v2(db, "PRAGMA quick_check(1)", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:progress-store-open-failure
+                "[progress_store] quick_check prepare failed: %s\n",
+                sqlite3_errmsg(db));
+        return false;
+    }
+    rc = sqlite3_step(stmt);  // raw-sql-ok:read-only-introspection
+    if (rc == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(stmt, 0);
+        ok = txt && strcmp((const char *)txt, "ok") == 0;
+        if (!ok && txt)
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] quick_check failed: %s\n", txt);
+    } else {
+        fprintf(stderr,  // obs-ok:progress-store-open-failure
+                "[progress_store] quick_check step failed: %s\n",
+                sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+/* Rename one progress.kv-family file (base / -wal / -shm) out of the way with a
+ * timestamped, pid+seq-unique suffix. ENOENT is success (the file may not
+ * exist). Mirrors db_quarantine_one in app/models/src/database.c. */
+static void progress_store_quarantine_one(const char *path, const char *suffix)
+{
+    if (access(path, F_OK) != 0)
+        return;  /* nothing to move (e.g. -wal/-shm absent) */
+    char dst[PROGRESS_STORE_PATH_MAX + 96];
+    int n = snprintf(dst, sizeof(dst), "%s.%s", path, suffix);
+    if (n <= 0 || (size_t)n >= sizeof(dst)) {
+        fprintf(stderr,  // obs-ok:progress-store-open-failure
+                "[progress_store] quarantine dest too long for %s\n", path);
+        return;
+    }
+    if (rename(path, dst) == 0)
+        fprintf(stderr,  // obs-ok:progress-store-lifecycle
+                "[progress_store] quarantined %s -> %s\n", path, dst);
+    else
+        fprintf(stderr,  // obs-ok:progress-store-open-failure
+                "[progress_store] failed to quarantine %s: %s\n",
+                path, strerror(errno));
+}
+
+/* Move the corrupt progress.kv (+ -wal/-shm) aside so the reopen creates a
+ * FRESH, empty store. progress.kv is a DERIVED projection: the coins_kv UTXO
+ * set it holds is re-seeded at boot from consensus_snapshot.db (or the anchor),
+ * and the stage cursors re-fold from there. An empty store therefore triggers
+ * the normal re-derivation rather than serving torn state. The suffix is
+ * timestamped + pid + a process-local sequence so repeated quarantines never
+ * collide. Emits a NAMED recovery event (not a silent stop). */
+static void progress_store_quarantine_corrupt(const char *path)
+{
+    static _Atomic(unsigned) s_seq;
+    unsigned seq = atomic_fetch_add_explicit(&s_seq, 1u,
+                                             memory_order_relaxed) + 1u;
+    char suffix[80];
+    time_t now = (time_t)wall_now_s();
+    snprintf(suffix, sizeof(suffix), "corrupt.%lld.%ld.%u",
+             (long long)now, (long)getpid(), seq);
+
+    char wal[PROGRESS_STORE_PATH_MAX + 8];
+    char shm[PROGRESS_STORE_PATH_MAX + 8];
+    snprintf(wal, sizeof(wal), "%s-wal", path);
+    snprintf(shm, sizeof(shm), "%s-shm", path);
+
+    progress_store_quarantine_one(path, suffix);
+    progress_store_quarantine_one(wal, suffix);
+    progress_store_quarantine_one(shm, suffix);
+
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "action=progress_store_quarantine reason=quick_check_failed "
+                "path=%s suffix=%s", path, suffix);
+}
+
 bool progress_store_open(const char *datadir)
 {
     if (!datadir || !datadir[0]) LOG_FAIL("progress_store",
@@ -123,6 +216,59 @@ bool progress_store_open(const char *datadir)
         if (db) sqlite3_close(db);
         pthread_mutex_unlock(&g_lock);
         return false;
+    }
+
+    /* Integrity gate. progress.kv is the authority store for the stage cursors
+     * and the coins_kv UTXO table; a corrupt file otherwise surfaces as a
+     * mid-fold SQLITE_CORRUPT → JOB_FATAL that pins H* permanently with no
+     * named blocker. On a non-"ok" quick_check, quarantine the file and reopen
+     * a FRESH one — boot re-seeds coins_kv from consensus_snapshot.db / the
+     * anchor and re-folds the stages from there (progress.kv is a derived
+     * projection, not the source of truth). AUTO-TERMINATING + idempotent: a
+     * fresh, just-created store that ALSO fails quick_check is a disk/fs fault,
+     * not corrupt derived state — log a terminal blocker and fail the open
+     * instead of quarantine-looping. */
+    if (!progress_store_quick_check_ok(db)) {
+        fprintf(stderr,  // obs-ok:progress-store-open-failure
+                "[progress_store] %s failed integrity quick_check; "
+                "quarantining + re-deriving from snapshot/anchor\n", path);
+        sqlite3_close(db);
+        db = NULL;
+        progress_store_quarantine_corrupt(path);
+
+        rc = sqlite3_open_v2(path, &db,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            NULL);
+        if (rc != SQLITE_OK) {
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] reopen after quarantine of %s failed: "
+                    "%s — disk/fs fault\n",
+                    path, db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
+            if (db) sqlite3_close(db);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=progress_store_reopen_failed reason=disk_fault "
+                        "path=%s", path);
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
+        if (!progress_store_quick_check_ok(db)) {
+            /* A freshly-created, empty DB that fails quick_check cannot be
+             * derived-state corruption — the underlying storage is broken.
+             * Do NOT quarantine again (that would loop); fail terminally with
+             * a named blocker. */
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] FRESH %s still fails quick_check — "
+                    "terminal disk/fs fault, refusing to loop\n", path);
+            sqlite3_close(db);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=progress_store_fresh_corrupt reason=disk_fault "
+                        "path=%s", path);
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
+        fprintf(stderr,  // obs-ok:progress-store-lifecycle
+                "[progress_store] fresh %s opened after quarantine "
+                "(coins_kv will re-seed from snapshot/anchor at boot)\n", path);
     }
 
     if (!apply_pragmas(db) || !stage_table_ensure(db) ||
