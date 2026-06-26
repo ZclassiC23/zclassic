@@ -216,6 +216,11 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                 bool restore_coinbase = false;
                 const uint8_t *restore_script = NULL;
                 uint32_t restore_script_len = 0;
+                /* Declared at the per-input scope (not inside the !found block
+                 * below) so its lifetime spans the script copy further down:
+                 * restore_script may alias lk's embedded buffer, which is
+                 * memcpy'd into se->script_owned after that block has closed. */
+                struct utxo_apply_lookup lk;
                 const struct delta_entry *intra = NULL;
                 bool found = lookup_added(added, out->added_count,
                                           &op->hash, op->n, &intra);
@@ -229,7 +234,6 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                     restore_script_len = intra->script_len;
                 }
                 if (!found) {
-                    struct utxo_apply_lookup lk;
                     memset(&lk, 0, sizeof(lk));
                     if (lookup && !lookup(&op->hash, op->n, &lk, lookup_user)) {
                         lookup_fail(out, "lookup_spend", block_height,
