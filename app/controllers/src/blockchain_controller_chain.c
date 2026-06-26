@@ -212,7 +212,16 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
      * doesn't appear in zclassicd's output, and UPGRADE_TESTDUMMY,
      * which has no real activation height on mainnet). Matches
      * zclassicd format: keyed by branch-id hex string, each value
-     * carries name + activationheight + status + info. */
+     * carries name + activationheight + status + info.
+     *
+     * Two ZClassic upgrades (DIFFADJ/"Bubbly" and BUTTERCUP/"Buttercup")
+     * intentionally share branch id 0x930b540d. Keying solely on the
+     * branch id would emit "930b540d" twice, which a strict JSON parser
+     * dedups (silently dropping one entry). Keep the bare branch-id key
+     * for the first occurrence (zclassicd parity for the common case)
+     * and disambiguate any colliding key with the upgrade name so every
+     * map key is unique. The shared branch id is a consensus value and
+     * is unchanged. */
     struct json_value upgrades = {0};
     json_set_object(&upgrades);
     int tip_height = tip ? tip->nHeight : 0;
@@ -221,8 +230,14 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
         if (activation == NETWORK_UPGRADE_NO_ACTIVATION)
             continue;
         const struct nu_info *info = &NetworkUpgradeInfo[idx];
-        char key[16];
+        char key[48];
         snprintf(key, sizeof(key), "%08x", info->nBranchId);
+        if (json_get(&upgrades, key) != NULL) {
+            /* Branch id already present — append the upgrade name to keep
+             * the JSON map key unique. */
+            snprintf(key, sizeof(key), "%08x-%s", info->nBranchId,
+                     info->strName ? info->strName : "?");
+        }
         const char *status =
             tip_height >= activation ? "active" :
             (activation == NETWORK_UPGRADE_NO_ACTIVATION ? "disabled" :
