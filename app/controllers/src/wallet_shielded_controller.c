@@ -162,30 +162,28 @@ bool rpc_z_getbalance(const struct json_value *params, bool help,
     /* Check if Sapling address */
     uint8_t z_d[11], z_pkd[32];
     if (sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
+        /* SQLite is the authoritative shielded-note store (z_gettotalbalance /
+         * z_listunspent read it). The in-memory note array is a strict subset
+         * post-restart (no load-from-DB path) and its `confirms` field is never
+         * populated, so trusting it here under-reported the balance and ignored
+         * minconf. Always derive the per-address balance from the DB with a
+         * minconf-aware query. */
         int64_t balance = 0;
-        bool found_in_memory = false;
-        size_t n_notes = 0;
-        struct sapling_received_note *snap =
-            wallet_copy_sapling_notes(ctx->wallet, &n_notes);
-        for (size_t i = 0; i < n_notes; i++) {
-            const struct sapling_received_note *n = &snap[i];
-            if (!n->used || n->spent)
-                continue;
-            if (memcmp(n->diversifier, z_d, 11) == 0 &&
-                memcmp(n->pk_d, z_pkd, 32) == 0) {
-                if (n->confirms >= minconf) {
-                    balance += (int64_t)n->value;
-                    found_in_memory = true;
-                }
-            }
-        }
-        free(snap);
-        /* Fall back to SQLite if no in-memory notes */
-        if (!found_in_memory && ctx->node_db) {
+        if (ctx->node_db) {
             const struct sapling_key_entry *ske =
                 sapling_keystore_find_by_address(&ctx->wallet->sapling_keys, z_d, z_pkd);
-            if (ske)
-                balance = db_sapling_note_balance_for_ivk(ctx->node_db, ske->ivk);
+            if (ske) {
+                int tip = ctx->wallet->best_block_height;
+                if (tip == 0 && ctx->main_state)
+                    tip = active_chain_height(&ctx->main_state->chain_active);
+                if (tip == 0 && wallet_ctx_db_ready(ctx)) {
+                    int db_h = db_block_max_height_any_status(ctx->node_db);
+                    if (db_h >= 0)
+                        tip = db_h;
+                }
+                balance = db_sapling_note_balance_for_ivk_minconf(
+                    ctx->node_db, ske->ivk, tip, minconf);
+            }
         }
         char buf[32];
         format_amount(balance, buf, sizeof(buf));
