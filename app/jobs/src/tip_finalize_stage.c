@@ -459,6 +459,28 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
 
     struct block_index *old_tip = active_chain_at(&ms->chain_active, next_h);
     struct block_index *new_tip = active_chain_at(&ms->chain_active, next_h + 1);
+    /* WINDOW-SLOT SELF-HEAL. The active-chain window's lower slot at next_h can
+     * read NULL while next_h is genuinely on the finalized chain: a blocks-less
+     * snapshot boot retracts the window to the seed, and as the body-dependent
+     * stages extend it UP the seed-region slot is left empty even though the
+     * authority still names next_h finalized. active_chain_at then returns NULL
+     * → tip_finalize idles on current_tip_missing forever and H* pins at the
+     * seed even though utxo_apply is folding ok=1 rows past it (observed:
+     * ua_cursor climbing, ua_ok=1, tf_blocked=current_tip_missing). Re-resolve
+     * the slot from the durable finalized-hash table + the block map (the SAME
+     * authority active_chain_tip() uses), so finalize can proceed; a real
+     * absence (no finalized row / not in map) still falls through to the
+     * blocked-IDLE below. Read-only on the window. */
+    if (!old_tip) {
+        struct uint256 oh;
+        if (tip_finalize_stage_block_hash_at(db, next_h, oh.data))
+            old_tip = block_map_find(&ms->map_block_index, &oh);
+    }
+    if (!new_tip) {
+        struct uint256 nh;
+        if (tip_finalize_stage_block_hash_at(db, next_h + 1, nh.data))
+            new_tip = block_map_find(&ms->map_block_index, &nh);
+    }
     if (!new_tip) {
         tf_mark_blocked(TF_BLOCKED_LOOKAHEAD_MISSING);
         return JOB_IDLE;

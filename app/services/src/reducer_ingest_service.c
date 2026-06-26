@@ -553,6 +553,17 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
         zcl_mutex_unlock(&ctl->mutex);
         return false;
     }
+    /* Extend the visible active-chain window along the contiguous have-data
+     * frontier before draining the body-dependent stages, so body_fetch /
+     * body_persist / script_validate can see active_chain_at(cursor+1) as the
+     * just-persisted body lands. (See chain_activation_service.c for the full
+     * rationale: the blocks-less snapshot boot retracts the window to the seed
+     * and nothing else widens it inside this drive.) No-op when there is no gap;
+     * takes only the active-chain + block-map rwlocks; inside reducer_drive. */
+    if (ctl->ms->pindex_best_header)
+        (void)active_chain_extend_window_have_data(
+            &ctl->ms->chain_active, &ctl->ms->map_block_index,
+            ctl->ms->pindex_best_header->nHeight);
     /* Full drain now that BLOCK_HAVE_DATA is set: body_fetch .. tip_finalize
      * each process this height exactly once, with the body present. */
     (void)reducer_drain_to_convergence();

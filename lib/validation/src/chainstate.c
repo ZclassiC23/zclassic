@@ -518,9 +518,27 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
     if (max_height <= c->height)
         return true; /* nothing persisted above the window — cheap no-op */
 
+    /* The window's tip slot (chain[c->height]) can be NULL while c->height is a
+     * valid finalized height: a blocks-less snapshot boot RETRACTS the window to
+     * the seed (active_chain_move_window_tip) and then the boot's later
+     * window/grow churn leaves chain[seed] empty, even though the AUTHORITY
+     * (tip_finalize) still names that height as the finalized tip. The plain
+     * active_chain_cached_tip() reads the raw slot and returns NULL → the extend
+     * bails and the body-dependent fold starves at seed+1 forever (the
+     * blocks-less starter-pack climb stall: win_slot=(nil), ua_cursor=seed+1
+     * ok=0, tf_blocked=lookahead_tip_missing). active_chain_tip() instead
+     * re-resolves the tip from the authority's finalized hash via the block map,
+     * so it returns the real tip even when the slot is empty. Re-install it into
+     * the slot so the subsequent fill walk + every active_chain_at(c->height)
+     * downstream is coherent. SELF-HEAL only — never lowers the height, never
+     * publishes authority, and is a no-op when the slot is already correct. */
     struct block_index *tip = active_chain_cached_tip(c);
-    if (!tip)
-        return true;
+    if (!tip) {
+        tip = active_chain_tip(c);  /* authority-resolved, slot-independent */
+        if (!tip || tip->nHeight != c->height)
+            return true;            /* no coherent finalized tip to anchor on */
+        (void)active_chain_install_tip_slot(c, tip);  /* repair chain[height] */
+    }
 
     int lo = c->height + 1;
     int hi = max_height;

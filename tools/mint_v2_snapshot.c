@@ -410,10 +410,48 @@ int main(int argc, char **argv)
         node_db_close(&ndb);
         return 1;
     }
+
+    /* COHERENCE GUARD (the utxo_collision fix). The snapshot UTXO body is the
+     * ENTIRE coins table = the set AS OF the last applied block =
+     * coins_applied_height - 1. The header height (seed_h) we stamp MUST equal
+     * that coin-set height, else a fresh node re-applies the block whose coins
+     * the snapshot ALREADY contains and utxo_apply rejects it (utxo_collision)
+     * — H* pins at the seed forever. The Sapling frontier + anchor hash must be
+     * at the SAME height too. So: the authoritative seed height is the coin-set
+     * height; the Sapling rebuild MUST reach it (it needs the body at that
+     * height on disk). If the source's block bodies stop BELOW the coin-set
+     * height (a coins-ahead-of-bodies mid-sync source), the bundle cannot be
+     * coherent — FAIL loudly rather than ship a colliding snapshot. */
+    int32_t coins_applied = 0;
+    bool ca_found = false;
+    if (!coins_kv_get_applied_height(pdb, &coins_applied, &ca_found) ||
+        !ca_found || coins_applied <= 0) {
+        fprintf(stderr, "[mint-v2] could not read coins_applied_height "
+                "(found=%d val=%d) — cannot guarantee snapshot coherence\n",
+                ca_found, coins_applied);
+        node_db_close(&ndb);
+        return 1;
+    }
+    int32_t coin_set_h = coins_applied - 1;  /* the coins table is as-of here */
+    if ((int32_t)built_h != coin_set_h) {
+        fprintf(stderr,
+                "[mint-v2] FATAL: incoherent source — coin set is as-of h=%d "
+                "(coins_applied_height=%d) but the Sapling rebuild only reached "
+                "h=%lld (block body at h=%d is absent on disk). A snapshot here "
+                "would carry coins from h=%d while claiming h=%lld, and a fresh "
+                "node would hit utxo_collision re-applying h=%lld. Mint from a "
+                "source whose block bodies reach the coin-set height "
+                "(node.db blocks max >= %d).\n",
+                coin_set_h, coins_applied, (long long)built_h, coin_set_h,
+                coin_set_h, (long long)built_h, (long long)built_h + 1,
+                coin_set_h);
+        node_db_close(&ndb);
+        return 1;
+    }
     if ((int32_t)built_h != seed_h) {
-        fprintf(stderr, "[mint-v2] NOTE: rebuild endpoint capped to h=%lld "
-                "(requested seed h=%d). Stamping the snapshot at h=%lld so the "
-                "UTXO set and the Sapling frontier are coherent.\n",
+        fprintf(stderr, "[mint-v2] stamping the snapshot at the coin-set height "
+                "h=%lld (requested seed h=%d); UTXO set + Sapling frontier + "
+                "anchor are all coherent at h=%lld.\n",
                 (long long)built_h, seed_h, (long long)built_h);
         seed_h = (int32_t)built_h;
         const struct block_index *bh = active_chain_at(&ms.chain_active, seed_h);
