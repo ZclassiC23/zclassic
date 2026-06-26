@@ -272,9 +272,9 @@ int test_seed_tape(void)
                        draws_match);
 
             /* Replay events: 3 injects, in order. */
-            uint8_t type;
+            uint8_t type = 0;
             uint8_t buf[64];
-            size_t len;
+            size_t len = 0;
             int e1 = seed_tape_next_event(rep, &type, buf, sizeof(buf), &len);
             TAPE_CHECK("event #1 returns 0", e1 == 0);
             TAPE_CHECK("event #1 type == 10", type == 10);
