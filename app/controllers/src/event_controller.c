@@ -382,15 +382,25 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                          legacy_mirror_sync_reported_lag(&ms));
         legacy_mirror_sync_push_observed_lag_json(
             result, "mirror_lag_observed", &ms);
+        /* The legacy/zclassicd mirror is an OPTIONAL advisory oracle. On a
+         * fresh node with no zclassicd configured (ms.enabled == false) it
+         * never probes a real peer, so its blocker fields must NOT read as
+         * live node blockers — otherwise a perfectly healthy fresh node
+         * shows candidate_blocker="rpc-unreachable" / mirror_blockers_total>0.
+         * Suppress the blocker SIGNALS when the mirror is disabled; keep the
+         * keys present (empty/0) for backward-compatible tooling. */
         json_push_kv_str(result, "candidate_blocker",
-                         ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
-                                                  : ms.last_blocker_id);
+                         ms.enabled
+                             ? (ms.activation_blocker_reason[0]
+                                    ? ms.activation_blocker_reason
+                                    : ms.last_blocker_id)
+                             : "");
         json_push_kv_str(result, "mirror_activation_blocker",
-                         ms.activation_blocker_reason);
+                         ms.enabled ? ms.activation_blocker_reason : "");
         json_push_kv_str(result, "mirror_last_blocker_code",
-                         ms.last_blocker_id);
+                         ms.enabled ? ms.last_blocker_id : "");
         json_push_kv_int(result, "mirror_blockers_total",
-                         ms.blockers_total);
+                         ms.enabled ? ms.blockers_total : 0);
         json_push_kv_int(result, "mirror_unsafe_overrides_total",
                          ms.unsafe_overrides_total);
         json_push_kv_int(result, "mirror_stalls_total",

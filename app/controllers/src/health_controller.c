@@ -75,9 +75,15 @@ static void push_mirror_sync_fields(struct json_value *result)
                      legacy_mirror_sync_reported_lag(&ms));
     legacy_mirror_sync_push_observed_lag_json(result,
                                               "candidate_lag_observed", &ms);
+    /* See rpc_healthcheck (event_controller.c): the optional legacy/zclassicd
+     * mirror must not surface blocker SIGNALS when it is disabled (no
+     * zclassicd configured), or a healthy fresh node looks blocked. */
     json_push_kv_str(result, "candidate_blocker",
-                     ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
-                                              : ms.last_blocker_id);
+                     ms.enabled
+                         ? (ms.activation_blocker_reason[0]
+                                ? ms.activation_blocker_reason
+                                : ms.last_blocker_id)
+                         : "");
     json_push_kv_int(result, "legacy_height", ms.legacy_height);
     json_push_kv_bool(result, "legacy_advisory_height_known",
                       ms.legacy_advisory_height_known);
@@ -88,11 +94,11 @@ static void push_mirror_sync_fields(struct json_value *result)
     legacy_mirror_sync_push_observed_lag_json(result,
                                               "mirror_lag_observed", &ms);
     json_push_kv_str(result, "mirror_activation_blocker",
-                     ms.activation_blocker_reason);
+                     ms.enabled ? ms.activation_blocker_reason : "");
     json_push_kv_str(result, "mirror_last_blocker_code",
-                     ms.last_blocker_id);
+                     ms.enabled ? ms.last_blocker_id : "");
     json_push_kv_int(result, "mirror_blockers_total",
-                     ms.blockers_total);
+                     ms.enabled ? ms.blockers_total : 0);
     json_push_kv_int(result, "mirror_unsafe_overrides_total",
                      ms.unsafe_overrides_total);
     json_push_kv_int(result, "mirror_stalls_total",
@@ -352,8 +358,11 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         legacy_mirror_sync_push_observed_lag_json(
             &svc, "candidate_lag_observed", &ms);
         json_push_kv_str(&svc, "candidate_blocker",
-                         ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
-                                                  : ms.last_blocker_id);
+                         ms.enabled
+                             ? (ms.activation_blocker_reason[0]
+                                    ? ms.activation_blocker_reason
+                                    : ms.last_blocker_id)
+                             : "");
         json_push_kv_int(&svc, "legacy_height", ms.legacy_height);
         json_push_kv_int(&svc, "local_height", ms.local_height);
         json_push_kv_bool(&svc, "lag_known", ms.lag_known);
@@ -382,13 +391,14 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_int(&svc, "lag_critical_seconds", ms.lag_critical_seconds);
         json_push_kv_str(&svc, "lag_breach_severity", ms.lag_breach_severity);
         json_push_kv_str(&svc, "activation_blocker",
-                         ms.activation_blocker_reason);
+                         ms.enabled ? ms.activation_blocker_reason : "");
         json_push_kv_str(&svc, "last_blocker_code",
-                         ms.last_blocker_id);
+                         ms.enabled ? ms.last_blocker_id : "");
         json_push_kv_int(&svc, "overrides_total", ms.overrides_total);
         json_push_kv_int(&svc, "unsafe_overrides_total",
                          ms.unsafe_overrides_total);
-        json_push_kv_int(&svc, "blockers_total", ms.blockers_total);
+        json_push_kv_int(&svc, "blockers_total",
+                         ms.enabled ? ms.blockers_total : 0);
         json_push_kv_bool(&svc, "last_override_safe",
                           ms.last_override_safe);
         json_push_kv_str(&svc, "last_override_reason",
