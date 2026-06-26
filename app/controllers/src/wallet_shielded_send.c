@@ -496,6 +496,19 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
     wtx.from_me = true;
     wtx.used = true;
 
+    /* Persist the wallet keystore (which may hold a freshly-minted change key)
+     * to disk BEFORE broadcast — abort the send on flush failure so we never
+     * relay a tx whose RAM-only change key isn't durable (see rpc_sendtoaddress). */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Cannot persist change key before broadcast — send aborted");
+            LOG_FAIL("wallet", "z_sendmany: pre-broadcast key flush failed "
+                                "(code=%d): %s", fr.code, fr.message);
+        }
+    }
+
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
@@ -507,14 +520,6 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
-        if (!fr.ok) {
-            LOG_FAIL("wallet", "z_sendmany: post-broadcast flush failed "
-                                "(code=%d): %s", fr.code, fr.message);
-        }
-    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);

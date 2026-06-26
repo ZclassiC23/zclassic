@@ -353,6 +353,22 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "sendtoaddress: create tx failed: %s", error ? error : "unknown");
     }
 
+    /* Persist the wallet keystore (which now holds the freshly-minted change
+     * key) to disk BEFORE broadcasting. The change key is RAM-only until this
+     * flush; a flush failure (disk full / I/O error) AFTER broadcast would put
+     * a tx on the wire that pays change to a key absent from disk — permanently
+     * unspendable on restart. Treat a pre-broadcast flush failure as a hard
+     * error and abort the send (write-ahead the key, like zclassicd). */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Cannot persist change key before broadcast — send aborted");
+            LOG_FAIL("wallet", "sendtoaddress: pre-broadcast key flush failed "
+                               "(code=%d): %s", fr.code, fr.message);
+        }
+    }
+
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         json_set_str(result, "Error committing transaction");
         transaction_free(&wtx.tx);
@@ -365,17 +381,6 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     /* Relay to peers */
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-
-    /* Persist wallet state after sending. The transaction is already
-     * broadcast; flush failure is non-fatal but operationally important
-     * — log it so getwalletinfo.persistence surfaces the drift. */
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
-        if (!fr.ok) {
-            LOG_WARN("wallet", "sendtoaddress: post-broadcast flush failed "
-                               "(code=%d): %s", fr.code, fr.message);
-        }
-    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -415,6 +420,20 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         LOG_FAIL("wallet", "direct_sendtoaddress: create tx failed: %s", err ? err : "unknown");
     }
 
+    /* Persist the change key BEFORE broadcast (see rpc_sendtoaddress): abort
+     * the send if the keystore flush fails, so we never broadcast a tx whose
+     * RAM-only change key isn't durable. */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            transaction_free(&wtx.tx);
+            snprintf(error_out, error_out_size,
+                     "Cannot persist change key before broadcast — send aborted");
+            LOG_FAIL("wallet", "direct_sendtoaddress: pre-broadcast key flush "
+                               "failed (code=%d): %s", fr.code, fr.message);
+        }
+    }
+
     if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
         snprintf(error_out, error_out_size, "Error committing transaction");
         transaction_free(&wtx.tx);
@@ -425,13 +444,6 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
-        if (!fr.ok) {
-            LOG_WARN("wallet", "direct_sendtoaddress: post-broadcast flush "
-                               "failed (code=%d): %s", fr.code, fr.message);
-        }
-    }
 
     uint256_get_hex(&wtx.tx.hash, txid_out);
     transaction_free(&wtx.tx);
