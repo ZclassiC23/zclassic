@@ -382,6 +382,18 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
+    /* Best-effort second flush to persist the new tx record (added to the
+     * keystore map by wallet_commit_transaction). The change-key durability
+     * guarantee was already met by the pre-broadcast flush above; this is
+     * non-fatal and re-runs on the next flush trigger if it fails. */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_WARN("wallet", "sendtoaddress: post-broadcast tx flush failed "
+                               "(code=%d): %s", fr.code, fr.message);
+        }
+    }
+
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
     json_set_str(result, txid);
@@ -444,6 +456,16 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
+
+    /* Best-effort second flush to persist the new tx record (change-key
+     * durability already met by the pre-broadcast flush above). */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_WARN("wallet", "direct_sendtoaddress: post-broadcast tx flush "
+                               "failed (code=%d): %s", fr.code, fr.message);
+        }
+    }
 
     uint256_get_hex(&wtx.tx.hash, txid_out);
     transaction_free(&wtx.tx);

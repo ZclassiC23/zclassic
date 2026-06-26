@@ -521,6 +521,16 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
+    /* Best-effort second flush to persist the new tx record (change-key
+     * durability already met by the pre-broadcast flush above). */
+    if (ctx->wallet_db) {
+        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        if (!fr.ok) {
+            LOG_WARN("wallet", "z_sendmany: post-broadcast tx flush failed "
+                                "(code=%d): %s", fr.code, fr.message);
+        }
+    }
+
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
     json_set_str(result, txid);
