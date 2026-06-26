@@ -205,6 +205,11 @@ static ssize_t conn_write(const struct rpc_conn *c, const void *buf, size_t len)
     return write(c->fd, buf, len);
 }
 
+/* Cap request-header count so an endless-header stream (a slowloris variant)
+ * cannot pin a server thread reading header lines forever. Legitimate
+ * RPC/metrics/WebSocket clients send well under this. */
+#define HTTP_MAX_REQUEST_HEADERS 512
+
 static bool read_line(const struct rpc_conn *c, char *buf, size_t buflen)
 {
     size_t pos = 0;
@@ -458,8 +463,11 @@ static void handle_client(struct rpc_conn conn)
     if (strcmp(method, "GET") == 0 && strcmp(path, "/metrics") == 0) {
         if (!g_metrics_http_enable) {
             /* Drain request headers so the socket closes cleanly. */
-            while (read_line(&conn, line, sizeof(line)))
+            int drain_hdrs = 0;
+            while (read_line(&conn, line, sizeof(line))) {
                 if (line[0] == '\0') break;
+                if (++drain_hdrs > HTTP_MAX_REQUEST_HEADERS) goto done;
+            }
             const char *msg = "metrics endpoint disabled "
                               "(set ZCL_METRICS_HTTP_ENABLE=1)";
             send_response_with_type(&conn, 404, "Not Found",
@@ -469,8 +477,10 @@ static void handle_client(struct rpc_conn conn)
         }
 
         char metrics_auth[512] = {0};
+        int metrics_hdrs = 0;
         while (read_line(&conn, line, sizeof(line))) {
             if (line[0] == '\0') break;
+            if (++metrics_hdrs > HTTP_MAX_REQUEST_HEADERS) goto done;
             if (strncasecmp(line, "Authorization:", 14) == 0)
                 snprintf(metrics_auth, sizeof(metrics_auth),
                          "%s", line + 14);
@@ -517,8 +527,10 @@ static void handle_client(struct rpc_conn conn)
         char ws_key[128] = {0};
         char ws_auth[512] = {0};
         bool is_upgrade = false;
+        int ws_hdrs = 0;
         while (read_line(&conn, line, sizeof(line))) {
             if (line[0] == '\0') break;
+            if (++ws_hdrs > HTTP_MAX_REQUEST_HEADERS) goto done;
             if (strncasecmp(line, "Upgrade:", 8) == 0 &&
                 strstr(line + 8, "websocket"))
                 is_upgrade = true;
@@ -595,8 +607,10 @@ static void handle_client(struct rpc_conn conn)
 
     size_t content_length = 0;
     char auth_value[512] = {0};
+    int post_hdrs = 0;
     while (read_line(&conn, line, sizeof(line))) {
         if (line[0] == '\0') break;
+        if (++post_hdrs > HTTP_MAX_REQUEST_HEADERS) goto done;
         if (strncasecmp(line, "Content-Length:", 15) == 0) {
             char *endp = NULL;
             long v = strtol(line + 15, &endp, 10);
