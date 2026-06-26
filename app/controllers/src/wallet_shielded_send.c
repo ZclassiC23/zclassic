@@ -139,51 +139,36 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
 
     /* ── Transparent spend path (t→t, t→z) ─────────────────────── */
 
-    /* Select coins from SQLite model layer — filter to from address */
+    /* Select coins from SQLite model layer, restricted to the from-address.
+     * Pushing the address hash into the SQL WHERE (rather than selecting
+     * globally then post-filtering) ensures a fully funded from-address is
+     * never falsely rejected because higher-value coins on OTHER addresses
+     * crowded out a value-DESC global selection window. */
     int64_t fee = ctx->wallet->default_fee;
     int tip = active_chain_height(&ctx->main_state->chain_active);
-    struct db_wallet_utxo db_utxos[256];
-    int n_utxos = 0;
 
-    if (wallet_ctx_db_ready(ctx))
-        n_utxos = db_wallet_utxo_select_coins(ctx->node_db,
-            total_amount + fee, tip, db_utxos, 256);
+    uint8_t from_addr_hash[20];
+    if (from_dest.type == DEST_KEY_ID)
+        memcpy(from_addr_hash, from_dest.id.key.id.data, 20);
+    else if (from_dest.type == DEST_SCRIPT_ID)
+        memcpy(from_addr_hash, from_dest.id.script.hash.data, 20);
+    else {
+        json_set_str(result, "Unsupported from address type");
+        LOG_FAIL("wallet_shielded", "z_sendmany: unsupported from_dest type %d", from_dest.type);
+    }
 
-    /* Filter to coins matching the from address */
     struct db_wallet_utxo db_selected[256];
     size_t num_selected = 0;
     int64_t selected_value = 0;
 
-    for (int i = 0; i < n_utxos; i++) {
-        if (!db_utxos[i].script || db_utxos[i].script_len == 0)
-            continue;
-        struct script sc;
-        script_init(&sc);
-        memcpy(sc.data, db_utxos[i].script, db_utxos[i].script_len);
-        sc.size = db_utxos[i].script_len;
-        struct tx_destination coin_dest;
-        if (!script_extract_destination(&sc, &coin_dest))
-            continue;
-        bool match = false;
-        if (coin_dest.type == from_dest.type) {
-            if (coin_dest.type == DEST_KEY_ID)
-                match = (memcmp(coin_dest.id.key.id.data,
-                                from_dest.id.key.id.data, 20) == 0);
-            else if (coin_dest.type == DEST_SCRIPT_ID)
-                match = (memcmp(coin_dest.id.script.hash.data,
-                                from_dest.id.script.hash.data, 20) == 0);
-        }
-        if (match) {
-            db_selected[num_selected] = db_utxos[i];
-            db_utxos[i].script = NULL; /* prevent double-free */
-            selected_value += db_utxos[i].value;
+    if (wallet_ctx_db_ready(ctx)) {
+        int n_sel = db_wallet_utxo_select_coins_for_address(ctx->node_db,
+            total_amount + fee, tip, from_addr_hash, db_selected, 256);
+        for (int i = 0; i < n_sel; i++) {
             num_selected++;
-            if (selected_value >= total_amount + fee)
-                break;
+            selected_value += db_selected[i].value;
         }
     }
-    for (int i = 0; i < n_utxos; i++)
-        db_wallet_utxo_free(&db_utxos[i]);
 
     if (selected_value < total_amount + fee) {
         for (size_t i = 0; i < num_selected; i++)
