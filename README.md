@@ -60,7 +60,7 @@ build.
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make zclassic23     # main binary -> build/bin/zclassic23
-make test           # full suite (~430 parallel groups)
+make test           # full suite (460 parallel groups)
 make lint           # defensive-coding gates
 ```
 
@@ -249,7 +249,7 @@ zclassic23 (~15 MB, static)
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (~423 parallel groups); bugs become 64-bit seeds in a
+- **Tests:** `make test` (460 parallel groups); bugs become 64-bit seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Gates are local:** `make lint` + `make ci` (not GitHub Actions).
 - **Deploy builds fresh:** `make deploy` rebuilds the binary and verifies the
