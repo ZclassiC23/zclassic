@@ -91,12 +91,24 @@ bool advance_wallet_witnesses(struct node_db *ndb,
                                      struct incremental_merkle_tree *tree,
                                      int height)
 {
-    /* Load unspent notes that may need initial witnesses */
-    struct db_sapling_note wnotes[256];
-    int nw = db_sapling_note_list_unspent(ndb, wnotes, 256);
+    /* Load ALL unspent notes that may need initial witnesses. A fixed 256-cap
+     * here (ORDER BY value DESC) left every note ranked below #256 without a
+     * witness — unspendable — and froze the witness of any note demoted out of
+     * the top-256 at a stale tree root. Size the load to the live count so
+     * EVERY unspent note gets its witness created and advanced each block. */
+    struct db_sapling_note *wnotes = NULL;
+    int nw = db_sapling_note_list_unspent_alloc(ndb, &wnotes);
+    if (nw < 0)
+        LOG_FAIL("sync", "advance_wallet_witnesses: failed to load unspent notes");
 
     /* Track which notes already have witnesses (for initial witness creation) */
-    bool has_witness[256];
+    bool *has_witness = nw > 0
+        ? zcl_calloc((size_t)nw, sizeof(bool), "sync has_witness")
+        : NULL;
+    if (nw > 0 && !has_witness) {
+        free(wnotes);
+        LOG_FAIL("sync", "advance_wallet_witnesses: has_witness calloc failed (%d notes)", nw);
+    }
     for (int i = 0; i < nw; i++) {
         uint8_t *wblob = NULL;
         size_t wlen = 0;
@@ -207,6 +219,8 @@ bool advance_wallet_witnesses(struct node_db *ndb,
 
     free(witnesses);
     free(witness_idx);
+    free(has_witness);
+    free(wnotes);
     return ok;
 }
 

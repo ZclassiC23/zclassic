@@ -32,10 +32,17 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
         return false;
     }
 
-    /* Load all unspent notes that need witnesses */
-    struct db_sapling_note notes[256];
-    int n_notes = db_sapling_note_list_unspent(ctx->node_db, notes, 256);
+    /* Load ALL unspent notes that need witnesses (no fixed cap — a 256-cap
+     * here meant the recovery path could not rebuild witnesses for notes ranked
+     * beyond #256, leaving them permanently unspendable). */
+    struct db_sapling_note *notes = NULL;
+    int n_notes = db_sapling_note_list_unspent_alloc(ctx->node_db, &notes);
+    if (n_notes < 0) {
+        json_set_str(result, "Failed to load unspent notes");
+        return false;
+    }
     if (n_notes == 0) {
+        free(notes);
         json_set_object(result);
         json_push_kv_int(result, "notes_updated", 0);
         json_push_kv_str(result, "status", "no unspent notes");
@@ -271,6 +278,7 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
 
     free(witnesses);
     free(witness_active);
+    free(notes);
 
     /* NOW release the rescan lock — tree and witnesses are all saved */
     atomic_store(&g_sapling_rescan_active, false);
