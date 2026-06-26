@@ -37,6 +37,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
+#include <errno.h>
 
 #include <sqlite3.h>
 #include <sys/mman.h>
@@ -158,20 +159,87 @@ static long topup_forward_from_node_db(struct main_state *ms, struct node_db *nd
     return inserted;
 }
 
+/* Verify the in-memory active chain is CONTIGUOUS from `seed_bi` down to the
+ * canonical genesis: every step is height-1 and no pprev is NULL before genesis.
+ * This is the load-bearing bundle invariant — a fresh node's from-genesis active
+ * chain caps at the first pprev hole, so a holed index would leave the seed
+ * unreachable. Returns true iff contiguous; logs the first gap otherwise. */
+static bool verify_contiguous_to_genesis(const struct block_index *seed_bi)
+{
+    const struct block_index *w = seed_bi;
+    int expect_h = seed_bi->nHeight;
+    while (w) {
+        if (w->nHeight != expect_h) {
+            fprintf(stderr, "[bundle] CONTIGUITY GAP: expected h=%d but block "
+                    "is h=%d\n", expect_h, w->nHeight);
+            return false;
+        }
+        if (w->nHeight == 0)
+            return true;                       /* reached genesis cleanly */
+        if (!w->pprev) {
+            fprintf(stderr, "[bundle] CONTIGUITY GAP: NULL pprev at h=%d "
+                    "(not genesis)\n", w->nHeight);
+            return false;
+        }
+        expect_h = w->nHeight - 1;
+        w = w->pprev;
+    }
+    fprintf(stderr, "[bundle] CONTIGUITY GAP: walked off the chain before "
+            "genesis\n");
+    return false;
+}
+
+/* Copy a file byte-for-byte (snapshot -> bundle dir). Returns true on success. */
+static bool copy_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb");
+    if (!in) { fprintf(stderr, "[bundle] open src %s failed\n", src); return false; }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fprintf(stderr, "[bundle] open dst %s failed\n", dst);
+        fclose(in);
+        return false;
+    }
+    uint8_t buf[1 << 20];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
+    }
+    if (ferror(in)) ok = false;
+    fclose(in);
+    if (fclose(out) != 0) ok = false;
+    if (!ok) fprintf(stderr, "[bundle] copy %s -> %s failed\n", src, dst);
+    return ok;
+}
+
 /* Provided by the node binary's main.c; this standalone tool defines its own
  * so the shared object set links. */
 volatile sig_atomic_t g_shutdown_requested = 0;
 
 int main(int argc, char **argv)
 {
-    if (argc != 4) {
+    if (argc != 4 && argc != 5) {
         fprintf(stderr,
-                "usage: %s <datadir> <seed_height> <out_path>\n", argv[0]);
+                "usage: %s <datadir> <seed_height> <out_path> [bundle_dir]\n"
+                "\n"
+                "  Mint a v2 (UTXO + Sapling-frontier) snapshot at <seed_height>\n"
+                "  from a synced source <datadir> (read from progress.kv + node.db\n"
+                "  + blocks/). Writes the snapshot to <out_path>.\n"
+                "\n"
+                "  If [bundle_dir] is given, ALSO emits a CONTIGUOUS block_index.bin\n"
+                "  there (reconstructed from the densified in-memory chain, so it is\n"
+                "  contiguous genesis..seed even if the source flat file had a hole)\n"
+                "  and copies the snapshot in as utxo-seed-<h>.snapshot. The result is\n"
+                "  a self-contained 'starter pack': drop bundle_dir/* into a fresh\n"
+                "  datadir + boot with -load-snapshot-at-own-height to climb seed->tip.\n",
+                argv[0]);
         return 2;
     }
     const char *datadir = argv[1];
     int32_t seed_h = (int32_t)strtol(argv[2], NULL, 10);
     const char *out_path = argv[3];
+    const char *bundle_dir = (argc == 5) ? argv[4] : NULL;
 
     if (seed_h <= 0) {
         fprintf(stderr, "seed_height must be > 0 (got %d)\n", seed_h);
@@ -381,7 +449,6 @@ int main(int argc, char **argv)
         node_db_close(&ndb);
         return 1;
     }
-    node_db_close(&ndb);
 
     char sha3hex[65];
     for (int i = 0; i < 32; i++)
@@ -390,5 +457,85 @@ int main(int argc, char **argv)
             "WROTE v2 %s height=%d count=%llu supply=%lld frontier=%zuB sha3=%s\n",
             out_path, seed_h, (unsigned long long)got_count,
             (long long)got_supply, flen, sha3hex);
+
+    /* ── STARTER-PACK BUNDLE (optional) ────────────────────────────────────
+     * Emit a CONTIGUOUS block_index.bin (genesis..seed) + the snapshot into
+     * bundle_dir. A fresh node's from-genesis active chain caps at the first
+     * pprev hole, so the contiguity invariant is load-bearing: we re-resolve
+     * the seed-height block in the densified map, VERIFY it walks pprev to
+     * genesis with no gap, then dump the whole map via save_block_index_flat
+     * (BIIE-embedded, self-verifying — no external sidecar needed). */
+    if (bundle_dir) {
+        const struct block_index *seed_chk =
+            active_chain_at(&ms.chain_active, seed_h);
+        if (!seed_chk) {
+            fprintf(stderr, "[bundle] active_chain_at(seed h=%d) NULL — cannot "
+                    "verify contiguity; refusing to emit a holed bundle\n", seed_h);
+            node_db_close(&ndb);
+            return 1;
+        }
+        if (!verify_contiguous_to_genesis(seed_chk)) {
+            fprintf(stderr, "[bundle] source chain is NOT contiguous genesis..%d "
+                    "— refusing to emit a bundle that would leave the seed "
+                    "unreachable. Pick a seed below the first hole.\n", seed_h);
+            node_db_close(&ndb);
+            return 1;
+        }
+        fprintf(stderr, "[bundle] contiguity verified genesis..%d\n", seed_h);
+
+        if (mkdir(bundle_dir, 0755) != 0 && errno != EEXIST) {
+            fprintf(stderr, "[bundle] mkdir(%s) failed: %s\n", bundle_dir,
+                    strerror(errno));
+            node_db_close(&ndb);
+            return 1;
+        }
+
+        /* Reset the active tip to EXACTLY the seed height so the emitted index
+         * is bounded at the seed (a fresh node fetches above-seed bodies via
+         * P2P). save_block_index_flat dumps the whole map; entries above the
+         * seed are harmless (boot drops their borrowed have-data), but trimming
+         * to the seed keeps the bundle minimal and unambiguous. */
+        struct block_index *seed_mut =
+            (struct block_index *)active_chain_at(&ms.chain_active, seed_h);
+        if (seed_mut)
+            (void)active_chain_move_window_tip(&ms.chain_active, seed_mut);
+
+        fprintf(stderr, "[bundle] writing contiguous block_index.bin to %s ...\n",
+                bundle_dir);
+        save_block_index_flat(bundle_dir, &ms);
+
+        /* Verify the emitted index round-trips (loads + integrity-passes). */
+        struct main_state vms;
+        main_state_init(&vms);
+        if (!load_block_index_flat(bundle_dir, &vms)) {
+            fprintf(stderr, "[bundle] VERIFY FAILED: emitted block_index.bin "
+                    "did not load back\n");
+            node_db_close(&ndb);
+            return 1;
+        }
+
+        /* Copy the snapshot in under a canonical name. */
+        char snap_dst[1200];
+        snprintf(snap_dst, sizeof(snap_dst), "%s/utxo-seed-%d.snapshot",
+                 bundle_dir, seed_h);
+        if (!copy_file(out_path, snap_dst)) {
+            node_db_close(&ndb);
+            return 1;
+        }
+
+        fprintf(stderr,
+                "\nSTARTER-PACK BUNDLE READY in %s:\n"
+                "  block_index.bin              (contiguous genesis..%d)\n"
+                "  utxo-seed-%d.snapshot        (v2: UTXO+frontier, count=%llu)\n"
+                "\nFresh-node usage:\n"
+                "  cp %s/block_index.bin             <DATADIR>/\n"
+                "  cp %s/utxo-seed-%d.snapshot       <DATADIR>/\n"
+                "  zclassic23 -datadir=<DATADIR> "
+                "-load-snapshot-at-own-height=%s/utxo-seed-%d.snapshot\n",
+                bundle_dir, seed_h, seed_h, (unsigned long long)got_count,
+                bundle_dir, bundle_dir, seed_h, "<DATADIR>", seed_h);
+    }
+
+    node_db_close(&ndb);
     return 0;
 }
