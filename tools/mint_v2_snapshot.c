@@ -122,7 +122,7 @@ static long topup_forward_from_node_db(struct main_state *ms, struct node_db *nd
         sqlite3_reset(child);
         sqlite3_clear_bindings(child);
         sqlite3_bind_blob(child, 1, cur->hashBlock.data, 32, SQLITE_STATIC);
-        if (sqlite3_step(child) != SQLITE_ROW) {
+        if (sqlite3_step(child) != SQLITE_ROW) {  // raw-sql-ok:standalone-dev-tool
             fprintf(stderr, "topup: no child of h=%d (hash chain ends before "
                     "seed h=%d)\n", cur->nHeight, to_h);
             inserted = -1;

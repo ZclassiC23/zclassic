@@ -170,6 +170,101 @@ static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
     return m > 0 && (size_t)m < cap;
 }
 
+/* Blocks-less bundle repair (the v2 snapshot judge bundle: block_index.bin +
+ * snapshot, NO blocks/ dir). block_index.bin carries each entry's nStatus
+ * INCLUDING BLOCK_HAVE_DATA plus the SOURCE datadir's (nFile, nDataPos). When
+ * the bundle ships no bodies above the seed, those entries claim HAVE_DATA at a
+ * blk file that does not exist on THIS node, so:
+ *   - the have-data window extender (active_chain_extend_window_have_data) tries
+ *     to fill to the bodiless slot, every stage read_block_pread_fail's, and the
+ *     have_data_unreadable healer clears the flag one block at a time — but
+ *   - a P2P-delivered body is then SKIPPED on write (process_block treats the
+ *     entry as already-having-data from the stale flag), so the body never lands
+ *     at a readable position; the window never extends past seed_h+1, and
+ *     tip_finalize wedges on lookahead_tip_missing (H* frozen at the seed).
+ *
+ * Fix: BEFORE the staged pipeline starts, drop the borrowed have-data claim for
+ * every block ABOVE seed_h whose referenced blk file is NOT present on disk —
+ * reset (nFile=-1, nDataPos=0), clear BLOCK_HAVE_DATA, and floor validity at
+ * header-only (BLOCK_VALID_TREE) so chain selection still sees the header but
+ * the body is re-fetched + re-indexed cleanly via P2P. A blocks-PRESENT bundle
+ * (live / legacy import) keeps its real bodies untouched — the per-file stat
+ * gate only fires when the file is genuinely absent. Cheap: one stat() per
+ * distinct nFile (memoized), header-only walk, no body reads.
+ *
+ * Returns the number of blocks whose borrowed have-data was dropped (0 on a
+ * blocks-present bundle). The caller uses a non-zero return to retract the
+ * active-chain tip to the seed: the boot's earlier CSR restore promoted the
+ * active tip to the highest had-data block (the top of the borrowed span), and
+ * the P2P download window follows active_chain_height(), so without the
+ * retraction the node floods the TOP of the gap (header-tip successors) and
+ * never fetches the connectable bottom (seed_h+1) the staged fold needs next. */
+static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
+    struct main_state *ms, const char *datadir, int seed_h)
+{
+    if (!ms || !datadir || seed_h < 0)
+        return 0;
+
+    /* Memoize stat() per nFile so a ~3k-block forward window costs ~1 stat per
+     * blk file, not one per block. -1 = unknown, 0 = missing, 1 = present. */
+    int8_t file_present[4096];
+    memset(file_present, -1, sizeof(file_present));
+
+    size_t cleared = 0, kept = 0;
+    size_t iter = 0;
+    struct block_index *p = NULL;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
+        if (!p || p->nHeight <= seed_h)
+            continue;
+        if (!(p->nStatus & BLOCK_HAVE_DATA))
+            continue;
+
+        int present;
+        int fn = p->nFile;
+        if (fn < 0) {
+            present = 0;  /* HAVE_DATA but no file slot — definitionally absent */
+        } else if (fn < (int)(sizeof(file_present) / sizeof(file_present[0])) &&
+                   file_present[fn] >= 0) {
+            present = file_present[fn];
+        } else {
+            char path[PATH_MAX];
+            int n = snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
+                             datadir, fn);
+            struct stat st;
+            present = (n > 0 && (size_t)n < sizeof(path) &&
+                       stat(path, &st) == 0 && st.st_size > 0) ? 1 : 0;
+            if (fn < (int)(sizeof(file_present) / sizeof(file_present[0])))
+                file_present[fn] = (int8_t)present;
+        }
+
+        if (present) {
+            kept++;
+            continue;
+        }
+
+        /* Borrowed (bodiless) have-data claim: drop it so P2P re-fetch writes +
+         * indexes the body at a readable position. Header validity is preserved
+         * at BLOCK_VALID_TREE; the body stages re-run from a clean slot. */
+        p->nStatus = (p->nStatus & ~(unsigned)BLOCK_HAVE_DATA);
+        if ((p->nStatus & BLOCK_VALID_MASK) > BLOCK_VALID_TREE)
+            p->nStatus = (p->nStatus & ~(unsigned)BLOCK_VALID_MASK)
+                         | BLOCK_VALID_TREE;
+        p->nFile = -1;
+        p->nDataPos = 0;
+        p->nTx = 0;
+        cleared++;
+    }
+
+    if (cleared > 0)
+        fprintf(stderr,
+                "[boot] -load-snapshot-at-own-height: blocks-less bundle — "
+                "dropped borrowed have-data on %zu block(s) above seed h=%d "
+                "(no body on disk; %zu kept with real bodies); P2P re-fetches "
+                "+ re-indexes them\n",
+                cleared, seed_h, kept);
+    return cleared;
+}
+
 /* Read-only probe: is a SHA3-verified anchor snapshot reachable for THIS
  * checkpoint? True iff a file exists at mint_snapshot_path AND uss_open verifies
  * its full body SHA3 against cp->sha3_hash (verify_full_sha3=true binds the
@@ -931,6 +1026,43 @@ retry_authority_store:
             "[boot] -load-snapshot-at-own-height: SELF-verified snapshot %s "
             "(body SHA3 OK, height=%d, count=%llu) — seeded coins_kv\n",
             path, seed_h, (unsigned long long)hdr.count);
+
+    /* Blocks-less bundle repair: the shipped block_index.bin claims HAVE_DATA at
+     * the SOURCE's blk file coordinates for blocks above the seed, but a
+     * blocks-less judge bundle has no bodies there. Drop the borrowed have-data
+     * for any above-seed block whose blk file is absent so P2P re-fetches +
+     * re-indexes the body cleanly (else the window never extends past seed_h+1
+     * and tip_finalize wedges on lookahead_tip_missing). No-op when the bodies
+     * are really present (live / legacy-import datadirs). */
+    if (ms) {
+        size_t bodiless = boot_snapshot_drop_bodiless_have_data_above_seed(
+            ms, datadir, seed_h);
+        /* On a blocks-less bundle, retract the active-chain tip to the seed. The
+         * boot's earlier CSR restore promoted the active tip to the top of the
+         * now-cleared borrowed span (e.g. 3,159,325), and the P2P download window
+         * follows active_chain_height(); without this the node floods the TOP of
+         * the gap and never fetches the connectable bottom (seed_h+1) the staged
+         * fold needs next. active_chain_move_window_tip re-pins chain[] to the
+         * seed block (walking pprev); it publishes NO finalized authority — the
+         * staged pipeline re-publishes the served tip as it folds forward. */
+        if (bodiless > 0) {
+            struct block_index *seed_bi =
+                active_chain_at(&ms->chain_active, seed_h);
+            if (seed_bi &&
+                active_chain_move_window_tip(&ms->chain_active, seed_bi)) {
+                fprintf(stderr,
+                        "[boot] -load-snapshot-at-own-height: blocks-less bundle "
+                        "— retracted active-chain tip to seed h=%d so P2P fills "
+                        "the gap bottom-up\n", seed_h);
+            } else {
+                LOG_WARN("boot",
+                         "[boot] -load-snapshot-at-own-height: blocks-less "
+                         "active-tip retract to seed h=%d failed (seed slot %s) "
+                         "— download may still target the gap top",
+                         seed_h, seed_bi ? "present" : "NULL");
+            }
+        }
+    }
 
     /* Lane S OPTION A: publish the durable applied frontier BEFORE the Sapling
      * rebuild runs, in its own committed transaction (the snapshot-load tx
