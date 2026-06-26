@@ -9,6 +9,7 @@
 
 #include "platform/time_compat.h"
 #include "net/msg_internal.h"
+#include "net/download.h"
 #include "net/compact_blocks.h"
 #include "net/peer_scoring.h"
 #include "storage/disk_block_io.h"
@@ -45,6 +46,12 @@ static void compact_submit_block(struct msg_processor *mp,
 {
     struct uint256 hash;
     block_header_get_hash(&blk->header, &hash);
+
+    /* Clear any download-manager in-flight slot created when this block was
+     * first announced via inv at tip (msg_tx.c at-tip getdata path), so a
+     * compact-reconstructed block does not leave a slot to time out into a
+     * spurious re-fetch. No-op (returns 0) when no slot exists. */
+    (void)dl_mark_received(get_download_mgr(), &hash);
 
     if (block_already_seen(&hash)) {
         char hex[65];

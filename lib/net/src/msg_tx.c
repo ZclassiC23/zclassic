@@ -156,8 +156,20 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                  * Headers arrive before (or with) the block, preventing
                  * orphan rejection if the block's parent is unknown. */
                 push_getheaders_from(mp, node, tip);
-                inv_item_serialize(&inv, &getdata);
-                request_count++;
+                /* Register the request with the download manager so a dropped
+                 * or stalled serving peer is caught by dl_check_timeouts (run
+                 * every cycle for ALL peers in msg_send_messages) and reassigned
+                 * to another peer. Without this the at-tip path was untracked: a
+                 * peer drop mid-body stalled new-block ingest until the 600s
+                 * tip-stale watchdog. dl_mark_requested returns false when the
+                 * hash is already in-flight, de-duping concurrent announces. */
+                struct download_manager *dm = get_download_mgr();
+                int32_t req_height = bi ? (int32_t)bi->nHeight : -1;
+                if (dl_mark_requested(dm, &inv.hash, req_height,
+                                      (uint32_t)node->id)) {
+                    inv_item_serialize(&inv, &getdata);
+                    request_count++;
+                }
             } else if (need_data && in_ibd) {
                 /* Ask for headers instead */
                 push_getheaders_from(mp, node, tip);
