@@ -132,18 +132,32 @@ static void handle_tools_call(const struct json_value *req)
 
     /* Embed result as MCP text content, escaping for JSON. */
     size_t rlen = strlen(result);
-    size_t cap = rlen * 2 + 512;
+    /* Worst case is 6 bytes per input char (\u00XX for a control char). */
+    size_t cap = rlen * 6 + 512;
     char *resp = zcl_malloc(cap, "mcp tools call response");
-    char *escaped = zcl_malloc(rlen * 2 + 1, "mcp tools call escaped");
+    char *escaped = zcl_malloc(rlen * 6 + 1, "mcp tools call escaped");
+    if (!resp || !escaped) {
+        free(resp); free(escaped); free(result);
+        char err[160];
+        snprintf(err, sizeof(err),
+            "{\"jsonrpc\":\"2.0\",\"id\":%lld,"
+            "\"error\":{\"code\":-32603,\"message\":\"out of memory\"}}",
+            id ? (long long)json_get_int(id) : 0LL);
+        mcp_send(err);
+        return;
+    }
     size_t ei = 0;
     for (size_t i = 0; i < rlen; i++) {
-        char c = result[i];
+        unsigned char c = (unsigned char)result[i];
         if (c == '"')       { escaped[ei++] = '\\'; escaped[ei++] = '"'; }
         else if (c == '\\') { escaped[ei++] = '\\'; escaped[ei++] = '\\'; }
         else if (c == '\n') { escaped[ei++] = '\\'; escaped[ei++] = 'n'; }
         else if (c == '\r') { escaped[ei++] = '\\'; escaped[ei++] = 'r'; }
         else if (c == '\t') { escaped[ei++] = '\\'; escaped[ei++] = 't'; }
-        else                { escaped[ei++] = c; }
+        else if (c < 0x20)  { /* other control chars: JSON requires \u escaping */
+            ei += (size_t)snprintf(escaped + ei, 7, "\\u%04x", c);
+        }
+        else                { escaped[ei++] = (char)c; }
     }
     escaped[ei] = 0;
 

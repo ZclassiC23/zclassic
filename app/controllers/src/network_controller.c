@@ -342,6 +342,22 @@ static bool rpc_addnode(const struct json_value *params, bool help,
             if (p_val > 0 && p_val <= 65535)
                 port = (uint16_t)p_val;
         }
+
+        /* addnode is a direct-connect to a known peer and must be a numeric
+         * IP[:port]. Reject DNS names up front: the resolution below runs
+         * getaddrinfo() synchronously on an RPC worker thread, and the
+         * rpc_timeout watchdog (socket shutdown) cannot interrupt a thread
+         * parked in getaddrinfo — so a few slow/dead hostnames would wedge the
+         * small RPC/MCP worker pool. A clear error beats a hung node. */
+        {
+            struct in_addr a4; struct in6_addr a6;
+            if (inet_pton(AF_INET, host, &a4) != 1 &&
+                inet_pton(AF_INET6, host, &a6) != 1) {
+                json_set_str(result,
+                    "addnode requires a numeric IP address (DNS names are not resolved)");
+                return false;
+            }
+        }
         connman_add_seed_node(ctx->connman, host, port);
 
         /* Direct connect — don't rely on addrman random selection */
