@@ -224,6 +224,29 @@ int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
         AR_BIND_BLOB(s, 1, ivk, 32));
 }
 
+int64_t db_sapling_note_balance_for_ivk_minconf(struct node_db *ndb,
+                                                const uint8_t ivk[32],
+                                                int tip_height, int minconf)
+{
+    if (!ndb || !ndb->open) return 0;
+    /* minconf<=0 → no confirmation requirement (count everything unspent). */
+    if (minconf <= 0)
+        return db_sapling_note_balance_for_ivk(ndb, ivk);
+
+    /* A note at block_height h has (tip - h + 1) confirmations; require that to
+     * be >= minconf, i.e. block_height <= tip - minconf + 1. Unconfirmed notes
+     * (NULL block_height) never satisfy minconf>=1 and are excluded. */
+    int max_height = tip_height - minconf + 1;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
+        " WHERE ivk=? AND spent_txid IS NULL"
+        "   AND block_height IS NOT NULL AND block_height >= 1"
+        "   AND block_height <= ?",
+        AR_BIND_BLOB(s, 1, ivk, 32);
+        AR_BIND_INT(s, 2, max_height));
+}
+
 int64_t db_sapling_note_balance_for_address(struct node_db *ndb,
                                             const char *address)
 {
@@ -263,6 +286,38 @@ int db_sapling_note_list_unspent(struct node_db *ndb,
         out, max,
         (void)0,
         db_sapling_note_read_row(s, 0, &out[count]));
+}
+
+int db_sapling_note_count_unspent(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return 0;
+    AR_QUERY_COUNT_SQL(ndb,
+        "SELECT COUNT(*) FROM wallet_sapling_notes WHERE spent_txid IS NULL");
+}
+
+int db_sapling_note_list_unspent_alloc(struct node_db *ndb,
+                                       struct db_sapling_note **out)
+{
+    if (!out) return -1;
+    *out = NULL;
+    if (!ndb || !ndb->open) return -1;
+
+    int n = db_sapling_note_count_unspent(ndb);
+    if (n <= 0)
+        return 0;
+
+    /* Size to the live count; re-read may see a couple extra rows if a write
+     * raced, so the fixed-size load below simply stops at our allocated count
+     * (correct: AR_QUERY_LIST honors max). A short-read is also fine. */
+    struct db_sapling_note *buf =
+        zcl_calloc((size_t)n, sizeof(struct db_sapling_note),
+                   "sapling notes unspent");
+    if (!buf)
+        return -1;
+
+    int got = db_sapling_note_list_unspent(ndb, buf, (size_t)n);
+    *out = buf;
+    return got;
 }
 
 int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,

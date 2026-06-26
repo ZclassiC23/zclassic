@@ -567,6 +567,41 @@ int64_t db_wallet_utxo_balance_with_count(struct node_db *ndb, int *utxo_count)
     return total;
 }
 
+int64_t db_wallet_utxo_spendable_balance(struct node_db *ndb, int *utxo_count)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t total = 0;
+    int count = 0;
+
+    if (utxo_count)
+        *utxo_count = 0;
+    if (!ndb || !ndb->open)
+        return 0;
+
+    /* Coinbase outputs are spendable only once buried COINBASE_MATURITY=100
+     * blocks deep. Exclude immature coinbase from the spendable total so the
+     * reported balance matches what the coin-selector can actually spend (see
+     * db_wallet_utxo_select_coins) and what rpc_listunspent shows. */
+    int tip = db_wallet_chain_tip_height(ndb);
+
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT COALESCE(SUM(value),0), COUNT(*) FROM wallet_utxos"
+        " WHERE spent_txid IS NULL"
+        "   AND (is_coinbase=0 OR height <= ?)",
+        -1, &s, NULL);
+    if (!s)
+        return 0;
+    AR_BIND_INT(s, 1, tip - 100);
+    if (AR_STEP_ROW(s)) {
+        total = AR_COL_INT(s, 0);
+        count = (int)AR_COL_INT(s, 1);
+    }
+    AR_FINALIZE(s);
+    if (utxo_count)
+        *utxo_count = count;
+    return total;
+}
+
 int db_wallet_chain_tip_height(struct node_db *ndb)
 {
     return db_wallet_query_max_height(ndb, "SELECT MAX(height) FROM blocks");
@@ -640,6 +675,37 @@ int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
         -1, &s, NULL);
     if (!s) return 0;
     AR_BIND_INT(s, 1, current_height - 100);
+    int count = 0;
+    int64_t total = 0;
+    while (AR_STEP_ROW(s) && (size_t)count < max) {
+        db_wallet_utxo_read_row(s, 0, &out[count]);
+        total += out[count].value;
+        count++;
+        if (total >= target) break;
+    }
+    AR_FINALIZE(s);
+    return count;
+}
+
+int db_wallet_utxo_select_coins_for_address(struct node_db *ndb, int64_t target,
+                                            int current_height,
+                                            const uint8_t address_hash[20],
+                                            struct db_wallet_utxo *out,
+                                            size_t max)
+{
+    if (!ndb->open || !address_hash) return 0;
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "SELECT txid,vout,value,address_hash,script,height,is_coinbase"
+        " FROM wallet_utxos"
+        " WHERE spent_txid IS NULL"
+        "   AND address_hash = ?"
+        "   AND (is_coinbase=0 OR height <= ?)"
+        " ORDER BY value DESC",
+        -1, &s, NULL);
+    if (!s) return 0;
+    AR_BIND_BLOB(s, 1, address_hash, 20);
+    AR_BIND_INT(s, 2, current_height - 100);
     int count = 0;
     int64_t total = 0;
     while (AR_STEP_ROW(s) && (size_t)count < max) {

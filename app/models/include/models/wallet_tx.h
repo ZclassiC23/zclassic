@@ -105,6 +105,16 @@ bool db_wallet_utxo_find(struct node_db *ndb,
                          struct db_wallet_utxo *out);
 int64_t db_wallet_utxo_balance(struct node_db *ndb);
 int64_t db_wallet_utxo_balance_with_count(struct node_db *ndb, int *utxo_count);
+
+/* SPENDABLE transparent balance: the SUM over unspent UTXOs that EXCLUDES
+ * immature coinbase (a coinbase output is spendable only once it is buried
+ * COINBASE_MATURITY=100 blocks deep), mirroring the spend coin-selector
+ * (db_wallet_utxo_select_coins) and rpc_listunspent. Use this for any balance
+ * a user can actually spend; the plain db_wallet_utxo_balance is the raw total
+ * of all unspent UTXOs (immature coinbase included) and is for diagnostics.
+ * The chain tip height is read internally from the blocks table; pass NULL for
+ * utxo_count if not needed. */
+int64_t db_wallet_utxo_spendable_balance(struct node_db *ndb, int *utxo_count);
 int db_wallet_chain_tip_height(struct node_db *ndb);
 int db_wallet_effective_tip_height(struct node_db *ndb);
 bool db_wallet_projection_summary(struct node_db *ndb,
@@ -136,6 +146,18 @@ int db_wallet_utxo_recent_activity(struct node_db *ndb,
 int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
                                 int current_height,
                                 struct db_wallet_utxo *out, size_t max);
+
+/* Coin selection restricted to a single 20-byte address hash: unspent,
+ * mature-coinbase-only, value DESC, accumulating until the running total
+ * reaches `target`. Pushing the address into the SQL WHERE (rather than
+ * selecting globally then post-filtering) ensures a fully funded from-address
+ * is never falsely rejected with "Insufficient funds" because higher-value
+ * coins on OTHER addresses crowded out the selection window. Returns count. */
+int db_wallet_utxo_select_coins_for_address(struct node_db *ndb, int64_t target,
+                                            int current_height,
+                                            const uint8_t address_hash[20],
+                                            struct db_wallet_utxo *out,
+                                            size_t max);
 
 /* Delete a single wallet UTXO by outpoint. */
 bool db_wallet_utxo_delete(struct node_db *ndb,
@@ -213,6 +235,15 @@ bool db_sapling_note_mark_spent(struct node_db *ndb,
 int64_t db_sapling_note_balance(struct node_db *ndb);
 int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
                                         const uint8_t ivk[32]);
+
+/* minconf-aware shielded balance for an ivk: sums only notes confirmed at
+ * least `minconf` deep relative to the chain tip (notes with NULL block_height
+ * or fewer than minconf confirmations are excluded). `tip_height` is the
+ * current chain tip; pass minconf<=0 to count every unspent note (including
+ * unconfirmed). */
+int64_t db_sapling_note_balance_for_ivk_minconf(struct node_db *ndb,
+                                                const uint8_t ivk[32],
+                                                int tip_height, int minconf);
 int64_t db_sapling_note_balance_with_count(struct node_db *ndb, int *note_count);
 int64_t db_sapling_note_balance_for_address(struct node_db *ndb,
                                             const char *address);
@@ -222,6 +253,18 @@ int64_t db_sapling_note_balance_for_exact_value(struct node_db *ndb,
 /* List unspent notes. Returns count. */
 int db_sapling_note_list_unspent(struct node_db *ndb,
                                  struct db_sapling_note *out, size_t max);
+
+/* Count of unspent notes (spent_txid IS NULL). 0 on error/empty. */
+int db_sapling_note_count_unspent(struct node_db *ndb);
+
+/* List ALL unspent notes, heap-allocating a buffer sized to the live count
+ * (no fixed cap). On success returns a non-negative count and sets *out to a
+ * malloc'd array the caller frees with free(); when the count is 0 *out is set
+ * to NULL. Returns -1 on allocation/DB error. Use this instead of the fixed-
+ * cap db_sapling_note_list_unspent for witness maintenance and listings that
+ * must cover every note regardless of value rank. */
+int db_sapling_note_list_unspent_alloc(struct node_db *ndb,
+                                       struct db_sapling_note **out);
 
 /* List unspent notes for a specific ivk. Returns count. */
 int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
