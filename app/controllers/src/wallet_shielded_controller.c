@@ -242,10 +242,18 @@ bool rpc_z_listunspent(const struct json_value *params, bool help,
 
     json_set_array(result);
 
-    /* Always read from SQLite (authoritative source for shielded notes) */
+    /* Always read from SQLite (authoritative source for shielded notes).
+     * Load ALL unspent notes (no 256-cap that would silently truncate the
+     * list below the reported balance). */
     if (ctx->node_db) {
-        struct db_sapling_note db_notes[256];
-        int count = db_sapling_note_list_unspent(ctx->node_db, db_notes, 256);
+        struct db_sapling_note *db_notes = NULL;
+        int count = db_sapling_note_list_unspent_alloc(ctx->node_db, &db_notes);
+        if (count < 0)
+            count = 0;
+        const struct chain_params *cp = chain_params_get();
+        const char *z_hrp = cp
+            ? cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS]
+            : "zs";
         int chain_h = ctx->wallet->best_block_height;
         if (chain_h == 0 && ctx->main_state)
             chain_h = active_chain_height(&ctx->main_state->chain_active);
@@ -271,7 +279,7 @@ bool rpc_z_listunspent(const struct json_value *params, bool help,
 
             char z_addr[128];
             sapling_encode_payment_address(n->diversifier, n->pk_d,
-                                            "zs", z_addr, sizeof(z_addr));
+                                            z_hrp, z_addr, sizeof(z_addr));
             json_push_kv_str(&entry, "address", z_addr);
 
             char amount_buf[32];
@@ -285,6 +293,7 @@ bool rpc_z_listunspent(const struct json_value *params, bool help,
 
             json_push_back(result, &entry);
         }
+        free(db_notes);
     }
     return true;
 }
