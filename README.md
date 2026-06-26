@@ -59,12 +59,14 @@ build.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
-make zclassic23     # main binary -> build/bin/zclassic23
+make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
 make test           # full suite (460 parallel groups)
 make lint           # defensive-coding gates
 ```
 
-The first `make zclassic23` auto-runs **`make vendor`**, which builds the static
+(`make zclassic23` builds only the node; plain `make` also builds the
+`zclassic-cli` / `zcl-rpc` clients used in the examples below.) The first build
+auto-runs **`make vendor`**, which builds the static
 third-party archives in `vendor/lib/` from source (OpenSSL, libevent ×3, LevelDB,
 SQLite, zlib) plus the in-tree Tor stub — sources are pulled from pinned URLs and
 verified against pinned SHA256 hashes, then compiled locally. Only

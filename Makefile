@@ -6,7 +6,11 @@ CC = cc
 # uncommitted tracked changes, so the hash alone does NOT identify the code
 # (a binary built minutes before its fix was committed reports the parent
 # commit; that ambiguity cost a live-deploy verification detour 2026-06-12).
-BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
+# `git update-index -q --refresh` first: a fresh `git clone` leaves stale stat
+# info in the index, so `git diff-index` reports spurious "-dirty" on a pristine
+# tree until the index is refreshed. Refreshing compares content and clears the
+# false positive, while a genuinely modified tree still reports -dirty.
+BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
 BUILD_DIR = build
 BIN_DIR = $(BUILD_DIR)/bin
 OBJ_DIR = $(BUILD_DIR)/obj
@@ -170,7 +174,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         soak-evidence-report soak-evidence-selftest
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
-all: test_zcl zclassic23 zclassic-cli
+all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)

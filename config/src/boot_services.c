@@ -1826,8 +1826,8 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
              * caches it reads). Skip the frees and exit now — the OS reclaims
              * everything microseconds later. */
             fprintf(stderr,
-                    "[shutdown] %d registered thread(s) still running after sweep; "
-                    "exiting without final free to avoid teardown UAF\n",
+                    "[shutdown] %d background thread(s) still finishing; state is "
+                    "already saved, exiting now\n",
                     stragglers);
             fflush(stdout);
             fflush(stderr);
