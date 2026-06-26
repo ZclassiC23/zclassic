@@ -18,6 +18,7 @@
 #include "util/trace.h"
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -852,6 +853,29 @@ static SSL_CTX *tls_init(const char *cert_path, const char *key_path)
     return ctx;
 }
 
+/* ── Cookie file write (atomic, owner-only) ─────────────────────────
+ * Create the RPC cookie restrictively in one step instead of
+ * fopen("w") (which honors the umask → typically world-readable) THEN
+ * chmod(0600): that create-then-chmod leaves a window where any local
+ * user can read the credentials, which grant full wallet access
+ * (including dumpprivkey/z_exportkey). open(O_CREAT|O_EXCL, 0600)
+ * guarantees the file is owner-only from the instant it exists; we
+ * unlink first so O_EXCL succeeds on rotation/restart. Returns NULL on
+ * failure (caller logs context). */
+static FILE *rpc_cookie_fopen_secure(const char *path)
+{
+    /* Drop any stale cookie so O_EXCL can win the create race; O_EXCL
+     * refuses to follow a symlink an attacker may have planted. */
+    unlink(path);
+    int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (fd < 0)
+        return NULL;
+    FILE *f = fdopen(fd, "w");
+    if (!f)
+        close(fd);
+    return f;
+}
+
 /* ── Cookie rotation ────────────────────────────────────────────── */
 
 void rpc_http_cookie_rotate(void)
@@ -873,13 +897,12 @@ void rpc_http_cookie_rotate(void)
              "%016llx%016llx",
              (unsigned long long)r1, (unsigned long long)r2);
 
-    /* Write new cookie to disk */
+    /* Write new cookie to disk (owner-only, no world-readable window) */
     if (g_cookie_file[0]) {
-        FILE *f = fopen(g_cookie_file, "w");
+        FILE *f = rpc_cookie_fopen_secure(g_cookie_file);
         if (f) {
             fprintf(f, "%s:%s", g_rpc_user, g_rpc_password);
             fclose(f);
-            chmod(g_cookie_file, 0600);
         }
     }
     pthread_mutex_unlock(&g_cookie_mutex);
@@ -944,13 +967,12 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
 
         snprintf(g_cookie_file, sizeof(g_cookie_file),
                  "%s/.cookie", datadir);
-        FILE *f = fopen(g_cookie_file, "w");
+        /* Create owner-only (0600) atomically — never a world-readable
+         * window between create and chmod. */
+        FILE *f = rpc_cookie_fopen_secure(g_cookie_file);
         if (f) {
             fprintf(f, "%s:%s", g_rpc_user, g_rpc_password);
             fclose(f);
-            /* Restrict cookie file to owner-only access (0600) to prevent
-             * other users on the system from reading RPC credentials. */
-            chmod(g_cookie_file, 0600);
             printf("RPC cookie written to %s\n", g_cookie_file);
         }
     }
