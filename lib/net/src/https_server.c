@@ -40,6 +40,7 @@ static unsigned g_worker_threads_started = 0;
 static bool g_https_thread_started = false;
 static bool g_http_thread_started = false;
 static _Atomic bool g_running = false;
+static _Atomic int g_https_port = 0;
 static char g_hostname[256] = "";
 static pthread_mutex_t g_https_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -585,6 +586,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     }
 
     atomic_store(&g_running, true);
+    atomic_store(&g_https_port, https_port);
     g_client_queue_head = 0;
     g_client_queue_tail = 0;
     g_client_queue_len = 0;
@@ -676,6 +678,7 @@ void https_server_stop(void)
         return;
     }
     atomic_store(&g_running, false);
+    atomic_store(&g_https_port, 0);
     https_fd = g_https_fd;
     http_fd = g_http_fd;
     g_https_fd = -1;
@@ -737,6 +740,21 @@ void https_deferred_set(const char *cert, const char *key, const char *hostname)
         g_deferred_host[0] = '\0';
     atomic_store(&g_deferred_pending, true);
     printf("HTTPS: deferred start queued (will start when synced)\n");
+}
+
+bool https_server_is_running(void)
+{
+    return atomic_load(&g_running);
+}
+
+int https_server_port(void)
+{
+    return atomic_load(&g_https_port);
+}
+
+bool https_deferred_pending(void)
+{
+    return atomic_load(&g_deferred_pending);
 }
 
 void https_deferred_check(void)

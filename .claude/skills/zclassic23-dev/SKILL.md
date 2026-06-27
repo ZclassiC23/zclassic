@@ -90,6 +90,37 @@ Escape hatch: `zcl_rpc(method,...)`. Discover all tools with `zcl_tools_list`. A
 registering one `*_dump_state_json` in `app/controllers/src/diagnostics_registry.c` — no new tool needed.
 Note: `mcp__zcl23-dev__*` hit the DEV node; `mcp__zcl23-live__*` / curl 18232 hit LIVE — confirm the target.
 
+## Hosting & recovering the clearnet block explorer
+
+The node **is its own HTTPS server** (`lib/net/src/https_server.c`) — no nginx/proxy.
+Full runbook + troubleshooting: `docs/BLOCK_EXPLORER_HOSTING.md`. The two things that
+silently take a public explorer (e.g. `https://zclnet.net/`) down:
+
+1. **No TLS cert in the active datadir → onion-only.** The node binds clearnet 8443 only
+   if `<datadir>/ssl/fullchain.pem` + `privkey.pem` exist at boot, else logs
+   `HTTPS: no cert … not on clearnet`. The certbot deploy-hook
+   (`/etc/letsencrypt/renewal-hooks/deploy/zclassic23-explorer.sh`) refreshes them **only
+   on renewal**, so a datadir rebuild/re-seed between renewals drops the cert until restored.
+   Diagnose: `zcl_state subsystem=explorer` (one call: https_started, cert_present, onion);
+   or by hand `ss -ltn | grep 8443` + `grep -aE 'HTTPS|cert' <datadir>/node.log`. Public 443
+   reaches 8443 via the capped linger forwarder `~/.local/bin/zcl-portfwd` (one-time
+   `setcap`, managed with `systemctl --user`, never sudo). Recover (no sudo): copy a valid
+   cert into `<datadir>/ssl/` (verify the pair with a **pubkey** compare — LE keys are ECDSA,
+   `openssl rsa -modulus` fails: `diff <(openssl x509 -in f.pem -noout -pubkey) <(openssl pkey
+   -in k.pem -pubout)`), then `systemctl --user restart zclassic23`. HTTPS defers during
+   IBD/refold and auto-starts near tip, so on a snapshot-loader node the site returns a few
+   minutes after restart, not instantly.
+2. **Snapshot-loader node shows empty token/history pages.** `/explorer/tokens` blank,
+   `zslp_listtokens` → `[]`, only 1-2 `blk*.dat` files = the node loaded a UTXO snapshot
+   (`-load-snapshot-at-own-height`) and never folded historical bodies, so body-derived
+   projections (ZSLP tokens, tx/address history, ZNAM below the seed) are empty. Correct
+   by design, not a bug. A **public explorer must run full-history** (P2P from genesis or
+   two-step `--importblockindex` of a `zclassicd` archive); the snapshot loader is for
+   fast/robust consensus+wallet nodes. See `docs/BLOCK_EXPLORER_HOSTING.md` §E.
+
+The live node is the detached `~/.local/bin/zclassic23-live` binary, but `systemctl --user
+restart zclassic23` correctly relaunches it (a `stopgap-loader.conf` drop-in overrides ExecStart).
+
 ## Parallel-worktree workflow
 
 Main repo orchestrates; `wt2`/`wt3` are workers (`cp -a` vendor static libs from main first — fresh

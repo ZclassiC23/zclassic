@@ -18,4 +18,11 @@ void https_server_stop(void);
 void https_deferred_set(const char *cert, const char *key, const char *hostname);
 void https_deferred_check(void);
 
+/* Diagnostics accessors (reentrant-safe atomic loads). Used by the
+ * `explorer` state dumper so an operator can see in one call whether the
+ * clearnet HTTPS explorer is actually serving. */
+bool https_server_is_running(void);   /* true once the listener bound + workers up */
+int  https_server_port(void);         /* bound HTTPS port, or 0 if not running */
+bool https_deferred_pending(void);    /* HTTPS start deferred during IBD, not yet up */
+
 #endif

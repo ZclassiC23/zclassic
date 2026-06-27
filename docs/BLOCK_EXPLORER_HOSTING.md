@@ -147,3 +147,113 @@ Pages available: `/explorer` (dashboard), `/explorer/block/<hash>`, `/explorer/t
 public/onion surface by design).
 
 **No nginx. No reverse proxy. The node is the server.**
+
+---
+
+## D. Troubleshooting — "the site stopped loading"
+
+The clearnet explorer has exactly three moving parts. Diagnose them in order
+(all read-only, no sudo):
+
+```bash
+DD=~/.zclassic-c23                       # your -datadir
+# 1. DNS still points at this box?
+getent hosts yourdomain.example
+# 2. Is the public 443 forwarder up?
+systemctl --user is-active zcl-portfwd
+# 3. Is the node actually serving HTTPS on its high port 8443?
+ss -ltn | grep 8443 || echo "NOT LISTENING on 8443 — node is onion-only"
+# why? the boot decision is logged:
+grep -aE 'HTTPS|cert' "$DD/node.log" | tail
+```
+
+**The common failure: nothing on 8443, log says `HTTPS: no cert … not on
+clearnet`.** The node only binds 8443 if `<datadir>/ssl/fullchain.pem` +
+`privkey.pem` are present at boot. The certbot **deploy-hook only refreshes
+those on renewal** (~every 60 days), so anything that replaces the `ssl/` dir
+*between* renewals silently takes the site down until you restore it:
+
+- the datadir was rebuilt / re-seeded / swapped (e.g. a snapshot redeploy),
+- the node was pointed at a new `-datadir` that never had the cert installed,
+- `ssl/` was deleted.
+
+**Recovery (no sudo) — restore the cert into the active datadir, then restart:**
+
+```bash
+DD=~/.zclassic-c23
+# Source A (preferred): the live Let's Encrypt cert, if your user can read it.
+SRC=/etc/letsencrypt/live/yourdomain.example
+# Source B (fallback): a recent owner-readable copy from another datadir.
+#   find ~ -name fullchain.pem -path '*/ssl/*'   # then pick the NEWEST valid one:
+#   openssl x509 -in <copy>/fullchain.pem -noout -enddate
+
+mkdir -p "$DD/ssl"
+install -m 644 "$SRC/fullchain.pem" "$DD/ssl/fullchain.pem"
+install -m 600 "$SRC/privkey.pem"   "$DD/ssl/privkey.pem"
+# verify cert and key are a pair (works for RSA *and* ECDSA Let's Encrypt keys):
+diff <(openssl x509 -in "$DD/ssl/fullchain.pem" -noout -pubkey) \
+     <(openssl pkey -in "$DD/ssl/privkey.pem" -pubout) && echo "cert/key MATCH"
+
+systemctl --user restart zclassic23      # boot re-reads ssl/ and binds 8443
+```
+
+After restart the node re-reads `ssl/` at boot. If it was mid-IBD/refold it
+**defers HTTPS and auto-starts it near tip** — so on a snapshot-loader node the
+site comes back a few minutes after restart, not instantly. Confirm:
+
+```bash
+sleep 30; ss -ltn | grep 8443
+curl -sk -o /dev/null -w "HTTPS %{http_code}\n" https://yourdomain.example/explorer
+```
+
+**Permanent fix if your datadir gets rebuilt often:** keep the cert outside the
+datadir and symlink it in (`ln -s /etc/letsencrypt/live/<domain> <datadir>/ssl`
+won't work — the node reads two specific filenames and the privkey must be
+group-readable by the node user), or re-run `tools/scripts/zcl-explorer-cert.sh`
+as part of your redeploy so a fresh datadir always gets the current cert.
+
+---
+
+## E. Data completeness — what a snapshot-loader node can and can't show
+
+The explorer renders **projections** — read-only views the node folds from block
+bodies as it validates them (`/explorer/tokens` ← `zslp_tokens`, address history,
+the full tx index, ZNAM names, etc.). **A projection only contains what the node
+actually processed.**
+
+This matters because there are two ways to reach tip:
+
+| Bootstrap | UTXO set | Historical block bodies | Body-derived projections (tokens, tx/address history below the seed) |
+|---|---|---|---|
+| **Full sync** (P2P from genesis, or legacy `--importblockindex` of a `zclassicd` datadir) | complete | **on disk** | **complete** — explorer shows everything |
+| **Snapshot loader** (`-load-snapshot-at-own-height=<utxo-seed-H>.snapshot`) | complete @ H | **only blocks above H** (fetched P2P after seed) | **empty/partial below H** — tokens, old tx/address pages, names blank |
+
+The snapshot carries the *UTXO set* at height H, not the bodies. So a
+snapshot-loader node reaches tip fast and is fully consensus-correct, but its
+explorer will show **no ZSLP tokens, no historical tx/address lookups, no ZNAM
+names registered below H** — because those genesis transactions live in bodies
+the node skipped. Symptom: `/explorer/tokens` returns `200` but lists nothing;
+`zslp_listtokens` returns `[]`; the `blocks/` dir holds only a handful of recent
+`blk*.dat` files.
+
+**Decide the node's role:**
+
+- **Consensus / wallet / "reach tip and stay robust" node** → snapshot loader is
+  ideal. The missing historical projections don't affect validation or your
+  wallet (the wallet rescans the chain it has + your keys).
+- **Public canonical explorer** (e.g. a domain you publish) → it must serve the
+  full history, so run it as a **full-history node**. Either let it P2P-sync
+  bodies from genesis, or on a box that already has a `zclassicd` archive use the
+  two-step legacy import (`build/bin/zclassic23 --importblockindex $HOME/.zclassic`
+  then a normal boot — see `docs/HANDOFF.md`), which gives the fold every body so
+  it rebuilds `zslp_tokens` and the address/tx indexes. Do **not** point an
+  explorer-serving node at the `-load-snapshot-at-own-height` loader if you need
+  the token/history pages populated.
+
+**Quick check whether a running node has full history (read-only, no sudo):**
+
+```bash
+DD=~/.zclassic-c23
+ls "$DD"/blocks/blk*.dat | wc -l          # full archive ≈ thousands; snapshot node ≈ 1-2
+sqlite3 "$DD"/node.db "SELECT count(*) FROM zslp_tokens;" 2>/dev/null  # 0 = no token history
+```

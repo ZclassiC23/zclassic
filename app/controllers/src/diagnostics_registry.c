@@ -78,6 +78,8 @@
 #include "models/database.h"
 #include "config/runtime.h"
 #include "net/peer_lifecycle.h"
+#include "net/https_server.h"
+#include "net/tor_integration.h"
 #include "util/log_macros.h"
 #include "util/long_op.h"
 #include "util/service_state.h"
@@ -86,6 +88,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── Controller-level state ─────────────────────────────────────── */
 
@@ -485,6 +488,47 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
     return true;
 }
 
+/* ── explorer (clearnet HTTPS frontend) dump ───────────────────────
+ *
+ * One-call diagnosis of why the clearnet block-explorer is or isn't
+ * serving. The HTTPS listener only binds when a TLS cert/key exist at
+ * <datadir>/ssl/{fullchain,privkey}.pem at boot (see
+ * boot_https_explorer_start in config/src/boot_frontend_services.c); a
+ * missing cert silently leaves the node onion-only. This dumper surfaces
+ * that condition without grepping node.log + ss + openssl by hand.
+ *
+ * Lives here (not lib/net) because it needs the controller-level datadir
+ * (diag_datadir), same rationale as block_index_dump_state_json above.
+ * access()-only existence checks — no sqlite, no cert parsing. */
+static bool explorer_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    json_push_kv_bool(out, "https_started", https_server_is_running());
+    json_push_kv_int(out, "https_port", (int64_t)https_server_port());
+    json_push_kv_bool(out, "https_deferred", https_deferred_pending());
+
+    const char *datadir = diag_datadir();
+    char cert_path[1100], key_path[1100];
+    snprintf(cert_path, sizeof(cert_path), "%s/ssl/fullchain.pem",
+             datadir ? datadir : "");
+    snprintf(key_path, sizeof(key_path), "%s/ssl/privkey.pem",
+             datadir ? datadir : "");
+    bool cert_present = (datadir && datadir[0] && access(cert_path, R_OK) == 0);
+    bool key_present  = (datadir && datadir[0] && access(key_path, R_OK) == 0);
+    json_push_kv_str(out, "cert_path", cert_path);
+    json_push_kv_bool(out, "cert_present", cert_present);
+    json_push_kv_bool(out, "key_present", key_present);
+
+    json_push_kv_bool(out, "onion_enabled", tor_integration_is_enabled());
+    const char *onion = tor_integration_get_onion_address();
+    json_push_kv_str(out, "onion_address", onion ? onion : "");
+    return true;
+}
+
 /* ── RPC: getmirrorstatus ──────────────────────────────────────────
  *
  * Backs the `zcl_mirror_status` MCP tool: the legacy_mirror
@@ -539,6 +583,11 @@ static const struct dump_entry g_dumpers[] = {
                      "block_index entry by height or hash (in `key`)" },
     { "health",      health_dump_state_json,
                      "unified heartbeat ring: registered subsystems, ages, stall fires" },
+    { "explorer",    explorer_dump_state_json,
+                     "clearnet block-explorer frontend: https_started/port/deferred, "
+                     "TLS cert_path + cert_present/key_present at <datadir>/ssl, "
+                     "onion_enabled + onion_address. Diagnoses why the explorer is "
+                     "or isn't serving on clearnet" },
     { "oracle",      zclassicd_oracle_dump_state_json,
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "header_probe", header_probe_dump_state_json,
