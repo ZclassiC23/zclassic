@@ -57,6 +57,14 @@ struct node_db;
 /* Persisted node.db state key: the height the `utxos` mirror is synced to
  * (== the coins_kv applied frontier reflected in the mirror). */
 #define UTXO_MIRROR_SYNC_CURSOR_KEY "utxos_mirror_height"
+/* While the applied frontier is more than this many blocks below the header
+ * tip we are catching up (IBD / P2P body fetch), the frontier climbs every
+ * tick, and a full ~1.3M-row rebuild per tick is quadratic against sync
+ * progress. The mirror is an explorer/wallet read model nothing consumes
+ * mid-sync, so defer the rebuild until within this window of the tip — the
+ * first near-tip pass rebuilds it once. Fail-open: if the header tip is
+ * unknown the gate no-ops and the pre-existing every-tick behavior stands. */
+#define UTXO_MIRROR_SYNC_NEAR_TIP_BLOCKS 200
 
 /* ── Status ────────────────────────────────────────────────── */
 

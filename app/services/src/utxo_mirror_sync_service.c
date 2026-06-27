@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 #include "services/utxo_mirror_sync_service.h"
 
+#include "controllers/chain_projection.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "jobs/refold_progress.h"
@@ -327,6 +328,23 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
         return 0;
     }
     atomic_store(&svc->last_frontier, (int64_t)frontier);
+
+    /* Defer the wholesale rebuild while still catching up. During IBD / P2P
+     * body fetch the coins_kv frontier climbs every tick, so drift is true on
+     * every 5s pass and this would DELETE+reinsert the ENTIRE ~1.3M-row mirror
+     * each time (quadratic against fold progress) — the same storm the refold
+     * guard above suppresses, but for non-refold catch-up. The mirror is a
+     * node.db read model (explorer/wallet/RPC) that nothing consumes mid-sync;
+     * the first within-N-of-tip pass rebuilds it once, and the count-mismatch
+     * self-heal below still runs near tip. Fail-open: header tip unknown (-1)
+     * leaves the original every-tick behavior. See
+     * docs/work/refold-fold-rate-bottlenecks.md (#3). */
+    int64_t header_tip = chain_projection_best_header_height();
+    if (header_tip > 0 &&
+        (int64_t)frontier + UTXO_MIRROR_SYNC_NEAR_TIP_BLOCKS < header_tip) {
+        atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
+        return 0;
+    }
 
     int64_t cursor = 0;
     (void)node_db_state_get_int(svc->ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cursor);
