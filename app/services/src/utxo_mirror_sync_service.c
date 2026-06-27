@@ -345,6 +345,20 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
         atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
         return 0;
     }
+    /* Symmetric guard: also defer when the header chain is BEHIND the coins
+     * frontier. A snapshot-bundle seed jumps coins_kv to seed_h while P2P
+     * headers are still climbing from genesis, so the header projection reports
+     * a tip far BELOW the frontier; the near-tip check above (frontier+N <
+     * header_tip) is then false on the bogus-low tip and the wholesale
+     * ~1.3M-row rebuild would fire AT THE SEED — far from any real tip and
+     * concurrent with the fold — the observed blocks-less crash window. "Near
+     * tip" requires the headers to have actually reached the coins frontier,
+     * not the reverse. The first pass once headers catch up (header_tip >=
+     * frontier) rebuilds it once, near the real tip. */
+    if (header_tip > 0 && (int64_t)frontier > header_tip) {
+        atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
+        return 0;
+    }
 
     int64_t cursor = 0;
     (void)node_db_state_get_int(svc->ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cursor);
