@@ -3477,6 +3477,8 @@ sapling_tree_boot_check_done:
      * and subsequent boots short-circuit here). The loader below still SELF-
      * SHA3-verifies + anchor-binds, so this only auto-selects a file the explicit
      * flag could have loaded. No-op when no bundle is present. */
+    bool snap_from_autodetect = false;
+    char autodetect_fail_marker[1200] = {0};
     if (!ctx->load_snapshot_at_own_height &&
         !coins_kv_is_proven_authority(progress_store_db(), NULL)) {
         char *auto_snap = boot_autodetect_bundle_snapshot(ctx->datadir);
@@ -3486,6 +3488,25 @@ sapling_tree_boot_check_done:
                      "loading %s (no -load-snapshot-at-own-height flag needed)",
                      auto_snap);
             ctx->load_snapshot_at_own_height = auto_snap;
+            snap_from_autodetect = true;
+            /* Failure memory (never-stuck): write a "<snap>.failed" marker BEFORE
+             * the seed attempt and remove it only AFTER the loader returns
+             * cleanly. The loader _exit()s on an unseedable bundle (corrupt
+             * index, anchor mismatch, sapling-rebuild fail, OOM), so if that
+             * happens the marker SURVIVES — and the next (systemd Restart=always)
+             * boot's autodetect skips this snapshot and falls back to normal P2P
+             * IBD. Turns a crash-loop-needing-a-human into crash-once-then-self-
+             * heal. Only the autodetect path is marked; the explicit
+             * -load-snapshot flag keeps its fail-closed FATAL (operator demanded
+             * that exact file). */
+            int mn = snprintf(autodetect_fail_marker, sizeof(autodetect_fail_marker),
+                              "%s.failed", auto_snap);
+            if (mn > 0 && (size_t)mn < sizeof(autodetect_fail_marker)) {
+                FILE *mf = fopen(autodetect_fail_marker, "we");
+                if (mf) fclose(mf);
+            } else {
+                autodetect_fail_marker[0] = '\0';
+            }
         }
     }
     /* -load-snapshot-at-own-height=PATH (EXPLICIT-ONLY recovery): seed coins_kv
@@ -3498,6 +3519,11 @@ sapling_tree_boot_check_done:
                                                ctx->load_snapshot_at_own_height,
                                                ctx->datadir,
                                                &g_state);
+    /* The autodetect seed returned cleanly (the loader _exit()s on failure, so
+     * reaching here means success) — drop the failure-memory marker so a later
+     * deliberate re-seed of the same bundle is allowed. */
+    if (snap_from_autodetect && autodetect_fail_marker[0])
+        (void)remove(autodetect_fail_marker);
     /* The from-anchor reset (LOAD+VERIFY the SHA3 anchor set into coins_kv, then
      * fold ONLY the anchor->tip delta) runs when EITHER:
      *   (a) the explicit -refold-from-anchor override is set, OR

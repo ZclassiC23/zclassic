@@ -781,6 +781,22 @@ char *boot_autodetect_bundle_snapshot(const char *datadir)
         }
         if (!digits_ok)
             continue;
+        /* Failure memory (never-stuck): a prior boot that crash-failed seeding
+         * THIS snapshot wrote a sibling "<name>.failed" marker (see boot.c
+         * around the autodetect reset call). Skip such a snapshot so a bad /
+         * incompatible / corrupt bundle degrades to normal P2P IBD on the next
+         * (systemd Restart=always) boot instead of crash-looping forever — no
+         * human needed to delete the file. The explicit -load-snapshot flag is
+         * unaffected (it never comes through here). */
+        char failp[1200];
+        int fpn = snprintf(failp, sizeof(failp), "%s/%s.failed", datadir, nm);
+        if (fpn > 0 && (size_t)fpn < sizeof(failp) && access(failp, F_OK) == 0) {
+            LOG_WARN("boot",
+                     "[boot] starter-pack snapshot %s has a .failed marker from a "
+                     "prior failed seed — skipping it; using normal P2P sync. "
+                     "Delete %s.failed to retry the bundle.", nm, nm);
+            continue;
+        }
         if (h > best_h) {
             best_h = h;
             snprintf(best_name, sizeof(best_name), "%s", nm);
