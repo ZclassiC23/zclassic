@@ -8,6 +8,8 @@
 #include "core/serialize.h"
 #include "core/hash.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
+#include "platform/time_compat.h"
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -16,6 +18,32 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include "util/safe_alloc.h"
+
+/* De-storm the read-fail logs (defense-in-depth). A blocks-less starter-pack
+ * bundle ships block_index with HAVE_DATA + (nFile,nDataPos) for blocks whose
+ * body was never shipped, so every read-walker — and the boot-time pprev-repair
+ * (block_index_integrity.c) — would open() a missing blk*.dat once per block.
+ * Below the snapshot seed that is ~3.1M absent-file opens; un-throttled it
+ * emitted one line per block (~3.1M lines, a >1 GB node.log in ~2 min) which on
+ * a near-full disk filled it and SILENTLY CRASHED the node before it could reach
+ * tip.
+ *
+ * This throttle bounds that log flood to at most one line per 60 s (carrying the
+ * running suppressed-repeat count + a sample path), which removes the disk-full
+ * crash vector regardless of any boot-time mitigation. It is always-on
+ * defense-in-depth for every residual unbacked read: a blk file lost/unlinked at
+ * runtime, a present-but-wrong-coord legacy mismatch, or a blocks-less bundle
+ * whose below-seed bodies were never shipped. Each such read costs only an
+ * open()/pread() fail, which the fold tolerates. (The deeper fix — not re-reading
+ * bodies the bundle never shipped — lives on the boot / mirror-rebuild path and
+ * is tracked separately.)
+ *
+ * Single global key (0) per throttle: interleaved walkers over many blk files
+ * would re-emit on every file transition if keyed by nFile (~4k lines observed),
+ * so we collapse to one identity that emits at most once per 60 s keep-alive,
+ * carrying the running suppressed-repeat count and a sample path. */
+static struct log_throttle g_open_fail_throttle = LOG_THROTTLE_INIT;
+static struct log_throttle g_readfail_throttle  = LOG_THROTTLE_INIT;
 
 void get_block_pos_filename(char *buf, size_t buflen,
                             const char *datadir,
@@ -307,8 +335,20 @@ ssize_t disk_block_pread(const char *datadir, const struct disk_block_pos *pos,
     get_block_pos_filename(path, sizeof(path), datadir, pos, prefix);
 
     int fd = open(path, O_RDONLY);
-    if (fd < 0)
-        LOG_ERR("disk_block_io", "pread: cannot open %s", path);
+    if (fd < 0) {
+        /* Throttled per nFile (see g_open_fail_throttle rationale above). The
+         * boot-time pprev-repair (block_index_integrity.c) walks EVERY had-data
+         * entry through here; on a blocks-less bundle that is ~3.1M absent-file
+         * opens before the snapshot repair clears the stale flags. */
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&g_open_fail_throttle,
+                                     0u,  /* single global key (see throttle rationale above) */
+                                     platform_time_wall_unix(), 60, &reps))
+            fprintf(stderr, "[disk_block_io] disk_block_pread: cannot open %s "
+                    "(%llu suppressed repeats since last log)\n",
+                    path, (unsigned long long)reps);
+        return -1;
+    }
 
     ssize_t nread = pread(fd, buf, len, (off_t)pos->nPos);
     close(fd);
@@ -389,8 +429,18 @@ bool read_block_from_disk_pread(struct block *b,
     get_block_pos_filename(path, sizeof(path), datadir, pos, "blk");
 
     int fd = open(path, O_RDONLY);
-    if (fd < 0)
-        LOG_FAIL("disk_block_io", "read_block_pread: cannot open %s", path);
+    if (fd < 0) {
+        /* Throttled: a blocks-less bundle would otherwise emit this per block
+         * (~3.1M lines). Still logs context (the path) on the throttled emit. */
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&g_open_fail_throttle,
+                                     0u,  /* single global key (see throttle rationale above) */
+                                     platform_time_wall_unix(), 60, &reps))
+            fprintf(stderr, "[disk_block_io] read_block_pread: cannot open %s "
+                    "(%llu suppressed repeats since last log)\n",
+                    path, (unsigned long long)reps);
+        return false;
+    }
 
     uint32_t payload_pos = pos->nPos;
     size_t bufsize = 2000000u;
@@ -439,8 +489,15 @@ bool read_block_from_disk_index_pread(struct block *b,
     pos.nPos = pindex->nDataPos;
 
     if (!read_block_from_disk_pread(b, &pos, datadir)) {
-        fprintf(stderr, "read_block_pread_fail: h=%d file=%d pos=%u\n",
-                pindex->nHeight, pos.nFile, pos.nPos);
+        /* Throttled per nFile (see g_open_fail_throttle rationale above). */
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&g_readfail_throttle,
+                                     0u,  /* single global key (see throttle rationale above) */
+                                     platform_time_wall_unix(), 60, &reps))
+            fprintf(stderr, "read_block_pread_fail: h=%d file=%d pos=%u "
+                    "(%llu suppressed repeats since last log)\n",
+                    pindex->nHeight, pos.nFile, pos.nPos,
+                    (unsigned long long)reps);
         return false;
     }
 
