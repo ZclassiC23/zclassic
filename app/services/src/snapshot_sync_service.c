@@ -37,6 +37,7 @@
 #include "sync/sync_state.h"
 #include "net/net.h"
 #include "util/log_macros.h"
+#include "platform/time_compat.h"
 
 #include "snapshot_sync_internal.h"
 
@@ -97,9 +98,13 @@ void snapsync_global_ensure_init(struct node_db *ndb)
 
 int64_t snapsync_now_us_internal(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    /* MONOTONIC, not wall-clock: every caller uses this purely as a delta
+     * (elapsed = now - start, stall = now - last_progress, blacklist expiry).
+     * gettimeofday() jumps on an NTP/suspend/VM step — a forward step would
+     * spuriously fire snapsync_check_stall mid-transfer, abort the in-flight
+     * snapshot, and blacklist the healthy serving peer; a backward step would
+     * make blacklist entries never expire. The monotonic clock cannot jump. */
+    return platform_time_monotonic_us();
 }
 
 static struct db_service *snapsync_db_service(

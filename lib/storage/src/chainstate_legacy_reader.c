@@ -329,6 +329,16 @@ int64_t chainstate_legacy_iter(void *handle,
         db_iter_next(&it);
     }
 
+    /* A torn SST, block-CRC mismatch, or I/O error ends iteration early —
+     * db_iter_valid() goes false and we would otherwise return a
+     * silently-truncated UTXO set. That short set becomes the SHA3 boot seed
+     * (src/main.c), which is exactly the torn-coins class that wedges the
+     * reducer. Refuse it. (Mirrors node_db_import_service.c's check.) */
+    if (!db_iter_check_error(&it)) {
+        db_iter_free(&it);
+        return -1;
+    }
+
     db_iter_free(&it);
     return count;
 }

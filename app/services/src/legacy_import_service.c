@@ -245,11 +245,24 @@ int legacy_import_service_run(const char *legacy_datadir,
            num_files, legacy_datadir);
     fflush(stdout);
 
+    /* uset/wl are freed unconditionally at the cleanup: label, which is
+     * reachable via the pass-1 thread-spawn-failure goto below — initialize
+     * them HERE, before any goto, so cleanup never frees uninitialized
+     * (garbage) structs. */
+    struct utxo_set uset;
+    uset_init(&uset);
+    struct wtx_list wl;
+    wl_init(&wl);
+
     /* ========== PASS 1: Parallel raw byte scan ========== */
     printf("legacy_import: pass 1 — parallel raw byte scan...\n");
     fflush(stdout);
 
     bool *file_has_match = zcl_calloc((size_t)num_files, sizeof(bool), "legacy file match flags");
+    if (!file_has_match) {
+        LOG_WARN("legacy_import", "legacy_import: OOM allocating %d file-match flags", num_files);
+        goto cleanup;
+    }
     int batch = 8;
 
     for (int base = 0; base < num_files; base += batch) {
@@ -296,10 +309,6 @@ int legacy_import_service_run(const char *legacy_datadir,
            matched);
     fflush(stdout);
 
-    struct utxo_set uset;
-    uset_init(&uset);
-    struct wtx_list wl;
-    wl_init(&wl);
     struct transparent_ctx tctx = { &aht, &uset, &wl, 0 };
 
     int total_blocks_p2 = 0;

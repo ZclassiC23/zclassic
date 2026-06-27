@@ -153,6 +153,15 @@ bool z_sendmany_shielded(
 
         /* Build spend descriptions */
         wtx.tx.v_shielded_spend = zcl_calloc(num_sel_notes, sizeof(struct spend_description), "shielded_spends");
+        if (!wtx.tx.v_shielded_spend) {
+            /* num_shielded_spend left 0 so transaction_free won't walk a NULL
+             * array. proving_ctx was init'd above; free it too. */
+            zclassic_sapling_proving_ctx_free(proving_ctx);
+            free(witnesses);
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Out of memory (shielded spends)");
+            LOG_FAIL("wallet_shielded", "z_sendmany: calloc v_shielded_spend failed for %zu notes", num_sel_notes);
+        }
         wtx.tx.num_shielded_spend = num_sel_notes;
 
         uint8_t spend_ars[256][32]; /* ar values for spend_auth_sig */
@@ -202,6 +211,13 @@ bool z_sendmany_shielded(
         if (total_z_outs > 0) {
             wtx.tx.v_shielded_output = zcl_calloc(total_z_outs,
                 sizeof(struct output_description), "shielded_outputs");
+            if (!wtx.tx.v_shielded_output) {
+                /* leave num_shielded_output 0; shielded_cleanup frees
+                 * proving_ctx/witnesses/tx and reports the error. */
+                wtx.tx.num_shielded_output = 0;
+                spend_err = "Out of memory (shielded outputs)";
+                goto shielded_cleanup;
+            }
             wtx.tx.num_shielded_output = total_z_outs;
 
             uint8_t ovk[32];

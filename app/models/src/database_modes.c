@@ -201,16 +201,20 @@ bool node_db_normal_mode(struct node_db *ndb)
 bool node_db_wal_checkpoint(struct node_db *ndb)
 {
     sqlite3_stmt *stmt = NULL;
-    const char *mode = NULL;
+    bool is_wal = false;
 
     if (!ndb || !ndb->open) return false;
     if (sqlite3_prepare_v2(ndb->db, "PRAGMA journal_mode", -1, &stmt, NULL) == SQLITE_OK &&
         stmt && sqlite3_step(stmt) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
-        mode = (const char *)sqlite3_column_text(stmt, 0);
+        /* sqlite3_column_text points INTO the stmt; it is freed by
+         * sqlite3_finalize below. Capture the comparison while the stmt is
+         * still live — reading `mode` after finalize is a use-after-free. */
+        const char *mode = (const char *)sqlite3_column_text(stmt, 0);
+        is_wal = (mode && strcmp(mode, "wal") == 0);
     }
     if (stmt)
         sqlite3_finalize(stmt);
-    if (!mode || strcmp(mode, "wal") != 0) {
+    if (!is_wal) {
         node_db_note_activity(ndb, "wal_checkpoint", SQLITE_OK);
         return true;
     }

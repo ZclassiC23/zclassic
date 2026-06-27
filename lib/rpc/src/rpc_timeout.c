@@ -52,9 +52,12 @@ struct rpc_timeout_mgr *rpc_timeout_get_global(void)
 
 static int64_t now_us(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    /* MONOTONIC: this clock drives RPC deadline/elapsed math only. With a
+     * wall clock, a backward NTP/suspend step makes elapsed go negative so
+     * the watchdog stops killing genuinely-stuck RPCs, and a forward step
+     * instantly kills healthy in-flight RPCs. The monotonic clock never
+     * inverts (matches http_middleware.c's timeout source). */
+    return platform_time_monotonic_us();
 }
 
 static void parse_env_int(const char *name, int *dst, int min_v, int max_v)

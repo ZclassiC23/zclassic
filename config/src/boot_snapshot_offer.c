@@ -149,7 +149,12 @@ static void *build_snapshot_offer_thread(void *arg)
 
     printf("Building fast sync snapshot offer...\n");
 
-    struct snapshot_offer offer;
+    /* Zero-init: on the no-snapshot-yet path fast_sync_build_offer() returns
+     * false WITHOUT filling offer, but offer.height is still read below to
+     * gate the block-piece manifest. Uninitialized, that fed a garbage
+     * end-height into the manifest builder on every at-tip node. With {0},
+     * height==0 fails the `tip_h > BLOCKS_PER_PIECE` guard and we skip it. */
+    struct snapshot_offer offer = {0};
     if (fast_sync_build_offer(datadir, &offer)) {
         /* Embed MMR root — cryptographically binds UTXO snapshot to PoW chain */
         struct mmr *m = rpc_blockchain_get_mmr();
