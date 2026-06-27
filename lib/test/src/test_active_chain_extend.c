@@ -91,7 +91,7 @@ int test_active_chain_extend(void)
         bool ok = ace_build(&ms, b, N, 3);
         ok = ok && active_chain_at(&ms.chain_active, 4) == NULL; /* gap pre */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 7);
+                                             &ms.map_block_index, ms.pindex_best_header, 7);
         ok = ok && active_chain_at(&ms.chain_active, 4) == b[4];
         ok = ok && active_chain_at(&ms.chain_active, 7) == b[7];
         ok = ok && active_chain_at(&ms.chain_active, 3) == b[3]; /* tip intact */
@@ -105,7 +105,7 @@ int test_active_chain_extend(void)
         struct block_index *b[8];
         bool ok = ace_build(&ms, b, N, 3);
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 5);
+                                             &ms.map_block_index, ms.pindex_best_header, 5);
         ok = ok && active_chain_at(&ms.chain_active, 5) == b[5];
         ok = ok && active_chain_at(&ms.chain_active, 6) == NULL; /* capped */
         ACE_CHECK("max_height caps the extension", ok);
@@ -119,7 +119,7 @@ int test_active_chain_extend(void)
         bool ok = ace_build(&ms, b, N, 3);
         b[5]->pprev = b[3]; /* divergent: not a child of b[4] */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 7);
+                                             &ms.map_block_index, ms.pindex_best_header, 7);
         ok = ok && active_chain_at(&ms.chain_active, 4) == b[4];
         ok = ok && active_chain_at(&ms.chain_active, 5) == NULL; /* refused */
         ACE_CHECK("fork/divergent successor refused (stops at contiguous edge)",
@@ -134,7 +134,7 @@ int test_active_chain_extend(void)
         bool ok = ace_build(&ms, b, N, 3);
         b[5]->nStatus = BLOCK_VALID_SCRIPTS; /* no BLOCK_HAVE_DATA */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 7);
+                                             &ms.map_block_index, ms.pindex_best_header, 7);
         ok = ok && active_chain_at(&ms.chain_active, 4) == b[4];
         ok = ok && active_chain_at(&ms.chain_active, 5) == NULL;
         ACE_CHECK("missing-body successor refused", ok);
@@ -155,7 +155,7 @@ int test_active_chain_extend(void)
         bool ok = ace_build(&ms, b, N, 3);
         b[5]->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE; /* body, no scripts */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 7);
+                                             &ms.map_block_index, ms.pindex_best_header, 7);
         ok = ok && active_chain_at(&ms.chain_active, 4) == b[4];
         ok = ok && active_chain_at(&ms.chain_active, 5) == b[5]; /* exposed */
         ok = ok && active_chain_at(&ms.chain_active, 7) == b[7];
@@ -169,7 +169,7 @@ int test_active_chain_extend(void)
         struct block_index *b[8];
         bool ok = ace_build(&ms, b, N, 7); /* window already at 7 */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 7);
+                                             &ms.map_block_index, ms.pindex_best_header, 7);
         ok = ok && active_chain_at(&ms.chain_active, 7) == b[7];
         ok = ok && active_chain_height(&ms.chain_active) == 7;
         ACE_CHECK("no gap -> no-op", ok);
@@ -252,7 +252,7 @@ int test_active_chain_extend(void)
         /* Scan all the way to the header tip (7), exactly as the fixed
          * reducer_extend_window_to_candidate now passes pindex_best_header. */
         active_chain_extend_window_have_data(&ms.chain_active,
-                                             &ms.map_block_index, 7);
+                                             &ms.map_block_index, ms.pindex_best_header, 7);
         ok = ok && active_chain_at(&ms.chain_active, 5) == b[5]; /* reached body */
         ok = ok && active_chain_at(&ms.chain_active, 6) == NULL; /* NOT pinned */
         ok = ok && active_chain_at(&ms.chain_active, 7) == NULL;
@@ -284,6 +284,7 @@ int test_active_chain_extend(void)
 
         active_chain_extend_window_have_data(&ms.chain_active,
                                              &ms.map_block_index,
+                                             ms.pindex_best_header,
                                              ms.pindex_best_header->nHeight);
 
         /* Every height a leading upstream stage would consume (cursor+1 ..

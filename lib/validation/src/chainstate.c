@@ -511,6 +511,7 @@ bool active_chain_extend_window(struct active_chain *c,
  * (which LOG_FAILs upstream). */
 bool active_chain_extend_window_have_data(struct active_chain *c,
                                           struct block_map *m,
+                                          struct block_index *best_header,
                                           int max_height)
 {
     if (!c || !m || c->height < 0)
@@ -544,6 +545,46 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
     int hi = max_height;
     if ((int64_t)hi - (int64_t)lo + 1 > ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP)
         hi = lo + ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP - 1;
+
+    /* ── FAST PATH: walk best-header ancestry, no whole-map scan ──────────
+     * The two block_map_next sweeps below (count + fill) visit ALL ~3.1M map
+     * buckets per call, lock-guarded — ~9s/block during above-checkpoint
+     * catch-up because the cheap early-out (max_height<=c->height) never fires
+     * (callers pass pindex_best_header height ≫ the climbing finalized tip),
+     * and the MAX_GAP clamp bounds only the height FILTER, not the scan. Same
+     * full-scan-per-call pathology already fixed in block_successor.c.
+     *
+     * When the finalized tip is provably ON best_header's chain
+     * (block_index_get_ancestor(best_header, c->height) == tip — the liveness
+     * guard), the canonical contiguous successors ARE best_header's ancestors at
+     * each height (chain.c block_index_get_ancestor, O(log n) along pskip). So
+     * have-data contiguity reduces to: walk h up from lo, stop at the first
+     * ancestor lacking BLOCK_HAVE_DATA or carrying a failure; fill to the last
+     * good. This is verdict-IDENTICAL to the pprev-walk below (ancestors are
+     * pprev-contiguous by construction; forks are excluded since only
+     * best_header's own ancestor at each height is consulted) — only the
+     * TRAVERSAL changes, restoring 2*O(map) → O(gap*log n). A reorg where
+     * best_header left the finalized tip fails the guard and falls through to
+     * the slow scan, which handles it via the pprev-walk. Never publishes
+     * authority (active_chain_fill_window); under-extension is a safe stall. */
+    if (best_header && best_header->nHeight >= lo &&
+        block_index_get_ancestor(best_header, c->height) == tip) {
+        struct block_index *cand = tip;
+        for (int h = lo; h <= hi; h++) {
+            struct block_index *anc = block_index_get_ancestor(best_header, h);
+            if (!anc || block_has_any_failure(anc) ||
+                !(anc->nStatus & BLOCK_HAVE_DATA))
+                break;
+            cand = anc;
+        }
+        if (cand == tip || cand->nHeight <= c->height)
+            return true; /* no contiguous have-data successor on the header path */
+        return active_chain_fill_window(c, cand);
+    }
+
+    /* ── SLOW PATH (fallback): best_header absent / below the window / off the
+     * finalized chain (reorg). Full-map scan + pprev-walk — the original, proven
+     * logic, exercised by the test suite with best_header=NULL. ── */
 
     /* Collect eligible (have-data, failure-free) block_index entries in
      * (c->height, hi]. NOT gated on BLOCK_VALID_SCRIPTS — see the function

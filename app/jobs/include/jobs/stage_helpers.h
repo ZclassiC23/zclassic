@@ -281,7 +281,7 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
     if (ms->pindex_best_header) {
         (void)active_chain_extend_window_have_data(
             &ms->chain_active, &ms->map_block_index,
-            ms->pindex_best_header->nHeight);
+            ms->pindex_best_header, ms->pindex_best_header->nHeight);
         return;
     }
 

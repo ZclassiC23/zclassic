@@ -454,7 +454,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     if (ctl->ms->pindex_best_header)
         (void)active_chain_extend_window_have_data(
             &ctl->ms->chain_active, &ctl->ms->map_block_index,
-            ctl->ms->pindex_best_header->nHeight);
+            ctl->ms->pindex_best_header, ctl->ms->pindex_best_header->nHeight);
     (void)reducer_drain_to_convergence();
     /* The reducer reports its verdict through the tip advance + the typed
      * behind-blocker (registered below by activation_eval_tip_blocker) —

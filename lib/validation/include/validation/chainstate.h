@@ -147,7 +147,9 @@ bool active_chain_extend_window(struct active_chain *c,
  * caused). No-op (no map scan) when max_height <= the window height.
  * See chainstate.c. */
 bool active_chain_extend_window_have_data(struct active_chain *c,
-                                          struct block_map *m, int max_height);
+                                          struct block_map *m,
+                                          struct block_index *best_header,
+                                          int max_height);
 /* Side-effect-free most-work candidate selector over the block map, mirroring
  * find_most_work_chain's eligibility (failure-free, >= VALID_TREE, has data,
  * clean ancestry, refuses below-tip). Returns the current tip when no heavier
