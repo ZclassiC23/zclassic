@@ -215,7 +215,16 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
     size_t iter = 0;
     struct block_index *p = NULL;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
-        if (!p || p->nHeight <= seed_h)
+        /* Clear borrowed have-data for absent bodies BELOW the seed too (not
+         * just above): on a blocks-less bundle the ~3.1M below-seed entries
+         * carry borrowed HAVE_DATA whose bodies were never shipped, and EVERY
+         * have-data-gated walker (node_db_catchup, bg_validation, wallet_scan,
+         * pprev-repair, utxo_mirror) then read-storms them — the crash. The
+         * snapshot is the consensus authority at/below seed_h, so those bodies
+         * are not needed; H* stays clamped at the seed anchor (proven-authority
+         * rungs), it does not depend on below-seed body rows. Protect ONLY the
+         * seed block itself (its state is the snapshot's anchor). */
+        if (!p || p->nHeight == seed_h)
             continue;
         if (!(p->nStatus & BLOCK_HAVE_DATA))
             continue;
@@ -259,9 +268,9 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
     if (cleared > 0)
         fprintf(stderr,
                 "[boot] -load-snapshot-at-own-height: blocks-less bundle — "
-                "dropped borrowed have-data on %zu block(s) above seed h=%d "
-                "(no body on disk; %zu kept with real bodies); P2P re-fetches "
-                "+ re-indexes them\n",
+                "dropped borrowed have-data on %zu block(s) around seed h=%d "
+                "(below+above; no body on disk; %zu kept with real bodies; seed "
+                "block protected); have-data-gated walkers now skip them\n",
                 cleared, seed_h, kept);
     return cleared;
 }
