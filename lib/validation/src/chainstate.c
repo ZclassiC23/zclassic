@@ -567,8 +567,14 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
      * best_header left the finalized tip fails the guard and falls through to
      * the slow scan, which handles it via the pprev-walk. Never publishes
      * authority (active_chain_fill_window); under-extension is a safe stall. */
-    if (best_header && best_header->nHeight >= lo &&
-        block_index_get_ancestor(best_header, c->height) == tip) {
+    struct block_index *guard_anc =
+        best_header ? block_index_get_ancestor(best_header, c->height) : NULL;
+    if (best_header && best_header->nHeight >= lo && guard_anc && tip &&
+        memcmp(guard_anc->hashBlock.data, tip->hashBlock.data, 32) == 0) {
+        /* Liveness guard by BLOCK HASH, not pointer: best_header's ancestry at
+         * the finalized height must be the SAME BLOCK as the tip (hash), but a
+         * duplicate same-hash object must not defeat the fast-path ancestry walk
+         * — that pointer mismatch is exactly the live 3162167 wedge. */
         struct block_index *cand = tip;
         for (int h = lo; h <= hi; h++) {
             struct block_index *anc = block_index_get_ancestor(best_header, h);
@@ -640,17 +646,24 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
         elig[n++] = p;
     }
 
-    /* Walk UP from the finalized tip, accepting the eligible child whose pprev
-     * is pointer-equal to the last accepted block. Contiguity is proven by
-     * construction; this also naturally skips forks (a fork at height h whose
-     * pprev != the canonical parent is simply never selected). */
+    /* Walk UP from the finalized tip, accepting the eligible child whose parent
+     * is the last accepted block BY BLOCK HASH (not by pointer). Contiguity is a
+     * CONSENSUS property — child.hashPrevBlock == parent.GetBlockHash() — so the
+     * test must be hash identity, not in-RAM object identity. A duplicate
+     * block_index object for the same hash (e.g. a tip slot installed from a
+     * snapshot seed vs the object header-ingest links pprev to) has a DIFFERENT
+     * pointer but the SAME hash; a pointer compare wrongly rejected it and wedged
+     * the forward fold at a body-present successor (live 3162167). Hash equality
+     * is a strict superset of the old pointer test (same object => same hash) and
+     * still skips real forks (different parent hash). */
     struct block_index *cand = tip;
     bool advanced = true;
     while (advanced) {
         advanced = false;
         for (int i = 0; i < n; i++) {
             struct block_index *ch = elig[i];
-            if (ch && ch->pprev == cand &&
+            if (ch && ch->pprev &&
+                memcmp(ch->pprev->hashBlock.data, cand->hashBlock.data, 32) == 0 &&
                 ch->nHeight == cand->nHeight + 1) {
                 cand = ch;
                 advanced = true;

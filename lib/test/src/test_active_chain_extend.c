@@ -298,5 +298,43 @@ int test_active_chain_extend(void)
         main_state_free(&ms);
     }
 
+    /* 10. POINTER-IDENTITY WEDGE regression (the live 3162167 stall). The
+     * canonical successor exists with a body, but its pprev points to a
+     * DUPLICATE block_index object that carries the SAME block hash as the
+     * window tip yet a DIFFERENT pointer — exactly what happens when a
+     * snapshot-seeded tip slot and a header-ingest pprev resolve the same block
+     * to two objects. The old by-pointer contiguity walk (ch->pprev == cand)
+     * rejected it and froze the forward fold one block below the header tip;
+     * the fix walks by BLOCK HASH (consensus linkage), so it admits the
+     * successor and the window advances. Exercises the slow path (best_header
+     * NULL) where the by-pprev hash compare lives. */
+    {
+        struct main_state ms; main_state_init(&ms);
+        struct block_index *b[8];
+        bool ok = ace_build(&ms, b, N, 3); /* window tip at b[3] */
+
+        /* A duplicate of height-3 (the tip): same hash, different pointer, not
+         * in the map; parent is the real b[2] so ancestry stays linked. */
+        struct block_index dup3;
+        memset(&dup3, 0, sizeof(dup3));
+        dup3.hashBlock  = b[3]->hashBlock;   /* SAME block hash as the tip */
+        dup3.phashBlock = &dup3.hashBlock;
+        dup3.nHeight    = 3;
+        dup3.nStatus    = b[3]->nStatus;
+        dup3.nChainWork = b[3]->nChainWork;
+        dup3.pprev      = b[2];
+
+        b[4]->pprev = &dup3; /* successor links to the duplicate parent */
+
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index,
+                                             NULL /* slow path: by-pprev hash */, 7);
+        ok = ok && active_chain_at(&ms.chain_active, 4) == b[4]; /* admitted */
+        ok = ok && active_chain_at(&ms.chain_active, 7) == b[7]; /* extends on */
+        ACE_CHECK("duplicate same-hash parent admitted by HASH not pointer "
+                  "(live 3162167 wedge)", ok);
+        main_state_free(&ms);
+    }
+
     return failures;
 }
