@@ -181,9 +181,17 @@ bool keystore_add_cscript(struct basic_keystore *ks,
 bool keystore_have_cscript(const struct basic_keystore *ks,
                              const struct uint160 *script_id)
 {
+    /* Lock the read: keystore_add_cscript publishes scripts[] entries (and bumps
+     * num_scripts) under ks->cs; a lock-free scan can observe a half-published
+     * entry or a stale count. const-cast to lock follows the reader pattern
+     * (keystore_get_key). */
+    zcl_mutex_lock((zcl_mutex_t *)&ks->cs);
     for (size_t i = 0; i < ks->num_scripts; i++)
-        if (ks->scripts[i].used && uint160_eq(&ks->scripts[i].script_id, script_id))
+        if (ks->scripts[i].used && uint160_eq(&ks->scripts[i].script_id, script_id)) {
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
             return true;
+        }
+    zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
     return false;
 }
 
@@ -191,12 +199,17 @@ bool keystore_get_cscript(const struct basic_keystore *ks,
                             const struct uint160 *script_id,
                             struct script *script_out)
 {
+    /* Lock the read+copy: a lock-free copy of redeem_script can tear against
+     * keystore_add_cscript's publish under ks->cs. */
+    zcl_mutex_lock((zcl_mutex_t *)&ks->cs);
     for (size_t i = 0; i < ks->num_scripts; i++) {
         if (ks->scripts[i].used && uint160_eq(&ks->scripts[i].script_id, script_id)) {
             *script_out = ks->scripts[i].redeem_script;
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
             return true;
         }
     }
+    zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
     return false;
 }
 
@@ -257,9 +270,15 @@ bool keystore_add_watch_only_id(struct basic_keystore *ks,
 bool keystore_have_watch_only(const struct basic_keystore *ks,
                                 const struct key_id *keyid)
 {
+    /* Lock the read: keystore_add_watch_only[_id] publish watching[] entries
+     * under ks->cs; a lock-free scan can observe a half-published entry. */
+    zcl_mutex_lock((zcl_mutex_t *)&ks->cs);
     for (size_t i = 0; i < ks->num_watching; i++)
-        if (ks->watching[i].used && key_id_eq(&ks->watching[i].keyid, keyid))
+        if (ks->watching[i].used && key_id_eq(&ks->watching[i].keyid, keyid)) {
+            zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
             return true;
+        }
+    zcl_mutex_unlock((zcl_mutex_t *)&ks->cs);
     return false;
 }
 
