@@ -11,6 +11,7 @@
  * are thin adapters / forwarders for the dispatch table. */
 
 #include "msgprocessor_internal.h"
+#include "net/msg_bounds_guard.h"
 #include "net/addrman.h"
 #include "net/download.h"
 #include "core/uint256.h"
@@ -40,10 +41,10 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
     /* notfound answers a getdata, so bound it by the same cap as inv/getdata
      * (the 2 MB frame cap already limits this, but cap at the call site so the
      * discipline is auditable and uniform across inv-bearing handlers). */
-    if (count > MAX_INV_SZ) {
+    if (msg_count_exceeds("net", "notfound", count, MAX_INV_SZ,
+                          node->addr_name)) {
         node->disconnect = true;
-        LOG_FAIL("net", "notfound count %llu exceeds MAX_INV_SZ from %s",
-                 (unsigned long long)count, node->addr_name);
+        return false;
     }
 
     struct download_manager *dm = get_download_mgr();
@@ -78,12 +79,12 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
         LOG_FAIL("net", "failed to read addr count from %s",
                  node->addr_name);
 
-    if (count > MAX_ADDR_TO_SEND) {
+    if (msg_count_exceeds("net", "addr", count, MAX_ADDR_TO_SEND,
+                          node->addr_name)) {
         printf("Peer %s: addr message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
-        LOG_FAIL("net", "addr count %llu exceeds max from %s",
-                 (unsigned long long)count, node->addr_name);
+        return false;
     }
 
     struct net_addr source;

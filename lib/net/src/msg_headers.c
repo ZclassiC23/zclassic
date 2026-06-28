@@ -8,6 +8,7 @@
  * Split from msgprocessor.c for maintainability. */
 
 #include "net/msg_internal.h"
+#include "net/msg_bounds_guard.h"
 #include "net/p2p_message.h"
 #include "net/peer_scoring.h"
 #include "net/fast_sync.h"
@@ -247,15 +248,14 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         LOG_FAIL("net", "failed to read headers count from %s",
                  node->addr_name);
 
-    if (count > 2000) {
+    if (msg_count_exceeds("net", "headers", count, 2000, node->addr_name)) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "headers count %llu exceeds 2000 from %s",
                     (unsigned long long)count, node->addr_name);
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                             "too many headers");
         node->disconnect = true;
-        LOG_FAIL("net", "headers count %llu exceeds 2000 from %s",
-                 (unsigned long long)count, node->addr_name);
+        return false;
     }
 
     struct uint256 last_hash;

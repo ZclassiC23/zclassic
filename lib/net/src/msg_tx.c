@@ -9,6 +9,7 @@
 
 #include "platform/time_compat.h"
 #include "net/msg_internal.h"
+#include "net/msg_bounds_guard.h"
 #include "net/peer_scoring.h"
 #include "net/dandelion.h"
 #include "net/download.h"
@@ -105,15 +106,14 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         LOG_FAIL("net", "failed to read inv count from %s",
                  node->addr_name);
 
-    if (count > MAX_INV_SZ) {
+    if (msg_count_exceeds("net", "inv", count, MAX_INV_SZ, node->addr_name)) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "inv too large (%llu) from %s",
                     (unsigned long long)count, node->addr_name);
         printf("Peer %s: inv message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
-        LOG_FAIL("net", "inv count %llu exceeds MAX_INV_SZ from %s",
-                 (unsigned long long)count, node->addr_name);
+        return false;
     }
 
     struct byte_stream getdata;

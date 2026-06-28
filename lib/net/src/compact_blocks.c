@@ -7,6 +7,7 @@
  * adapted from the reference C code. */
 
 #include "net/compact_blocks.h"
+#include "net/msg_bounds_guard.h"
 #include "core/hash.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -507,9 +508,9 @@ bool compact_block_msg_deserialize(struct compact_block_msg *cb,
     uint64_t num_short;
     if (!stream_read_compact_size(s, &num_short))
         LOG_FAIL("compact", "failed to read short txid count");
-    if (num_short > MAX_COMPACT_BLOCK_TXNS) {
-        LOG_FAIL("compact", "too many short txids: %lu", (unsigned long)num_short);
-    }
+    if (msg_count_exceeds("compact", "short txids", num_short,
+                          MAX_COMPACT_BLOCK_TXNS, NULL))
+        return false;
     cb->num_short_txids = (size_t)num_short;
     if (num_short > 0) {
         cb->short_txids = zcl_malloc(num_short * SHORT_TXID_LEN, "compact_deser_stxids");
@@ -531,9 +532,10 @@ bool compact_block_msg_deserialize(struct compact_block_msg *cb,
         compact_block_msg_free(cb);
         LOG_FAIL("compact", "failed to read prefilled count");
     }
-    if (num_prefilled > MAX_COMPACT_BLOCK_TXNS) {
+    if (msg_count_exceeds("compact", "prefilled txs", num_prefilled,
+                          MAX_COMPACT_BLOCK_TXNS, NULL)) {
         compact_block_msg_free(cb);
-        LOG_FAIL("compact", "too many prefilled txs: %lu", (unsigned long)num_prefilled);
+        return false;
     }
     cb->num_prefilled = (size_t)num_prefilled;
     if (num_prefilled > 0) {
@@ -597,8 +599,9 @@ bool block_txn_request_deserialize(struct block_txn_request *req,
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
         LOG_FAIL("compact", "failed to read index count");
-    if (count > MAX_GETBLOCKTXN_INDICES)
-        LOG_FAIL("compact", "too many blocktxn indices: %lu", (unsigned long)count);
+    if (msg_count_exceeds("compact", "blocktxn indices", count,
+                          MAX_GETBLOCKTXN_INDICES, NULL))
+        return false;
 
     req->num_indices = (size_t)count;
     if (count > 0) {
@@ -648,8 +651,9 @@ bool block_txn_response_deserialize(struct block_txn_response *resp,
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
         LOG_FAIL("compact", "failed to read tx count");
-    if (count > MAX_COMPACT_BLOCK_TXNS)
-        LOG_FAIL("compact", "too many blocktxn txs: %lu", (unsigned long)count);
+    if (msg_count_exceeds("compact", "blocktxn txs", count,
+                          MAX_COMPACT_BLOCK_TXNS, NULL))
+        return false;
 
     resp->num_txs = (size_t)count;
     if (count > 0) {
