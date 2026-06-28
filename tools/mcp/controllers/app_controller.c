@@ -99,6 +99,7 @@ static int h_zcl_market_offer(const struct mcp_request *req, struct mcp_response
         snprintf(res->error_message, sizeof(res->error_message),
                  "filepath: missing, empty, oversized (>1024), "
                  "or contains control characters");
+        LOG_WARN("mcp.app", "market_offer: %s", res->error_message);
         return 0;
     }
     int64_t price  = json_get_int(json_get(req->args, "price_per_mb_zat"));

@@ -85,7 +85,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
         "(txid,raw_tx,fee,size,time_added,height_added,spends_coinbase)"
         " VALUES(?,?,?,?,?,?,?)",
         -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, e->txid, 32);
     AR_BIND_BLOB(s, 2, e->raw_tx, (int)e->raw_tx_len);
     AR_BIND_INT(s, 3, e->fee);
@@ -115,7 +115,7 @@ bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
         "SELECT raw_tx,fee,size,time_added,height_added,spends_coinbase"
         " FROM mempool WHERE txid=?",
         -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
 
@@ -156,7 +156,7 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     bool ok = false;
     sqlite3_prepare_v2(ndb->db, "DELETE FROM mempool WHERE txid=?",
                        -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
@@ -242,7 +242,7 @@ bool db_mempool_is_spent(struct node_db *ndb,
     sqlite3_prepare_v2(ndb->db,
         "SELECT 1 FROM mempool_spends WHERE spent_txid=? AND spent_vout=?",
         -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     AR_BIND_INT(s, 2, (int)vout);
     bool found = AR_STEP_ROW(s);
@@ -260,7 +260,7 @@ bool db_mempool_add_spend(struct node_db *ndb,
         "INSERT OR REPLACE INTO mempool_spends(txid,spent_txid,spent_vout)"
         " VALUES(?,?,?)",
         -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, spending_txid, 32);
     AR_BIND_BLOB(s, 2, spent_txid, 32);
     AR_BIND_INT(s, 3, (int)spent_vout);
@@ -275,7 +275,7 @@ bool db_mempool_remove_spends(struct node_db *ndb, const uint8_t txid[32])
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "DELETE FROM mempool_spends WHERE txid=?", -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
@@ -292,7 +292,7 @@ int db_mempool_each(struct node_db *ndb, mempool_entry_cb cb, void *ctx)
         "SELECT txid,raw_tx,fee,size,time_added,height_added,spends_coinbase"
         " FROM mempool ORDER BY fee DESC",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s) LOG_RETURN(0, "mempool", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     int count = 0;
     while (AR_STEP_ROW(s)) {
         struct db_mempool_entry e;

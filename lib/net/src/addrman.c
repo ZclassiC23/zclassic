@@ -209,7 +209,7 @@ static void random_push(struct addr_man *am, int id)
     if (am->random_size >= am->random_cap) {
         size_t new_cap = am->random_cap ? am->random_cap * 2 : 256;
         int *p = zcl_realloc(am->random_order, new_cap * sizeof(int), "addr_random_order");
-        if (!p) return;
+        if (!p) { LOG_WARN("addrman", "random_push: realloc failed cap=%zu, dropping id=%d", new_cap, id); return; }
         am->random_order = p;
         am->random_cap = new_cap;
     }
@@ -219,11 +219,20 @@ static void random_push(struct addr_man *am, int id)
 static void swap_random(struct addr_man *am, unsigned int p1, unsigned int p2)
 {
     if (p1 == p2) return;
-    if (p1 >= am->random_size || p2 >= am->random_size) return;
+    if (p1 >= am->random_size || p2 >= am->random_size) {
+        LOG_WARN("addrman", "swap_random: index OOB p1=%u p2=%u size=%zu", p1, p2, am->random_size);
+        return;
+    }
     int id1 = am->random_order[p1];
     int id2 = am->random_order[p2];
-    if (id1 < 0 || (size_t)id1 >= am->entries_cap) return;
-    if (id2 < 0 || (size_t)id2 >= am->entries_cap) return;
+    if (id1 < 0 || (size_t)id1 >= am->entries_cap) {
+        LOG_WARN("addrman", "swap_random: corrupt id1=%d entries_cap=%zu", id1, am->entries_cap);
+        return;
+    }
+    if (id2 < 0 || (size_t)id2 >= am->entries_cap) {
+        LOG_WARN("addrman", "swap_random: corrupt id2=%d entries_cap=%zu", id2, am->entries_cap);
+        return;
+    }
     am->entries[id1].random_pos = (int)p2;
     am->entries[id2].random_pos = (int)p1;
     am->random_order[p1] = id2;

@@ -617,13 +617,12 @@ static bool handle_game_msg(struct msg_processor *mp, struct p2p_node *node,
  * everything else (filter*, zmsg, zfile*, zgame, mempool, tx) is local.
  * Sentinel at the end. */
 
-/* process_sendcmpct's signature omits the mp parameter; this shim adapts
- * it to the uniform (mp, node, s) dispatch signature. */
+/* Shim adapting process_sendcmpct to the uniform (mp, node, s) dispatch
+ * signature (the names differ only by this indirection). */
 static bool mp_sendcmpct(struct msg_processor *mp, struct p2p_node *node,
                          struct byte_stream *s)
 {
-    (void)mp;
-    return process_sendcmpct(node, s);
+    return process_sendcmpct(mp, node, s);
 }
 
 static const struct msg_dispatch_entry g_msg_dispatch[] = {

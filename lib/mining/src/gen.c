@@ -176,8 +176,10 @@ void gen_start(struct gen_context *ctx)
         return;
     g_num_miner_threads = ctx->num_threads;
     g_miner_threads = zcl_calloc((size_t)g_num_miner_threads, sizeof(pthread_t), "miner_threads");
-    if (!g_miner_threads)
+    if (!g_miner_threads) {
+        LOG_WARN("mining", "gen_start: calloc failed for %d threads", g_num_miner_threads);
         return;
+    }
 
     atomic_store(&ctx->running, true);
 

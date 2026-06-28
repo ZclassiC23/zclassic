@@ -88,6 +88,7 @@ static int h_zcl_onion_health(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "path: must start with '/', "
                  "be 1..256 chars, contain no control chars or '..' segments");
+        LOG_WARN("mcp.net", "onion_health: %s", res->error_message);
         return 0;
     }
 

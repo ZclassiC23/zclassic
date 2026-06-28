@@ -318,7 +318,7 @@ int db_peer_fast_zcl23(struct node_db *ndb, struct db_peer *out, size_t max)
         " FROM peers WHERE is_zcl23=1"
         " ORDER BY bandwidth_score DESC, last_seen DESC LIMIT ?",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s) LOG_RETURN(0, "peer", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_INT(s, 1, (int)max);
     int count = 0;
     while (AR_STEP_ROW(s) && (size_t)count < max) {

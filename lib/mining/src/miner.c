@@ -34,8 +34,10 @@
 static void block_compute_merkle_root(struct block *b)
 {
     struct uint256 *txids = zcl_malloc(b->num_vtx * sizeof(struct uint256), "merkle_txids");
-    if (!txids)
+    if (!txids) {
+        LOG_WARN("mining", "block_compute_merkle_root: malloc failed");
         return;
+    }
     for (size_t i = 0; i < b->num_vtx; i++)
         txids[i] = b->vtx[i].hash;
     b->header.hashMerkleRoot = compute_merkle_root(txids, b->num_vtx);

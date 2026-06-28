@@ -732,6 +732,7 @@ static int h_zcl_postmortem_replay(const struct mcp_request *req,
         res->error = MCP_ERR_MISSING_PARAM;
         snprintf(res->error_message, sizeof(res->error_message),
                  "path is required");
+        LOG_WARN("mcp.ops", "postmortem_replay: %s", res->error_message);
         return 0;
     }
 

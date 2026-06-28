@@ -100,7 +100,8 @@ enum tx_accept_result msg_tx_accept(struct msg_processor *mp,
                                     struct transaction *tx);
 
 /* msg_compact.c — compact blocks (BIP152) */
-bool process_sendcmpct(struct p2p_node *node, struct byte_stream *s);
+bool process_sendcmpct(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s);
 bool process_cmpctblock(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s);
 bool process_getblocktxn(struct msg_processor *mp, struct p2p_node *node,

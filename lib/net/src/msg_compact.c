@@ -104,15 +104,18 @@ static void compact_submit_block(struct msg_processor *mp,
     }
 }
 
-bool process_sendcmpct(struct p2p_node *node, struct byte_stream *s)
+bool process_sendcmpct(struct msg_processor *mp, struct p2p_node *node,
+                       struct byte_stream *s)
 {
     /* sendcmpct: [1 byte: announce] [8 bytes: version]
      * announce=1 means peer wants high-bandwidth mode (send compact blocks
      * unsolicited). version=1 is the only version we support. */
     uint8_t announce;
     uint64_t version;
-    if (!stream_read_u8(s, &announce) || !stream_read_u64_le(s, &version))
+    if (!stream_read_u8(s, &announce) || !stream_read_u64_le(s, &version)) {
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD, "malformed sendcmpct");
         LOG_FAIL("compact", "malformed sendcmpct from peer %s", node->addr_name);
+    }
 
     if (version == COMPACT_BLOCK_VERSION) {
         node->send_compact = (announce != 0);

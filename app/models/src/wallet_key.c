@@ -470,7 +470,7 @@ int db_wallet_key_utxos(struct node_db *ndb, const uint8_t pubkey_hash[20],
         " FROM wallet_utxos WHERE address_hash=?"
         " AND spent_txid IS NULL ORDER BY value DESC LIMIT ?",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s) LOG_RETURN(0, "wallet_key", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, pubkey_hash, 20);
     AR_BIND_INT(s, 2, (int)max);
     int count = 0;
@@ -502,7 +502,7 @@ int db_sapling_key_notes(struct node_db *ndb, const uint8_t ivk[32],
         " FROM wallet_sapling_notes WHERE ivk=?"
         " AND spent_txid IS NULL ORDER BY value DESC LIMIT ?",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s) LOG_RETURN(0, "wallet_key", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, ivk, 32);
     AR_BIND_INT(s, 2, (int)max);
     int count = 0;

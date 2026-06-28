@@ -173,6 +173,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
+        check-wallet-raw-prepare-log \
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
@@ -1819,6 +1820,14 @@ check-silent-errors-bool:
 	@echo "══ LINT: silent call-guard return-false (RATCHET) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_silent_bool_errors.sh
 
+# Closes the raw sqlite3_prepare_v2() + unlogged NULL-check blind spot (the
+# wallet_tx.c class the other silent-error gates do not see): a BARE prepare
+# followed by `if (!stmt) return ...;` with no LOG_* between them. RATCHET
+# (shrink-only) — today's population is baselined.
+check-wallet-raw-prepare-log:
+	@echo "══ LINT: raw sqlite3_prepare_v2 unlogged NULL-check (RATCHET) ══"
+	@ZCL_LINT_MODE=FAIL ./tools/lint/check_wallet_raw_prepare_log.sh
+
 check-before-save-hooks:
 	@echo "══ LINT: critical models wire before_save hooks ══"
 	@for model in utxo block wallet_key wallet_tx; do \
@@ -2127,7 +2136,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

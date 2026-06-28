@@ -11,6 +11,7 @@
 
 #include "zslp/slp.h"
 #include "script/op_return_push.h"
+#include "util/log_macros.h"
 #include <string.h>
 
 /* Read a big-endian uint64 from data of given length (1-8 bytes). */
@@ -29,6 +30,26 @@ static void u64_to_be(uint8_t *out, uint64_t val)
         out[i] = (uint8_t)(val & 0xff);
         val >>= 8;
     }
+}
+
+/* Copy a length-prefixed SLP string field into a fixed buffer.
+ * The caller has zeroed *out (slp_parse memsets the whole message), so an
+ * empty (len==0) or over-long (len >= out_len) field leaves *out as the
+ * empty string — preserving the SLP overlay's existing accept-but-drop
+ * behavior. We only add an observability log for the over-long case, which
+ * used to be silently discarded (Law 2: every dropped field logs context). */
+static void slp_copy_str_field(const uint8_t *data, size_t len,
+                               char *out, size_t out_len, const char *field_name)
+{
+    if (len == 0)
+        return; /* empty field: keep the zeroed default */
+    if (len >= out_len) {
+        LOG_WARN("slp", "%s field discarded: len=%zu exceeds cap=%zu",
+                 field_name, len, out_len);
+        return; /* preserve current behavior: drop, leave empty */
+    }
+    memcpy(out, data, len);
+    out[len] = '\0';
 }
 
 bool slp_parse(const uint8_t *script, size_t script_len,
@@ -66,26 +87,18 @@ bool slp_parse(const uint8_t *script, size_t script_len,
         /* Field 3: ticker */
         p = read_push(p, end, &data, &len);
         if (!p) return false;
-        if (len > 0 && len < sizeof(msg->ticker)) {
-            memcpy(msg->ticker, data, len);
-            msg->ticker[len] = 0;
-        }
+        slp_copy_str_field(data, len, msg->ticker, sizeof(msg->ticker), "ticker");
 
         /* Field 4: name */
         p = read_push(p, end, &data, &len);
         if (!p) return false;
-        if (len > 0 && len < sizeof(msg->name)) {
-            memcpy(msg->name, data, len);
-            msg->name[len] = 0;
-        }
+        slp_copy_str_field(data, len, msg->name, sizeof(msg->name), "name");
 
         /* Field 5: document_url */
         p = read_push(p, end, &data, &len);
         if (!p) return false;
-        if (len > 0 && len < sizeof(msg->document_url)) {
-            memcpy(msg->document_url, data, len);
-            msg->document_url[len] = 0;
-        }
+        slp_copy_str_field(data, len, msg->document_url, sizeof(msg->document_url),
+                           "document_url");
 
         /* Field 6: document_hash (0 or 32 bytes) */
         p = read_push(p, end, &data, &len);

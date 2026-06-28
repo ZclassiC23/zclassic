@@ -51,7 +51,7 @@ bool wallet_tx_query_total_and_count(struct node_db *ndb,
         return false;
     sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
     if (!s)
-        return false;
+        LOG_FAIL("wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     if (bind_blob && bind_blob_len > 0)
         AR_BIND_BLOB(s, 1, bind_blob, (int)bind_blob_len);
     if (AR_STEP_ROW(s)) {
@@ -75,7 +75,7 @@ static int db_wallet_query_max_height(struct node_db *ndb, const char *sql)
         return 0;
     sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
     if (!s)
-        return 0;
+        LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     if (AR_STEP_ROW(s) && sqlite3_column_type(s, 0) != SQLITE_NULL)
         height = (int)AR_COL_INT(s, 0);
     AR_FINALIZE(s);
@@ -590,7 +590,7 @@ int64_t db_wallet_utxo_spendable_balance(struct node_db *ndb, int *utxo_count)
         "   AND (is_coinbase=0 OR height <= ?)",
         -1, &s, NULL);
     if (!s)
-        return 0;
+        LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_INT(s, 1, tip - 100);
     if (AR_STEP_ROW(s)) {
         total = AR_COL_INT(s, 0);
@@ -673,7 +673,7 @@ int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
         "   AND (is_coinbase=0 OR height <= ?)"
         " ORDER BY value DESC",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s) LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_INT(s, 1, current_height - 100);
     int count = 0;
     int64_t total = 0;
@@ -703,7 +703,7 @@ int db_wallet_utxo_select_coins_for_address(struct node_db *ndb, int64_t target,
         "   AND (is_coinbase=0 OR height <= ?)"
         " ORDER BY value DESC",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s) LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, address_hash, 20);
     AR_BIND_INT(s, 2, current_height - 100);
     int count = 0;
@@ -800,7 +800,8 @@ int db_wallet_tx_utxos(struct node_db *ndb, const uint8_t txid[32],
         "spent_txid,spent_vin"
         " FROM wallet_utxos WHERE txid=? ORDER BY vout",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s)
+        LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     int count = 0;
     while (AR_STEP_ROW(s) && (size_t)count < max) {
@@ -823,7 +824,8 @@ int db_wallet_tx_notes(struct node_db *ndb, const uint8_t txid[32],
         "cm,nullifier,block_height,spent_txid"
         " FROM wallet_sapling_notes WHERE txid=? ORDER BY output_index",
         -1, &s, NULL);
-    if (!s) return 0;
+    if (!s)
+        LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     int count = 0;
     while (AR_STEP_ROW(s) && (size_t)count < max) {

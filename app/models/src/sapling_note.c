@@ -399,7 +399,7 @@ bool db_sapling_note_save_witness(struct node_db *ndb,
         "UPDATE wallet_sapling_notes SET witness_data=?,witness_height=?"
         " WHERE txid=? AND output_index=?",
         -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("sapling_note", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, witness_blob, (int)blob_len);
     AR_BIND_INT(s, 2, height);
     AR_BIND_BLOB(s, 3, txid, 32);
@@ -420,7 +420,7 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
         "SELECT witness_data,witness_height FROM wallet_sapling_notes"
         " WHERE txid=? AND output_index=?",
         -1, &s, NULL);
-    if (!s) return false;
+    if (!s) LOG_FAIL("sapling_note", "prepare failed: %s", sqlite3_errmsg(ndb->db));
     AR_BIND_BLOB(s, 1, txid, 32);
     AR_BIND_INT(s, 2, (int)output_index);
     if (!AR_STEP_ROW(s)) { AR_FINALIZE(s); return false; }
