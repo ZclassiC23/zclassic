@@ -3501,10 +3501,25 @@ sapling_tree_boot_check_done:
              * that exact file). */
             int mn = snprintf(autodetect_fail_marker, sizeof(autodetect_fail_marker),
                               "%s.failed", auto_snap);
+            bool marker_ok = false;
             if (mn > 0 && (size_t)mn < sizeof(autodetect_fail_marker)) {
                 FILE *mf = fopen(autodetect_fail_marker, "we");
-                if (mf) fclose(mf);
-            } else {
+                if (mf) { fclose(mf); marker_ok = true; }
+            }
+            if (!marker_ok) {
+                /* Could not write the failure-memory marker (read-only datadir /
+                 * ENOSPC / EACCES). Do NOT gamble on an autodetect seed whose
+                 * failure we cannot remember: a bad bundle _exit()s the loader,
+                 * and the next (Restart=always) boot would re-select the SAME
+                 * bundle forever — a fresh-install crash-loop needing a human.
+                 * Abandon the seed and fall back to plain P2P IBD instead. */
+                LOG_WARN("boot",
+                         "[boot] autodetect seed marker unwritable (%s.failed) — "
+                         "skipping snapshot seed, using P2P IBD",
+                         auto_snap);
+                free(auto_snap);  /* owned via load_snapshot_at_own_height (autodetect path) */
+                ctx->load_snapshot_at_own_height = NULL;
+                snap_from_autodetect = false;
                 autodetect_fail_marker[0] = '\0';
             }
         }
