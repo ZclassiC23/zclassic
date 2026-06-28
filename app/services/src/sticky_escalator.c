@@ -151,6 +151,17 @@ static enum sticky_rung_result rung_reindex_default(void)
                 (long long)tip, rc);
     if (rc == BOOT_AUTO_REINDEX_TERMINAL)
         return STICKY_RUNG_FAILED;   /* budget spent here -> go deeper */
+    /* Cap the RUNTIME request budget at the same bound boot enforces. Without
+     * this, apply_drive re-dispatches this rung every supervisor tick and the
+     * on-disk count climbs unbounded (observed live: 4002) — a durable-write
+     * storm that never self-terminates because the node, mid-stall, never
+     * reboots to let boot_crashonly mark the budget terminal. Persist the
+     * exhausted state now and go deeper, exactly as the boot path would. */
+    if (rc >= BOOT_AUTO_REINDEX_MAX) {
+        (void)boot_auto_reindex_mark_terminal(g_datadir,
+                                              (int32_t)(tip > 0 ? tip : 0));
+        return STICKY_RUNG_FAILED;
+    }
     return STICKY_RUNG_PROGRESSING;  /* armed for next boot; hold a window */
 }
 
@@ -204,6 +215,13 @@ static void clear_episode(int64_t now)
     atomic_store(&g_rung, STICKY_RUNG_RETRY);
     atomic_store(&g_tip_at_rung, -1);
     atomic_fetch_add(&g_episodes_cleared, 1u);
+    /* Release any operator_needed latch this episode raised: the tip
+     * progressed, so the symptom genuinely cleared. note_cycling_page() emits
+     * a (terminal=0) page that — depending on the alerts policy — may still
+     * latch the health surface; this is the matching clear so recovery is
+     * fully automatic and the node returns to healthy with no human action. */
+    event_emitf(EV_CONDITION_CLEARED, 0,
+                "condition=sticky_ladder_cycling reason=tip_progressed");
     LOG_INFO("sticky_escalator",
              "[sticky_escalator] episode cleared: tip progressed, ladder reset");
 }

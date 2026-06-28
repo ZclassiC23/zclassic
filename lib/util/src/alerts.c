@@ -174,8 +174,17 @@ static void alert_observer(enum event_type type, uint32_t peer_id,
     /* EV_OPERATOR_NEEDED is the loudest signal the framework emits: the
      * condition engine ran out of remedies. Latch it for the health surface
      * AND let it flow through the normal rule dispatch below for log/webhook. */
-    if (type == EV_OPERATOR_NEEDED)
-        operator_needed_set(payload ? (const char *)payload : NULL);
+    if (type == EV_OPERATOR_NEEDED) {
+        /* A page tagged `terminal=0` is the auto-recovery layer announcing
+         * "still cycling, no human needed yet" (e.g. the sticky escalator's
+         * ladder-cycling notice). Latching the DEGRADED health surface on it
+         * makes a self-recovering wedge read as operator_needed forever — even
+         * after the tip climbs back to the network. Only latch genuine
+         * remedy-exhaustion pages, which omit the terminal=0 marker. */
+        const char *p = payload ? (const char *)payload : "";
+        if (!strstr(p, "terminal=0"))
+            operator_needed_set(p);
+    }
     /* The symptom resolved (remedy witnessed) → drop the DEGRADED latch so
      * the node returns to healthy without operator intervention. */
     else if (type == EV_CONDITION_CLEARED)

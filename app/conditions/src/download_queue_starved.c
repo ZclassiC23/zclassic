@@ -97,14 +97,23 @@ static struct condition c_download_queue_starved = {
     .severity = COND_WARN,
     .poll_secs = 5,
     .backoff_secs = 120,
-    /* Finite: repeated kick_refill attempts must page when the request
-     * counter never advances. 100000 attempts at 120s backoff made this
-     * condition effectively non-escalating. */
+    /* Page after 5 unwitnessed kick_refill attempts (the request counter never
+     * advanced), THEN re-arm on the cooldown below — escalate once without ever
+     * permanently giving up. (100000 attempts at 120s backoff made this
+     * effectively non-escalating; a hard cap-and-latch made a transient no-peer
+     * stall permanent. Re-arm is the robust middle: page + keep trying.) */
     .max_attempts = 5,
     .detect = detect_download_queue_starved,
     .remedy = remedy_download_queue_starved,
     .witness = witness_download_queue_starved,
     .witness_window_secs = 60,
+    /* External-resource fault (peers / bandwidth / a momentarily empty fetch
+     * window) — NOT a deterministic local fault. Re-arm on a long cooldown so a
+     * transient fetch stall can never become a permanent operator_needed latch;
+     * the remedy keeps retrying every 5 min, unbounded, until the queue refills.
+     * Mirrors peer_floor_violated (the proven external-dependency pattern). */
+    .cooldown_secs = 300,
+    .cooldown_max_rearms = 0,
 };
 
 void register_download_queue_starved(void)

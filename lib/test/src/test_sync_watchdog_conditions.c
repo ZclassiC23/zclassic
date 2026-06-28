@@ -248,11 +248,23 @@ int test_sync_watchdog_conditions(void)
         ok = ok && snap.operator_needed_emitted;
         ok = ok && condition_engine_get_unresolved_count() == 1;
 
+        /* Never-give-up contract (changed): at the attempt cap this
+         * EXTERNAL-resource fault pages ONCE (operator_needed_emitted above)
+         * but RE-ARMS on the cooldown instead of latching forever — a node
+         * with no peers / an empty fetch window must resume automatically when
+         * the resource returns. After the cooldown the budget resets to 0 and
+         * the remedy runs again (a 6th call), so escalation happens without a
+         * permanent give-up. Mirrors peer_floor_violated. */
         fake_clock_set(&clock, 5721);
         condition_engine_tick();
-        ok = ok && download_queue_starved_test_remedy_calls() == 5;
+        ok = ok && download_queue_starved_test_remedy_calls() == 6;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok &&
+             condition_engine_get_registered_snapshot(
+                 "download_queue_starved", &snap);
+        ok = ok && snap.attempts < 5;   /* re-armed: budget reset, not latched */
         SYNC_WATCHDOG_CHECK(
-            "download queue starved finite unwitnessed escalation", ok);
+            "download queue starved pages then re-arms (never latches)", ok);
         cleanup_sync_watchdog();
     }
 
