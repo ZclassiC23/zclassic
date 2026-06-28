@@ -161,19 +161,20 @@ static void init_main_params(void)
      * only when a live ZCL DNS seeder exists. */
     p->nSeeds = 0;
 
-    /* Hardcoded seed nodes — known-good as of 2026-04 */
+    /* Hardcoded seed nodes — re-verified reachable on the live ZCL mainnet
+     * 2026-06-28 (TCP :8033). The 2026-04 set had churned: 7 of 10 were dead,
+     * which (with DNS seeds disabled, nSeeds=0) wastes a fresh node's whole
+     * bootstrap on connect timeouts and can leave it unable to find any peer.
+     * Keep ONLY currently-reachable IPs here and re-verify before each release;
+     * one live seed is enough — the rest of the network is discovered via its
+     * addrman gossip, the .onion directory seeds, and the runtime onion-seeds
+     * file. Re-verify with: for ip in <list>; do timeout 4 bash -c "</dev/tcp/$ip/8033"; done */
     p->nFixedSeeds = 0;
     static const uint8_t fixed_ip4[][4] = {
-        {205,209,104,118},  /* MagicBean */
-        {140,174,189,  3},  /* MagicBean */
-        {140,174,189, 17},  /* MagicBean */
-        {157,173,195,203},  /* MagicBean */
-        { 85,239,232, 93},  /* MagicBean */
-        { 37,187, 76, 79},  /* MagicBean — Zelcore explorer peer */
-        {162, 55, 92, 62},  /* MagicBean — Zelcore explorer peer */
-        {157, 90,223,151},  /* MagicBean — Zelcore explorer peer */
-        {154, 38,178,121},  /* MagicBean — Zelcore explorer peer */
-        { 51,178,179, 75},  /* MagicBean — Zelcore explorer peer */
+        {205,209,104,118},  /* reachable 2026-06-28 */
+        {140,174,189, 17},  /* reachable 2026-06-28 */
+        { 51,178,179, 75},  /* reachable 2026-06-28 */
+        {142, 54,184,106},  /* reachable 2026-06-28 */
     };
     for (size_t i = 0; i < sizeof(fixed_ip4)/sizeof(fixed_ip4[0]); i++) {
         if (p->nFixedSeeds + 2 > MAX_FIXED_SEEDS) break;
