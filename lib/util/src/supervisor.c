@@ -227,20 +227,38 @@ void supervisor_report_stall(supervisor_child_id id,
 void supervisor_set_period(supervisor_child_id id, int64_t secs)
 {
     struct liveness_contract *c = contract_for(id);
-    if (c) atomic_store(&c->period_secs, secs);
+    if (!c) {
+        fprintf(stderr,  // obs-ok:supervisor-invalid-child
+            "[supervisor] set_period: invalid/unregistered child_id=%d — "
+            "ignored (liveness contract keeps its default)\n", (int)id);
+        return;
+    }
+    atomic_store(&c->period_secs, secs);
 }
 
 void supervisor_set_deadline(supervisor_child_id id, int64_t secs)
 {
     struct liveness_contract *c = contract_for(id);
-    if (c) atomic_store(&c->deadline_secs, secs);
+    if (!c) {
+        fprintf(stderr,  // obs-ok:supervisor-invalid-child
+            "[supervisor] set_deadline: invalid/unregistered child_id=%d — "
+            "ignored (a stale deadline is a liveness hazard)\n", (int)id);
+        return;
+    }
+    atomic_store(&c->deadline_secs, secs);
 }
 
 void supervisor_set_progress_max_quiet(supervisor_child_id id,
                                        int64_t microseconds)
 {
     struct liveness_contract *c = contract_for(id);
-    if (c) atomic_store(&c->progress_max_quiet_us, microseconds);
+    if (!c) {
+        fprintf(stderr,  // obs-ok:supervisor-invalid-child
+            "[supervisor] set_progress_max_quiet: invalid/unregistered "
+            "child_id=%d — ignored\n", (int)id);
+        return;
+    }
+    atomic_store(&c->progress_max_quiet_us, microseconds);
 }
 
 /* ── Supervisor loop ───────────────────────────────────────────────── */
