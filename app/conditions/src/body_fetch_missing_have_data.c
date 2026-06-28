@@ -144,6 +144,12 @@ static struct condition c_body_fetch_missing_have_data = {
     .remedy = remedy_body_fetch_missing_have_data,
     .witness = witness_body_fetch_missing_have_data,
     .witness_window_secs = 60,
+    /* External-resource fault (a present-but-unreadable/missing body must be
+     * re-fetched from peers): re-arm on a cooldown so the re-queue keeps
+     * retrying until the body lands, instead of latching operator_needed
+     * forever. Pages once at the cap; never gives up. Mirrors peer_floor_violated. */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
 };
 
 void register_body_fetch_missing_have_data(void)

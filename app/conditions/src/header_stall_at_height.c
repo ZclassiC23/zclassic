@@ -122,6 +122,12 @@ static struct condition c_header_stall_at_height = {
     .remedy = remedy_header_stall_at_height,
     .witness = witness_header_stall_at_height,
     .witness_window_secs = 60,
+    /* External-resource fault (peers not serving headers): re-arm on a cooldown
+     * so the kick keeps retrying until headers flow again, instead of latching
+     * operator_needed forever. Pages once at the cap; never gives up. Mirrors
+     * peer_floor_violated. */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
 };
 
 void register_header_stall_at_height(void)

@@ -101,6 +101,12 @@ static struct condition c_sync_state_stuck = {
     .remedy = remedy_sync_state_stuck,
     .witness = witness_sync_state_stuck,
     .witness_window_secs = 60,
+    /* External-resource fault (FSM stalled waiting on peer progress): re-arm on
+     * a cooldown so the FSM kick keeps retrying until sync advances, instead of
+     * latching operator_needed forever. Pages once at the cap; never gives up.
+     * Mirrors peer_floor_violated. */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
 };
 
 void register_sync_state_stuck(void)

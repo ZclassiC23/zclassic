@@ -77,6 +77,12 @@ static struct condition c_snapshot_receive_stalled = {
     .remedy = remedy_snapshot_receive_stalled,
     .witness = witness_snapshot_receive_stalled,
     .witness_window_secs = 60,
+    /* External-resource fault (snapshot peer stalled mid-transfer): re-arm on a
+     * cooldown so the stall-check/re-offer keeps retrying until a peer serves
+     * the snapshot, instead of latching operator_needed forever. Pages once at
+     * the cap; never gives up. Mirrors peer_floor_violated. */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
 };
 
 void register_snapshot_receive_stalled(void)
