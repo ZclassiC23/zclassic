@@ -256,6 +256,61 @@ bool coins_kv_get_applied_height(struct sqlite3 *db, int32_t *out, bool *found);
  * permissive derived path. SELECT-only. */
 bool coins_kv_is_proven_authority(struct sqlite3 *db, int32_t *out_applied);
 
+/* ── Self-folded provenance marker (the sovereign-cure G-SOV part 3) ──────────
+ *
+ * THE bit that distinguishes a SELF-VERIFIED tip from a BORROWED-and-stamped
+ * one. coins_kv_is_proven_authority() is true in BOTH cases — the borrowed
+ * zclassicd-chainstate copy (coins_kv_seed_from_node_db) also stamps
+ * COINS_KV_MIGRATION_COMPLETE_KEY — so the migration stamp ALONE cannot prove
+ * the UTXO trust root is the node's own fold. This durable progress.kv key is
+ * SET only by a SELF-DERIVED path: a from-anchor reseed from the node's OWN
+ * SHA3-checkpoint-bound minted snapshot, or a from-genesis bodies-only refold.
+ *
+ * LIFECYCLE — wired by the -refold-from-anchor cutover (docs/work/
+ * self-verified-tip-plan.md Act 3); this groundwork ships the marker + the
+ * predicate, NOT the boot wiring, so NO default boot path changes. The cutover
+ * must: SET the marker (coins_kv_mark_self_folded) on the self-derived path
+ * AFTER it reproduces the compiled checkpoint, and CLEAR it
+ * (coins_kv_clear_self_folded, also folded into coins_kv_reset_for_reseed) on
+ * any borrowed reseed so a later borrow cannot inherit a stale claim. Until the
+ * cutover wires the SET, the marker is absent and coins_kv_tip_is_self_derived
+ * correctly reports the live node as NOT-yet-sovereign (borrowed-and-stamped). */
+#define COINS_KV_SELF_FOLDED_KEY "coins_kv_self_folded"
+
+/* Stamp the self-folded marker (own-txn, the same standalone-txn justification
+ * as coins_kv_backfill_applied_height_if_absent: a pure provenance bit, NO coin
+ * mutation). Idempotent. Returns false on a DB error (logs context). */
+bool coins_kv_mark_self_folded(struct sqlite3 *db);
+
+/* Clear the self-folded marker (own-txn). Idempotent — an absent key is a clean
+ * no-op true. Returns false on a DB error (logs context). */
+bool coins_kv_clear_self_folded(struct sqlite3 *db);
+
+/* SELECT-only reader: true iff COINS_KV_SELF_FOLDED_KEY is set — the coins_kv
+ * set was produced by a self-derived path, never the borrowed node.db copy. A
+ * read error degrades to false (conservatively "not proven self-folded"). */
+bool coins_kv_contains_refold_marker(struct sqlite3 *db);
+
+/* ── The composite sovereignty gate (G-SOV parts 2 & 3) ──────────────────────
+ *
+ * A boot's (tip, utxo) is SELF-VERIFIED-SOVEREIGN at H* iff ALL THREE hold
+ * (docs/work/self-verified-tip-plan.md, G-SOV):
+ *   (1) H* climbed past the target wedge height   [RUNTIME, TWO-SAMPLE — the
+ *       copy-prove harness owns it; NOT checkable from one DB snapshot here];
+ *   (2) coins_applied_height == hstar + 1          [checked here — continuous
+ *       log coverage, no NULL/stamped span];
+ *   (3) coins_kv_is_proven_authority() == false, OR (== true AND
+ *       coins_kv_contains_refold_marker())          [checked here — separates
+ *       self-derived from borrowed-and-stamped].
+ *
+ * This predicate checks the two STATICALLY-DERIVABLE parts (2 and 3) from ONE
+ * consistent progress.kv snapshot; the caller passes the H* it computed (via
+ * reducer_frontier_compute_hstar) and remains responsible for part 1 (the
+ * climb). Returns true iff parts 2 and 3 hold. On false, *reason (when
+ * non-NULL, cap > 0) receives a short machine-readable cause. SELECT-only. */
+bool coins_kv_tip_is_self_derived(struct sqlite3 *db, int32_t hstar,
+                                  char *reason, size_t reason_cap);
+
 /* One-time idempotent boot backfill for existing datadirs that predate this
  * key: if coins_applied_height is ABSENT, seed it (in its OWN BEGIN IMMEDIATE —
  * the one allowed standalone txn, since it backfills a derived value that

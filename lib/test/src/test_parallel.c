@@ -249,7 +249,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(onion_bootstrap_slice) X(shielded_receive_slice) X(shielded_receive_persist) \
     X(reducer_forward_progress_gate) X(parity_slice) \
     X(parity_lockin_anchor_membership) X(parity_lockin_contextual_header) \
-    X(coins_kv_reset_for_reseed) X(reindex_epilogue) \
+    X(coins_kv_reset_for_reseed) X(coins_kv_sovereign_gate) X(reindex_epilogue) \
     X(replay_canary_verdict) \
     X(canary_sentinel_watch) X(seed_torn_import_gate) \
     X(shielded_spend_slice) X(atomic_commit_ordering) \

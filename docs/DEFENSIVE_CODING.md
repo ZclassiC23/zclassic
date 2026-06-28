@@ -366,6 +366,7 @@ add/remove a gate.
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-authoritative-ram-state`
 - `check-no-new-repair-rung`
+- `check-no-new-borrowed-seed`
 - `check-no-silent-ready`
 - `check-observability-pairing`
 - `check-one-result-type`

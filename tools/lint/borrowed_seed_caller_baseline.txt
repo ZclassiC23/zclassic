@@ -1,0 +1,12 @@
+# Borrowed-seed caller baseline — the SHRINK-ONLY ratchet for
+# coins_kv_seed_from_node_db (the path that COPIES zclassicd's chainstate into
+# coins_kv instead of self-deriving it; docs/work/self-verified-tip-plan.md
+# Act 3). The sovereign cure DELETES these callers; this baseline may only
+# shrink as it does. A NEW caller (a file not listed here) FAILS the gate.
+#
+# Enforced by tools/lint/check_no_new_borrowed_seed.sh (make lint ->
+# check-no-new-borrowed-seed). Remove a line when its caller is deleted; never
+# add one.
+app/services/src/reindex_epilogue.c
+app/services/src/utxo_recovery_restore.c
+config/src/boot_refold_staged.c

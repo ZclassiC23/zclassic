@@ -34,6 +34,7 @@
 
 #include <sqlite3.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* UAF guard (the phashBlock-into-bucket class): the coins_ram overlay is a
@@ -626,6 +627,124 @@ bool coins_kv_is_proven_authority(sqlite3 *db, int32_t *out_applied)
         return false;
 
     if (out_applied) *out_applied = applied;
+    return true;
+}
+
+/* ── Self-folded provenance marker (coins_kv.h G-SOV part 3) ───────────────── */
+
+bool coins_kv_mark_self_folded(sqlite3 *db)
+{
+    if (!db) {
+        LOG_WARN("coins_kv", "[coins_kv] mark_self_folded: NULL db");
+        return false;
+    }
+    if (!progress_meta_table_ensure(db)) {
+        LOG_WARN("coins_kv", "[coins_kv] mark_self_folded: meta table ensure failed");
+        return false;
+    }
+    const uint8_t one = 0x01;
+    progress_store_tx_lock();
+    bool ok = progress_meta_set(db, COINS_KV_SELF_FOLDED_KEY, &one, sizeof(one));
+    progress_store_tx_unlock();
+    if (!ok) {
+        LOG_WARN("coins_kv", "[coins_kv] mark_self_folded: progress_meta_set failed");
+        return false;
+    }
+    LOG_INFO("coins_kv",
+             "[coins_kv] stamped self-folded marker — the coin set is "
+             "self-derived (not the borrowed node.db copy)");
+    return true;
+}
+
+bool coins_kv_clear_self_folded(sqlite3 *db)
+{
+    if (!db) {
+        LOG_WARN("coins_kv", "[coins_kv] clear_self_folded: NULL db");
+        return false;
+    }
+    if (!progress_meta_table_ensure(db)) {
+        LOG_WARN("coins_kv", "[coins_kv] clear_self_folded: meta table ensure failed");
+        return false;
+    }
+    progress_store_tx_lock();
+    bool ok = progress_meta_delete(db, COINS_KV_SELF_FOLDED_KEY);
+    progress_store_tx_unlock();
+    if (!ok) {
+        LOG_WARN("coins_kv", "[coins_kv] clear_self_folded: progress_meta_delete failed");
+        return false;
+    }
+    return true;
+}
+
+bool coins_kv_contains_refold_marker(sqlite3 *db)
+{
+    if (!db)
+        return false;
+    uint8_t v = 0;
+    size_t n = 0;
+    bool found = false;
+    progress_store_tx_lock();
+    bool ok = progress_meta_get(db, COINS_KV_SELF_FOLDED_KEY,
+                                &v, sizeof(v), &n, &found);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;  /* read error → conservatively NOT proven self-folded */
+    return found && n == 1 && v == 0x01;
+}
+
+bool coins_kv_tip_is_self_derived(sqlite3 *db, int32_t hstar,
+                                  char *reason, size_t reason_cap)
+{
+    if (reason && reason_cap)
+        reason[0] = '\0';
+    if (!db) {
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap, "null_db");
+        return false;
+    }
+
+    /* ONE consistent durable snapshot across all reads (recursive lock — safe
+     * whether or not the caller already holds it). */
+    progress_store_tx_lock();
+
+    /* Part 2: coins_applied_height present AND == hstar + 1. */
+    int32_t applied = 0;
+    bool found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &found)) {
+        progress_store_tx_unlock();
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap, "applied_height_read_error");
+        return false;
+    }
+    if (!found) {
+        progress_store_tx_unlock();
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap, "applied_height_absent");
+        return false;
+    }
+    if (applied != hstar + 1) {
+        progress_store_tx_unlock();
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap,
+                     "applied_height=%d!=hstar+1=%d", (int)applied, (int)hstar + 1);
+        return false;
+    }
+
+    /* Part 3: NOT borrowed-and-stamped, OR self-folded marker present. */
+    bool borrowed_stamped = coins_kv_is_proven_authority(db, NULL);
+    uint8_t v = 0;
+    size_t n = 0;
+    bool mfound = false;
+    bool self_folded = progress_meta_get(db, COINS_KV_SELF_FOLDED_KEY,
+                                         &v, sizeof(v), &n, &mfound) &&
+                       mfound && n == 1 && v == 0x01;
+    progress_store_tx_unlock();
+
+    if (borrowed_stamped && !self_folded) {
+        if (reason && reason_cap)
+            snprintf(reason, reason_cap, "borrowed_seed_no_refold_marker");
+        return false;
+    }
     return true;
 }
 
