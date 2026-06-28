@@ -71,6 +71,9 @@ int test_coins_kv_sovereign_gate(void)
     SOV_CHECK("progress_store opens", progress_store_open(dir));
     sqlite3 *db = progress_store_db();
     SOV_CHECK("db handle", db != NULL);
+    /* coins_kv_add writes the coins table — ensure its schema exists first
+     * (progress_store_open does not create it). */
+    SOV_CHECK("coins_kv schema", db && coins_kv_ensure_schema(db));
 
     /* NULL-db hardening: graceful false, no crash. */
     SOV_CHECK("contains_refold_marker(NULL) -> false",
