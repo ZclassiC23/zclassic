@@ -171,6 +171,8 @@ bool node_db_ibd_turbo_mode(struct node_db *ndb)
                         "turbo_fallback cache_size");
         db_exec_checked(ndb->db, "PRAGMA wal_autocheckpoint=1000",
                         "turbo_fallback wal_autocheckpoint");
+        db_exec_checked(ndb->db, "PRAGMA journal_size_limit=67108864",
+                        "turbo_fallback journal_size_limit");
         node_db_note_turbo_mode(ndb, false, "ibd_turbo_mode_fallback",
                                 SQLITE_ERROR);
         return false;
@@ -191,6 +193,16 @@ bool node_db_normal_mode(struct node_db *ndb)
                     "normal_mode cache_size");
     db_exec_checked(ndb->db, "PRAGMA wal_autocheckpoint=1000",
                     "normal_mode wal_autocheckpoint");
+    /* Cap the WAL FILE size after checkpoint. wal_autocheckpoint is PASSIVE: it
+     * folds WAL pages into the db but leaves the .wal file at its high-water
+     * mark, so one write burst can leave a large file sitting for the entire
+     * life of a days-long node (a slow disk-fill the disk_full condition cannot
+     * reclaim). journal_size_limit truncates the .wal back to the cap after each
+     * checkpoint, bounding disk at the source — no reclaim thread, no deleting a
+     * live WAL out from under an open handle. 64 MiB is generous headroom over
+     * the ~4 MiB autocheckpoint trigger; it only caps pathological bursts. */
+    db_exec_checked(ndb->db, "PRAGMA journal_size_limit=67108864",
+                    "normal_mode journal_size_limit");
     node_db_rebuild_indexes(ndb);
     node_db_wal_checkpoint(ndb);
     node_db_note_turbo_mode(ndb, false, "normal_mode", SQLITE_OK);
