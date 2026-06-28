@@ -115,6 +115,11 @@ uint64_t tip_finalize_stage_precondition_failed_total(void);
  * successor H+1 lands) — distinct from precondition_failed_total which now
  * counts only the genuine competing-fork (chainwork_not_greater) skip. */
 uint64_t tip_finalize_stage_successor_pending_total(void);
+/* Count of HEADER-ONLY canonical-successor finalizes: N finalized on N+1's
+ * header witness because N+1's body/scripts were not yet pipelined (deadlock-
+ * cure step 3). A subset of finalized_total; the complement of
+ * successor_pending_total. */
+uint64_t tip_finalize_stage_header_witness_total(void);
 uint64_t tip_finalize_stage_total_work_added_high(void);
 uint64_t tip_finalize_stage_total_work_added_low(void);
 /* Lock-free snapshot of the last blocked-class token. Returns "" when no

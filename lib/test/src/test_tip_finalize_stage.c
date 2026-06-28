@@ -912,6 +912,81 @@ int test_tip_finalize_stage(void)
     }
 
     {
+        /* HEADER-ONLY CANONICAL-SUCCESSOR FINALIZE (deadlock-cure step 3).
+         * The precondition hold above (best_header unset) proves tip_finalize
+         * HOLDS at height 1 when the lookahead successor block[2] is body-
+         * missing. Here the SAME fixture, but with pindex_best_header SET so
+         * block[2] is a CANONICAL header successor (BLOCK_VALID_SCRIPTS >=
+         * BLOCK_VALID_HEADER, strictly greater work, on the best-header
+         * ancestry). tip_finalize must NOT freeze: it finalizes height 1 on
+         * block[2]'s HEADER witness (no body/script gate on block[2]) and the
+         * frontier then cascades to the synthetic tip. This is the live 3162166
+         * wedge in miniature — the have-data window stalls at the body frontier
+         * (block[1]) and the successor is resolvable ONLY via the best-header
+         * self-heal, exercising the new header-chain lookahead resolution. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("header_witness: setup",
+                 tf_setup("header_witness", 3, TF_FAIL_PRECONDITION, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        ms.pindex_best_header = &sc.blocks[3];
+        TF_CHECK("header_witness: drains PAST the body-missing successor",
+                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("header_witness: cursor advanced to the frontier",
+                 tip_finalize_stage_cursor() == 3);
+        TF_CHECK("header_witness: header-witness finalize fired exactly once",
+                 tip_finalize_stage_header_witness_total() == 1);
+        TF_CHECK("header_witness: total finalized == 3 (heights 0,1,2)",
+                 tip_finalize_stage_finalized_total() == 3);
+        TF_CHECK("header_witness: NOT counted as a successor-pending hold",
+                 tip_finalize_stage_successor_pending_total() == 0);
+        /* The header-only row at height 1 uses the LOOKAHEAD convention
+         * (status "finalized", tip_hash == hash(block[2])) — NOT an anchor row —
+         * so the reorg-rewind scan checks it normally (no blind spot). */
+        {
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            TF_CHECK("header_witness: h=1 is a normal lookahead 'finalized' row",
+                     log_row_at(progress_store_db(), 1, &ok, status,
+                                sizeof(status), &depth, &utxos) &&
+                     ok == 1 && strcmp(status, "finalized") == 0);
+            struct uint256 th;
+            TF_CHECK("header_witness: h=1 row carries hash(block[2]) (lookahead)",
+                     log_tip_hash_at(progress_store_db(), 1, &th) &&
+                     uint256_eq(&th, sc.blocks[2].phashBlock));
+        }
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* NEGATIVE GUARD: a RESOLVABLE successor that is NOT a canonical header
+         * successor (here block[2] carries EQUAL — not strictly greater — work)
+         * must STILL HOLD. No header-witness finalize, no DB row, cursor frozen.
+         * Guards against a regression that finalizes on a lighter/non-canonical
+         * N+1 (which would let H* climb past the real most-work chain). */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("header_witness_neg: setup",
+                 tf_setup("header_witness_neg", 3, TF_FAIL_PRECONDITION, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        ms.pindex_best_header = &sc.blocks[3];
+        /* block[2] no longer strictly heavier than its parent block[1]. */
+        sc.blocks[2].nChainWork = sc.blocks[1].nChainWork;
+        TF_CHECK("header_witness_neg: finalizes only h0, holds at 1",
+                 tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("header_witness_neg: cursor held at 1",
+                 tip_finalize_stage_cursor() == 1);
+        TF_CHECK("header_witness_neg: NO header-witness finalize",
+                 tip_finalize_stage_header_witness_total() == 0);
+        TF_CHECK("header_witness_neg: counted as a successor-pending hold",
+                 tip_finalize_stage_successor_pending_total() == 1);
+        {
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            TF_CHECK("header_witness_neg: NO junk row written at h=1",
+                     log_row_at(progress_store_db(), 1, &ok, status,
+                                sizeof(status), &depth, &utxos) == false);
+        }
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
         /* The block_index BLOCK_VALID_SCRIPTS mirror drifted CLEAR for the
          * lookahead (block[2]) — the live 3134954 wedge. The reducer's
          * hash-bound script_validate_log proves the scripts WERE validated, so
