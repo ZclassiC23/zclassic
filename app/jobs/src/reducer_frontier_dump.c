@@ -73,6 +73,11 @@ static const char *diagnostic_repair_hint(const char *reason)
     if (strcmp(reason, "no-header-solution-backfill-required") == 0 ||
         strcmp(reason, "header-source-hash-mismatch") == 0)
         return "stale_validate_headers_repair";
+    /* hash_split: the reducer_frontier_reconcile_light condition drives the
+     * one-shot script re-derivation (maybe_repair_validate_script_hash_split in
+     * try_replay_repairs) and witnesses on H* advancing past the split. */
+    if (strcmp(reason, "validate-script-hash-mismatch") == 0)
+        return "reducer_frontier_reconcile_light";
     return "";
 }
 

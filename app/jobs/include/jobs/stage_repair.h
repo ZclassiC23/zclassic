@@ -285,6 +285,18 @@ void stage_reducer_frontier_reset_detect_memo_for_testing(void);
  * whether and where a rewind fired. Marker is keyed on a zero block hash. */
 bool stage_repair_proof_internal_error_rewind_for_testing(
     struct sqlite3 *db, bool *repaired, int *out_height);
+
+/* Test-only witnesses for the hash_split (validate-script-hash-mismatch) class.
+ * detect returns the lowest height where validate_headers.hash !=
+ * script_validate.block_hash (or -1). rewind applies the coins-not-advanced
+ * subset of the one-shot replay (delete the stale script+proof verdicts +
+ * rewind script/proof/tip so the forward stages re-derive). Pure progress-store
+ * ops; production uses maybe_repair_validate_script_hash_split with the full
+ * block-read + coins safety. */
+bool stage_repair_validate_script_hash_split_detect_for_testing(
+    struct sqlite3 *db, int *out_height);
+bool stage_repair_validate_script_hash_split_rewind_for_testing(
+    struct sqlite3 *db, bool *repaired, int *out_height);
 #endif
 
 #endif /* ZCL_JOBS_STAGE_REPAIR_H */

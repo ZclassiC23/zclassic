@@ -15,6 +15,7 @@
 #include "jobs/stage_repair_coin_backfill.h"
 #include "jobs/stage_repair_internal.h"
 #include "jobs/created_outputs_index.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/utxo_apply_delta.h"
 #include "utxo_apply_delta_internal.h"
@@ -113,6 +114,38 @@ static bool stale_proof_hole_unlocked(sqlite3 *db, int cursor,
         "ORDER BY height LIMIT 1",
         "stale proof", cursor, out_height);
 }
+
+/* Lowest height strictly below `cursor` where validate_headers and
+ * script_validate recorded DIFFERENT block hashes (both ok=1, both 32-byte) —
+ * the hash_split / validate-script-hash-mismatch class. script_validate passed
+ * a NON-canonical body here (its block_hash differs from the canonical header
+ * validate_headers re-derived), so apply_hash_agreement (reducer_frontier.c)
+ * caps H* at height-1. The script verdict is STALE, not invalid: the cure is
+ * the SAME one-shot stale_script_replay_tx (delete the stale script+proof rows,
+ * rewind script/proof/tip cursors, re-derive against the canonical active
+ * block). The twin detector to stale_script_hole_unlocked, except it matches an
+ * ok=1 wrong-hash row instead of an ok=0 status hole. Before this existed the
+ * split had NO repair owner: the existing reconcile only rewound the
+ * validate_headers cursor (which re-derives the SAME canonical hash and leaves
+ * the stale script row untouched), so the split could sit forever as a silent
+ * operator-needed wedge. Caller holds the progress_store tx lock. */
+static bool stale_script_hash_split_unlocked(sqlite3 *db, int cursor,
+                                             int *out_height)
+{
+    return log_hole_below_unlocked(db,
+        "SELECT v.height FROM validate_headers_log v "
+        "JOIN script_validate_log s ON s.height = v.height "
+        "WHERE v.height < ? AND v.ok = 1 AND s.ok = 1 "
+        "  AND length(v.hash) = 32 AND length(s.block_hash) = 32 "
+        "  AND v.hash <> s.block_hash "
+        "ORDER BY v.height LIMIT 1",
+        "validate-script hash split", cursor, out_height);
+}
+
+/* Detector signature shared by the ok=0 stale-script-hole path and the ok=1
+ * hash-split path so maybe_repair_stale_script_via runs ONE body for both. */
+typedef bool (*stale_script_detector_fn)(sqlite3 *db, int cursor,
+                                         int *out_height);
 
 bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
                                             struct block *blk,
@@ -662,11 +695,17 @@ static bool maybe_repair_value_overflow(
     return true;
 }
 
-static bool maybe_repair_stale_script(
+/* Shared body for the two stale-script replay paths. `detect` picks the lowest
+ * height to re-derive (an ok=0 status hole, or an ok=1 hash split); `marker_kind`
+ * keys the one-shot guard so the two paths never collide at the same height. The
+ * rewind/dry-run/coins safety is identical for both — only the trigger differs. */
+static bool maybe_repair_stale_script_via(
     sqlite3 *db,
     struct main_state *ms,
     bool apply,
-    struct stage_reducer_frontier_reconcile_result *out)
+    struct stage_reducer_frontier_reconcile_result *out,
+    stale_script_detector_fn detect,
+    const char *marker_kind)
 {
     int script_cursor = -1;
     int proof_cursor = -1;
@@ -696,7 +735,7 @@ static bool maybe_repair_stale_script(
                                               &body_cursor) &&
               coins_kv_get_applied_height(db, &coins_frontier,
                                            &coins_found) &&
-              stale_script_hole_unlocked(db, script_cursor, &height);
+              detect(db, script_cursor, &height);
     if (!ok) {
         progress_store_tx_unlock();
         return false;
@@ -784,7 +823,7 @@ static bool maybe_repair_stale_script(
     }
 
     char marker[192];
-    if (!reducer_repair_marker_key(marker, "script_replay", height,
+    if (!reducer_repair_marker_key(marker, marker_kind, height,
                                    &block_hash)) {
         progress_store_tx_unlock();
         block_free(&blk);
@@ -829,6 +868,80 @@ static bool maybe_repair_stale_script(
              replay_first, height, script_cursor, proof_cursor, utxo_cursor,
              tip_cursor, coins_frontier, replay_first, backfill_top);
     return true;
+}
+
+/* ok=0 status hole (internal_error / prevout_unresolved / block_decode_failed):
+ * a "couldn't determine validity" verdict frozen as terminal — re-derive it. */
+static bool maybe_repair_stale_script(
+    sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    return maybe_repair_stale_script_via(db, ms, apply, out,
+                                         stale_script_hole_unlocked,
+                                         "script_replay");
+}
+
+/* ok=1 hash split (validate_headers.hash != script_validate.block_hash): a stale
+ * script verdict for a NON-canonical body that caps H* with no other repair
+ * owner. Re-derive against the canonical active block so the split clears and
+ * H* climbs. The one-shot marker + the reducer_frontier_reconcile_light witness
+ * (H* must advance) make it auto-terminating; the condition re-polls every tick
+ * so a not-yet-fetched canonical body just retries, never silently wedges. */
+static bool maybe_repair_validate_script_hash_split(
+    sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    /* Probe + DISCRIMINATE before descending into the shared body. Two reasons:
+     * (1) maybe_repair_stale_script_via shares the out->stale_script_* result
+     *     fields with the ok=0 stale-script step earlier in the ladder; a pass
+     *     that does not own a repair here must not overwrite a stale-script hole
+     *     that step already reported into *out.
+     * (2) This is the SCRIPT-side cure. A hash split (validate_headers.hash !=
+     *     script_validate.block_hash) can be stale on EITHER side. Re-deriving
+     *     script only helps when script recorded a NON-canonical body — i.e.
+     *     when its stored block_hash disagrees with the CANONICAL active block.
+     *     If script already matches the active block, the staleness is on the
+     *     validate_headers side; leave it to the validate-cursor rewind in
+     *     reconcile_refill_cursors (re-deriving the authoritative header). */
+    int split_height = -1;
+    int script_cursor = -1;
+    uint8_t sv_hash[32];
+    bool sv_found = false;
+    progress_store_tx_lock();
+    bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
+                                              &script_cursor) &&
+              stale_script_hash_split_unlocked(db, script_cursor,
+                                               &split_height);
+    if (ok && split_height >= 0)
+        ok = reducer_frontier_log_hash_at(db, "script_validate_log",
+                                          "block_hash", split_height,
+                                          sv_hash, &sv_found);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;
+    if (split_height < 0)
+        return true; /* no split — leave *out untouched */
+
+    /* Read the canonical active block (cs_main lock, no progress lock). If it is
+     * not on disk yet, defer (the body re-fetch / validate rewind will run). */
+    struct block blk;
+    struct uint256 active_hash;
+    block_init(&blk);
+    bool readable = stage_repair_read_active_block_checked(ms, split_height,
+                                                           &blk, &active_hash);
+    block_free(&blk);
+    if (!readable)
+        return true;
+    if (!sv_found || memcmp(sv_hash, active_hash.data, 32) == 0)
+        return true; /* script matches active — validate-side split, not ours */
+
+    return maybe_repair_stale_script_via(db, ms, apply, out,
+                                         stale_script_hash_split_unlocked,
+                                         "script_hash_split");
 }
 
 /* Core proof internal_error one-shot rewind, parameterized by the block_hash
@@ -1008,6 +1121,105 @@ bool stage_repair_proof_internal_error_rewind_for_testing(
     return maybe_repair_stale_proof_core(db, /*apply=*/true, &zero_hash, NULL,
                                          repaired, out_height);
 }
+
+/* Test-only detect for the hash_split class: returns the lowest height (below
+ * the script_validate cursor) where validate_headers and script_validate
+ * recorded different block hashes, or -1 if none. Pure progress-store read. */
+bool stage_repair_validate_script_hash_split_detect_for_testing(
+    sqlite3 *db, int *out_height)
+{
+    if (out_height) *out_height = -1;
+    progress_store_tx_lock();
+    int script_cursor = -1, height = -1;
+    bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
+                                              &script_cursor) &&
+              stale_script_hash_split_unlocked(db, script_cursor, &height);
+    progress_store_tx_unlock();
+    if (ok && out_height)
+        *out_height = height;
+    return ok;
+}
+
+/* Test-only witness for the hash_split repair. Detects the lowest split, then
+ * applies the coins-NOT-advanced subset of stale_script_replay_tx: delete the
+ * stale script+proof verdicts at/above the split and rewind script/proof/tip so
+ * the forward stages re-derive against the canonical body. Pure progress-store
+ * ops (no main_state, no disk block read, no coins rewind) — production
+ * (maybe_repair_validate_script_hash_split) uses the full replay_tx with the
+ * block-read dry-run + coins/backfill safety. A one-shot marker (keyed on a
+ * zero block hash) bounds the retry; a second call with the marker present is a
+ * no-op. Returns false only on a store error; *repaired / *out_height report
+ * whether and where a rewind fired. */
+bool stage_repair_validate_script_hash_split_rewind_for_testing(
+    sqlite3 *db, bool *repaired, int *out_height)
+{
+    if (repaired) *repaired = false;
+    if (out_height) *out_height = -1;
+
+    progress_store_tx_lock();
+    int script_cursor = -1, proof_cursor = -1, tip_cursor = -1, height = -1;
+    bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
+                                              &script_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "proof_validate",
+                                              &proof_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "tip_finalize",
+                                              &tip_cursor) &&
+              stale_script_hash_split_unlocked(db, script_cursor, &height);
+    if (!ok) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (height < 0) {
+        progress_store_tx_unlock();
+        return true; /* no split: success no-op */
+    }
+
+    struct uint256 zero_hash;
+    memset(&zero_hash, 0, sizeof(zero_hash));
+    char marker[192];
+    if (!reducer_repair_marker_key(marker, "script_hash_split", height,
+                                   &zero_hash)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    bool seen = false;
+    if (!reducer_repair_marker_seen(db, marker, &seen)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (seen) {
+        progress_store_tx_unlock();
+        return true; /* one-shot already fired */
+    }
+
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (!delete_log_range(db, "script_validate_log", height, script_cursor) ||
+        !delete_log_range(db, "proof_validate_log", height, proof_cursor) ||
+        !stage_repair_force_stage_cursor(db, "script_validate", height) ||
+        !stage_repair_force_stage_cursor(db, "proof_validate", height) ||
+        !stage_repair_force_stage_cursor(db, "tip_finalize", height) ||
+        !reducer_repair_marker_record_in_tx(db, marker)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+    progress_store_tx_unlock();
+
+    if (repaired) *repaired = true;
+    if (out_height) *out_height = height;
+    return true;
+}
 #endif
 
 /* Production coin_backfill_io.read_block: user is the main_state. */
@@ -1084,6 +1296,24 @@ bool stage_reducer_frontier_try_replay_repairs(
                  "[stage_repair] reducer_frontier repaired stale script "
                  "hole h=%d; forward stages must replay from the hole "
                  "before L1 continues",
+                 out->stale_script_repair_height);
+        *handled = true;
+        return true;
+    }
+
+    /* hash_split (validate-script-hash-mismatch): script_validate passed a
+     * non-canonical body so its block_hash disagrees with the canonical header
+     * validate_headers re-derived, capping H* with no other repair owner. Same
+     * one-shot replay (re-derive the script verdict against the canonical
+     * active block) — the missing complement to the validate_headers-cursor
+     * rewind in reconcile_refill_cursors, which alone never clears the split. */
+    if (!maybe_repair_validate_script_hash_split(db, ms, apply, out))
+        return false;
+    if (out->stale_script_repaired) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier repaired validate-script "
+                 "hash split h=%d; script_validate must re-derive the verdict "
+                 "against the canonical body before L1 continues",
                  out->stale_script_repair_height);
         *handled = true;
         return true;
