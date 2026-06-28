@@ -23,6 +23,7 @@
 #include "models/db_txn.h"
 
 #include "event/event.h"
+#include "services/disk_monitor.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -84,6 +85,24 @@ struct db_txn *db_txn_begin(struct node_db *db, const char *label)
     if (!db->open) {
         emit_rejected(label, "db_not_open");
         return NULL;
+    }
+
+    /* Disk back-pressure. When the free-space watchdog reports CRITICAL (free
+     * below the refuse threshold, default 1 GB), refuse to open a NEW write
+     * transaction so we stop adding bytes to a near-full filesystem. This is a
+     * NAMED refuse (EV_DB_TXN_REJECTED reason=disk_critical), never a silent
+     * stall — callers already handle a NULL begin. It clears automatically the
+     * instant disk_monitor_is_critical() goes false: the disk_full_pause
+     * remedy reclaims derived bytes (WAL truncate + *.tmp sweep), so writes
+     * resume without operator action. disk_monitor_is_critical() is a lock-free
+     * atomic read and returns false whenever the watchdog is not running, so
+     * this is a no-op on nodes/tests without the monitor. */
+    if (disk_monitor_is_critical()) {
+        emit_rejected(label, "disk_critical");
+        LOG_NULL("db",
+                 "db_txn: REJECTED label='%s' — disk CRITICAL (free below "
+                 "refuse threshold); write back-pressure engaged until reclaim "
+                 "frees space", label);
     }
 
     /* Refuse nesting. The node_db layer only supports one transaction

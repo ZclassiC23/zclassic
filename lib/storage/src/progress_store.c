@@ -347,6 +347,31 @@ bool progress_store_set_sync_mode(bool ibd)
     return true;
 }
 
+bool progress_store_checkpoint(void)
+{
+    /* Same checkpoint+truncate as the close path, but WITHOUT closing the
+     * connection — returns the WAL file's high-water bytes to the filesystem
+     * while the store stays open. Used by the disk_full reclaim path so a
+     * near-full disk can free derived bytes and clear the condition. */
+    progress_store_tx_lock();
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    char *err = NULL;
+    int rc = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)",
+                          NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:progress-store-lifecycle
+                "[progress_store] checkpoint(reclaim): %s\n",
+                err ? err : "(no message)");
+    }
+    if (err) sqlite3_free(err);
+    progress_store_tx_unlock();
+    return rc == SQLITE_OK;
+}
+
 void progress_store_close(void)
 {
     pthread_mutex_lock(&g_lock);

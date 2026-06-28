@@ -361,6 +361,23 @@ struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op)
     return ZCL_OK;
 }
 
+struct zcl_result db_maintenance_checkpoint_now(void)
+{
+    /* Reclaim the node.db WAL using the handle registered by
+     * db_maintenance_start, for callers (the disk_full reclaim path) that do
+     * not themselves hold the node_db. Routing through run_now serializes with
+     * the maintenance thread on g_dbm.lock — no concurrent sqlite access on the
+     * shared handle. Read the pointer under the lock, then release it before
+     * run_now re-acquires (run_now guards a closed/null db itself). */
+    pthread_mutex_lock(&g_dbm.lock);
+    struct node_db *db = g_dbm.db;
+    pthread_mutex_unlock(&g_dbm.lock);
+    if (!db)
+        return ZCL_ERR(-21,
+            "db_maint: checkpoint_now with no registered db (not started)");
+    return db_maintenance_run_now(db, "wal");
+}
+
 /* ── Thread loop ────────────────────────────────────────────── */
 
 /* Returns true if `last_unix == 0` (never run) or the interval

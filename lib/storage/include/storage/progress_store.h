@@ -79,6 +79,14 @@ void progress_store_tx_unlock(void);
  * not open. Takes progress_store_tx_lock internally. */
 bool progress_store_set_sync_mode(bool ibd);
 
+/* Checkpoint+truncate the WAL on the open progress.kv handle NOW, returning
+ * the WAL file's high-water bytes to the filesystem WITHOUT closing the
+ * connection. The disk_full reclaim path calls this so a near-full disk can
+ * free derived bytes (the 3.1M-row cursor log's WAL) and clear. Takes
+ * progress_store_tx_lock internally. Returns false (no-op) when not open or
+ * the checkpoint fails. */
+bool progress_store_checkpoint(void);
+
 /* Graceful close: PRAGMA wal_checkpoint(TRUNCATE), sqlite3_close. Safe
  * to call repeatedly and from shutdown paths. */
 void progress_store_close(void);

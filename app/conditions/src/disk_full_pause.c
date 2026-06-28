@@ -6,6 +6,7 @@
 
 #include "event/event.h"
 #include "services/disk_monitor.h"
+#include "services/storage_reclaim.h"
 #include "util/blocker.h"
 
 #include <stdatomic.h>
@@ -58,16 +59,20 @@ static enum condition_remedy_result remedy_disk_full_pause(void)
 
     /* 2. Reclaim DERIVED/temp bytes. The sqlite WAL files are derived — a
      *    checkpoint+truncate returns their bytes without losing committed
-     *    state. disk_monitor itself does not own the DB handles, so we ask the
-     *    storage layer to checkpoint (best-effort; the witness, not this call,
-     *    decides success). NOTE: HEAD has no public reclaim entry point yet;
-     *    until one lands this remedy logs the intent + re-polls. A follow-up
-     *    wires storage_reclaim_derived() here (WAL truncate + *.tmp sweep). */
+     *    state — and stale *.tmp files are crash orphans. storage_reclaim_derived
+     *    does both (best-effort; the witness, not this call, decides success).
+     *    This is what makes the condition AUTO-TERMINATING: it can actually move
+     *    free bytes back above the refuse threshold so the witness clears,
+     *    instead of only logging intent and re-arming forever. */
+    struct storage_reclaim_result rec = storage_reclaim_derived(st.datadir);
     LOG_INFO("condition",
              "[condition:disk_full_pause] CRITICAL free=%lld refuse_thr=%lld "
-             "datadir=%s — reclaiming derived/temp bytes",
+             "datadir=%s — reclaimed sources_ok=%d/%d tmp_removed=%d "
+             "tmp_bytes=%lld",
              (long long)st.last_free_bytes,
-             (long long)st.refuse_free_bytes, st.datadir);
+             (long long)st.refuse_free_bytes, st.datadir,
+             rec.sources_ok, rec.sources_total, rec.tmp_files_removed,
+             (long long)rec.tmp_bytes_removed);
 
     /* 3. Force a fresh poll so the witness sees the post-reclaim level. */
     disk_monitor_poll_now();

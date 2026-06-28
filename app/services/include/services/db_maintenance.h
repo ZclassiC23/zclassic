@@ -120,6 +120,13 @@ void db_maintenance_stop(void);
  * _START / _DONE / _FAILED events on success and failure paths. */
 struct zcl_result db_maintenance_run_now(struct node_db *db, const char *op);
 
+/* Checkpoint+truncate the node.db WAL NOW using the db registered by
+ * db_maintenance_start — a handle-free entry point for the disk_full reclaim
+ * path (which does not own the node_db). Serializes with the maintenance
+ * thread. Returns ZCL_OK on success; a non-ok result if maintenance was never
+ * started (no db registered) or the checkpoint failed. */
+struct zcl_result db_maintenance_checkpoint_now(void);
+
 /* ── Vacuum gate ────────────────────────────────────────────── */
 
 /* Caller-supplied predicate that decides whether the scheduler

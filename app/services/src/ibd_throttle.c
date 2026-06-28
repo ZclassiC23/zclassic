@@ -27,6 +27,7 @@
 
 #include "event/event.h"
 #include "json/json.h"
+#include "services/disk_monitor.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -125,6 +126,17 @@ static void it_refill_locked(int64_t now_us)
 {
     int64_t elapsed = now_us - g_it.last_refill_us;
     if (elapsed < 0) elapsed = 0;
+    /* Disk back-pressure: when the free-space watchdog reports CRITICAL, stop
+     * refilling AND drain the bucket so acquire() blocks the IBD block writer
+     * until reclaim frees space (no new bytes apply to a near-full disk). This
+     * is the IBD-path twin of the db_txn_begin gate; it resumes automatically
+     * when disk_monitor_is_critical() clears. The pure refill primitive
+     * (ibd_throttle_refill) is left untouched so its determinism is intact. */
+    if (disk_monitor_is_critical()) {
+        g_it.tokens = 0.0;
+        g_it.last_refill_us = now_us;
+        return;
+    }
     g_it.tokens = ibd_throttle_refill(g_it.tokens,
                                        (double)g_it.blocks_per_sec,
                                        (double)g_it.burst,

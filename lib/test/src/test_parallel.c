@@ -254,7 +254,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(shielded_spend_slice) X(atomic_commit_ordering) \
     X(coldimport_restart_fragility) \
     X(wallet_funds_safety) \
-    X(block_parse_cache)
+    X(block_parse_cache) \
+    X(storage_reclaim)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \
