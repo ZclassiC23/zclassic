@@ -2764,6 +2764,22 @@ bool app_init(struct app_context *ctx)
              * FIXABLE failure, so we must NOT advance the budget here. */
             fprintf(stderr, "Warning: Chainstate reindex had errors\n");
         }
+        /* Raise pindex_best_header to the real header frontier after a reindex.
+         * The reindex restores the coins/active tip (scan_reindex_best) but
+         * leaves pindex_best_header pinned at that height; the branch that
+         * promotes the most-work header (scan_best_header) lives only in the
+         * non-reindex path below and is never reached here. Without this, a node
+         * that reindexed while behind the network stays pinned at the replayed
+         * coins tip: gap_fill (gap_fill_service.c best_h<=tip_h) requests no
+         * bodies and tip_finalize's is_canonical_header_successor rejects the
+         * next height (new_tip->nHeight > best_header->nHeight), so the node
+         * stalls below the network tip and never catches up (observed live:
+         * stuck at 3162166 with headers known to 3162641). Mirror the
+         * non-reindex promotion; csr's boot rollback-auth carve-out installs it,
+         * and the guard makes it a no-op when there is no gap. */
+        if (scan_best_header)
+            (void)boot_promote_header_via_csr(scan_best_header,
+                                              "scan_best_header_reindex");
     } else if (fast_restart) {
     } else if (g_state.map_block_index.size > 1) {
         struct utxo_recovery_ctx uctx = {
