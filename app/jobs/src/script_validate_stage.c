@@ -9,6 +9,7 @@
 #include "platform/time_compat.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_db_fault.h"
 #include "script_validate_log_store.h"
 
 #include "chain/chain.h"
@@ -84,6 +85,23 @@ static script_validate_reader_fn g_reader = NULL;
 static void *g_reader_user = NULL;
 static script_validate_prevout_fn g_prevout = NULL;
 static void *g_prevout_user = NULL;
+
+/* Infra-db fault ladder (R5). A momentary sqlite glitch (busy/locked/transient
+ * IO) holds the cursor and retries (JOB_IDLE); a persistent/permanent one
+ * routes to the bounded auto-reindex. Reset on every advancing step. NEVER used
+ * for a validity verdict (script_invalid etc.) — those advance with an ok=0
+ * row. */
+static struct stage_db_fault g_sv_db_fault;
+
+/* Map a sqlite failure inside the step body to the result the step must return:
+ * JOB_IDLE (transient, within budget — cursor held, supervisor re-ticks) or
+ * JOB_FATAL (persistent/permanent — a bounded auto-reindex was requested). `rc`
+ * is the sqlite (extended) code captured AT the failing call. */
+static job_result_t sv_db_fault(int rc, int height, const char *ctx)
+{
+    return stage_db_fault_result(&g_sv_db_fault, rc, g_datadir,
+                                 (int32_t)height, ctx);
+}
 
 static _Atomic uint64_t g_verified_total = 0;
 static _Atomic uint64_t g_script_invalid_total = 0;
@@ -398,7 +416,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     uint64_t bp_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "body_persist", STAGE_NAME,
                                    &bp_cursor))
-        return JOB_FATAL;
+        return sv_db_fault(sqlite3_extended_errcode(db), next_h,
+                           "body_persist cursor read");
     if ((uint64_t)next_h >= bp_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
@@ -406,7 +425,9 @@ static job_result_t step_validate(struct stage_step_ctx *c)
 
     struct body_persist_row upstream;
     int found = script_validate_body_persist_log_at(db, next_h, &upstream);
-    if (found < 0) return JOB_FATAL;
+    if (found < 0)
+        return sv_db_fault(sqlite3_extended_errcode(db), next_h,
+                           "body_persist_log read");
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
@@ -415,10 +436,12 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (upstream.ok == 0) {
         if (!script_validate_log_insert(db, next_h, "upstream_failed", false,
                         0, 0, NULL, -1, SCRIPT_ERR_OK, NULL))
-            return JOB_FATAL;
+            return sv_db_fault(sqlite3_extended_errcode(db), next_h,
+                               "script_validate_log insert (upstream_failed)");
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
+        stage_db_fault_clear(&g_sv_db_fault);
         return JOB_ADVANCED;
     }
 
@@ -453,10 +476,16 @@ static job_result_t step_validate(struct stage_step_ctx *c)
             atomic_fetch_add(&g_internal_error_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
+        stage_db_fault_clear(&g_sv_db_fault);
         return JOB_ADVANCED;
     case SV_CTX_FATAL:
+        /* The contextual gate's only FATAL is a log-insert store failure (an
+         * infra fault, never a validity verdict — a contextual REJECT is
+         * SV_CTX_REJECTED above): route it through the bounded retry/reindex
+         * ladder instead of a dead JOB_FATAL. */
         block_free(&blk);
-        return JOB_FATAL;
+        return sv_db_fault(sqlite3_extended_errcode(db), next_h,
+                           "contextual gate log insert");
     }
 
     struct validate_summary summary;
@@ -536,10 +565,13 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (!script_validate_log_insert(db, next_h, status, ok, summary.tx_count,
                     summary.input_count, fail_txid, fail_vin, fail_serror,
                     bi->phashBlock))
-        return JOB_FATAL;
+        return sv_db_fault(sqlite3_extended_errcode(db), next_h,
+                           "script_validate_log insert");
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
+    /* Clean advancing step — the infra-db fault retry budget resets. */
+    stage_db_fault_clear(&g_sv_db_fault);
     return JOB_ADVANCED;
 }
 
@@ -615,6 +647,7 @@ void script_validate_stage_shutdown(void)
     atomic_store(&g_last_advance_height, (int64_t)-1);
     atomic_store(&g_header_event_emit_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
+    stage_db_fault_clear(&g_sv_db_fault);
     pthread_mutex_unlock(&g_lock);
 }
 

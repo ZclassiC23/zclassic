@@ -197,6 +197,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(seed_integrity_gate) X(mirror_divergence_locator) \
     X(log_throttle) \
     X(reducer_frontier_reconcile_light) \
+    X(stage_db_fault) \
     X(reducer_stage_fuzz) \
     X(mint_proof_harness) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \

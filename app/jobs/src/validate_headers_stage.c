@@ -11,6 +11,7 @@
 #include "platform/time_compat.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_db_fault.h"
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"  /* STAGE_REPAIR_SOLUTIONLESS_REASON */
 #include "validate_headers_internal.h"
@@ -88,6 +89,13 @@ static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_failure_recheck_cursor = 0;
 
+/* Infra-db fault ladder (R5). A momentary sqlite glitch (busy/locked/transient
+ * IO) must NOT be a dead JOB_FATAL: a transient fault holds the cursor and
+ * retries (JOB_IDLE), a persistent/permanent one routes to the bounded
+ * auto-reindex. Reset on every advancing step. NEVER used for a validity
+ * verdict — those advance the cursor with an ok=0/ok=1 row. */
+static struct stage_db_fault g_vh_db_fault;
+
 /* Injectable validator. Default = full PoW + Equihash from disk.
  * Tests set this via validate_headers_stage_set_validator(). Reset to
  * default on shutdown. */
@@ -95,6 +103,16 @@ static vh_validator_fn g_validator      = NULL;
 static void           *g_validator_user = NULL;
 /* Datadir cached at init for the workers (g_validator may need it). */
 static char            g_datadir[2048] = {0};
+
+/* Map a sqlite failure inside the step body to the result the step must return.
+ * `rc` is the sqlite (extended) code captured AT the failing call. Returns
+ * JOB_IDLE (transient, within budget — cursor held, supervisor re-ticks) or
+ * JOB_FATAL (persistent/permanent — a bounded auto-reindex was requested). */
+static job_result_t vh_db_fault(int rc, int height, const char *ctx)
+{
+    return stage_db_fault_result(&g_vh_db_fault, rc, g_datadir,
+                                 (int32_t)height, ctx);
+}
 
 /* A validate_headers failure is REPAIRABLE — worth keeping in the recheck
  * window until it can be re-validated — ONLY when it failed for lack of a
@@ -329,7 +347,8 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
                                        &fin_cursor) ||
             !stage_cursor_read_or_zero(db, "body_fetch", STAGE_NAME,
                                        &bf_cursor))
-            return JOB_FATAL;
+            return vh_db_fault(sqlite3_extended_errcode(db), (int)start,
+                               "recheck frontier cursor read");
         int64_t fin_cur = (int64_t)fin_cursor;
         int64_t bf_cur  = (int64_t)bf_cursor;
         int64_t frontier = fin_cur;
@@ -353,7 +372,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         progress_store_tx_unlock();
         LOG_ERR("validate_headers",
                 "failed-row recheck query prepare failed");
-        return JOB_FATAL;
+        return vh_db_fault(rc, (int)start, "recheck query prepare");
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)start);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)validated_cursor);
@@ -394,7 +413,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         sqlite3_finalize(stmt);
         progress_store_tx_unlock();
         LOG_ERR("validate_headers", "failed-row recheck query failed");
-        return JOB_FATAL;
+        return vh_db_fault(rc, (int)last_seen, "recheck query step");
     }
     sqlite3_finalize(stmt);
     progress_store_tx_unlock();
@@ -425,10 +444,11 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     const char *vh_open   = vh_batched ? "SAVEPOINT vh_recheck" : "BEGIN IMMEDIATE";
     const char *vh_commit = vh_batched ? "RELEASE SAVEPOINT vh_recheck" : "COMMIT";
     if (sqlite3_exec(db, vh_open, NULL, NULL, &err) != SQLITE_OK) {
+        int frc = sqlite3_extended_errcode(db);
         LOG_WARN("validate_headers", "[validate_headers] failed-row recheck BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
-        return JOB_FATAL;
+        return vh_db_fault(frc, (int)start, "recheck begin/savepoint");
     }
     for (int i = 0; i < n; i++) {
         if (jobs[i].ok &&
@@ -441,9 +461,10 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         if (!validate_headers_log_insert(db, jobs[i].height,
                                          jobs[i].bi->phashBlock, jobs[i].ok,
                                          jobs[i].reason)) {
+            int frc = sqlite3_extended_errcode(db);
             vh_recheck_rollback(db, vh_batched);
             progress_store_tx_unlock();
-            return JOB_FATAL;
+            return vh_db_fault(frc, jobs[i].height, "recheck log insert");
         }
         if (jobs[i].ok)
             atomic_fetch_add(&g_passed_total, 1);
@@ -451,11 +472,12 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             atomic_fetch_add(&g_failed_total, 1);
     }
     if (sqlite3_exec(db, vh_commit, NULL, NULL, &err) != SQLITE_OK) {
+        int frc = sqlite3_extended_errcode(db);
         LOG_WARN("validate_headers", "[validate_headers] failed-row recheck COMMIT failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         vh_recheck_rollback(db, vh_batched);
         progress_store_tx_unlock();
-        return JOB_FATAL;
+        return vh_db_fault(frc, (int)last_seen, "recheck commit");
     }
     progress_store_tx_unlock();
     /* Advance the floor only past rows that RESOLVED to ok=1; pin it at the
@@ -516,7 +538,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     uint64_t ha_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "header_admit", STAGE_NAME,
                                    &ha_cursor))
-        return JOB_FATAL;
+        return vh_db_fault(sqlite3_extended_errcode(db), next_h,
+                           "header_admit cursor read");
     if ((uint64_t)next_h >= ha_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;  /* not BLOCKED — header_admit will catch up */
@@ -558,7 +581,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         if (!validate_headers_log_insert(db, jobs[i].height,
                                          jobs[i].bi->phashBlock, jobs[i].ok,
                                          jobs[i].reason))
-            return JOB_FATAL;
+            return vh_db_fault(sqlite3_extended_errcode(db), jobs[i].height,
+                               "validate_headers_log insert");
         if (jobs[i].ok) atomic_fetch_add(&g_passed_total, 1);
         else            atomic_fetch_add(&g_failed_total, 1);
     }
@@ -593,6 +617,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     } else if (recheck_floor < (int64_t)c->cursor_out) {
         atomic_store(&g_failure_recheck_cursor, (int64_t)c->cursor_out);
     }
+    /* Clean advancing step — the infra-db fault retry budget resets. */
+    stage_db_fault_clear(&g_vh_db_fault);
     return JOB_ADVANCED;
 }
 
@@ -692,10 +718,13 @@ job_result_t validate_headers_stage_step_once(void)
     uint64_t validated_cursor = 0;
     if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME,
                                    &validated_cursor)) {
+        int frc = sqlite3_extended_errcode(db);
         progress_store_tx_unlock();
-        return JOB_FATAL;
+        return vh_db_fault(frc, 0, "step_once validated cursor read");
     }
     job_result_t recheck = recheck_failed_rows(g_ms, db, validated_cursor);
+    if (recheck == JOB_ADVANCED)
+        stage_db_fault_clear(&g_vh_db_fault);
     progress_store_tx_unlock();
     return recheck;
 }
@@ -720,6 +749,7 @@ void validate_headers_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_failure_recheck_cursor, (int64_t)0);
+    stage_db_fault_clear(&g_vh_db_fault);
     pthread_mutex_unlock(&g_lock);
 }
 
