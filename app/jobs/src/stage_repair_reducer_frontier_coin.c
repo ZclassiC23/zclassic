@@ -169,13 +169,23 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
     }
     zcl_mutex_unlock(&ms->cs_main);
 
-    if (!have)
+    if (!have) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] read_active_block_checked: h=%d not readable "
+                 "from active chain (missing entry / no BLOCK_HAVE_DATA / no "
+                 "file) — repair defers", height);
         return false;
+    }
 
     char datadir[2048];
     GetDataDir(true, datadir, sizeof(datadir));
-    if (!read_block_from_disk_pread(blk, &pos, datadir))
+    if (!read_block_from_disk_pread(blk, &pos, datadir)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] read_active_block_checked: disk read failed "
+                 "h=%d (nFile=%d pos=%d) — repair defers",
+                 height, pos.nFile, pos.nPos);
         return false;
+    }
 
     struct uint256 got;
     block_get_hash(blk, &got);

@@ -154,6 +154,7 @@ explicit `// raw-return-ok:<reason>` marker (no space after the colon):
 | `check-silent-errors-controllers` | `app/controllers/src/` |
 | `check-silent-errors-jobs` | `app/jobs/src/` |
 | `check-silent-errors-conditions` | `app/conditions/src/` |
+| `check-silent-errors-bool` | `app/{controllers,services,jobs,conditions,models}/src/` (RATCHET) |
 
 The service/controller/job/condition gates accept only an *error-level*
 preceding log (`LOG_ERR`, `LOG_FAIL`, `LOG_RETURN`, or `log_json` at error
@@ -376,6 +377,7 @@ add/remove a gate.
 - `check-raw-sqlite`
 - `check-rpc-registrar`
 - `check-silent-errors`
+- `check-silent-errors-bool`
 - `check-silent-errors-conditions`
 - `check-silent-errors-controllers`
 - `check-silent-errors-jobs`
