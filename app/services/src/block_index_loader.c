@@ -39,7 +39,9 @@
 
 /* ── Flat file format ────────────────────────────────────── */
 
-/* Compact on-disk format: height-sorted, 192 bytes per entry */
+/* Compact on-disk format: height-sorted, 172 bytes per entry (packed). The
+ * size-on-disk math below uses sizeof(struct block_index_flat), so it tracks
+ * this layout automatically. */
 struct __attribute__((packed)) block_index_flat {
     uint8_t  hash[32];
     uint8_t  prev_hash[32];

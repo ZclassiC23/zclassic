@@ -301,6 +301,153 @@ $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 $(eval $(call BUILD_NODE_TOOL,snapshot_from_coinskv,tools/snapshot_from_coinskv.c))
 $(eval $(call BUILD_NODE_TOOL,mint_v2_snapshot,tools/mint_v2_snapshot.c))
 
+# ── Bootstrap starter-pack: produce + SELF-PROVE a publishable bundle ──────
+# Turns the one-command bundle producer (mint_v2_snapshot) into a self-verified,
+# checksummed, manifested, publishable artifact. LOCAL-ONLY: nothing here needs
+# the network at build time. The ONLY network step is `make bootstrap-publish`
+# (a `gh` upload), and it refuses to run unless the copy-prove has passed.
+#
+#   make bootstrap            Mint a bundle from a COPY of a synced datadir, then
+#                             boot a FRESH /tmp datadir from that bundle with
+#                             -nolegacyimport and ASSERT H* CLIMBS past the seed
+#                             (not merely "booted"). Writes a .copyprove-ok
+#                             marker on success. mint_v2_snapshot authors the
+#                             rich SHA256SUMS + manifest.json during the mint.
+#   make bootstrap-manifest   (Re)generate ONLY SHA256SUMS over an existing
+#                             bundle dir (the rich manifest.json is authored by
+#                             mint_v2_snapshot; this target does not rewrite it).
+#   make bootstrap-publish    `gh release create starterpack-<seed_h>` over the
+#                             bundle. GATED on the copy-prove marker; tag is
+#                             derived from the manifest's seed_height.
+#
+# Env (override on the command line, e.g. `make bootstrap ZCL_BOOTSTRAP_SRC=...`):
+#   ZCL_BOOTSTRAP_SRC       Source datadir to mint from. MUST be a SYNCED datadir
+#                           that is NOT being written by a running node. The
+#                           recipe REFUSES a source owned by a live pid, so the
+#                           default (the full-history datadir) is rejected while
+#                           zclassic23.service runs on it — point this at a
+#                           stopped / non-live synced datadir instead.
+#   ZCL_BOOTSTRAP_WORK      Throwaway FULL copy of the source; minting runs HERE,
+#                           never on the source (a torn live copy is unsafe).
+#   ZCL_BOOTSTRAP_OUT       Bundle output dir: block_index.bin, utxo-seed-<h>.
+#                           snapshot, SHA256SUMS, manifest.json.
+#   ZCL_BOOTSTRAP_PROVE     Fresh /tmp datadir the copy-prove boots from.
+#   ZCL_BOOTSTRAP_PEER      Local peer the copy-prove fetches above-seed bodies
+#                           from so H* can climb (default the live node p2p port).
+#   ZCL_BOOTSTRAP_DEADLINE  Seconds to wait for the H* climb past the seed.
+ZCL_BOOTSTRAP_SRC      ?= $(HOME)/.zclassic-c23-fullhist
+ZCL_BOOTSTRAP_WORK     ?= $(HOME)/.zclassic-c23-bootstrap-work
+ZCL_BOOTSTRAP_OUT      ?= $(BUILD_DIR)/bootstrap
+ZCL_BOOTSTRAP_PROVE    ?= /tmp/zcl-bootstrap-prove
+ZCL_BOOTSTRAP_PEER     ?= 127.0.0.1:8023
+ZCL_BOOTSTRAP_DEADLINE ?= 900
+
+.PHONY: bootstrap bootstrap-manifest bootstrap-publish
+
+bootstrap: $(ZCLASSIC23_BIN) $(BIN_DIR)/mint_v2_snapshot $(ZCL_RPC_BIN)
+	@set -eu; \
+	SRC='$(ZCL_BOOTSTRAP_SRC)'; WORK='$(ZCL_BOOTSTRAP_WORK)'; \
+	OUT='$(ZCL_BOOTSTRAP_OUT)'; PROVE='$(ZCL_BOOTSTRAP_PROVE)'; \
+	PEER='$(ZCL_BOOTSTRAP_PEER)'; DEADLINE='$(ZCL_BOOTSTRAP_DEADLINE)'; \
+	NODE='$(ZCLASSIC23_BIN)'; MINT='$(BIN_DIR)/mint_v2_snapshot'; RPC='$(ZCL_RPC_BIN)'; \
+	[ -d "$$SRC" ] || { echo "bootstrap: source datadir not found: $$SRC" >&2; exit 1; }; \
+	case "$$SRC" in "$$WORK"|"$$PROVE") echo "bootstrap: SRC must differ from WORK/PROVE" >&2; exit 1;; esac; \
+	: 'SAFETY: never mint from a datadir a running node owns (torn SQLite copy).'; \
+	if [ -f "$$SRC/zclassic23.pid" ] && kill -0 "$$(cat "$$SRC/zclassic23.pid" 2>/dev/null)" 2>/dev/null; then \
+	  echo "bootstrap: REFUSING — $$SRC is owned by a live node (pid $$(cat "$$SRC/zclassic23.pid"))." >&2; \
+	  echo "           Stop the service or set ZCL_BOOTSTRAP_SRC to a stopped/non-live synced datadir." >&2; \
+	  exit 1; \
+	fi; \
+	echo "[bootstrap] full-copy $$SRC -> $$WORK (minting runs on the copy, never on SRC)"; \
+	rm -rf "$$WORK"; mkdir -p "$$WORK"; cp -a "$$SRC"/. "$$WORK"/; \
+	rm -f "$$WORK/zclassic23.pid" "$$WORK/.lock" "$$WORK/.cookie" 2>/dev/null || true; \
+	echo "[bootstrap] minting bundle into $$OUT (mint_v2_snapshot is read-only over the copy)"; \
+	rm -rf "$$OUT"; mkdir -p "$$OUT"; \
+	"$$MINT" "$$WORK" 0 "$$OUT/.snapshot.tmp" "$$OUT"; \
+	rm -f "$$OUT/.snapshot.tmp"; \
+	SNAP="$$(ls "$$OUT"/utxo-seed-*.snapshot 2>/dev/null | head -1)"; \
+	[ -n "$$SNAP" ] || { echo "bootstrap: mint produced no utxo-seed-*.snapshot in $$OUT" >&2; exit 1; }; \
+	[ -f "$$OUT/block_index.bin" ] || { echo "bootstrap: mint produced no block_index.bin in $$OUT" >&2; exit 1; }; \
+	SEED_H="$$(basename "$$SNAP" | sed -n 's/^utxo-seed-\([0-9][0-9]*\)\.snapshot$$/\1/p')"; \
+	[ -n "$$SEED_H" ] || { echo "bootstrap: cannot parse seed height from $$SNAP" >&2; exit 1; }; \
+	echo "[bootstrap] bundle minted: seed_height=$$SEED_H"; \
+	: 'COPY-PROVE: fresh /tmp datadir, zero-flag autodetect, assert H* CLIMBS past seed.'; \
+	echo "[bootstrap] copy-prove: booting fresh $$PROVE from the bundle (-nolegacyimport, no -load-snapshot flag)"; \
+	rm -rf "$$PROVE"; mkdir -p "$$PROVE"; \
+	cp "$$OUT/block_index.bin" "$$PROVE/"; cp "$$SNAP" "$$PROVE/"; \
+	ISO_HOME="$$PROVE/.home"; mkdir -p "$$ISO_HOME"; \
+	HOME="$$ISO_HOME" "$$NODE" -datadir="$$PROVE" -nolegacyimport -nobgvalidation \
+	  -rpcport=18299 -port=18933 -fsport=18934 -httpsport=18935 -addnode="$$PEER" \
+	  > "$$PROVE/prove.log" 2>&1 & NODE_PID=$$!; \
+	trap 'kill -TERM '"$$NODE_PID"' 2>/dev/null || true' EXIT INT TERM; \
+	tipof() { \
+	  resp="$$(HOME="$$ISO_HOME" ZCL_DATADIR="$$PROVE" ZCL_RPCPORT=18299 "$$RPC" getblockcount 2>/dev/null || true)"; \
+	  case "$$resp" in \
+	    *'"result"'*) printf '%s\n' "$$resp" | sed -n 's/.*"result"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -1 ;; \
+	    *) printf '%s\n' "$$resp" | sed -n 's/^[[:space:]]*\(-\{0,1\}[0-9][0-9]*\)[[:space:]]*$$/\1/p' | head -1 ;; \
+	  esac; \
+	}; \
+	deadline=$$(( $$(date +%s) + DEADLINE )); first=-1; cur=-1; climbed=0; \
+	while [ "$$(date +%s)" -lt "$$deadline" ]; do \
+	  if ! kill -0 "$$NODE_PID" 2>/dev/null; then echo "[bootstrap] node exited early (see $$PROVE/prove.log)"; break; fi; \
+	  t="$$(tipof)"; t="$${t:--1}"; \
+	  if [ "$$t" -ge 0 ] 2>/dev/null; then \
+	    if [ "$$first" -lt 0 ]; then first="$$t"; echo "[bootstrap] first served H*=$$t (seed=$$SEED_H)"; fi; \
+	    cur="$$t"; \
+	    if [ "$$t" -gt "$$SEED_H" ]; then climbed=1; echo "[bootstrap] H* CLIMBED to $$t (> seed $$SEED_H)"; break; fi; \
+	  fi; \
+	  sleep 5; \
+	done; \
+	kill -TERM "$$NODE_PID" 2>/dev/null || true; wait "$$NODE_PID" 2>/dev/null || true; trap - EXIT INT TERM; \
+	if [ "$$climbed" != "1" ]; then \
+	  echo "[bootstrap] COPY-PROVE FAILED: H* did not climb past seed $$SEED_H (first=$$first last=$$cur) within $${DEADLINE}s" >&2; \
+	  echo "            Bundle is NOT proven; refusing to mark publishable. log: $$PROVE/prove.log" >&2; \
+	  exit 1; \
+	fi; \
+	printf 'seed_height=%s\ngit_head=%s\nproved_utc=%s\nfirst_hstar=%s\nclimbed_to=%s\n' \
+	  "$$SEED_H" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+	  "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$first" "$$cur" > "$$OUT/.copyprove-ok"; \
+	echo "[bootstrap] COPY-PROVE PASSED — bundle in $$OUT is self-verified (seed=$$SEED_H, H* $$first -> $$cur)"
+	@: 'mint_v2_snapshot already wrote the authoritative SHA256SUMS + rich (schema_version 2) manifest.json'
+	@: 'during the mint step above — do NOT regenerate them here (the shell bootstrap-manifest writes a leaner'
+	@: 'schema that would DROP anchor_block_hash / snapshot_sha3 / utxo_count / total_supply / build_commit).'
+
+# Standalone: regenerate ONLY SHA256SUMS over an existing bundle dir (e.g. after a
+# manual file swap). The rich manifest.json is authored by mint_v2_snapshot during
+# `make bootstrap`; this target deliberately does NOT rewrite it, to avoid
+# downgrading its schema.
+bootstrap-manifest:
+	@set -eu; \
+	OUT='$(ZCL_BOOTSTRAP_OUT)'; \
+	[ -d "$$OUT" ] || { echo "bootstrap-manifest: no bundle dir: $$OUT" >&2; exit 1; }; \
+	SNAP="$$(ls "$$OUT"/utxo-seed-*.snapshot 2>/dev/null | head -1)"; \
+	[ -n "$$SNAP" ] || { echo "bootstrap-manifest: no utxo-seed-*.snapshot in $$OUT" >&2; exit 1; }; \
+	[ -f "$$OUT/block_index.bin" ] || { echo "bootstrap-manifest: no block_index.bin in $$OUT" >&2; exit 1; }; \
+	SNAP_BASE="$$(basename "$$SNAP")"; \
+	SEED_H="$$(printf '%s' "$$SNAP_BASE" | sed -n 's/^utxo-seed-\([0-9][0-9]*\)\.snapshot$$/\1/p')"; \
+	[ -n "$$SEED_H" ] || { echo "bootstrap-manifest: cannot parse seed height from $$SNAP_BASE" >&2; exit 1; }; \
+	( cd "$$OUT" && sha256sum block_index.bin "$$SNAP_BASE" > SHA256SUMS ); \
+	echo "[bootstrap-manifest] regenerated $$OUT/SHA256SUMS (seed_height=$$SEED_H)"; \
+	echo "[bootstrap-manifest] manifest.json is authored by mint_v2_snapshot (make bootstrap); not rewritten here"; \
+	echo "[bootstrap-manifest] verify with: ( cd $$OUT && sha256sum -c SHA256SUMS )"
+
+bootstrap-publish:
+	@set -eu; \
+	OUT='$(ZCL_BOOTSTRAP_OUT)'; \
+	[ -d "$$OUT" ] || { echo "bootstrap-publish: no bundle dir: $$OUT" >&2; exit 1; }; \
+	[ -f "$$OUT/.copyprove-ok" ] || { echo "bootstrap-publish: REFUSING — no copy-prove marker ($$OUT/.copyprove-ok). Run 'make bootstrap' first." >&2; exit 1; }; \
+	[ -f "$$OUT/manifest.json" ] || { echo "bootstrap-publish: no manifest.json — run 'make bootstrap-manifest'." >&2; exit 1; }; \
+	SEED_H="$$(sed -n 's/.*\"seed_height\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$$OUT/manifest.json" | head -1)"; \
+	[ -n "$$SEED_H" ] || { echo "bootstrap-publish: cannot read seed_height from $$OUT/manifest.json" >&2; exit 1; }; \
+	PROVED_H="$$(sed -n 's/^seed_height=\([0-9][0-9]*\)$$/\1/p' "$$OUT/.copyprove-ok" | head -1)"; \
+	[ "$$PROVED_H" = "$$SEED_H" ] || { echo "bootstrap-publish: REFUSING — copy-prove marker is for seed $$PROVED_H but manifest says $$SEED_H (stale). Re-run 'make bootstrap'." >&2; exit 1; }; \
+	command -v gh >/dev/null 2>&1 || { echo "bootstrap-publish: gh CLI not found (gh is the only network step)" >&2; exit 1; }; \
+	TAG="starterpack-$$SEED_H"; \
+	echo "[bootstrap-publish] creating GitHub release $$TAG from $$OUT/* (copy-prove verified, seed=$$SEED_H)"; \
+	gh release create "$$TAG" $$OUT/* \
+	  --title "ZClassic23 starter pack @ height $$SEED_H" \
+	  --notes "Fast-sync starter pack (block index + SHA3-self-verified UTXO snapshot) at seed height $$SEED_H. Drop block_index.bin + utxo-seed-$$SEED_H.snapshot into a fresh datadir and run zclassic23 with NO extra flags — it seeds + folds to tip. Integrity: sha256sum -c SHA256SUMS. See docs/BOOTSTRAPPING.md."
+
 $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/session.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm

@@ -50,6 +50,7 @@
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
+#include "chain/utxo_snapshot_loader.h"
 #include "models/database.h"
 #include "services/block_index_loader.h"
 #include "controllers/sync_controller.h"
@@ -57,6 +58,8 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "chain/chainparams.h"
+#include "crypto/sha256.h"
+#include "util/clientversion.h"
 
 /* Read the REAL hashFinalSaplingRoot from a block body on disk (node.db's
  * blocks.sapling_root is a zeroed projection artifact, so we cannot trust it).
@@ -213,6 +216,139 @@ static bool copy_file(const char *src, const char *dst)
     return ok;
 }
 
+/* SHA-256 a file's full contents into a 64-char hex string (+NUL). Returns the
+ * byte size on success (>= 0) or -1 on error (logged). Uses the linked
+ * crypto/sha256.h streaming API — the SAME SHA-256 the rest of the binary uses,
+ * so a user's stock `sha256sum` reproduces these digests bit-for-bit. */
+static long sha256_file_hex(const char *path, char hex_out[65])
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[bundle] sha256: open %s failed: %s\n", path,
+                strerror(errno));
+        return -1;
+    }
+    struct sha256_ctx ctx;
+    sha256_init(&ctx);
+    uint8_t buf[1 << 20];
+    size_t n;
+    long total = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        sha256_write(&ctx, buf, n);
+        total += (long)n;
+    }
+    bool read_err = ferror(f) != 0;
+    fclose(f);
+    if (read_err) {
+        fprintf(stderr, "[bundle] sha256: read %s failed\n", path);
+        return -1;
+    }
+    uint8_t dg[32];
+    sha256_finalize(&ctx, dg);
+    for (int i = 0; i < 32; i++)
+        snprintf(hex_out + i * 2, 3, "%02x", dg[i]);
+    return total;
+}
+
+/* Emit the publish sidecars next to the bundle files:
+ *   - SHA256SUMS  — standard "<hex>  <name>" lines (basenames) so a user can run
+ *                   `cd <bundle_dir> && sha256sum -c SHA256SUMS`.
+ *   - manifest.json — machine-readable provenance (heights, hashes, sizes, the
+ *                   build commit). See the field list in the file header.
+ * Reuses sha256_file_hex (the linked crypto lib) so the digests match stock
+ * `sha256sum`. Returns true on success; logs + returns false on any I/O error.
+ * `snap_sha3_hex` is the body-SHA3 the writer already computed+printed (forward
+ * hex of got_sha3); `anchor_hash` is the INTERNAL-LE 32-byte block hash (we emit
+ * the conventional display hex = reversed). */
+static bool write_bundle_sidecars(const char *bundle_dir, const char *snap_name,
+                                  int seed_h, const char *snap_sha3_hex,
+                                  const uint8_t anchor_hash[32],
+                                  uint64_t utxo_count, int64_t total_supply)
+{
+    char bi_path[1200], snap_path[1300];
+    snprintf(bi_path, sizeof(bi_path), "%s/block_index.bin", bundle_dir);
+    snprintf(snap_path, sizeof(snap_path), "%s/%s", bundle_dir, snap_name);
+
+    char bi_sha[65], snap_sha[65];
+    long bi_size = sha256_file_hex(bi_path, bi_sha);
+    long snap_size = sha256_file_hex(snap_path, snap_sha);
+    if (bi_size < 0 || snap_size < 0) {
+        fprintf(stderr, "[bundle] sidecar: SHA-256 of bundle files failed\n");
+        return false;
+    }
+
+    /* SHA256SUMS — two-space separator, basenames (sha256sum binary-mode form). */
+    char sums_path[1240];
+    snprintf(sums_path, sizeof(sums_path), "%s/SHA256SUMS", bundle_dir);
+    FILE *sf = fopen(sums_path, "wb");
+    if (!sf) {
+        fprintf(stderr, "[bundle] sidecar: open %s failed: %s\n", sums_path,
+                strerror(errno));
+        return false;
+    }
+    fprintf(sf, "%s  block_index.bin\n", bi_sha);
+    fprintf(sf, "%s  %s\n", snap_sha, snap_name);
+    if (ferror(sf) || fclose(sf) != 0) {
+        fprintf(stderr, "[bundle] sidecar: write %s failed\n", sums_path);
+        return false;
+    }
+
+    /* anchor_block_hash display hex = reversed from the internal-LE header bytes
+     * (the conventional leading-zeros PoW-hash form a user sees in explorers). */
+    char anchor_disp[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(anchor_disp + i * 2, 3, "%02x", anchor_hash[31 - i]);
+
+    /* total_supply is zatoshi (1 ZCL = 100,000,000 zatoshi). Emit ZCL as a
+     * fixed-point STRING (8 places) to avoid any float rounding in the manifest. */
+    long long zwhole = (long long)(total_supply / 100000000LL);
+    long long zfrac  = (long long)(total_supply % 100000000LL);
+    if (zfrac < 0) zfrac = -zfrac;  /* supply is non-negative; defensive */
+
+    char man_path[1240];
+    snprintf(man_path, sizeof(man_path), "%s/manifest.json", bundle_dir);
+    FILE *mf = fopen(man_path, "wb");
+    if (!mf) {
+        fprintf(stderr, "[bundle] sidecar: open %s failed: %s\n", man_path,
+                strerror(errno));
+        return false;
+    }
+    fprintf(mf,
+            "{\n"
+            "  \"schema_version\": 2,\n"
+            "  \"seed_height\": %d,\n"
+            "  \"anchor_block_hash\": \"%s\",\n"
+            "  \"snapshot_sha3\": \"%s\",\n"
+            "  \"utxo_count\": %llu,\n"
+            "  \"total_supply_sat\": %lld,\n"
+            "  \"total_supply_zcl\": \"%lld.%08lld\",\n"
+            "  \"block_index_file\": \"block_index.bin\",\n"
+            "  \"block_index_size\": %ld,\n"
+            "  \"block_index_sha256\": \"%s\",\n"
+            "  \"snapshot_file\": \"%s\",\n"
+            "  \"snapshot_size\": %ld,\n"
+            "  \"snapshot_sha256\": \"%s\",\n"
+            "  \"build_commit\": \"%s\"\n"
+            "}\n",
+            seed_h, anchor_disp, snap_sha3_hex,
+            (unsigned long long)utxo_count, (long long)total_supply,
+            zwhole, zfrac,
+            bi_size, bi_sha,
+            snap_name, snap_size, snap_sha,
+            zcl_build_commit());
+    if (ferror(mf) || fclose(mf) != 0) {
+        fprintf(stderr, "[bundle] sidecar: write %s failed\n", man_path);
+        return false;
+    }
+
+    fprintf(stderr,
+            "[bundle] wrote SHA256SUMS + manifest.json\n"
+            "         block_index.bin  %ld B  sha256=%s\n"
+            "         %s  %ld B  sha256=%s\n",
+            bi_size, bi_sha, snap_name, snap_size, snap_sha);
+    return true;
+}
+
 /* Provided by the node binary's main.c; this standalone tool defines its own
  * so the shared object set links. */
 volatile sig_atomic_t g_shutdown_requested = 0;
@@ -283,8 +419,11 @@ int main(int argc, char **argv)
     struct main_state ms;
     main_state_init(&ms);
     if (!load_block_index_flat(datadir, &ms)) {
-        fprintf(stderr, "load_block_index_flat(%s) failed — need a "
-                "block_index.bin (run --importblockindex first)\n", datadir);
+        fprintf(stderr, "load_block_index_flat(%s) failed — the source datadir "
+                "has no readable block_index.bin. Point at a datadir from a "
+                "synced zclassic23 node, which writes block_index.bin itself "
+                "(no zclassicd / --importblockindex step is involved).\n",
+                datadir);
         return 1;
     }
 
@@ -545,6 +684,52 @@ int main(int argc, char **argv)
             out_path, seed_h, (unsigned long long)got_count,
             (long long)got_supply, flen, sha3hex);
 
+    /* ── MANDATORY POST-WRITE SELF-ATTEST ──────────────────────────────────
+     * Generalizes the anchor_selfmint hard-verify (write → re-open → assert
+     * written == intended → unlink on mismatch). Re-open the just-written
+     * artifact through the SAME reader a fresh node uses (uss_open with
+     * verify_full_sha3=true): it re-reads the body FROM DISK, recomputes the
+     * body SHA3, and checks it against the on-disk header. Then assert every
+     * in-file header field equals what THIS mint intended. Any failure means we
+     * produced a corrupt or wrong artifact — UNLINK it and exit non-zero so a
+     * bad snapshot is NEVER published. */
+    {
+        char verr[256] = {0};
+        struct uss_header vhdr;
+        struct uss_handle *vh = uss_open(out_path, /*verify_full_sha3=*/true,
+                                         /*expected_sha3=*/NULL, &vhdr,
+                                         verr, sizeof(verr));
+        if (!vh) {
+            fprintf(stderr, "[mint-v2] SELF-ATTEST FAILED: re-open + body-SHA3 "
+                    "verify of %s failed (%s) — UNLINKING (refusing to publish a "
+                    "bad artifact)\n", out_path, verr);
+            unlink(out_path);
+            node_db_close(&ndb);
+            return 1;
+        }
+        bool ok_ver  = (vhdr.version == 2);
+        bool ok_h    = (vhdr.height == (uint32_t)seed_h);
+        bool ok_cnt  = (vhdr.count == got_count);
+        bool ok_sup  = (vhdr.total_supply == got_supply);
+        bool ok_anc  = (memcmp(vhdr.anchor_block_hash, anchor_hash, 32) == 0);
+        bool ok_sha3 = (memcmp(vhdr.sha3_hash, got_sha3, 32) == 0);
+        uss_close(vh);
+        if (!ok_ver || !ok_h || !ok_cnt || !ok_sup || !ok_anc || !ok_sha3) {
+            fprintf(stderr,
+                    "[mint-v2] SELF-ATTEST FAILED: in-file header disagrees with "
+                    "the mint intent (version_ok=%d height_ok=%d count_ok=%d "
+                    "supply_ok=%d anchor_ok=%d sha3_ok=%d) — UNLINKING %s\n",
+                    ok_ver, ok_h, ok_cnt, ok_sup, ok_anc, ok_sha3, out_path);
+            unlink(out_path);
+            node_db_close(&ndb);
+            return 1;
+        }
+        fprintf(stderr, "[mint-v2] SELF-ATTEST OK: re-read body SHA3 matches the "
+                "header, and count/supply/anchor/height equal the mint intent "
+                "(count=%llu supply=%lld height=%d)\n",
+                (unsigned long long)got_count, (long long)got_supply, seed_h);
+    }
+
     /* ── STARTER-PACK BUNDLE (optional) ────────────────────────────────────
      * Emit a CONTIGUOUS block_index.bin (genesis..seed) + the snapshot into
      * bundle_dir. A fresh node's from-genesis active chain caps at the first
@@ -602,10 +787,20 @@ int main(int argc, char **argv)
         }
 
         /* Copy the snapshot in under a canonical name. */
+        char snap_name[256];
+        snprintf(snap_name, sizeof(snap_name), "utxo-seed-%d.snapshot", seed_h);
         char snap_dst[1200];
-        snprintf(snap_dst, sizeof(snap_dst), "%s/utxo-seed-%d.snapshot",
-                 bundle_dir, seed_h);
+        snprintf(snap_dst, sizeof(snap_dst), "%s/%s", bundle_dir, snap_name);
         if (!copy_file(out_path, snap_dst)) {
+            node_db_close(&ndb);
+            return 1;
+        }
+
+        /* Publish sidecars: SHA256SUMS (for `sha256sum -c`) + manifest.json. */
+        if (!write_bundle_sidecars(bundle_dir, snap_name, seed_h, sha3hex,
+                                   anchor_hash, got_count, got_supply)) {
+            fprintf(stderr, "[bundle] FAILED to write publish sidecars "
+                    "(SHA256SUMS / manifest.json)\n");
             node_db_close(&ndb);
             return 1;
         }
@@ -613,14 +808,17 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "\nSTARTER-PACK BUNDLE READY in %s:\n"
                 "  block_index.bin              (contiguous genesis..%d)\n"
-                "  utxo-seed-%d.snapshot        (v2: UTXO+frontier, count=%llu)\n"
-                "\nFresh-node usage:\n"
-                "  cp %s/block_index.bin             <DATADIR>/\n"
-                "  cp %s/utxo-seed-%d.snapshot       <DATADIR>/\n"
-                "  zclassic23 -datadir=<DATADIR> "
-                "-load-snapshot-at-own-height=%s/utxo-seed-%d.snapshot\n",
-                bundle_dir, seed_h, seed_h, (unsigned long long)got_count,
-                bundle_dir, bundle_dir, seed_h, "<DATADIR>", seed_h);
+                "  %s        (v2: UTXO+frontier, count=%llu)\n"
+                "  SHA256SUMS                   (run: cd %s && sha256sum -c SHA256SUMS)\n"
+                "  manifest.json                (provenance: heights, hashes, sizes)\n"
+                "\nFresh-node usage (zero flags — boot autodetects a dropped-in bundle):\n"
+                "  cp %s/block_index.bin   <DATADIR>/\n"
+                "  cp %s/%s   <DATADIR>/\n"
+                "  zclassic23 -datadir=<DATADIR>\n"
+                "  (the explicit -load-snapshot-at-own-height=<DATADIR>/%s flag still\n"
+                "   works as a forced override, but is not required.)\n",
+                bundle_dir, seed_h, snap_name, (unsigned long long)got_count,
+                bundle_dir, bundle_dir, bundle_dir, snap_name, snap_name);
     }
 
     node_db_close(&ndb);
