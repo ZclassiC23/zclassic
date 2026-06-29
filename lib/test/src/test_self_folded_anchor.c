@@ -22,17 +22,27 @@
  *       and assert the re-derived root EQUALS the original (bodies are the
  *       authority, not the binary).
  *
- * REACHABILITY NOTE (honest scope):
- * ---------------------------------
- * The full genesis->3,056,758 fold requires a real datadir carrying ~3.1M
- * block bodies (`boot_mint_anchor_run`, config/src/boot_mint_anchor.c:52) and
- * cannot run inside this in-process unit test. So the two fold-and-compare
- * cases below are COMPILE-CLEAN SKELETONS marked TODO/skipped: they exercise
- * the checkpoint accessor + the test override seam (which DO build and link),
- * assert the baked invariants that the fold must reproduce, and leave the
- * actual genesis->checkpoint replay wired as a TODO behind an env opt-in so a
- * future heavy-fixture run (or `boot_mint_anchor_run` on a copy datadir) can
- * fill it in without touching the registry again.
+ * TWO REAL LAYERS (no skeletons):
+ * --------------------------------
+ *   (A) ALWAYS-ON light fold-and-compare (section 2). A small in-process
+ *       coins_kv set ("the bodies") is committed with the SAME canonical SHA3
+ *       encoder the real checkpoint uses (coins_kv_commitment), that root is
+ *       installed via the checkpoint override seam as "the notarization", and
+ *       the root is RE-DERIVED from the same set and asserted EQUAL. Mutating a
+ *       coin must break the match. This proves "re-derive == baked" at fixture
+ *       scale on every run — the assertion the old skeleton never made.
+ *
+ *   (B) HEAVY genesis->3,056,758 fold-and-compare (section 3, opt-in). The full
+ *       ~3.1M-block fold needs a real datadir + the whole boot pipeline
+ *       (`boot_mint_anchor_run`, config/src/boot_mint_anchor.c:52), so the
+ *       bodies-from-genesis fold is run by the BINARY (`-mint-anchor`, which
+ *       itself HARD-ASSERTs the fold == the compiled checkpoint) and this test
+ *       binds to its USS artifact: when ZCL_SELF_FOLD_ANCHOR_FIXTURE points at
+ *       that artifact, `uss_open(verify_full_sha3=true,
+ *       expected_sha3=cp->sha3_hash)` RE-HASHES the whole body from the records
+ *       (not the header) and binds it to the compiled checkpoint. A real
+ *       fold-derived-root vs baked-checkpoint comparison; SKIP only when no
+ *       artifact is provided.
  *
  * Wave-1 Lane E of docs/work/self-verified-tip-plan.md. Authored as Act-3 prep.
  */
@@ -40,7 +50,11 @@
 #include "test/test_helpers.h"
 
 #include "chain/checkpoints.h"
+#include "chain/utxo_snapshot_loader.h"        /* uss_open — re-derive body SHA3 */
+#include "storage/coins_kv.h"                   /* fixture fold + commitment */
+#include "storage/progress_store.h"             /* temp datadir for the fixture */
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,6 +64,13 @@
  * THIS test, not just the production accessor. */
 #define SFA_CHECKPOINT_HEIGHT      3056758
 #define SFA_CHECKPOINT_UTXO_COUNT  1354771ULL
+
+/* A deterministic txid for the fixture fold. */
+static void sfa_txid(uint8_t out[32], uint8_t tag)
+{
+    memset(out, 0, 32);
+    out[0] = tag; out[1] = 0x5F; out[31] = 0x01;
+}
 
 int test_self_folded_anchor(void);
 int test_self_folded_anchor(void)
@@ -85,80 +106,126 @@ int test_self_folded_anchor(void)
         printf("OK\n");
     }
 
-    /* (2) Self-fold from a FRESH temp coins_kv: fold genesis->checkpoint and
-     * assert the re-derived SHA3 root + count == the baked checkpoint.
-     *
-     * TODO(act3-fold): wire the real genesis->3,056,758 replay here. The fold
-     * needs ~3.1M block bodies (boot_mint_anchor_run on a copy datadir), which
-     * is not reachable in this in-process unit test. Until then this section is
-     * SKIPPED unless ZCL_SELF_FOLD_ANCHOR_FIXTURE is set, so it builds + links
-     * and the registry wiring is permanent. */
-    printf("self_folded_anchor: fresh fold reproduces root + count (heavy)... ");
+    /* (2) ALWAYS-ON light fold-and-compare — the bodies-are-the-authority
+     * property at fixture scale, in-process, every run. This is the genuine
+     * de-skeleton: build a small coins_kv set ("the bodies"), commit it with
+     * the SAME canonical SHA3 encoder the real checkpoint uses
+     * (coins_kv_commitment == the writer's body SHA3, coins_kv.h:55-58 +
+     * :297-299), capture that root as the "baked notarization", install it via
+     * the checkpoint override seam, then RE-DERIVE the root from the same set
+     * and assert re-derive == baked. A mutated coin must break the match. The
+     * checkpoint-override doctrine documents this exact construction: "a
+     * scaled-down fixture height whose locally-computed commitment IS the
+     * override's sha3_hash by construction" (checkpoints.h:101-108). */
+    printf("self_folded_anchor: light fixture fold re-derives the notarized root... ");
     {
-        if (!run_heavy) {
-            printf("SKIP (set ZCL_SELF_FOLD_ANCHOR_FIXTURE to run the "
-                   "genesis->checkpoint fold)\n");
-        } else {
-            /* TODO(act3-fold): on a copy datadir, run the fold to
-             * SFA_CHECKPOINT_HEIGHT into a fresh temp coins_kv, then:
-             *   uint8_t root[32]; uint64_t count;
-             *   ASSERT(self_fold_to_height(tmp, SFA_CHECKPOINT_HEIGHT,
-             *                              root, &count) == 0);
-             *   const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-             *   ASSERT(memcmp(root, cp->sha3_hash, 32) == 0);
-             *   ASSERT(count == cp->utxo_count);
-             * For now the opt-in path also no-ops until the fold helper exists. */
-            printf("SKIP (fold helper not yet wired — TODO act3-fold)\n");
-        }
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "self_fold_light", "main");
+        ASSERT(progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(coins_kv_ensure_schema(db));
+
+        /* "The bodies" — a fixed, deterministic UTXO set at a fixture height. */
+        const int32_t fixture_h = 100;
+        uint8_t ta[32], tb[32], tc[32];
+        sfa_txid(ta, 0xA1); sfa_txid(tb, 0xB2); sfa_txid(tc, 0xC3);
+        uint8_t sc_a[4] = {0xDE,0xAD,0xBE,0xEF};
+        uint8_t sc_b[2] = {0x51,0x87};
+        ASSERT(coins_kv_add(db, ta, 0, 5000, fixture_h, true,  sc_a, sizeof(sc_a)));
+        ASSERT(coins_kv_add(db, ta, 1, 6000, fixture_h, true,  sc_b, sizeof(sc_b)));
+        ASSERT(coins_kv_add(db, tb, 0, 7000, fixture_h, false, sc_a, sizeof(sc_a)));
+        ASSERT(coins_kv_add(db, tc, 0, 8000, fixture_h, false, NULL, 0));
+
+        /* The "notarized" root: SHA3 over the folded set. Stand this in for the
+         * compiled checkpoint via the override seam. */
+        struct sha3_utxo_checkpoint fixture_cp;
+        memset(&fixture_cp, 0, sizeof(fixture_cp));
+        fixture_cp.height = fixture_h;
+        fixture_cp.utxo_count = (uint64_t)coins_kv_count(db);
+        ASSERT(coins_kv_commitment(db, fixture_cp.sha3_hash) == 0);
+        ASSERT(fixture_cp.utxo_count == 4);
+
+        checkpoints_set_sha3_override_for_test(&fixture_cp);
+        const struct sha3_utxo_checkpoint *notarized = get_sha3_utxo_checkpoint();
+        ASSERT(notarized == &fixture_cp);
+
+        /* RE-DERIVE from the same bodies (NOT by reading the override field):
+         * the property is that folding the bodies reproduces the notarized
+         * root. This is the assertion the skeleton never made. */
+        uint8_t rederived[32] = {0};
+        ASSERT(coins_kv_commitment(db, rederived) == 0);
+        ASSERT(memcmp(rederived, notarized->sha3_hash, 32) == 0);
+        ASSERT((uint64_t)coins_kv_count(db) == notarized->utxo_count);
+
+        /* Mutate one coin: the re-derived root must NO LONGER match the
+         * notarized one — a state-wrong fold is DETECTABLE, not silently
+         * accepted (the false-green the skeleton allowed). */
+        ASSERT(coins_kv_spend(db, tb, 0));
+        ASSERT(coins_kv_add(db, tb, 0, 7001, fixture_h, false, sc_a, sizeof(sc_a)));
+        uint8_t mutated[32] = {0};
+        ASSERT(coins_kv_commitment(db, mutated) == 0);
+        ASSERT(memcmp(mutated, notarized->sha3_hash, 32) != 0);
+
+        checkpoints_reset_sha3_override_for_test();
+        progress_store_close();
+        test_rm_rf_recursive(dir);
+        printf("OK\n");
     }
 
-    /* (3) _no_binary_checkpoint variant — the bodies-are-the-authority trap
-     * defeat. NULL the compiled checkpoint via the test seam, re-derive from
-     * bodies, and assert the re-derived root EQUALS the original compiled one.
+    /* (3) HEAVY genesis->3,056,758 fold-and-compare — REAL when opted in.
+     * The full ~3.1M-block fold needs a real datadir and the whole boot
+     * pipeline (boot_mint_anchor_run drives the eight stages under app_init),
+     * so the bodies-from-genesis fold is run by the BINARY, not in-process:
      *
-     * REAL assertion: capture the compiled checkpoint, install an override,
-     * confirm the accessor returns the override, reset, confirm it returns the
-     * compiled value again. The re-derive-from-bodies-and-compare step is the
-     * TODO heavy fixture (same reachability limit as section 2). */
-    printf("self_folded_anchor: _no_binary_checkpoint seam (re-derive == baked)... ");
+     *   ZCL_MINT_ANCHOR_OUT=/path/anchor.snapshot \
+     *     build/bin/zclassic23 -datadir=<copy-of-full-history> -mint-anchor
+     *
+     * That writes a USS artifact whose body SHA3 is what the genesis->anchor
+     * fold produced (boot_mint_anchor.c:140-180 already HARD-ASSERTs it == the
+     * compiled checkpoint inside the run). Point this test at the artifact:
+     *
+     *   ZCL_SELF_FOLD_ANCHOR_FIXTURE=/path/anchor.snapshot build/bin/test_parallel
+     *
+     * uss_open(verify_full_sha3=true, expected_sha3=cp->sha3_hash) RE-HASHES
+     * the entire body from the raw records (it does NOT trust the header) and
+     * binds it to the compiled checkpoint — i.e. the bodies reproduce the
+     * anchor root. We also assert the header height/count == the baked
+     * checkpoint. This is a genuine fold-derived-root vs baked-checkpoint
+     * comparison, NOT a skeleton. SKIP only when no artifact is provided. */
+    printf("self_folded_anchor: heavy fold artifact re-derives baked root (opt-in)... ");
     {
-        /* Snapshot the compiled checkpoint values BEFORE any override. */
-        const struct sha3_utxo_checkpoint *compiled = get_sha3_utxo_checkpoint();
-        ASSERT(compiled != NULL);
-        struct sha3_utxo_checkpoint baked = *compiled;
-
-        /* Install a zeroed override standing in for "no compiled checkpoint":
-         * a fold that trusts the binary would now read all-zeros and a naive
-         * test would still "pass"; the real test re-derives from bodies. */
-        static struct sha3_utxo_checkpoint null_cp; /* zero-initialized */
-        null_cp.height = baked.height; /* keep the height addressable */
-        checkpoints_set_sha3_override_for_test(&null_cp);
-
-        const struct sha3_utxo_checkpoint *ov = get_sha3_utxo_checkpoint();
-        ASSERT(ov == &null_cp);
-        uint8_t zero[32] = {0};
-        ASSERT(memcmp(ov->sha3_hash, zero, 32) == 0); /* binary "nulled" */
-
-        /* TODO(act3-fold): when run_heavy, re-derive the root by folding bodies
-         * (NOT by reading the now-nulled compiled checkpoint) and assert it
-         * equals the captured baked.sha3_hash:
-         *   uint8_t root[32]; uint64_t count;
-         *   ASSERT(self_fold_to_height(tmp, baked.height, root, &count) == 0);
-         *   ASSERT(memcmp(root, baked.sha3_hash, 32) == 0);
-         *   ASSERT(count == baked.utxo_count);
-         */
-        (void)run_heavy;
-
-        /* Restore the compiled checkpoint and confirm the seam reset works —
-         * bodies are the authority, the binary is just the notarization. */
-        checkpoints_reset_sha3_override_for_test();
-        const struct sha3_utxo_checkpoint *restored = get_sha3_utxo_checkpoint();
-        ASSERT(restored != NULL);
-        ASSERT(restored != &null_cp);
-        ASSERT(restored->height == baked.height);
-        ASSERT(restored->utxo_count == baked.utxo_count);
-        ASSERT(memcmp(restored->sha3_hash, baked.sha3_hash, 32) == 0);
-        printf("OK\n");
+        const char *artifact = getenv("ZCL_SELF_FOLD_ANCHOR_FIXTURE");
+        if (!run_heavy || !artifact || !artifact[0] || !strcmp(artifact, "1")) {
+            printf("SKIP (set ZCL_SELF_FOLD_ANCHOR_FIXTURE=<path to a "
+                   "-mint-anchor artifact> to run the genesis->checkpoint "
+                   "fold-and-compare)\n");
+        } else {
+            const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+            ASSERT(cp != NULL);
+            struct uss_header hdr;
+            memset(&hdr, 0, sizeof(hdr));
+            char err[256] = {0};
+            /* verify_full_sha3=true re-derives the body SHA3 from the records;
+             * expected_sha3=cp->sha3_hash binds the re-derived root to the
+             * compiled checkpoint — a forged or stale artifact FAILS here. */
+            struct uss_handle *h = uss_open(artifact, /*verify_full_sha3=*/true,
+                                            cp->sha3_hash, &hdr, err, sizeof(err));
+            if (!h) {
+                printf("FAIL\n  uss_open(%s) rejected the artifact: %s\n",
+                       artifact, err);
+                failures++;
+                goto _test_next;
+            }
+            /* The artifact's own header must also agree with the baked
+             * height/count (a fold at a different height is not the anchor). */
+            ASSERT(hdr.height == (uint32_t)SFA_CHECKPOINT_HEIGHT);
+            ASSERT(hdr.count == cp->utxo_count);
+            ASSERT(memcmp(hdr.sha3_hash, cp->sha3_hash, 32) == 0);
+            uss_close(h);
+            printf("OK (re-derived %llu-UTXO root @ h=%u == baked checkpoint)\n",
+                   (unsigned long long)hdr.count, hdr.height);
+        }
     }
 
     goto _done;

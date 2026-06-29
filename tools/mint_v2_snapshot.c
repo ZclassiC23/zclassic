@@ -237,12 +237,12 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *datadir = argv[1];
-    int32_t seed_h = (int32_t)strtol(argv[2], NULL, 10);
+    int32_t seed_h = (int32_t)strtol(argv[2], NULL, 10);  /* 0 = auto */
     const char *out_path = argv[3];
     const char *bundle_dir = (argc == 5) ? argv[4] : NULL;
 
-    if (seed_h <= 0) {
-        fprintf(stderr, "seed_height must be > 0 (got %d)\n", seed_h);
+    if (seed_h < 0) {
+        fprintf(stderr, "seed_height must be >= 0 (0 = auto-pick coins_applied-1)\n");
         return 2;
     }
 
@@ -255,6 +255,23 @@ int main(int argc, char **argv)
     if (!pdb) {
         fprintf(stderr, "progress_store_db() returned NULL\n");
         return 1;
+    }
+
+    /* Auto-pick the seed height from the source's coins-applied frontier when
+     * the caller passes 0. The ONLY coherent mint height is coins_applied-1 (the
+     * coin set is exactly as-of the last applied block; the coherence guard
+     * below enforces this). Saves the caller from reading progress.kv by hand. */
+    if (seed_h == 0) {
+        int32_t ca = 0;
+        bool caf = false;
+        if (!coins_kv_get_applied_height(pdb, &ca, &caf) || !caf || ca <= 1) {
+            fprintf(stderr, "auto-seed: could not read coins_applied_height "
+                    "(found=%d val=%d)\n", caf, ca);
+            return 1;
+        }
+        seed_h = ca - 1;
+        fprintf(stderr, "[mint-v2] auto seed height = coins_applied(%d) - 1 = %d\n",
+                ca, seed_h);
     }
 
     int64_t num_txs = 0, count = 0, supply = 0;
@@ -383,22 +400,54 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* (5) clear stale resume markers + drive the consensus-validating rebuild.
-     * It replays note commitments from Sapling activation to the capped
-     * endpoint, verifying the final root against hashFinalSaplingRoot, and
-     * persists the serialized frontier into node_state["sapling_tree"]. */
-    (void)node_db_state_set(&ndb, "sapling_tree", NULL, 0);
-    (void)node_db_state_set(&ndb, "sapling_tree_rescan_height", NULL, 0);
-    (void)node_db_state_set(&ndb, "sapling_tree_rebuild_height", NULL, 0);
+    /* (5) Acquire the Sapling frontier at the seed height.
+     *
+     * FAST PATH (reuse): a SYNCED source already persists
+     * node_state["sapling_tree"] at its coins-applied height — the live fold
+     * maintains it and consensus-verifies its root against every block's
+     * hashFinalSaplingRoot inside connect_block. If that persisted frontier is
+     * already AT the seed height, reuse it verbatim instead of replaying note
+     * commitments from blocks/. This is what lets us mint from a blocks-pruned
+     * source (the daily-driver lacks block bodies below its snapshot seed, so a
+     * from-activation replay is impossible) — the frontier is already correct,
+     * and the v2 LOADER re-verifies its root against the PoW-proven seed header
+     * at load, so a bad reuse is caught there, never silently shipped. Force a
+     * full from-blocks replay with ZCL_MINT_FORCE_REBUILD=1.
+     *
+     * SLOW PATH (rebuild): clear stale resume markers + drive the
+     * consensus-validating rebuild, which replays note commitments from Sapling
+     * activation to the capped endpoint, verifies the final root against
+     * hashFinalSaplingRoot, and persists the serialized frontier. */
+    int64_t persisted_tree_h = 0;
+    bool reuse_frontier = (getenv("ZCL_MINT_FORCE_REBUILD") == NULL) &&
+        node_db_state_get_int(&ndb, "sapling_tree_rebuild_height",
+                              &persisted_tree_h) &&
+        persisted_tree_h == seed_h;
+    if (reuse_frontier) {
+        uint8_t probe[8192];
+        size_t probe_len = 0;
+        reuse_frontier = node_db_state_get(&ndb, "sapling_tree", probe,
+                                           sizeof(probe), &probe_len) &&
+                         probe_len > 0;
+    }
+    if (reuse_frontier) {
+        fprintf(stderr, "[mint-v2] REUSING persisted Sapling frontier already at "
+                "h=%d (no blocks/ replay; the v2 loader re-verifies its root "
+                "against the PoW-proven seed header at load)\n", seed_h);
+    } else {
+        (void)node_db_state_set(&ndb, "sapling_tree", NULL, 0);
+        (void)node_db_state_set(&ndb, "sapling_tree_rescan_height", NULL, 0);
+        (void)node_db_state_set(&ndb, "sapling_tree_rebuild_height", NULL, 0);
 
-    fprintf(stderr, "[mint-v2] driving sapling_tree_rebuild to h=%d "
-            "(this replays note commitments from blocks/ — minutes)...\n",
-            seed_h);
-    int appended = sapling_tree_rebuild(&ndb, &ms.chain_active, datadir);
-    if (appended < 0) {
-        fprintf(stderr, "sapling_tree_rebuild FAILED (rc=%d)\n", appended);
-        node_db_close(&ndb);
-        return 1;
+        fprintf(stderr, "[mint-v2] driving sapling_tree_rebuild to h=%d "
+                "(this replays note commitments from blocks/ — minutes)...\n",
+                seed_h);
+        int appended = sapling_tree_rebuild(&ndb, &ms.chain_active, datadir);
+        if (appended < 0) {
+            fprintf(stderr, "sapling_tree_rebuild FAILED (rc=%d)\n", appended);
+            node_db_close(&ndb);
+            return 1;
+        }
     }
 
     /* The rebuild may have capped its endpoint to the coins-applied frontier;
