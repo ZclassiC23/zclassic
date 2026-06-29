@@ -138,6 +138,15 @@ struct stage_reducer_frontier_reconcile_result {
     int lowest_have_data_cleared;
     int lowest_validate_headers_refill_hole;
     int lowest_validate_headers_hash_split;
+    /* Lowest validate/script hash_split classified as SCRIPT-side (script
+     * disagrees with the canonical active header). Owned by the coins-rewinding
+     * dual replay, NOT the validate-cursor clamp: the clamp re-derives the same
+     * canonical header and leaves the stale script row, so counting it as
+     * `repaired` would self-clear without H* advancing. The refill sets this
+     * (and resets lowest_validate_headers_hash_split to -1 for the same height)
+     * so the clamp stays validate-side-only and the repaired rollup can exclude
+     * a non-advancing clamp for an unresolved script-side split. */
+    int lowest_script_validate_hash_split;
     int lowest_body_fetch_refill_hole;
     int lowest_body_persist_refill_hole;
     int scripts_set;

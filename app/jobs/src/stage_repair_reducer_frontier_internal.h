@@ -22,6 +22,27 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
                                             struct block *blk,
                                             struct uint256 *block_hash);
 
+/* Classify a validate/script hash_split at `height` by HASHES ONLY — the
+ * in-memory canonical active HEADER (active_chain_at(H)->phashBlock, no disk
+ * read, no BLOCK_HAVE_DATA gate) vs the two stored verdicts
+ * (validate_headers_log.hash, script_validate_log.block_hash). NEVER gates on
+ * body-readability: routing must not stall on a not-yet-fetched body.
+ *   RF_SPLIT_VALIDATE_SIDE — validate_headers disagrees with the active header
+ *     AND script already matches it (the validate-cursor clamp owns it).
+ *   RF_SPLIT_SCRIPT_SIDE   — script disagrees with the active header (or both
+ *     verdicts disagree); the coins-rewinding dual replay owns it.
+ *   RF_SPLIT_INDETERMINATE — active header unavailable / a verdict hash missing;
+ *     default to the replay (never the validate clamp). On a DB read error
+ *     *out_err is set true and the return value is INDETERMINATE.
+ * Acquires its own locks; safe to call without holding the progress lock. */
+enum rf_hash_split_side {
+    RF_SPLIT_INDETERMINATE = 0,
+    RF_SPLIT_SCRIPT_SIDE,
+    RF_SPLIT_VALIDATE_SIDE,
+};
+enum rf_hash_split_side stage_repair_classify_hash_split(
+    struct main_state *ms, struct sqlite3 *db, int height, bool *out_err);
+
 bool stage_reducer_frontier_try_replay_repairs(
     struct sqlite3 *db,
     struct main_state *ms,
@@ -37,6 +58,7 @@ bool stage_reducer_frontier_force_stage_cursor_in_tx(
 
 bool stage_reducer_frontier_reconcile_refill_cursors(
     struct sqlite3 *db,
+    struct main_state *ms,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 

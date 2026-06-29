@@ -198,6 +198,64 @@ bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
     return true;
 }
 
+/* In-memory canonical active HEADER hash at `height` — phashBlock of the
+ * active-chain block_index, NO disk read, NO BLOCK_HAVE_DATA gate. Used to
+ * DISCRIMINATE a validate/script hash_split (which stored hash matches the
+ * most-work header chain) without depending on whether the canonical BODY is
+ * on disk; routing must never stall on a not-yet-fetched body. Returns false
+ * only when the active chain has no entry / no phashBlock at `height`. */
+static bool stage_repair_active_header_hash(struct main_state *ms, int height,
+                                            struct uint256 *out_hash)
+{
+    if (!ms || !out_hash)
+        return false;
+    bool have = false;
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *bi = active_chain_at(&ms->chain_active, height);
+    if (bi && bi->phashBlock) {
+        *out_hash = *bi->phashBlock;
+        have = true;
+    }
+    zcl_mutex_unlock(&ms->cs_main);
+    return have;
+}
+
+enum rf_hash_split_side stage_repair_classify_hash_split(
+    struct main_state *ms, sqlite3 *db, int height, bool *out_err)
+{
+    if (out_err)
+        *out_err = false;
+    if (!ms || !db || height < 0)
+        return RF_SPLIT_INDETERMINATE;
+
+    uint8_t vh_hash[32];
+    uint8_t sv_hash[32];
+    bool vh_found = false;
+    bool sv_found = false;
+    if (!reducer_frontier_log_hash_at(db, "validate_headers_log", "hash",
+                                      height, vh_hash, &vh_found) ||
+        !reducer_frontier_log_hash_at(db, "script_validate_log", "block_hash",
+                                      height, sv_hash, &sv_found)) {
+        if (out_err)
+            *out_err = true;
+        return RF_SPLIT_INDETERMINATE;
+    }
+
+    struct uint256 active_hash;
+    if (!stage_repair_active_header_hash(ms, height, &active_hash) ||
+        !vh_found || !sv_found)
+        return RF_SPLIT_INDETERMINATE;
+
+    bool vh_eq_active = memcmp(vh_hash, active_hash.data, 32) == 0;
+    bool sv_eq_active = memcmp(sv_hash, active_hash.data, 32) == 0;
+    /* A genuine stale HEADER: validate disagrees with the canonical active
+     * header while script already matches it. Anything else with script !=
+     * active (incl. both-stale) is the dual replay's. */
+    if (!vh_eq_active && sv_eq_active)
+        return RF_SPLIT_VALIDATE_SIDE;
+    return RF_SPLIT_SCRIPT_SIDE;
+}
+
 static bool reducer_repair_marker_key(char key[192], const char *kind,
                                       int height,
                                       const struct uint256 *block_hash)
@@ -909,44 +967,44 @@ static bool maybe_repair_validate_script_hash_split(
      *     fields with the ok=0 stale-script step earlier in the ladder; a pass
      *     that does not own a repair here must not overwrite a stale-script hole
      *     that step already reported into *out.
-     * (2) This is the SCRIPT-side cure. A hash split (validate_headers.hash !=
-     *     script_validate.block_hash) can be stale on EITHER side. Re-deriving
-     *     script only helps when script recorded a NON-canonical body — i.e.
-     *     when its stored block_hash disagrees with the CANONICAL active block.
-     *     If script already matches the active block, the staleness is on the
-     *     validate_headers side; leave it to the validate-cursor rewind in
-     *     reconcile_refill_cursors (re-deriving the authoritative header). */
+     * (2) This is the SCRIPT-side cure. A split (validate_headers.hash !=
+     *     script_validate.block_hash) is owned by the coins-rewinding DUAL
+     *     replay by DEFAULT: rewind_headers=true drops BOTH the validate_headers
+     *     AND script verdicts over the span so both re-derive from the SAME
+     *     canonical body (v.hash == s.block_hash by construction). The routing
+     *     decision is HASH-ONLY (the most-work header verdict + the in-memory
+     *     active header) and must NOT gate on body-readability: when the coins
+     *     writer leads H*, active_chain_at(H) still references the very block
+     *     script validated, so the old active_chain_at == sv_hash test
+     *     mis-classified a script-side split as validate-side and the script
+     *     verdict was never re-derived (livelock). The ONLY validate-side
+     *     early-out is a GENUINE stale header (validate_headers != active header
+     *     AND script == active header); there the validate-cursor rewind in
+     *     reconcile_refill_cursors re-derives the authoritative header. */
     int split_height = -1;
     int script_cursor = -1;
-    uint8_t sv_hash[32];
-    bool sv_found = false;
     progress_store_tx_lock();
     bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
                                               &script_cursor) &&
               stale_script_hash_split_unlocked(db, script_cursor,
                                                &split_height);
-    if (ok && split_height >= 0)
-        ok = reducer_frontier_log_hash_at(db, "script_validate_log",
-                                          "block_hash", split_height,
-                                          sv_hash, &sv_found);
     progress_store_tx_unlock();
     if (!ok)
         return false;
     if (split_height < 0)
         return true; /* no split — leave *out untouched */
 
-    /* Read the canonical active block (cs_main lock, no progress lock). If it is
-     * not on disk yet, defer (the body re-fetch / validate rewind will run). */
-    struct block blk;
-    struct uint256 active_hash;
-    block_init(&blk);
-    bool readable = stage_repair_read_active_block_checked(ms, split_height,
-                                                           &blk, &active_hash);
-    block_free(&blk);
-    if (!readable)
-        return true;
-    if (!sv_found || memcmp(sv_hash, active_hash.data, 32) == 0)
-        return true; /* script matches active — validate-side split, not ours */
+    /* HASH-ONLY discrimination (no body-readability gate). Default: the dual
+     * replay owns the split; ONLY a genuine stale header (RF_SPLIT_VALIDATE_SIDE)
+     * is left to the validate-cursor clamp. INDETERMINATE (active header
+     * unavailable) routes to the replay, whose dry-run names a blocker if the
+     * body is absent — never a silent skip. A DB read error fails closed. */
+    bool classify_err = false;
+    if (stage_repair_classify_hash_split(ms, db, split_height, &classify_err) ==
+            RF_SPLIT_VALIDATE_SIDE)
+        return true; /* genuine stale header — validate-cursor clamp owns it */
+    if (classify_err)
+        return false;
 
     return maybe_repair_stale_script_via(db, ms, apply, out,
                                          stale_script_hash_split_unlocked,

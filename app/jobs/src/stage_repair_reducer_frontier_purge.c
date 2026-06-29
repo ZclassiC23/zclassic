@@ -38,6 +38,35 @@
  * are left alone. Caller holds the progress-store tx lock. */
 #define RF_NONCANON_MAX_PER_PASS 8192
 
+/* True iff `h` carries an ok=1/ok=1 validate-vs-script hash_split: both
+ * validate_headers_log and script_validate_log hold a 32-byte hash at h, both
+ * ok=1, and the two disagree. Such a height is owned EXCLUSIVELY by the
+ * coins-rewinding stale-script replay (maybe_repair_validate_script_hash_split,
+ * rewind_headers=true) — the purge must NOT delete either side below the coins
+ * frontier or it blinds that replay's JOIN detector. Returns false only on a
+ * real DB read error. Caller holds the progress-store tx lock. */
+static bool rf_height_is_vs_hash_split(sqlite3 *db, int h, bool *out_split)
+{
+    *out_split = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM validate_headers_log v "
+            "JOIN script_validate_log s ON s.height = v.height "
+            "WHERE v.height = ? AND v.ok = 1 AND s.ok = 1 "
+            "  AND length(v.hash) = 32 AND length(s.block_hash) = 32 "
+            "  AND v.hash <> s.block_hash LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair", "purge_noncanonical: vs_split prepare: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, h);
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
+        *out_split = true;
+    sqlite3_finalize(st);
+    return true;
+}
+
 bool stage_reducer_frontier_purge_noncanonical(
     sqlite3 *db,
     struct main_state *ms,
@@ -71,6 +100,31 @@ bool stage_reducer_frontier_purge_noncanonical(
         struct block_index *bi = active_chain_at(&ms->chain_active, h);
         if (!bi || !bi->phashBlock)
             continue;
+
+        /* A validate-vs-script ok=1/ok=1 hash_split BELOW the coins frontier is
+         * owned by the coins-rewinding stale-script replay, which needs BOTH
+         * ok=1 rows intact to detect (its JOIN) and re-derive against the
+         * canonical body. Deleting either side here would blind that detector
+         * and strand a rowless hole the refill REFUSES below the coins frontier
+         * (refill_target_in_unapplied_domain). COUNT it so the condition stays
+         * actionable (and the peer-gate bypass / sticky_escalator can arm), but
+         * leave the evidence rows intact for the replay owner. */
+        bool below_frontier = out->coins_applied_found &&
+                              out->coins_applied_height >= 0 &&
+                              h < out->coins_applied_height;
+        if (below_frontier) {
+            bool vs_split = false;
+            if (!rf_height_is_vs_hash_split(db, h, &vs_split))
+                return false; // raw-return-ok:vs_split-db-error-logged-in-callee
+            if (vs_split) {
+                out->noncanonical_found++;
+                if (out->lowest_noncanonical < 0 ||
+                    h < out->lowest_noncanonical)
+                    out->lowest_noncanonical = h;
+                continue; /* leave evidence rows for the stale-script replay */
+            }
+        }
+
         bool stale_here = false;
         for (size_t t = 0; t < sizeof(hash_logs) / sizeof(hash_logs[0]); t++) {
             char sql[160];

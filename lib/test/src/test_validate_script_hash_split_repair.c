@@ -51,17 +51,37 @@
 
 #include "test/test_helpers.h"
 
+#include "core/arith_uint256.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "json/json.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* Mirrors app/jobs/src/stage_repair_reducer_frontier_internal.h (a src-private
+ * header; same mirror idiom as test_stage_repair_coin_backfill.c). This is the
+ * PRODUCTION routing discriminator: maybe_repair_validate_script_hash_split
+ * calls stage_repair_classify_hash_split, which reads
+ * active_chain_at(H)->phashBlock — so it can ONLY be exercised through a real
+ * main_state + active chain. PHASES A-C below drive only the *_for_testing
+ * progress-store primitives and never reach this function, which is exactly
+ * why the live coins-above-H* mis-route (the body-readability gate that
+ * livelocked a script-side split) shipped green. PHASE D-F closes that gap. */
+enum rf_hash_split_side {
+    RF_SPLIT_INDETERMINATE = 0,
+    RF_SPLIT_SCRIPT_SIDE,
+    RF_SPLIT_VALIDATE_SIDE,
+};
+enum rf_hash_split_side stage_repair_classify_hash_split(
+    struct main_state *ms, sqlite3 *db, int height, bool *out_err);
 
 #define VSH_CHECK(name, expr) do {                                  \
     printf("validate_script_hash_split_repair: %s... ", (name));    \
@@ -269,6 +289,154 @@ static int64_t vsh_cursor(sqlite3 *db, const char *name)
     return cur;
 }
 
+/* Does a validate_headers_log row exist at height h? */
+static bool vsh_vh_row_present(sqlite3 *db, int32_t h)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM validate_headers_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    bool present = sqlite3_step(st) == SQLITE_ROW;  // raw-sql-ok:test-readback
+    sqlite3_finalize(st);
+    return present;
+}
+
+/* ── PHASE D-F production fixture helpers ───────────────────────────────────
+ * The orchestrator (stage_reducer_frontier_reconcile_light) queries
+ * proof_validate_log.status / utxo_apply_log.status (the value_overflow +
+ * stale_proof ladder) and the body_fetch_log / header_admit_log columns that
+ * the PHASE A-C minimal schema omits, so the production fixture builds its own
+ * orchestrator-compatible schema. proof/utxo `status` are nullable so the
+ * existing vsh_put_pv/vsh_put_ua helpers (which omit it) round-trip while the
+ * `WHERE status='value_overflow'/'internal_error'` probes simply never match. */
+static bool vsh_prod_exec(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);  // raw-sql-ok:test-seed
+    if (rc != SQLITE_OK) {
+        printf("vsh_prod: SQL failed: %s\n", err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static bool vsh_prod_schema(sqlite3 *db)
+{
+    return vsh_prod_exec(db,
+        "CREATE TABLE IF NOT EXISTS header_admit_log("
+        " height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        " parent_hash BLOB, admitted_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS validate_headers_log("
+        " height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        " fail_reason TEXT, validated_at INTEGER);"
+        "CREATE TABLE IF NOT EXISTS script_validate_log("
+        " height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        " tx_count INTEGER NOT NULL, input_count INTEGER NOT NULL,"
+        " first_failure_txid BLOB, first_failure_vin INTEGER,"
+        " first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
+        " block_hash BLOB);"
+        "CREATE TABLE IF NOT EXISTS body_persist_log("
+        " height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS body_fetch_log("
+        " height INTEGER PRIMARY KEY, hash BLOB, source TEXT, bytes INTEGER,"
+        " fetched_at INTEGER, ok INTEGER, fail_reason TEXT);"
+        "CREATE TABLE IF NOT EXISTS proof_validate_log("
+        " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log("
+        " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log("
+        " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        " tip_hash BLOB);");
+}
+
+static bool vsh_prod_put_ha(sqlite3 *db, int32_t h)
+{
+    uint8_t hash[32];
+    uint8_t parent[32];
+    fill_hash(hash, h, false);
+    fill_hash(parent, h - 1, false);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) VALUES(?,?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 3, parent, 32, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool vsh_prod_put_bf(sqlite3 *db, int32_t h)
+{
+    uint8_t hash[32];
+    fill_hash(hash, h, false);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO body_fetch_log"
+            "(height,hash,source,bytes,fetched_at,ok,fail_reason) "
+            "VALUES(?,?,'disk',0,1,1,NULL)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* validate_headers_log row with a DIVERGENT (corrupt) hash — used only to
+ * exercise the genuine VALIDATE-side discriminator branch, then reverted. */
+static bool vsh_put_vh_corrupt(sqlite3 *db, int32_t h)
+{
+    uint8_t hash[32];
+    fill_hash(hash, h, true);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO validate_headers_log(height,hash,ok)"
+            " VALUES(?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Install one active-chain block_index at height h. Its IDENTITY hash
+ * (phashBlock — what the discriminator reads) is the CANONICAL per-height
+ * hash fill_hash(h,false), i.e. == validate_headers' most-work header hash.
+ * No BLOCK_HAVE_DATA + nFile=-1 keeps the body deliberately ABSENT: the live
+ * mis-route was the OLD discriminator's body-readability gate deferring a
+ * script-side split forever; the header-only classifier must route it to the
+ * replay regardless. BLOCK_VALID_SCRIPTS (already set) makes the block-flag
+ * reconcile a clean no-op so it does not perturb the false-clear assertion. */
+static struct block_index *vsh_prod_insert(struct main_state *ms,
+                                           struct uint256 *hash, int32_t h,
+                                           struct block_index *prev)
+{
+    fill_hash(hash->data, h, false);
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = h;
+    bi->pprev = prev;
+    bi->nStatus = BLOCK_VALID_SCRIPTS;   /* no HAVE_DATA -> flag repair no-op */
+    bi->nFile = -1;
+    bi->nDataPos = 0;
+    bi->nTx = 1;
+    bi->nChainTx = prev ? prev->nChainTx + 1 : 1;
+    arith_uint256_set_u64(&bi->nChainWork, (uint64_t)(h - A + 1));
+    return bi;
+}
+
 int test_validate_script_hash_split_repair(void);
 int test_validate_script_hash_split_repair(void)
 {
@@ -412,5 +580,209 @@ int test_validate_script_hash_split_repair(void)
     /* ── teardown ──────────────────────────────────────────────────────────── */
     progress_store_close();
     test_cleanup_tmpdir(dir);
+
+    /* ── PHASE D-F: the PRODUCTION live shape (coins above H*, body absent) ──
+     * PHASES A-C exercise only progress-store primitives, so the production
+     * routing decision (maybe_repair_validate_script_hash_split ->
+     * stage_repair_classify_hash_split, which reads
+     * active_chain_at(H)->phashBlock) was never covered — that is why the live
+     * coins-above-H* mis-route shipped green. Here we build the real shape:
+     *   - a real main_state with a [A+1..A+5] active chain whose per-height
+     *     IDENTITY hash (phashBlock) is the CANONICAL most-work header;
+     *   - script_validate recorded the DIVERGENT non-canonical body at A+3
+     *     (the script-side split that caps H* at A+2);
+     *   - coins applied through A+5 (well ABOVE the A+2 frontier);
+     *   - the canonical bodies deliberately NOT on disk (nFile=-1) — the live
+     *     livelock was the OLD body-readability gate deferring a script-side
+     *     split forever, so the header-only classifier MUST route it to the
+     *     dual replay regardless of body presence.
+     * Asserts: discriminator routes SCRIPT-side (and a genuine validate-side
+     * shape routes VALIDATE-side); the orchestrator routes the split to the
+     * dual replay; the noncanonical purge PRESERVES (not blind-purges) the
+     * below-frontier evidence; the condition does NOT self-report `repaired`
+     * while H* is still pinned (the false-clear guard); and once the verdict
+     * is re-derived against the canonical body H* CLIMBS past the split. */
+    {
+        char pdir[256];
+        snprintf(pdir, sizeof(pdir),
+                 "./test-tmp/vsh_prod_%d", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(pdir, 0755);
+
+        progress_store_close();
+        bool p_open = progress_store_open(pdir);
+        VSH_CHECK("D: production store opens", p_open);
+        sqlite3 *pd = progress_store_db();
+        VSH_CHECK("D: production db handle", pd != NULL);
+        bool p_schema = pd && vsh_prod_schema(pd) && coins_kv_ensure_schema(pd);
+        VSH_CHECK("D: production schema built", p_schema);
+        /* fresh store: drop any cached dry-run detect memo */
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+
+        /* Real active chain [A+1..A+5]; canonical header = fill_hash(h,false). */
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 phash[TOP_H - A + 1];
+        struct block_index *pidx[TOP_H - A + 1];
+        bool chain_ok = true;
+        struct block_index *prev = NULL;
+        for (int32_t h = A + 1; h <= TOP_H; h++) {
+            int i = (int)(h - (A + 1));
+            pidx[i] = vsh_prod_insert(&ms, &phash[i], h, prev);
+            chain_ok = chain_ok && pidx[i] != NULL;
+            prev = pidx[i];
+        }
+        VSH_CHECK("D: active chain [A+1..A+5] installs", chain_ok);
+        VSH_CHECK("D: active-chain window moves to A+5",
+                  chain_ok &&
+                  active_chain_move_window_tip(&ms.chain_active,
+                                               pidx[TOP_H - (A + 1)]));
+
+        /* Six logs ok=1 contiguous A+1..A+5; script hash corrupt @ A+3.
+         * validate_headers hash == canonical == active-chain phashBlock. */
+        bool p_seeded = pd != NULL;
+        for (int32_t h = A + 1; h <= TOP_H; h++) {
+            p_seeded = p_seeded
+                && vsh_put_vh(pd, h)                  /* canonical header */
+                && vsh_put_sv(pd, h, h == SPLIT_H)    /* divergent @ A+3   */
+                && vsh_put_bp(pd, h)
+                && vsh_put_pv(pd, h)
+                && vsh_put_ua(pd, h)
+                && vsh_put_tf(pd, h)
+                && vsh_prod_put_bf(pd, h)
+                && vsh_prod_put_ha(pd, h);
+        }
+        VSH_CHECK("D: production logs seeded (script corrupt @ A+3)", p_seeded);
+
+        bool p_cursors = pd
+            && vsh_set_cursor(pd, "validate_headers", TOP_H + 1)
+            && vsh_set_cursor(pd, "body_fetch", TOP_H + 1)
+            && vsh_set_cursor(pd, "body_persist", TOP_H + 1)
+            && vsh_set_cursor(pd, "script_validate", TOP_H + 1)
+            && vsh_set_cursor(pd, "proof_validate", TOP_H + 1)
+            && vsh_set_cursor(pd, "utxo_apply", TOP_H + 1)
+            && vsh_set_cursor(pd, "tip_finalize", TOP_H);
+        VSH_CHECK("D: production cursors set", p_cursors);
+
+        /* coins proven authority applied through A+5 — WELL above the A+2 H*. */
+        uint8_t ptxid[32] = {0};
+        ptxid[0] = 0xC0; ptxid[1] = 0x1d; ptxid[31] = 0xab;
+        uint8_t pcs[1] = {0x51};
+        bool p_coins = pd
+            && coins_kv_add(pd, ptxid, 0, 2000, A + 1, false, pcs, sizeof(pcs))
+            && vsh_set_applied(pd, TOP_H);
+        VSH_CHECK("D: coins proven authority applied @ A+5 (above H*=A+2)",
+                  p_coins);
+
+        /* D1 — the wedge is real: the split caps H* at A+2. */
+        {
+            int32_t hstar = -1;
+            VSH_CHECK("D1: compute_hstar returns true",
+                      pd && vsh_hstar(pd, &hstar));
+            VSH_CHECK("D1: H* capped at A+2 by the script-side split",
+                      hstar == A + 2);
+        }
+
+        /* D2 — THE routing pin: the in-memory canonical header at A+3 equals
+         * validate_headers (vh==active) while script diverged (sv!=active), so
+         * the discriminator routes SCRIPT-side. The OLD body-readability gate
+         * would have deferred here (body absent, nFile=-1); the header-only
+         * classifier must NOT. */
+        {
+            bool cerr = true;
+            enum rf_hash_split_side side =
+                stage_repair_classify_hash_split(&ms, pd, SPLIT_H, &cerr);
+            VSH_CHECK("D2: classify routes the live split SCRIPT-side "
+                      "(no body-readability gate)",
+                      side == RF_SPLIT_SCRIPT_SIDE && !cerr);
+        }
+
+        /* D2b — direction non-regression: a GENUINE stale header (validate
+         * diverged, script == canonical active header) must route VALIDATE-side
+         * so the discriminator is not merely hardwired to SCRIPT-side. Probe at
+         * A+4, then revert it to canonical so the orchestrator sees only A+3. */
+        {
+            bool cerr = true;
+            VSH_CHECK("D2b: seed genuine stale-header shape @ A+4",
+                      vsh_put_vh_corrupt(pd, A + 4));   /* validate diverges  */
+            enum rf_hash_split_side side =
+                stage_repair_classify_hash_split(&ms, pd, A + 4, &cerr);
+            VSH_CHECK("D2b: classify routes a genuine stale header "
+                      "VALIDATE-side", side == RF_SPLIT_VALIDATE_SIDE && !cerr);
+            VSH_CHECK("D2b: revert A+4 to canonical", vsh_put_vh(pd, A + 4));
+        }
+
+        /* D3 + E(dry) — drive the production orchestrator dry-run. It must
+         * ROUTE the split to the dual replay (stale_script_repair_height ==
+         * A+3, repaired probe set, classified SCRIPT-side off the validate
+         * clamp) and the noncanonical purge must PRESERVE — not blind-purge —
+         * the below-frontier evidence (found, purged==0). */
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        {
+            struct stage_reducer_frontier_reconcile_result dry;
+            VSH_CHECK("D3: orchestrator dry-run succeeds",
+                      stage_reducer_frontier_reconcile_light_needed(
+                          pd, &ms, &dry));
+            VSH_CHECK("D3: dry-run routes the split to the dual replay",
+                      dry.repaired &&
+                      dry.stale_script_repair_height == SPLIT_H &&
+                      dry.lowest_script_validate_hash_split == SPLIT_H &&
+                      dry.lowest_validate_headers_hash_split == -1 &&
+                      dry.hstar == A + 2);
+            VSH_CHECK("E: noncanonical evidence preserved, not blind-purged",
+                      dry.noncanonical_found >= 1 &&
+                      dry.noncanonical_purged == 0 &&
+                      dry.lowest_noncanonical == SPLIT_H);
+        }
+
+        /* Apply — the canonical body is absent (nFile=-1), so the replay
+         * cannot re-derive this pass. The FALSE-CLEAR GUARD must hold: the
+         * unresolved script-side split is NOT self-reported as `repaired` via a
+         * validate/tip cursor clamp, H* stays pinned at A+2, and the evidence
+         * rows survive for the replay owner. */
+        {
+            struct stage_reducer_frontier_reconcile_result rr;
+            VSH_CHECK("F: orchestrator apply succeeds",
+                      stage_reducer_frontier_reconcile_light(pd, &ms, &rr));
+            VSH_CHECK("F: false-clear guard — split unresolved, NOT cleared",
+                      !rr.stale_script_repaired &&
+                      rr.lowest_script_validate_hash_split == SPLIT_H &&
+                      rr.lowest_validate_headers_hash_split == -1 &&
+                      !rr.clamped_validate_headers &&
+                      !rr.repaired &&
+                      rr.hstar == A + 2);
+            VSH_CHECK("F: below-frontier split rows survive the purge",
+                      vsh_vh_row_present(pd, SPLIT_H) &&
+                      vsh_sv_row_present(pd, SPLIT_H));
+        }
+
+        /* F2 — model the dual replay's COMMITTED end-state when the body is on
+         * disk: it re-derives the canonical script verdict AND advances the
+         * stage cursors back to the at-tip frontier. The F apply (body absent)
+         * correctly clamped body_fetch/tip_finalize without climbing, so F2 must
+         * restore those cursors — re-deriving the row alone leaves a clamped
+         * cursor capping H*. With the split cleared and cursors at the frontier,
+         * H* CLIMBS past A+3 to the header tip A+5. */
+        {
+            int32_t hstar = -1;
+            VSH_CHECK("F2: re-derive verdict + advance cursors (replay commit)",
+                      vsh_put_sv(pd, SPLIT_H, false)
+                      && vsh_set_cursor(pd, "validate_headers", TOP_H + 1)
+                      && vsh_set_cursor(pd, "body_fetch", TOP_H + 1)
+                      && vsh_set_cursor(pd, "body_persist", TOP_H + 1)
+                      && vsh_set_cursor(pd, "script_validate", TOP_H + 1)
+                      && vsh_set_cursor(pd, "proof_validate", TOP_H + 1)
+                      && vsh_set_cursor(pd, "utxo_apply", TOP_H + 1)
+                      && vsh_set_cursor(pd, "tip_finalize", TOP_H));
+            VSH_CHECK("F2: compute_hstar returns true after re-derivation",
+                      pd && vsh_hstar(pd, &hstar));
+            VSH_CHECK("F2: H* CLIMBED past the split to A+5", hstar == TOP_H);
+        }
+
+        main_state_free(&ms);
+        progress_store_close();
+        test_cleanup_tmpdir(pdir);
+    }
+
     return failures;
 }

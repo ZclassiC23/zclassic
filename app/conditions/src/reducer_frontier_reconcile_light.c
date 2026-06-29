@@ -607,8 +607,9 @@ static bool peer_lag_allows_repair(struct main_state *ms)
  * internal-store evidence of damage, independent of any peer's height
  * (guards against the peer gate silently idling). Transition-logged: one WARN
  * when the bypass engages, re-armed when the tear state ends. */
-static void note_tear_bypass(
-    const struct stage_reducer_frontier_reconcile_result *rr)
+static void note_peer_gate_bypass(
+    const struct stage_reducer_frontier_reconcile_result *rr,
+    const char *reason)
 {
     if (atomic_load(&g_tear_bypass_active))
         return;
@@ -616,10 +617,11 @@ static void note_tear_bypass(
     atomic_fetch_add(&g_tear_bypass_warn_total, 1);
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] peer-gate BYPASS: "
-             "refused_coin_tear pending (coins_applied_height=%d hstar=%d) — "
-             "a durable internal-state tear is peer-independent evidence, "
+             "%s (coins_applied_height=%d hstar=%d noncanonical_found=%d) — "
+             "durable internal-state damage is peer-independent evidence, "
              "detect proceeds with no peer ahead",
-             rr->coins_applied_height, rr->hstar);
+             reason, rr->coins_applied_height, rr->hstar,
+             rr->noncanonical_found);
 }
 
 /* True when the dry-run reports any refusal/backfill-pending signal, or a
@@ -636,7 +638,8 @@ static bool repair_evidence_pending(
         rr->stale_script_repair_attempted ||
         rr->tipfin_backfill_count > 0 ||
         rr->tipfin_backfill_refused_reason ||
-        rr->reorg_residue_tipfin_found > 0)
+        rr->reorg_residue_tipfin_found > 0 ||
+        rr->noncanonical_found > 0)
         return true;
 
     bool present = false;
@@ -773,7 +776,17 @@ static bool detect_reducer_frontier_reconcile_light(void)
 
     if (!peer_lag_allows_repair(ms)) {
         if (rr.refused_coin_tear) {
-            note_tear_bypass(&rr);
+            note_peer_gate_bypass(&rr, "refused_coin_tear pending");
+        } else if (rr.noncanonical_found > 0) {
+            /* Durable below-frontier damage — e.g. a validate/script
+             * hash_split the noncanonical purge PROTECTED for the
+             * coins-rewinding stale-script replay — is peer-independent
+             * evidence exactly like refused_coin_tear: the fold tip H* is
+             * pinned below the header tip with no peer ahead. BYPASS the gate
+             * so the remedy runs and the episode stays active; WITHOUT this the
+             * LIVE node (peers at the tip, none ahead) never arms the
+             * sticky_escalator and the wedge is silent. */
+            note_peer_gate_bypass(&rr, "noncanonical_found pending");
         } else {
             /* Gate KEPT for the plain cursor-churn repair class: peers that
              * exist but are not ahead are no staleness evidence. The tear

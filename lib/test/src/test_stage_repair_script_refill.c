@@ -74,8 +74,10 @@ extern bool stage_reducer_frontier_try_unapplied_hole_clamp(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out,
     bool *handled);
+struct main_state;
 extern bool stage_reducer_frontier_reconcile_refill_cursors(
     sqlite3 *db,
+    struct main_state *ms,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
@@ -745,7 +747,8 @@ static int run_drain_harness_refill(void)
     rr.body_persist_cursor_after = rr.body_persist_cursor_before;
 
     SRF_CHECK("drain: FIX-2b reconcile_refill_cursors succeeds",
-              stage_reducer_frontier_reconcile_refill_cursors(db, true, &rr));
+              stage_reducer_frontier_reconcile_refill_cursors(db, NULL, true,
+                                                              &rr));
     SRF_CHECK("drain: FIX-2b clamps script+proof to the hole",
               rr.clamped_script_validate &&
               rr.clamped_proof_validate &&
@@ -969,7 +972,7 @@ int test_stage_repair_script_refill(void)
 
         SRF_CHECK("floor: reconcile_refill_cursors succeeds",
                   stage_reducer_frontier_reconcile_refill_cursors(
-                      db, true, &rr));
+                      db, NULL, true, &rr));
         SRF_CHECK("floor: hole detected but clamp refused (replay domain)",
                   rr.lowest_script_validate_refill_hole == A + 2 &&
                   !rr.clamped_script_validate &&

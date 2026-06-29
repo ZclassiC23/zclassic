@@ -570,6 +570,7 @@ static bool reducer_frontier_reconcile_light_impl(
     local.coins_applied_height = -1;
     local.lowest_noncanonical = -1;
     local.lowest_reorg_residue_tipfin = -1;
+    local.lowest_script_validate_hash_split = -1;
 
     if (!stage_table_ensure(db))
         return false;
@@ -708,15 +709,33 @@ static bool reducer_frontier_reconcile_light_impl(
         !reconcile_block_index_flags(db, ms, apply, &local))
         return false;
 
-    if (!stage_reducer_frontier_reconcile_refill_cursors(db, apply, &local))
+    if (!stage_reducer_frontier_reconcile_refill_cursors(db, ms, apply, &local))
         return false;
 
     if (!reconcile_tip_finalize_cursor(db, apply, &local))
         return false;
 
+    /* An UNRESOLVED script-side hash_split this pass (the dual replay did not
+     * re-derive it — e.g. the canonical body is not yet on disk) must NOT
+     * self-report `repaired` via a validate_headers / tip_finalize cursor clamp:
+     * those clamps re-derive the SAME canonical header / clamp the served tip
+     * but cannot move H* past the split (apply_hash_agreement still caps it), so
+     * counting them as success would self-clear the condition and starve the
+     * sticky_escalator. Leave it honestly unresolved so the witness stays false,
+     * attempts accrue to max_attempts, and the escalator arms its terminating
+     * ladder. With the discriminator + replay routing fixed the replay normally
+     * fires (handled_replay returns before this point), so this guard only bites
+     * the residual non-advancing case (canonical body genuinely absent). A
+     * genuine VALIDATE-side split still counts its clamp (it does advance H*). */
+    bool unresolved_script_side_split =
+        local.lowest_script_validate_hash_split >= 0 &&
+        !local.stale_script_repaired;
+    bool clamp_repaired =
+        (!unresolved_script_side_split) &&
+        (local.clamped_tip_finalize || local.clamped_validate_headers);
+
     local.repaired = local.repaired ||
-                     local.clamped_tip_finalize ||
-                     local.clamped_validate_headers ||
+                     clamp_repaired ||
                      local.clamped_body_fetch ||
                      local.clamped_body_persist ||
                      local.clamped_script_validate ||

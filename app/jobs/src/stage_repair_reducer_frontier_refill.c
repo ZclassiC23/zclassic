@@ -245,6 +245,7 @@ static bool proof_validate_log_present_unlocked(sqlite3 *db,
 
 static bool reconcile_validate_headers_refill_holes(
     sqlite3 *db,
+    struct main_state *ms,
     struct stage_reducer_frontier_reconcile_result *out)
 {
     if (!db || !out)
@@ -259,9 +260,32 @@ static bool reconcile_validate_headers_refill_holes(
             db, out->hstar + 1, end_height,
             &out->lowest_validate_headers_refill_hole))
         return false;
-    return find_lowest_validate_headers_hash_split_unlocked(
-        db, out->hstar + 1, end_height,
-        &out->lowest_validate_headers_hash_split);
+    if (!find_lowest_validate_headers_hash_split_unlocked(
+            db, out->hstar + 1, end_height,
+            &out->lowest_validate_headers_hash_split))
+        return false;
+
+    /* VALIDATE-SIDE-ONLY clamp: the cursor rewind below re-derives the
+     * canonical HEADER, which cures a stale validate_headers verdict but is a
+     * semantic no-op for a SCRIPT-side split (it leaves the stale script row, so
+     * H* cannot climb and the clamp would self-clear without progress). Classify
+     * the split by the canonical active header; route a script-side split to the
+     * coins-rewinding dual replay (lowest_script_validate_hash_split) and drop it
+     * from the validate clamp target. INDETERMINATE (active header unavailable)
+     * keeps the existing direction-blind clamp as a fallback. */
+    if (out->lowest_validate_headers_hash_split >= 0) {
+        bool err = false;
+        enum rf_hash_split_side side = stage_repair_classify_hash_split(
+            ms, db, out->lowest_validate_headers_hash_split, &err);
+        if (err)
+            return false;
+        if (side == RF_SPLIT_SCRIPT_SIDE) {
+            out->lowest_script_validate_hash_split =
+                out->lowest_validate_headers_hash_split;
+            out->lowest_validate_headers_hash_split = -1;
+        }
+    }
+    return true;
 }
 
 static bool reconcile_body_fetch_refill_holes(
@@ -711,10 +735,11 @@ bool stage_reducer_frontier_try_unapplied_hole_clamp(
 
 bool stage_reducer_frontier_reconcile_refill_cursors(
     sqlite3 *db,
+    struct main_state *ms,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    if (!reconcile_validate_headers_refill_holes(db, out))
+    if (!reconcile_validate_headers_refill_holes(db, ms, out))
         return false;
 
     if (!reconcile_body_fetch_refill_holes(db, out))
