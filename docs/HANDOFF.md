@@ -1,21 +1,39 @@
-> ## CURRENT STATE (2026-06-23)
-> Node is UNWEDGED and at the network tip: `getblockcount` ~3,156,986 (climbing with
-> the network), `verificationprogress=1`. The former wedge block 3,156,171
-> (hash `00000bbf1e98fe6058189d193f54f6497a841ccfd5185a360e3f4a2a850079a2`) is now ACTIVE.
-> Fixed by commit `ab512d577` "fix(boot): bind a snapshot above coins-best by extending
-> the active-chain window": when the `-load-snapshot-at-own-height` seed height is ABOVE
-> coins-best, the loader extends the active-chain window forward to the PoW-proven header
-> tip (`active_chain_extend_window`, `config/src/boot_refold_staged.c:702`) instead of
-> FATAL-ing. HOW it unwedged: a COMPLETE, SHA3-verified snapshot at h=3,156,809
-> (`utxo-seed-3156809.snapshot`) seeds the full UTXO set ABOVE the height that wedged the
-> older TORN 3,151,901 seed, then folds forward (never re-touches 3,156,171).
-> STILL BORROWED — the 3,156,809 snapshot is minted from the zclassicd oracle: its block
-> hash is consensus-bound to the in-binary PoW header, but its UTXO-set CONTENT is not yet
-> independently re-derived from genesis. The sovereign cure (self-mint a from-genesis SHA3
-> anchor at compiled checkpoint 3,056,758 → `-refold-from-anchor` cutover → DELETE the
-> borrowed loader) remains the END GOAL, NOT done.
-> **docs/work/FUTURE-CLAUDE-FIX-THIS.md** must now be read as historical (it analysed the
-> prior wedge, since resolved).
+## CURRENT STATE (2026-06-29)
+
+**The recurring forward-sync "stuck one block below tip" class is CURED.** The
+fixes are on `main` and are ancestors of HEAD `90539edd4`: `75f35dcaf`
+(`fix(sync): never wedge on one block`), `a35ca0c8f` (tip_finalize
+header-only-successor finalize — the lookahead deadlock), and `525d6579c` /
+`75967c574` (the self-heal de-latch package). The live node **reaches and HOLDS
+the network tip** — verified live 2026-06-29 (`blocks` 3,163,729 vs `headers`
+3,163,730, the intentional 1-block finality lag; `verificationprogress=1`).
+Verify, do not assume: `zcl_status`, then `zcl_state subsystem=reducer_frontier`.
+
+**How it reaches tip is still a borrowed-but-consensus-bound stopgap.** The node
+seeds `coins_kv` from a near-tip SHA3 snapshot whose anchor block hash is bound to
+the in-binary PoW header, then folds forward. The snapshot's UTXO *content* is not
+yet independently re-derived from genesis. The published bootstrap snapshot is
+`utxo-seed-3155842.snapshot` (starterpack-3155842); reconcile any other height
+cited below against the README/release before trusting it.
+
+**Latest landed change:** explorer improvements shipped in `90539edd4` (HODL-wave
+hover, corrected stats, detailed factoids) and were deployed to the live binary.
+The live binary carries a `-dirty` build stamp only because it was built with the
+owner WIP (the sovereign-anchor files) present in the tree.
+
+**Remaining in-flight work — the sovereign self-mint anchor.** Goal: self-mint a
+from-genesis SHA3 anchor at a compiled checkpoint, cut over via
+`-refold-from-anchor`, and DELETE the borrowed near-tip loader. Code lives in
+`tools/mint_v2_snapshot.c` (auto-pick seed height + Sapling-frontier reuse so it
+can mint from a blocks-pruned source) and `lib/test/src/test_self_folded_anchor.c`
+(re-derive == baked checkpoint; a mutated coin is detectable). `mint_v2_snapshot`
+is a standalone `BUILD_NODE_TOOL` target (not in default `all`); the anchor
+fixture runs under `build/bin/test_zcl`, not `test-parallel`. Plan of record:
+[`docs/work/sticky-node-plan.md`](work/sticky-node-plan.md) (sovereign-cure spine:
+[`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md)).
+
+**Do NOT re-chase the wedge.** Verify the live node first — a doc can be stale, the
+node cannot.
 
 # HANDOFF — read this first
 
@@ -23,35 +41,14 @@
 Verify HEAD with `git status --short --branch`; detect your worktree with `pwd`
 (`main` = orchestrator; `wt2`/`wt3` = workers — `docs/work/README.md`).
 
-## Night wrap — 2026-06-24
+## Recent history
 
-`origin/main` is current at `011b3f2f7` (`mcp: harden profile response
-building`). The local `main` branch was fast-forwarded to `origin/main` with the
-working tree preserved; there are still unrelated WIP files in the worktree.
-Treat those remaining edits as **uncommitted and unreviewed** until you inspect
-them. Do not revert them blindly.
-
-Safe commits pushed tonight, in order:
-
-- `5704b8c08` `jobs: distinguish missing cursor from read failure`
-- `80bdffb24` `jobs: fail loud on cursor hydrate errors`
-- `ca0599291` `api: stream json routes without stack body caps`
-- `3cd9ebfe2` `sync: expose monitor tip advance input`
-- `011b3f2f7` `mcp: harden profile response building`
-
-Verification run for those commits: staged-sync cursor/stage groups,
-`body_fetch_stage`, `stage_anchor`, `api`, `sync_watchdog_conditions`,
-`syncdiag_rpc`, `node_health_service`, `mcp_controllers`, plus focused lint
-gates (`check-raw-sqlite`, `check-long-functions`, `check-silent-errors*` where
-applicable). Live node was **not** restarted or deployed.
-
-Remaining dirty WIP after the fast-forward was concentrated in:
-`Makefile`, API resource/page controllers, `utxo_apply_stage`,
-runtime flags, SHA3 AVX512, block/transaction serializers, block index /
-coins_kv / progress-store code, wallet files, `src/main.c`, plus untracked
-`coins_ram.*`, `test_coins_ram.c`, and `tools/snapshot_from_coinskv.c`.
-Re-run `git status --short --branch` and `git diff --stat origin/main` before
-touching any of it.
+`origin/main` is at HEAD `90539edd4`; `git log --oneline -20` is the
+authoritative recent record. Two work-streams landed most recently: the
+forward-sync never-wedge cure (`75f35dcaf` plus the deadlock/de-latch commits —
+see **CURRENT STATE** above) and the explorer refresh (`90539edd4`). The dated
+sections below this line are historical context — trust `git log` and the live
+node over any of them.
 
 ---
 
