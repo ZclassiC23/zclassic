@@ -116,6 +116,78 @@ bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
     return true;
 }
 
+/* STEP-2A pending-prevout HOLD signal — an IN-MEMORY trigger, NOT persisted to
+ * progress.kv. It is published by script_validate's sv_hold_unresolved on a
+ * JOB_IDLE HOLD (reducer drive thread). A JOB_IDLE step's progress.kv writes are
+ * rolled back by the stage per-step SAVEPOINT (lib/util/src/stage.c
+ * stage_run_once:482 always ROLLBACK TO SAVEPOINT a non-advancing step), so a
+ * durable row CANNOT be written from inside the HOLD — not in the test, not
+ * live. The trigger therefore lives in RAM (guarded by g_pending_lock) and is
+ * RE-DERIVED after a restart: script_validate re-runs the frozen-cursor block,
+ * re-HOLDs, and re-publishes it within a tick. Read by coin_backfill's hole
+ * finder + hole re-check and the boot torn gate (self_heal / boot threads). The
+ * `db` params are kept for call-site symmetry but unused. */
+static pthread_mutex_t g_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool g_pending_present;
+static int g_pending_height = -1;
+static struct uint256 g_pending_block_hash;
+static struct uint256 g_pending_txid;
+static int g_pending_vin = -1;
+
+bool coin_backfill_pending_prevout_set(struct sqlite3 *db, int height,
+                                       const struct uint256 *block_hash,
+                                       const struct uint256 *fail_txid,
+                                       int fail_vin)
+{
+    (void)db;
+    if (!block_hash || !fail_txid)
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] pending_prevout_set NULL input h=%d", height);
+    pthread_mutex_lock(&g_pending_lock);
+    g_pending_present = true;
+    g_pending_height = height;
+    g_pending_block_hash = *block_hash;
+    g_pending_txid = *fail_txid;
+    g_pending_vin = fail_vin;
+    pthread_mutex_unlock(&g_pending_lock);
+    return true;
+}
+
+bool coin_backfill_pending_prevout_clear(struct sqlite3 *db)
+{
+    (void)db;
+    pthread_mutex_lock(&g_pending_lock);
+    g_pending_present = false;
+    g_pending_height = -1;
+    g_pending_vin = -1;
+    pthread_mutex_unlock(&g_pending_lock);
+    return true;
+}
+
+bool coin_backfill_pending_prevout_get(struct sqlite3 *db, int *out_height,
+                                       struct uint256 *out_block_hash,
+                                       struct uint256 *out_txid, int *out_vin,
+                                       bool *out_found)
+{
+    (void)db;
+    if (out_height) *out_height = -1;
+    if (out_vin)    *out_vin    = -1;
+    if (!out_found)
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] pending_prevout_get NULL out_found");
+    pthread_mutex_lock(&g_pending_lock);
+    bool present = g_pending_present;
+    if (present) {
+        if (out_height)     *out_height = g_pending_height;
+        if (out_block_hash) *out_block_hash = g_pending_block_hash;
+        if (out_txid)       *out_txid = g_pending_txid;
+        if (out_vin)        *out_vin = g_pending_vin;
+    }
+    pthread_mutex_unlock(&g_pending_lock);
+    *out_found = present;
+    return true;
+}
+
 bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
                                int32_t *out)
 {
@@ -214,6 +286,38 @@ bool find_lowest_prevout_unresolved_hole_unlocked(
                  rc, sqlite3_errmsg(db));
     }
     sqlite3_finalize(st);
+
+    /* STEP-2A: ALSO consult the non-terminal pending-prevout HOLD signal. When
+     * script_validate HOLDS on a transient prevout_unresolved it no longer
+     * writes the terminal ok=0 row the SQL scan above looks for, so a genuinely
+     * torn pre-anchor coin would be invisible to coin_backfill and the boot
+     * torn gate. The signal carries the same (height, block_hash) binding and
+     * frozen-cursor height; admit it as the hole when it replaces or is lower
+     * than the SQL result (preserving "lowest hole" semantics). Only meaningful
+     * for the prevout_unresolved verdict the tear/repair consumers want. */
+    if (strcmp(wanted_status, "prevout_unresolved") == 0) {
+        int pend_h = -1, pend_vin = -1;
+        struct uint256 pend_hash, pend_txid;
+        bool pend_found = false;
+        if (!coin_backfill_pending_prevout_get(db, &pend_h, &pend_hash,
+                                               &pend_txid, &pend_vin,
+                                               &pend_found))
+            LOG_FAIL("coin_backfill",
+                     "[coin_backfill] hole scan pending_prevout read failed");
+        /* `<= cursor` (NOT `< cursor` like the SQL scan): the HOLD freezes the
+         * script_validate cursor AT the hole, so backfill_run calls this with
+         * cursor == hole_h. A strict `<` would exclude the very frozen-cursor
+         * hole the signal exists to surface; the torn gate's cursor=ceiling+1
+         * keeps hole_h < cursor regardless. A pend_h ABOVE the cursor (not yet a
+         * settled frontier) is still excluded. */
+        if (pend_found && pend_h > 0 && pend_h <= cursor &&
+            (*out_height < 0 || pend_h < *out_height)) {
+            *out_height = pend_h;
+            snprintf(status_out, 32, "prevout_unresolved");
+            *hash_out = pend_hash;
+            *hash_found = true;
+        }
+    }
     return true;
 }
 
@@ -324,6 +428,26 @@ bool coin_backfill_hole_row_matches_unlocked(struct sqlite3 *db, int height,
                  rc, sqlite3_errmsg(db));
     }
     sqlite3_finalize(st);
+
+    /* STEP-2A torn case: when script_validate HOLDs on a prevout_unresolved it
+     * writes NO legacy ok=0 row — the hole was surfaced via the non-terminal
+     * pending-prevout signal (find_lowest_prevout_unresolved_hole admits it).
+     * The re-check above then sees no row and would make backfill_run refuse
+     * "hole_row_changed" on a genuinely torn coin. Accept the hole when the
+     * durable signal still matches this (height, block_hash) — the same binding
+     * the finder admitted. */
+    if (!*match) {
+        int pend_h = -1;
+        struct uint256 pend_hash;
+        bool pend_found = false;
+        if (!coin_backfill_pending_prevout_get(db, &pend_h, &pend_hash, NULL,
+                                               NULL, &pend_found))
+            LOG_FAIL("coin_backfill",
+                     "[coin_backfill] hole recheck pending read failed");
+        if (pend_found && pend_h == height &&
+            memcmp(pend_hash.data, hash->data, 32) == 0)
+            *match = true;
+    }
     return true;
 }
 
@@ -442,6 +566,11 @@ void coin_backfill_reset_latches_for_testing(void)
     memset(g_latch, 0, sizeof(g_latch));
     g_latch_next = 0;
     pthread_mutex_unlock(&g_state_lock);
+    pthread_mutex_lock(&g_pending_lock);
+    g_pending_present = false;
+    g_pending_height = -1;
+    g_pending_vin = -1;
+    pthread_mutex_unlock(&g_pending_lock);
 }
 
 bool coin_backfill_dump_state_json(struct json_value *out, const char *key)

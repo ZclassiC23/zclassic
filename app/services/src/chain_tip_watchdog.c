@@ -27,6 +27,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "services/sticky_escalator.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
@@ -381,13 +382,40 @@ static void wd_apply_tick(int64_t h, int64_t now_us, bool do_shutdown)
     supervisor_progress(atomic_load(&g_id), h);
 }
 
+/* The PROVABLE tip (H* = reducer_frontier_compute_hstar), NOT
+ * active_chain_height. active_chain_height is the DOWNLOAD/header tip: it
+ * climbs on every block admitted to the index even while the fold is frozen
+ * one below it, so keying this liveness watchdog on it would false-green it
+ * through the exact forward-sync wedge it exists to catch (the tip "advances"
+ * by raw download churn while H* — the only height the node may serve — stays
+ * stuck, so the watchdog never escalates / restarts / pages). H* only advances
+ * on a real re-derived fold step, so a frozen H* is a genuine liveness loss.
+ * On a transient progress.kv read failure, fall back to the active-chain
+ * height rather than report a phantom 0 that would itself trip a false stall. */
+static int64_t wd_provable_tip(void)
+{
+    sqlite3 *db = progress_store_db();
+    if (db) {
+        progress_store_tx_lock();
+        int32_t hstar = -1;
+        int32_t served_floor = -1;
+        bool ok = reducer_frontier_compute_hstar(db, &hstar, &served_floor);
+        progress_store_tx_unlock();
+        if (ok && hstar >= 0)
+            return (int64_t)hstar;
+        LOG_WARN("chain_tip_watchdog",
+                 "[chain_tip_watchdog] H* recompute failed — falling back to "
+                 "active-chain height for this tick");
+    }
+    return g_ms ? (int64_t)active_chain_height(&g_ms->chain_active) : -1;
+}
+
 static void chain_tip_wd_tick(struct liveness_contract *c)
 {
     (void)c;
     if (!g_ms) return;
-    /* Production: live chain height, real monotonic clock, real shutdown. */
-    wd_apply_tick((int64_t)active_chain_height(&g_ms->chain_active),
-                  mono_us_now(), /*do_shutdown=*/true);
+    /* Production: provable tip H*, real monotonic clock, real shutdown. */
+    wd_apply_tick(wd_provable_tip(), mono_us_now(), /*do_shutdown=*/true);
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */

@@ -59,6 +59,14 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
  * blocker_reset_for_testing per the hook's contract. */
 void coin_backfill_reset_latches_for_testing(void);
 
+/* STEP-2A pending-prevout HOLD signal writer (src-private util) — lets this
+ * test prove coin_backfill fires from the NON-TERMINAL pending signal alone,
+ * with NO terminal ok=0 row and the script_validate cursor frozen at the hole. */
+bool coin_backfill_pending_prevout_set(struct sqlite3 *db, int height,
+                                       const struct uint256 *block_hash,
+                                       const struct uint256 *fail_txid,
+                                       int fail_vin);
+
 #define CBT(desc, expr) do { \
     printf("coin_backfill: %s... ", (desc)); \
     if ((expr)) printf("OK\n"); \
@@ -870,16 +878,9 @@ static int cb_case_happy(void)
     const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
     int64_t coins_before = coins_kv_count(fx->db);
 
-    /* Seed the existing stale-script replay marker — the insert must delete
-     * it so the proven replay re-runs once with the new coin. */
-    char hex[65];
-    char replay_key[192];
-    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hex);
-    snprintf(replay_key, sizeof(replay_key),
-             "reducer_frontier.script_replay_repair.%d.%s", CB_HOLE, hex);
-    uint8_t one = 1;
-    CBT("happy: seed replay marker",
-        progress_meta_set(fx->db, replay_key, &one, 1));
+    /* STEP 3: the stale-script replay no longer uses a write-once marker
+     * (termination is the body-vs-row delta), so coin_backfill no longer seeds
+     * or clears one. */
 
     /* Detect (apply=false): applicable, no scan, no writes. */
     struct coin_backfill_result det;
@@ -968,10 +969,6 @@ static int cb_case_happy(void)
                            "utxo_apply.coin_backfill.outpoint.%") == 1 &&
         progress_meta_get(fx->db, op_key, blob, sizeof(blob), &blen, &found) &&
         found);
-    found = false;
-    CBT("happy: replay marker deleted (replay re-runs once)",
-        progress_meta_get(fx->db, replay_key, blob, sizeof(blob), &blen,
-                          &found) && !found);
     CBT("happy: scan record consumed",
         cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
 
@@ -1000,6 +997,54 @@ static int cb_case_happy(void)
 }
 
 /* Case 2: ADVERSARIAL — coin actually spent mid-range. */
+/* Case: the STEP-2A pending-prevout HOLD signal (NOT a terminal ok=0 row) is
+ * what arms coin_backfill. script_validate HOLDS its cursor AT the torn hole and
+ * publishes the non-terminal pending signal instead of writing ok=0 — so the
+ * legacy ok=0 trigger is GONE. coin_backfill must still discover and repair the
+ * hole (preserving the torn-coins class's auto-terminating remedy owner), after
+ * which the frozen H* can climb. Same fixture as happy, but the ok=0 row is
+ * removed, the script_validate cursor is frozen AT the hole (== hole_h), and the
+ * pending signal is the only trigger present. */
+static int cb_case_pending_signal_arms(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("pending_signal: setup",
+        cb_setup(fx, "pending_signal", 9, CBV_TA0, CB_TA0_VALUE, false, true));
+
+    /* Swap the legacy terminal trigger for the STEP-2A HOLD state: drop the
+     * ok=0 row, freeze the script_validate cursor AT the hole, publish ONLY the
+     * non-terminal pending-prevout signal. */
+    CBT("pending_signal: drop the legacy ok=0 row",
+        cb_exec(fx->db,
+                "DELETE FROM script_validate_log WHERE height=16")); /* CB_HOLE */
+    CBT("pending_signal: legacy ok=0 row is gone",
+        cb_query_int(fx->db,
+            "SELECT COUNT(*) FROM script_validate_log WHERE height=16") == 0);
+    CBT("pending_signal: freeze script_validate cursor at the hole",
+        cb_seed_cursor(fx->db, "script_validate", CB_HOLE));
+    const struct transaction *spender = &fx->chain.bodies[CB_HOLE].vtx[1];
+    CBT("pending_signal: publish the non-terminal pending HOLD signal",
+        coin_backfill_pending_prevout_set(fx->db, CB_HOLE,
+                                          &fx->chain.hashes[CB_HOLE],
+                                          &spender->hash, 0));
+
+    int64_t coins_before = coins_kv_count(fx->db);
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("pending_signal: repairs from the pending signal alone",
+        st == COIN_BACKFILL_REPAIRED && res.hole_height == CB_HOLE &&
+        res.inserted_count == 1);
+    CBT("pending_signal: the torn coin is re-inserted (H* can climb)",
+        coins_kv_count(fx->db) == coins_before + 1 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
 static int cb_case_spent(void)
 {
     int failures = 0;
@@ -1373,15 +1418,9 @@ static int cb_case_multi_coin(void)
     CBT("multi: setup", cb_setup(fx, "multi", 8, CBV_TA0_TB0, CB_TA0_VALUE,
                                  false, true));
 
-    char hex[65];
-    char replay_key[192];
-    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hex);
-    snprintf(replay_key, sizeof(replay_key),
-             "reducer_frontier.script_replay_repair.%d.%s", CB_HOLE, hex);
-    uint8_t one = 1;
-    CBT("multi: seed replay marker",
-        progress_meta_set(fx->db, replay_key, &one, 1));
-
+    /* STEP 3: the stale-script replay no longer uses a write-once marker
+     * (termination is the body-vs-row delta), so coin_backfill no longer clears
+     * one — the seed/clear assertions were removed. */
     int64_t coins_before = coins_kv_count(fx->db);
     struct coin_backfill_result res;
     int st = cb_try_until(fx, &res);
@@ -1397,12 +1436,6 @@ static int cb_case_multi_coin(void)
     CBT("multi: one outpoint marker per coin",
         cb_meta_count_like(fx->db,
                            "utxo_apply.coin_backfill.outpoint.%") == 2);
-    uint8_t blob[8];
-    size_t blen = 0;
-    bool found = false;
-    CBT("multi: replay marker cleared once",
-        progress_meta_get(fx->db, replay_key, blob, sizeof(blob), &blen,
-                          &found) && !found);
     CBT("multi: the single scan record was consumed by the insert",
         cb_meta_count_like(fx->db, "coin_backfill.scan.%") == 0);
 
@@ -2209,6 +2242,7 @@ int test_stage_repair_coin_backfill(void)
     blocker_reset_for_testing();
 
     failures += cb_case_happy();
+    failures += cb_case_pending_signal_arms();
     failures += cb_case_spent();
     failures += cb_case_offchain_creator();
     failures += cb_case_delta_window();

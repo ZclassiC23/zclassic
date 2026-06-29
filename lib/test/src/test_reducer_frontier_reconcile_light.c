@@ -735,14 +735,20 @@ int test_reducer_frontier_reconcile_light(void)
         bool got = condition_engine_get_registered_snapshot(
             "reducer_frontier_reconcile_light", &snap);
         sqlite3 *db = progress_store_db();
+        /* STEP 4: the cursor-desync repair runs and clamps the cursors, but a
+         * cursor clamp does NOT advance the provable frontier H*
+         * (reducer_frontier_compute_hstar stays at A+1, still pinned by
+         * tip_finalize). The H*-only witness therefore must NOT clear on cursor
+         * churn — it stays active with one accrued attempt. (Pre-STEP-4 the
+         * any-cursor-change clear-edge false-greened here; that edge is gone.) */
         bool ok = got &&
                   reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
                   cursor_value(db, "body_fetch") == A + 2 &&
                   cursor_value(db, "tip_finalize") == A + 1 &&
-                  !snap.currently_active &&
-                  snap.attempts == 0 &&
-                  snap.last_outcome == COND_REMEDY_SKIP &&
-                  snap.cleared_count == 1 &&
+                  snap.currently_active &&
+                  snap.attempts == 1 &&
+                  snap.last_outcome == COND_REMEDY_UNWITNESSED &&
+                  snap.cleared_count == 0 &&
                   !snap.operator_needed_emitted;
 
         struct json_value dump;
@@ -792,16 +798,20 @@ int test_reducer_frontier_reconcile_light(void)
                      == A + 1;
         json_free(&dump);
 
+        /* A second tick must still NOT false-clear: with H* unchanged the
+         * witness stays false, so the condition remains active and un-cleared,
+         * and a single bounded attempt does not page the operator. (Whether the
+         * now-clamped symptom re-detects is irrelevant to the contract under
+         * test — only that cursor churn never witnesses a clear.) */
         condition_engine_tick();
         got = condition_engine_get_registered_snapshot(
             "reducer_frontier_reconcile_light", &snap);
         ok = ok && got &&
-             reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
-             !snap.currently_active &&
-             snap.attempts == 0 &&
-             snap.cleared_count == 1 &&
+             snap.currently_active &&
+             snap.cleared_count == 0 &&
              !snap.operator_needed_emitted;
-        RFRL_CHECK("zero-peer condition witnesses cursor repair", ok);
+        RFRL_CHECK("zero-peer cursor repair does not false-clear "
+                   "(H*-only witness)", ok);
 
         sync_monitor_set_context(NULL, NULL, NULL);
         sync_monitor_test_set_tip_advance_ts(0);

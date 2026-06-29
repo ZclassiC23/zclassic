@@ -13,7 +13,10 @@
 #include "net/compact_blocks.h"
 #include "storage/disk_block_io.h"
 #include "validation/process_block.h"
+#include "validation/check_block.h"
 #include "consensus/validation.h"
+#include "core/arith_uint256.h"
+#include "jobs/reducer_frontier.h"  // lib-layer-ok:provable-tip-for-self-suspicion-ban-gate
 #include "net/download.h"
 #include "net/https_server.h"
 #include "event/event.h"
@@ -21,6 +24,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -232,6 +236,185 @@ bool msg_block_validation_is_retryable(const struct validation_state *state)
     return strcmp(state->reject_reason, "block-not-finalized-by-reducer") == 0;
 }
 
+/* ── Self-suspicion gate for the block-reject ban path ──────────────────
+ *
+ * A dos>=100 block reject normally bans the serving peer (24h). But the
+ * reject verdict produced by our own block-submit path mixes two very
+ * different failure classes:
+ *   - the block BODY is consensus-invalid (bad Equihash/PoW, bad merkle
+ *     root, malformed tx, sigop overflow) — the peer is genuinely
+ *     misbehaving and MUST be banned; OR
+ *   - the block body is fine but OUR local state/context rejected it (a
+ *     stale reducer verdict, a torn coins seed, a header-source mismatch).
+ *     Here WE are wrong; banning every peer that serves the canonical block
+ *     self-isolates the node from the honest majority.
+ *
+ * The old code exempted exactly ONE reject_reason string and otherwise
+ * banned unconditionally — so any NEW local-state defect that we hadn't
+ * spelled into that allowlist self-isolated the node silently.
+ *
+ * This gate re-derives the verdict from the block's OWN bytes via
+ * check_block() — the same context-free consensus predicate zclassicd
+ * applies (Equihash, PoW-vs-nBits, merkle root, structural/sigops). It is
+ * armed ONLY for a block that the network's PoW says is a strictly-more-
+ * work chain at/above our provable tip H* (i.e. the network disagrees with
+ * us about the best chain), so it changes nothing for old forks or lower-
+ * work side chains. When armed:
+ *   - body INVALID  -> the block itself is condemned: ban normally (DoS
+ *                      protection + consensus parity fully preserved).
+ *   - body VALID    -> the fault is local: SUPPRESS the ban and leave the
+ *                      block retryable so it reprocesses once our state
+ *                      heals (never a silent dedup'd wedge).
+ *
+ * K distinct peers serving the SAME body-valid block we keep rejecting is
+ * a NAMED, escalated blocker (event + WARN) — the otherwise-silent
+ * ban-everyone loop now TERMINATES as a named self-isolation alarm. */
+#define SELF_SUSPICION_SLOTS      64
+#define SELF_SUSPICION_MAX_PEERS  32
+#define SELF_SUSPICION_ESCALATE_K 2   /* distinct peers => named blocker */
+
+struct self_suspicion_entry {
+    struct uint256 hash;
+    node_id_t peers[SELF_SUSPICION_MAX_PEERS];
+    int n_peers;
+    int64_t last_ms;
+    bool used;
+    bool escalated;
+};
+
+static struct self_suspicion_entry g_ss_table[SELF_SUSPICION_SLOTS];
+static pthread_mutex_t g_ss_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Record that `peer_id` served the body-valid more-work block `hash` that
+ * we locally rejected; return the count of DISTINCT peers seen for it
+ * (>=1). Sets *escalated_now true exactly once, when the distinct count
+ * first reaches SELF_SUSPICION_ESCALATE_K. Fixed-size table, LRU-evicted
+ * by oldest last_ms. */
+static int self_suspicion_record(const struct uint256 *hash,
+                                 node_id_t peer_id, bool *escalated_now)
+{
+    if (escalated_now) *escalated_now = false;
+    int64_t now = peer_scoring_now_ms();
+
+    pthread_mutex_lock(&g_ss_lock);
+
+    struct self_suspicion_entry *e = NULL;
+    struct self_suspicion_entry *free_slot = NULL;
+    struct self_suspicion_entry *oldest = &g_ss_table[0];
+    for (int i = 0; i < SELF_SUSPICION_SLOTS; i++) {
+        struct self_suspicion_entry *c = &g_ss_table[i];
+        if (c->used && uint256_eq(&c->hash, hash)) { e = c; break; }
+        if (!c->used && !free_slot) free_slot = c;
+        if (c->last_ms < oldest->last_ms) oldest = c;
+    }
+    if (!e) {
+        e = free_slot ? free_slot : oldest;
+        memset(e, 0, sizeof(*e));
+        e->hash = *hash;
+        e->used = true;
+    }
+
+    bool known = false;
+    for (int i = 0; i < e->n_peers; i++)
+        if (e->peers[i] == peer_id) { known = true; break; }
+    if (!known && e->n_peers < SELF_SUSPICION_MAX_PEERS)
+        e->peers[e->n_peers++] = peer_id;
+    e->last_ms = now;
+    int distinct = e->n_peers;
+
+    if (distinct >= SELF_SUSPICION_ESCALATE_K && !e->escalated) {
+        e->escalated = true;
+        if (escalated_now) *escalated_now = true;
+    }
+
+    pthread_mutex_unlock(&g_ss_lock);
+    return distinct;
+}
+
+/* Decide whether a rejected block's fault is OURS (local state/context)
+ * rather than the serving peer's. Returns true => the peer must NOT be
+ * banned and the block must stay retryable; false => fall through to the
+ * normal DoS/ban path (this includes the case where the block body is
+ * itself consensus-invalid — a genuine offence). */
+static bool msg_block_reject_self_suspected(struct msg_processor *mp,
+                                            struct p2p_node *node,
+                                            const struct block *blk,
+                                            const struct uint256 *hash,
+                                            const struct validation_state *state)
+{
+    /* We need our header index for this block to learn its height + work.
+     * If we never accepted the header, we cannot establish a more-work
+     * chain — fall back to the normal ban (conservative, DoS-preserving). */
+    struct block_index *landed =
+        block_map_find(&mp->main_state->map_block_index, hash);
+    struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
+    if (!landed || !tip)
+        return false;
+
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    bool at_or_above_hstar = landed->nHeight >= hstar;
+    bool strictly_more_work =
+        arith_uint256_compare(&landed->nChainWork, &tip->nChainWork) > 0;
+
+    /* Only suspect ourselves when the network's PoW says this is a BETTER
+     * chain than ours AND it lives at/above the height we can prove. An old
+     * fork or a lower-work side chain keeps the normal ban. */
+    if (!at_or_above_hstar || !strictly_more_work)
+        return false;
+
+    /* Re-derive the verdict from the block's OWN bytes (context-free
+     * consensus). This neither weakens nor strengthens any validity rule —
+     * it is the identical predicate the connect path uses. */
+    struct validation_state body_state;
+    validation_state_init(&body_state);
+    bool body_ok = check_block(blk, &body_state, mp->params,
+                               /*check_pow=*/true,
+                               /*check_merkle_root=*/true,
+                               /*check_size_limits=*/true);
+
+    char hex[65];
+    uint256_get_hex(hash, hex);
+
+    if (!body_ok) {
+        /* The block body itself condemns the block — a genuine
+         * consensus-invalid. Ban normally; parity + DoS preserved. */
+        LOG_WARN("net",
+                 "self-suspicion CLEARED: more-work block %s at h=%d is "
+                 "body-invalid (%s) — banning %s as normal",
+                 hex, landed->nHeight,
+                 body_state.reject_reason[0] ? body_state.reject_reason
+                                             : "invalid",
+                 node->addr_name);
+        return false;
+    }
+
+    /* Body is clean but we still rejected it: OUR state/context is the
+     * suspect, not the peer. Count distinct peers; once K agree, raise a
+     * NAMED blocker so this can never degrade into a silent ban-everyone
+     * loop. */
+    bool escalated_now = false;
+    int distinct = self_suspicion_record(hash, node->id, &escalated_now);
+    const char *lr = state->reject_reason[0] ? state->reject_reason
+                                             : "unknown";
+    if (escalated_now) {
+        event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                    "SELF_SUSPECT h=%d hash=%s peers=%d local_reason=%s",
+                    landed->nHeight, hex, distinct, lr);
+        LOG_WARN("net",
+                 "SELF-SUSPICION BLOCKER: %d distinct peers serve body-valid "
+                 "more-work block %s at h=%d (>=H*=%d) that we locally reject "
+                 "(%s); NOT banning — local state/context is the suspect. "
+                 "Block left retryable for reprocessing once state heals.",
+                 distinct, hex, landed->nHeight, hstar, lr);
+    } else {
+        LOG_INFO("net",
+                 "self-suspicion: not banning %s for body-valid more-work "
+                 "block %s at h=%d we locally reject (%s); distinct_peers=%d",
+                 node->addr_name, hex, landed->nHeight, lr, distinct);
+    }
+    return true;
+}
+
 bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
 {
@@ -297,21 +480,47 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     }
     (void)mp->block_submit(&blk, &state, mp->block_submit_ctx);
 
-    if (!validation_state_is_valid(&state) &&
-        !msg_block_validation_is_retryable(&state)) {
+    /* Decide ONCE whether a non-retryable reject is OUR fault (a local
+     * state/context defect against a body-valid, more-work block at/above
+     * H*) rather than the peer's. Reused below to (a) leave the block
+     * retryable instead of dedup'ing it away, and (b) suppress the peer
+     * ban. Expensive (re-derives the body verdict via check_block) so it is
+     * computed only on the invalid, non-retryable path and only fires the
+     * body re-check for a strictly-more-work block at/above H*. */
+    bool self_suspect = false;
+    const bool reject_nonretryable =
+        !validation_state_is_valid(&state) &&
+        !msg_block_validation_is_retryable(&state);
+    if (reject_nonretryable)
+        self_suspect = msg_block_reject_self_suspected(mp, node, &blk, &hash,
+                                                       &state);
+
+    if (reject_nonretryable) {
         char hex[65];
         uint256_get_hex(&hash, hex);
         event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
                     "hash=%s reason=%s", hex,
                     state.reject_reason[0] ? state.reject_reason : "unknown");
 
-        /* rejected blocks: mark seen so the dedup ring
-         * short-circuits subsequent deliveries of the same bad block
-         * from other peers. Only the "received but skipped connect"
-         * case (SKIP_ALREADY_RUNNING, etc.) must stay UN-marked so
-         * it can retry; that path is validation_state_is_valid ==
-         * true but with no tip advance, handled below. */
-        block_mark_seen(&hash);
+        if (!self_suspect) {
+            /* rejected blocks: mark seen so the dedup ring
+             * short-circuits subsequent deliveries of the same bad block
+             * from other peers. Only the "received but skipped connect"
+             * case (SKIP_ALREADY_RUNNING, etc.) must stay UN-marked so
+             * it can retry; that path is validation_state_is_valid ==
+             * true but with no tip advance, handled below. */
+            block_mark_seen(&hash);
+        } else {
+            /* Body-valid more-work block we reject on LOCAL state: do NOT
+             * dedup it. Marking it seen would short-circuit every future
+             * delivery (block_already_seen at intake) and silently wedge
+             * the node below it forever. Leaving it out of the ring means
+             * the next delivery reprocesses it once our state heals. */
+            LOG_WARN("net",
+                     "holding block %s retryable (self-suspected local "
+                     "reject) — not dedup'ing so it reprocesses after heal",
+                     hex);
+        }
 
         /* When a block fails validation during IBD (likely a fork block),
          * re-request headers from this peer starting at our current tip.
@@ -500,26 +709,42 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     } else {
         int dos = 0;
         if (validation_state_get_dos(&state, &dos) && dos > 0) {
-            event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
-                        "dos=%d %s", dos, state.reject_reason);
-            printf("Peer %s: invalid block (dos=%d): %s\n",
-                   node->addr_name, dos, state.reject_reason);
-            /* DoS from validation is graded: treat the common [50, 100]
-             * range as the two typed categories so peer_offence_weight()
-             * drives the score increment. Anything else (graded 1..49)
-             * falls through to the raw peer_misbehaving() path so we
-             * still honour the validator's exact grade — a constant
-             * enum can't represent it. */
             const char *rr = state.reject_reason[0] ? state.reject_reason
                                                     : "invalid block";
-            if (dos >= 100) {
-                peer_scoring_record(mp->net_mgr, node,
-                                    PEER_OFFENCE_INVALID_BLOCK, rr);
-            } else if (dos >= 50) {
-                peer_scoring_record(mp->net_mgr, node,
-                                    PEER_OFFENCE_INVALID_HEADER, rr);
+            if (self_suspect) {
+                /* The fault is LOCAL, not the peer's: the block body is
+                 * clean (re-derived via check_block) and on a strictly-
+                 * more-work chain at/above H*. Banning would self-isolate
+                 * from the honest majority, so we suppress ALL peer
+                 * penalty here. The named self-isolation blocker is already
+                 * emitted inside msg_block_reject_self_suspected(); this is
+                 * the per-event suppression record. */
+                event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                            "dos=%d SUPPRESSED-self-suspect: %s", dos, rr);
+                LOG_WARN("net",
+                         "Peer %s: NOT penalizing (self-suspected local "
+                         "reject, dos=%d): %s",
+                         node->addr_name, dos, rr);
             } else {
-                peer_misbehaving(mp->net_mgr, node, dos, rr);
+                event_emitf(EV_BLOCK_REJECTED, (uint32_t)node->id,
+                            "dos=%d %s", dos, state.reject_reason);
+                printf("Peer %s: invalid block (dos=%d): %s\n",
+                       node->addr_name, dos, state.reject_reason);
+                /* DoS from validation is graded: treat the common [50, 100]
+                 * range as the two typed categories so peer_offence_weight()
+                 * drives the score increment. Anything else (graded 1..49)
+                 * falls through to the raw peer_misbehaving() path so we
+                 * still honour the validator's exact grade — a constant
+                 * enum can't represent it. */
+                if (dos >= 100) {
+                    peer_scoring_record(mp->net_mgr, node,
+                                        PEER_OFFENCE_INVALID_BLOCK, rr);
+                } else if (dos >= 50) {
+                    peer_scoring_record(mp->net_mgr, node,
+                                        PEER_OFFENCE_INVALID_HEADER, rr);
+                } else {
+                    peer_misbehaving(mp->net_mgr, node, dos, rr);
+                }
             }
         } else if (!validation_state_is_valid(&state)) {
             /* DoS=0 but invalid: orphan block or parent-failed.

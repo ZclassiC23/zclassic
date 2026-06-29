@@ -489,11 +489,36 @@ static bool log_hash_at(sqlite3 *db, const char *log_table,
     return rc_ok;
 }
 
-/* C3 — cap H* at the height BELOW the first hash split between
+/* C3 — clamp H* at the height BELOW the first hash split between
  * validate_headers_log.hash and script_validate_log.block_hash. A split
  * counts only when BOTH rows are present with non-NULL 32-byte hashes that
- * differ. Walks anchor+1 .. *hstar; lowers *hstar on the first split.
- * Returns false on a DB read error. */
+ * differ. Walks anchor+1 .. *hstar; clamps on the first split.
+ *
+ * STEP 5 (2026-06-28): this clamp used to be a SILENT permanent cap that set
+ * *hstar = h-1 and returned, delegating 100% of the cure to an unbounded
+ * downstream remedy with no named signal — a height could sit frozen one below
+ * forever with nothing on record. That silent delegation is removed here:
+ *
+ *   (1) A split now has a BOUNDED, auto-terminating repair OWNER:
+ *       maybe_repair_validate_script_hash_split() (stage_repair_reducer_-
+ *       frontier_coin.c) self-discovers the lowest split via
+ *       stale_script_hash_split_unlocked() and re-derives BOTH sides from the
+ *       one canonical active block (delete stale script+proof rows, rewind
+ *       cursors, replay). With both verdicts re-derived from a single body a
+ *       standing split can no longer be produced — this branch is the dead
+ *       band-aid for a defect class that now has a real owner.
+ *
+ *   (2) On the off chance a residual/transient split (a pre-fix stale row) is
+ *       still seen, the clamp is KEPT as a pure SAFETY floor so H* never
+ *       advances past an unproven height (compute_hstar's returned value is
+ *       byte-identical to the old behavior in every case) — but it is no
+ *       longer SILENT: it emits a throttled, named blocker line identifying
+ *       the exact height + both 4-byte hash prefixes and the repair owner, so
+ *       the pass TERMINATES as a named-and-owned condition rather than a quiet
+ *       freeze. The repair owner is the auto-terminating remedy; if IT cannot
+ *       make progress it raises EV_OPERATOR_NEEDED itself.
+ *
+ * Returns false on a DB read error. Caller holds progress_store_tx_lock(). */
 static bool apply_hash_agreement(sqlite3 *db, int32_t anchor, int32_t *hstar)
 {
     for (int32_t h = anchor + 1; h <= *hstar; h++) {
@@ -505,9 +530,23 @@ static bool apply_hash_agreement(sqlite3 *db, int32_t anchor, int32_t *hstar)
                          &sv_found))
             return false;
         if (vh_found && sv_found && memcmp(vh, sv, 32) != 0) {
-            /* Both logs recorded a hash for h and they disagree: a genuine
-             * defect. H* caps at h-1 (never below the anchor). */
+            /* Genuine residual split: clamp H* to h-1 (never below the anchor)
+             * so we never serve the unproven height, and NAME it loudly so the
+             * bounded repair owner's work is visible — never a silent freeze. */
             *hstar = (h - 1 < anchor) ? anchor : (h - 1);
+            static struct log_throttle split_throttle = LOG_THROTTLE_INIT;
+            int64_t now = platform_time_wall_unix();
+            uint64_t reps = 0;
+            if (log_throttle_should_emit(&split_throttle, (uint64_t)(uint32_t)h,
+                                         now, 300, &reps))
+                LOG_WARN("reducer",
+                         "validate_headers vs script_validate hash split at "
+                         "h=%d (vh=%02x%02x%02x%02x sv=%02x%02x%02x%02x) — H* "
+                         "clamped to %d; owner = maybe_repair_validate_script_"
+                         "hash_split (re-derive from canonical body) "
+                         "repeated=%llu",
+                         h, vh[0], vh[1], vh[2], vh[3], sv[0], sv[1], sv[2],
+                         sv[3], *hstar, (unsigned long long)reps);
             return true;
         }
     }

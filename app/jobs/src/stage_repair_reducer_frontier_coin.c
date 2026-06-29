@@ -24,6 +24,9 @@
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "script/script.h"
+#include "script_validate_log_store.h"
+#include "event/event.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "util/util.h"
@@ -34,13 +37,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-struct repair_prevout_view {
-    sqlite3 *db;
-    int created_first;
-    int created_last;
-    int coin_frontier;
-};
 
 /* Lowest failed-row height strictly below `cursor` for `sql` (which takes a
  * single trailing int bind); no hole is success with *out_height == -1.
@@ -388,51 +384,6 @@ static bool backfill_created_outputs_range(sqlite3 *db, struct main_state *ms,
     return true;
 }
 
-static bool repair_prevout_resolver(const struct outpoint *prevout,
-                                    struct tx_out *out, void *user)
-{
-    const struct repair_prevout_view *view = user;
-    if (!prevout || !out || !view || !view->db)
-        return false;
-
-    int64_t value = 0;
-    unsigned char script[MAX_SCRIPT_SIZE];
-    size_t slen = 0;
-    int created_h = -1;
-    if (created_outputs_index_get_bounded(
-            view->db, prevout->hash.data, prevout->n, view->created_first,
-            view->created_last, &value, script, sizeof(script), &slen,
-            &created_h)) {
-        if (slen > MAX_SCRIPT_SIZE)
-            return false;
-        out->value = value;
-        script_set(&out->script_pub_key, script, slen);
-        return true;
-    }
-
-    struct coins c;
-    coins_init(&c);
-    if (coins_kv_get_coins(view->db, prevout->hash.data, &c)) {
-        bool usable = c.height < view->coin_frontier &&
-                      c.height <= view->created_last &&
-                      prevout->n < c.num_vout &&
-                      !tx_out_is_null(&c.vout[prevout->n]);
-        if (usable) {
-            const struct tx_out *src = &c.vout[prevout->n];
-            size_t src_len = src->script_pub_key.size;
-            if (src_len <= MAX_SCRIPT_SIZE) {
-                out->value = src->value;
-                script_set(&out->script_pub_key, src->script_pub_key.data,
-                           src_len);
-                coins_free(&c);
-                return true;
-            }
-        }
-        coins_free(&c);
-    }
-    return false;
-}
-
 static bool delete_log_range(sqlite3 *db, const char *table,
                              int first_h, int cursor)
 {
@@ -485,18 +436,25 @@ static bool dry_run_stale_script_replay(
         if (err) sqlite3_free(err);
         return false;
     }
-    struct repair_prevout_view view = {
-        .db = db,
-        .created_first = replay_first,
-        .created_last = height,
-        .coin_frontier = replay_first,
-    };
+    /* STEP 1 (keystone): the dry-run MUST go through the SAME public dry-run the
+     * real stage uses (script_validate_stage_dry_run_block -> the NULL/default
+     * created_index_prevout resolver) so dry.ok==true PROVABLY implies the real
+     * fold writes ok=1 for the same (height, active body). We set up the rolled-
+     * back txn so the default resolver sees the SAME state the real fold will:
+     *   - created_outputs backfilled over [replay_first, backfill_top] (covers
+     *     coins created in the replay span);
+     *   - coins_kv rewound (inverse deltas) AND the applied_height marker rolled
+     *     back to replay_first, so created_index_prevout's view frontier matches
+     *     the rewound coin set (pre-replay coins resolve via coins_kv, in-span
+     *     coins via the created_outputs index — exactly the real fold's two
+     *     layers). Everything is undone by the ROLLBACK below. */
+    bool rewind_coins = utxo_cursor > replay_first;
     bool ok = backfill_created_outputs_range(db, ms, replay_first,
                                              backfill_top) &&
-              (utxo_cursor <= replay_first ||
-               inverse_checked(db, replay_first, utxo_cursor)) &&
-              script_validate_stage_dry_run_block_with_prevout(
-                  blk, height, repair_prevout_resolver, &view, dry);
+              (!rewind_coins || inverse_checked(db, replay_first, utxo_cursor)) &&
+              (!rewind_coins ||
+               coins_kv_set_applied_height_in_tx(db, replay_first)) &&
+              script_validate_stage_dry_run_block(blk, height, dry);
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     return ok;
 }
@@ -511,7 +469,7 @@ static bool stale_script_replay_tx(
     int utxo_cursor,
     int tip_cursor,
     int backfill_top,
-    const char *marker)
+    bool rewind_headers)
 {
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
@@ -522,6 +480,15 @@ static bool stale_script_replay_tx(
         return false;
     }
 
+    /* STEP 3: NO write-once marker. The rewind deletes the stale ok=0 row(s) and
+     * rewinds the cursor(s), so the ok=0 detector stops matching next tick; STEP
+     * 1 (dry==real) guarantees the forward re-fold writes ok=1, so the hole
+     * cannot re-form — termination is by the body-vs-row delta, not a guard.
+     * For the hash-split class (rewind_headers) we ALSO drop validate_headers'
+     * rows over [replay_first, script_cursor) and force its cursor back, so BOTH
+     * validate_headers and script_validate re-derive their hash from the SAME
+     * on-disk canonical body -> v.hash==s.block_hash by construction, the split
+     * cannot persist. */
     bool rewind_coins = utxo_cursor > replay_first;
     if (!backfill_created_outputs_range(db, ms, replay_first, backfill_top) ||
         (rewind_coins && !inverse_checked(db, replay_first, utxo_cursor)) ||
@@ -529,16 +496,21 @@ static bool stale_script_replay_tx(
                           script_cursor) ||
         !delete_log_range(db, "proof_validate_log", replay_first,
                           proof_cursor) ||
+        (rewind_headers &&
+         !delete_log_range(db, "validate_headers_log", replay_first,
+                           script_cursor)) ||
         (rewind_coins &&
          !utxo_apply_delete_rows_above(db, replay_first, utxo_cursor - 1)) ||
+        (rewind_headers &&
+         !stage_repair_force_stage_cursor(db, "validate_headers",
+                                          replay_first)) ||
         !stage_repair_force_stage_cursor(db, "script_validate", replay_first) ||
         !stage_repair_force_stage_cursor(db, "proof_validate", replay_first) ||
         !stage_repair_force_stage_cursor(db, "tip_finalize", replay_first) ||
         (rewind_coins &&
          !utxo_apply_unwind_write_cursor(db, (uint64_t)replay_first)) ||
         (rewind_coins &&
-         !coins_kv_set_applied_height_in_tx(db, replay_first)) ||
-        !reducer_repair_marker_record_in_tx(db, marker)) {
+         !coins_kv_set_applied_height_in_tx(db, replay_first))) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
@@ -706,16 +678,20 @@ static bool maybe_repair_value_overflow(
 }
 
 /* Shared body for the two stale-script replay paths. `detect` picks the lowest
- * height to re-derive (an ok=0 status hole, or an ok=1 hash split); `marker_kind`
- * keys the one-shot guard so the two paths never collide at the same height. The
- * rewind/dry-run/coins safety is identical for both — only the trigger differs. */
+ * height to re-derive (an ok=0 status hole, or an ok=1 hash split).
+ * `rewind_headers` is true ONLY for the hash-split path: it additionally drops
+ * the validate_headers verdict over the replay span so both validators re-derive
+ * the hash from the SAME canonical body. Termination is by the body-vs-row delta
+ * (STEP 3) — there is NO write-once marker; the rewind + STEP-1's dry==real
+ * guarantee make each pass end as progress (rewind/rewrite) XOR named
+ * escalation. */
 static bool maybe_repair_stale_script_via(
     sqlite3 *db,
     struct main_state *ms,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out,
     stale_script_detector_fn detect,
-    const char *marker_kind)
+    bool rewind_headers)
 {
     int script_cursor = -1;
     int proof_cursor = -1;
@@ -768,6 +744,11 @@ static bool maybe_repair_stale_script_via(
         return true;
     }
     if (!apply) {
+        /* PROBE: signal the reconcile_light condition that a stale-script hole
+         * is present so detect fires (reducer_frontier_reconcile_light.c reads
+         * rr.repaired). The real body-vs-row delta runs below in apply mode;
+         * a genuinely-invalid / irreducible hole is resolved there (rewrite /
+         * named escalation), never by this probe. */
         out->repaired = true;
         progress_store_tx_unlock();
         return true;
@@ -798,6 +779,18 @@ static bool maybe_repair_stale_script_via(
         return true;
     }
 
+    /* STEP 1 + STEP 3 — the body-vs-row DELTA. Re-derive the verdict against the
+     * canonical body via the SAME public dry-run the real fold uses (so dry.ok
+     * PROVABLY implies the real fold writes ok=1). Three outcomes, each
+     * self-terminating with NO write-once marker:
+     *   - dry.ok               -> the stored ok=0 / wrong-hash row is stale: rewind
+     *                             (delete + cursor-rewind) so the forward re-fold
+     *                             writes ok=1; the detector stops matching at once.
+     *   - genuinely invalid    -> rewrite the row to the terminal genuine reject
+     *                             (status='script_invalid', ok=0) so the transient
+     *                             detector stops matching; a real reject stays real.
+     *   - irreducibly undeter- -> NAME one permanent blocker + page the operator;
+     *     mined (internal_err)    no churn, no silent skip. */
     struct script_validate_dry_run_report dry;
     int backfill_top = body_cursor - 1;
     if (!dry_run_stale_script_replay(db, ms, height, replay_first, utxo_cursor,
@@ -807,61 +800,65 @@ static bool maybe_repair_stale_script_via(
         return false;
     }
     if (!dry.ok && !dry.internal_error) {
+        /* The body genuinely fails script verification. Record the terminal
+         * genuine verdict (the SAME ok=0 'script_invalid' row the real fold
+         * would write) so the transient-class detector stops matching and the
+         * reject stays a real reject — consensus verdict unchanged. */
         out->stale_script_repair_genuinely_invalid = true;
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair: H genuinely invalid "
-                 "height=%d status=%s",
-                 height, dry.status);
+        bool wrote = script_validate_log_insert(
+            db, height, "script_invalid", false, dry.tx_count, dry.input_count,
+            &dry.first_failure_txid, dry.first_failure_vin,
+            dry.first_failure_serror, &block_hash);
         progress_store_tx_unlock();
         block_free(&blk);
+        if (!wrote)
+            LOG_RETURN(false, "stage_repair",
+                       "[stage_repair] stale script repair: failed to record "
+                       "terminal genuine reject h=%d", height);
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair: H genuinely invalid "
+                 "height=%d status=%s — recorded terminal script_invalid",
+                 height, dry.status);
         return true;
     }
     if (!dry.ok && dry.internal_error) {
-        /* A transient infra failure (internal_error) is NOT a consensus
-         * verdict — "could not determine validity," not "invalid." The
-         * dry-run reproducing it means the transient has not yet cleared.
-         * Fall through to the one-shot rewind so the stages re-attempt the
-         * height; the marker guard below bounds the retry to exactly one
-         * rewind per (height, block_hash), after which a still-present
-         * internal_error surfaces as a named marker-seen refusal instead
-         * of a permanent silent wedge. */
+        /* The body still cannot be re-derived (prevout truly missing / body
+         * undecodable) even after backfill: this is an IRREDUCIBLE blocker, not
+         * a retryable transient (STEP 2A holds genuine transients at the stage,
+         * so a row that reaches the repair as internal_error is stuck). Name it
+         * and page the operator ONCE — never a silent skip, never a rewind that
+         * cannot make progress. */
+        char txhex[65];
+        uint256_get_hex(&dry.first_failure_txid, txhex);
+        char reason[BLOCKER_REASON_MAX];
+        snprintf(reason, sizeof(reason),
+                 "stale script hole height=%d %s: body could not be re-derived "
+                 "(tx=%s vin=%d) — H* cannot advance",
+                 height, dry.status, txhex, dry.first_failure_vin);
+        struct blocker_record b;
+        if (blocker_init(&b, "reducer_frontier.script_undetermined",
+                         "stage_repair", BLOCKER_PERMANENT, reason)) {
+            b.retry_budget = -1;
+            if (blocker_set(&b) == 0) /* fresh (not rate-limited) -> page once */
+                event_emitf(EV_OPERATOR_NEEDED, 0,
+                            "reducer_frontier script_undetermined height=%d "
+                            "tx=%s vin=%d status=%s",
+                            height, txhex, dry.first_failure_vin, dry.status);
+        }
+        out->stale_script_repair_genuinely_invalid = false;
+        progress_store_tx_unlock();
+        block_free(&blk);
         LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair: transient "
-                 "internal_error retriable height=%d status=%s — rewinding "
-                 "for one-shot re-validation",
+                 "[stage_repair] stale script repair: irreducible "
+                 "internal_error height=%d status=%s — named blocker + "
+                 "operator paged",
                  height, dry.status);
-    }
-
-    char marker[192];
-    if (!reducer_repair_marker_key(marker, marker_kind, height,
-                                   &block_hash)) {
-        progress_store_tx_unlock();
-        block_free(&blk);
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair marker overflow h=%d",
-                 height);
-        return false;
-    }
-    bool marker_seen = false;
-    if (!reducer_repair_marker_seen(db, marker, &marker_seen)) {
-        progress_store_tx_unlock();
-        block_free(&blk);
-        return false;
-    }
-    if (marker_seen) {
-        out->stale_script_repair_marker_seen = true;
-        LOG_WARN("stage_repair",
-                 "[stage_repair] stale script repair skipped h=%d: "
-                 "one-shot marker already present",
-                 height);
-        progress_store_tx_unlock();
-        block_free(&blk);
         return true;
     }
 
     ok = stale_script_replay_tx(db, ms, height, replay_first, script_cursor,
                                 proof_cursor, utxo_cursor, tip_cursor,
-                                backfill_top, marker);
+                                backfill_top, rewind_headers);
     progress_store_tx_unlock();
     block_free(&blk);
     if (!ok)
@@ -890,15 +887,17 @@ static bool maybe_repair_stale_script(
 {
     return maybe_repair_stale_script_via(db, ms, apply, out,
                                          stale_script_hole_unlocked,
-                                         "script_replay");
+                                         /*rewind_headers=*/false);
 }
 
 /* ok=1 hash split (validate_headers.hash != script_validate.block_hash): a stale
  * script verdict for a NON-canonical body that caps H* with no other repair
  * owner. Re-derive against the canonical active block so the split clears and
- * H* climbs. The one-shot marker + the reducer_frontier_reconcile_light witness
- * (H* must advance) make it auto-terminating; the condition re-polls every tick
- * so a not-yet-fetched canonical body just retries, never silently wedges. */
+ * H* climbs. The body-vs-row delta makes it auto-terminating WITHOUT a marker:
+ * the rewind (STEP 3, rewind_headers=true) drops the stale validate_headers AND
+ * script_validate verdicts over the span so both re-derive from the SAME
+ * canonical body (v.hash==s.block_hash by construction); the condition re-polls
+ * every tick so a not-yet-fetched canonical body just retries, never wedges. */
 static bool maybe_repair_validate_script_hash_split(
     sqlite3 *db,
     struct main_state *ms,
@@ -951,7 +950,7 @@ static bool maybe_repair_validate_script_hash_split(
 
     return maybe_repair_stale_script_via(db, ms, apply, out,
                                          stale_script_hash_split_unlocked,
-                                         "script_hash_split");
+                                         /*rewind_headers=*/true);
 }
 
 /* Core proof internal_error one-shot rewind, parameterized by the block_hash
@@ -1156,10 +1155,11 @@ bool stage_repair_validate_script_hash_split_detect_for_testing(
  * the forward stages re-derive against the canonical body. Pure progress-store
  * ops (no main_state, no disk block read, no coins rewind) — production
  * (maybe_repair_validate_script_hash_split) uses the full replay_tx with the
- * block-read dry-run + coins/backfill safety. A one-shot marker (keyed on a
- * zero block hash) bounds the retry; a second call with the marker present is a
- * no-op. Returns false only on a store error; *repaired / *out_height report
- * whether and where a rewind fired. */
+ * block-read dry-run + coins/backfill safety. STEP 3: marker-free — the rewind
+ * deletes the split row and rewinds the cursor, so a second call's detector
+ * finds no split and is a clean no-op (termination is the body-vs-row delta).
+ * Returns false only on a store error; *repaired / *out_height report whether
+ * and where a rewind fired. */
 bool stage_repair_validate_script_hash_split_rewind_for_testing(
     sqlite3 *db, bool *repaired, int *out_height)
 {
@@ -1184,24 +1184,10 @@ bool stage_repair_validate_script_hash_split_rewind_for_testing(
         return true; /* no split: success no-op */
     }
 
-    struct uint256 zero_hash;
-    memset(&zero_hash, 0, sizeof(zero_hash));
-    char marker[192];
-    if (!reducer_repair_marker_key(marker, "script_hash_split", height,
-                                   &zero_hash)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-    bool seen = false;
-    if (!reducer_repair_marker_seen(db, marker, &seen)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-    if (seen) {
-        progress_store_tx_unlock();
-        return true; /* one-shot already fired */
-    }
-
+    /* STEP 3: marker-free. The rewind deletes the split row and rewinds the
+     * cursor, so a SECOND call's detector finds no split (both ok=1 wrong-hash
+     * rows are gone) and is a clean no-op — termination is by the body-vs-row
+     * delta, not a one-shot guard. */
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
@@ -1212,8 +1198,7 @@ bool stage_repair_validate_script_hash_split_rewind_for_testing(
         !delete_log_range(db, "proof_validate_log", height, proof_cursor) ||
         !stage_repair_force_stage_cursor(db, "script_validate", height) ||
         !stage_repair_force_stage_cursor(db, "proof_validate", height) ||
-        !stage_repair_force_stage_cursor(db, "tip_finalize", height) ||
-        !reducer_repair_marker_record_in_tx(db, marker)) {
+        !stage_repair_force_stage_cursor(db, "tip_finalize", height)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         progress_store_tx_unlock();
         return false;

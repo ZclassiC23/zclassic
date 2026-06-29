@@ -27,6 +27,19 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* src-private util helpers (app/jobs/src/stage_repair_coin_backfill_util.h):
+ * the STEP-2A pending-prevout HOLD signal getter + the shared hole finder that
+ * coin_backfill (G2) and the boot torn-import gate consult. Forward-declared
+ * here — same pattern as test_stage_repair_coin_backfill.c — to drive the REAL
+ * stage and assert the HOLD arms the repair WITHOUT a hand-seeded ok=0 row. */
+bool coin_backfill_pending_prevout_get(struct sqlite3 *db, int *out_height,
+                                       struct uint256 *out_block_hash,
+                                       struct uint256 *out_txid, int *out_vin,
+                                       bool *out_found);
+bool find_lowest_prevout_unresolved_hole_unlocked(
+    struct sqlite3 *db, int cursor, const char *wanted_status, int *out_height,
+    char status_out[32], struct uint256 *hash_out, bool *hash_found);
+
 #define SV_CHECK(name, expr) do { \
     printf("script_validate: %s... ", (name)); \
     if ((expr)) printf("OK\n"); \
@@ -392,16 +405,93 @@ int test_script_validate_stage(void)
         SV_CHECK("internal_error: setup",
                  sv_setup("internal", 3, -1, dir, sizeof(dir), &ms, &sc) == 0);
         sc.missing_prevout_height = 1;
-        SV_CHECK("internal_error: drains 3",
-                 script_validate_stage_drain(100) == 3);
-        SV_CHECK("internal_error: counter == 1",
+        /* STEP 2A: prevout_unresolved is a TRANSIENT "cannot determine yet",
+         * NOT a permanent reject. The stage HOLDS the cursor at the hole — no
+         * terminal ok=0 row, no advance — and re-derives next tick. So the drain
+         * stops at the hole (only h=0 advances) and NO row is written at h=1. */
+        SV_CHECK("internal_error: drains only up to the hole",
+                 script_validate_stage_drain(100) == 1);
+        SV_CHECK("internal_error: cursor held at the hole (1)",
+                 script_validate_stage_cursor() == 1);
+        SV_CHECK("internal_error: counter == 1 (one held height)",
                  script_validate_stage_internal_error_total() == 1);
         int ok = -1, vin = -2; char status[32];
-        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
-                   &vin);
-        SV_CHECK("internal_error: h=1 ok=0", ok == 0);
-        SV_CHECK("internal_error: h=1 status",
-                 strcmp(status, "prevout_unresolved") == 0);
+        bool row = log_row_at(progress_store_db(), 1, &ok, status,
+                              sizeof(status), &vin);
+        SV_CHECK("internal_error: no terminal row written at the hole",
+                 !row && ok == -1);
+        sv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* STEP-2A torn-coin remedy (never-stuck-invariant-0): the real stage
+         * HOLDS on a torn pre-anchor coin (no terminal ok=0 row), but it MUST
+         * still publish the NON-TERMINAL pending-prevout signal — the TRIGGER
+         * that arms coin_backfill's G2 hole finder and the boot torn gate. For
+         * a genuinely torn coin re-derivation alone never resolves, so without
+         * this signal the torn-coins class would lose its auto-terminating
+         * remedy owner. This drives the REAL stage (NOT a hand-seeded ok=0 row),
+         * asserts the signal is published AND found by the shared hole finder,
+         * then resolves the coin (as coin_backfill re-inserts it) and asserts
+         * H* advances and the signal clears — auto-termination, no operator, no
+         * terminal reject. */
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("torn_hold_signal: setup",
+                 sv_setup("torn_hold", 3, -1, dir, sizeof(dir), &ms, &sc) == 0);
+        sc.missing_prevout_height = 1;        /* coin for h=1's spend is torn */
+        SV_CHECK("torn_hold_signal: drains only up to the hole",
+                 script_validate_stage_drain(100) == 1);
+        SV_CHECK("torn_hold_signal: cursor HELD at the hole (1)",
+                 script_validate_stage_cursor() == 1);
+        int ok0 = -1, vin0 = -2; char st0[32];
+        SV_CHECK("torn_hold_signal: no terminal ok=0 row at the hole",
+                 !log_row_at(progress_store_db(), 1, &ok0, st0, sizeof(st0),
+                             &vin0));
+
+        /* (1) the non-terminal pending signal is published with the hole's
+         *     coordinates (height, block_hash, first-failure txid+vin). */
+        int ph = -1, pvin = -1; struct uint256 phash, ptxid; bool pf = false;
+        SV_CHECK("torn_hold_signal: pending signal read",
+                 coin_backfill_pending_prevout_get(progress_store_db(), &ph,
+                                                   &phash, &ptxid, &pvin, &pf));
+        SV_CHECK("torn_hold_signal: pending signal present", pf);
+        SV_CHECK("torn_hold_signal: pending height == hole (1)", ph == 1);
+        SV_CHECK("torn_hold_signal: pending block_hash == hole block",
+                 uint256_eq(&phash, &sc.hashes[1]));
+        SV_CHECK("torn_hold_signal: pending txid == spender",
+                 uint256_eq(&ptxid, &sc.bodies[1].vtx[1].hash));
+        SV_CHECK("torn_hold_signal: pending vin == 0", pvin == 0);
+
+        /* (2) coin_backfill's hole finder + the boot torn gate are ARMED by the
+         *     pending signal alone (no ok=0 row exists). Use cursor == hole —
+         *     the exact frozen-cursor call backfill_run makes (script_validate
+         *     is HELD at the hole, so its cursor equals hole_h). */
+        int hh = -1; char hst[32]; struct uint256 hhash; bool hf = false;
+        progress_store_tx_lock();
+        bool found_hole = find_lowest_prevout_unresolved_hole_unlocked(
+            progress_store_db(), 1, "prevout_unresolved", &hh, hst, &hhash,
+            &hf);
+        progress_store_tx_unlock();
+        SV_CHECK("torn_hold_signal: hole finder returns ok", found_hole);
+        SV_CHECK("torn_hold_signal: hole finder found the hole (1)", hh == 1);
+        SV_CHECK("torn_hold_signal: hole finder hash-bound",
+                 hf && uint256_eq(&hhash, &sc.hashes[1]));
+        SV_CHECK("torn_hold_signal: hole status prevout_unresolved",
+                 strcmp(hst, "prevout_unresolved") == 0);
+
+        /* (3) coin_backfill re-inserts the missing coin; the next HOLD
+         *     re-derivation now resolves ok=1, H* advances, the signal clears —
+         *     the torn-coins class terminates on its own, no operator. */
+        sc.missing_prevout_height = -1;       /* coin now resolvable */
+        SV_CHECK("torn_hold_signal: H* climbs once the coin is restored",
+                 script_validate_stage_drain(100) == 2);
+        SV_CHECK("torn_hold_signal: cursor advanced to tip (3)",
+                 script_validate_stage_cursor() == 3);
+        bool pf2 = true; int ph2 = -1;
+        SV_CHECK("torn_hold_signal: pending signal read after resolve",
+                 coin_backfill_pending_prevout_get(progress_store_db(), &ph2,
+                                                   NULL, NULL, NULL, &pf2));
+        SV_CHECK("torn_hold_signal: pending signal CLEARED on resolve", !pf2);
         sv_teardown(dir, &ms, &sc);
     }
 

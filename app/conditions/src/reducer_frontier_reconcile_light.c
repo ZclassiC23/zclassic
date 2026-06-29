@@ -4,6 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_coin_backfill.h"
@@ -18,6 +19,8 @@
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdint.h>
+
+#define RFRL_COND_NAME "reducer_frontier_reconcile_light"
 
 static _Atomic int g_local_height_at_detect = -1;
 static _Atomic int g_hstar_at_detect = -1;
@@ -445,43 +448,21 @@ static void snapshot_reducer_cursors(sqlite3 *db)
         atomic_store(&g_tip_finalize_cursor_at_detect, cursor);
 }
 
-static bool cursor_changed(sqlite3 *db, const char *name,
-                           const _Atomic int *captured)
-{
-    int before = atomic_load(captured);
-    if (before < 0)
-        return false;
-
-    int now = -1;
-    if (!read_reducer_cursor(db, name, &now))
-        return false;
-    return now >= 0 && now != before;
-}
-
-static bool reducer_cursor_witnessed(sqlite3 *db)
-{
-    return cursor_changed(db, "validate_headers",
-                          &g_validate_headers_cursor_at_detect) ||
-           cursor_changed(db, "body_fetch",
-                          &g_body_fetch_cursor_at_detect) ||
-           cursor_changed(db, "body_persist",
-                          &g_body_persist_cursor_at_detect) ||
-           cursor_changed(db, "script_validate",
-                          &g_script_validate_cursor_at_detect) ||
-           cursor_changed(db, "proof_validate",
-                          &g_proof_validate_cursor_at_detect) ||
-           cursor_changed(db, "utxo_apply",
-                          &g_utxo_apply_cursor_at_detect) ||
-           cursor_changed(db, "tip_finalize",
-                          &g_tip_finalize_cursor_at_detect);
-}
+/* NOTE: the per-stage cursor snapshots captured by snapshot_reducer_cursors()
+ * are now DIAGNOSTIC HINTS only (surfaced via detail_*), never a witness
+ * clear-edge — a moving cursor is raw churn, not a real H* advance, and using
+ * it to clear false-greened the witness on every tick. The witness keys
+ * exclusively on reducer_frontier_compute_hstar (see
+ * witness_reducer_frontier_reconcile_light). */
 
 /* The coin-backfill no-spend scan persists its resumable cursor as a
  * progress_meta record keyed coin_backfill.scan.<H>.<holehash> whose value
  * begins [next_height i32 LE] (jobs/stage_repair_coin_backfill.h). At most
  * one hole is active (single-frontier discipline), so the first record in
- * key order is the live scan. Distinguishes record ABSENT — a valid,
- * witnessable state — from a read failure (returns false). */
+ * key order is the live scan. Distinguishes record ABSENT — a valid
+ * state — from a read failure (returns false). Diagnostic/loud-suppress
+ * input only (snapshot_coin_backfill_scan + repair_evidence_pending); NOT a
+ * witness clear-edge. */
 static bool read_coin_backfill_scan_cursor(sqlite3 *db, bool *present,
                                            int *next_height)
 {
@@ -537,41 +518,15 @@ static void snapshot_coin_backfill_scan(sqlite3 *db)
     atomic_store(&g_coin_backfill_scan_next_at_detect, next);
 }
 
-/* Unlike cursor_changed — whose before<0 convention means "no snapshot,
- * never witness" — an ABSENT scan record at detect is itself a valid
- * baseline: the record being CREATED (absent->present, scan started) and
- * CONSUMED (present->absent, scan completed and applied by the insert tx)
- * are both durable backfill progress and must reset the attempt budget.
- * Only present_before == -1 (no detect snapshot at all) refuses. */
-static bool coin_backfill_scan_witnessed(sqlite3 *db)
-{
-    int present_before =
-        atomic_load(&g_coin_backfill_scan_present_at_detect);
-    if (present_before < 0)
-        return false;
-    int next_before = atomic_load(&g_coin_backfill_scan_next_at_detect);
-
-    bool present_now = false;
-    int next_now = -1;
-    if (!read_coin_backfill_scan_cursor(db, &present_now, &next_now))
-        return false;
-
-    if ((present_before != 0) != present_now)
-        return true;
-    return present_now && next_now != next_before;
-}
-
-/* ── tipfin backfill witness channel ────────────────────────────────────
+/* ── tipfin backfill progress record (diagnostic snapshot only) ─────────
  * The TIPFIN no-spend backfill persists a progress_meta record keyed
  * tipfin_backfill.progress whose value begins [progress i32 LE], bumped
- * after every repaired batch (that package owns the writes/deletes; this
- * Condition only snapshots/witnesses). Mirrors the coin_backfill.scan
- * channel exactly, INCLUDING the absent->present (backfill started) and
- * present->absent (backfill completed and consumed) transitions: a
- * row-only backfill moves NO stage cursor and NO chain height, so it is
- * structurally unwitnessable through the channels above — without this one
- * the attempt budget freezes at max_attempts and pages the operator while
- * the repair is genuinely progressing (attempt-budget starvation). */
+ * after every repaired batch (that package owns the writes/deletes). This
+ * Condition only SNAPSHOTS the record for diagnostics + the loud-suppress
+ * decision (repair_evidence_pending). It is NOT a witness clear-edge: a
+ * row-only backfill that has not yet moved H* is bounded progress, not a
+ * real frontier advance, so it must never reset the attempt budget — only a
+ * genuine H* climb (reducer_frontier_compute_hstar) clears the witness. */
 static bool read_tipfin_backfill_progress(sqlite3 *db, bool *present,
                                           int *progress)
 {
@@ -624,25 +579,6 @@ static void snapshot_tipfin_backfill(sqlite3 *db)
         return;
     atomic_store(&g_tipfin_backfill_present_at_detect, present ? 1 : 0);
     atomic_store(&g_tipfin_backfill_progress_at_detect, progress);
-}
-
-/* Same baseline semantics as coin_backfill_scan_witnessed: an ABSENT record
- * at detect is a valid baseline; only "no detect snapshot at all" refuses. */
-static bool tipfin_backfill_witnessed(sqlite3 *db)
-{
-    int present_before = atomic_load(&g_tipfin_backfill_present_at_detect);
-    if (present_before < 0)
-        return false;
-    int progress_before = atomic_load(&g_tipfin_backfill_progress_at_detect);
-
-    bool present_now = false;
-    int progress_now = -1;
-    if (!read_tipfin_backfill_progress(db, &present_now, &progress_now))
-        return false;
-
-    if ((present_before != 0) != present_now)
-        return true;
-    return present_now && progress_now != progress_before;
 }
 
 static bool peer_lag_allows_repair(struct main_state *ms)
@@ -851,13 +787,33 @@ static bool detect_reducer_frontier_reconcile_light(void)
     }
     log_throttle_reset(&g_gate_suppress);
 
-    atomic_store(&g_local_height_at_detect,
-                 active_chain_height(&ms->chain_active));
-    atomic_store(&g_hstar_at_detect, rr.hstar);
-    atomic_store(&g_sweep_top_at_detect, rr.sweep_top);
-    snapshot_reducer_cursors(db);
-    snapshot_coin_backfill_scan(db);
-    snapshot_tipfin_backfill(db);
+    /* never-stuck-invariant-3: capture the at-detect baseline ONCE, at the
+     * RISING EDGE of an episode — NOT on every detect-true tick. detect() runs
+     * before the engine flips currently_active, so on the first detect of a new
+     * episode the registered snapshot still reads inactive. The old code
+     * re-stamped g_hstar_at_detect = rr.hstar every tick: a sustained
+     * detect-true episode that IS climbing H* one hole at a time would
+     * re-baseline to the just-climbed H* each tick, so the witness's
+     * `hstar_now > hstar_at_detect` never held — a genuinely-progressing repair
+     * accrued attempts and false-paged. Capturing once lets any real H* climb
+     * during the episode clear the witness. The coin/tipfin snapshots are the
+     * progressing() delta baseline; they are likewise frozen at the rising edge
+     * and refreshed ONLY by progressing() on a true return (REFRESH-only, never
+     * a clear-edge). condition_engine_get_registered_snapshot takes the engine
+     * mutex, which the tick path does NOT hold while calling detect(). */
+    struct condition_runtime_snapshot snap;
+    bool already_active =
+        condition_engine_get_registered_snapshot(RFRL_COND_NAME, &snap) &&
+        snap.currently_active;
+    if (!already_active) {
+        atomic_store(&g_local_height_at_detect,
+                     active_chain_height(&ms->chain_active));
+        atomic_store(&g_hstar_at_detect, rr.hstar);
+        atomic_store(&g_sweep_top_at_detect, rr.sweep_top);
+        snapshot_reducer_cursors(db);
+        snapshot_coin_backfill_scan(db);
+        snapshot_tipfin_backfill(db);
+    }
     return true;
 }
 
@@ -965,26 +921,127 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
 
 static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
 {
+    /* The engine passes a wall-clock TIMESTAMP here (condition.c stores `now`
+     * into target_at_detect), NOT a height — ignore it and read our own
+     * captured baseline. */
     (void)target_at_detect;
 
-    struct main_state *ms = sync_monitor_main_state();
-    if (!ms)
+    /* SOLE success predicate: the durable reducer frontier H* advanced PAST
+     * the H* captured at detect (g_hstar_at_detect, set in detect). H* =
+     * reducer_frontier_compute_hstar = MIN over every stage's contiguous ok=1
+     * prefix — the only height the node may serve as its tip.
+     *
+     * The old witness ALSO cleared the instant active_chain_height (the
+     * DOWNLOAD/header tip) grew, OR any reducer cursor moved, OR a coin/tipfin
+     * backfill record advanced. But the download tip climbs on EVERY new block
+     * admitted to the index while the fold stays frozen one below it, so the
+     * witness false-greened on essentially every ~5 s tick, reset attempts to
+     * 0, and NEVER reached max_attempts — EV_OPERATOR_NEEDED / sticky_escalator
+     * could not fire on a genuinely stuck node (the live 6244 silent loops).
+     * Those proxy clear-edges are gone: only a real H* advance clears, so a
+     * non-advancing remedy now leaves the witness false, accrues attempts,
+     * trips max_attempts, and pages the operator in bounded time. A read
+     * failure is "not yet cleared" (false), never a false clear. */
+    int hstar_at_detect = atomic_load(&g_hstar_at_detect);
+    if (hstar_at_detect < 0)
         return false;
-
-    int before = atomic_load(&g_local_height_at_detect);
-    if (before < 0)
-        return false;
-
-    int now = active_chain_height(&ms->chain_active);
-    if (now > before)
-        return true;
 
     sqlite3 *db = progress_store_db();
-    if (reducer_cursor_witnessed(db))
-        return true;
-    if (coin_backfill_scan_witnessed(db))
-        return true;
-    return tipfin_backfill_witnessed(db);
+    if (!db) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] witness: "
+                 "progress db unavailable — treating as not-yet-cleared");
+        return false;
+    }
+
+    progress_store_tx_lock();
+    int32_t hstar_now = -1;
+    int32_t served_floor = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar_now, &served_floor);
+    progress_store_tx_unlock();
+    if (!ok) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] witness: H* "
+                 "recompute failed — treating as not-yet-cleared");
+        return false;
+    }
+    return hstar_now > hstar_at_detect;
+}
+
+/* TL-1 REFRESH-ONLY progress signal. The H* witness above is the SOLE
+ * clear/success predicate; this is consulted by the engine ONLY when the
+ * witness is still false after a remedy, to decide whether the attempt budget
+ * should be refreshed (a converging multi-round repair) rather than exhausted
+ * (pure churn). It re-uses the deleted clear-edge deltas as a REFRESH-ONLY
+ * signal: a chunked coin_backfill scan whose resumable cursor advanced, a
+ * tipfin backfill whose progress record advanced, or coins inserted by the most
+ * recent reconcile pass. ANY of these means durable, resumable progress that
+ * has not yet moved H* — the budget refreshes so the repair is not false-paged.
+ * On a true return the delta baselines are re-snapshotted so the next round
+ * measures fresh; pure churn (records frozen / absent) returns false, so the
+ * budget still exhausts and the operator is paged. These statics are NEVER a
+ * witness clear-edge (only reducer_frontier_compute_hstar clears). */
+static bool progressing_reducer_frontier_reconcile_light(
+    int64_t target_at_detect)
+{
+    /* The engine passes the wall-clock target timestamp; we key on our own
+     * captured per-record baselines, not on it. */
+    (void)target_at_detect;
+
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] progressing: "
+                 "progress db unavailable — treating as no-progress");
+        return false;
+    }
+
+    bool progressed = false;
+
+    /* (1) coin_backfill resumable scan cursor advanced (or appeared). A wide
+     * hole needs more chunks (COIN_BACKFILL_SCAN_CHUNK_BLOCKS/call) than
+     * max_attempts; each chunk advances scan_next durably even before H* moves. */
+    bool coin_present = false;
+    int coin_next = -1;
+    if (read_coin_backfill_scan_cursor(db, &coin_present, &coin_next) &&
+        coin_present) {
+        int prev_present =
+            atomic_load(&g_coin_backfill_scan_present_at_detect);
+        int prev_next = atomic_load(&g_coin_backfill_scan_next_at_detect);
+        if (prev_present != 1 || coin_next > prev_next)
+            progressed = true;
+    }
+
+    /* (2) tipfin backfill progress record advanced (or appeared). */
+    bool tip_present = false;
+    int tip_progress = -1;
+    if (read_tipfin_backfill_progress(db, &tip_present, &tip_progress) &&
+        tip_present) {
+        int prev_present = atomic_load(&g_tipfin_backfill_present_at_detect);
+        int prev_progress =
+            atomic_load(&g_tipfin_backfill_progress_at_detect);
+        if (prev_present != 1 || tip_progress > prev_progress)
+            progressed = true;
+    }
+
+    /* (3) the most recent reconcile pass inserted coins this round. */
+    if (atomic_load(&g_last_rr_values[RFRL_RR_COIN_BACKFILL_INSERTED]) > 0)
+        progressed = true;
+
+    /* Re-snapshot the delta baselines ONLY on a true return (REFRESH-only) so
+     * the next round measures a fresh delta. A false return leaves the baseline
+     * untouched, so progress accrued over multiple rounds is still detected. */
+    if (progressed) {
+        if (coin_present) {
+            atomic_store(&g_coin_backfill_scan_present_at_detect, 1);
+            atomic_store(&g_coin_backfill_scan_next_at_detect, coin_next);
+        }
+        if (tip_present) {
+            atomic_store(&g_tipfin_backfill_present_at_detect, 1);
+            atomic_store(&g_tipfin_backfill_progress_at_detect, tip_progress);
+        }
+    }
+    return progressed;
 }
 
 static bool detail_reducer_frontier_reconcile_light(struct json_value *out)
@@ -1043,7 +1100,7 @@ static bool detail_reducer_frontier_reconcile_light(struct json_value *out)
 }
 
 static struct condition c_reducer_frontier_reconcile_light = {
-    .name = "reducer_frontier_reconcile_light",
+    .name = RFRL_COND_NAME,
     .severity = COND_CRITICAL,
     .poll_secs = 5,
     .backoff_secs = 30,
@@ -1051,6 +1108,7 @@ static struct condition c_reducer_frontier_reconcile_light = {
     .detect = detect_reducer_frontier_reconcile_light,
     .remedy = remedy_reducer_frontier_reconcile_light,
     .witness = witness_reducer_frontier_reconcile_light,
+    .progressing = progressing_reducer_frontier_reconcile_light,
     .detail = detail_reducer_frontier_reconcile_light,
     .witness_window_secs = 60,
 };

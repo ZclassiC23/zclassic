@@ -274,14 +274,11 @@ static int coin_backfill_insert_tx(sqlite3 *db,
                                    const struct coin_backfill_outpoint *set,
                                    int n, int32_t *out_round, char fail[64])
 {
-    char scan_key[192], rounds_key[192], replay_key[192];
+    char scan_key[192], rounds_key[192];
     fail[0] = '\0';
     *out_round = 0;
     if (!coin_backfill_scan_record_key(scan_key, hole_height, hole_hash) ||
         !coin_backfill_key_h_hash(rounds_key, "coin_backfill.rounds",
-                                  hole_height, hole_hash) ||
-        !coin_backfill_key_h_hash(replay_key,
-                                  "reducer_frontier.script_replay_repair",
                                   hole_height, hole_hash))
         LOG_RETURN(-1, "coin_backfill",
                    "[coin_backfill] insert key build failed h=%d",
@@ -413,15 +410,17 @@ static int coin_backfill_insert_tx(sqlite3 *db,
         if (step_failed || fail[0])
             break;
 
-        /* steps 5-7: round counter, replay-marker delete (lets the proven
-         * stale-script replay run once more), scan record delete */
+        /* steps 5-7: round counter, scan record delete. STEP 3: the
+         * stale-script replay no longer uses a write-once marker (termination is
+         * the body-vs-row delta), so there is no replay marker to clear here —
+         * once this backfill inserts the missing coin, the next reconcile's
+         * dry-run resolves the prevout and the rewind re-derives ok=1. */
         uint8_t le[4];
         coin_backfill_le32_put(le, rounds + 1);
         if (!progress_meta_set_in_tx(db, rounds_key, le, sizeof(le)) ||
-            !progress_meta_delete_in_tx(db, replay_key) ||
             !progress_meta_delete_in_tx(db, scan_key)) {
             LOG_WARN("coin_backfill",
-                     "[coin_backfill] round/marker bookkeeping failed h=%d",
+                     "[coin_backfill] round/scan bookkeeping failed h=%d",
                      hole_height);
             rc = -1;
             break;
@@ -476,7 +475,13 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
      * holes (transient / re-attempted) are owned by the separate stale-script
      * replay path, so scanning for prevout_unresolved here means a lower
      * internal_error can no longer mask a higher genuine coin tear. */
-    if (hole_h < 0 || script_cursor <= 0 || hole_h >= script_cursor)
+    /* Admit hole_h == script_cursor (the STEP-2A frozen-cursor case): when
+     * script_validate HOLDS on a prevout_unresolved it does NOT advance, so the
+     * held hole sits AT the cursor, not below it. The repair must be able to act
+     * on the held outpoint while the cursor is frozen there; a strict `>=` would
+     * forever skip the very hole the HOLD is waiting on. hole_h > script_cursor
+     * (above the live frontier — not yet a settled verdict) is still skipped. */
+    if (hole_h < 0 || script_cursor <= 0 || hole_h > script_cursor)
         return true;
     if (strcmp(hole_status, "prevout_unresolved") != 0)
         return true;
@@ -753,7 +758,8 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     }
     LOG_WARN("coin_backfill",
              "[coin_backfill] backfilled %d coin(s) for hole h=%d round=%d; "
-             "stale-script replay marker cleared for one more replay",
+             "the next reconcile dry-run can now resolve the prevout and "
+             "re-derive ok=1",
              n, hole_h, (int)round);
     return true;
 }

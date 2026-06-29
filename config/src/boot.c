@@ -434,15 +434,45 @@ static struct boot_svc_ctx g_svc;
  * to app_init_services; boot_services.c's main.c-facing entry points read it. */
 struct boot_svc_ctx *boot_active_svc(void) { return &g_svc; }
 
+/* Defined below (line ~1175); used by boot_step_init_crypto_and_state's
+ * mainnet zk-params gate before its definition appears. */
+static bool boot_park_until_shutdown(const char *gate_name);
+
 void *load_params_thread(void *arg)
 {
     (void)arg;
     printf("Loading verification keys (background)...\n");
-    if (sapling_init_params(g_params_dir_buf))
+    if (sapling_init_params(g_params_dir_buf)) {
         atomic_store(&g_params_loaded, true);
-    else
-        fprintf(stderr, "Warning: Failed to load ZK params\n");
-    printf("Verification keys loaded.\n");
+        printf("Verification keys loaded.\n");
+        return NULL;
+    }
+
+    /* A failed background param load must NOT silently downgrade to a
+     * one-line warning while proof_validate idles forever. The synchronous
+     * pre-check in boot_step_init_crypto_and_state already confirmed the files
+     * EXIST before CRYPTO_READY advanced, so reaching here on mainnet means the
+     * files are present-but-corrupt (SHA-512/parse failure). Name a PERMANENT
+     * blocker and page the operator ONCE; the running node then surfaces this
+     * named blocker via proof_validate's params gate (JOB_BLOCKED) instead of a
+     * silent JOB_IDLE — a stall that is always named, never a quiet stop. */
+    const struct chain_params *cp = chain_params_get();
+    if (cp && strcmp(cp->strNetworkID, "main") == 0) {
+        struct blocker_record rec;
+        if (blocker_init(&rec, "params_missing", "crypto.params",
+                         BLOCKER_PERMANENT,
+                         "mainnet zk verification keys present but failed to load "
+                         "(SHA-512/parse) — proof validation cannot proceed") &&
+            blocker_set(&rec) == 0)
+            event_emitf(EV_OPERATOR_NEEDED, 0,
+                        "check=params_missing dir=%s", g_params_dir_buf);
+        LOG_WARN("crypto.params",
+                 "[crypto.params] zk params failed to load from %s — proof "
+                 "validation BLOCKED (params_missing); operator paged once",
+                 g_params_dir_buf);
+    } else {
+        fprintf(stderr, "Warning: Failed to load ZK params (non-mainnet)\n");
+    }
     return NULL;
 }
 
@@ -917,8 +947,64 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
     /* Defer ZK key loading to background thread — not needed for RPC startup.
      * Keys load in parallel while block index + wallet initialize. */
     g_params_thread_started = false;
-    if (ctx->params_dir) {
+    if (ctx->params_dir)
         snprintf(g_params_dir_buf, sizeof(g_params_dir_buf), "%s", ctx->params_dir);
+
+    /* On mainnet, the zk verification keys are consensus-critical — a
+     * node with no ~/.zcash-params cannot validate shielded proofs, and the
+     * deferred background loader would just fail while proof_validate idles
+     * forever (the old silent-halt). Synchronously confirm the required files
+     * EXIST + are readable BEFORE advancing CRYPTO_READY. If any is missing:
+     * name a PERMANENT blocker, page the operator ONCE, do NOT advance
+     * CRYPTO_READY (params genuinely failed to load), and PARK alive-degraded
+     * so a missing-params install is a NAMED blocker — never a silent idle and
+     * never a systemd Restart=always crash-loop.
+     *
+     * EXEMPTION: -mint-anchor-fast passes the crypto stages through without
+     * running (jobs/mint_skip_crypto.h), so that offline self-mint legitimately
+     * needs no zk params — do not park it for missing params. */
+    if (params && strcmp(params->strNetworkID, "main") == 0 &&
+        !ctx->mint_anchor_fast) {
+        static const char *const req[] = {
+            "sapling-spend.params", "sapling-output.params",
+            "sprout-groth16.params", "sprout-verifying.key",
+        };
+        const char *missing = NULL;
+        char missing_path[1100] = {0};
+        if (!ctx->params_dir) {
+            missing = "(no -paramsdir configured)";
+        } else {
+            for (size_t i = 0; i < sizeof(req) / sizeof(req[0]); i++) {
+                char p[1100];
+                snprintf(p, sizeof(p), "%s/%s", g_params_dir_buf, req[i]);
+                if (access(p, R_OK) != 0) {
+                    missing = req[i];
+                    snprintf(missing_path, sizeof(missing_path), "%s", p);
+                    break;
+                }
+            }
+        }
+        if (missing) {
+            struct blocker_record rec;
+            if (blocker_init(&rec, "params_missing", "crypto.params",
+                             BLOCKER_PERMANENT,
+                             "mainnet zk verification keys are missing/unreadable "
+                             "— proof validation cannot run; install ~/.zcash-params") &&
+                blocker_set(&rec) == 0)
+                event_emitf(EV_OPERATOR_NEEDED, 0,
+                            "check=params_missing file=%s path=%s", missing,
+                            missing_path[0] ? missing_path : "");
+            LOG_WARN("crypto.params",
+                     "[crypto.params] mainnet requires zk params but '%s' is "
+                     "missing/unreadable (dir=%s) — NOT advancing CRYPTO_READY; "
+                     "parking alive-degraded after paging the operator",
+                     missing, ctx->params_dir ? ctx->params_dir : "(unset)");
+            /* Do NOT advance CRYPTO_READY: the params actually failed to load. */
+            return boot_park_until_shutdown("crypto_params_missing");
+        }
+    }
+
+    if (ctx->params_dir) {
         /* One-shot ZK params loader; joined at shutdown via
          * app_shutdown's params_thread field. raw-pthread-ok */
         if (pthread_create(&g_params_thread, NULL, load_params_thread, NULL) == 0)
@@ -3494,7 +3580,7 @@ sapling_tree_boot_check_done:
      * SHA3-verifies + anchor-binds, so this only auto-selects a file the explicit
      * flag could have loaded. No-op when no bundle is present. */
     bool snap_from_autodetect = false;
-    char autodetect_fail_marker[1200] = {0};
+    char snapshot_fail_marker[1200] = {0};
     if (!ctx->load_snapshot_at_own_height &&
         !coins_kv_is_proven_authority(progress_store_db(), NULL)) {
         char *auto_snap = boot_autodetect_bundle_snapshot(ctx->datadir);
@@ -3512,14 +3598,14 @@ sapling_tree_boot_check_done:
              * happens the marker SURVIVES — and the next (systemd Restart=always)
              * boot's autodetect skips this snapshot and falls back to normal P2P
              * IBD. Turns a crash-loop-needing-a-human into crash-once-then-self-
-             * heal. Only the autodetect path is marked; the explicit
-             * -load-snapshot flag keeps its fail-closed FATAL (operator demanded
-             * that exact file). */
-            int mn = snprintf(autodetect_fail_marker, sizeof(autodetect_fail_marker),
+             * heal. The explicit -load-snapshot flag uses the SAME marker
+             * primitive below (explicit-snapshot failure memory) so a corrupt explicit bundle also self-heals
+             * to P2P IBD after exactly one crash instead of crash-looping. */
+            int mn = snprintf(snapshot_fail_marker, sizeof(snapshot_fail_marker),
                               "%s.failed", auto_snap);
             bool marker_ok = false;
-            if (mn > 0 && (size_t)mn < sizeof(autodetect_fail_marker)) {
-                FILE *mf = fopen(autodetect_fail_marker, "we");
+            if (mn > 0 && (size_t)mn < sizeof(snapshot_fail_marker)) {
+                FILE *mf = fopen(snapshot_fail_marker, "we");
                 if (mf) { fclose(mf); marker_ok = true; }
             }
             if (!marker_ok) {
@@ -3536,7 +3622,56 @@ sapling_tree_boot_check_done:
                 free(auto_snap);  /* owned via load_snapshot_at_own_height (autodetect path) */
                 ctx->load_snapshot_at_own_height = NULL;
                 snap_from_autodetect = false;
-                autodetect_fail_marker[0] = '\0';
+                snapshot_fail_marker[0] = '\0';
+            }
+        }
+    }
+    /* EXPLICIT -load-snapshot-at-own-height failure memory. The explicit
+     * loader (boot_load_snapshot_at_own_height_reset) fail-closes with
+     * _exit(EXIT_FAILURE) on a corrupt/mismatched bundle. Under systemd
+     * Restart=always that crash-loops FOREVER needing a human. Fold the explicit
+     * path onto the SAME "<snap>.failed" marker primitive the autodetect path
+     * uses above: (a) HONOR an existing marker — a prior boot already crashed on
+     * THIS exact file — by skipping the seed and degrading to P2P IBD; (b) WRITE
+     * the marker BEFORE the seed; (c) REMOVE it only AFTER the loader returns
+     * cleanly (below). Result: a bad explicit bundle crashes AT MOST ONCE, then
+     * self-heals to P2P IBD — a named/observable degrade, never a silent crash-
+     * loop. Marker-unwritable (read-only datadir / ENOSPC) → same policy as
+     * autodetect: abandon the seed rather than gamble on a failure we cannot
+     * remember. */
+    if (ctx->load_snapshot_at_own_height && !snap_from_autodetect) {
+        int mn = snprintf(snapshot_fail_marker, sizeof(snapshot_fail_marker),
+                          "%s.failed", ctx->load_snapshot_at_own_height);
+        if (mn <= 0 || (size_t)mn >= sizeof(snapshot_fail_marker)) {
+            /* Path too long to form a marker — we could not remember a failure,
+             * so do not enter the fail-closed _exit path; degrade to P2P IBD. */
+            LOG_WARN("boot",
+                     "[boot] -load-snapshot-at-own-height marker path too long "
+                     "for %s — skipping snapshot seed, using P2P IBD",
+                     ctx->load_snapshot_at_own_height);
+            ctx->load_snapshot_at_own_height = NULL;
+            snapshot_fail_marker[0] = '\0';
+        } else if (access(snapshot_fail_marker, F_OK) == 0) {
+            /* HONOR: a prior boot crash-failed seeding this exact bundle. Skip it
+             * (degrade to P2P IBD) instead of re-entering the _exit crash-loop. */
+            LOG_WARN("boot",
+                     "[boot] -load-snapshot-at-own-height bundle %s has a .failed "
+                     "marker from a prior crashed seed — skipping it; using normal "
+                     "P2P IBD. Delete %s to retry the bundle.",
+                     ctx->load_snapshot_at_own_height, snapshot_fail_marker);
+            ctx->load_snapshot_at_own_height = NULL;
+            snapshot_fail_marker[0] = '\0';
+        } else {
+            FILE *mf = fopen(snapshot_fail_marker, "we");
+            if (mf) {
+                fclose(mf);
+            } else {
+                LOG_WARN("boot",
+                         "[boot] -load-snapshot-at-own-height marker unwritable "
+                         "(%s) — skipping snapshot seed, using P2P IBD",
+                         snapshot_fail_marker);
+                ctx->load_snapshot_at_own_height = NULL;
+                snapshot_fail_marker[0] = '\0';
             }
         }
     }
@@ -3550,11 +3685,11 @@ sapling_tree_boot_check_done:
                                                ctx->load_snapshot_at_own_height,
                                                ctx->datadir,
                                                &g_state);
-    /* The autodetect seed returned cleanly (the loader _exit()s on failure, so
-     * reaching here means success) — drop the failure-memory marker so a later
-     * deliberate re-seed of the same bundle is allowed. */
-    if (snap_from_autodetect && autodetect_fail_marker[0])
-        (void)remove(autodetect_fail_marker);
+    /* The snapshot seed returned cleanly (the loader _exit()s on failure, so
+     * reaching here means success) — drop the failure-memory marker (autodetect
+     * OR explicit) so a later deliberate re-seed of the same bundle is allowed. */
+    if (snapshot_fail_marker[0])
+        (void)remove(snapshot_fail_marker);
     /* The from-anchor reset (LOAD+VERIFY the SHA3 anchor set into coins_kv, then
      * fold ONLY the anchor->tip delta) runs when EITHER:
      *   (a) the explicit -refold-from-anchor override is set, OR

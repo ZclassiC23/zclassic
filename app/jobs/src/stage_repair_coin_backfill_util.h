@@ -97,6 +97,28 @@ bool coin_backfill_outpoint_marker_key(char out[160], const uint8_t txid[32],
 bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
                                 bool *present);
 
+/* STEP-2A pending-prevout HOLD signal (fixed progress_meta key
+ * "script_validate.pending_prevout"): a NON-TERMINAL durable record published
+ * by script_validate WHILE it HOLDS the cursor on a transient
+ * prevout_unresolved — it stopped writing the terminal ok=0 row, but that row
+ * was ALSO the TRIGGER that armed coin_backfill (G2 hole finder) and the boot
+ * torn-import gate. For a genuinely torn pre-anchor coin, re-derivation alone
+ * never re-inserts the missing coin — coin_backfill must — so this signal keeps
+ * the torn-coins class's auto-terminating remedy owner alive without a terminal
+ * reject. Only ONE height is held at a time, so a single fixed key suffices;
+ * the writer DELETEs it the moment the held height advances (sv_unresolved_
+ * clear). Value layout (72 bytes): height(LE32) | block_hash(32) |
+ * first_failure_txid(32) | first_failure_vin(LE32). Each takes its own txn. */
+bool coin_backfill_pending_prevout_set(struct sqlite3 *db, int height,
+                                       const struct uint256 *block_hash,
+                                       const struct uint256 *fail_txid,
+                                       int fail_vin);
+bool coin_backfill_pending_prevout_clear(struct sqlite3 *db);
+bool coin_backfill_pending_prevout_get(struct sqlite3 *db, int *out_height,
+                                       struct uint256 *out_block_hash,
+                                       struct uint256 *out_txid, int *out_vin,
+                                       bool *out_found);
+
 /* Round counter value: i32 LE; absent == 0 rounds so far. */
 bool coin_backfill_rounds_read(struct sqlite3 *db, const char *key,
                                int32_t *out);

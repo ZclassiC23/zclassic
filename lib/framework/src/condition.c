@@ -347,6 +347,20 @@ static void condition_tick_one(const struct condition *cond, int64_t now)
             condition_mark_cleared(cond, s, now);
             return;
         }
+
+        /* TL-1 (decouple witness-CLEAR from budget REFRESH): the witness did
+         * NOT clear, but the remedy may be making durable, resumable progress
+         * toward a future witnessed success that has not yet landed (a chunked
+         * repair that legitimately spans more rounds than max_attempts). When
+         * the optional progressing() callback confirms that, RESET the attempt
+         * budget so a genuinely-converging repair is never converted into a
+         * false operator page. This is NOT a clear: currently_active and
+         * cleared_count are untouched — only the H* witness above clears. The
+         * callback re-snapshots its own delta baseline on a true return, so
+         * pure churn (no durable progress) returns false, the budget still
+         * exhausts here, and the operator is paged in bounded time. */
+        if (cond->progressing && cond->progressing(target))
+            atomic_store(&s->attempts, 0);
     }
 
     int max_attempts = cond->max_attempts > 0 ? cond->max_attempts : 1;

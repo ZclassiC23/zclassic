@@ -34,6 +34,10 @@ enum condition_remedy_result {
 typedef bool (*condition_detect_fn)(void);
 typedef enum condition_remedy_result (*condition_remedy_fn)(void);
 typedef bool (*condition_witness_fn)(int64_t target_at_detect);
+/* TL-1: optional REFRESH-ONLY progress signal (see struct condition.progressing
+ * below). Same argument convention as condition_witness_fn (the engine passes
+ * the at-detect target). */
+typedef bool (*condition_progressing_fn)(int64_t target_at_detect);
 typedef bool (*condition_detail_fn)(struct json_value *out);
 
 struct condition_state {
@@ -82,6 +86,21 @@ struct condition {
     condition_detect_fn detect;
     condition_remedy_fn remedy;
     condition_witness_fn witness;
+    /* TL-1: optional REFRESH-ONLY progress signal. After a remedy runs and the
+     * witness has NOT cleared, the engine consults this (if non-NULL): a true
+     * return means the remedy is making durable, resumable progress toward a
+     * future witnessed success that has not yet landed (e.g. a chunked backfill
+     * spanning MORE rounds than max_attempts), so the engine RESETS the attempt
+     * budget to 0 — WITHOUT clearing (currently_active and cleared_count are
+     * untouched; only the witness clears). NULL = legacy behavior: the budget
+     * only ever resets on a witnessed clear, so a deterministic-unrecoverable
+     * local fault still latches/pages exactly as before. Contract: the callback
+     * MUST re-snapshot its own delta baseline on a true return so the next round
+     * measures FRESH progress; pure churn (records frozen, no durable advance)
+     * MUST return false so the budget still exhausts and the operator is paged
+     * in bounded time. This is NEVER a clear-edge — it cannot mask a genuinely
+     * stuck node, only keep a converging repair from false-paging. */
+    condition_progressing_fn progressing;
     condition_detail_fn detail;
     int witness_window_secs;
     struct condition_state state;

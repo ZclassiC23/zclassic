@@ -4,15 +4,24 @@
  * witness channel + peer-gate visibility, proven through the REAL condition
  * engine (condition_engine_tick), never by calling detect/remedy directly.
  *
- * T10 — tipfin backfill witness channel (panel-required): a row-only
- *   backfill moves no stage cursor and no chain height, so it is
- *   structurally unwitnessable through the pre-existing channels; the
- *   tipfin_backfill.progress record (including absent<->present
- *   transitions) is the mandatory channel. With the record bumping every
- *   remedy round the attempt budget must NEVER freeze (no operator page
- *   across >5 rounds); with the record artificially frozen the budget must
- *   still exhaust at max_attempts=5 and page (EV_OPERATOR_NEEDED path
- *   intact).
+ * T10 — H*-only witness + TL-1 REFRESH-ONLY progress channel. The witness
+ *   still clears ONLY on a real advance of the provable frontier H*
+ *   (reducer_frontier_compute_hstar) — a backfill record bump is NOT a
+ *   clear-edge. But TL-1 decouples the witness CLEAR from the attempt-budget
+ *   REFRESH: when the witness is still false yet the remedy is making durable,
+ *   resumable progress (a chunked backfill spanning more rounds than
+ *   max_attempts), condition.progressing() RESETS the budget so a converging
+ *   repair is never false-paged. So:
+ *     T10a — a backfill record that ADVANCES every round (durable progress)
+ *       REFRESHES the budget: across >5 rounds with H* frozen it must NOT page
+ *       and must stay currently_active (TL-1 — converging repair not wedged).
+ *     T10b — a FROZEN record (pure churn, no advance) returns progressing()=
+ *       false, so the budget STILL exhausts at max_attempts=5 and pages
+ *       (EV_OPERATOR_NEEDED path intact — a genuinely stuck node still pages).
+ *     T10c — never-stuck-invariant-3: the at-detect H* baseline is captured
+ *       ONCE at the rising edge, not re-stamped every detect-true tick, so a
+ *       sustained detect-true episode whose H* climbs by 1 each round CLEARS
+ *       the witness (never accrues a false page).
  *
  * T11 — peer-gate bypass: peers present but none ahead used to idle the
  *   ENTIRE L1 layer silently. A pending refused_coin_tear (durable internal
@@ -393,6 +402,94 @@ static void bump_tipfin_record(void)
     (void)set_tipfin_progress(progress_store_db(), g_bump_progress);
 }
 
+/* ── T10c climb-fixture helpers (never-stuck-invariant-3) ─────────────────
+ * A fixture where detect stays TRUE via a persistent coin tear while H*
+ * genuinely CLIMBS one height per round. The tear is kept "high" (coins
+ * applied far above utxo_apply's own contiguous frontier), and utxo_apply is
+ * the SLOWEST stage (the global MIN that pins H*); filling utxo_apply one
+ * height at a time between ticks climbs H* by 1 while the tear (and thus
+ * detect) persists. coins are kept so far above that no pre-refusal repair can
+ * heal the tear, so the remedy refuses (FAILED) without mutating H* — the only
+ * H* movement is the test's own between-tick fill. */
+static void synth_hash_h(struct uint256 *h, int height)
+{
+    memset(h, 0, sizeof(*h));
+    h->data[0] = (uint8_t)(height & 0xff);
+    h->data[1] = (uint8_t)((height >> 8) & 0xff);
+    h->data[2] = (uint8_t)((height >> 16) & 0xff);
+    h->data[31] = 0x7c;
+}
+
+/* Stamp coins_kv proven-authority (the rungs coins_kv_is_proven_authority
+ * checks) so compute_hstar treats REDUCER_FRONTIER_TRUSTED_ANCHOR as a REAL
+ * finality floor — otherwise the phantom-anchor guard drops the floor to 0 and
+ * the gap below the anchor pins H*=0 (it could not climb). coins_applied_height
+ * is set separately by seed_coins_applied. */
+static bool stamp_coins_kv_migration(sqlite3 *db)
+{
+    if (!exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
+            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');"))
+        return false;
+    uint8_t one = 1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Build the climb fixture. Every stage EXCEPT utxo_apply is ok=1 contiguous
+ * A+1..A+top (so they never bind below utxo_apply); utxo_apply is ok=1 ONLY at
+ * A+1 (holes A+2..A+top — the climbing stage). coins_applied sits at A+top+4
+ * (a persistent tear). No block_index is needed: active_chain_height reads
+ * MAX(tip_finalize ok=1)=A+top, so the peer gate passes with zero peers. */
+static bool setup_climb_fixture(struct rrw_fixture *fx, const char *tag, int top)
+{
+    memset(fx, 0, sizeof(*fx));
+    test_make_tmpdir(fx->dir, sizeof(fx->dir),
+                     "reducer_reconcile_witness", tag);
+    if (!progress_store_open(fx->dir))
+        return false;
+    sqlite3 *db = progress_store_db();
+    if (!seed_schema(db))
+        return false;
+    if (!seed_all_cursors(db, A + top + 8))
+        return false;
+    main_state_init(&fx->ms);
+
+    for (int h = A + 1; h <= A + top; h++) {
+        struct uint256 hh;
+        synth_hash_h(&hh, h);
+        if (!put_header_admit(db, h, &hh, NULL))
+            return false;
+        if (!put_hash_log(db, "validate_headers_log", "hash", h, 1, &hh))
+            return false;
+        if (!put_hash_log(db, "script_validate_log", "block_hash", h, 1, &hh))
+            return false;
+        if (!put_simple_log(db, "body_persist_log", h, 1))
+            return false;
+        if (!put_simple_log(db, "proof_validate_log", h, 1))
+            return false;
+        if (!put_tip_log(db, h, 1, &hh))
+            return false;
+    }
+    /* utxo_apply: only A+1 ok=1; A+2..A+top are holes (the climbing stage). */
+    if (!put_simple_log(db, "utxo_apply_log", A + 1, 1))
+        return false;
+    /* Tear far above the climb so no pre-refusal repair can heal it. */
+    if (!seed_coins_applied(db, A + top + 4))
+        return false;
+    if (!stamp_coins_kv_migration(db))
+        return false;
+    return true;
+}
+
 int test_reducer_reconcile_witness(void);
 int test_reducer_reconcile_witness(void)
 {
@@ -400,17 +497,21 @@ int test_reducer_reconcile_witness(void)
     printf("\n=== reducer_reconcile_witness (FIX-5) tests ===\n");
     int failures = 0;
 
-    /* ── T10a: bumping record keeps the attempt budget alive ─────────── */
+    /* ── T10a: ADVANCING record REFRESHES the budget (TL-1) ──────────── */
     {
         struct rrw_fixture fx;
         RRW_CHECK("T10a: setup tear fixture", setup_fixture(&fx, "t10_bump"));
         sqlite3 *db = progress_store_db();
-        /* REAL coin tear: the tear is now measured against utxo_apply's OWN
-         * contiguous ok=1 log prefix, so seed a real utxo_apply hole at K=A+2
-         * with coins_applied=A+3 > K — `coins_applied > utxo_apply_contig + 1`
-         * is TRUE so the tear (and the bypass/witness machinery) genuinely
-         * fires. Remedy refuses (COND_REMEDY_FAILED) every round — the ONLY
-         * thing moving is the backfill record the hook bumps. */
+        /* REAL coin tear: a real utxo_apply hole at K=A+2 with
+         * coins_applied=A+3 > K — `coins_applied > utxo_apply_contig + 1` is
+         * TRUE so the tear fires and the remedy refuses (COND_REMEDY_FAILED)
+         * every round. H* stays pinned at the hole (A+1) the whole time — the
+         * witness NEVER clears (H* is the sole clear predicate). But the
+         * post-remedy hook ADVANCES the tipfin backfill record every round,
+         * which is durable, resumable progress: TL-1's progressing() channel
+         * REFRESHES the attempt budget so a converging multi-round repair is
+         * never false-paged. Across 8 rounds (> max_attempts=5) it must stay
+         * active and NOT page. */
         RRW_CHECK("T10a: poke real utxo_apply hole at K=A+2",
                   poke_utxo_apply_hole(db, A + 2));
         RRW_CHECK("T10a: seed coins_applied above the hole (tear)",
@@ -432,29 +533,25 @@ int test_reducer_reconcile_witness(void)
         reducer_frontier_reconcile_light_test_set_post_remedy_hook(
             bump_tipfin_record);
 
+        /* 8 rounds (> max_attempts=5): each tick detects, remedies (hook
+         * ADVANCES the record, impl refuses the tear), and the post-remedy
+         * progressing() sees the record advance and resets attempts to 0. So no
+         * round pages even though H* never moves and the witness never clears. */
+        for (int i = 0; i < 8; i++) {
+            reducer_frontier_reconcile_light_test_clear_backoff();
+            condition_engine_tick();
+        }
+
         struct condition_runtime_snapshot snap;
         bool got = condition_engine_get_registered_snapshot(COND_NAME, &snap);
-        int cleared_before = got ? snap.cleared_count : -1;
-
-        /* >5 remedy rounds: each tick detects (snapshot), remedies (hook
-         * bumps the record, impl refuses the tear), and the immediate
-         * post-remedy witness sees the bump -> cleared -> attempts reset.
-         * No backoff-clearing needed: condition_mark_cleared zeroes
-         * last_remedy_unix. */
-        for (int i = 0; i < 7; i++)
-            condition_engine_tick();
-
-        got = condition_engine_get_registered_snapshot(COND_NAME, &snap);
-        RRW_CHECK("T10a: 7 remedy rounds ran",
+        RRW_CHECK("T10a: advancing record REFRESHES the budget — stays active, "
+                  "never pages across >5 rounds (TL-1)",
                   got &&
-                  reducer_frontier_reconcile_light_test_remedy_calls() == 7);
-        RRW_CHECK("T10a: every round witnessed (cleared 7x, budget reset)",
-                  got && cleared_before >= 0 &&
-                  snap.cleared_count - cleared_before == 7 &&
-                  snap.attempts == 0 &&
-                  !snap.currently_active);
-        RRW_CHECK("T10a: attempts never hit max — no operator page",
-                  got && !snap.operator_needed_emitted);
+                  reducer_frontier_reconcile_light_test_remedy_calls() == 8 &&
+                  snap.currently_active &&
+                  snap.attempts < 5 &&
+                  snap.last_outcome == COND_REMEDY_FAILED &&
+                  !snap.operator_needed_emitted);
 
         reducer_frontier_reconcile_light_test_set_post_remedy_hook(NULL);
         sync_monitor_set_context(NULL, NULL, NULL);
@@ -511,6 +608,61 @@ int test_reducer_reconcile_witness(void)
                   snap.attempts >= 5 &&
                   snap.last_outcome == COND_REMEDY_FAILED &&
                   snap.operator_needed_emitted);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    /* ── T10c: H* baseline captured ONCE at the rising edge (inv-3) ──── */
+    {
+        /* never-stuck-invariant-3: the old detect re-stamped g_hstar_at_detect
+         * on EVERY detect-true tick, so a sustained detect-true episode that
+         * climbs H* one hole at a time could never witness the climb (the
+         * baseline tracked H* up), accrued attempts, and false-paged. With the
+         * rising-edge capture the baseline is frozen at episode start, so any
+         * genuine H* climb clears the witness. Here detect stays true via a
+         * persistent tear while the test fills utxo_apply one height per round
+         * between ticks (H* climbs by 1 each round). The remedy refuses the tear
+         * (FAILED) without mutating H*, so the only H* movement is the fill.
+         * Expectation: the witness CLEARS repeatedly (never a false page) across
+         * 8 rounds (> max_attempts=5). The OLD re-stamp bug would page at 5. */
+        const int top = 10;
+        struct rrw_fixture fx;
+        RRW_CHECK("T10c: setup climb fixture",
+                  setup_climb_fixture(&fx, "t10_climb", top));
+        sqlite3 *db = progress_store_db();
+
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        for (int round = 1; round <= 8; round++) {
+            reducer_frontier_reconcile_light_test_clear_backoff();
+            condition_engine_tick();
+            /* Between ticks: fill the next utxo_apply hole so H* climbs by 1.
+             * utxo_apply is the global MIN, so its contiguous frontier == H*. */
+            (void)put_simple_log(db, "utxo_apply_log", A + 1 + round, 1);
+        }
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(COND_NAME, &snap);
+        RRW_CHECK("T10c: climbing H* clears the witness, never pages "
+                  "(baseline captured once at the rising edge)",
+                  got &&
+                  snap.cleared_count >= 3 &&
+                  snap.attempts < 5 &&
+                  !snap.operator_needed_emitted);
 
         sync_monitor_set_context(NULL, NULL, NULL);
         sync_monitor_test_set_tip_advance_ts(0);

@@ -348,14 +348,35 @@ int test_proof_validate_stage(void)
                           &ms, &sc) == 0);
         sapling_free_params();
         proof_validate_stage_set_tx_verifier(NULL, NULL);
-        PV_CHECK("params_missing: shielded block idles",
+        /* CS-PROOF-TRANSIENT: during the NORMAL background param-load window the
+         * LOADER has not named the permanent blocker, so proof_validate must HOLD
+         * (JOB_IDLE) and re-derive next tick — it must NOT name a permanent
+         * blocker of its own (that would wedge a transient load window). */
+        blocker_clear("params_missing");
+        PV_CHECK("params_missing: transient load window holds (JOB_IDLE)",
                  proof_validate_stage_step_once() == JOB_IDLE);
-        PV_CHECK("params_missing: cursor stays 0",
+        PV_CHECK("params_missing: cursor stays 0 (idle)",
                  proof_validate_stage_cursor() == 0);
         int ok = -1; char status[32]; char type[32];
-        PV_CHECK("params_missing: no poisoned row",
+        PV_CHECK("params_missing: no poisoned row (idle)",
                  !log_row_at(progress_store_db(), 0, &ok, status,
                              sizeof(status), type, sizeof(type)));
+        /* The LOADER is the authority: once it declares the PERMANENT
+         * params_missing blocker (a genuine corrupt/parse failure),
+         * proof_validate RE-SURFACES it as JOB_BLOCKED — still no poisoned row. */
+        struct blocker_record rec;
+        PV_CHECK("params_missing: loader names blocker",
+                 blocker_init(&rec, "params_missing", "crypto.params",
+                              BLOCKER_PERMANENT, "test: params corrupt") &&
+                 blocker_set(&rec) == 0);
+        PV_CHECK("params_missing: shielded block blocks (named blocker)",
+                 proof_validate_stage_step_once() == JOB_BLOCKED);
+        PV_CHECK("params_missing: cursor stays 0 (blocked)",
+                 proof_validate_stage_cursor() == 0);
+        PV_CHECK("params_missing: still no poisoned row",
+                 !log_row_at(progress_store_db(), 0, &ok, status,
+                             sizeof(status), type, sizeof(type)));
+        blocker_clear("params_missing");
         pv_teardown(dir, &ms, &sc);
     }
 
@@ -447,18 +468,28 @@ int test_proof_validate_stage(void)
                  pv_setup("internal", 3, -1, dir, sizeof(dir), &ms, &sc) == 0);
         sc.fail_height = 1;
         sc.fail_kind = PV_FAIL_INTERNAL;
-        PV_CHECK("internal_error: drains 3",
-                 proof_validate_stage_drain(100) == 3);
-        PV_CHECK("internal_error: counter == 1",
+        /* TL-2: a transient internal_error (e.g. a sapling_ctx allocation failure
+         * under memory pressure) is NOT a permanent reject. The stage HOLDS the
+         * cursor at the hole — no terminal ok=0 row, no advance — and re-derives
+         * next tick. So the drain stops at the hole (only h=0 advances) and NO row
+         * is written at h=1. */
+        PV_CHECK("internal_error: drains only up to the hole",
+                 proof_validate_stage_drain(100) == 1);
+        PV_CHECK("internal_error: cursor held at the hole (1)",
+                 proof_validate_stage_cursor() == 1);
+        PV_CHECK("internal_error: counter == 1 (one held height)",
                  proof_validate_stage_internal_error_total() == 1);
         int ok = -1; char status[32]; char type[32];
-        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
-                   type, sizeof(type));
-        PV_CHECK("internal_error: h=1 ok=0", ok == 0);
-        PV_CHECK("internal_error: h=1 status",
-                 strcmp(status, "internal_error") == 0);
-        PV_CHECK("internal_error: type",
-                 strcmp(type, "sapling_ctx") == 0);
+        bool row = log_row_at(progress_store_db(), 1, &ok, status,
+                              sizeof(status), type, sizeof(type));
+        PV_CHECK("internal_error: no terminal row written at the hole",
+                 !row && ok == -1);
+        /* Re-tick within budget: still HOLDS (JOB_IDLE), never advances, never
+         * writes a row, counter stays 1 (paged once per held height). */
+        PV_CHECK("internal_error: re-tick still holds (JOB_IDLE)",
+                 proof_validate_stage_step_once() == JOB_IDLE);
+        PV_CHECK("internal_error: counter still 1 (same held height)",
+                 proof_validate_stage_internal_error_total() == 1);
         pv_teardown(dir, &ms, &sc);
     }
 

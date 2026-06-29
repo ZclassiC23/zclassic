@@ -87,6 +87,90 @@ static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 
+/* TL-2 — HOLD-and-re-derive budget for the TRANSIENT internal_error class on
+ * the proof path (e.g. a sapling_ctx allocation failure under memory pressure
+ * on <8GB targets, or a transient verifier/decode glitch). Like the script
+ * path's STEP-2A, the stage HOLDS the cursor (no terminal ok=0 row, no advance,
+ * no EV_BLOCK_REJECTED) and re-derives the same height next tick — once the
+ * transient clears (memory freed, params loaded) the SAME verification path
+ * resolves it and the height advances ok=1. A bounded blocked-since budget
+ * converts a genuinely irreducible internal_error into EXACTLY ONE named
+ * PERMANENT blocker + EV_OPERATOR_NEEDED (naming height+txid+proof_type), never
+ * a silent loop AND never a transient flipped into a permanent ok=0 reject.
+ * g_pv_unresolved_height is the height currently held (-1 = none);
+ * g_pv_unresolved_since_unix is when the hold began; g_pv_unresolved_paged_height
+ * is the height we already paged the operator for (page once per episode).
+ * The GENUINE proof-invalid verdict (a real bad proof) is unaffected — it still
+ * writes ok=0 + advances below. */
+#define PV_UNRESOLVED_BUDGET_SECONDS 600  /* 10 min held before naming a blocker */
+static _Atomic int64_t g_pv_unresolved_height = -1;
+static _Atomic int64_t g_pv_unresolved_since_unix = 0;
+static _Atomic int64_t g_pv_unresolved_paged_height = -1;
+
+/* Clear the HOLD tracking once a height advances cleanly (verified /
+ * proof_invalid / upstream_failed): the next internal_error, if any, restarts
+ * the budget clock from scratch and the named blocker is released. */
+static void pv_unresolved_clear(void)
+{
+    if (atomic_exchange(&g_pv_unresolved_height, (int64_t)-1) != (int64_t)-1) {
+        atomic_store(&g_pv_unresolved_paged_height, (int64_t)-1);
+        blocker_clear("proof_validate.internal_error");
+    }
+}
+
+/* HOLD the cursor on a transient internal_error at `height`: within the
+ * blocked-since budget return JOB_IDLE (re-derive next tick, no ok=0 row
+ * written); past the budget name ONE PERMANENT blocker + page the operator ONCE
+ * and return JOB_BLOCKED. Never advances, never inserts a terminal row.
+ * `fail_txid` / `fail_type` carry the offending tx + proof_type for the name. */
+static job_result_t pv_hold_unresolved(struct stage_step_ctx *c, int height,
+                                       const struct uint256 *fail_txid,
+                                       const char *fail_type)
+{
+    int64_t now = platform_time_wall_unix();
+    if (atomic_load(&g_pv_unresolved_height) != (int64_t)height) {
+        atomic_store(&g_pv_unresolved_height, (int64_t)height);
+        atomic_store(&g_pv_unresolved_since_unix, now);
+        atomic_store(&g_pv_unresolved_paged_height, (int64_t)-1);
+        atomic_fetch_add(&g_internal_error_total, 1); /* once per held height */
+    }
+    int64_t since = atomic_load(&g_pv_unresolved_since_unix);
+    int64_t elapsed = (since > 0 && now >= since) ? now - since : 0;
+    atomic_store(&g_last_blocked_unix, now);
+
+    if (elapsed < PV_UNRESOLVED_BUDGET_SECONDS)
+        return JOB_IDLE; /* hold the cursor; the body re-derives next tick */
+
+    char txhex[65] = {0};
+    if (fail_txid)
+        uint256_get_hex(fail_txid, txhex);
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "proof_validate height=%d type=%s txid=%s held %llds: proof "
+             "verification hit a transient internal_error that did not clear "
+             "(sapling_ctx alloc / verifier fault)",
+             height, fail_type ? fail_type : "internal", txhex,
+             (long long)elapsed);
+    if (!blocker_init(&c->blocker, "proof_validate.internal_error",
+                      STAGE_NAME, BLOCKER_PERMANENT, reason)) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] could not name internal_error blocker "
+                 "height=%d — degrading to idle", height);
+        return JOB_IDLE;
+    }
+    c->blocker.retry_budget = -1;
+    /* Page the operator exactly once per held height (EXACTLY ONE escalation). */
+    if (atomic_exchange(&g_pv_unresolved_paged_height, (int64_t)height) !=
+        (int64_t)height)
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "proof_validate internal_error height=%d type=%s txid=%s "
+                    "held %llds — H* cannot advance; transient proof-verify "
+                    "fault did not clear",
+                    height, fail_type ? fail_type : "internal", txhex,
+                    (long long)elapsed);
+    return JOB_BLOCKED;
+}
+
 static void tx_report_init(struct proof_validate_tx_report *r)
 {
     memset(r, 0, sizeof(*r));
@@ -355,6 +439,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                         0, 0, 0, NULL, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
+        pv_unresolved_clear();
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
@@ -383,7 +468,25 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         !sapling_params_loaded()) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
+        /* The zk verification keys are not loaded yet and this block carries
+         * shielded proofs that REQUIRE them. The LOADER (load_params_thread,
+         * boot.c) is the AUTHORITY for this blocker: it names PERMANENT
+         * "params_missing" ONLY on a genuine corrupt/parse failure. During the
+         * NORMAL in-flight background load g_params_loaded is still false with
+         * nothing wrong, so naming a PERMANENT blocker here would convert a
+         * transient param-load window into a wedge. Only RE-SURFACE the loader's
+         * blocker (it already declared it permanent) as JOB_BLOCKED; otherwise
+         * HOLD the cursor (JOB_IDLE) and re-derive next tick — once the keys
+         * finish loading the same height advances. proof_validate never SETS the
+         * blocker, so no blocker_clear is needed. */
+        if (!blocker_exists("params_missing"))
+            return JOB_IDLE; /* transient load window; re-derive next tick */
+        if (!blocker_init(&c->blocker, "params_missing", "crypto.params",
+                          BLOCKER_PERMANENT,
+                          "zk verification keys not loaded; shielded-proof block "
+                          "cannot be validated"))
+            return JOB_IDLE; /* blocker_init logged the reason; degrade to idle */
+        return JOB_BLOCKED;
     }
 
     struct validate_summary summary;
@@ -403,24 +506,31 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
     block_free(&blk);
 
+    /* TL-2: the internal_error class is a TRANSIENT "could not complete proof
+     * verification yet" (a sapling_ctx allocation failure under memory pressure
+     * on <8GB targets, or a transient verifier/decode fault) — NOT a permanent
+     * bad-proof reject. Mirror the script path STEP-2A: HOLD the cursor and
+     * re-derive next tick — do NOT insert a terminal ok=0 row, do NOT advance the
+     * cursor, do NOT emit EV_BLOCK_REJECTED. A bounded blocked-since budget turns
+     * a genuinely irreducible internal_error into one named PERMANENT blocker
+     * (pv_hold_unresolved), never a silent loop and never a transient frozen as a
+     * false ok=0 reject (the very wedge the script path already cured). */
+    if (!summary.ok && summary.internal_error)
+        return pv_hold_unresolved(c, next_h, &summary.first_failure_txid,
+                                  summary.first_failure_proof_type);
+
     const char *status = "verified";
     bool ok = true;
     const struct uint256 *fail_txid = NULL;
     const char *fail_type = NULL;
     char fail_txid_hex[65] = {0};
     if (!summary.ok) {
+        /* TL-2 holds the internal_error class above, so a !ok summary here is a
+         * GENUINE proof-invalid verdict (a real bad proof): write the terminal
+         * ok=0 row and advance the cursor — this path is unchanged. */
         uint256_get_hex(&summary.first_failure_txid, fail_txid_hex);
         fail_txid = &summary.first_failure_txid;
         fail_type = summary.first_failure_proof_type;
-    }
-    if (!summary.ok && summary.internal_error) {
-        status = "internal_error";
-        ok = false;
-        atomic_fetch_add(&g_internal_error_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "proof_validate internal_error height=%d type=%s txid=%s",
-                    next_h, fail_type ? fail_type : "unknown", fail_txid_hex);
-    } else if (!summary.ok) {
         status = "proof_invalid";
         ok = false;
         atomic_fetch_add(&g_proof_invalid_total, 1);
@@ -437,6 +547,9 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                     summary.sprout_joinsplits_total, fail_txid, fail_type))
         return JOB_FATAL;
 
+    /* A height advanced cleanly: release any HOLD budget/named blocker so a
+     * later internal_error restarts the budget clock from scratch. */
+    pv_unresolved_clear();
     atomic_store(&g_last_advance_height, (int64_t)next_h);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
@@ -514,6 +627,11 @@ void proof_validate_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    /* TL-2 HOLD tracking reset (clears the named blocker if one is live). */
+    pv_unresolved_clear();
+    atomic_store(&g_pv_unresolved_height, (int64_t)-1);
+    atomic_store(&g_pv_unresolved_since_unix, (int64_t)0);
+    atomic_store(&g_pv_unresolved_paged_height, (int64_t)-1);
     pthread_mutex_unlock(&g_lock);
 }
 
