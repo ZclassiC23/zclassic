@@ -117,14 +117,7 @@ bool reindex_epilogue_derive(struct main_state *ms, struct node_db *ndb,
         reindex_epi_page(tip_h, "utxo_sha3_stamp_failed");
         LOG_RETURN(false, "reindex_epi", "utxo_sha3 stamp failed h=%d", tip_h);
     }
-    {
-        struct utxo_commitment uc;
-        utxo_commitment_init(&uc);
-        utxo_commitment_compute_db(ndb->db, &uc);          /* over `utxos` */
-        if (!utxo_commitment_save_checkpoint(ndb->db, &uc))
-            LOG_WARN("reindex_epi",
-                     "utxo_commitment XOR checkpoint write failed (non-fatal)");
-    }
+    (void)utxo_commitment_resync_from_db(ndb->db, NULL);  /* over `utxos`; logs */
     /* coins_best_block cache := the replayed tip hash (a CACHE of the
      * derivation; the authority is coins_applied_height set in step 3). */
     if (!node_db_state_set(ndb, "coins_best_block", tip_hash, 32))

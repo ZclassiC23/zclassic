@@ -104,6 +104,19 @@ bool utxo_commitment_save_checkpoint(struct sqlite3 *db,
 bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
                                       struct utxo_commitment *uc);
 
+/* Re-derive the XOR checkpoint from the live `utxos` table (utxo_commitment_compute_db)
+ * and OVERWRITE the stored node_state('utxo_commitment') checkpoint with it.
+ *
+ * The `utxos` table is a deterministic rebuild of the coins_kv authority and the
+ * checkpoint is a derived cache written only out-of-band (boot/recovery) — never
+ * co-committed by the live reducer mirror writer — so it runs frozen-stale during
+ * forward sync. Adopting the recomputed digest is the same refresh the boot path
+ * performs (reindex_epilogue / utxo_recovery). Logs the count on success / a
+ * warning on save failure. Copies the recomputed digest to *out_optional when
+ * non-NULL. Returns the save result. */
+bool utxo_commitment_resync_from_db(struct sqlite3 *db,
+                                    struct utxo_commitment *out_optional);
+
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
 /* Single-source per-record serializer for the SHA3 UTXO commitment.

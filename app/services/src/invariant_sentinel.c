@@ -62,6 +62,13 @@ static _Atomic uint64_t g_commitment_skipped_tip_moved = 0;
 static _Atomic int64_t  g_last_audit_unix = 0;
 static _Atomic bool     g_sweep_blocker_active = false;
 static _Atomic bool     g_audit_blocker_active = false;
+/* Consecutive corruption-candidate audits before the diagnostic blocker is
+ * raised. The hourly O(n) scan can race a mirror `DELETE FROM utxos`+reinsert
+ * rebuild (the torn-scan guard keys on tip cursor + checkpoint and misses that
+ * window — the cause of the live 6 false fires), so a single candidate verdict
+ * is not trusted; reset on any clean/growth pass. */
+static _Atomic int      g_commitment_candidate_streak = 0;
+#define COMMITMENT_CANDIDATE_STREAK_RAISE 2
 
 static pthread_mutex_t g_detail_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_last_sweep_detail[200];
@@ -509,6 +516,22 @@ static void audit_log_range_counts(sqlite3 *db)
              line);
 }
 
+/* Release a latched commitment-audit diagnostic (blocker + any residual
+ * chain_linkage hold) and reset the page-once gate. NO node.db access — safe to
+ * call from any thread, including the condition-engine owner. Idempotent: a
+ * no-op when nothing is latched. */
+static void audit_clear_latched_blocker(const char *why)
+{
+    if (!atomic_load(&g_audit_blocker_active))
+        return;
+    atomic_store(&g_audit_blocker_active, false);
+    blocker_clear("coins.commitment_spot_check");
+    chain_linkage_hold_clear("commitment_audit");
+    LOG_INFO("validation_pack",
+             "[validation_pack] coins.commitment_spot_check cleared by %s",
+             why ? why : "a clean audit");
+}
+
 bool invariant_sentinel_commitment_audit_once(void)
 {
     struct node_db *ndb = sentinel_ndb();
@@ -551,23 +574,37 @@ bool invariant_sentinel_commitment_audit_once(void)
     }
 
     if (utxo_commitment_equal(&saved, &computed)) {
-        if (atomic_load(&g_audit_blocker_active)) {
-            atomic_store(&g_audit_blocker_active, false);
-            blocker_clear("coins.commitment_spot_check");
-            chain_linkage_hold_clear("commitment_audit");
-            LOG_INFO("validation_pack",
-                     "[validation_pack] coins.commitment_spot_check cleared "
-                     "by a clean audit");
-        }
+        atomic_store(&g_commitment_candidate_streak, 0);
+        audit_clear_latched_blocker("a clean audit");
         return true;
     }
 
     /* Shared stale-vs-corruption classifier: growth past the checkpoint =
-     * stale (legitimate, never fires); shrink or
-     * equal-count-different-hash = corruption candidate. */
+     * stale (legitimate); shrink or equal-count-different-hash = corruption
+     * candidate. GROWTH is the EXPECTED steady state — the checkpoint is a
+     * derived cache written only out-of-band (boot/recovery), never
+     * co-committed by the live coins_kv mirror writer, so the `utxos`
+     * projection legitimately runs AHEAD of it during forward sync. Resync the
+     * checkpoint to the recomputed digest (the same refresh the boot path
+     * performs) so it tracks the set, and release any blocker latched during an
+     * earlier transient — the only OTHER clear is gated on EXACT equality, which
+     * a perpetually-advancing set may never hit, so a transient latch would
+     * otherwise strand the chain forever (the live 3164076 wedge). */
     if (!utxo_recovery_xor_mismatch_is_corruption_candidate(
-            saved.count, computed.count))
+            saved.count, computed.count)) {
+        atomic_store(&g_commitment_candidate_streak, 0);
+        (void)utxo_commitment_resync_from_db(ndb->db, NULL);
+        audit_clear_latched_blocker("a growth/stale resync");
         return true;
+    }
+
+    /* Corruption candidate (computed <= saved). Require
+     * COMMITMENT_CANDIDATE_STREAK_RAISE consecutive candidate verdicts before
+     * raising, to swallow the mirror-rebuild torn-scan race the guard above
+     * misses (the live 6 false fires). */
+    if (atomic_fetch_add(&g_commitment_candidate_streak, 1) + 1
+            < COMMITMENT_CANDIDATE_STREAK_RAISE)
+        return true; /* not yet persistent — wait for the next audit */
 
     atomic_fetch_add(&g_commitment_mismatches_total, 1);
     atomic_store(&g_audit_blocker_active, true);
@@ -578,14 +615,29 @@ bool invariant_sentinel_commitment_audit_once(void)
         "count_got=%llu (corruption candidate; range counts logged)",
         (unsigned long long)saved.count,
         (unsigned long long)computed.count);
-    /* HOLD: a node with a corrupted coin set must not extend the chain.
-     * Boundary = the applied frontier (everything at/above it is built on
-     * the suspect set). */
-    int64_t tip = tip_finalize_stage_last_height();
-    if (tip >= 0)
-        chain_linkage_hold_set("commitment_audit", (int)tip + 1,
-                               "utxo commitment corruption candidate");
+    /* DECOUPLED from chain_linkage (2026-06-29): the `utxos` table is a
+     * REBUILDABLE projection of the coins_kv authority — NOT the authority — and
+     * this audit compares it only to a frozen out-of-band self-checkpoint, so it
+     * cannot evidence coin-set-vs-chain corruption. A projection mismatch must
+     * NEVER refuse a PoW-proven tip move: the live 3164076 wedge was a commitment
+     * HOLD making tip_finalize roll back an already-inserted finalized row via
+     * JOB_FATAL, pinning H* with no auto-remedy. The consensus coin gate is
+     * utxo_apply's per-block ok-verdict (tip_finalize upstream.ok), untouched.
+     * The non-fatal blocker above is owned by state_window_inconsistent, which
+     * re-derives the projection from the coins_kv authority and clears it — it
+     * never freezes forward sync. */
     return true;
+}
+
+/* Auto-terminating owner hook (state_window_inconsistent): release a latched
+ * commitment-audit diagnostic so a benign projection skew never pages forever.
+ * NO node.db access — the checkpoint resync runs on the audit thread (the
+ * growth branch) and the projection rebuild on the mirror thread; this only
+ * clears the operator-facing signal. */
+void invariant_sentinel_clear_commitment_blocker(void)
+{
+    atomic_store(&g_commitment_candidate_streak, 0);
+    audit_clear_latched_blocker("the auto-terminating owner");
 }
 
 /* ── supervisor children ────────────────────────────────────────── */
@@ -795,6 +847,7 @@ void invariant_sentinel_reset_for_testing(void)
     atomic_store(&g_commitment_skipped_tip_moved, (uint64_t)0);
     atomic_store(&g_sweep_blocker_active, false);
     atomic_store(&g_audit_blocker_active, false);
+    atomic_store(&g_commitment_candidate_streak, 0);
     atomic_store(&g_seed_gate_runs, (uint64_t)0);
     atomic_store(&g_seed_gate_refusals, (uint64_t)0);
     atomic_store(&g_locator_runs, (uint64_t)0);

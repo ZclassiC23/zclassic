@@ -138,6 +138,14 @@ bool invariant_sentinel_sweep_once(void);
 /* One commitment audit pass (reads node.db). Same exposure rationale. */
 bool invariant_sentinel_commitment_audit_once(void);
 
+/* Auto-terminating owner hook: release a latched coins.commitment_spot_check
+ * diagnostic (and any residual commitment_audit chain_linkage hold). NO node.db
+ * access — safe from the condition-engine thread. Called by the
+ * state_window_inconsistent condition remedy so a benign projection skew never
+ * pages the operator forever. The underlying checkpoint resync happens on the
+ * audit thread; this clears only the operator-facing signal. */
+void invariant_sentinel_clear_commitment_blocker(void);
+
 /* ── zcl_state subsystem=validation_pack ─────────────────────────── */
 bool invariant_sentinel_dump_state_json(struct json_value *out,
                                         const char *key);

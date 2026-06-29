@@ -279,9 +279,18 @@ int test_invariant_sentinel(void)
                   !invariant_sentinel_confirm_violation(&v));
     }
 
-    /* ── check 5: commitment audit (fire + non-fire + self-clear) ──── */
+    /* ── check 5: commitment audit — DECOUPLED, streak-gated, self-clearing.
+     * The `utxos` table is a rebuildable projection of the coins_kv authority
+     * and the checkpoint is a frozen out-of-band cache, so a mismatch is a
+     * benign skew, not chain corruption: it must NEVER raise a chain_linkage
+     * HOLD (decoupled — the 2026-06-29 live 3164076 wedge was that HOLD rolling
+     * back a PoW-proven tip_finalize), needs 2 CONSECUTIVE candidate verdicts to
+     * fire (swallow the mirror-rebuild torn-scan race), and self-clears on a
+     * growth resync or via the auto-terminating owner. ───────────────────── */
     {
         invariant_sentinel_reset_for_testing();
+        blocker_reset_for_testing();
+        chain_linkage_reset_for_testing();
         struct node_db ndb;
         bool dbok = node_db_open(&ndb, ":memory:");
         ISN_CHECK("fixture: audit node_db opens", dbok);
@@ -299,59 +308,71 @@ int test_invariant_sentinel(void)
             ISN_CHECK("fixture: checkpoint saved (count=8)",
                       saved && uc.count == 8);
 
-            /* non-fire: live set matches the checkpoint exactly */
+            /* matching set -> clean, no blocker, no hold */
             bool ran = invariant_sentinel_commitment_audit_once();
-            ISN_CHECK("audit: matching set -> clean, no blocker",
-                      ran &&
-                      !blocker_exists("coins.commitment_spot_check"));
+            ISN_CHECK("audit: matching set -> clean (no blocker, no hold)",
+                      ran && !blocker_exists("coins.commitment_spot_check") &&
+                      !chain_linkage_hold_active());
 
-            /* non-fire: the set GREW past the checkpoint (bulk-import
-             * staleness shape) — classifier says stale, never fires */
+            /* GROWTH (computed > saved): no fire, and EDIT 1 RESYNCS the
+             * checkpoint to the grown set (count 8 -> 10). */
             bool grew = isn_insert_utxo(&ndb, 100) &&
                         isn_insert_utxo(&ndb, 101);
             ran = invariant_sentinel_commitment_audit_once();
-            ISN_CHECK("audit: grown set (stale checkpoint) -> no fire",
+            struct utxo_commitment ck;
+            bool loaded = utxo_commitment_load_checkpoint(ndb.db, &ck);
+            ISN_CHECK("audit: growth -> no fire + checkpoint resynced to 10",
                       grew && ran &&
-                      !blocker_exists("coins.commitment_spot_check"));
+                      !blocker_exists("coins.commitment_spot_check") &&
+                      !chain_linkage_hold_active() &&
+                      loaded && ck.count == 10);
 
-            /* fire: silent truncation — rows vanish below the
-             * checkpoint count (the 2026-06-10 keyspace-tail class) */
-            utxo_commitment_compute_db(ndb.db, &uc);
-            saved = utxo_commitment_save_checkpoint(ndb.db, &uc);
-            char *err = NULL;
-            bool truncated = saved &&
-                sqlite3_exec(ndb.db,
-                             "DELETE FROM utxos WHERE rowid IN "
-                             "(SELECT rowid FROM utxos LIMIT 4)",
-                             NULL, NULL, &err) == SQLITE_OK;
-            if (err) sqlite3_free(err);
+            /* SHRINK below the (now count=10) checkpoint. */
+            bool truncated = sqlite3_exec(ndb.db,
+                "DELETE FROM utxos WHERE rowid IN "
+                "(SELECT rowid FROM utxos LIMIT 4)",
+                NULL, NULL, NULL) == SQLITE_OK;
+            /* STREAK GATE: a single shrink audit must NOT fire. */
             ran = invariant_sentinel_commitment_audit_once();
-            ISN_CHECK("audit: TRUNCATED set FIRES "
-                      "coins.commitment_spot_check (PERMANENT)",
+            ISN_CHECK("audit: single shrink does NOT fire (streak gate)",
                       truncated && ran &&
+                      !blocker_exists("coins.commitment_spot_check") &&
+                      !chain_linkage_hold_active());
+
+            /* DECOUPLE: a 2nd consecutive shrink fires the NON-FATAL diagnostic
+             * blocker but NEVER a chain_linkage hold. */
+            ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: 2nd shrink FIRES non-fatal blocker, NO HOLD",
+                      ran &&
                       blocker_exists("coins.commitment_spot_check") &&
                       blocker_class_for("coins.commitment_spot_check") ==
-                          BLOCKER_PERMANENT);
+                          BLOCKER_PERMANENT &&
+                      !chain_linkage_hold_active());
 
-            /* self-clear: a repaired checkpoint (matching the live set
-             * again) clears the blocker on the next clean audit */
-            utxo_commitment_compute_db(ndb.db, &uc);
-            saved = utxo_commitment_save_checkpoint(ndb.db, &uc);
-            ran = invariant_sentinel_commitment_audit_once();
-            ISN_CHECK("audit: clean audit self-clears the blocker",
-                      saved && ran &&
-                      !blocker_exists("coins.commitment_spot_check"));
+            /* OWNER: the auto-terminating owner hook (called by the
+             * state_window_inconsistent remedy) releases the diagnostic with no
+             * node.db access. */
+            invariant_sentinel_clear_commitment_blocker();
+            ISN_CHECK("owner: clear_commitment_blocker releases blocker + hold",
+                      !blocker_exists("coins.commitment_spot_check") &&
+                      !chain_linkage_hold_active());
 
-            /* fire: equal count, different contents (clearest corruption
-             * signature — count matches, accumulator does not) */
-            bool mutated = sqlite3_exec(ndb.db,
-                "UPDATE utxos SET value = value + 1 WHERE rowid = "
-                "(SELECT MIN(rowid) FROM utxos)",
-                NULL, NULL, NULL) == SQLITE_OK;
-            ran = invariant_sentinel_commitment_audit_once();
-            ISN_CHECK("audit: equal-count different-hash FIRES",
-                      mutated && ran &&
+            /* LIVE-WEDGE SELF-HEAL: re-latch (2 shrinks), then a GROWTH audit
+             * clears the latched blocker via resync — the exact 3164076 cure. */
+            (void)invariant_sentinel_commitment_audit_once(); /* streak 1 */
+            (void)invariant_sentinel_commitment_audit_once(); /* streak 2 -> fire */
+            ISN_CHECK("setup: blocker re-latched on sustained shrink",
                       blocker_exists("coins.commitment_spot_check"));
+            bool regrew = isn_insert_utxo(&ndb, 200) &&
+                          isn_insert_utxo(&ndb, 201) &&
+                          isn_insert_utxo(&ndb, 202) &&
+                          isn_insert_utxo(&ndb, 203) &&
+                          isn_insert_utxo(&ndb, 204); /* above the 10-checkpoint */
+            ran = invariant_sentinel_commitment_audit_once();
+            ISN_CHECK("audit: growth resync clears a latched blocker (3164076 self-heal)",
+                      regrew && ran &&
+                      !blocker_exists("coins.commitment_spot_check") &&
+                      !chain_linkage_hold_active());
 
             blocker_clear("coins.commitment_spot_check");
             chain_linkage_hold_clear("commitment_audit");

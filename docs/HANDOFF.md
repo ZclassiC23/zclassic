@@ -1,25 +1,43 @@
-## CURRENT STATE (2026-06-29)
+## CURRENT STATE (2026-06-29, late)
 
-**The recurring forward-sync "stuck one block below tip" class is CURED.** The
-fixes are on `main` and are ancestors of HEAD `90539edd4`: `75f35dcaf`
-(`fix(sync): never wedge on one block`), `a35ca0c8f` (tip_finalize
-header-only-successor finalize — the lookahead deadlock), and `525d6579c` /
-`75967c574` (the self-heal de-latch package). The live node **reaches and HOLDS
-the network tip** — verified live 2026-06-29 (`blocks` 3,163,729 vs `headers`
-3,163,730, the intentional 1-block finality lag; `verificationprogress=1`).
-Verify, do not assume: `zcl_status`, then `zcl_state subsystem=reducer_frontier`.
+**A new wedge class was found, cured, and deployed: the commitment-audit false
+positive.** A UTXO-commitment audit (a heuristic over the *rebuildable `utxos`
+projection*) was raising a permanent `chain_linkage` HOLD that rolled back a
+PoW-proven `tip_finalize` (`JOB_FATAL` → txn rollback → "missing-success-row"),
+with its owner condition stuck on a `COND_REMEDY_FAILED` stub — the live node sat
+frozen ~10h at H\*=3164075. The cure (this commit, 7 files) **decouples** the audit
+from consensus finalize, **self-heals** the checkpoint on the growth path + clears
+the latch, gates the diagnostic behind 2 consecutive verdicts (kills the
+mirror-rebuild race), and gives it an **auto-terminating owner**. Gates: unit test,
+`test_parallel` 0/466, `make lint` (E13 parity intact), 3-lens adversarial diff
+review, copy-prove on the real wedged datadir. On deploy the live node **unwedged
+and climbed 406 blocks (3164075 → 3164482)**, `zcl_blockers=0`. Full write-up:
+[`docs/work/commitment-audit-wedge-cure-2026-06-29.md`](work/commitment-audit-wedge-cure-2026-06-29.md)
++ review [`docs/work/commit-audit-cure-review-2026-06-29.md`](work/commit-audit-cure-review-2026-06-29.md).
 
-**How it reaches tip is still a borrowed-but-consensus-bound stopgap.** The node
-seeds `coins_kv` from a near-tip SHA3 snapshot whose anchor block hash is bound to
-the in-binary PoW header, then folds forward. The snapshot's UTXO *content* is not
-yet independently re-derived from genesis. The published bootstrap snapshot is
-`utxo-seed-3155842.snapshot` (starterpack-3155842); reconcile any other height
-cited below against the README/release before trusting it.
+**The node is NOT at tip — it now blocks on a deeper, pre-existing coin-hole at
+3164483** that the commitment wedge had masked. Block 3164483 spends a coin missing
+from `coins_kv` that *also appears spent* in 3164371..3164482 (`coin_backfill` →
+`refused_spent`). This is a chain-view inconsistency (torn-coins / borrowed-snapshot
+class). A `coin_backfill` delta-window-relax fix was tried and REVERTED (insufficient
+— the real blocker is the no-spend scan). **THE NEXT TASK** with a precise diagnosis
+and where to start: [`docs/work/coin-hole-3164483-next-2026-06-29.md`](work/coin-hole-3164483-next-2026-06-29.md).
+Verify the live node first: `zcl_status`, then `zcl_state subsystem=reducer_frontier`
+and `zcl_state subsystem=coin_backfill`.
 
-**Latest landed change:** explorer improvements shipped in `90539edd4` (HODL-wave
-hover, corrected stats, detailed factoids) and were deployed to the live binary.
-The live binary carries a `-dirty` build stamp only because it was built with the
-owner WIP (the sovereign-anchor files) present in the tree.
+**Reductions in the commitment-audit cure (for the next reviewer):** the audit is
+now a non-fatal diagnostic, not a consensus gate — real coin-set integrity rests on
+the per-block fold ok-verdict + the SHA3 full-set commitment (untouched). The review
+doc flags follow-ups (stale comments to fix, the growth-path checkpoint write shares
+the unserialized node.db connection — benign/self-healing, and the audit is now a
+transient-stability check rather than a durable-baseline detector).
+
+**Bootstrap is still a borrowed-but-consensus-bound stopgap.** The node seeds
+`coins_kv` from a near-tip SHA3 snapshot (`utxo-seed-3155842.snapshot`,
+starterpack-3155842) whose anchor hash is bound to the in-binary PoW header, then
+folds forward. The snapshot's UTXO *content* is not yet independently re-derived
+from genesis — the sovereign self-mint anchor below is the cure, and is very likely
+the real fix for the 3164483 coin-hole too.
 
 **Remaining in-flight work — the sovereign self-mint anchor.** Goal: self-mint a
 from-genesis SHA3 anchor at a compiled checkpoint, cut over via
@@ -43,12 +61,11 @@ Verify HEAD with `git status --short --branch`; detect your worktree with `pwd`
 
 ## Recent history
 
-`origin/main` is at HEAD `90539edd4`; `git log --oneline -20` is the
-authoritative recent record. Two work-streams landed most recently: the
-forward-sync never-wedge cure (`75f35dcaf` plus the deadlock/de-latch commits —
-see **CURRENT STATE** above) and the explorer refresh (`90539edd4`). The dated
-sections below this line are historical context — trust `git log` and the live
-node over any of them.
+`git log --oneline -20` is the authoritative recent record. The most recent
+landed work is the **commitment-audit wedge cure** (see **CURRENT STATE** above);
+before it, the forward-sync never-wedge cure (`75f35dcaf` + the deadlock/de-latch
+commits) and the explorer refresh (`90539edd4`). The dated sections below this line
+are historical context — trust `git log` and the live node over any of them.
 
 ---
 

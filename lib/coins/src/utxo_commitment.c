@@ -222,6 +222,26 @@ bool utxo_commitment_load_checkpoint(sqlite3 *db,
     return ok;
 }
 
+bool utxo_commitment_resync_from_db(sqlite3 *db,
+                                    struct utxo_commitment *out_optional)
+{
+    if (!db) return false;
+    struct utxo_commitment uc;
+    utxo_commitment_init(&uc);
+    utxo_commitment_compute_db(db, &uc);
+    bool ok = utxo_commitment_save_checkpoint(db, &uc);
+    if (ok)
+        LOG_INFO("utxo_cmt",
+                 "[utxo_cmt] XOR checkpoint resynced from utxos table: count=%llu",
+                 (unsigned long long)uc.count);
+    else
+        LOG_WARN("utxo_cmt",
+                 "[utxo_cmt] XOR checkpoint resync save failed (count=%llu)",
+                 (unsigned long long)uc.count);
+    if (out_optional) *out_optional = uc;
+    return ok;
+}
+
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
 bool utxo_sha3_serialize_record(uint8_t *buf, size_t buf_cap, size_t *out_len,
