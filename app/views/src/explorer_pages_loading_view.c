@@ -15,6 +15,7 @@ size_t explorer_view_tokens_loading(uint8_t *r, size_t max)
     APPEND(off, r, max,
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<meta http-equiv='refresh' content='3'>"
         "<link rel='stylesheet' href='/explorer/style.css'>"
         "</head><body>" EXPLORER_NAV

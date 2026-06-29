@@ -125,12 +125,29 @@ struct stats_ctx {
     int64_t slowest_block_h, slowest_block_gap;
 
     /* Derived */
-    char    hr_str[64];
-    char    supply_str[32];
+    char    hr_str[64];          /* solve rate, formatted (Sol/s) */
+    char    supply_str[32];      /* transparent UTXO pool, formatted */
     int     halvings, next_halving, blocks_until_halving;
     int64_t current_subsidy;
-    double  pct_mined;
+    double  pct_mined;           /* transparent pool / cap */
     int64_t t_query_ms;
+
+    /* Economy & emission (factoid section) */
+    int64_t mined_supply;        /* consensus mined/circulating supply at tip */
+    int64_t max_supply_sat;      /* asymptotic emission cap (~11.46M ZCL) */
+    double  pct_of_cap;          /* mined_supply / max_supply_sat * 100 */
+    double  solrate;             /* estimated network solve rate (Sol/s) */
+    double  daily_issuance_zcl;  /* current subsidy * 86400 / target spacing */
+    double  annual_inflation;    /* daily_issuance annualized vs mined_supply (%) */
+    double  recent_avg_interval; /* avg block interval, last 1000 blocks (s) */
+    int64_t halving_eta_secs;    /* blocks_until_halving * recent_avg_interval */
+    int64_t tx_per_day;          /* tx count in blocks over the last 24h */
+    int64_t net_daily_utxo;      /* outputs created - inputs spent, last ~1d */
+    int64_t immature_cb_count;   /* unspent coinbase within COINBASE_MATURITY */
+    int64_t immature_cb_value;
+    int64_t median_utxo_value;
+    int64_t tip_age_secs;        /* wall_now - tip block time */
+    char    chainwork_hex[72];   /* cumulative chainwork, big-endian hex */
 };
 
 struct stats_chart_data {
@@ -146,6 +163,10 @@ struct stats_chart_data {
 void gather_deep_chain_data(sqlite3 *db, struct stats_ctx *c);
 void gather_chart_data(sqlite3 *db, int tip, double diff,
                        struct stats_chart_data *out);
+/* Recent-window economy aggregates (interval, tx/day, UTXO flow, immature
+ * coinbase, median UTXO, chainwork) — needs the tip + tip block time. */
+void gather_economy_data(sqlite3 *db, int tip, int64_t tip_time,
+                         struct stats_ctx *c);
 
 /* ── Section emitters (defined in explorer_stats_sections.c) ──────────
  *
@@ -155,6 +176,8 @@ size_t emit_stats_header(uint8_t *r, size_t max, size_t off,
                          const struct stats_ctx *c);
 size_t emit_section_1_network(uint8_t *r, size_t max, size_t off,
                               const struct stats_ctx *c);
+size_t emit_section_1b_economy(uint8_t *r, size_t max, size_t off,
+                               const struct stats_ctx *c);
 size_t emit_section_2_chain_history(uint8_t *r, size_t max, size_t off,
                                     const struct stats_ctx *c);
 size_t emit_section_3_block_records(uint8_t *r, size_t max, size_t off,

@@ -21,7 +21,9 @@ size_t explorer_view_block_not_found_rpc(uint8_t *r, size_t max)
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Block Not Found</h2>" EXPLORER_FOOTER);
 }
 
@@ -32,7 +34,9 @@ size_t explorer_view_block_not_found(const char *safe_param,
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Block Not Found</h2>"
         "<p>No block found for: <code>%s</code></p>"
         EXPLORER_FOOTER, safe_param ? safe_param : "");

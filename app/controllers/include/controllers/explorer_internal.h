@@ -608,6 +608,58 @@ static inline int64_t zcl_total_supply_zatoshi(int64_t height)
     return total;
 }
 
+/* ── Equihash solve-rate (NOT "hashrate") ──────────────────────────
+ *
+ * ZClassic is Equihash 200,9: miners produce *solutions*, not raw hashes,
+ * so the network rate is measured in Sol/s. The estimate is
+ *   diff * 2^13 / target_block_spacing
+ * where the target spacing switched 150s -> 75s at Buttercup
+ * (BUTTERCUP_ACTIVATION_HEIGHT). Using the active spacing matters: the
+ * pre-Buttercup hard-coded 150 under-reports the post-Buttercup rate ~2x. */
+static inline int explorer_target_spacing(int height)
+{
+    return height >= BUTTERCUP_ACTIVATION_HEIGHT ? 75 : 150;
+}
+
+static inline double explorer_solrate_from_diff(double diff, int height)
+{
+    int spacing = explorer_target_spacing(height);
+    if (spacing <= 0) spacing = 75; /* defensive: never divide by zero */
+    return diff * 8192.0 / (double)spacing;
+}
+
+/* Format a solve rate (solutions/sec) with SI-style units. */
+static inline void explorer_format_solrate(char *buf, size_t max, double sr)
+{
+    if (sr >= 1e9)      snprintf(buf, max, "%.2f GSol/s", sr / 1e9);
+    else if (sr >= 1e6) snprintf(buf, max, "%.2f MSol/s", sr / 1e6);
+    else if (sr >= 1e3) snprintf(buf, max, "%.2f KSol/s", sr / 1e3);
+    else                snprintf(buf, max, "%.0f Sol/s", sr);
+}
+
+/* Height of the next subsidy halving at/after `tip` (Buttercup-aware:
+ * pre-BC boundaries every PRE_BC_HALVING, post-BC every POST_BC_HALVING
+ * starting one block after BUTTERCUP_ACTIVATION_HEIGHT). Mirrors the
+ * inline calc in explorer_stats_view.c. */
+static inline int explorer_next_halving_height(int tip)
+{
+    if (tip >= BUTTERCUP_ACTIVATION_HEIGHT) {
+        int era = (int)(((int64_t)tip - 1 - BUTTERCUP_ACTIVATION_HEIGHT)
+                        / POST_BC_HALVING);
+        return (int)(BUTTERCUP_ACTIVATION_HEIGHT + 1
+                     + (int64_t)(era + 1) * POST_BC_HALVING);
+    }
+    return (tip / PRE_BC_HALVING + 1) * PRE_BC_HALVING;
+}
+
+/* Asymptotic emission cap (total ZCL ever mintable). A large height
+ * drives zcl_total_supply_zatoshi past the last non-zero subsidy era,
+ * so the result is the true tail-summed cap (~11.46M ZCL), NOT 21M. */
+static inline int64_t zcl_max_supply_zatoshi(void)
+{
+    return zcl_total_supply_zatoshi(100000000LL);
+}
+
 /* Aliases used by factoids, API, and stats code */
 static inline int64_t compute_supply_at_height(int64_t height)
 {

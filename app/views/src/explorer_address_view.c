@@ -19,7 +19,9 @@ size_t explorer_view_address_invalid(const char *safe_addr,
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Invalid Address</h2>"
         "<p><code>%s</code> is not a valid ZClassic address.</p>"
         EXPLORER_FOOTER, safe_addr ? safe_addr : "");
@@ -89,7 +91,9 @@ size_t explorer_view_search_invalid(const char *detail, uint8_t *r, size_t max)
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Invalid Search Query</h2>"
         "<p>%s</p>" EXPLORER_FOOTER, detail ? detail : "");
 }

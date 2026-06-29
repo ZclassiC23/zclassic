@@ -44,15 +44,142 @@ size_t emit_section_1_network(uint8_t *r, size_t max, size_t off,
         "<div class='stats-row'>"
         "<div class='stat'><div class='num'>%d</div><div class='lbl'>Block Height</div></div>"
         "<div class='stat'><div class='num'>%.4f</div><div class='lbl'>Difficulty</div></div>"
-        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Est. Hashrate</div></div>"
+        "<div class='stat'><div class='num'>%s</div><div class='lbl'>Est. Solve Rate</div></div>"
         "</div>"
         "<div class='stats-row'>"
-        "<div class='stat'><div class='num'>%s ZCL</div><div class='lbl'>Circulating Supply</div></div>"
-        "<div class='stat'><div class='num'>%.2f%%</div><div class='lbl'>%% of Max Supply</div></div>"
+        "<div class='stat'><div class='num'>%s ZCL</div><div class='lbl'>Transparent UTXO Pool</div></div>"
+        "<div class='stat'><div class='num'>%.2f%%</div><div class='lbl'>Transparent %% of Cap</div></div>"
         "<div class='stat'><div class='num'>%" PRId64 "</div><div class='lbl'>Total UTXOs</div></div>"
         "</div>",
         c->tip, c->diff, c->hr_str,
         c->supply_str, c->pct_mined, c->utxo_count_val);
+    return off;
+}
+
+/* Format zatoshi as a thousands-separated ZCL string with 2 decimals,
+ * e.g. 1045337617187500 -> "10,453,376.17". Compact for headline cards. */
+static void econ_fmt_zcl(char *buf, size_t max, int64_t zat)
+{
+    int64_t whole = zat / 100000000LL;
+    int64_t frac  = zat % 100000000LL;
+    if (frac < 0) frac = -frac;
+    char wc[32];
+    format_with_commas(wc, sizeof(wc), whole);
+    snprintf(buf, max, "%s.%02lld", wc, (long long)(frac / 1000000LL));
+}
+
+/* Human-readable duration: years / days / minutes. */
+static void econ_fmt_duration(char *buf, size_t max, int64_t secs)
+{
+    if (secs <= 0) { snprintf(buf, max, "n/a"); return; }
+    double days = (double)secs / 86400.0;
+    if (days >= 365.25)   snprintf(buf, max, "%.2f years", days / 365.25);
+    else if (days >= 1.0) snprintf(buf, max, "%.1f days", days);
+    else                  snprintf(buf, max, "%lld min", (long long)(secs / 60));
+}
+
+size_t emit_section_1b_economy(uint8_t *r, size_t max, size_t off,
+                                      const struct stats_ctx *c)
+{
+    char mined_str[40], cap_str[40], subsidy_str[40], solrate_str[40];
+    char daily_str[40], median_str[40], avg_str[40], cb_mat_str[40], cb_imm_str[40];
+    char eta_str[40], age_str[40];
+    econ_fmt_zcl(mined_str, sizeof(mined_str), c->mined_supply);
+    econ_fmt_zcl(cap_str, sizeof(cap_str), c->max_supply_sat);
+    zcl_format_zcl(subsidy_str, sizeof(subsidy_str), c->current_subsidy);
+    explorer_format_solrate(solrate_str, sizeof(solrate_str), c->solrate);
+
+    int64_t mature_cb_count = c->utxo_coinbase_count - c->immature_cb_count;
+    int64_t mature_cb_value = c->utxo_coinbase_value - c->immature_cb_value;
+    econ_fmt_zcl(cb_mat_str, sizeof(cb_mat_str), mature_cb_value);
+    econ_fmt_zcl(cb_imm_str, sizeof(cb_imm_str), c->immature_cb_value);
+    zcl_format_zcl(median_str, sizeof(median_str), c->median_utxo_value);
+    zcl_format_zcl(avg_str, sizeof(avg_str), (int64_t)c->utxo_avg);
+    econ_fmt_duration(eta_str, sizeof(eta_str), c->halving_eta_secs);
+    econ_fmt_duration(age_str, sizeof(age_str), c->tip_age_secs);
+    snprintf(daily_str, sizeof(daily_str), "%.2f", c->daily_issuance_zcl);
+
+    char txd[24], txt[24], dust_c[24], imm_c[24], mat_c[24];
+    char netg[24], so_str[24], blk_until[24];
+    format_with_commas(txd, sizeof(txd), c->tx_per_day);
+    format_with_commas(txt, sizeof(txt), c->total_txs);
+    format_with_commas(dust_c, sizeof(dust_c), c->utxo_dust);
+    format_with_commas(imm_c, sizeof(imm_c), c->immature_cb_count);
+    format_with_commas(mat_c, sizeof(mat_c), mature_cb_count);
+    format_with_commas(blk_until, sizeof(blk_until), c->blocks_until_halving);
+    snprintf(netg, sizeof(netg), "%s%lld",
+             c->net_daily_utxo >= 0 ? "+" : "", (long long)c->net_daily_utxo);
+
+    double dust_pct = c->utxo_count_val > 0
+        ? (double)c->utxo_dust / (double)c->utxo_count_val * 100.0 : 0.0;
+    int64_t shielded_ops = c->total_joinsplits + c->total_sap_spends
+                         + c->total_sap_outputs;
+    format_with_commas(so_str, sizeof(so_str), shielded_ops);
+    double shielded_ratio = c->total_txs > 0
+        ? (double)shielded_ops / (double)c->total_txs * 100.0 : 0.0;
+    double oldest_years =
+        (double)hodl_wave_age_seconds(c->utxo_min_height, c->tip)
+        / 86400.0 / 365.25;
+
+    APPEND(off, r, max,
+        "<h2>Economy &amp; Emission</h2>"
+        "<p style='color:#888;margin:-4px 0 12px;font-size:14px'>"
+        "Live supply, issuance, and network metrics. Solve rate is Equihash "
+        "solutions/sec at the active target block spacing; supply caps at the "
+        "true asymptotic %s ZCL (not 21M).</p>"
+        "<div class='stats-row'>"
+        "<div class='stat'><div class='num'>%s</div>"
+        "<div class='lbl'>Circulating Supply (ZCL)</div></div>"
+        "<div class='stat'><div class='num'>%.2f%%</div>"
+        "<div class='lbl'>%% of Max Supply (cap)</div></div>"
+        "<div class='stat'><div class='num'>%s</div>"
+        "<div class='lbl'>Est. Network Solve Rate</div></div>"
+        "</div>",
+        cap_str, mined_str, c->pct_of_cap, solrate_str);
+
+    APPEND(off, r, max,
+        "<div class='card'><div class='grid'>"
+        "<div class='label'>Asymptotic Cap</div><div class='val amount'>%s ZCL</div>"
+        "<div class='label'>Current Block Subsidy</div><div class='val amount'>%s ZCL</div>"
+        "<div class='label'>Blocks to Next Halving</div><div class='val'>%s (~%s)</div>"
+        "<div class='label'>Daily Issuance</div><div class='val amount'>%s ZCL/day</div>"
+        "<div class='label'>Annualized Inflation</div><div class='val'>%.2f%%</div>"
+        "<div class='label'>Recent Avg Block Interval</div>"
+        "<div class='val'>%.1f s (target %ds)</div>"
+        "<div class='label'>Chain Tip Age</div><div class='val'>%s</div>"
+        "<div class='label'>Total Transactions</div><div class='val'>%s</div>"
+        "<div class='label'>Transactions / Day</div><div class='val'>%s</div>"
+        "<div class='label'>UTXO Set Size</div><div class='val'>%" PRId64 "</div>"
+        "<div class='label'>Net Daily UTXO Growth</div><div class='val'>%s</div>"
+        "<div class='label'>Dust UTXOs (&lt; 0.001 ZCL)</div>"
+        "<div class='val'>%s (%.2f%%)</div>"
+        "<div class='label'>Mature Coinbase UTXOs</div>"
+        "<div class='val'>%s &mdash; %s ZCL</div>"
+        "<div class='label'>Immature Coinbase UTXOs</div>"
+        "<div class='val'>%s &mdash; %s ZCL</div>"
+        "<div class='label'>Median UTXO Value</div><div class='val amount'>%s ZCL</div>"
+        "<div class='label'>Average UTXO Value</div><div class='val amount'>%s ZCL</div>"
+        "<div class='label'>Oldest Live Coin</div>"
+        "<div class='val'>Block %" PRId64 " (~%.1f yr)</div>"
+        "<div class='label'>Shielded Ops vs Total Tx</div>"
+        "<div class='val'>%s (%.1f%%)</div>"
+        "<div class='label'>Cumulative Chainwork</div>"
+        "<div class='val' style='font-family:monospace;font-size:12px'>0x%s</div>"
+        "</div></div>",
+        cap_str, subsidy_str,
+        blk_until, eta_str,
+        daily_str, c->annual_inflation,
+        c->recent_avg_interval, explorer_target_spacing(c->tip),
+        age_str,
+        txt, txd,
+        c->utxo_count_val, netg,
+        dust_c, dust_pct,
+        mat_c, cb_mat_str,
+        imm_c, cb_imm_str,
+        median_str, avg_str,
+        c->utxo_min_height, oldest_years,
+        so_str, shielded_ratio,
+        c->chainwork_hex[0] ? c->chainwork_hex : "n/a");
     return off;
 }
 

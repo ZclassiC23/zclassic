@@ -17,6 +17,92 @@
 #include <stdio.h>
 #include <string.h>
 
+/* ── Headline chain-card grid ─────────────────────────────────
+ *
+ * A responsive, self-contained card grid of the highest-value live stats.
+ * Class prefix .chaincard so the inline <style> can't collide with the
+ * shared header CSS. Every number is either pulled from the view struct or
+ * derived purely from the tip (supply/cap/halving via the consensus-exact
+ * helpers in explorer_internal.h), so it is correct by construction. */
+static size_t emit_chaincard_grid(uint8_t *r, size_t max, size_t off,
+        int tip, double difficulty, int64_t mempool_count,
+        int64_t mempool_bytes, int64_t tip_time, double recent_interval)
+{
+    int64_t mined = zcl_total_supply_zatoshi(tip);
+    int64_t cap   = zcl_max_supply_zatoshi();
+    double  pct   = cap > 0 ? (double)mined / (double)cap * 100.0 : 0.0;
+
+    char supply_str[24], cap_str[24], solrate_str[32], mp_str[24];
+    char bu_str[24], nh_str[24], age_str[40], int_str[32], ht_str[24];
+    format_with_commas(ht_str, sizeof(ht_str), tip);
+    format_with_commas(supply_str, sizeof(supply_str), mined / 100000000LL);
+    format_with_commas(cap_str, sizeof(cap_str), cap / 100000000LL);
+    explorer_format_solrate(solrate_str, sizeof(solrate_str),
+                            explorer_solrate_from_diff(difficulty, tip));
+    format_with_commas(mp_str, sizeof(mp_str), mempool_count);
+
+    int next_h = explorer_next_halving_height(tip);
+    int blocks_until = next_h - tip;
+    if (blocks_until < 0) blocks_until = 0;
+    format_with_commas(bu_str, sizeof(bu_str), blocks_until);
+    format_with_commas(nh_str, sizeof(nh_str), next_h);
+
+    int64_t now_w = (int64_t)platform_time_wall_time_t();
+    int64_t age = (tip_time > 0 && now_w > tip_time) ? now_w - tip_time : 0;
+    if (age <= 0)        snprintf(age_str, sizeof(age_str), "just now");
+    else if (age < 3600) snprintf(age_str, sizeof(age_str), "%lldm %llds",
+                                  (long long)(age / 60), (long long)(age % 60));
+    else                 snprintf(age_str, sizeof(age_str), "%lldh %lldm",
+                                  (long long)(age / 3600),
+                                  (long long)((age % 3600) / 60));
+
+    if (recent_interval > 0)
+        snprintf(int_str, sizeof(int_str), "%.0f s", recent_interval);
+    else
+        snprintf(int_str, sizeof(int_str), "%d s", explorer_target_spacing(tip));
+
+    APPEND(off, r, max,
+        "<style>"
+        ".chaincard-grid{display:grid;"
+        "grid-template-columns:repeat(auto-fit,minmax(190px,1fr));"
+        "gap:12px;margin:16px 0}"
+        ".chaincard{background:#111;border:1px solid #222;border-radius:10px;"
+        "padding:14px 16px}"
+        ".chaincard .cv{font-family:ui-monospace,Menlo,monospace;font-size:22px;"
+        "font-weight:700;color:#4db8ff;letter-spacing:-.5px}"
+        ".chaincard .cl{color:#888;font-size:12px;margin-top:4px;"
+        "text-transform:uppercase;letter-spacing:.5px}"
+        ".chaincard .cs{color:#666;font-size:12px;margin-top:2px}"
+        "</style>"
+        "<div class='chaincard-grid'>"
+        "<div class='chaincard'><div class='cv'>%s</div>"
+        "<div class='cl'>Circulating Supply</div>"
+        "<div class='cs'>%.2f%% of %s ZCL cap</div></div>"
+        "<div class='chaincard'><div class='cv'>%s</div>"
+        "<div class='cl'>Network Solve Rate</div>"
+        "<div class='cs'>difficulty %.2f</div></div>"
+        "<div class='chaincard'><div class='cv'>%s</div>"
+        "<div class='cl'>Blocks to Next Halving</div>"
+        "<div class='cs'>at block %s</div></div>"
+        "<div class='chaincard'><div class='cv'>%s</div>"
+        "<div class='cl'>Avg Block Interval</div>"
+        "<div class='cs'>target %ds</div></div>"
+        "<div class='chaincard'><div class='cv'>%s</div>"
+        "<div class='cl'>Mempool Txs</div>"
+        "<div class='cs'>%.1f KB</div></div>"
+        "<div class='chaincard'><div class='cv'>%s</div>"
+        "<div class='cl'>Chain Tip Age</div>"
+        "<div class='cs'>block %s</div></div>"
+        "</div>",
+        supply_str, pct, cap_str,
+        solrate_str, difficulty,
+        bu_str, nh_str,
+        int_str, explorer_target_spacing(tip),
+        mp_str, (double)mempool_bytes / 1024.0,
+        age_str, ht_str);
+    return off;
+}
+
 /* ── Dashboard (RPC proxy mode) ───────────────────────────── */
 
 size_t explorer_dashboard_view_rpc(uint8_t *r, size_t max,
@@ -37,6 +123,10 @@ size_t explorer_dashboard_view_rpc(uint8_t *r, size_t max,
         "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
         "</div>",
         ht_fmt, v->difficulty, v->mempool_count, (double)v->mempool_bytes / 1024.0);
+
+    off = emit_chaincard_grid(r, max, off, v->tip, v->difficulty,
+                              v->mempool_count, v->mempool_bytes,
+                              v->tip_time, v->recent_avg_interval);
 
     /* Latest blocks */
     APPEND(off, r, max,
@@ -79,6 +169,14 @@ size_t explorer_dashboard_view_native(uint8_t *r, size_t max,
         "<div class='stat'><div class='num'>%.1f KB</div><div class='lbl'>Mempool Size</div></div>"
         "</div>",
         ht_fmt, v->difficulty, v->mempool_count, (double)v->mempool_bytes / 1024.0);
+
+    /* Headline card grid only on page 0 (the landing dashboard); on older
+     * pages the "recent interval" / shown rows aren't the chain tip. */
+    if (v->page == 0)
+        off = emit_chaincard_grid(r, max, off, v->tip, v->difficulty,
+                                  (int64_t)v->mempool_count,
+                                  (int64_t)v->mempool_bytes,
+                                  v->tip_time, v->recent_avg_interval);
 
     APPEND(off, r, max,
         "<h2>Latest Blocks</h2>"

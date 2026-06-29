@@ -42,6 +42,7 @@ size_t explorer_view_loading_placeholder(uint8_t *r, size_t max,
         "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n\r\n"
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<meta http-equiv='refresh' content='3'>"
         "<link rel='stylesheet' href='/explorer/style.css'>"
         "</head><body>" EXPLORER_NAV
@@ -308,7 +309,9 @@ size_t explorer_view_token_detail(const char *token_id_hex,
         sqlite3_close(db);
         return (size_t)snprintf((char *)r, max,
             "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
             EXPLORER_NAV "<h2>Token Not Found</h2>"
             "<p>No ZSLP token with ID: <code>%s</code></p>" EXPLORER_FOOTER,
             token_id_hex);

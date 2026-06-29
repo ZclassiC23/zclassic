@@ -46,6 +46,7 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
      * HTTP/onion worker threads, so a process-global array would race. */
     struct explorer_dashboard_rpc_row rows[25];
     int n = 0;
+    int64_t first_blk_time = 0, last_blk_time = 0; /* newest, oldest shown */
 
     for (int h = tip; h > tip - show && h >= 0 && n < show; h--) {
         char params[64];
@@ -63,6 +64,8 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         rpc_call("getblock", params2, buf, sizeof(buf));
 
         int64_t blk_time = zcl_json_int(buf, "time");
+        if (first_blk_time == 0) first_blk_time = blk_time;
+        last_blk_time = blk_time;
         int64_t ntx = zcl_json_int(buf, "tx");  /* this is actually array, use size */
         double blk_diff = zcl_json_real(buf, "difficulty");
 
@@ -80,11 +83,16 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         row->difficulty = blk_diff;
     }
 
+    double recent_interval = (n >= 2 && first_blk_time > last_blk_time)
+        ? (double)(first_blk_time - last_blk_time) / (double)(n - 1) : 0.0;
+
     struct explorer_dashboard_rpc_view v = {
         .tip = tip,
         .difficulty = diff,
         .mempool_count = mp_count,
         .mempool_bytes = mp_bytes,
+        .tip_time = first_blk_time,
+        .recent_avg_interval = recent_interval,
         .rows = rows,
         .row_count = n,
     };
@@ -124,10 +132,13 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
      * HTTP/onion worker threads, so a process-global array would race. */
     struct explorer_dashboard_native_row rows[25];
     int n = 0;
+    int64_t first_blk_time = 0, last_blk_time = 0; /* newest, oldest shown */
 
     for (int h = start_height; h >= end_height && h >= 0; h--) {
         const struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, h);
         if (!bi) continue;
+        if (first_blk_time == 0) first_blk_time = bi->nTime;
+        last_blk_time = bi->nTime;
 
         struct explorer_dashboard_native_row *row = &rows[n++];
         row->height = h;
@@ -144,11 +155,16 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
         row->difficulty = difficulty_from_index(bi);
     }
 
+    double recent_interval = (n >= 2 && first_blk_time > last_blk_time)
+        ? (double)(first_blk_time - last_blk_time) / (double)(n - 1) : 0.0;
+
     struct explorer_dashboard_native_view v = {
         .tip = tip,
         .difficulty = difficulty_from_index(tip_bi),
         .mempool_count = mp_count,
         .mempool_bytes = mp_bytes,
+        .tip_time = tip_bi ? (int64_t)tip_bi->nTime : 0,
+        .recent_avg_interval = recent_interval,
         .rows = rows,
         .row_count = n,
         .page = page,

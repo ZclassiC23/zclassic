@@ -126,6 +126,125 @@ void gather_deep_chain_data(sqlite3 *db, struct stats_ctx *c)
     }
 }
 
+/* Phase 1h2: recent-window economy aggregates. Cheap range-bounded queries
+ * (last ~1 day / 1000 blocks) plus median + chainwork. Writes into ctx. */
+void gather_economy_data(sqlite3 *db, int tip, int64_t tip_time,
+                                struct stats_ctx *c)
+{
+    printf("Stats: gathering economy data...\n"); fflush(stdout);
+
+    /* Recent average block interval over the last 1000 blocks. */
+    c->recent_avg_interval = 0.0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT MAX(time), MIN(time), COUNT(*) FROM "
+                "(SELECT time FROM blocks ORDER BY height DESC LIMIT 1000)",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                int64_t tmax = sqlite3_column_int64(s, 0);
+                int64_t tmin = sqlite3_column_int64(s, 1);
+                int64_t n    = sqlite3_column_int64(s, 2);
+                if (n > 1 && tmax > tmin)
+                    c->recent_avg_interval = (double)(tmax - tmin) / (double)(n - 1);
+            }
+            sqlite3_finalize(s);
+        } else {
+            printf("Stats: recent-interval query prepare failed: %s\n",
+                   sqlite3_errmsg(db)); fflush(stdout);
+        }
+    }
+
+    /* Transactions confirmed in the last 24h (by block time). */
+    {
+        char sql[160];
+        snprintf(sql, sizeof(sql),
+            "SELECT COALESCE(SUM(num_tx),0) FROM blocks WHERE time > %lld",
+            (long long)(tip_time - 86400));
+        c->tx_per_day = stats_q_i64(db, sql);
+    }
+
+    /* Net daily UTXO growth ~= outputs created - inputs spent over the last
+     * ~1 day of blocks (1152 blocks @ 75s target spacing). */
+    {
+        int64_t thresh = (int64_t)tip - 1152;
+        if (thresh < 0) thresh = 0;
+        char sql[160];
+        snprintf(sql, sizeof(sql),
+            "SELECT count(*) FROM tx_outputs WHERE block_height > %lld",
+            (long long)thresh);
+        int64_t outs = stats_q_i64(db, sql);
+        snprintf(sql, sizeof(sql),
+            "SELECT count(*) FROM tx_inputs WHERE block_height > %lld",
+            (long long)thresh);
+        int64_t ins = stats_q_i64(db, sql);
+        c->net_daily_utxo = outs - ins;
+    }
+
+    /* Unspent coinbase still inside the COINBASE_MATURITY (=100) window. */
+    c->immature_cb_count = 0;
+    c->immature_cb_value = 0;
+    {
+        int64_t mat = (int64_t)tip - 100; /* COINBASE_MATURITY */
+        if (mat < 0) mat = 0;
+        char sql[200];
+        snprintf(sql, sizeof(sql),
+            "SELECT COUNT(*), COALESCE(SUM(value),0) FROM utxos "
+            "WHERE is_coinbase=1 AND height > %lld", (long long)mat);
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                c->immature_cb_count = sqlite3_column_int64(s, 0);
+                c->immature_cb_value = sqlite3_column_int64(s, 1);
+            }
+            sqlite3_finalize(s);
+        } else {
+            printf("Stats: immature-coinbase query prepare failed: %s\n",
+                   sqlite3_errmsg(db)); fflush(stdout);
+        }
+    }
+
+    /* Median UTXO value (offset to the middle row of a value-ordered scan). */
+    c->median_utxo_value = stats_q_i64(db,
+        "SELECT value FROM utxos ORDER BY value "
+        "LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM utxos)");
+
+    /* Cumulative chainwork at tip. Stored as a 32-byte little-endian blob;
+     * render big-endian hex (matches getblockchaininfo), leading zeros
+     * trimmed. */
+    c->chainwork_hex[0] = '\0';
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT hex(chain_work) FROM blocks ORDER BY height DESC LIMIT 1",
+                -1, &s, NULL) == SQLITE_OK && s) {
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                const char *le = (const char *)sqlite3_column_text(s, 0);
+                if (le) {
+                    size_t n = strlen(le);
+                    if (n >= 2 && n <= 64 && (n % 2) == 0) {
+                        char be[72];
+                        size_t bo = 0;
+                        for (size_t i = n; i >= 2 && bo + 2 < sizeof(be); i -= 2) {
+                            be[bo++] = le[i - 2];
+                            be[bo++] = le[i - 1];
+                        }
+                        be[bo] = '\0';
+                        size_t z = 0;
+                        while (be[z] == '0' && be[z + 1] != '\0') z++;
+                        snprintf(c->chainwork_hex, sizeof(c->chainwork_hex),
+                                 "%s", be + z);
+                    }
+                }
+            }
+            sqlite3_finalize(s);
+        } else {
+            printf("Stats: chainwork query prepare failed: %s\n",
+                   sqlite3_errmsg(db)); fflush(stdout);
+        }
+    }
+}
+
 /* Phase 1i: 40-bucket aggregates over 5 time ranges (24h/7d/30d/1y/all).
  * Single batch query per range. */
 void gather_chart_data(sqlite3 *db, int tip, double diff,
@@ -148,8 +267,9 @@ void gather_chart_data(sqlite3 *db, int tip, double diff,
         /* Batch: get all 40 data points in one query using
          * (height - base) / step as bucket index */
         for (int i = 0; i < 40; i++) {
+            int bh = base + (i + 1) * step;
             out->diff_data[ri][i] = diff;
-            out->hr_data[ri][i] = diff * 8192.0 / 150.0;
+            out->hr_data[ri][i] = explorer_solrate_from_diff(diff, bh);
             out->sprout_c[ri][i] = 0;
             out->sapling_c[ri][i] = 0;
             out->txcount[ri][i] = 0;
@@ -173,8 +293,11 @@ void gather_chart_data(sqlite3 *db, int tip, double diff,
                 if (bucket < 0 || bucket >= 40) continue;
                 uint32_t bits = (uint32_t)sqlite3_column_int(s, 1);
                 if (bits > 0) {
+                    /* Representative height of this bucket -> active spacing. */
+                    int bh = base + (bucket + 1) * step;
                     out->diff_data[ri][bucket] = explorer_difficulty_from_bits(bits);
-                    out->hr_data[ri][bucket] = out->diff_data[ri][bucket] * 8192.0 / 150.0;
+                    out->hr_data[ri][bucket] =
+                        explorer_solrate_from_diff(out->diff_data[ri][bucket], bh);
                 }
                 /* Sprout: positive=shielding, show as positive on chart (pool inflow)
                  * Sapling: negative=shielding, negate to show inflow as positive */

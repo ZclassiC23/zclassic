@@ -36,6 +36,8 @@ struct explorer_dashboard_rpc_view {
     double  difficulty;
     int64_t mempool_count;
     int64_t mempool_bytes;
+    int64_t tip_time;            /* tip block unix time (0 if unknown) */
+    double  recent_avg_interval; /* avg interval over shown blocks (s, 0 if n/a) */
     const struct explorer_dashboard_rpc_row *rows;
     int     row_count;
 };
@@ -65,6 +67,8 @@ struct explorer_dashboard_native_view {
     double   difficulty;
     size_t   mempool_count;
     uint64_t mempool_bytes;
+    int64_t  tip_time;            /* tip block unix time (0 if unknown) */
+    double   recent_avg_interval; /* avg interval over shown blocks (s, 0 if n/a) */
     const struct explorer_dashboard_native_row *rows;
     int      row_count;
     int      page;          /* current page (>= 0) */

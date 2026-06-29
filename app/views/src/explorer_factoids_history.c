@@ -213,7 +213,12 @@ size_t factoids_emit_section_3_mining_eras(uint8_t *buf, size_t cap, size_t off,
 
             char sub_str[64], emit_str[64], rcpt[32] = "";
             fmt_zcl(sub_str, sizeof(sub_str), subsidy);
-            int64_t emission = count * subsidy;
+            /* Genesis (block 0) has zero subsidy (slow-start), so the first
+             * pre-BC era earns over (count - 1) blocks. Without this the era
+             * emission over-counts by one full subsidy (e.g. 707000*12.5 vs
+             * the correct 706999*12.5 = 8,837,487.5 ZCL pre-BC max). The
+             * "0 - 706999" range label is unchanged. */
+            int64_t emission = (count - (era_start == 0 ? 1 : 0)) * subsidy;
             fmt_zcl(emit_str, sizeof(emit_str), emission);
             char blk_str[32];
             fmt_comma(blk_str, sizeof(blk_str), count);
@@ -316,8 +321,10 @@ size_t factoids_emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
         int64_t known_height;  /* authoritative fallback when SQL table is empty */
     };
 
-    /* known_height values are immutable blockchain facts verified against
-     * zclassicd getblock RPC on 2026-03-25.  They serve as fallbacks when
+    /* known_height values are immutable blockchain facts; the sapling/
+     * op_return firsts re-verified against the live node index on 2026-06-29
+     * (MIN(block_height) of sapling_spends/sapling_outputs/op_returns).
+     * They serve as fallbacks when
      * Phase B indexing tables (joinsplits, sapling_spends, sapling_outputs,
      * op_returns) haven't been populated yet. */
     struct milestone milestones[] = {
@@ -329,11 +336,11 @@ size_t factoids_emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
         { "Overwinter + Sapling activation", NULL,
           OVERWINTER_ACTIVATION_HEIGHT, -1 },
         { "First Sapling shielded spend",
-          "SELECT MIN(block_height) FROM sapling_spends", -1, 477214 },
+          "SELECT MIN(block_height) FROM sapling_spends", -1, 476978 },
         { "First Sapling shielded output",
-          "SELECT MIN(block_height) FROM sapling_outputs", -1, 477214 },
+          "SELECT MIN(block_height) FROM sapling_outputs", -1, 476977 },
         { "First OP_RETURN",
-          "SELECT MIN(block_height) FROM op_returns", -1, 649950 },
+          "SELECT MIN(block_height) FROM op_returns", -1, 375159 },
         { "Bubbles upgrade activation", NULL,
           BUBBLES_ACTIVATION_HEIGHT, -1 },
         { "DiffAdj (Bubbly) activation", NULL,

@@ -132,18 +132,43 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     APPEND(off, r, max, EXPLORER_HEADER("ZClassic Historian Factoids"));
     off += explorer_emit_nav((char *)r + off, max - off, "factoids");
     APPEND(off, r, max,
-        "<div class='content'>"
+        "<div class='content' id='top'>"
         "<h1>ZClassic Historian Factoids</h1>"
-        "<p style='color:#888'>Deep chain archaeology with SHA3-256 data receipts. "
+        "<p style='color:#999'>Deep chain archaeology with SHA3-256 data receipts. "
         "Two receipt formats in use: "
-        "<code>SHA3(height_le64 || block_hash_hex || fact_name)</code> for "
+        "<code title='Milestone receipt: SHA3-256 over the little-endian 64-bit "
+        "height, the big-endian block-hash hex, and the fact name. Recompute it "
+        "from raw chain data to verify the fact.'>"
+        "SHA3(height_le64 || block_hash_hex || fact_name)</code> for "
         "milestones (sections 1, 2, 4, 12), and "
-        "<code>SHA3(val1_le64 || val2_le64 || label)</code> for record "
+        "<code title='Record receipt: SHA3-256 over two little-endian 64-bit "
+        "values and a label. Recompute it from raw chain data to verify the "
+        "summary.'>SHA3(val1_le64 || val2_le64 || label)</code> for record "
         "summaries (sections 5-7, 9-11, 13-16). First 16 hex chars shown. "
         "Section 17 chains a SHA3 over the last 100 blocks and shows the "
         "full 64-hex digest. Independently verifiable from raw chain data.</p>"
-        "<p style='color:#555;font-size:0.85em'>Chain height: %" PRId64
-        " | All timestamps UTC | All hashes big-endian display order</p>",
+        "<p style='color:#999;font-size:0.85em'>Chain height: %" PRId64
+        " | All timestamps UTC | All hashes big-endian display order</p>"
+        "<nav class='toc' aria-label='Section navigation'>"
+        "<h3>Jump to section</h3>"
+        "<a href='#genesis'>1. Genesis</a>"
+        "<a href='#upgrades'>2. Upgrades</a>"
+        "<a href='#mining-eras'>3. Mining Eras</a>"
+        "<a href='#milestones'>4. Milestones</a>"
+        "<a href='#records'>5. Records</a>"
+        "<a href='#supply'>6. Supply</a>"
+        "<a href='#addresses'>7. Addresses</a>"
+        "<a href='#privacy'>8. Privacy</a>"
+        "<a href='#zslp'>9. ZSLP</a>"
+        "<a href='#opreturn'>10. OP_RETURN</a>"
+        "<a href='#dust'>11. UTXO</a>"
+        "<a href='#checkpoints'>12. Checkpoints</a>"
+        "<a href='#blocktimes'>13. Block Times</a>"
+        "<a href='#transactions'>14. Transactions</a>"
+        "<a href='#empty'>15. Empty Blocks</a>"
+        "<a href='#difficulty'>16. Difficulty</a>"
+        "<a href='#integrity'>17. Integrity</a>"
+        "</nav>",
         chain_height);
 
     off = factoids_emit_section_1_genesis(buf, buf_max, off, db);
@@ -165,29 +190,9 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     off = factoids_emit_section_17_integrity(buf, buf_max, off, db, chain_height,
                                              chain_stats.blocks);
 
-    /* ── Table of Contents (anchor links) ────────────────────── */
+    /* ── Floating back-to-top control (top TOC handles jump-nav) ── */
     APPEND(off, r, max,
-        "<div class='card' style='margin-top:16px'>"
-        "<h3>Quick Navigation</h3>"
-        "<p>"
-        "<a href='#genesis'>1. Genesis</a> | "
-        "<a href='#upgrades'>2. Upgrades</a> | "
-        "<a href='#mining-eras'>3. Mining Eras</a> | "
-        "<a href='#milestones'>4. Milestones</a> | "
-        "<a href='#records'>5. Records</a> | "
-        "<a href='#supply'>6. Supply</a> | "
-        "<a href='#addresses'>7. Addresses</a> | "
-        "<a href='#privacy'>8. Privacy</a> | "
-        "<a href='#zslp'>9. ZSLP</a> | "
-        "<a href='#opreturn'>10. OP_RETURN</a> | "
-        "<a href='#dust'>11. UTXO</a> | "
-        "<a href='#checkpoints'>12. Checkpoints</a> | "
-        "<a href='#blocktimes'>13. Block Times</a> | "
-        "<a href='#transactions'>14. Transactions</a> | "
-        "<a href='#empty'>15. Empty Blocks</a> | "
-        "<a href='#difficulty'>16. Difficulty</a> | "
-        "<a href='#integrity'>17. Integrity</a>"
-        "</p></div>");
+        "<a href='#top' class='back-to-top' aria-label='Back to top'>&uarr; Top</a>");
 
     /* ── Close page ───────────────────────────────────────── */
     APPEND(off, r, max, "</div>" EXPLORER_FOOTER);

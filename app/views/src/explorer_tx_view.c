@@ -23,7 +23,9 @@ size_t explorer_view_tx_not_found_rpc(const char *param,
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Transaction Not Found</h2>"
         "<p>TxID: <code>%s</code></p>" EXPLORER_FOOTER, param ? param : "");
 }
@@ -118,7 +120,9 @@ size_t explorer_view_tx_invalid(uint8_t *r, size_t max)
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Invalid Transaction ID</h2>"
         "<p>Expected 64 hex characters.</p>" EXPLORER_FOOTER);
 }
@@ -128,7 +132,9 @@ size_t explorer_view_tx_not_found(const char *safe_param,
 {
     return (size_t)snprintf((char *)r, max,
         "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
         EXPLORER_NAV "<h2>Transaction Not Found</h2>"
         "<p>TxID: <code>%s</code></p>"
         "<p style='color:#666'>Not in mempool or tx index.</p>" EXPLORER_FOOTER,

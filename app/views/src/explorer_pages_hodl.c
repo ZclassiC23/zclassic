@@ -58,7 +58,26 @@ static int hodl_cum_idx_at(const struct hodl_cum_row *cum, int n,
     return found;
 }
 
-/* Per-sample chart row including the day-window movement counters. */
+/* Invert hodl_wave_age_seconds: return the creation height whose age,
+ * measured with sample_h as the tip, equals age_sec. Mirrors the model's
+ * Buttercup-aware spacing (pre-BC 150 s/block, post-BC 75 s/block) so the
+ * per-band split computed here lines up with hodl_wave_bucket_index. */
+static int64_t hodl_height_for_age(int64_t sample_h, int64_t age_sec)
+{
+    const int64_t BC = 707000, PRE = 150, POST = 75;
+    if (age_sec <= 0) return sample_h;
+    if (sample_h >= BC) {
+        int64_t post_span = (sample_h - BC) * POST; /* max age inside post-BC */
+        if (age_sec <= post_span) return sample_h - age_sec / POST;
+        int64_t rem = age_sec - post_span;           /* spill into pre-BC */
+        return BC - rem / PRE;
+    }
+    /* sample_h below Buttercup: only the 150 s spacing applies */
+    return sample_h - age_sec / PRE;
+}
+
+/* Per-sample chart row including the day-window movement counters and the
+ * per-age-band value split (percent x1000) used by the hover legend. */
 struct hodl_chart_row {
     int64_t height;
     int64_t time;
@@ -67,7 +86,35 @@ struct hodl_chart_row {
     double  older_1y_pct;
     int64_t created_count;  /* UTXOs created in this day's window, still unspent */
     int64_t created_zat;
+    int     band_x1000[HODL_WAVE_BUCKETS]; /* per-band share of total, pct x1000 */
 };
+
+/* Fill band_x1000[] with each age band's share (percent x1000) of `total`
+ * at sample_h. Band b covers ages [prev_max, max); the youngest band starts
+ * at 0, the oldest band runs to genesis. The split telescopes to `total`,
+ * so the bands sum to ~100%. Bisects the cumulative-value array at the
+ * height boundaries that the band's age edges map to. */
+static void hodl_fill_bands(const struct hodl_cum_row *cum, int n_cum,
+                            const struct hodl_wave_snapshot *hodl,
+                            int64_t sample_h, int64_t total,
+                            int *band_x1000)
+{
+    for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
+        int64_t young_age = b == 0 ? 0 : hodl->buckets[b - 1].max_age_seconds;
+        int64_t cv_young = hodl_cum_at(cum, n_cum,
+                                       hodl_height_for_age(sample_h, young_age));
+        int64_t cv_old = 0; /* last band runs to genesis → 0 */
+        if (b < HODL_WAVE_BUCKETS - 1) {
+            int64_t old_h = hodl_height_for_age(sample_h,
+                                                hodl->buckets[b].max_age_seconds);
+            cv_old = hodl_cum_at(cum, n_cum, old_h);
+        }
+        int64_t band_val = cv_young - cv_old;
+        if (band_val < 0) band_val = 0;
+        band_x1000[b] = total > 0
+            ? (int)((double)band_val / (double)total * 100000.0) : 0;
+    }
+}
 
 size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
 {
@@ -194,9 +241,21 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     total_supply_zat = running;
                 }
             }
-            sqlite3_close(udb);
+            /* bisect via the file-scope helper hodl_cum_at(cum, n_cum, h). */
 
-            /* bisect via the file-scope helper hodl_hodl_cum_at(cum, n_cum,). */
+            /* Real on-chain timestamps: one point lookup per sample height
+             * against blocks.time (the canonical mined-block time). Prepared
+             * once and reused; udb stays open through the sample loop and is
+             * closed below. Falls back to the spacing estimate only if a row
+             * is missing (a gap during indexing). */
+            sqlite3_stmt *ts = NULL;
+            if (sqlite3_prepare_v2(udb,
+                    "SELECT time FROM blocks WHERE height=?1 AND status>=3 "
+                    "LIMIT 1", -1, &ts, NULL) != SQLITE_OK) {
+                LOG_WARN("hodl", "prepare blocks.time lookup failed: %s",
+                         sqlite3_errmsg(udb));
+                ts = NULL;
+            }
 
             /* Sample one row per ~day from stride to tip. Use the
              * chain tip from the headline snapshot as the right edge
@@ -236,19 +295,31 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     (hi_idx >= 0 ? cum[hi_idx].cum_v : 0) -
                     (lo_idx >= 0 ? cum[lo_idx].cum_v : 0);
 
-                /* Estimate block time: pre-Buttercup 150 s/block,
-                 * post-Buttercup 75 s/block. Slightly idealized but
-                 * close enough for x-axis labels. */
-                int64_t pre  = sample_h < BC_HEIGHT ? sample_h : BC_HEIGHT;
-                int64_t post = sample_h < BC_HEIGHT
-                             ? 0 : (sample_h - BC_HEIGHT);
+                /* True on-chain block time; fall back to the spacing
+                 * estimate (pre-Buttercup 150 s, post-Buttercup 75 s) only
+                 * when the row is absent. */
+                int64_t btime = 0;
+                if (ts) {
+                    sqlite3_reset(ts);
+                    sqlite3_bind_int64(ts, 1, sample_h);
+                    if (AR_STEP_ROW_READONLY(ts) == SQLITE_ROW)
+                        btime = sqlite3_column_int64(ts, 0);
+                }
+                if (btime <= 0) {
+                    int64_t pre  = sample_h < BC_HEIGHT ? sample_h : BC_HEIGHT;
+                    int64_t post = sample_h < BC_HEIGHT
+                                 ? 0 : (sample_h - BC_HEIGHT);
+                    btime = GENESIS_TIME + pre * 150 + post * 75;
+                }
                 rows[n].height        = sample_h;
-                rows[n].time          = GENESIS_TIME + pre * 150 + post * 75;
+                rows[n].time          = btime;
                 rows[n].total_zat     = total;
                 rows[n].older_1y_zat  = older;
                 rows[n].older_1y_pct  = (double)older / (double)total * 100.0;
                 rows[n].created_count = created_count;
                 rows[n].created_zat   = created_zat;
+                hodl_fill_bands(cum, n_cum, &hodl, sample_h, total,
+                                rows[n].band_x1000);
                 n++;
             }
 
@@ -270,8 +341,12 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                 rows[n].created_zat   =
                     (hi_idx >= 0 ? cum[hi_idx].cum_v : 0) -
                     (lo_idx >= 0 ? cum[lo_idx].cum_v : 0);
+                hodl_fill_bands(cum, n_cum, &hodl, hodl.tip_height,
+                                hodl.total_value, rows[n].band_x1000);
                 n++;
             }
+            if (ts) sqlite3_finalize(ts);
+            sqlite3_close(udb);
             #undef HODL_CUM_MAX
 
             if (n < 2 || total_supply_zat <= 0) {
@@ -306,9 +381,13 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
 
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto'>"
-                    "<svg id='hodl-ts' viewBox='0 0 %d %d' style='width:100%%;"
+                    "<svg id='hodl-ts' viewBox='0 0 %d %d' tabindex='0' "
+                    "role='img' aria-label='Time series: percent of the current "
+                    "transparent supply already held longer than one year, by "
+                    "historical block. Use left/right arrows to inspect samples.' "
+                    "style='width:100%%;"
                     "height:auto;background:#0c0c0c;border:1px solid #1a1a1a;"
-                    "border-radius:8px;display:block'>"
+                    "border-radius:8px;display:block;outline:none'>"
                     "<text x='30' y='30' fill='#bbb' font-size='18' "
                     "font-family='Georgia,serif'>Current supply: %% already held &gt; 1 year, by historical block</text>"
                     "<text x='%d' y='30' fill='#666' font-size='12' "
@@ -358,52 +437,74 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                 }
                 APPEND(off, r, max, "'/>");
 
-                /* Hover crosshair + tooltip (hidden until JS shows it) */
+                /* Hover crosshair + tooltip (hidden until JS shows it).
+                 * pointer-events:none on every overlay node so the cursor
+                 * always hits the svg below — no flicker/jitter when the
+                 * pointer crosses the dot or tooltip. The tooltip's summary
+                 * rows + per-band legend are built by JS; the static rect is
+                 * a placeholder the script resizes to fit. */
                 APPEND(off, r, max,
                     "<line id='hodl-xhair' x1='0' y1='%d' x2='0' y2='%d' "
                     "stroke='#33ff99' stroke-dasharray='2,3' stroke-width='1' "
-                    "style='display:none'/>"
+                    "style='display:none;pointer-events:none'/>"
                     "<circle id='hodl-dot' cx='0' cy='0' r='4' "
-                    "fill='#33ff99' style='display:none'/>"
-                    "<g id='hodl-tip' style='display:none'>"
-                    "<rect id='hodl-tip-bg' x='0' y='0' width='280' "
+                    "fill='#33ff99' style='display:none;pointer-events:none'/>"
+                    "<g id='hodl-tip' style='display:none;pointer-events:none'>"
+                    "<rect id='hodl-tip-bg' x='0' y='0' width='290' "
                     "height='104' rx='6' fill='#000' stroke='#33ff99' "
                     "opacity='0.95'/>"
                     "<text id='hodl-tip-date' x='10' y='20' fill='#fff' "
                     "font-size='13' font-family='Georgia,serif'>—</text>"
                     "<text id='hodl-tip-pct' x='10' y='40' fill='#33ff99' "
                     "font-size='15' font-weight='600'>—</text>"
-                    "<text id='hodl-tip-amt' x='10' y='60' fill='#bbb' "
+                    "<text id='hodl-tip-amt' x='10' y='58' fill='#bbb' "
                     "font-size='12'>—</text>"
-                    "<text id='hodl-tip-mv' x='10' y='78' fill='#ffcc66' "
+                    "<text id='hodl-tip-mv' x='10' y='74' fill='#ffcc66' "
                     "font-size='12'>—</text>"
-                    "<text id='hodl-tip-h' x='10' y='96' fill='#666' "
+                    "<text id='hodl-tip-h' x='10' y='90' fill='#666' "
                     "font-size='11'>—</text>"
                     "</g>",
                     pt, pt + ph);
 
+                /* Close the SVG + wrapper BEFORE the <script>. An HTML
+                 * <script> nested in SVG foreign content is tokenized in the
+                 * DATA state, so comparisons like a<b open bogus tags and
+                 * mangle the code — it must be a body-level sibling (same as
+                 * explorer_pages_view.c / explorer_main_view.c). The script
+                 * still reaches the SVG children via getElementById. */
+                APPEND(off, r, max, "</svg></div>");
+
                 /* Inline data block for JS — one row per sample, packed
                  * as comma-separated integers
                  * [height, time, total_zat, older_zat, pct_x1000,
-                 *  created_count, created_zat]
-                 * to keep the inline blob compact. created_* are the
-                 * UTXOs created in this day's window that are still
-                 * unspent today ("surviving creation"). */
+                 *  created_count, created_zat, band0_x1000 .. band9_x1000]
+                 * to keep the inline blob compact. created_* are the UTXOs
+                 * created in this day's window that are still unspent today
+                 * ("surviving creation"); bandN_x1000 is the percent-x1000
+                 * share of total value in age band N at the sample. */
                 APPEND(off, r, max,
                     "<script>(function(){"
+                    "var NS='http://www.w3.org/2000/svg';"
                     "var data=[");
                 for (int i = 0; i < n; i++) {
                     APPEND(off, r, max,
-                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d,%" PRId64 ",%" PRId64 "]",
+                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d,%" PRId64 ",%" PRId64,
                         i ? "," : "",
                         rows[i].height, rows[i].time,
                         rows[i].total_zat, rows[i].older_1y_zat,
                         (int)(rows[i].older_1y_pct * 1000.0),
                         rows[i].created_count, rows[i].created_zat);
+                    for (int b = 0; b < HODL_WAVE_BUCKETS; b++)
+                        APPEND(off, r, max, ",%d", rows[i].band_x1000[b]);
+                    APPEND(off, r, max, "]");
                 }
+                APPEND(off, r, max, "];var bands=[");
+                for (int b = 0; b < HODL_WAVE_BUCKETS; b++)
+                    APPEND(off, r, max, "%s[\"%s\",\"%s\"]", b ? "," : "",
+                           hodl.buckets[b].color, hodl.buckets[b].label);
                 APPEND(off, r, max,
                     "];"
-                    "var W=%d,pl=%d,pr=%d,pt=%d,pb=%d,pw=W-pl-pr;"
+                    "var W=%d,pl=%d,pr=%d,pt=%d,pb=%d,ph=%d,pw=W-pl-pr;"
                     "var ymin=%.3f,ymax=%.3f,tmin=%" PRId64 ",tmax=%" PRId64 ";"
                     "var svg=document.getElementById('hodl-ts');"
                     "var xhair=document.getElementById('hodl-xhair');"
@@ -415,16 +516,41 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "var ta=document.getElementById('hodl-tip-amt');"
                     "var tm=document.getElementById('hodl-tip-mv');"
                     "var th=document.getElementById('hodl-tip-h');"
+                    /* tooltip geometry: summary block, then one 15px legend
+                     * row per band; bg rect sized to fit + clamped in plot */
+                    "var TIPW=290,SUMH=104,ROWH=15,NB=bands.length;"
+                    "var TIPH=SUMH+NB*ROWH+6;"
+                    "tipBg.setAttribute('width',TIPW);"
+                    "tipBg.setAttribute('height',TIPH);"
+                    "var legend=[];"
+                    "for(var bi=0;bi<NB;bi++){"
+                    "var yy=SUMH+bi*ROWH;"
+                    "var sw=document.createElementNS(NS,'rect');"
+                    "sw.setAttribute('x',10);sw.setAttribute('y',yy-9);"
+                    "sw.setAttribute('width',10);sw.setAttribute('height',10);"
+                    "sw.setAttribute('rx',2);sw.setAttribute('fill',bands[bi][0]);"
+                    "tip.appendChild(sw);"
+                    "var lt=document.createElementNS(NS,'text');"
+                    "lt.setAttribute('x',26);lt.setAttribute('y',yy);"
+                    "lt.setAttribute('fill','#bbb');lt.setAttribute('font-size','11');"
+                    "lt.textContent=bands[bi][1];tip.appendChild(lt);"
+                    "var pv=document.createElementNS(NS,'text');"
+                    "pv.setAttribute('x',TIPW-12);pv.setAttribute('y',yy);"
+                    "pv.setAttribute('text-anchor','end');"
+                    "pv.setAttribute('fill','#fff');pv.setAttribute('font-size','11');"
+                    "tip.appendChild(pv);legend.push(pv);"
+                    "}"
                     "function fmtZcl(z){"
-                    "var n=z/1e8;"
-                    "if(n>=1e6)return(n/1e6).toFixed(2)+'M';"
-                    "if(n>=1e3)return(n/1e3).toFixed(2)+'k';"
-                    "return n.toFixed(2);"
+                    "var v=z/1e8;"
+                    "if(v>=1e6)return(v/1e6).toFixed(2)+'M';"
+                    "if(v>=1e3)return(v/1e3).toFixed(2)+'k';"
+                    "return v.toFixed(2);"
                     "}"
                     "function fmtDate(t){"
                     "var d=new Date(t*1000);"
                     "return d.toISOString().slice(0,10);"
                     "}"
+                    "var cur=-1;"
                     "function hide(){"
                     "xhair.style.display='none';"
                     "dot.style.display='none';"
@@ -440,50 +566,71 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "Math.abs(data[lo][1]-target))lo--;"
                     "return lo;"
                     "}"
-                    "function show(svgX){"
-                    "var i=pickNearest(svgX);"
-                    "var row=data[i];"
-                    "var x=pl+(row[1]-tmin)/(tmax-tmin)*pw;"
-                    "var pct=row[4]/1000;"
-                    "var y=pt+(%d)-(pct-ymin)/(ymax-ymin)*(%d);"
-                    "xhair.setAttribute('x1',x);"
-                    "xhair.setAttribute('x2',x);"
+                    /* render at a continuous svg x: crosshair tracks the
+                     * cursor smoothly; dot + tooltip snap to the nearest
+                     * sample. All coords rounded to integers (no shimmer). */
+                    "function render(svgX){"
+                    "if(svgX<pl)svgX=pl;if(svgX>W-pr)svgX=W-pr;"
+                    "var cx=Math.round(svgX);"
+                    "xhair.setAttribute('x1',cx);xhair.setAttribute('x2',cx);"
                     "xhair.style.display='';"
-                    "dot.setAttribute('cx',x);"
-                    "dot.setAttribute('cy',y);"
+                    "var i=pickNearest(svgX);cur=i;var row=data[i];"
+                    "var x=Math.round(pl+(row[1]-tmin)/(tmax-tmin)*pw);"
+                    "var pct=row[4]/1000;"
+                    "var y=Math.round(pt+ph-(pct-ymin)/(ymax-ymin)*ph);"
+                    "dot.setAttribute('cx',x);dot.setAttribute('cy',y);"
                     "dot.style.display='';"
-                    "var tx=x+12;"
-                    "if(tx+280>W-pr)tx=x-292;"
-                    "var ty=y-58;"
-                    "if(ty<pt+5)ty=pt+5;"
+                    "var tx=cx+14;if(tx+TIPW>W-pr)tx=cx-TIPW-14;if(tx<pl)tx=pl;"
+                    "var ty=Math.round(y-TIPH/2);"
+                    "if(ty+TIPH>pt+ph)ty=pt+ph-TIPH;if(ty<pt)ty=pt;"
                     "tip.setAttribute('transform','translate('+tx+','+ty+')');"
                     "tip.style.display='';"
                     "td.textContent=fmtDate(row[1]);"
                     "tp.textContent=pct.toFixed(3)+'%% held > 1 year';"
                     "ta.textContent=fmtZcl(row[3])+' / '+fmtZcl(row[2])+' ZCL';"
                     "tm.textContent='+ '+row[5].toLocaleString()+' UTXOs, '+fmtZcl(row[6])+' ZCL surviving';"
-                    "th.textContent='Block '+row[0];"
+                    "th.textContent='Block '+row[0].toLocaleString();"
+                    "for(var bi=0;bi<NB;bi++)"
+                    "legend[bi].textContent=(row[7+bi]/1000).toFixed(2)+'%%';"
                     "}"
-                    "function pt2svg(e){"
-                    "var r=svg.getBoundingClientRect();"
-                    "return (e.clientX-r.left)*(W/r.width);"
+                    /* coalesce pointer moves into one rAF tick per frame */
+                    "var pend=null,raf=0;"
+                    "function sched(svgX){pend=svgX;if(!raf)"
+                    "raf=requestAnimationFrame(function(){raf=0;"
+                    "if(pend!=null)render(pend);});}"
+                    "function pt2svg(clientX){"
+                    "var rc=svg.getBoundingClientRect();"
+                    "return (clientX-rc.left)*(W/rc.width);"
                     "}"
                     "svg.addEventListener('mousemove',function(e){"
-                    "var sx=pt2svg(e);"
+                    "var sx=pt2svg(e.clientX);"
                     "if(sx<pl||sx>W-pr){hide();return;}"
-                    "show(sx);"
+                    "sched(sx);"
                     "});"
                     "svg.addEventListener('mouseleave',hide);"
-                    "svg.addEventListener('touchmove',function(e){"
+                    "function onTouch(e){"
                     "if(!e.touches[0])return;"
-                    "var sx=pt2svg(e.touches[0]);"
-                    "if(sx>=pl&&sx<=W-pr)show(sx);"
+                    "var sx=pt2svg(e.touches[0].clientX);"
+                    "if(sx>=pl&&sx<=W-pr)sched(sx);"
                     "e.preventDefault();"
-                    "},{passive:false});"
-                    "})();</script>"
-                    "</svg></div>",
-                    W, pl, pr, pt, pb, y_min, y_max, t_min, t_max,
-                    ph, ph);
+                    "}"
+                    "svg.addEventListener('touchstart',onTouch,{passive:false});"
+                    "svg.addEventListener('touchmove',onTouch,{passive:false});"
+                    "svg.addEventListener('touchend',hide);"
+                    "svg.addEventListener('touchcancel',hide);"
+                    "svg.addEventListener('keydown',function(e){"
+                    "var k=e.key,i=cur<0?data.length-1:cur;"
+                    "if(k==='ArrowLeft')i=Math.max(0,i-1);"
+                    "else if(k==='ArrowRight')i=Math.min(data.length-1,i+1);"
+                    "else if(k==='Home')i=0;"
+                    "else if(k==='End')i=data.length-1;"
+                    "else if(k==='Escape'){hide();return;}"
+                    "else return;"
+                    "e.preventDefault();"
+                    "render(pl+(data[i][1]-tmin)/(tmax-tmin)*pw);"
+                    "});"
+                    "})();</script>",
+                    W, pl, pr, pt, pb, ph, y_min, y_max, t_min, t_max);
             }
         }
     }

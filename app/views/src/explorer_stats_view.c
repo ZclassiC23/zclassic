@@ -565,14 +565,15 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     struct stats_chart_data chart_data;
     gather_deep_chain_data(db, &ctx);
     gather_chart_data(db, tip, diff, &chart_data);
+    gather_economy_data(db, tip, tip_time, &ctx);
 
     /* ── Derived values ── */
-    double hashrate = diff * 8192.0 / 150.0;
+    /* Equihash 200,9 measures SOLUTIONS, not hashes. Estimate uses the
+     * ACTIVE target spacing (75s post-Buttercup, 150s before) — the old
+     * hard-coded /150 under-reported the live rate ~2x. */
+    double solrate = explorer_solrate_from_diff(diff, tip);
     char hr_str[64];
-    if (hashrate > 1e9) snprintf(hr_str, sizeof(hr_str), "%.2f GH/s", hashrate / 1e9);
-    else if (hashrate > 1e6) snprintf(hr_str, sizeof(hr_str), "%.2f MH/s", hashrate / 1e6);
-    else if (hashrate > 1e3) snprintf(hr_str, sizeof(hr_str), "%.2f KH/s", hashrate / 1e3);
-    else snprintf(hr_str, sizeof(hr_str), "%.0f H/s", hashrate);
+    explorer_format_solrate(hr_str, sizeof(hr_str), solrate);
 
     char supply_str[32];
     zcl_format_zcl(supply_str, sizeof(supply_str), total_supply);
@@ -603,6 +604,21 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     int64_t max_supply_sat = zcl_total_supply_zatoshi(100000000LL);
     double pct_mined = (max_supply_sat > 0)
         ? (double)total_supply / (double)max_supply_sat * 100.0 : 0.0;
+
+    /* ── Economy & emission derived factoids ── */
+    int64_t mined_supply = zcl_total_supply_zatoshi(tip);
+    double pct_of_cap = (max_supply_sat > 0)
+        ? (double)mined_supply / (double)max_supply_sat * 100.0 : 0.0;
+    double daily_issuance_zcl = (double)current_subsidy / 1e8
+        * 86400.0 / (double)explorer_target_spacing(tip);
+    double annual_inflation = mined_supply > 0
+        ? daily_issuance_zcl * 365.25 / ((double)mined_supply / 1e8) * 100.0 : 0.0;
+    int64_t halving_eta_secs =
+        (ctx.recent_avg_interval > 0 && blocks_until_halving > 0)
+            ? (int64_t)((double)blocks_until_halving * ctx.recent_avg_interval)
+            : 0;
+    int64_t now_wall = (int64_t)platform_time_wall_time_t();
+    int64_t tip_age_secs = (now_wall > tip_time) ? now_wall - tip_time : 0;
 
     int64_t t_query_ms = (int64_t)platform_time_wall_time_t() - t_start_ms;
     printf("Stats: phase 1 complete in %llds, building HTML...\n",
@@ -645,11 +661,22 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     ctx.current_subsidy = current_subsidy;
     ctx.pct_mined = pct_mined;
     ctx.t_query_ms = t_query_ms;
+    /* Economy & emission (recent-window aggregates already gathered into
+     * ctx by gather_economy_data; here we add the derived scalars). */
+    ctx.mined_supply = mined_supply;
+    ctx.max_supply_sat = max_supply_sat;
+    ctx.pct_of_cap = pct_of_cap;
+    ctx.solrate = solrate;
+    ctx.daily_issuance_zcl = daily_issuance_zcl;
+    ctx.annual_inflation = annual_inflation;
+    ctx.halving_eta_secs = halving_eta_secs;
+    ctx.tip_age_secs = tip_age_secs;
     snprintf(ctx.hr_str, sizeof(ctx.hr_str), "%s", hr_str);
     snprintf(ctx.supply_str, sizeof(ctx.supply_str), "%s", supply_str);
 
     off = emit_stats_header(r, max, off, &ctx);
     off = emit_section_1_network(r, max, off, &ctx);
+    off = emit_section_1b_economy(r, max, off, &ctx);
     off = emit_section_2_chain_history(r, max, off, &ctx);
     off = emit_section_3_block_records(r, max, off, &ctx);
 
@@ -713,7 +740,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     render_tabbed_chart((char *)r, max, &off,
         "Difficulty", "d", "#4db8ff", chart_data.diff_data, chart_data.labels, "Difficulty", rids);
     render_tabbed_chart((char *)r, max, &off,
-        "Hashrate", "h", "#33ff99", chart_data.hr_data, chart_data.labels, "H/s", rids);
+        "Solve Rate", "h", "#33ff99", chart_data.hr_data, chart_data.labels, "Sol/s", rids);
     render_tabbed_chart((char *)r, max, &off,
         "Sprout Value Flow", "sv", "#ff9933", chart_data.sprout_c, chart_data.labels, "ZCL", rids);
     render_tabbed_chart((char *)r, max, &off,

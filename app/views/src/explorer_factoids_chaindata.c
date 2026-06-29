@@ -116,11 +116,25 @@ size_t factoids_emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
             sqlite3_finalize(s); s = NULL;
         }
 
+        /* Reliability gate for the Net Shielded column. The cumulative
+         * whole-chain pool balance is SUM(blocks.sapling_value); a pool
+         * BALANCE can never be negative. On this datadir it computes to a
+         * negative value (~-38,928 ZCL), which means blocks.sapling_value
+         * has a sign-convention / coverage bug. That is a data-layer fix
+         * (out of scope here) — until it lands we must not render the
+         * impossible per-year net-shielded figures as if authoritative. */
+        int64_t net_shielded_total =
+            fq_i64(db, "SELECT COALESCE(SUM(sapling_value),0) FROM blocks");
+        bool net_shielded_unreliable = (net_shielded_total < 0);
+
         for (int yr = 2016; yr <= max_yr && yr < 2036; yr++) {
             int idx = yr - 2016;
             if (blk_yrs[idx] == 0) continue;
             char sv_str[64];
-            fmt_zcl(sv_str, sizeof(sv_str), sv_yrs[idx]);
+            if (net_shielded_unreliable)
+                snprintf(sv_str, sizeof(sv_str), "n/a");
+            else
+                fmt_zcl(sv_str, sizeof(sv_str), sv_yrs[idx]);
             APPEND(off, r, max,
                 "<tr><td>%d</td><td>%" PRId64 "</td>"
                 "<td>%" PRId64 "</td><td>%" PRId64 "</td>"
@@ -128,8 +142,16 @@ size_t factoids_emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
                 yr, blk_yrs[idx], js_yrs[idx], ss_yrs[idx],
                 so_yrs[idx], sv_str);
         }
+        APPEND(off, r, max, "</table>");
+        if (net_shielded_unreliable) {
+            APPEND(off, r, max,
+                "<p style='color:#c80'>shielded pool: monitoring unavailable "
+                "&mdash; the net-shielded column is suppressed because the "
+                "cumulative pool balance computes negative (impossible). "
+                "Pending a blocks.sapling_value sign/coverage fix in the data "
+                "layer.</p>");
+        }
     }
-    APPEND(off, r, max, "</table>");
     return off;
 }
 
