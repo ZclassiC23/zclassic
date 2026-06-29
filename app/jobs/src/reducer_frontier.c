@@ -117,6 +117,16 @@ int32_t reducer_frontier_provable_tip_cached(void)
     return v < 0 ? 0 : (int32_t)v;
 }
 
+bool reducer_frontier_provable_tip_is_published(void)
+{
+    /* True once the provable-tip cache holds a real H* (not the -1 "unpublished"
+     * sentinel). Lets the tip_finalize step warm the cache EXACTLY once at boot
+     * on a node that comes up already at tip (no finalize advance / reorg rewind
+     * to publish through), so getblockcount serves the true height immediately
+     * instead of 0 until the next network block. Read lock-free. */
+    return atomic_load(&g_provable_tip) >= 0;
+}
+
 void reducer_frontier_provable_tip_set(int32_t hstar)
 {
     /* Store the value as given: the caller passes a value already produced by

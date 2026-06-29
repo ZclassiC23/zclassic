@@ -876,6 +876,20 @@ job_result_t tip_finalize_stage_step_once(void)
         progress_store_tx_unlock();
         return JOB_FATAL;
     }
+    /* One-time provable-tip cache warm. H* (the getblockcount / explorer /
+     * health / P2P start_height authority) is published ONLY on a finalize
+     * advance (step_finalize) or a reorg rewind (above). A node that boots
+     * already AT tip — the -load-snapshot-at-own-height resume path, or any
+     * normal at-tip restart between blocks — hits neither, so the cache would
+     * sit at the -1 sentinel (served as 0) until the next network block
+     * finalizes (up to a full block interval). Publish the durable H* once here:
+     * we hold progress_store_tx_lock and the reorg check already ran, so
+     * compute_hstar reads a consistent committed prefix. Gated on the published
+     * sentinel so the O(tip-anchor) fold runs exactly once; the advance/rewind
+     * chokepoints keep it fresh thereafter. On a fresh/IBD node this publishes
+     * the honest 0 (unchanged served value) and the advance path takes over. */
+    if (!reducer_frontier_provable_tip_is_published())
+        tf_refresh_provable_tip(db);
     job_result_t r = stage_run_once(g_stage, db);
     progress_store_tx_unlock();
     return r;

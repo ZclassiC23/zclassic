@@ -76,18 +76,27 @@ int32_t reducer_frontier_floor(void);
  * provable-prefix number, equal to the real tip at steady state and LOWER
  * mid-fold or after a reorg.
  *
- * Init value is REDUCER_FRONTIER_TRUSTED_ANCHOR (the irreversible finality
- * floor) — a sane >= anchor fallback before the first refresh. The getter is
- * a plain lock-free atomic load; never takes progress_store_tx_lock(). */
+ * Init value is a -1 "unpublished" sentinel that the getter maps to 0 (the
+ * honest "nothing proven yet" before the first publish — see the .c). The
+ * getter is a plain lock-free atomic load; never takes progress_store_tx_lock(). */
 int32_t reducer_frontier_provable_tip_cached(void);
+
+/* True once the provable-tip cache has been published a real H* (not the -1
+ * "unpublished" sentinel). The tip_finalize step uses this to warm the cache
+ * exactly once at boot when the node comes up already at tip — there is no
+ * finalize advance or reorg rewind to publish through, so getblockcount would
+ * otherwise serve 0 until the next network block. Lock-free atomic load. */
+bool reducer_frontier_provable_tip_is_published(void);
 
 /* Refresh the cached provable tip (H*). Stores `hstar` verbatim — the caller
  * passes the value it just computed via reducer_frontier_compute_hstar (which
  * already clamps to the finality floor), so this never re-clamps and faithfully
- * mirrors a reorg-LOWERED H*. Called ONLY at the two chokepoints under
- * progress_store_tx_lock: the finalize advance (tip_finalize_stage.c) and the
- * reorg-rewind (rewind_cursor_if_active_chain_reorged). Cross-thread-safe
- * (atomic store); the getter is the matching atomic load. */
+ * mirrors a reorg-LOWERED H*. Called under progress_store_tx_lock at three
+ * sites (all in tip_finalize_stage.c): the finalize advance, the reorg-rewind
+ * (rewind_cursor_if_active_chain_reorged), and a one-time boot warm in
+ * tip_finalize_stage_step_once (gated on is_published) so a node that comes up
+ * already at tip serves the true H* without waiting for the next advance.
+ * Cross-thread-safe (atomic store); the getter is the matching atomic load. */
 void reducer_frontier_provable_tip_set(int32_t hstar);
 
 /* Reset the cached provable tip to the finality anchor — mirrors the
