@@ -291,7 +291,7 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
             {"Overwinter",476969,170005,"0x5ba81b19"},
             {"Sapling",476969,170007,"0x76b809bb"},
             {"Bubbles",585318,170009,"0x821a451c"},
-            {"DiffAdj",585322,170010,"0x930b540d"},
+            {"Bubbly",585322,170010,"0x930b540d"},
             {"Buttercup",707000,170011,"0x930b540d"},
         };
         for (int i = 0; i < 6; i++) {
@@ -308,14 +308,31 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
     }
     APPEND(off, r, max, "]");
 
-    /* Supply */
+    /* Supply — mined-at-tip, asymptotic cap, transparent UTXO pool, and the
+     * mined-minus-transparent gap (the only reliable shielded+burned proxy;
+     * blocks.sapling_value is sign-buggy, so we never SUM it). Mirrors the
+     * headline HTML supply factoids so /api/factoids stays in sync. */
     {
         int64_t supply = compute_supply_at_height(chain_height);
-        char rcpt[32] = "";
+        int64_t cap = zcl_max_supply_zatoshi();
+        int64_t transparent_pool =
+            fq_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+        int64_t gap = supply - transparent_pool;
+        double pct_of_cap = cap > 0 ? 100.0 * (double)supply / (double)cap : 0.0;
+        char rcpt[32] = "", gap_rcpt[32] = "";
         compute_receipt_i64(rcpt, sizeof(rcpt), chain_height, supply, "total_supply");
+        compute_receipt_i64(gap_rcpt, sizeof(gap_rcpt), chain_height, gap, "supply_gap");
         APPEND(off, r, max,
-            ",\"supply\":{\"total_sat\":%" PRId64 ",\"total_zcl\":%.8f,\"sha3\":\"%s\"}",
-            supply, (double)supply / (double)ZATOSHI_PER_ZCL, rcpt);
+            ",\"supply\":{\"total_sat\":%" PRId64 ",\"total_zcl\":%.8f,\"sha3\":\"%s\""
+            ",\"mined_sat\":%" PRId64 ",\"mined_zcl\":%.8f"
+            ",\"cap_sat\":%" PRId64 ",\"cap_zcl\":%.8f,\"pct_of_cap\":%.3f"
+            ",\"transparent_pool_sat\":%" PRId64 ",\"transparent_pool_zcl\":%.8f"
+            ",\"gap_sat\":%" PRId64 ",\"gap_zcl\":%.8f,\"gap_sha3\":\"%s\"}",
+            supply, (double)supply / (double)ZATOSHI_PER_ZCL, rcpt,
+            supply, (double)supply / (double)ZATOSHI_PER_ZCL,
+            cap, (double)cap / (double)ZATOSHI_PER_ZCL, pct_of_cap,
+            transparent_pool, (double)transparent_pool / (double)ZATOSHI_PER_ZCL,
+            gap, (double)gap / (double)ZATOSHI_PER_ZCL, gap_rcpt);
     }
 
     /* Address stats */
@@ -327,15 +344,21 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
             address_stats.total, address_stats.nonzero);
     }
 
-    /* Privacy stats */
+    /* Privacy stats — plus the last on-chain Sprout JoinSplit height
+     * (Sprout effectively retired; ~2,124,937 today). Read live from the
+     * joinsplits projection so it self-corrects if a later one ever appears. */
     {
         struct explorer_privacy_stats privacy_stats = {0};
         explorer_query_privacy_stats(db, &privacy_stats);
+        int64_t last_sprout_js = fq_i64(db,
+            "SELECT COALESCE(MAX(block_height),0) FROM joinsplits");
         APPEND(off, r, max,
             ",\"privacy\":{\"joinsplits\":%" PRId64 ",\"sapling_spends\":%" PRId64
-            ",\"sapling_outputs\":%" PRId64 ",\"net_shielded_sat\":%" PRId64 "}",
+            ",\"sapling_outputs\":%" PRId64 ",\"net_shielded_sat\":%" PRId64
+            ",\"last_sprout_joinsplit_height\":%" PRId64 "}",
             privacy_stats.joinsplits, privacy_stats.sapling_spends,
-            privacy_stats.sapling_outputs, privacy_stats.net_shielded_sat);
+            privacy_stats.sapling_outputs, privacy_stats.net_shielded_sat,
+            last_sprout_js);
     }
 
     /* ZSLP */

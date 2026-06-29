@@ -13,6 +13,40 @@
 
 #include "views/explorer_factoids_internal.h"
 
+/* ── Section-local helpers (private to this TU; the shared header is
+ *    off-limits) ──────────────────────────────────────────────────── */
+
+/* Read a single REAL/double scalar (SELECT ... LIMIT 1). Returns `def` on
+ * empty/error. The i64 helpers truncate, so the hodl_history.older_1y_pct
+ * column (declared REAL) must be read through this one. */
+static double fq_double(sqlite3 *db, const char *sql, double def)
+{
+    sqlite3_stmt *s = NULL;
+    double v = def;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK && s) {
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
+            v = sqlite3_column_double(s, 0);
+        sqlite3_finalize(s);
+    }
+    return v;
+}
+
+/* Current per-block coinbase subsidy in zatoshi at `height`, mirroring the
+ * schedule in zcl_total_supply_zatoshi() (pre-Buttercup 12.5 ZCL; post-
+ * Buttercup post_base >> (era+3), era = (h-1-707000)/1,680,000). Display-only,
+ * consensus-neutral — derives the number so the supply prose cannot go stale
+ * across a halving. */
+static int64_t current_block_subsidy_sat(int64_t height)
+{
+    if (height < 1) return 0;
+    if (height < BUTTERCUP_ACTIVATION_HEIGHT) return BASE_SUBSIDY_SAT; /* 12.5 ZCL */
+    int64_t post_base = BASE_SUBSIDY_SAT / 2; /* 625,000,000 zat (spacing ratio 2) */
+    int era = (int)((height - 1 - BUTTERCUP_ACTIVATION_HEIGHT) / POST_BC_HALVING);
+    int shift = era + 3;
+    if (shift >= 63) return 0;
+    return post_base >> shift;
+}
+
 size_t factoids_emit_section_1_genesis(uint8_t *buf, size_t cap, size_t off,
                                        sqlite3 *db)
 {
@@ -62,7 +96,9 @@ size_t factoids_emit_section_1_genesis(uint8_t *buf, size_t cap, size_t off,
         "<tr><td><b>Default Port</b></td><td>8033 (mainnet), 18033 (testnet)</td></tr>"
         "<tr><td><b>BIP44 Coin Type</b></td><td>147</td></tr>"
         "<tr><td><b>Address Prefix (t1)</b></td><td><code>0x1C 0xB8</code></td></tr>"
-        "<tr><td><b>Equihash Params</b></td><td>N=200, K=9 (memory-hard, ASIC-resistant)</td></tr>"
+        "<tr><td><b>Equihash Params</b></td><td>N=200, K=9 (memory-hard, ASIC-resistant) "
+        "for blocks 0\xe2\x80\x93" "585,317 (1344-byte solution). The Bubbles upgrade at "
+        "block 585,318 switches to N=192, K=7 (400-byte solution).</td></tr>"
         "<tr><td><b>PoW Limit</b></td><td><code>0x0007ffff...fff</code></td></tr>"
         "<tr><td><b>SHA3 Receipt</b></td><td><code>%s</code></td></tr>"
         "</table></div>",
@@ -143,7 +179,7 @@ size_t factoids_emit_section_2_upgrades(uint8_t *buf, size_t cap, size_t off,
          * in consensus (lib/consensus/src/upgrades.c:16-17) — Buttercup
          * did not change transaction-binding format, so it reuses Bubbly's
          * branch ID. The duplicate is correct. */
-        { "DiffAdj (Bubbly)", BUBBLY_ACTIVATION_HEIGHT, 170010, "0x930b540d",
+        { "Bubbly (DiffAdj)", BUBBLY_ACTIVATION_HEIGHT, 170010, "0x930b540d",
           "Difficulty adjustment algorithm refinement" },
         { "Buttercup", BUTTERCUP_ACTIVATION_HEIGHT, 170011, "0x930b540d",
           "Block time 150s\xe2\x86\x92" "75s, halving doubled, subsidy adjusted" },
@@ -299,6 +335,39 @@ size_t factoids_emit_section_3_mining_eras(uint8_t *buf, size_t cap, size_t off,
             total_str, rcpt);
     }
     APPEND(off, r, max, "</table>");
+
+    /* Proof-of-Work parameter eras. The Equihash (N,K) pair changed exactly
+     * once — at the Bubbles upgrade (block 585,318) — which is observable in
+     * the chain as the block solution field dropping from 1344 to 400 bytes.
+     * Both byte sizes are consensus-immutable constants of the respective
+     * Equihash parameters, so they are inlined (not a growing scalar). */
+    {
+        char rcpt[32] = "";
+        compute_receipt_i64(rcpt, sizeof(rcpt),
+                            BUBBLES_ACTIVATION_HEIGHT, 400, "equihash_param_era");
+        APPEND(off, r, max,
+            "<div class='card'>"
+            "<h3>Proof-of-Work Parameter Eras</h3>"
+            "<p style='color:#888'>ZClassic's Equihash parameters changed once, "
+            "at the Bubbles upgrade (block 585,318). The switch is visible on-chain "
+            "as the per-block solution field shrinking from 1344 to 400 bytes.</p>"
+            "<table class='txlist'>"
+            "<tr><th>Era</th><th>Block Range</th><th>Equihash (N,K)</th>"
+            "<th>Solution Size</th></tr>"
+            "<tr><td>Genesis \xe2\x80\x93 Bubbles</td>"
+            "<td><a href='/explorer/block/0'>0</a> \xe2\x80\x93 "
+            "<a href='/explorer/block/585317'>585,317</a></td>"
+            "<td>N=200, K=9</td>"
+            "<td>1344 bytes (2^9 indices \xc3\x97 21 bits)</td></tr>"
+            "<tr><td>Bubbles \xe2\x80\x93 tip</td>"
+            "<td><a href='/explorer/block/585318'>585,318</a> \xe2\x80\x93 present</td>"
+            "<td>N=192, K=7</td>"
+            "<td>400 bytes (2^7 indices \xc3\x97 25 bits)</td></tr>"
+            "</table>"
+            "<p style='color:#888'><b>SHA3 Receipt:</b> <code>%s</code></p>"
+            "</div>",
+            rcpt);
+    }
     return off;
 }
 
@@ -343,7 +412,7 @@ size_t factoids_emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
           "SELECT MIN(block_height) FROM op_returns", -1, 375159 },
         { "Bubbles upgrade activation", NULL,
           BUBBLES_ACTIVATION_HEIGHT, -1 },
-        { "DiffAdj (Bubbly) activation", NULL,
+        { "Bubbly activation (DiffAdj)", NULL,
           BUBBLY_ACTIVATION_HEIGHT, -1 },
         { "First ZSLP token genesis",
           "SELECT MIN(genesis_height) FROM zslp_tokens", -1, -1 },
@@ -356,6 +425,11 @@ size_t factoids_emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
          * permanently render "Not yet reached." */
         { "Block 1,000,000", NULL, 1000000, -1 },
         { "Block 2,000,000", NULL, 2000000, -1 },
+        /* Last on-chain Sprout JoinSplit (h=2,124,937, 2023-10-07): the
+         * legacy Sprout shielded pool falls out of use. Data-derived
+         * (MAX block_height over joinsplits), so no consensus assumption. */
+        { "Last Sprout JoinSplit (old shielded pool retires)",
+          "SELECT MAX(block_height) FROM joinsplits", -1, 2124937 },
         { "Block 3,000,000", NULL, 3000000, -1 },
     };
 
@@ -432,7 +506,9 @@ size_t factoids_emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
             val_args, (int64_t)(height_val), (int64_t)(height_val), _ts, _rcpt); \
     } while(0)
 
-    /* Largest transparent output */
+    /* Largest UNSPENT transparent output — scans the live utxos set, so it is
+     * the largest coin still spendable today (a larger output that was later
+     * spent is, by construction, not here — see the all-time row below). */
     {
         struct sql_row_i64_3 row;
         const char *sql = "SELECT u.value, u.height, b.time FROM utxos u "
@@ -441,8 +517,27 @@ size_t factoids_emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
         if (sql_query_row_i64_3(db, sql, &row)) {
             char vstr[64];
             fmt_zcl(vstr, sizeof(vstr), row.v0);
-            RECORD_ROW("Largest transparent output",
+            RECORD_ROW("Largest unspent transparent output",
                 "%s ZCL", vstr, row.v1, row.v2);
+        }
+    }
+
+    /* Largest transparent output EVER created (tx_outputs scan, includes coins
+     * since spent). Pinning the exact tx by value times out, so no block link.
+     * MAX(value) over tx_outputs runs once per cached build (~0.5s, no 2s cap). */
+    {
+        int64_t max_ever = fq_i64(db, "SELECT MAX(value) FROM tx_outputs");
+        if (max_ever > 0) {
+            char vstr[64], rcpt[32] = "";
+            fmt_zcl(vstr, sizeof(vstr), max_ever);
+            compute_receipt_i64(rcpt, sizeof(rcpt), max_ever, 0,
+                                "Largest transparent output ever");
+            APPEND(off, r, max,
+                "<tr><td>Largest transparent output ever</td><td>%s ZCL</td>"
+                "<td style='color:#666'>spent</td>"
+                "<td style='color:#666'>\xe2\x80\x94</td>"
+                "<td><code>%s</code></td></tr>",
+                vstr, rcpt);
         }
     }
 
@@ -560,6 +655,88 @@ size_t factoids_emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
         }
     }
 
+    /* Most blocks mined in a single UTC calendar day. Buckets by integer day
+     * index (time/86400) rather than the date() string so the GROUP BY over all
+     * ~3.16M blocks sorts integers (budget-safe) instead of doing 3M strftime
+     * calls + a string sort. The winning day index is rendered back to a date. */
+    {
+        struct sql_row_i64_2 row;
+        const char *sql = "SELECT time/86400 AS d, COUNT(*) AS n FROM blocks "
+                          "WHERE time>0 GROUP BY d ORDER BY n DESC LIMIT 1";
+        if (sql_query_row_i64_2(db, sql, &row) && row.v1 > 0) {
+            time_t day_ts = (time_t)(row.v0 * 86400);
+            struct tm tmv;
+            char day[16] = "?";
+            if (gmtime_r(&day_ts, &tmv))
+                strftime(day, sizeof(day), "%Y-%m-%d", &tmv);
+            char nstr[32], rcpt[32] = "";
+            fmt_comma(nstr, sizeof(nstr), row.v1);
+            compute_receipt_i64(rcpt, sizeof(rcpt), row.v1, row.v0, "blocks_per_day");
+            APPEND(off, r, max,
+                "<tr><td>Most blocks mined in one UTC day</td><td>%s blocks</td>"
+                "<td style='color:#666'>\xe2\x80\x94</td><td>%s UTC</td>"
+                "<td><code>%s</code></td></tr>",
+                nstr, day, rcpt);
+        }
+    }
+
+    /* Oldest coin still unspent: the earliest-height UTXO (a genesis-era
+     * coinbase that has never moved). Links to its mining block. */
+    {
+        struct sql_row_i64_3 row;
+        const char *sql = "SELECT u.height, u.value, b.time FROM utxos u "
+                          "JOIN blocks b ON u.height = b.height "
+                          "ORDER BY u.height ASC LIMIT 1";
+        if (sql_query_row_i64_3(db, sql, &row)) {
+            char vstr[64];
+            fmt_zcl(vstr, sizeof(vstr), row.v1);
+            RECORD_ROW("Oldest coin still unspent",
+                "%s ZCL", vstr, row.v0, row.v2);
+        }
+    }
+
+    /* HODL wave: value-weighted share of supply dormant > 1 year, from the
+     * hodl_history projection (older_1y_pct is REAL — read via fq_double). */
+    {
+        double latest = fq_double(db,
+            "SELECT older_1y_pct FROM hodl_history ORDER BY height DESC LIMIT 1", -1.0);
+        double peak = fq_double(db,
+            "SELECT MAX(older_1y_pct) FROM hodl_history", -1.0);
+        int64_t sample_h = fq_i64(db,
+            "SELECT height FROM hodl_history ORDER BY height DESC LIMIT 1");
+        if (latest >= 0.0 && sample_h > 0) {
+            char rcpt[32] = "";
+            compute_receipt_i64(rcpt, sizeof(rcpt), sample_h,
+                                (int64_t)(latest * 1000.0), "hodl_dormant_1y");
+            APPEND(off, r, max,
+                "<tr><td>Supply dormant &gt; 1 year (HODL wave)</td>"
+                "<td>%.2f%% now \xc2\xb7 peak %.2f%%</td>"
+                "<td><a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a></td>"
+                "<td style='color:#666'>latest sample</td>"
+                "<td><code>%s</code></td></tr>",
+                latest, peak, sample_h, sample_h, rcpt);
+        }
+    }
+
+    /* Coins untouched since before the Buttercup upgrade (creation height <
+     * 707,000), as a share of the live UTXO set — the coin-COUNT companion to
+     * the value-weighted HODL figure above. */
+    {
+        int64_t pre_bc = fq_i64(db, "SELECT count(*) FROM utxos WHERE height < 707000");
+        int64_t total_utxo = fq_i64(db, "SELECT count(*) FROM utxos");
+        if (total_utxo > 0 && pre_bc > 0) {
+            char pstr[32], tstr[32], valbuf[96];
+            double pct = 100.0 * (double)pre_bc / (double)total_utxo;
+            fmt_comma(pstr, sizeof(pstr), pre_bc);
+            fmt_comma(tstr, sizeof(tstr), total_utxo);
+            snprintf(valbuf, sizeof(valbuf), "%s of %s UTXOs (%.1f%%)",
+                     pstr, tstr, pct);
+            int64_t bc_time = get_block_time(db, BUTTERCUP_ACTIVATION_HEIGHT);
+            RECORD_ROW("Coins predating Buttercup (still unspent)",
+                "%s", valbuf, (int64_t)BUTTERCUP_ACTIVATION_HEIGHT, bc_time);
+        }
+    }
+
     #undef RECORD_ROW
     APPEND(off, r, max, "</table>");
     return off;
@@ -571,12 +748,20 @@ size_t factoids_emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
     char *r = (char *)buf;
     size_t max = cap;
 
+    char cur_sub_str[64];
+    fmt_zcl(cur_sub_str, sizeof(cur_sub_str),
+            current_block_subsidy_sat(chain_height));
+
     APPEND(off, r, max,
         "<h2 id='supply'>6. Supply Milestones</h2>"
-        "<p style='color:#888'>Buttercup-aware calculation: pre-707000 at 12.5 ZCL/block, "
-        "post-707000 at 0.78125 ZCL/block (6.25 &gt;&gt; 3), with 1.68M-block halvings.</p>"
+        "<p style='color:#888'>Buttercup-aware emission: pre-707,000 at 12.5 ZCL/block; "
+        "post-707,000 the subsidy halves every 1,680,000 blocks (6.25 &gt;&gt; (era+3)). "
+        "Current block subsidy: <b>%s ZCL</b> (derived from the live tip, so it "
+        "tracks each halving). ZClassic has no founders/dev tax \xe2\x80\x94 the "
+        "entire coinbase goes to the miner.</p>"
         "<table class='txlist'>"
-        "<tr><th>Milestone</th><th>Block</th><th>Date</th><th>SHA3</th></tr>");
+        "<tr><th>Milestone</th><th>Block</th><th>Date</th><th>SHA3</th></tr>",
+        cur_sub_str);
 
     /* Find block heights where supply reaches milestones via binary search */
     struct { const char *label; int64_t target_sat; } supply_milestones[] = {
@@ -644,6 +829,90 @@ size_t factoids_emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
         }
     }
     APPEND(off, r, max, "</table>");
+
+    /* Live supply dashboard. Every figure derives from the in-binary emission
+     * schedule (compute_supply_at_height / zcl_max_supply_zatoshi) + the live
+     * UTXO projection, so it stays correct as the chain grows; only past-event
+     * heights/dates are constants. */
+    {
+        int64_t mined_sat   = compute_supply_at_height(chain_height);
+        int64_t cap_sat     = zcl_max_supply_zatoshi();
+        int64_t sub_sat     = current_block_subsidy_sat(chain_height);
+        int     spacing     = chain_height >= BUTTERCUP_ACTIVATION_HEIGHT ? 75 : 150;
+        int64_t blocks_per_day = 86400 / spacing;
+        int64_t daily_sat   = blocks_per_day * sub_sat;
+        int64_t transparent_sat = fq_i64(db, "SELECT COALESCE(SUM(value),0) FROM utxos");
+        int64_t utxo_count  = fq_i64(db, "SELECT count(*) FROM utxos");
+        int64_t gap_sat     = mined_sat - transparent_sat;
+        if (gap_sat < 0) gap_sat = 0;
+
+        double pct_cap = cap_sat > 0
+            ? 100.0 * (double)mined_sat / (double)cap_sat : 0.0;
+        double annual_infl = mined_sat > 0
+            ? 100.0 * ((double)daily_sat * 365.25) / (double)mined_sat : 0.0;
+        double gap_pct = mined_sat > 0
+            ? 100.0 * (double)gap_sat / (double)mined_sat : 0.0;
+
+        /* First/only post-Buttercup halving (block 2,387,001, 2024-06-16). */
+        int64_t halving_time   = get_block_time(db, 2387001);
+        int64_t halving_supply = compute_supply_at_height(2387001);
+
+        /* Next halving + ETA projected from the live tip at the target spacing. */
+        int64_t next_h       = explorer_next_halving_height((int)chain_height);
+        int64_t blocks_to_go = next_h - chain_height;
+        if (blocks_to_go < 0) blocks_to_go = 0;
+        int64_t days_to_go   = blocks_to_go * spacing / 86400;
+        int64_t tip_time     = get_block_time(db, chain_height);
+        int64_t eta_time     = tip_time + blocks_to_go * spacing;
+
+        char mined_str[64], cap_str[64], sub_str2[64], daily_str[64];
+        char transp_str[64], gap_str[64], hsup_str[64];
+        char uc_str[32], btg_str[32], hts[64], etats[64], rcpt[32] = "";
+        fmt_zcl(mined_str, sizeof(mined_str), mined_sat);
+        fmt_zcl(cap_str, sizeof(cap_str), cap_sat);
+        fmt_zcl(sub_str2, sizeof(sub_str2), sub_sat);
+        fmt_zcl(daily_str, sizeof(daily_str), daily_sat);
+        fmt_zcl(transp_str, sizeof(transp_str), transparent_sat);
+        fmt_zcl(gap_str, sizeof(gap_str), gap_sat);
+        fmt_zcl(hsup_str, sizeof(hsup_str), halving_supply);
+        fmt_comma(uc_str, sizeof(uc_str), utxo_count);
+        fmt_comma(btg_str, sizeof(btg_str), blocks_to_go);
+        fmt_time(hts, sizeof(hts), halving_time);
+        fmt_time(etats, sizeof(etats), eta_time);
+        compute_receipt_i64(rcpt, sizeof(rcpt), mined_sat, cap_sat, "supply_dashboard");
+
+        APPEND(off, r, max,
+            "<div class='card'>"
+            "<h3>Supply Dashboard (live)</h3>"
+            "<table>"
+            "<tr><td><b>Mined supply (at tip)</b></td><td>%s ZCL</td></tr>"
+            "<tr><td><b>Asymptotic emission cap</b></td><td>%s ZCL "
+            "<span style='color:#888'>(tail-summed schedule; NOT 21M)</span></td></tr>"
+            "<tr><td><b>Percent of cap mined</b></td><td>%.3f%%</td></tr>"
+            "<tr><td><b>Current block subsidy</b></td><td>%s ZCL</td></tr>"
+            "<tr><td><b>Daily issuance (target)</b></td><td>~%s ZCL/day "
+            "<span style='color:#888'>(%" PRId64 " blocks \xc3\x97 subsidy)</span></td></tr>"
+            "<tr><td><b>Annualized inflation</b></td><td>~%.2f%% "
+            "<span style='color:#888'>(disinflationary)</span></td></tr>"
+            "<tr><td><b>First/only post-Buttercup halving</b></td>"
+            "<td>block <a href='/explorer/block/2387001'>2,387,001</a> \xc2\xb7 %s "
+            "\xc2\xb7 supply %s ZCL</td></tr>"
+            "<tr><td><b>Next halving</b></td>"
+            "<td>block <a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a> \xc2\xb7 "
+            "~%s blocks (~%" PRId64 " days, est. %s) to go</td></tr>"
+            "<tr><td><b>Transparent UTXO pool</b></td>"
+            "<td>%s ZCL across %s UTXOs</td></tr>"
+            "<tr><td><b>Shielded + burned (supply gap)</b></td>"
+            "<td>%s ZCL (%.3f%% of mined)</td></tr>"
+            "<tr><td><b>SHA3 Receipt</b></td><td><code>%s</code></td></tr>"
+            "</table></div>",
+            mined_str, cap_str, pct_cap, sub_str2,
+            daily_str, blocks_per_day, annual_infl,
+            hts, hsup_str,
+            next_h, next_h, btg_str, days_to_go, etats,
+            transp_str, uc_str,
+            gap_str, gap_pct, rcpt);
+    }
     return off;
 }
 
@@ -662,26 +931,127 @@ size_t factoids_emit_section_7_addresses(uint8_t *buf, size_t cap, size_t off,
     int64_t addr_nonzero = address_stats.nonzero;
     int64_t addr_over_1 = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance >= 100000000");
     int64_t addr_over_100 = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance >= 10000000000");
+    int64_t addr_over_1000 = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance >= 100000000000");
+    int64_t addr_over_1m = fq_i64(db, "SELECT count(*) FROM addresses WHERE balance >= 100000000000000");
 
     {
-        char t_str[32], nz_str[32], o1_str[32], o100_str[32];
+        int64_t addr_zero = addr_total - addr_nonzero;
+        if (addr_zero < 0) addr_zero = 0;
+
+        char t_str[32], nz_str[32], z_str[32];
+        char o1_str[32], o100_str[32], o1k_str[32], o1m_str[64];
         fmt_comma(t_str, sizeof(t_str), addr_total);
         fmt_comma(nz_str, sizeof(nz_str), addr_nonzero);
+        fmt_comma(z_str, sizeof(z_str), addr_zero);
         fmt_comma(o1_str, sizeof(o1_str), addr_over_1);
         fmt_comma(o100_str, sizeof(o100_str), addr_over_100);
+        fmt_comma(o1k_str, sizeof(o1k_str), addr_over_1000);
+        if (addr_over_1m > 0)
+            fmt_comma(o1m_str, sizeof(o1m_str), addr_over_1m);
+        else
+            snprintf(o1m_str, sizeof(o1m_str),
+                     "None \xe2\x80\x94 no address holds a million ZCL");
 
         char rcpt[32] = "";
         compute_receipt_i64(rcpt, sizeof(rcpt), addr_total, addr_nonzero, "addr_stats");
 
+        /* The addresses table is the live UTXO-holder index — one row per
+         * address that currently owns transparent coins, NOT a full historical
+         * address census. "Currently holding coins" = balance > 0; the small
+         * remainder are indexed rows whose balance has since fallen to zero. */
         APPEND(off, r, max,
             "<div class='card'>"
-            "<p><b>Total unique addresses seen:</b> %s</p>"
-            "<p><b>Addresses with balance &gt; 0:</b> %s</p>"
-            "<p><b>Addresses with \xe2\x89\xa5 1 ZCL:</b> %s</p>"
-            "<p><b>Addresses with \xe2\x89\xa5 100 ZCL:</b> %s</p>"
+            "<p style='color:#888'>The <code>addresses</code> table is the live "
+            "transparent UTXO-holder index (one row per address that currently "
+            "owns coins), not a full historical address census. Percentages in "
+            "this section are shares of <b>transparent</b> coins held, not of "
+            "total emission \xe2\x80\x94 much of the supply is shielded or already "
+            "spent.</p>"
+            "<p><b>Addresses currently holding coins:</b> %s "
+            "<span style='color:#888'>(of %s in the index; %s carry a zero "
+            "balance)</span></p>"
+            "<p><b>Holding \xe2\x89\xa5 1 ZCL:</b> %s</p>"
+            "<p><b>Holding \xe2\x89\xa5 100 ZCL:</b> %s</p>"
+            "<p><b>Holding \xe2\x89\xa5 1,000 ZCL:</b> %s</p>"
+            "<p><b>Holding \xe2\x89\xa5 1,000,000 ZCL:</b> %s</p>"
             "<p><b>SHA3 Receipt:</b> <code>%s</code></p>"
             "</div>",
-            t_str, nz_str, o1_str, o100_str, rcpt);
+            nz_str, t_str, z_str, o1_str, o100_str, o1k_str, o1m_str, rcpt);
+    }
+
+    /* Distribution & concentration — all shares are of held transparent coins
+     * (SUM of address balances), the denominator stated above, NOT of total
+     * emission. Runs once per cached factoids build. */
+    {
+        int64_t total_held = fq_i64(db, "SELECT COALESCE(SUM(balance),0) FROM addresses");
+        int64_t top10 = fq_i64(db,
+            "SELECT COALESCE(SUM(balance),0) FROM "
+            "(SELECT balance FROM addresses ORDER BY balance DESC LIMIT 10)");
+        int64_t top100 = fq_i64(db,
+            "SELECT COALESCE(SUM(balance),0) FROM "
+            "(SELECT balance FROM addresses ORDER BY balance DESC LIMIT 100)");
+        int64_t richest = fq_i64(db, "SELECT COALESCE(MAX(balance),0) FROM addresses");
+        int64_t median = fq_i64(db,
+            "SELECT balance FROM addresses WHERE balance>0 ORDER BY balance "
+            "LIMIT 1 OFFSET (SELECT COUNT(*) FROM addresses WHERE balance>0)/2");
+        int64_t single_use = fq_i64(db,
+            "SELECT COALESCE(SUM(CASE WHEN first_seen_height=last_seen_height "
+            "THEN 1 ELSE 0 END),0) FROM addresses");
+        int64_t oldest_funded = fq_i64(db,
+            "SELECT MIN(first_seen_height) FROM addresses WHERE balance>0");
+        int64_t newest = fq_i64(db, "SELECT MAX(first_seen_height) FROM addresses");
+        int64_t tip = fq_i64(db, "SELECT MAX(height) FROM blocks");
+
+        int64_t mean = addr_nonzero > 0 ? total_held / addr_nonzero : 0;
+        double top10_pct   = total_held > 0 ? 100.0 * (double)top10   / (double)total_held : 0.0;
+        double top100_pct  = total_held > 0 ? 100.0 * (double)top100  / (double)total_held : 0.0;
+        double richest_pct = total_held > 0 ? 100.0 * (double)richest / (double)total_held : 0.0;
+        double single_pct  = addr_total  > 0 ? 100.0 * (double)single_use / (double)addr_total : 0.0;
+        int64_t newest_below = (tip > 0 && newest > 0 && tip >= newest) ? tip - newest : 0;
+        int64_t oldest_time = oldest_funded > 0 ? get_block_time(db, oldest_funded) : 0;
+
+        char total_str[64], richest_str[64], mean_str[64], median_str[64];
+        char held_cnt[32], su_str[32], ots[64], rcpt[32] = "";
+        fmt_zcl(total_str, sizeof(total_str), total_held);
+        fmt_zcl(richest_str, sizeof(richest_str), richest);
+        fmt_zcl(mean_str, sizeof(mean_str), mean);
+        fmt_zcl(median_str, sizeof(median_str), median);
+        fmt_comma(held_cnt, sizeof(held_cnt), addr_nonzero);
+        fmt_comma(su_str, sizeof(su_str), single_use);
+        fmt_time(ots, sizeof(ots), oldest_time);
+        compute_receipt_i64(rcpt, sizeof(rcpt), top10, top100, "addr_concentration");
+
+        APPEND(off, r, max,
+            "<div class='card'>"
+            "<h3>Distribution &amp; Concentration</h3>"
+            "<p style='color:#888'>Shares are of the %s ZCL held across %s funded "
+            "transparent addresses (the held-coin denominator, not total "
+            "emission).</p>"
+            "<table>"
+            "<tr><td><b>Top 10 addresses hold</b></td><td>%.2f%% of held coins</td></tr>"
+            "<tr><td><b>Top 100 addresses hold</b></td><td>%.2f%% of held coins</td></tr>"
+            "<tr><td><b>Richest address</b></td>"
+            "<td>%s ZCL (%.2f%% of held coins)</td></tr>"
+            "<tr><td><b>Mean holder</b></td><td>%s ZCL</td></tr>"
+            "<tr><td><b>Median holder</b></td><td>%s ZCL</td></tr>"
+            "<tr><td><b>Single-use addresses</b></td>"
+            "<td>%s (%.1f%%, first seen = last seen)</td></tr>"
+            "<tr><td><b>Oldest still-funded address</b></td>"
+            "<td>block <a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a> "
+            "\xc2\xb7 %s</td></tr>"
+            "<tr><td><b>Newest address</b></td>"
+            "<td>block <a href='/explorer/block/%" PRId64 "'>%" PRId64 "</a> "
+            "(%" PRId64 " below tip)</td></tr>"
+            "<tr><td><b>SHA3 Receipt</b></td><td><code>%s</code></td></tr>"
+            "</table></div>",
+            total_str, held_cnt,
+            top10_pct, top100_pct,
+            richest_str, richest_pct,
+            mean_str, median_str,
+            su_str, single_pct,
+            oldest_funded, oldest_funded, ots,
+            newest, newest, newest_below,
+            rcpt);
     }
 
     /* Top 10 richest addresses */
