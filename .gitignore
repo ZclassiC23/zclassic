@@ -23,6 +23,7 @@ vendor/include/zconf.h
 *.log
 node.log
 crash_log.txt
+.cookie
 /core
 /core.*
 /vgcore.*
