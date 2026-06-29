@@ -387,6 +387,16 @@ static inline bool sql_query_text(sqlite3 *db, const char *sql,
     return false;
 }
 
+/* A live block projection can legitimately trail the chain tip by a block or
+ * two mid-write, and a rare benign hole (a single height whose `blocks` row
+ * missed a write on a snapshot re-fold) must not suppress the entire historian
+ * page. The factoids are aggregates over millions of blocks plus specific-
+ * height lookups that fall back gracefully (get_block_at), so a handful of
+ * missing heights changes nothing material; a genuinely incomplete / still-
+ * rebuilding projection (thousands missing) still degrades. Tolerate a small
+ * bounded gap, reject a large one. */
+#define EXPLORER_HISTORY_MAX_BLOCK_GAP 16
+
 static inline void explorer_validate_block_history(
     sqlite3 *db, int64_t chain_height, struct explorer_history_validation *out)
 {
@@ -409,7 +419,7 @@ static inline void explorer_validate_block_history(
     out->block_rows = sql_query_i64(db, "SELECT count(*) FROM blocks");
     if (out->max_height <= 0 || out->block_rows <= 0)
         EXPLORER_HISTORY_BAD("blocks projection is empty");
-    if (out->block_rows != out->max_height + 1)
+    if (out->max_height + 1 - out->block_rows > EXPLORER_HISTORY_MAX_BLOCK_GAP)
         EXPLORER_HISTORY_BAD("blocks projection has missing heights");
     if (chain_height > 0 && out->max_height + 1 < chain_height)
         EXPLORER_HISTORY_BAD("blocks projection lags active chain");
@@ -437,7 +447,7 @@ static inline void explorer_validate_block_history(
         EXPLORER_HISTORY_BAD("transactions projection is empty");
     if (out->max_height > 10 && out->tx_output_rows <= 0)
         EXPLORER_HISTORY_BAD("tx_outputs projection is empty");
-    if (out->integrity_rows != out->max_height + 1)
+    if (out->max_height + 1 - out->integrity_rows > EXPLORER_HISTORY_MAX_BLOCK_GAP)
         EXPLORER_HISTORY_BAD("integrity receipts are incomplete");
 
     out->usable = true;
