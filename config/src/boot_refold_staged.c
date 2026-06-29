@@ -849,6 +849,52 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
         _exit(EXIT_FAILURE);
     }
 
+    /* (0) RESUME-FAST — if coins_kv is ALREADY the proven authority at/above the
+     * snapshot's seed height, the persisted coin set + stage logs are sufficient:
+     * a normal boot recomputes H* from them and serves tip in seconds. Wiping and
+     * RE-SEEDING here would re-fold (header_tip - seed_h) blocks on EVERY restart
+     * for zero gain (the stopgap turned every restart into a full re-fold). Skip
+     * the wipe+re-seed+re-fold in that case and let the normal boot resume from
+     * the persisted authority. Re-seed only when coins_kv is absent / corrupt /
+     * BELOW the seed (those cases fall through to the full path below, byte-for-
+     * byte unchanged — the fresh/corrupt fallback is preserved). The peek is
+     * READ-ONLY (verify_full_sha3=false → header-only mmap, no body re-hash, no
+     * coin written); on ANY peek failure we fall through to the full-verify open
+     * below, which fail-closes on a genuinely corrupt snapshot exactly as before.
+     * This is the SAME proven-authority gate the snapshot-autodetect path
+     * (boot.c) and -load-verify path already enforce; only the explicit flag
+     * omitted it. The skip never SEEDS a set — it only declines to wipe a coins_kv
+     * that is INDEPENDENTLY proven by the 3-rung predicate, so a forged/wrong
+     * snapshot can never cause a wrong resume (a real internal tear surfaces as a
+     * named H* gap that the reducer refuses to serve past, never a silent serve). */
+    {
+        char peek_err[256] = {0};
+        struct uss_header peek_hdr;
+        struct uss_handle *peek = uss_open(path, /*verify_full_sha3=*/false,
+                                           /*expected_sha3=*/NULL, &peek_hdr,
+                                           peek_err, sizeof(peek_err));
+        if (peek) {
+            const int32_t peek_seed_h = (int32_t)peek_hdr.height;
+            int32_t applied = -1;
+            const bool resume =
+                coins_kv_is_proven_authority(progress_store_db(), &applied) &&
+                applied >= peek_seed_h + 1;
+            uss_close(peek);
+            if (resume) {
+                LOG_INFO("boot",
+                         "[boot] -load-snapshot-at-own-height: coins_kv is the "
+                         "proven authority at h=%d (>= snapshot seed h=%d) — "
+                         "RESUMING from the persisted coin set; skipping the "
+                         "re-seed + ~%d-block re-fold.",
+                         applied - 1, peek_seed_h, applied - 1 - peek_seed_h);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                            "load_snapshot_at_own_height resume_skip applied=%d "
+                            "seed_h=%d", applied, peek_seed_h);
+                return;
+            }
+        }
+    }
+
     /* (i) Open + SELF-verify the snapshot against its OWN header SHA3 (NOT the
      * compiled checkpoint). expected_sha3=NULL skips the checkpoint binding;
      * verify_full_sha3=true still recomputes the whole body and compares it to
