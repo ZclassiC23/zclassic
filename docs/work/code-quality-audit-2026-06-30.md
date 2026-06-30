@@ -77,6 +77,8 @@ mega-refactor. This page is the running backlog for those passes.
   health.
 - [x] Continue oversized factoids-view shrinkage with a behavior-preserving
   difficulty section extraction and regression test.
+- [x] Continue oversized factoids-view shrinkage with a behavior-preserving
+  empty-block section extraction and regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1008,6 +1010,24 @@ mega-refactor. This page is the running backlog for those passes.
      recent-retarget count, chainwork line, yearly peak table, and SHA3 receipt
      remain present. Ran `make t ONLY=explorer` and `make lint`.
 
+30. **Oversized factoids empty-block extraction**
+   - Files: `app/views/src/explorer_factoids_chaindata.c`,
+     `app/views/src/explorer_factoids_empty_blocks.c`,
+     `app/views/include/views/explorer_factoids_internal.h`,
+     `app/views/src/explorer_factoids_view.c`,
+     `lib/test/src/test_explorer.c`
+   - Problem: section 15's empty-block totals, yearly table, busiest-block
+     record, and longest-empty-run query still lived inside the oversized
+     chain-data section file.
+   - Fix: moved the Empty Blocks renderer into
+     `explorer_factoids_empty_blocks.c`, leaving
+     `explorer_factoids_chaindata.c` responsible for sections 8-14 only. The
+     chain-data file shrank from 1182 to 1076 lines.
+   - Tests: added a direct explorer regression for the empty-block section that
+     asserts the 5-of-8 summary, yearly table row, busiest block link, longest
+     empty run, and both SHA3 receipts remain present. Ran
+     `make t ONLY=explorer` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1072,6 +1092,10 @@ mega-refactor. This page is the running backlog for those passes.
      History now lives in its own private view TU, reducing
      `explorer_factoids_chaindata.c` to 1182 lines while preserving the
      compact-target/chainwork display contract.
+   - Fourth behavior-preserving extraction landed for the same view: Empty
+     Blocks now lives in its own private view TU, reducing
+     `explorer_factoids_chaindata.c` to 1076 lines while preserving the
+     empty-block summary/record receipt contract.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

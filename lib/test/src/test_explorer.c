@@ -248,6 +248,57 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: factoids empty-block section renders records... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER, num_tx INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,time,num_tx) VALUES"
+            "(1,1478403829,2),"
+            "(2,1478403900,1),"
+            "(3,1478403975,1),"
+            "(4,1478404050,5),"
+            "(5,1478404125,1),"
+            "(6,1478404200,1),"
+            "(7,1478404275,1),"
+            "(8,1478404350,3)",
+            NULL, NULL, NULL);
+
+        char summary_expected[32] = "";
+        char records_expected[32] = "";
+        compute_receipt_i64(summary_expected, sizeof(summary_expected),
+                            5, 8, "empty_blocks");
+        compute_receipt_i64(records_expected, sizeof(records_expected),
+                            4, 3, "empty_block_records");
+
+        uint8_t out[8192];
+        size_t n = factoids_emit_section_15_empty_blocks(
+            out, sizeof(out) - 1, 0, db);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "15. Empty Blocks Analysis") != NULL &&
+                  strstr((const char *)out, "5 of 8 (62.5%)") != NULL &&
+                  strstr((const char *)out, "Empty Blocks Per Year") != NULL &&
+                  strstr((const char *)out,
+                         "<tr><td>2016</td><td>5</td><td>8</td><td>62.5%</td></tr>") != NULL &&
+                  strstr((const char *)out, "Records") != NULL &&
+                  strstr((const char *)out, "5 transactions at block") != NULL &&
+                  strstr((const char *)out, "/explorer/block/4") != NULL &&
+                  strstr((const char *)out,
+                         "Longest run of consecutive empty blocks:</b> 3") != NULL &&
+                  strstr((const char *)out, "heights 5") != NULL &&
+                  strstr((const char *)out, "7)") != NULL &&
+                  strstr((const char *)out, summary_expected) != NULL &&
+                  strstr((const char *)out, records_expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: difficulty_from_bits handles edge cases... ");
     {
         double d0 = explorer_difficulty_from_bits(0);
