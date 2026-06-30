@@ -15,6 +15,7 @@
 
 #include "services/invariant_sentinel.h"
 
+#include "invariant_sentinel_internal.h"
 #include "config/runtime.h"
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"
@@ -28,7 +29,6 @@
 #include "storage/progress_store.h"
 #include "supervisors/domains.h"
 #include "coins/utxo_commitment.h"
-#include "json/json.h"
 #include "util/ar_step_readonly.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -51,39 +51,39 @@
 #define SWEEP_OSCILLATION_THRESHOLD  10
 
 /* ── counters / state (all atomic or lock-guarded; dumped via JSON) ── */
-static _Atomic uint64_t g_pair_checks_total = 0;
-static _Atomic uint64_t g_pair_violations_total = 0;
-static _Atomic uint64_t g_sweeps_total = 0;
-static _Atomic uint64_t g_sweep_violations_total = 0;
-static _Atomic int64_t  g_last_sweep_unix = 0;
-static _Atomic uint64_t g_commitment_audits_total = 0;
-static _Atomic uint64_t g_commitment_mismatches_total = 0;
-static _Atomic uint64_t g_commitment_skipped_tip_moved = 0;
-static _Atomic int64_t  g_last_audit_unix = 0;
-static _Atomic bool     g_sweep_blocker_active = false;
-static _Atomic bool     g_audit_blocker_active = false;
+_Atomic uint64_t g_isn_pair_checks_total = 0;
+_Atomic uint64_t g_isn_pair_violations_total = 0;
+_Atomic uint64_t g_isn_sweeps_total = 0;
+_Atomic uint64_t g_isn_sweep_violations_total = 0;
+_Atomic int64_t  g_isn_last_sweep_unix = 0;
+_Atomic uint64_t g_isn_commitment_audits_total = 0;
+_Atomic uint64_t g_isn_commitment_mismatches_total = 0;
+_Atomic uint64_t g_isn_commitment_skipped_tip_moved = 0;
+_Atomic int64_t  g_isn_last_audit_unix = 0;
+_Atomic bool     g_isn_sweep_blocker_active = false;
+_Atomic bool     g_isn_audit_blocker_active = false;
 /* Consecutive corruption-candidate audits before the diagnostic blocker is
  * raised. The hourly O(n) scan can race a mirror `DELETE FROM utxos`+reinsert
  * rebuild (the torn-scan guard keys on tip cursor + checkpoint and misses that
  * window — the cause of the live 6 false fires), so a single candidate verdict
  * is not trusted; reset on any clean/growth pass. */
-static _Atomic int      g_commitment_candidate_streak = 0;
+_Atomic int      g_isn_commitment_candidate_streak = 0;
 #define COMMITMENT_CANDIDATE_STREAK_RAISE 2
 
-static pthread_mutex_t g_detail_lock = PTHREAD_MUTEX_INITIALIZER;
-static char g_last_sweep_detail[200];
-static char g_last_pair_detail[200];
+pthread_mutex_t g_isn_detail_lock = PTHREAD_MUTEX_INITIALIZER;
+char g_isn_last_sweep_detail[200];
+char g_isn_last_pair_detail[200];
 
 /* Cross-sweep memory for the oscillation check (single sweep thread). */
-static uint64_t g_prev_reorg_total = 0;
-static int64_t  g_prev_tip_finalize_cursor = -1;
-static bool     g_prev_sweep_valid = false;
+uint64_t g_isn_prev_reorg_total = 0;
+int64_t  g_isn_prev_tip_finalize_cursor = -1;
+bool     g_isn_prev_sweep_valid = false;
 
 /* Two-sweep confirmation memory (single sweep thread): a violation must
  * repeat on the NEXT sweep before it raises blocker/page/HOLD. */
-static char    g_pending_invariant[16];
-static int     g_pending_first_bad_h = -1;
-static bool    g_pending_valid = false;
+char    g_isn_pending_invariant[16];
+int     g_isn_pending_first_bad_h = -1;
+bool    g_isn_pending_valid = false;
 
 /* De-storm for the window-sweep "awaiting confirmation" WARN: while wedged it
  * re-prints every 60 s sweep with the SAME invariant/detail. Throttle to
@@ -99,18 +99,18 @@ static char g_unconfirmed_last_invariant[16], g_unconfirmed_last_detail[200];
  * advances at boot/seed re-anchors). Invalidated on any violation or on a
  * cursor rewind (an unwind deleted log rows in the same txn it rewound
  * the cursor, so rows at/below the memo may be gone). */
-static int32_t g_memo_ua_frontier = -1;
-static int64_t g_memo_ua_cursor = -1;
+int32_t g_isn_memo_ua_frontier = -1;
+int64_t g_isn_memo_ua_cursor = -1;
 
 #ifdef ZCL_TESTING
-static struct node_db *g_test_ndb;
+struct node_db *g_isn_test_ndb;
 #endif
 
 static struct node_db *sentinel_ndb(void)
 {
 #ifdef ZCL_TESTING
-    if (g_test_ndb)
-        return g_test_ndb;
+    if (g_isn_test_ndb)
+        return g_isn_test_ndb;
 #endif
     return app_runtime_node_db();
 }
@@ -180,12 +180,12 @@ void invariant_sentinel_pair_violation(const char *site, int height,
     if (refold_in_progress())
         return;
 
-    atomic_fetch_add(&g_pair_violations_total, 1);
-    pthread_mutex_lock(&g_detail_lock);
-    snprintf(g_last_pair_detail, sizeof(g_last_pair_detail),
+    atomic_fetch_add(&g_isn_pair_violations_total, 1);
+    pthread_mutex_lock(&g_isn_detail_lock);
+    snprintf(g_isn_last_pair_detail, sizeof(g_isn_last_pair_detail),
              "site=%s published_h=%d resolved_h=%lld",
              site ? site : "?", height, (long long)resolved_h);
-    pthread_mutex_unlock(&g_detail_lock);
+    pthread_mutex_unlock(&g_isn_detail_lock);
     sentinel_raise_blocker("authority.pair_self_check",
                            "authority pair mismatch site=%s published_h=%d "
                            "resolved_h=%lld (write refused)",
@@ -216,7 +216,7 @@ bool invariant_sentinel_check_pair(struct node_db *ndb,
                       * key is absent on a normal boot, so this is mint/refold
                       * ONLY. No consensus value is touched. */
 
-    atomic_fetch_add(&g_pair_checks_total, 1);
+    atomic_fetch_add(&g_isn_pair_checks_total, 1);
     int64_t resolved_h = -1;
     int found = pair_resolve_height(ndb, hash, &resolved_h);
     if (found <= 0)
@@ -325,20 +325,20 @@ bool invariant_sentinel_confirm_violation(
     const struct invariant_sweep_verdict *v)
 {
     if (!v || !v->violated) {
-        g_pending_valid = false;
-        g_pending_first_bad_h = -1;
-        g_pending_invariant[0] = '\0';
+        g_isn_pending_valid = false;
+        g_isn_pending_first_bad_h = -1;
+        g_isn_pending_invariant[0] = '\0';
         return false;
     }
     bool confirmed =
-        g_pending_valid &&
-        strncmp(g_pending_invariant, v->invariant,
-                sizeof(g_pending_invariant)) == 0 &&
-        g_pending_first_bad_h == v->first_bad_h;
-    g_pending_valid = true;
-    snprintf(g_pending_invariant, sizeof(g_pending_invariant), "%s",
+        g_isn_pending_valid &&
+        strncmp(g_isn_pending_invariant, v->invariant,
+                sizeof(g_isn_pending_invariant)) == 0 &&
+        g_isn_pending_first_bad_h == v->first_bad_h;
+    g_isn_pending_valid = true;
+    snprintf(g_isn_pending_invariant, sizeof(g_isn_pending_invariant), "%s",
              v->invariant);
-    g_pending_first_bad_h = v->first_bad_h;
+    g_isn_pending_first_bad_h = v->first_bad_h;
     return confirmed;
 }
 
@@ -379,12 +379,12 @@ bool invariant_sentinel_sweep_once(void)
      * REWIND invalidates the memo (the unwind deleted rows at/below it). */
     int32_t ua_frontier = 0;
     if (in.cur_utxo_apply > 0) {
-        if (g_memo_ua_frontier >= 0 &&
-            in.cur_utxo_apply >= g_memo_ua_cursor) {
+        if (g_isn_memo_ua_frontier >= 0 &&
+            in.cur_utxo_apply >= g_isn_memo_ua_cursor) {
             in.ua_log_frontier_known =
                 reducer_frontier_log_frontier_above(db, "utxo_apply_log",
                                                     "utxo_apply",
-                                                    g_memo_ua_frontier,
+                                                    g_isn_memo_ua_frontier,
                                                     &ua_frontier);
         } else {
             in.ua_log_frontier_known =
@@ -403,33 +403,33 @@ bool invariant_sentinel_sweep_once(void)
     progress_store_tx_unlock();
 
     in.reorg_detected_total = tip_finalize_stage_reorg_detected_total();
-    if (g_prev_sweep_valid) {
-        in.prev_reorg_detected_total = g_prev_reorg_total;
-        in.prev_cur_tip_finalize = g_prev_tip_finalize_cursor;
+    if (g_isn_prev_sweep_valid) {
+        in.prev_reorg_detected_total = g_isn_prev_reorg_total;
+        in.prev_cur_tip_finalize = g_isn_prev_tip_finalize_cursor;
     } else {
         in.prev_reorg_detected_total = in.reorg_detected_total;
         in.prev_cur_tip_finalize = -1;
     }
-    g_prev_reorg_total = in.reorg_detected_total;
-    g_prev_tip_finalize_cursor = in.cur_tip_finalize;
-    g_prev_sweep_valid = true;
+    g_isn_prev_reorg_total = in.reorg_detected_total;
+    g_isn_prev_tip_finalize_cursor = in.cur_tip_finalize;
+    g_isn_prev_sweep_valid = true;
 
     struct invariant_sweep_verdict v;
     invariant_sentinel_sweep_evaluate(&in, &v);
 
-    atomic_fetch_add(&g_sweeps_total, 1);
-    atomic_store(&g_last_sweep_unix, platform_time_wall_unix());
+    atomic_fetch_add(&g_isn_sweeps_total, 1);
+    atomic_store(&g_isn_last_sweep_unix, platform_time_wall_unix());
 
     if (v.violated) {
         /* Violations invalidate the frontier memo: re-prove from the
          * anchor until the state is clean again. */
-        g_memo_ua_frontier = -1;
-        g_memo_ua_cursor = -1;
-        atomic_fetch_add(&g_sweep_violations_total, 1);
-        pthread_mutex_lock(&g_detail_lock);
-        snprintf(g_last_sweep_detail, sizeof(g_last_sweep_detail),
+        g_isn_memo_ua_frontier = -1;
+        g_isn_memo_ua_cursor = -1;
+        atomic_fetch_add(&g_isn_sweep_violations_total, 1);
+        pthread_mutex_lock(&g_isn_detail_lock);
+        snprintf(g_isn_last_sweep_detail, sizeof(g_isn_last_sweep_detail),
                  "%s %s", v.invariant, v.detail);
-        pthread_mutex_unlock(&g_detail_lock);
+        pthread_mutex_unlock(&g_isn_detail_lock);
         /* TWO-SWEEP CONFIRMATION before blocker/page/HOLD: there is one
          * durably-committed window where cursors disagree BY DESIGN — a
          * reorg unwind commits {utxo_apply cursor + log deletes + coins
@@ -439,7 +439,7 @@ bool invariant_sentinel_sweep_once(void)
          * healthy node. That window is ms-scale; a REAL wedge persists
          * across consecutive 60 s sweeps at the same named heights. */
         if (invariant_sentinel_confirm_violation(&v)) {
-            atomic_store(&g_sweep_blocker_active, true);
+            atomic_store(&g_isn_sweep_blocker_active, true);
             sentinel_raise_blocker("window.consistency", "%s %s",
                                    v.invariant, v.detail);
             if (v.first_bad_h >= 0)
@@ -464,14 +464,14 @@ bool invariant_sentinel_sweep_once(void)
     } else {
         (void)invariant_sentinel_confirm_violation(&v); /* reset pending */
         if (in.ua_log_frontier_known) {
-            g_memo_ua_frontier = in.ua_log_frontier;
-            g_memo_ua_cursor = in.cur_utxo_apply;
+            g_isn_memo_ua_frontier = in.ua_log_frontier;
+            g_isn_memo_ua_cursor = in.cur_utxo_apply;
         }
-        if (atomic_load(&g_sweep_blocker_active)) {
+        if (atomic_load(&g_isn_sweep_blocker_active)) {
             /* Self-clearing: a clean sweep releases the hold — repair
              * jobs may legitimately fix holes; crash-only and
              * recovery-friendly. */
-            atomic_store(&g_sweep_blocker_active, false);
+            atomic_store(&g_isn_sweep_blocker_active, false);
             blocker_clear("window.consistency");
             chain_linkage_hold_clear("window_sweep");
             LOG_INFO("validation_pack",
@@ -522,9 +522,9 @@ static void audit_log_range_counts(sqlite3 *db)
  * no-op when nothing is latched. */
 static void audit_clear_latched_blocker(const char *why)
 {
-    if (!atomic_load(&g_audit_blocker_active))
+    if (!atomic_load(&g_isn_audit_blocker_active))
         return;
-    atomic_store(&g_audit_blocker_active, false);
+    atomic_store(&g_isn_audit_blocker_active, false);
     blocker_clear("coins.commitment_spot_check");
     chain_linkage_hold_clear("commitment_audit");
     LOG_INFO("validation_pack",
@@ -564,17 +564,17 @@ bool invariant_sentinel_commitment_audit_once(void)
     bool ckpt_after_ok =
         utxo_commitment_load_checkpoint(ndb->db, &saved_after);
 
-    atomic_fetch_add(&g_commitment_audits_total, 1);
-    atomic_store(&g_last_audit_unix, platform_time_wall_unix());
+    atomic_fetch_add(&g_isn_commitment_audits_total, 1);
+    atomic_store(&g_isn_last_audit_unix, platform_time_wall_unix());
 
     if (tip_before != tip_after || !ckpt_after_ok ||
         !utxo_commitment_equal(&saved, &saved_after)) {
-        atomic_fetch_add(&g_commitment_skipped_tip_moved, 1);
+        atomic_fetch_add(&g_isn_commitment_skipped_tip_moved, 1);
         return true; /* discarded, no verdict */
     }
 
     if (utxo_commitment_equal(&saved, &computed)) {
-        atomic_store(&g_commitment_candidate_streak, 0);
+        atomic_store(&g_isn_commitment_candidate_streak, 0);
         audit_clear_latched_blocker("a clean audit");
         return true;
     }
@@ -592,7 +592,7 @@ bool invariant_sentinel_commitment_audit_once(void)
      * otherwise strand the chain forever (the live 3164076 wedge). */
     if (!utxo_recovery_xor_mismatch_is_corruption_candidate(
             saved.count, computed.count)) {
-        atomic_store(&g_commitment_candidate_streak, 0);
+        atomic_store(&g_isn_commitment_candidate_streak, 0);
         (void)utxo_commitment_resync_from_db(ndb->db, NULL);
         audit_clear_latched_blocker("a growth/stale resync");
         return true;
@@ -602,12 +602,12 @@ bool invariant_sentinel_commitment_audit_once(void)
      * COMMITMENT_CANDIDATE_STREAK_RAISE consecutive candidate verdicts before
      * raising, to swallow the mirror-rebuild torn-scan race the guard above
      * misses (the live 6 false fires). */
-    if (atomic_fetch_add(&g_commitment_candidate_streak, 1) + 1
+    if (atomic_fetch_add(&g_isn_commitment_candidate_streak, 1) + 1
             < COMMITMENT_CANDIDATE_STREAK_RAISE)
         return true; /* not yet persistent — wait for the next audit */
 
-    atomic_fetch_add(&g_commitment_mismatches_total, 1);
-    atomic_store(&g_audit_blocker_active, true);
+    atomic_fetch_add(&g_isn_commitment_mismatches_total, 1);
+    atomic_store(&g_isn_audit_blocker_active, true);
     audit_log_range_counts(ndb->db);
     sentinel_raise_blocker(
         "coins.commitment_spot_check",
@@ -636,7 +636,7 @@ bool invariant_sentinel_commitment_audit_once(void)
  * clears the operator-facing signal. */
 void invariant_sentinel_clear_commitment_blocker(void)
 {
-    atomic_store(&g_commitment_candidate_streak, 0);
+    atomic_store(&g_isn_commitment_candidate_streak, 0);
     audit_clear_latched_blocker("the auto-terminating owner");
 }
 
@@ -700,174 +700,3 @@ void invariant_sentinel_register(void)
                      "[validation_pack] audit register failed");
     }
 }
-
-/* ── health + dump ──────────────────────────────────────────────── */
-
-static const char *const k_pack_blockers[] = {
-    "chain.linkage_violation",
-    "chain.coinbase_label_mismatch",
-    "authority.pair_self_check",
-    "window.consistency",
-    "coins.commitment_spot_check",
-    "mirror.divergence_located",
-    "seed.linkage_gate",
-};
-
-bool invariant_sentinel_healthy(char *detail, int detail_cap)
-{
-    if (detail && detail_cap > 0)
-        detail[0] = '\0';
-    bool ok = !chain_linkage_hold_active();
-    for (size_t i = 0;
-         i < sizeof(k_pack_blockers) / sizeof(k_pack_blockers[0]); i++) {
-        if (blocker_exists(k_pack_blockers[i])) {
-            ok = false;
-            if (detail && detail_cap > 0 && !detail[0])
-                snprintf(detail, (size_t)detail_cap, "%s",
-                         k_pack_blockers[i]);
-        }
-    }
-    return ok;
-}
-
-/* Counter accessors for the cross-module dump (seed gate + locator
- * register theirs through these setters to keep ONE dumper). */
-static _Atomic uint64_t g_seed_gate_runs = 0;
-static _Atomic uint64_t g_seed_gate_refusals = 0;
-static _Atomic uint64_t g_locator_runs = 0;
-static _Atomic int g_locator_first_div_h = -1;
-static _Atomic uint64_t g_loader_height_fallbacks = 0;
-
-void invariant_sentinel_note_seed_gate(bool refused)
-{
-    atomic_fetch_add(&g_seed_gate_runs, 1);
-    if (refused)
-        atomic_fetch_add(&g_seed_gate_refusals, 1);
-}
-
-void invariant_sentinel_note_locator(int first_div_h)
-{
-    atomic_fetch_add(&g_locator_runs, 1);
-    if (first_div_h >= 0)
-        atomic_store(&g_locator_first_div_h, first_div_h);
-}
-
-void invariant_sentinel_note_loader_height_fallback(void)
-{
-    atomic_fetch_add(&g_loader_height_fallbacks, 1);
-}
-
-bool invariant_sentinel_dump_state_json(struct json_value *out,
-                                        const char *key)
-{
-    (void)key;
-    json_set_object(out);
-
-    bool hold_active = false;
-    int refuse_from = -1;
-    char ids[96], reason[CHAIN_HOLD_REASON_MAX];
-    chain_linkage_hold_snapshot(&hold_active, &refuse_from, ids,
-                                (int)sizeof(ids), reason,
-                                (int)sizeof(reason));
-    json_push_kv_bool(out, "hold_active", hold_active);
-    json_push_kv_int(out, "hold_refuse_from_h", (int64_t)refuse_from);
-    json_push_kv_str(out, "hold_check_ids", ids);
-    json_push_kv_str(out, "hold_reason", reason);
-
-    json_push_kv_int(out, "linkage_violations_total",
-                     (int64_t)chain_linkage_violations_total());
-    json_push_kv_int(out, "hold_refusals_total",
-                     (int64_t)chain_linkage_hold_refusals_total());
-    json_push_kv_int(out, "offtip_switches_total",
-                     (int64_t)chain_linkage_offtip_switches_total());
-
-    json_push_kv_int(out, "pair_checks_total",
-                     (int64_t)atomic_load(&g_pair_checks_total));
-    json_push_kv_int(out, "pair_violations_total",
-                     (int64_t)atomic_load(&g_pair_violations_total));
-
-    json_push_kv_int(out, "sweeps_total",
-                     (int64_t)atomic_load(&g_sweeps_total));
-    json_push_kv_int(out, "sweep_violations_total",
-                     (int64_t)atomic_load(&g_sweep_violations_total));
-    json_push_kv_int(out, "last_sweep_unix",
-                     atomic_load(&g_last_sweep_unix));
-
-    json_push_kv_int(out, "commitment_audits_total",
-                     (int64_t)atomic_load(&g_commitment_audits_total));
-    json_push_kv_int(out, "commitment_mismatches_total",
-                     (int64_t)atomic_load(&g_commitment_mismatches_total));
-    json_push_kv_int(out, "commitment_skipped_tip_moved",
-                     (int64_t)atomic_load(&g_commitment_skipped_tip_moved));
-    json_push_kv_int(out, "last_audit_unix",
-                     atomic_load(&g_last_audit_unix));
-
-    json_push_kv_int(out, "seed_gate_runs",
-                     (int64_t)atomic_load(&g_seed_gate_runs));
-    json_push_kv_int(out, "seed_gate_refusals",
-                     (int64_t)atomic_load(&g_seed_gate_refusals));
-    json_push_kv_int(out, "locator_runs",
-                     (int64_t)atomic_load(&g_locator_runs));
-    json_push_kv_int(out, "locator_first_div_h",
-                     (int64_t)atomic_load(&g_locator_first_div_h));
-    json_push_kv_int(out, "loader_height_fallbacks",
-                     (int64_t)atomic_load(&g_loader_height_fallbacks));
-
-    pthread_mutex_lock(&g_detail_lock);
-    json_push_kv_str(out, "last_sweep_detail", g_last_sweep_detail);
-    json_push_kv_str(out, "last_pair_detail", g_last_pair_detail);
-    pthread_mutex_unlock(&g_detail_lock);
-
-    struct json_value blockers = {0};
-    json_set_object(&blockers);
-    for (size_t i = 0;
-         i < sizeof(k_pack_blockers) / sizeof(k_pack_blockers[0]); i++)
-        json_push_kv_bool(&blockers, k_pack_blockers[i],
-                          blocker_exists(k_pack_blockers[i]));
-    json_push_kv(out, "blockers", &blockers);
-    json_free(&blockers);
-
-    char detail[BLOCKER_ID_MAX];
-    json_push_kv_bool(out, "healthy",
-                      invariant_sentinel_healthy(detail,
-                                                 (int)sizeof(detail)));
-    return true;
-}
-
-#ifdef ZCL_TESTING
-void invariant_sentinel_reset_for_testing(void)
-{
-    g_test_ndb = NULL;
-    atomic_store(&g_pair_checks_total, (uint64_t)0);
-    atomic_store(&g_pair_violations_total, (uint64_t)0);
-    atomic_store(&g_sweeps_total, (uint64_t)0);
-    atomic_store(&g_sweep_violations_total, (uint64_t)0);
-    atomic_store(&g_commitment_audits_total, (uint64_t)0);
-    atomic_store(&g_commitment_mismatches_total, (uint64_t)0);
-    atomic_store(&g_commitment_skipped_tip_moved, (uint64_t)0);
-    atomic_store(&g_sweep_blocker_active, false);
-    atomic_store(&g_audit_blocker_active, false);
-    atomic_store(&g_commitment_candidate_streak, 0);
-    atomic_store(&g_seed_gate_runs, (uint64_t)0);
-    atomic_store(&g_seed_gate_refusals, (uint64_t)0);
-    atomic_store(&g_locator_runs, (uint64_t)0);
-    atomic_store(&g_locator_first_div_h, -1);
-    g_prev_sweep_valid = false;
-    g_prev_reorg_total = 0;
-    g_prev_tip_finalize_cursor = -1;
-    g_pending_valid = false;
-    g_pending_first_bad_h = -1;
-    g_pending_invariant[0] = '\0';
-    g_memo_ua_frontier = -1;
-    g_memo_ua_cursor = -1;
-    pthread_mutex_lock(&g_detail_lock);
-    g_last_sweep_detail[0] = '\0';
-    g_last_pair_detail[0] = '\0';
-    pthread_mutex_unlock(&g_detail_lock);
-}
-
-void invariant_sentinel_set_node_db_for_testing(struct node_db *ndb)
-{
-    g_test_ndb = ndb;
-}
-#endif

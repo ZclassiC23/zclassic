@@ -102,6 +102,8 @@ mega-refactor. This page is the running backlog for those passes.
   result-name extraction and repository regression test.
 - [x] Continue oversized-file review with a behavior-preserving wallet read
   helper extraction and wallet model regressions.
+- [x] Continue oversized-file review with a behavior-preserving validation-pack
+  state/dump extraction and sentinel regressions.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1229,6 +1231,23 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=wallet_funds_safety`; final gates `git diff --check` and
      `make lint`.
 
+42. **Oversized validation-pack state/dump extraction**
+   - Files: `app/services/src/invariant_sentinel.c`,
+     `app/services/src/invariant_sentinel_state.c`,
+     `app/services/src/invariant_sentinel_internal.h`
+   - Problem: the core invariant sentinel mixed fail-loud detection/audit
+     behavior with health rollup, `zcl_state validation_pack` JSON export,
+     cross-module seed/locator/loader counters, and testing reset hooks,
+     making the ownership boundary harder for future AI passes to navigate.
+   - Fix: moved health, dumpstate, cross-module counter feeds, and testing
+     reset support into a sibling state TU behind a sentinel-owned internal
+     state header. The core file now keeps pair checks, window sweeps,
+     commitment audits, and supervisor registration. `invariant_sentinel.c`
+     is now 702 lines.
+   - Tests: ran `make t ONLY=invariant_sentinel`,
+     `make t ONLY=node_health`, and `make t ONLY=mcp_controllers`; final
+     gates `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1344,6 +1363,11 @@ mega-refactor. This page is the running backlog for those passes.
      read-only aggregate/tip-summary helpers now live in `wallet_tx_reads.c`,
      reducing `wallet_tx.c` to 772 lines while preserving the public wallet
      model API and AR hook/write-path ownership.
+   - Sixteenth behavior-preserving extraction landed for validation pack:
+     health, dumpstate, cross-module counter feeds, and testing reset support
+     now live in `invariant_sentinel_state.c`, reducing
+     `invariant_sentinel.c` to 702 lines while preserving fail-loud detector
+     behavior and the validation-pack state API.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
