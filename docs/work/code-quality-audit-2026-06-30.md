@@ -171,6 +171,10 @@ mega-refactor. This page is the running backlog for those passes.
   lives in `boot_shutdown_marker.*`, with regressions for WAL crash detection,
   clean marker consumption, first boot, timestamp write, and invalid datadir
   guards.
+- [x] Continue oversized-file review with a behavior-preserving boot stale-lock
+  preflight extraction: LevelDB/chainstate LOCK hygiene and SQLite WAL notice
+  now live in `boot_stale_locks.*`, with regressions for stale PID removal,
+  live PID retention, WAL detection, and invalid datadir guards.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1487,6 +1491,27 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make -j$(nproc) build-only` and
      `make t ONLY=boot_shutdown_marker`.
 
+51. **Boot stale-lock preflight split**
+   - Files: `config/src/boot.c`, `config/src/boot_stale_locks.c`,
+     `config/include/config/boot_stale_locks.h`,
+     `lib/test/src/test_boot_stale_locks.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still carried startup lock hygiene
+     inline between maintenance-service startup and SQLite open. That mixed
+     phase order with PID-file parsing, dead-process detection, and WAL-crash
+     notices.
+   - Fix: moved the policy into `boot_stale_locks_preflight()`. `boot.c` now
+     calls a named pre-database boundary; the helper owns path construction,
+     LevelDB/chainstate LOCK inspection, SQLite WAL notice output, and a small
+     result struct for tests. It also treats `EPERM`/unknown `kill(pid, 0)`
+     failures as "not proven dead" so a lock is only removed when the owner PID
+     is definitely gone. `boot.c` is now 3820 lines and the new helper is 139
+     lines.
+   - Tests: ran `make -j$(nproc) build-only`,
+     `make t ONLY=boot_stale_locks`, and
+     `ZCL_TEST_ONLY=boot_stale_locks build/bin/test_zcl`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1669,6 +1694,11 @@ mega-refactor. This page is the running backlog for those passes.
      live in `boot_shutdown_marker.c`. This keeps future boot reviews focused
      on phase ordering while preserving the existing clean-shutdown marker
      contract.
+   - Twenty-seventh behavior-preserving extraction landed for boot stale-lock
+     preflight: LevelDB/chainstate LOCK inspection, dead-PID cleanup, live-PID
+     retention, and SQLite WAL notices now live in `boot_stale_locks.c`. This
+     keeps future boot reviews focused on phase ordering while preserving
+     startup recovery hygiene before SQLite opens.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the

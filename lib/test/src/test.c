@@ -611,6 +611,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "boot_stale_locks") == 0) {
+        printf("[test] ZCL_TEST_ONLY=boot_stale_locks - running only\n");
+        failures += test_boot_stale_locks();
+        printf("\n=== boot_stale_locks subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
@@ -760,6 +767,7 @@ int main(void)
       failures += test_boot_snapshot_failure_memory(); }
     failures += test_boot_datadir_lock();
     failures += test_boot_shutdown_marker();
+    failures += test_boot_stale_locks();
     failures += test_store();
     failures += test_blog();
     failures += test_api();

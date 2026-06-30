@@ -474,6 +474,7 @@ int test_power_node_contract_spec(void);
 int test_boot_phase(void);
 int test_boot_datadir_lock(void);
 int test_boot_shutdown_marker(void);
+int test_boot_stale_locks(void);
 int test_path_check(void);
 int test_supervisor(void);
 int test_supervisor_domains(void);

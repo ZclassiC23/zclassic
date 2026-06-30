@@ -11,6 +11,7 @@
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
+#include "config/boot_stale_locks.h"
 #include "config/file_ops.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_activation_service.h"
@@ -1119,61 +1120,7 @@ bool app_init(struct app_context *ctx)
 
     boot_step_start_maintenance_services();
 
-    /* Pre-flight: check for stale lock files from crashed processes */
-    {
-        char lock_path[1024];
-
-        /* Check LevelDB locks */
-        snprintf(lock_path, sizeof(lock_path), "%s/blocks/index/LOCK",
-                 ctx->datadir);
-        if (access(lock_path, F_OK) == 0) {
-            /* LevelDB LOCK exists — check if holder is still alive */
-            FILE *lf = fopen(lock_path, "r");
-            if (lf) {
-                char pidbuf[32] = {0};
-                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
-                fclose(lf);
-                if (nr > 0) {
-                    long pid = strtol(pidbuf, NULL, 10);
-                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
-                        printf("Removing stale LevelDB LOCK (pid %ld dead)\n",
-                               pid);
-                        unlink(lock_path);
-                    } else if (pid > 0) {
-                        fprintf(stderr,
-                            "ERROR: LevelDB locked by pid %ld (still running)\n"
-                            "Kill the other process or use a different datadir.\n",
-                            pid);
-                    }
-                }
-            }
-        }
-        snprintf(lock_path, sizeof(lock_path), "%s/chainstate/LOCK",
-                 ctx->datadir);
-        if (access(lock_path, F_OK) == 0) {
-            FILE *lf = fopen(lock_path, "r");
-            if (lf) {
-                char pidbuf[32] = {0};
-                size_t nr = fread(pidbuf, 1, sizeof(pidbuf) - 1, lf);
-                fclose(lf);
-                if (nr > 0) {
-                    long pid = strtol(pidbuf, NULL, 10);
-                    if (pid > 0 && kill((pid_t)pid, 0) != 0) {
-                        printf("Removing stale chainstate LOCK (pid %ld dead)\n",
-                               pid);
-                        unlink(lock_path);
-                    }
-                }
-            }
-        }
-
-        /* Check SQLite WAL lock — WAL mode handles this via busy_timeout,
-         * but a crash can leave a -wal file. SQLite recovers automatically. */
-        snprintf(lock_path, sizeof(lock_path), "%s/node.db-wal",
-                 ctx->datadir);
-        if (access(lock_path, F_OK) == 0)
-            printf("SQLite WAL file exists (normal after crash recovery)\n");
-    }
+    boot_stale_locks_preflight(ctx->datadir);
 
     /* Open SQLite node database */
     t_phase = boot_clock_ms();
