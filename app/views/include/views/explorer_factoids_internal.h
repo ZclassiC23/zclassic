@@ -3,7 +3,7 @@
  * Explorer factoids VIEW — shared internals for the multi-TU split.
  *
  * The factoids page is large (17 archaeology sections + a JSON API), so
- * the View is split across three translation units that all live in
+ * the View is split across focused translation units that all live in
  * app/views/src/ and share these helpers:
  *
  *   - explorer_factoids_view.c     — public entry points (HTML page +
@@ -14,10 +14,11 @@
  *                                    supply, addresses (chain structure).
  *   - explorer_factoids_checkpoints.c — immutable checkpoint row data +
  *                                    renderer for section 12.
- *   - explorer_factoids_chaindata.c— sections 8-17: privacy, ZSLP,
- *                                    OP_RETURN, dust/UTXO, checkpoints,
- *                                    block times, transactions, empty
- *                                    blocks, difficulty, data integrity.
+ *   - explorer_factoids_integrity.c — section 17: last-100-block integrity
+ *                                    hash and verification instructions.
+ *   - explorer_factoids_chaindata.c— sections 8-16: privacy, ZSLP,
+ *                                    OP_RETURN, dust/UTXO, block times,
+ *                                    transactions, empty blocks, difficulty.
  *
  * Each section emitter appends one logical section of HTML starting at
  * `off` and returns the new offset. The SHA3 receipt + format helpers are
@@ -257,7 +258,7 @@ size_t factoids_emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
 size_t factoids_emit_section_7_addresses(uint8_t *buf, size_t cap, size_t off,
                                          sqlite3 *db);
 
-/* explorer_factoids_chaindata.c — sections 8-17 */
+/* explorer_factoids_chaindata.c — sections 8-16 */
 size_t factoids_emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
                                        sqlite3 *db);
 size_t factoids_emit_section_9_zslp(uint8_t *buf, size_t cap, size_t off,
@@ -278,6 +279,8 @@ size_t factoids_emit_section_15_empty_blocks(uint8_t *buf, size_t cap, size_t of
                                              sqlite3 *db);
 size_t factoids_emit_section_16_difficulty(uint8_t *buf, size_t cap, size_t off,
                                            sqlite3 *db);
+
+/* explorer_factoids_integrity.c — section 17 */
 size_t factoids_emit_section_17_integrity(uint8_t *buf, size_t cap, size_t off,
                                           sqlite3 *db, int64_t chain_height,
                                           int64_t block_count);

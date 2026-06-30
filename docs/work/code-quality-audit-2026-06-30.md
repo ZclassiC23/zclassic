@@ -70,6 +70,8 @@ mega-refactor. This page is the running backlog for those passes.
   an advisory-only unavailable dependency while native P2P remains healthy.
 - [x] Start oversized factoids-view shrinkage with a behavior-preserving
   checkpoint-row extraction and regression test.
+- [x] Continue oversized factoids-view shrinkage with a behavior-preserving
+  data-integrity section extraction and regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -948,6 +950,24 @@ mega-refactor. This page is the running backlog for those passes.
      asserts the rendered section, latest checkpoint link/hash preview, and
      SHA3 receipt remain present. Ran `make t ONLY=explorer` and `make lint`.
 
+27. **Oversized factoids data-integrity extraction**
+   - Files: `app/views/src/explorer_factoids_chaindata.c`,
+     `app/views/src/explorer_factoids_integrity.c`,
+     `app/views/include/views/explorer_factoids_internal.h`,
+     `app/views/src/explorer_factoids_view.c`,
+     `lib/test/src/test_explorer.c`
+   - Problem: section 17's last-100-block integrity hash rendering still lived
+     inside the oversized chain-data section file even though it has its own
+     verification contract and no coupling to the other archaeology sections.
+   - Fix: moved the Data Integrity section renderer into
+     `explorer_factoids_integrity.c` and refreshed the private factoids view
+     ownership comments. The chain-data file shrank from 1439 to 1375 lines.
+   - Tests: added a direct explorer regression for the integrity section that
+     asserts chain height, indexed block/transaction counts, the
+     `chain_height-99 .. chain_height` coverage text, and the deterministic
+     SHA3 integrity hash remain present. Ran `make t ONLY=explorer` and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1004,6 +1024,10 @@ mega-refactor. This page is the running backlog for those passes.
    - Split only when it reduces real coupling; avoid mechanical churn.
    - First behavior-preserving extraction landed for the factoids chain-data
      view: immutable checkpoint row data now lives in its own private view TU.
+   - Second behavior-preserving extraction landed for the same view: the
+     Data Integrity section now lives in its own private view TU, reducing
+     `explorer_factoids_chaindata.c` to 1375 lines while preserving the
+     last-100-block receipt contract.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

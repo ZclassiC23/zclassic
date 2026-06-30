@@ -162,6 +162,53 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: factoids integrity section renders coverage and hash... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash TEXT, time INTEGER, "
+            "num_tx INTEGER, sapling_value INTEGER, sprout_value INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE transactions(is_coinbase INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE tx_inputs(block_height INTEGER)",
+                     NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE tx_outputs(block_height INTEGER)",
+                     NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,hash,time,num_tx,sapling_value,sprout_value) "
+            "VALUES"
+            "(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,1,0,0),"
+            "(2,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',20,2,3,4),"
+            "(101,'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',30,3,5,6)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO transactions(is_coinbase) VALUES(1),(0),(0)",
+            NULL, NULL, NULL);
+
+        char expected[128] = "";
+        compute_integrity_hash(db, 101, expected, sizeof(expected));
+
+        uint8_t out[8192];
+        size_t n = factoids_emit_section_17_integrity(
+            out, sizeof(out) - 1, 0, db, 101, 3);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "17. Data Integrity") != NULL &&
+                  strstr((const char *)out, "Chain height:</b> 101") != NULL &&
+                  strstr((const char *)out, "Indexed blocks:</b> 3") != NULL &&
+                  strstr((const char *)out, "Indexed transactions:</b> 3") != NULL &&
+                  strstr((const char *)out, "blocks 2") != NULL &&
+                  strstr((const char *)out, "101 (last 100)") != NULL &&
+                  strstr((const char *)out, expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: difficulty_from_bits handles edge cases... ");
     {
         double d0 = explorer_difficulty_from_bits(0);
