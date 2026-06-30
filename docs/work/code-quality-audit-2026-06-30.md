@@ -147,6 +147,12 @@ mega-refactor. This page is the running backlog for those passes.
   created-output backfill, inverse-delta checks, log deletion, dry-run setup,
   and script/proof replay transactions now live in a sibling helper, leaving
   the original file focused on repair detection, routing, and blocker naming.
+- [x] Continue oversized-file review with a behavior-preserving
+  `reducer_frontier_reconcile_light` observability extraction: at-detect
+  baselines, progress-meta readers, reconcile-result detail JSON,
+  tear-bypass/remedy counters, and testing reset support now live in
+  `reducer_frontier_light_observe.*`, leaving the condition file focused on
+  detect/remedy/witness/progress decisions.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1361,6 +1367,30 @@ mega-refactor. This page is the running backlog for those passes.
      0 while `pindex_best_header` reaches height 1 and asserts
      `dumpstate block_index 1` resolves via `best_header_ancestor`.
 
+46. **Reducer-frontier reconcile-light observability split**
+   - Files: `app/conditions/src/reducer_frontier_reconcile_light.c`,
+     `app/conditions/src/reducer_frontier_light_observe.c`,
+     `app/conditions/src/reducer_frontier_light_observe.h`
+   - Problem: the reconcile-light condition mixed active condition decisions
+     with a large observe-only surface: at-detect snapshots, progress-meta
+     readers, reconcile-result detail fields, bypass/remedy counters, and test
+     reset state. That made future review harder because a reader had to
+     separate repair semantics from diagnostic bookkeeping in one 1,240-line
+     file.
+   - Fix: moved the observe-only state and readers behind a private helper with
+     a small API. The condition file now owns the active decisions
+     (`detect`, `remedy`, `witness`, `progressing`) and calls the helper for
+     snapshots/detail/test counters. The split keeps the H*-only witness and
+     refresh-only progress semantics unchanged, adds null-output guards to the
+     private progress-meta readers, and brings the condition file down to
+     583 lines (`reducer_frontier_light_observe.c` is 708 lines).
+   - Tests: ran `make -j$(nproc) build-only`,
+     `make t ONLY=reducer_frontier_reconcile_light`,
+     `make t ONLY=reducer_reconcile_witness`,
+     `make t ONLY=reducer_forward_progress_gate`,
+     `make t ONLY=refold_premature_clear`, `git diff --check`, and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1412,8 +1442,7 @@ mega-refactor. This page is the running backlog for those passes.
 
 4. **Oversized files**
    - `make lint` reports advisory file-size warnings, including
-     `reducer_frontier_reconcile_light.c`, `reducer_frontier_replay.c`,
-     `utxo_apply_stage.c`, `boot_refold_staged.c`, and `boot.c`.
+     `boot_refold_staged.c`, `boot.c`, and `boot_services.c`.
    - Split only when it reduces real coupling; avoid mechanical churn.
    - First behavior-preserving extraction landed for the factoids chain-data
      view: immutable checkpoint row data now lives in its own private view TU.
@@ -1513,6 +1542,13 @@ mega-refactor. This page is the running backlog for those passes.
      This reduces `reducer_frontier_replay.c` to 800 lines while preserving
      repair detection, hash-split classification, blocker naming, and the
      existing private repair API.
+   - Twenty-second behavior-preserving extraction landed for reducer-frontier
+     reconcile-light: observability state, progress-meta readers, detail JSON,
+     bypass/remedy counters, and test reset support now live in
+     `reducer_frontier_light_observe.c`. This reduces
+     `reducer_frontier_reconcile_light.c` to 583 lines while preserving
+     detect/remedy/witness/progress semantics and the condition's public test
+     hooks.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
