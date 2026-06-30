@@ -19,9 +19,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Shared sum+count aggregate query (defined in wallet_tx.c).
+/* Shared sum+count aggregate query (defined in wallet_tx_reads.c).
  * Used by db_wallet_utxo_balance_with_count and
- * db_sapling_note_balance_with_count. */
+ * db_sapling_note_balance_with_count. Keep read-only wallet aggregates in
+ * wallet_tx_reads.c; keep validation, hooks, persistence, and relationships
+ * in wallet_tx.c. */
 bool wallet_tx_query_total_and_count(struct node_db *ndb,
                                      const char *sql,
                                      const void *bind_blob,

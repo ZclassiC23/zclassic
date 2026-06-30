@@ -36,52 +36,6 @@
 
 static const uint8_t ZERO_HASH[32] = {0};
 
-bool wallet_tx_query_total_and_count(struct node_db *ndb,
-                                     const char *sql,
-                                     const void *bind_blob,
-                                     size_t bind_blob_len,
-                                     int64_t *total_out,
-                                     int *count_out)
-{
-    sqlite3_stmt *s = NULL;
-    int64_t total = 0;
-    int count = 0;
-
-    if (!ndb || !ndb->open || !sql)
-        return false;
-    sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (!s)
-        LOG_FAIL("wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
-    if (bind_blob && bind_blob_len > 0)
-        AR_BIND_BLOB(s, 1, bind_blob, (int)bind_blob_len);
-    if (AR_STEP_ROW(s)) {
-        total = AR_COL_INT(s, 0);
-        count = (int)AR_COL_INT(s, 1);
-    }
-    AR_FINALIZE(s);
-    if (total_out)
-        *total_out = total;
-    if (count_out)
-        *count_out = count;
-    return true;
-}
-
-static int db_wallet_query_max_height(struct node_db *ndb, const char *sql)
-{
-    sqlite3_stmt *s = NULL;
-    int height = 0;
-
-    if (!ndb || !ndb->open || !sql)
-        return 0;
-    sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (!s)
-        LOG_RETURN(0, "wallet_tx", "prepare failed: %s", sqlite3_errmsg(ndb->db));
-    if (AR_STEP_ROW(s) && sqlite3_column_type(s, 0) != SQLITE_NULL)
-        height = (int)AR_COL_INT(s, 0);
-    AR_FINALIZE(s);
-    return height;
-}
-
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
 DEFINE_MODEL_CALLBACKS(wallet_tx)
@@ -600,35 +554,6 @@ int64_t db_wallet_utxo_spendable_balance(struct node_db *ndb, int *utxo_count)
     if (utxo_count)
         *utxo_count = count;
     return total;
-}
-
-int db_wallet_chain_tip_height(struct node_db *ndb)
-{
-    return db_wallet_query_max_height(ndb, "SELECT MAX(height) FROM blocks");
-}
-
-int db_wallet_effective_tip_height(struct node_db *ndb)
-{
-    int chain_tip = db_wallet_chain_tip_height(ndb);
-    int utxo_tip = db_wallet_query_max_height(ndb,
-        "SELECT MAX(height) FROM wallet_utxos WHERE spent_txid IS NULL");
-    return utxo_tip > chain_tip ? utxo_tip : chain_tip;
-}
-
-bool db_wallet_projection_summary(struct node_db *ndb,
-                                  struct db_wallet_projection_summary *out)
-{
-    if (!ndb || !ndb->open || !out)
-        return false;
-    memset(out, 0, sizeof(*out));
-    out->chain_tip_height = db_wallet_chain_tip_height(ndb);
-    out->effective_tip_height = db_wallet_effective_tip_height(ndb);
-    out->transparent_balance = db_wallet_utxo_balance_with_count(ndb,
-        &out->utxo_count);
-    out->shielded_balance = db_sapling_note_balance_with_count(ndb,
-        &out->note_count);
-    out->speed_balance = out->transparent_balance;
-    return true;
 }
 
 int db_wallet_utxo_list_unspent(struct node_db *ndb,

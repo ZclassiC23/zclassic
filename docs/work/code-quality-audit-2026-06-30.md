@@ -100,6 +100,8 @@ mega-refactor. This page is the running backlog for those passes.
   reducer-frontier reader extraction and frontier/coins-best regressions.
 - [x] Continue oversized-file review with a behavior-preserving chain-state
   result-name extraction and repository regression test.
+- [x] Continue oversized-file review with a behavior-preserving wallet read
+  helper extraction and wallet model regressions.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1210,6 +1212,23 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=chain_state_repo`; final gates
      `git diff --check` and `make lint`.
 
+41. **Oversized wallet read-helper extraction**
+   - Files: `app/models/src/wallet_tx.c`,
+     `app/models/src/wallet_tx_reads.c`,
+     `app/models/include/models/wallet_tx_internal.h`
+   - Problem: `wallet_tx.c` still mixed AR validation/hooks, persistence, and
+     relationship reads with read-only aggregate/tip-summary helpers, keeping
+     the model above the 800-line advisory ceiling.
+   - Fix: moved the shared sum/count aggregate helper, max-height reader,
+     chain/effective tip readers, and wallet projection summary into the
+     existing read-model helper TU. The public wallet API is unchanged; the
+     internal header now documents that read-only wallet aggregates belong in
+     `wallet_tx_reads.c` while hooks, validation, persistence, and
+     relationships stay in `wallet_tx.c`. `wallet_tx.c` is now 772 lines.
+   - Tests: ran `make t ONLY=models` and
+     `make t ONLY=wallet_funds_safety`; final gates `git diff --check` and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1321,6 +1340,10 @@ mega-refactor. This page is the running backlog for those passes.
      result-code names now live in `chain_state_result.c`, reducing
      `chain_state_service.c` to 794 lines while preserving the repository
      contract and all existing callers.
+   - Fifteenth behavior-preserving extraction landed for wallet models:
+     read-only aggregate/tip-summary helpers now live in `wallet_tx_reads.c`,
+     reducing `wallet_tx.c` to 772 lines while preserving the public wallet
+     model API and AR hook/write-path ownership.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
