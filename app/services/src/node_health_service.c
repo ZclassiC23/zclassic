@@ -437,9 +437,10 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         {
             block_source_policy_get_status(&decision);
         }
-        if (node_health_chain_advance_synced(&decision))
+        if (node_health_chain_advance_synced(&decision)) {
             snapshot->synced = true;
-        else if (snapshot->sync_state == SYNC_AT_TIP &&
+            snapshot->sync_state = SYNC_AT_TIP;
+        } else if (snapshot->sync_state == SYNC_AT_TIP &&
                  node_health_chain_advance_blocks_at_tip(&decision)) {
             snapshot->synced = false;
             node_health_chain_advance_reason(

@@ -521,6 +521,74 @@ int test_node_health_service(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("node_health_service: source-policy at-tip normalizes health sync label... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct cac_decision decision;
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        memset(&decision, 0, sizeof(decision));
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 145,
+                                             145, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "source-at-tip-peer",
+                                                 tip.nHeight);
+
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = tip.nHeight;
+        decision.target_height = tip.nHeight;
+        decision.projection_height = tip.nHeight;
+        decision.projection_lag = 0;
+        struct cac_source_status *p2p =
+            &decision.sources[CAC_SOURCE_P2P];
+        p2p->source = CAC_SOURCE_P2P;
+        p2p->available = true;
+        p2p->healthy = true;
+        p2p->selectable = true;
+        p2p->height = tip.nHeight;
+
+        if (ok) {
+            (void)node;
+            node_health_test_set_log_head_override(tip.nHeight);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_IDLE, "test reset");
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced;
+            ok = ok && health.sync_state == SYNC_AT_TIP;
+            ok = ok && health.has_peers;
+            ok = ok && health.healthy;
+            ok = ok && health.serving;
+            ok = ok && health.tip_height == tip.nHeight;
+            ok = ok && health.header_height == tip.nHeight;
+            ok = ok && health.peer_best_height == tip.nHeight;
+            ok = ok && health.log_head == tip.nHeight;
+            ok = ok && health.log_head_gap == 0;
+            ok = ok && health.degraded_reason[0] == '\0';
+            ok = ok && health.blocking_reason[0] == '\0';
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("node_health_service: old errors stay visible without degrading... ");
     {
         struct node_health_snapshot health;

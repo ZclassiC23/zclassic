@@ -59,6 +59,8 @@ mega-refactor. This page is the running backlog for those passes.
   binary/datadir/port.
 - [x] Harden deploy verification against restart-time cookie races, nested JSON
   false-greens, and single-RPC hangs.
+- [x] Fix deploy verification's `zcl-rpc` fallback so it uses the client's env
+  contract, unwraps JSON-RPC envelopes, and reports finalized `log_head`.
 - [ ] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
   an advisory-only unavailable dependency while native P2P remains healthy.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
@@ -843,6 +845,33 @@ mega-refactor. This page is the running backlog for those passes.
      direct live verifier runs for `b615dee88`, `f0cd0be9a`, and `5b4888096`,
      `git diff --check`, `make check-doc-accuracy`, and final `make deploy` at
      `5b4888096` (`Deployed + RPC live at block 3165011`).
+
+23. **Deploy verifier fallback RPC compatibility**
+   - Files: `tools/deploy_verify.sh`, `lib/test/src/test_make_lint_gates.c`
+   - Problem: the verifier's fallback to `build/bin/zcl-rpc` passed
+     `-datadir=` and `-rpcport=` as positional arguments, but `zcl-rpc` reads
+     `ZCL_DATADIR` / `ZCL_RPCPORT` from the environment and treats argv[1] as
+     the RPC method. The same fallback also returns JSON-RPC envelopes, so
+     top-level health checks could fail on valid fallback output. The success
+     line preferred chain-advance local height over `checks.log_head`, which
+     could overstate the finalized stage cursor by one block when health still
+     allows a bounded log-head gap.
+   - Fix: the verifier now branches `zclassic-cli` and `zcl-rpc` invocation
+     contracts explicitly, unwraps successful JSON-RPC `result` envelopes before
+     checking diagnostic objects, keeps error envelopes intact for useful
+     failures, and reports `checks.log_head` first when a healthy response
+     supplies it. The make-lint gate test now asserts the fallback env contract,
+     JSON-RPC unwrapping helper, and log-head height preference remain in the
+     verifier.
+   - Tests: ran `sh -n tools/deploy_verify.sh` and a fake executable named
+     `zcl-rpc` that proved the verifier exports `ZCL_DATADIR` / `ZCL_RPCPORT`,
+     falls back to quoted `dumpstate` params, unwraps JSON-RPC envelopes, and
+     reports `block 100` from `checks.log_head` instead of
+     `local_height=101`. Final local verification for this pass: `git diff
+     --check`, `make t ONLY=node_health_service`,
+     `make t ONLY=make_lint_gates`, `make check-doc-accuracy`, `make lint`,
+     and the full `build/bin/test_parallel` suite (`0/466` groups failed,
+     14 self-skipped).
 
 ## High-priority review backlog
 

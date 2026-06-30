@@ -83,12 +83,20 @@ rpc_exec() {
 rpc_call() {
     name=$(basename "$RPC_TOOL")
     case "$name" in
-        zclassic-cli|zcl-rpc)
+        zclassic-cli)
             if [ -n "${ZCL_RPCCONNECT:-}" ]; then
                 rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" \
                     "-rpcconnect=$ZCL_RPCCONNECT" "$@"
             else
                 rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" "$@"
+            fi
+            ;;
+        zcl-rpc)
+            if [ -n "${ZCL_RPCCONNECT:-}" ]; then
+                rpc_exec env "ZCL_DATADIR=$RPC_DATADIR" "ZCL_RPCPORT=$RPCPORT" \
+                    "ZCL_RPCCONNECT=$ZCL_RPCCONNECT" "$RPC_TOOL" "$@"
+            else
+                rpc_exec env "ZCL_DATADIR=$RPC_DATADIR" "ZCL_RPCPORT=$RPCPORT" "$RPC_TOOL" "$@"
             fi
             ;;
         *)
@@ -136,6 +144,28 @@ json_top_key_is_string() {
         python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) == sys.argv[2] else 1)' "$2" "$3" 2>/dev/null
 }
 
+json_rpc_result() {
+    command -v python3 >/dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
+    printf '%s\n' "$1" | python3 -c '
+import json
+import sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except Exception:
+    sys.stdout.write(raw)
+    sys.exit(0)
+if isinstance(d, dict) and "result" in d and d.get("error") in (None, {}) and d.get("result") is not None:
+    result = d.get("result")
+    if isinstance(result, str):
+        sys.stdout.write(result)
+    else:
+        sys.stdout.write(json.dumps(result, separators=(",", ":")))
+else:
+    sys.stdout.write(raw)
+' 2>/dev/null
+}
+
 extract_health_height() {
     command -v python3 >/dev/null 2>&1 || return 1
     printf '%s\n' "$1" | python3 -c '
@@ -145,7 +175,7 @@ d = json.load(sys.stdin)
 checks = d.get("checks") or {}
 checks_ca = checks.get("chain_advance") or {}
 top_ca = d.get("chain_advance") or {}
-for value in (checks_ca.get("local_height"), top_ca.get("local_height"), checks.get("log_head")):
+for value in (checks.get("log_head"), checks_ca.get("projection_height"), checks_ca.get("local_height"), top_ca.get("projection_height"), top_ca.get("local_height")):
     if isinstance(value, int) and value > 0:
         print(value)
         sys.exit(0)
@@ -184,6 +214,7 @@ norm_commit() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/-dirty$//'; }
 rpc_dumpstate() {
     component="$1"
     out=$(rpc_call dumpstate "$component" 2>&1 || true)
+    out=$(json_rpc_result "$out")
     if json_has_key "$out" "$2"; then
         printf '%s\n' "$out"
         return 0
@@ -193,6 +224,7 @@ rpc_dumpstate() {
     # so string arguments need quotes. zclassic-cli accepts the unquoted
     # form above, but this fallback keeps deploy verification portable.
     out=$(rpc_call dumpstate "\"$component\"" 2>&1 || true)
+    out=$(json_rpc_result "$out")
     printf '%s\n' "$out"
 }
 
@@ -226,6 +258,7 @@ verify_contract() {
         { last_err="chain_evidence is frozen/degraded: $evidence"; return 1; }
 
     net=$(rpc_call getnetworkinfo 2>&1 || true)
+    net=$(json_rpc_result "$net")
     for key in advertised_subver advertised_services inbound_connections outbound_connections handshaked_connections \
                inbound_handshake_seen remote_handshake_seen magicbean_peers \
                zclassic_c23_peers peer_lifecycle; do
@@ -278,6 +311,7 @@ verify_contract() {
         { last_err="legacy_mirror last_override_scope missing: $mirror"; return 1; }
 
     health=$(rpc_call healthcheck 2>&1 || true)
+    health=$(json_rpc_result "$health")
     json_top_key_is_string "$health" consensus_authority local_consensus_validation ||
         { last_err="healthcheck authority contract missing: $health"; return 1; }
     json_not_has_key "$health" mirror_authorization_enabled ||

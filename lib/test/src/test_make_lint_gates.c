@@ -2008,6 +2008,12 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "canonical diagnostics ready") != NULL);
         ASSERT(strstr(buf, "chain_advance_coordinator") != NULL);
         ASSERT(strstr(buf, "local_consensus_validation") != NULL);
+        ASSERT(strstr(buf, "ZCL_DATADIR=$RPC_DATADIR") != NULL);
+        ASSERT(strstr(buf, "ZCL_RPCPORT=$RPCPORT") != NULL);
+        ASSERT(strstr(buf, "zclassic-cli|zcl-rpc") == NULL);
+        ASSERT(strstr(buf, "json_rpc_result") != NULL);
+        ASSERT(strstr(buf, "checks.get(\"log_head\")") != NULL);
+        ASSERT(strstr(buf, "checks_ca.get(\"local_height\")") != NULL);
         ASSERT(strstr(buf, "handshaked_connections") != NULL);
         ASSERT(strstr(buf, "peer_lifecycle") != NULL);
         ASSERT(strstr(buf, "legacy_mirror") != NULL);
