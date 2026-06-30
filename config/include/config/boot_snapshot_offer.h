@@ -8,8 +8,8 @@
  *
  * It is a supervised background worker (Shape 5 — MONITOR): it shares the
  * worker_on_stall handler and boot_register_worker_supervisor helper exposed
- * by boot_background_workers.h, and reaches the single MMB leaf store via the
- * g_mmb_leaf_store extern in boot_internal.h.
+ * by boot_background_workers.h, and reaches the single MMB leaf store declared
+ * by boot_flyclient.h through boot_internal.h.
  *
  * The start/join pair is called from its existing sites in app_init_services /
  * app_shutdown_svc (boot_services.c), boot order preserved.

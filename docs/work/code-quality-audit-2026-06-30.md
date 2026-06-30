@@ -193,6 +193,11 @@ mega-refactor. This page is the running backlog for those passes.
   logging now live in `boot_memory_guard.*`, with direct regressions for
   fallback counts, exact estimate sizing, overflow saturation, and warn
   threshold semantics.
+- [x] Continue oversized-file review with a behavior-preserving boot
+  FlyClient extraction: proof-building callbacks, block-hash range loading,
+  UTXO-SHA3 callback, snapshot serialization, and MMB leaf-store preparation
+  now live in `boot_flyclient.*`, with direct guard regressions and lint-gate
+  coverage for net snapshot callback injection.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1600,6 +1605,38 @@ mega-refactor. This page is the running backlog for those passes.
      the new helper is 79 lines.
    - Tests: ran `make t ONLY=boot_memory_guard`.
 
+56. **Boot FlyClient callback split**
+   - Files: `config/src/boot_services.c`, `config/src/boot_flyclient.c`,
+     `config/include/config/boot_flyclient.h`,
+     `config/include/config/boot_internal.h`,
+     `lib/test/src/test_boot_flyclient.c`,
+     `lib/test/src/test_make_lint_gates.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`,
+     `tools/scripts/file_size_ceiling_baseline.txt`
+   - Problem: the service composition root still owned FlyClient proof
+     callback bodies, block-hash range loading, UTXO-SHA3 serving, snapshot
+     serialization, and MMB leaf-store repair/preparation inline. That mixed
+     fast-sync proof mechanics and model/MMB includes into the service startup
+     file, and it kept `boot_services.c` above its E1 ratchet baseline.
+   - Fix: moved the callback implementations and MMB leaf-store lifecycle into
+     `boot_flyclient.c`; `boot_services.c` now only injects the callbacks into
+     the net snapshot handler and calls a named MMB leaf-store preparation
+     boundary. The lint-gate test now verifies both sides of the seam:
+     `boot_services.c` wires the callbacks, `boot_flyclient.c` owns the direct
+     DB/MMB/SHA3 implementation, and the net layer stays isolated from DB/MMB
+     model details. The legacy zclassicd MMB repair reach stays in the existing
+     allowlisted `boot_services.c` boundary as a narrow leaf-hash callback, so
+     the extraction does not spread the external-oracle dependency surface.
+     `boot_services.c` is now 1675 lines, the new helper is 219 lines, and the
+     E1 file-size baseline shrank to the two still-oversized
+     config files (`boot.c` and `boot_services.c`); `tip_finalize_stage.c`
+     dropped below the ceiling and left the baseline.
+   - Tests: ran `make t ONLY=boot_flyclient`,
+     `make t ONLY=make_lint_gates`, `make -j$(nproc) build-only test_zcl`,
+     `ZCL_TEST_ONLY=boot_flyclient build/bin/test_zcl`, `make lint`, and
+     `make test`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1650,8 +1687,9 @@ mega-refactor. This page is the running backlog for those passes.
      for this audit batch.
 
 4. **Oversized files**
-   - `make lint` reports advisory file-size warnings, including
-     `boot_refold_staged.c`, `boot.c`, and `boot_services.c`.
+   - `make lint` reports an advisory file-size warning for
+     `boot_refold_staged.c`; `boot.c` and `boot_services.c` remain oversized
+     but are now ratcheted to their current baselines.
    - Split only when it reduces real coupling; avoid mechanical churn.
    - First behavior-preserving extraction landed for the factoids chain-data
      view: immutable checkpoint row data now lives in its own private view TU.
@@ -1806,6 +1844,14 @@ mega-refactor. This page is the running backlog for those passes.
      live in `boot_memory_guard.c`. This keeps future boot reviews focused on
      phase order while giving the estimate/count/threshold arithmetic direct
      regression coverage.
+   - Thirty-second behavior-preserving extraction landed for boot FlyClient
+     serving: proof callbacks, block-hash range loading, UTXO-SHA3 serving,
+     snapshot serialization, and MMB leaf-store preparation now live in
+     `boot_flyclient.c`. Legacy MMB repair leaf loading remains callback-owned
+     by `boot_services.c`, keeping the frozen zclassicd reach allowlist stable.
+     This removes fast-sync proof mechanics from `boot_services.c`, shrinks
+     that file below its old E1 baseline, and keeps the net snapshot layer
+     behind callback injection.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the

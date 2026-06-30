@@ -13,8 +13,8 @@
  * (single source, not duplicated here), reaches the boot context through the
  * boot_services.c accessors declared in boot_internal.h (boot_node_db /
  * boot_profile_has_file_service / boot_serialize_utxo_snapshot), and reaches
- * the single MMB leaf store via the
- * g_mmb_leaf_store extern (also in boot_internal.h).
+ * the single MMB leaf store declared by boot_flyclient.h through
+ * boot_internal.h.
  *
  * The start/join pair is called from its existing sites in app_init_services /
  * app_shutdown_svc (boot_services.c), boot order preserved.

@@ -6,6 +6,7 @@
 #define ZCL_BOOT_INTERNAL_H
 
 #include "config/boot.h"
+#include "config/boot_flyclient.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "validation/main_state.h"
@@ -232,22 +233,6 @@ bool boot_register_frontend_services(struct boot_svc_ctx *svc);
  * boot_background_workers.c drives them forward. */
 bool boot_start_catchup_service(struct boot_svc_ctx *svc, const char *datadir);
 bool boot_reap_catchup_service(struct boot_svc_ctx *svc);
-
-/* FlyClient UTXO snapshot serializer — passed by the snapshot-offer worker as a
- * fast_sync_snapshot_serialize_fn callback; definition stays beside the other
- * FlyClient proof helpers (boot_build_flyclient_proof) in boot_services.c. */
-int64_t boot_serialize_utxo_snapshot(void *ctx, const char *path,
-                                     uint32_t chunk_size, uint8_t sha3_out[32]);
-
-/* The single MMB leaf-hash store for FlyClient proofs. Defined (non-static) in
- * boot_services.c because boot_build_flyclient_proof and the app_init MMB build
- * block both read it; the snapshot-offer worker in boot_background_workers.c is
- * the only out-of-TU reader and reaches this one instance via this extern. The
- * legacy catchup/repair helpers that touch it stay private to boot_services.c
- * (only the staying app_init block calls them), so this variable is the sole
- * symbol crossing the TU boundary for the MMB cluster. */
-struct mmb_leaf_store;
-extern struct mmb_leaf_store g_mmb_leaf_store;
 
 /* The single boot service context, owned by boot.c's g_svc. The public
  * app_add_node / app_start_metrics / app_stop_metrics entry points (declared

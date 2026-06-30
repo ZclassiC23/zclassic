@@ -12,10 +12,5 @@
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
 
 # config/ composition root — boot mega-files, decomposed wave-by-wave.
-config/src/boot.c 3625
-config/src/boot_services.c 1768
-
-# app/jobs — tip_finalize_stage.c was 797 lines before wave3/lockwindow-and-deletions;
-# grew by ~12 lines (lock-window comment + last_blocked_reason accessor). Target: split
-# the accessor group into a tip_finalize_stage_accessors.c TU when the file grows next.
-app/jobs/src/tip_finalize_stage.c 809
+config/src/boot.c 3575
+config/src/boot_services.c 1675

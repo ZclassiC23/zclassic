@@ -2366,14 +2366,28 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_build_flyclient_proof") != NULL);
-        ASSERT(strstr(buf, "snapsync_build_fc_response") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_flyclient_proof_builder") != NULL);
         ASSERT(strstr(buf, "boot_load_block_hashes_range") != NULL);
-        ASSERT(strstr(buf, "db_block_hashes_in_range") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_block_hashes_range") != NULL);
         ASSERT(strstr(buf, "boot_compute_utxo_sha3") != NULL);
-        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_utxo_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "snapsync_build_fc_response") == NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") == NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_flyclient.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_build_flyclient_proof") != NULL);
+        ASSERT(strstr(buf, "snapsync_build_fc_response") != NULL);
+        ASSERT(strstr(buf, "boot_load_block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") != NULL);
+        ASSERT(strstr(buf, "boot_compute_utxo_sha3") != NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "boot_prepare_mmb_leaf_store") != NULL);
+        ASSERT(strstr(buf, "mmb_leaf_store_rebuild") != NULL);
+        ASSERT(strstr(buf, "legacy_chain_rpc_") == NULL);
+        ASSERT(strstr(buf, "legacy_chain_oracle") == NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),
@@ -2427,10 +2441,16 @@ static int t_fast_sync_uses_lib_sqlite_helpers(void)
         ASSERT(strstr(buf, "struct node_db") == NULL);
         free(buf);
         buf = NULL;
-        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_flyclient.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_serialize_utxo_snapshot") != NULL);
         ASSERT(strstr(buf, "db_utxo_serialize_snapshot") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_snapshot_offer.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_serialize_utxo_snapshot") != NULL);
+        ASSERT(strstr(buf, "fast_sync_prebuild_snapshot") != NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -3160,6 +3180,7 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
     TEST("production comments name purpose, not refactor scaffold labels") {
         const char *files[] = {
             "config/src/boot_services.c",
+            "config/src/boot_flyclient.c",
             "config/src/boot_background_workers.c",
             "config/src/boot_msg_callbacks.c",
             "config/src/boot.c",
