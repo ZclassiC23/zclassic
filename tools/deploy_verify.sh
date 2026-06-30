@@ -51,9 +51,9 @@ fi
 
 DEFAULT_DATADIR="$HOME/.zclassic-c23"
 RPC_DATADIR="${ZCL_DATADIR:-$DEFAULT_DATADIR}"
-if [ -z "${ZCL_DATADIR:-}" ] && [ ! -f "$RPC_DATADIR/.cookie" ]; then
+if [ -z "${ZCL_DATADIR:-}" ]; then
     SERVICE_DATADIR="$(systemd_exec_arg datadir || true)"
-    if [ -n "$SERVICE_DATADIR" ] && [ -f "$SERVICE_DATADIR/.cookie" ]; then
+    if [ -n "$SERVICE_DATADIR" ]; then
         RPC_DATADIR="$SERVICE_DATADIR"
     fi
 fi
@@ -281,8 +281,10 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         if [ -n "$height" ] && verify_contract "$height"; then
             exit 0
         fi
-    fi
-    if [ -z "$last_err" ]; then
+        if [ -z "$height" ]; then
+            last_err="$out"
+        fi
+    else
         last_err="$out"
     fi
     sleep "$INTERVAL"
