@@ -96,6 +96,8 @@ mega-refactor. This page is the running backlog for those passes.
   validate-headers worker-pool extraction and stage regression test.
 - [x] Continue oversized-file review with a behavior-preserving
   script-validation dumpstate/prevout extraction and stage regression test.
+- [x] Continue oversized-file review with a behavior-preserving
+  reducer-frontier reader extraction and frontier/coins-best regressions.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1180,6 +1182,20 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=script_validate_stage`; final gates
      `git diff --check` and `make lint`.
 
+39. **Oversized reducer-frontier reader extraction**
+   - Files: `app/jobs/src/reducer_frontier.c`,
+     `app/jobs/src/reducer_frontier_readers.c`
+   - Problem: `reducer_frontier.c` mixed the L0 H* authority with public
+     derived-state helper readers for coins-best and per-log coverage, keeping
+     the authority file above the 800-line advisory ceiling.
+   - Fix: moved the reusable SELECT-only coins-best derivation and coverage
+     floor readers into a sibling job translation unit. The original file keeps
+     trusted-anchor selection, contiguous-prefix scans, hash-agreement clamping,
+     and public H* computation. `reducer_frontier.c` is now 783 lines.
+   - Tests: ran `make t ONLY=reducer_frontier` and
+     `make t ONLY=coins_best_derivation`; final gates `git diff --check` and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1283,6 +1299,10 @@ mega-refactor. This page is the running backlog for those passes.
      prevout resolver now lives in `script_validate_stage_prevout.c`, reducing
      `script_validate_stage.c` to 734 lines while preserving dry-run, log-write,
      and cursor semantics.
+   - Thirteenth behavior-preserving extraction landed for reducer-frontier:
+     coins-best derivation and coverage-floor readers now live in
+     `reducer_frontier_readers.c`, reducing `reducer_frontier.c` to 783 lines
+     while preserving H* computation and derived-state reader contracts.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
