@@ -46,211 +46,6 @@
                  "during %s", (context));                             \
 } while (0)
 
-/* Shared scan runner: `sql` selects the single lowest hole height and binds
- * exactly two integer bounds (start, end). *out_height = -1 when no hole. */
-static bool find_lowest_hole_unlocked(
-    sqlite3 *db,
-    const char *label,
-    const char *sql,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    if (out_height)
-        *out_height = -1;
-    if (!db || !out_height)
-        return false;
-    if (start_height > end_height)
-        return true;
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] %s scan prepare failed: %s",
-                 label, sqlite3_errmsg(db));
-        return false;
-    }
-
-    sqlite3_bind_int(st, 1, start_height);
-    sqlite3_bind_int(st, 2, end_height);
-
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        *out_height = sqlite3_column_int(st, 0);
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] %s scan failed rc=%d: %s",
-                 label, rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
-        return false;
-    }
-
-    sqlite3_finalize(st);
-    return true;
-}
-
-static bool find_lowest_validate_headers_refill_hole_unlocked(
-    sqlite3 *db,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    return find_lowest_hole_unlocked(db, "validate_headers refill",
-        "SELECT h.height "
-        "FROM header_admit_log h "
-        "LEFT JOIN validate_headers_log v ON v.height = h.height "
-        "WHERE h.height >= ? AND h.height <= ? "
-        "AND v.height IS NULL "
-        "ORDER BY h.height ASC LIMIT 1",
-        start_height, end_height, out_height);
-}
-
-bool stage_reducer_frontier_find_lowest_validate_headers_hash_split_unlocked(
-    sqlite3 *db,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    return find_lowest_hole_unlocked(db, "validate_headers hash-split",
-        "SELECT v.height "
-        "FROM validate_headers_log v "
-        "JOIN script_validate_log s ON s.height = v.height "
-        "WHERE v.height >= ? AND v.height <= ? "
-        "AND v.ok = 1 AND s.ok = 1 "
-        "AND length(v.hash) = 32 AND length(s.block_hash) = 32 "
-        "AND v.hash <> s.block_hash "
-        "ORDER BY v.height ASC LIMIT 1",
-        start_height, end_height, out_height);
-}
-
-static bool find_lowest_body_fetch_refill_hole_unlocked(
-    sqlite3 *db,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    return find_lowest_hole_unlocked(db, "body_fetch refill",
-        "SELECT v.height "
-        "FROM validate_headers_log v "
-        "LEFT JOIN body_fetch_log b ON b.height = v.height "
-        "WHERE v.height >= ? AND v.height <= ? "
-        "AND v.ok = 1 AND b.height IS NULL "
-        "ORDER BY v.height ASC LIMIT 1",
-        start_height, end_height, out_height);
-}
-
-static bool find_lowest_body_persist_refill_hole_unlocked(
-    sqlite3 *db,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    return find_lowest_hole_unlocked(db, "body_persist refill",
-        "SELECT b.height "
-        "FROM body_fetch_log b "
-        "LEFT JOIN body_persist_log p ON p.height = b.height "
-        "WHERE b.height >= ? AND b.height <= ? "
-        "AND b.ok = 1 AND p.height IS NULL "
-        "ORDER BY b.height ASC LIMIT 1",
-        start_height, end_height, out_height);
-}
-
-/* FIX-2 scan: lowest height whose body persisted ok=1 but whose
- * script_validate_log row is MISSING entirely (rowless hole, not an ok=0
- * verdict — real verdicts are never bulldozed). */
-static bool find_lowest_script_validate_refill_hole_unlocked(
-    sqlite3 *db,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    return find_lowest_hole_unlocked(db, "script_validate refill",
-        "SELECT b.height "
-        "FROM body_persist_log b "
-        "LEFT JOIN script_validate_log s ON s.height = b.height "
-        "WHERE b.height >= ? AND b.height <= ? "
-        "AND b.ok = 1 AND s.height IS NULL "
-        "ORDER BY b.height ASC LIMIT 1",
-        start_height, end_height, out_height);
-}
-
-/* FIX-2 scan: lowest height with script ok=1 but no proof_validate_log
- * row. NOTE: this join is blind to a height whose script row is itself
- * missing (the live 3,138,947 shape) — the caller folds the script hole
- * in when no proof row exists there. */
-static bool find_lowest_proof_validate_refill_hole_unlocked(
-    sqlite3 *db,
-    int start_height,
-    int end_height,
-    int *out_height)
-{
-    return find_lowest_hole_unlocked(db, "proof_validate refill",
-        "SELECT s.height "
-        "FROM script_validate_log s "
-        "LEFT JOIN proof_validate_log p ON p.height = s.height "
-        "WHERE s.height >= ? AND s.height <= ? "
-        "AND s.ok = 1 AND p.height IS NULL "
-        "ORDER BY s.height ASC LIMIT 1",
-        start_height, end_height, out_height);
-}
-
-/* Shared row-presence probe: `sql` is "SELECT 1 FROM <log> WHERE height = ?
- * LIMIT 1". A present row (any verdict) is evidence the stage already
- * spoke at that height. */
-static bool log_row_present_unlocked(
-    sqlite3 *db,
-    const char *label,
-    const char *sql,
-    int height,
-    bool *present)
-{
-    if (present)
-        *present = false;
-    if (!db || !present)
-        return false;
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] %s presence prepare failed: %s",
-                 label, sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int(st, 1, height);
-
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        *present = true;
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] %s presence failed h=%d rc=%d: %s",
-                 label, height, rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
-        return false;
-    }
-
-    sqlite3_finalize(st);
-    return true;
-}
-
-static bool body_persist_log_present_unlocked(sqlite3 *db,
-                                              int height,
-                                              bool *present)
-{
-    return log_row_present_unlocked(db, "body_persist",
-        "SELECT 1 FROM body_persist_log WHERE height = ? LIMIT 1",
-        height, present);
-}
-
-static bool proof_validate_log_present_unlocked(sqlite3 *db,
-                                                int height,
-                                                bool *present)
-{
-    return log_row_present_unlocked(db, "proof_validate",
-        "SELECT 1 FROM proof_validate_log WHERE height = ? LIMIT 1",
-        height, present);
-}
-
 static bool reconcile_validate_headers_refill_holes(
     sqlite3 *db,
     struct main_state *ms,
@@ -266,7 +61,7 @@ static bool reconcile_validate_headers_refill_holes(
     int end_height = out->validate_headers_cursor_before - 1;
     if (out->sweep_top < end_height)
         end_height = out->sweep_top;
-    if (!find_lowest_validate_headers_refill_hole_unlocked(
+    if (!stage_reducer_frontier_find_lowest_validate_headers_refill_hole_unlocked(
             db, out->hstar + 1, end_height,
             &out->lowest_validate_headers_refill_hole)) {
         LOG_WARN("stage_repair",
@@ -324,7 +119,7 @@ static bool reconcile_body_fetch_refill_holes(
     int end_height = out->body_fetch_cursor_before - 1;
     if (out->sweep_top < end_height)
         end_height = out->sweep_top;
-    if (!find_lowest_body_fetch_refill_hole_unlocked(
+    if (!stage_reducer_frontier_find_lowest_body_fetch_refill_hole_unlocked(
             db, out->hstar + 1, end_height,
             &out->lowest_body_fetch_refill_hole)) {
         LOG_WARN("stage_repair",
@@ -351,7 +146,7 @@ static bool reconcile_body_persist_refill_holes(
     int end_height = out->body_persist_cursor_before - 1;
     if (out->sweep_top < end_height)
         end_height = out->sweep_top;
-    if (!find_lowest_body_persist_refill_hole_unlocked(
+    if (!stage_reducer_frontier_find_lowest_body_persist_refill_hole_unlocked(
             db, out->hstar + 1, end_height,
             &out->lowest_body_persist_refill_hole)) {
         LOG_WARN("stage_repair",
@@ -497,7 +292,8 @@ static bool reconcile_body_persist_cursor(
         if (candidate < 0)
             continue;
         bool present = false;
-        if (!body_persist_log_present_unlocked(db, candidate, &present)) {
+        if (!stage_reducer_frontier_body_persist_log_present_unlocked(
+                db, candidate, &present)) {
             LOG_WARN("stage_repair",
                      "[stage_repair] body_persist upstream presence probe "
                      "failed h=%d",
@@ -633,7 +429,8 @@ static bool reconcile_proof_validate_cursor(
     int script_hole = out->lowest_script_validate_refill_hole;
     if (script_hole >= 0) {
         bool present = false;
-        if (!proof_validate_log_present_unlocked(db, script_hole, &present)) {
+        if (!stage_reducer_frontier_proof_validate_log_present_unlocked(
+                db, script_hole, &present)) {
             LOG_WARN("stage_repair",
                      "[stage_repair] proof_validate presence probe failed "
                      "at script hole h=%d",
@@ -701,7 +498,7 @@ bool stage_reducer_frontier_reconcile_script_proof_refill_cursors(
         int end_height = out->script_validate_cursor_before - 1;
         if (out->sweep_top < end_height)
             end_height = out->sweep_top;
-        if (!find_lowest_script_validate_refill_hole_unlocked(
+        if (!stage_reducer_frontier_find_lowest_script_validate_refill_hole_unlocked(
                 db, scan_floor, end_height,
                 &out->lowest_script_validate_refill_hole)) {
             LOG_WARN("stage_repair",
@@ -717,7 +514,7 @@ bool stage_reducer_frontier_reconcile_script_proof_refill_cursors(
         int end_height = out->proof_validate_cursor_before - 1;
         if (out->sweep_top < end_height)
             end_height = out->sweep_top;
-        if (!find_lowest_proof_validate_refill_hole_unlocked(
+        if (!stage_reducer_frontier_find_lowest_proof_validate_refill_hole_unlocked(
                 db, scan_floor, end_height,
                 &out->lowest_proof_validate_refill_hole)) {
             LOG_WARN("stage_repair",

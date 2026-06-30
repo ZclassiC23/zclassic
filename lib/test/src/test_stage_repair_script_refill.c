@@ -2,7 +2,8 @@
  *
  * test_stage_repair_script_refill — FIX-2 script/proof missing-row refill.
  *
- * Covers both invocations of the shared scan+clamp core in
+ * Covers both invocations of the shared scan+clamp core split across
+ * app/jobs/src/stage_repair_reducer_frontier_refill_scan.c and
  * app/jobs/src/stage_repair_reducer_frontier_refill.c:
  *   - FIX-2b (post-refusal, inside reconcile_refill_cursors, reached through
  *     the full reconcile_light pipeline): a rowless script+proof hole at

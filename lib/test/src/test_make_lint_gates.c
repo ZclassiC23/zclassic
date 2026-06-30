@@ -3222,6 +3222,8 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "app/jobs/src/proof_validate_stage.c",
             "app/jobs/src/tip_finalize_stage.c",
             "app/jobs/src/header_admit_stage.c",
+            "app/jobs/src/stage_repair_reducer_frontier_refill.c",
+            "app/jobs/src/stage_repair_reducer_frontier_refill_scan.c",
             "app/jobs/src/tip_finalize_post_step.h",
             "app/jobs/src/validate_headers_internal.h",
             "app/jobs/src/validate_headers_report.c",

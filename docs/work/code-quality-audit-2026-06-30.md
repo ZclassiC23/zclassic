@@ -30,7 +30,7 @@ mega-refactor. This page is the running backlog for those passes.
   usability in operator status surfaces.
 - [x] Centralize reducer-frontier reconcile-result evidence predicates so memo,
   gate-loudness, and post-refold shrink boundaries share one contract.
-- [ ] Continue reducer-frontier repair helper review for post-refold
+- [x] Continue reducer-frontier repair helper review for post-refold
   deletion/shrinkage.
 - [ ] Re-home the retained reducer cursor-refill helpers before deleting
   tear-only refill/backfill repair files after the sovereign cure.
@@ -1637,6 +1637,28 @@ mega-refactor. This page is the running backlog for those passes.
      `ZCL_TEST_ONLY=boot_flyclient build/bin/test_zcl`, `make lint`, and
      `make test`.
 
+57. **Reducer-frontier refill scan split**
+   - Files: `app/jobs/src/stage_repair_reducer_frontier_refill.c`,
+     `app/jobs/src/stage_repair_reducer_frontier_refill_scan.c`,
+     `app/jobs/src/stage_repair_reducer_frontier_internal.h`,
+     `lib/test/src/test_stage_repair_script_refill.c`,
+     `lib/test/src/test_make_lint_gates.c`
+   - Problem: the retained reducer-frontier cursor-refill implementation still
+     mixed SELECT-only hole/presence probes with clamp orchestration. That made
+     it harder to audit which code is the retained crash-recovery refill slice
+     and which code is only the probe layer that future post-refold cleanup can
+     reuse or delete independently.
+   - Fix: moved validate/body/script/proof refill scans and row-presence probes
+     into `stage_repair_reducer_frontier_refill_scan.c`, exposed only through
+     the src-private reducer-frontier repair header. The original refill file
+     now focuses on window choice, hash-split routing, coins-frontier safety,
+     and cursor clamps. The broader cursor-refill re-home/delete item remains
+     open because this pass split the scan surface, not the full retained
+     cursor-refill ownership model.
+   - Tests: `make t ONLY=stage_repair_script_refill`,
+     `make check-no-new-repair-rung`, `make t ONLY=make_lint_gates`,
+     `git diff --check`, `make lint`, and `make -j$(nproc) build-only`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1649,7 +1671,9 @@ mega-refactor. This page is the running backlog for those passes.
      `stage_repair_reducer_frontier_pre_refusal.c` as borrowed-seed-era repair
      fabric and `stage_repair_reducer_frontier_refill.c` as retained
      crash-recovery cursor refill unless the sovereign cure makes a narrower
-     split possible.
+     split possible. The retained refill probes now live in
+     `stage_repair_reducer_frontier_refill_scan.c`, leaving the refill file as
+     the window/clamp owner.
    - Current finding: the coin-backfill delete boundary now has a current
      manifest. The public production caller is guarded by
      `check-no-new-coin-backfill-caller`; `_coin.c` has been reduced to

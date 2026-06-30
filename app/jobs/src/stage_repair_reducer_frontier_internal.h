@@ -101,11 +101,51 @@ bool stage_reducer_frontier_force_stage_cursor_in_tx(
     const char *label,
     int target);
 
+bool stage_reducer_frontier_find_lowest_validate_headers_refill_hole_unlocked(
+    struct sqlite3 *db,
+    int start_height,
+    int end_height,
+    int *out_height);
+
 bool stage_reducer_frontier_find_lowest_validate_headers_hash_split_unlocked(
     struct sqlite3 *db,
     int start_height,
     int end_height,
     int *out_height);
+
+bool stage_reducer_frontier_find_lowest_body_fetch_refill_hole_unlocked(
+    struct sqlite3 *db,
+    int start_height,
+    int end_height,
+    int *out_height);
+
+bool stage_reducer_frontier_find_lowest_body_persist_refill_hole_unlocked(
+    struct sqlite3 *db,
+    int start_height,
+    int end_height,
+    int *out_height);
+
+bool stage_reducer_frontier_find_lowest_script_validate_refill_hole_unlocked(
+    struct sqlite3 *db,
+    int start_height,
+    int end_height,
+    int *out_height);
+
+bool stage_reducer_frontier_find_lowest_proof_validate_refill_hole_unlocked(
+    struct sqlite3 *db,
+    int start_height,
+    int end_height,
+    int *out_height);
+
+bool stage_reducer_frontier_body_persist_log_present_unlocked(
+    struct sqlite3 *db,
+    int height,
+    bool *present);
+
+bool stage_reducer_frontier_proof_validate_log_present_unlocked(
+    struct sqlite3 *db,
+    int height,
+    bool *present);
 
 bool stage_reducer_frontier_reconcile_script_proof_refill_cursors(
     struct sqlite3 *db,
