@@ -1,13 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * stage_repair_coin_backfill_internal — contract between the backfill
- * orchestration TU (stage_repair_coin_backfill.c) and the chain-bound
- * no-spend scan TU (stage_repair_coin_backfill_scan.c). Not a public API. */
+ * stage_repair_coin_backfill_internal — private contract between the backfill
+ * orchestration TU, creator-proof TU, and chain-bound no-spend scan TU.
+ * Not a public API. */
 
 #ifndef ZCL_JOBS_STAGE_REPAIR_COIN_BACKFILL_INTERNAL_H
 #define ZCL_JOBS_STAGE_REPAIR_COIN_BACKFILL_INTERNAL_H
 
 #include "jobs/stage_repair_coin_backfill.h"
+#include "stage_repair_coin_backfill_util.h"
 
 enum coin_backfill_scan_verdict {
     COIN_SCAN_IN_PROGRESS,
@@ -70,6 +71,7 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
 #define COIN_BACKFILL_SCAN_REC_BASE_LEN  72
 #define COIN_BACKFILL_SCAN_REC_CLEAN_LEN 105
 #define COIN_BACKFILL_SCAN_REC_PENDING_LEN 109
+#define COIN_BACKFILL_CREATOR_SCAN_MAX_BLOCKS 32768
 
 struct coin_backfill_scan_record {
     int32_t next_height;
@@ -100,5 +102,22 @@ bool coin_backfill_scan_record_load(struct sqlite3 *db, int hole_height,
  * n > COIN_BACKFILL_MAX_OUTPOINTS. */
 bool coin_backfill_scan_set_digest(const struct coin_backfill_outpoint *set,
                                    size_t n, uint8_t out_digest[32]);
+
+/* G5: enumerate prevouts that script_validate cannot currently resolve.
+ * Caller holds the progress lock. reason[0] != 0 is a deterministic refusal
+ * reason; false is infrastructure failure. */
+bool coin_backfill_enumerate_unresolved_prevouts(
+    struct sqlite3 *db, const struct block *blk, int hole_height, int frontier,
+    struct coin_backfill_outpoint *set, int *out_n, char reason[64]);
+
+/* G7/G8: bind every missing outpoint to an active-chain creator transaction.
+ * On success reason[0] == 0 and *out_floor is the minimum creator height.
+ * On refusal reason[0] names the whole-set refusal and *out_tc classifies
+ * whether the caller should persist the durable terminal marker. */
+void coin_backfill_resolve_creator(
+    const struct coin_backfill_io *io, int hole_height, int frontier,
+    int delta_horizon, struct coin_backfill_outpoint *set, int n,
+    int *out_floor, char reason[64],
+    enum coin_backfill_terminal_class *out_tc);
 
 #endif /* ZCL_JOBS_STAGE_REPAIR_COIN_BACKFILL_INTERNAL_H */

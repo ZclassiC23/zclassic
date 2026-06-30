@@ -104,6 +104,8 @@ mega-refactor. This page is the running backlog for those passes.
   helper extraction and wallet model regressions.
 - [x] Continue oversized-file review with a behavior-preserving validation-pack
   state/dump extraction and sentinel regressions.
+- [x] Continue oversized-file review with a behavior-preserving coin-backfill
+  creator-proof extraction and repair regressions.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1248,6 +1250,24 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=node_health`, and `make t ONLY=mcp_controllers`; final
      gates `git diff --check` and `make lint`.
 
+43. **Oversized coin-backfill creator-proof extraction**
+   - Files: `app/jobs/src/stage_repair_coin_backfill.c`,
+     `app/jobs/src/stage_repair_coin_backfill_creator.c`,
+     `app/jobs/src/stage_repair_coin_backfill_internal.h`
+   - Problem: the guarded coin-backfill job mixed orchestration/refusal policy,
+     marker checks, no-spend scan handoff, insert transaction, unresolved
+     prevout enumeration, and active-chain creator resolution in one oversized
+     repair file. That made the borrowed-seed tear repair harder for future AI
+     passes to review before post-cure deletion.
+   - Fix: moved G5 unresolved-prevout enumeration and G7/G8 creator-proof
+     resolution into a private creator TU behind the existing src-private
+     backfill contract. The orchestration file now keeps refusal policy,
+     marker reads, scan orchestration, and the single `coins_kv` insert
+     transaction. `stage_repair_coin_backfill.c` is now 630 lines.
+   - Tests: ran `make t ONLY=stage_repair_coin_backfill` and
+     `make t ONLY=script_validate_stage`; final gates `git diff --check` and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1299,8 +1319,8 @@ mega-refactor. This page is the running backlog for those passes.
 
 4. **Oversized files**
    - `make lint` reports advisory file-size warnings, including
-     `stage_repair_coin_backfill.c`, `reducer_frontier_reconcile_light.c`,
-     `reducer_frontier_replay.c`, `boot_refold_staged.c`, and `boot.c`.
+     `reducer_frontier_reconcile_light.c`, `reducer_frontier_replay.c`,
+     `utxo_apply_stage.c`, `boot_refold_staged.c`, and `boot.c`.
    - Split only when it reduces real coupling; avoid mechanical churn.
    - First behavior-preserving extraction landed for the factoids chain-data
      view: immutable checkpoint row data now lives in its own private view TU.
@@ -1368,6 +1388,12 @@ mega-refactor. This page is the running backlog for those passes.
      now live in `invariant_sentinel_state.c`, reducing
      `invariant_sentinel.c` to 702 lines while preserving fail-loud detector
      behavior and the validation-pack state API.
+   - Seventeenth behavior-preserving extraction landed for coin backfill:
+     unresolved-prevout enumeration and active-chain creator proof resolution
+     now live in `stage_repair_coin_backfill_creator.c`, reducing
+     `stage_repair_coin_backfill.c` to 630 lines while preserving the guarded
+     repair API, refusal policy, no-spend scan handoff, and single-write
+     transaction.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
