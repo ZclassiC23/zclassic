@@ -604,6 +604,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "boot_shutdown_marker") == 0) {
+        printf("[test] ZCL_TEST_ONLY=boot_shutdown_marker - running only\n");
+        failures += test_boot_shutdown_marker();
+        printf("\n=== boot_shutdown_marker subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
@@ -752,6 +759,7 @@ int main(void)
     { extern int test_boot_snapshot_failure_memory(void);
       failures += test_boot_snapshot_failure_memory(); }
     failures += test_boot_datadir_lock();
+    failures += test_boot_shutdown_marker();
     failures += test_store();
     failures += test_blog();
     failures += test_api();

@@ -8,6 +8,7 @@
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_postmortem.h"
+#include "config/boot_shutdown_marker.h"
 #include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
 #include "config/file_ops.h"
@@ -520,37 +521,6 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
 
     boot_stage_advance_to(BOOT_STAGE_DATADIR_LOCKED);
     return true;
-}
-
-static void boot_step_detect_unclean_shutdown(const char *datadir)
-{
-    /* A clean shutdown writes .shutdown_clean marker. If it's missing
-     * and a WAL file exists, the previous run crashed. We don't fail
-     * boot here — we surface the condition as an event for ops, then
-     * unlink the marker so the next clean shutdown can rewrite it. */
-    char marker_path[1024], wal_path[1024];
-    snprintf(marker_path, sizeof(marker_path), "%s/.shutdown_clean", datadir);
-    snprintf(wal_path, sizeof(wal_path), "%s/node.db-wal", datadir);
-
-    struct stat wal_st;
-    bool wal_exists = (stat(wal_path, &wal_st) == 0 && wal_st.st_size > 0);
-    bool marker_exists = (access(marker_path, F_OK) == 0);
-
-    if (!marker_exists && wal_exists) {
-        printf("[boot] Unclean shutdown detected (WAL=%lldB, "
-               "clean marker missing)\n",
-               (long long)wal_st.st_size);
-        event_emitf(EV_CRASH_RECOVERY_START, 0,
-            "wal_size=%lld clean_marker=missing",
-            (long long)wal_st.st_size);
-    } else if (!marker_exists) {
-        printf("[boot] First boot or marker absent (no WAL)\n");
-    } else {
-        printf("[boot] Clean shutdown marker present\n");
-    }
-
-    /* Remove marker at boot — will be re-created on clean shutdown */
-    unlink(marker_path);
 }
 
 static void boot_step_backfill_shielded_if_needed(struct app_context *ctx,
@@ -1134,7 +1104,7 @@ bool app_init(struct app_context *ctx)
     const struct chain_params *params = chain_params_get();
 
     boot_postmortem_start(ctx->datadir);
-    boot_step_detect_unclean_shutdown(ctx->datadir);
+    boot_shutdown_marker_detect_unclean(ctx->datadir);
     boot_step_start_disk_and_ibd_guards(ctx->datadir);
 
     if (!boot_step_init_crypto_and_state(ctx, params))
@@ -3883,21 +3853,6 @@ static void shutdown_alarm_abort(int sig)
     _exit(1);
 }
 
-/* Written LAST in app_shutdown: marker present == every teardown step
- * completed. An alarm-forced exit mid-shutdown must read as UNCLEAN so
- * the next boot runs recovery. */
-static void write_clean_shutdown_marker(void)
-{
-    if (!g_datadir) return;
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/.shutdown_clean", g_datadir);
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fprintf(f, "%ld\n", (long)platform_time_wall_time_t());
-        fclose(f);
-    }
-}
-
 /* app_shutdown delegates to boot_services.c */
 void app_shutdown(void)
 {
@@ -3907,7 +3862,9 @@ void app_shutdown(void)
     boot_stop_platform_services();
     app_shutdown_svc(&g_svc);
     boot_postmortem_stop();
-    write_clean_shutdown_marker();
+    /* Written LAST before releasing the datadir lock: marker present means
+     * teardown completed. An alarm-forced exit still reads as unclean. */
+    boot_shutdown_marker_write_clean(g_datadir);
     boot_datadir_lock_release();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }

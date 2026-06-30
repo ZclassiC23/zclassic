@@ -166,6 +166,11 @@ mega-refactor. This page is the running backlog for those passes.
   lock extraction: PID lock acquire/release now live in
   `boot_datadir_lock.*`, with regressions for current-PID refusal, stale PID
   overwrite, release cleanup, and invalid datadir guards.
+- [x] Continue oversized-file review with a behavior-preserving boot shutdown
+  marker extraction: clean/unclean shutdown marker detect/write policy now
+  lives in `boot_shutdown_marker.*`, with regressions for WAL crash detection,
+  clean marker consumption, first boot, timestamp write, and invalid datadir
+  guards.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1464,6 +1469,24 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make -j$(nproc) build-only` and
      `make t ONLY=boot_datadir_lock`.
 
+50. **Boot shutdown marker split**
+   - Files: `config/src/boot.c`, `config/src/boot_shutdown_marker.c`,
+     `config/include/config/boot_shutdown_marker.h`,
+     `lib/test/src/test_boot_shutdown_marker.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still carried clean/unclean shutdown
+     marker policy inline at both ends of the lifecycle: startup WAL+marker
+     crash detection and final shutdown marker write. That forced future boot
+     reviews to jump between prologue and teardown code to validate one policy.
+   - Fix: moved the policy into `boot_shutdown_marker_detect_unclean()` and
+     `boot_shutdown_marker_write_clean()`. `boot.c` now calls named lifecycle
+     boundaries; the helper owns path construction, EV_CRASH_RECOVERY_START
+     emission, boot-time marker consumption, and best-effort clean marker
+     writes. `boot.c` is now 3873 lines and the new helper is 70 lines.
+   - Tests: ran `make -j$(nproc) build-only` and
+     `make t ONLY=boot_shutdown_marker`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1640,6 +1663,12 @@ mega-refactor. This page is the running backlog for those passes.
      overwrite, and shutdown release now live in `boot_datadir_lock.c`. This
      keeps future boot reviews focused on phase ordering while preserving the
      single-process guard and non-fatal PID-file creation posture.
+   - Twenty-sixth behavior-preserving extraction landed for boot shutdown
+     marker lifecycle: WAL+clean-marker crash detection, crash-recovery event
+     emission, boot-time marker consumption, and final clean marker write now
+     live in `boot_shutdown_marker.c`. This keeps future boot reviews focused
+     on phase ordering while preserving the existing clean-shutdown marker
+     contract.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
