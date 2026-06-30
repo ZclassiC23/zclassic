@@ -1597,6 +1597,12 @@ deploy: lint zclassic-cli tools/wal_checkpoint
 	@# deploy_verify.sh below then confirms the running build_commit matches.
 	rm -f $(ZCLASSIC23_BIN)
 	$(MAKE) zclassic23
+	@SERVICE_BIN=$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null \
+	    | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1); \
+	if [ -n "$$SERVICE_BIN" ] && [ "$$SERVICE_BIN" != "$(abspath $(ZCLASSIC23_BIN))" ]; then \
+	    install -m 755 $(ZCLASSIC23_BIN) "$$SERVICE_BIN"; \
+	    echo "deploy: installed $(ZCLASSIC23_BIN) -> $$SERVICE_BIN (service ExecStart)"; \
+	fi
 	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
 	    $(WAL_CHECKPOINT_BIN) $(HOME)/.zclassic-c23/node.db \
 	        || { echo "WAL checkpoint failed"; exit 1; }; \

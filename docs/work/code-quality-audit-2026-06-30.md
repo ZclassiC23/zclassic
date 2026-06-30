@@ -55,7 +55,8 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Pin reducer-frontier replay dispatcher ordering so lower stale-script
   holes keep ownership over higher script-side hash splits.
 - [x] Add readable-block production fixtures for stale script and proof replay.
-- [x] Fix deploy verification so it targets the live service datadir/port.
+- [x] Fix deploy verification so it installs and verifies the live service
+  binary/datadir/port.
 - [ ] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
   an advisory-only unavailable dependency while native P2P remains healthy.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
@@ -784,19 +785,22 @@ mega-refactor. This page is the running backlog for those passes.
      `make check-doc-accuracy`, `make lint`, and the full
      `build/bin/test_parallel` suite (`0/466` groups failed, 14 self-skipped).
 
-22. **Deploy verifier targets the live service datadir**
-   - Files: `tools/deploy_verify.sh`,
+22. **Deploy target installs and verifies the live service target**
+   - Files: `Makefile`, `tools/deploy_verify.sh`,
      `docs/work/code-quality-audit-2026-06-30.md`
    - Problem: the deploy target rebuilt and restarted the live user service,
-     whose `ExecStart` uses `~/.zclassic-c23-fullhist`, but
+     whose drop-in `ExecStart` uses `~/.local/bin/zclassic23-live` and
+     `~/.zclassic-c23-fullhist`, but it only rebuilt `build/bin/zclassic23` and
      `tools/deploy_verify.sh` polled plain `build/bin/zclassic-cli` against the
-     default `~/.zclassic-c23` cookie. A correct restart of the full-history
-     service could therefore false-fail with "Cannot read cookie" while the new
-     binary was already running.
-   - Fix: the verifier now mirrors `tools/z` target selection. It honors
-     explicit `ZCL_DATADIR`, `ZCL_RPCPORT`, and `ZCL_RPCCONNECT`; otherwise,
-     when the default cookie is absent, it reads `zclassic23.service`
-     `ExecStart` and passes the service `-datadir` / `-rpcport` to
+     default `~/.zclassic-c23` cookie. A restart could therefore keep the old
+     live binary and/or false-fail with "Cannot read cookie" while the
+     full-history service was healthy.
+   - Fix: `make deploy` now reads the effective `zclassic23.service`
+     `ExecStart` binary path and installs the rebuilt `build/bin/zclassic23`
+     there before restart when it differs from the in-tree binary. The verifier
+     mirrors `tools/z` target selection: it honors explicit `ZCL_DATADIR`,
+     `ZCL_RPCPORT`, and `ZCL_RPCCONNECT`; otherwise, when the default cookie is
+     absent, it reads the service `-datadir` / `-rpcport` and passes those to
      `zclassic-cli` / `zcl-rpc`. Custom wrapper tools are still called without
      added options.
    - Tests: ran `sh -n tools/deploy_verify.sh`, then
