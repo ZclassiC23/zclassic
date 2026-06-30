@@ -75,6 +75,9 @@ static enum condition_remedy_result remedy_download_queue_starved(void)
 static bool witness_download_queue_starved(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    if (sync_get_state() != SYNC_BLOCKS_DOWNLOAD)
+        return true;
+
     struct download_manager *dm =
         sync_monitor_download_manager();
     if (!dm)

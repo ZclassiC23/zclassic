@@ -72,6 +72,9 @@ mega-refactor. This page is the running backlog for those passes.
   checkpoint-row extraction and regression test.
 - [x] Continue oversized factoids-view shrinkage with a behavior-preserving
   data-integrity section extraction and regression test.
+- [x] Fix stale `download_queue_starved` warn condition so reaching
+  `SYNC_AT_TIP` clears the download-only symptom instead of blocking deploy
+  health.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -967,6 +970,23 @@ mega-refactor. This page is the running backlog for those passes.
      `chain_height-99 .. chain_height` coverage text, and the deterministic
      SHA3 integrity hash remain present. Ran `make t ONLY=explorer` and
      `make lint`.
+
+28. **Download-queue starvation clears at tip**
+   - Files: `app/conditions/src/download_queue_starved.c`,
+     `lib/test/src/test_sync_watchdog_conditions.c`
+   - Problem: deploy verification exposed a live restart case where
+     `download_queue_starved` stayed active after the node reached
+     `SYNC_AT_TIP`: the detector became false because the node was no longer
+     in `SYNC_BLOCKS_DOWNLOAD`, but the witness only accepted a request-counter
+     increase, so the warn condition could not clear. That left an otherwise
+     at-tip node with one active condition and made deploy health wait/fail.
+   - Fix: the witness now treats leaving `SYNC_BLOCKS_DOWNLOAD` as an honest
+     symptom clear. The request-counter witness still protects the in-download
+     remedy path from self-reporting success before the queue actually refills.
+   - Tests: added a sync-watchdog regression that detects the starvation,
+     records one unwitnessed remedy, transitions to `SYNC_AT_TIP`, and asserts
+     the active condition clears. Ran `make t ONLY=sync_watchdog_conditions`
+     and `make lint`.
 
 ## High-priority review backlog
 

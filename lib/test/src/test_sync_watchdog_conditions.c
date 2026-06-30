@@ -217,6 +217,39 @@ int test_sync_watchdog_conditions(void)
 
     {
         struct fake_clock clock;
+        fake_clock_install(&clock, 3500);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 3621);
+        condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        sync_set_state(SYNC_AT_TIP, "test-at-tip");
+        fake_clock_set(&clock, 3622);
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved clears after leaving block download", ok);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        struct fake_clock clock;
         fake_clock_install(&clock, 5000);
         struct connman cm;
         struct download_manager dm;
