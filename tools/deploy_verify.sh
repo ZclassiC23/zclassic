@@ -104,6 +104,24 @@ json_key_is_string() {
         grep -q "\"$2\"[[:space:]]*:[[:space:]]*\"$3\""
 }
 
+json_top_key_is_true() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1" |
+        python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) is True else 1)' "$2" 2>/dev/null
+}
+
+json_top_has_key() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1" |
+        python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in d else 1)' "$2" 2>/dev/null
+}
+
+json_top_key_is_string() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1" |
+        python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) == sys.argv[2] else 1)' "$2" "$3" 2>/dev/null
+}
+
 json_key_is_int() {
     printf '%s\n' "$1" |
         grep -q "\"$2\"[[:space:]]*:[[:space:]]*$3\\([^0-9]\\|$\\)"
@@ -229,17 +247,17 @@ verify_contract() {
         { last_err="legacy_mirror last_override_scope missing: $mirror"; return 1; }
 
     health=$(rpc_call healthcheck 2>&1 || true)
-    json_key_is_string "$health" consensus_authority local_consensus_validation ||
+    json_top_key_is_string "$health" consensus_authority local_consensus_validation ||
         { last_err="healthcheck authority contract missing: $health"; return 1; }
     json_not_has_key "$health" mirror_authorization_enabled ||
         { last_err="healthcheck exposes deleted mirror_authorization_enabled: $health"; return 1; }
     json_not_has_key "$health" mirror_consensus_authority ||
         { last_err="healthcheck exposes deleted mirror_consensus_authority: $health"; return 1; }
-    json_has_key "$health" candidate_source ||
+    json_top_has_key "$health" candidate_source ||
         { last_err="healthcheck candidate_source missing: $health"; return 1; }
-    json_has_key "$health" candidate_trust ||
+    json_top_has_key "$health" candidate_trust ||
         { last_err="healthcheck candidate_trust missing: $health"; return 1; }
-    json_key_is_true "$health" healthy ||
+    json_top_key_is_true "$health" healthy ||
         { last_err="healthcheck is not healthy: $health"; return 1; }
     printf '%s\n' "$health" | grep -q '"degraded_reason"[[:space:]]*:[[:space:]]*"chain_evidence_gap"' &&
         { last_err="healthcheck reports generic evidence gap: $health"; return 1; }
