@@ -55,6 +55,7 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Pin reducer-frontier replay dispatcher ordering so lower stale-script
   holes keep ownership over higher script-side hash splits.
 - [x] Add readable-block production fixtures for stale script and proof replay.
+- [x] Fix deploy verification so it targets the live service datadir/port.
 - [ ] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
   an advisory-only unavailable dependency while native P2P remains healthy.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
@@ -292,6 +293,15 @@ mega-refactor. This page is the running backlog for those passes.
   `activation_blocker=rpc-unreachable`,
   `activation_blocker_class=transient`, and
   `active_error_detail="rpc error -28: Activating best chain... height 0 (1%)"`.
+- Post-deploy live sample after commit `29329bffe`: the manually installed
+  live binary reports `build_commit=29329bffe`; `./tools/deploy_verify.sh`
+  reports `Deployed + RPC live at block 3164990`. `./tools/z status` reports
+  `healthy=true`, `serving=true`, `sync_state=at_tip`, `checks.peer_count=5`,
+  `checks.tip_lag=0`, `condition_engine.active_count=0`,
+  `checks.log_head=3164991`, `checks.chain_advance.local_height=3164991`,
+  `checks.chain_advance.best_header_height=3164991`,
+  `checks.chain_advance.projection_height=3164991`, and no chain-evidence
+  health reason.
 
 ## Fixed in this pass
 
@@ -774,6 +784,26 @@ mega-refactor. This page is the running backlog for those passes.
      `make check-doc-accuracy`, `make lint`, and the full
      `build/bin/test_parallel` suite (`0/466` groups failed, 14 self-skipped).
 
+22. **Deploy verifier targets the live service datadir**
+   - Files: `tools/deploy_verify.sh`,
+     `docs/work/code-quality-audit-2026-06-30.md`
+   - Problem: the deploy target rebuilt and restarted the live user service,
+     whose `ExecStart` uses `~/.zclassic-c23-fullhist`, but
+     `tools/deploy_verify.sh` polled plain `build/bin/zclassic-cli` against the
+     default `~/.zclassic-c23` cookie. A correct restart of the full-history
+     service could therefore false-fail with "Cannot read cookie" while the new
+     binary was already running.
+   - Fix: the verifier now mirrors `tools/z` target selection. It honors
+     explicit `ZCL_DATADIR`, `ZCL_RPCPORT`, and `ZCL_RPCCONNECT`; otherwise,
+     when the default cookie is absent, it reads `zclassic23.service`
+     `ExecStart` and passes the service `-datadir` / `-rpcport` to
+     `zclassic-cli` / `zcl-rpc`. Custom wrapper tools are still called without
+     added options.
+   - Tests: ran `sh -n tools/deploy_verify.sh`, then
+     `ZCL_DEPLOY_EXPECT_COMMIT=29329bffe ZCL_DEPLOY_VERIFY_TIMEOUT=180
+     ./tools/deploy_verify.sh`, which passed against the live full-history
+     service.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -827,9 +857,9 @@ mega-refactor. This page is the running backlog for those passes.
    - Split only when it reduces real coupling; avoid mechanical churn.
 
 5. **Long-lived dirty deployment discipline**
-   - Live binary reports `build_commit=4ef91c5c0-dirty`.
-   - Commit or otherwise snapshot the deployed diff before the next risky live
-     change, so future deploy verification is not ambiguous.
+   - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
+     the verifier was taught to check the same datadir/port that the service
+     actually runs.
 
 6. **Sovereign cure**
    - Continue `-refold-from-anchor` / self-verified tip work so the borrowed

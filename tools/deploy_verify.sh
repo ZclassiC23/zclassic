@@ -26,6 +26,15 @@ RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
 INTERVAL=2
 
+systemd_exec_arg() {
+    key="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null |
+        tr ' ' '\n' |
+        sed -n "s/^-${key}=//p" |
+        head -1
+}
+
 # The build_commit we expect the restarted daemon to be running. `make deploy`
 # passes ZCL_DEPLOY_EXPECT_COMMIT=$(BUILD_COMMIT) (the exact baked value,
 # including any -dirty suffix); a by-hand run inside the repo falls back to
@@ -39,6 +48,40 @@ if [ ! -x "$RPC_TOOL" ]; then
         RPC_TOOL="$alt"
     fi
 fi
+
+DEFAULT_DATADIR="$HOME/.zclassic-c23"
+RPC_DATADIR="${ZCL_DATADIR:-$DEFAULT_DATADIR}"
+if [ -z "${ZCL_DATADIR:-}" ] && [ ! -f "$RPC_DATADIR/.cookie" ]; then
+    SERVICE_DATADIR="$(systemd_exec_arg datadir || true)"
+    if [ -n "$SERVICE_DATADIR" ] && [ -f "$SERVICE_DATADIR/.cookie" ]; then
+        RPC_DATADIR="$SERVICE_DATADIR"
+    fi
+fi
+
+RPCPORT="${ZCL_RPCPORT:-18232}"
+if [ -z "${ZCL_RPCPORT:-}" ]; then
+    SERVICE_RPCPORT="$(systemd_exec_arg rpcport || true)"
+    if [ -n "$SERVICE_RPCPORT" ]; then
+        RPCPORT="$SERVICE_RPCPORT"
+    fi
+fi
+
+rpc_call() {
+    name=$(basename "$RPC_TOOL")
+    case "$name" in
+        zclassic-cli|zcl-rpc)
+            if [ -n "${ZCL_RPCCONNECT:-}" ]; then
+                "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" \
+                    "-rpcconnect=$ZCL_RPCCONNECT" "$@"
+            else
+                "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" "$@"
+            fi
+            ;;
+        *)
+            "$RPC_TOOL" "$@"
+            ;;
+    esac
+}
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 attempt=0
@@ -91,7 +134,7 @@ norm_commit() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/-dirty$//'; }
 
 rpc_dumpstate() {
     component="$1"
-    out=$("$RPC_TOOL" dumpstate "$component" 2>&1 || true)
+    out=$(rpc_call dumpstate "$component" 2>&1 || true)
     if json_has_key "$out" "$2"; then
         printf '%s\n' "$out"
         return 0
@@ -100,7 +143,7 @@ rpc_dumpstate() {
     # build/bin/zcl-rpc wraps remaining argv directly into a JSON params array,
     # so string arguments need quotes. zclassic-cli accepts the unquoted
     # form above, but this fallback keeps deploy verification portable.
-    out=$("$RPC_TOOL" dumpstate "\"$component\"" 2>&1 || true)
+    out=$(rpc_call dumpstate "\"$component\"" 2>&1 || true)
     printf '%s\n' "$out"
 }
 
@@ -133,7 +176,7 @@ verify_contract() {
     printf '%s\n' "$evidence" | grep -q '"health_reason"[[:space:]]*:[[:space:]]*"[^"]' &&
         { last_err="chain_evidence is frozen/degraded: $evidence"; return 1; }
 
-    net=$("$RPC_TOOL" getnetworkinfo 2>&1 || true)
+    net=$(rpc_call getnetworkinfo 2>&1 || true)
     for key in advertised_subver advertised_services inbound_connections outbound_connections handshaked_connections \
                inbound_handshake_seen remote_handshake_seen magicbean_peers \
                zclassic_c23_peers peer_lifecycle; do
@@ -185,7 +228,7 @@ verify_contract() {
     json_has_key "$mirror" last_override_scope ||
         { last_err="legacy_mirror last_override_scope missing: $mirror"; return 1; }
 
-    health=$("$RPC_TOOL" healthcheck 2>&1 || true)
+    health=$(rpc_call healthcheck 2>&1 || true)
     json_key_is_string "$health" consensus_authority local_consensus_validation ||
         { last_err="healthcheck authority contract missing: $health"; return 1; }
     json_not_has_key "$health" mirror_authorization_enabled ||
@@ -230,7 +273,7 @@ verify_contract() {
 
 while [ "$(date +%s)" -lt "$deadline" ]; do
     attempt=$((attempt + 1))
-    if out=$("$RPC_TOOL" getblockcount 2>&1); then
+    if out=$(rpc_call getblockcount 2>&1); then
         # Accept either a plain integer (zclassic-cli) or a JSON
         # envelope with "result":<integer> (build/bin/zcl-rpc). Any other
         # output keeps the loop polling.
