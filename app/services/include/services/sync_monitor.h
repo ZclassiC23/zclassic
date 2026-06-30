@@ -67,6 +67,9 @@ void sync_monitor_kick_local_sync(const char *reason);
 struct zcl_result sync_monitor_queue_active_frontier_body(
     int target_height,
     const char *reason);
+struct zcl_result sync_monitor_queue_best_header_body(
+    int target_height,
+    const char *reason);
 int sync_monitor_local_header_refill(struct connman *cm,
                                      int next_h,
                                      const char *reason);

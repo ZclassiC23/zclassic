@@ -28,6 +28,7 @@
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "framework/condition.h"
+#include "util/result.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block_invalidate.h"
@@ -70,6 +71,13 @@ static bool stub_rebuild(int from_height)
     if (g_advance_ms && g_advance_to)
         active_chain_move_window_tip(&g_advance_ms->chain_active, g_advance_to);
     return atomic_load(&g_stub_rebuild_ret);
+}
+
+static struct zcl_result stub_queue_body(int height, const char *reason)
+{
+    (void)height;
+    (void)reason;
+    return ZCL_OK;
 }
 
 /* Insert one block_index at height h with the given prev + chainwork. */
@@ -259,7 +267,73 @@ int test_tip_fork_stale(void)
         main_state_free(&ms);
     }
 
-    /* ── 3. Legit catch-up: tip+1 child IS on the best-header chain (just
+    /* ── 3. Same-height stale tip + zclassicd rebuild unavailable:
+     *      degrade to native best-header body queue. ─────────────── */
+    {
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        atomic_store(&g_stub_invalidate_calls, 0);
+        atomic_store(&g_stub_rebuild_calls, 0);
+        atomic_store(&g_stub_rebuild_ret, false);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[256];
+        struct block_index *tip = tfs_build_main(&ms, hashes, TIP_H);
+
+        struct uint256 canonical_tip_h;
+        struct block_index *canonical_tip = tfs_insert(&ms,
+            &canonical_tip_h, 11, TIP_H, tip ? tip->pprev : NULL,
+            (uint64_t)(TIP_H + 1000), BLOCK_VALID_TREE);
+
+        struct uint256 hdr_h[8];
+        struct block_index *prev = canonical_tip;
+        struct block_index *best_header = canonical_tip;
+        for (int i = 1; i <= 5; i++) {
+            int h = TIP_H + i;
+            prev = tfs_insert(&ms, &hdr_h[i], 11 + i, h, prev,
+                              (uint64_t)(TIP_H + 1000 + i * 1000),
+                              BLOCK_VALID_TREE);
+            best_header = prev;
+        }
+        ms.pindex_best_header = best_header;
+
+        bool setup_ok = (tip != NULL && canonical_tip != NULL &&
+                         block_index_get_ancestor(best_header, TIP_H) ==
+                             canonical_tip);
+
+        condition_engine_set_main_state(&ms);
+        g_advance_ms = NULL;
+        g_advance_to = NULL;
+
+        register_tip_fork_stale();
+        tip_fork_stale_test_set_remedy_stubs(stub_invalidate, stub_rebuild);
+        tip_fork_stale_test_set_queue_body_stub(stub_queue_body);
+        tip_fork_stale_test_force_stall(TIP_H, 400);
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "tip_fork_stale", &snap);
+        bool ok = setup_ok;
+        ok = ok && tip_fork_stale_test_invalidate_calls() == 1;
+        ok = ok && tip_fork_stale_test_rebuild_calls() == 1;
+        ok = ok && tip_fork_stale_test_queue_body_calls() == 1;
+        ok = ok && tip_fork_stale_test_last_queue_body_height() == TIP_H;
+        ok = ok && got && snap.last_outcome == COND_REMEDY_UNWITNESSED;
+        ok = ok && condition_engine_get_active_count() == 1;
+        TFS_CHECK("same-height stale tip + rebuild failure -> queue "
+                  "best-header body fallback", ok);
+
+        condition_engine_set_main_state(NULL);
+        g_advance_ms = NULL; g_advance_to = NULL;
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        main_state_free(&ms);
+    }
+
+    /* ── 4. Legit catch-up: tip+1 child IS on the best-header chain (just
      *      missing body) → detect FALSE, NO invalidate. ──────────── */
     {
         condition_engine_reset_for_testing();
@@ -315,7 +389,7 @@ int test_tip_fork_stale(void)
         main_state_free(&ms);
     }
 
-    /* ── 4. No higher-work header chain (normal at-tip) → detect FALSE. ── */
+    /* ── 5. No higher-work header chain (normal at-tip) → detect FALSE. ── */
     {
         condition_engine_reset_for_testing();
         tip_fork_stale_test_reset();
@@ -351,7 +425,7 @@ int test_tip_fork_stale(void)
         main_state_free(&ms);
     }
 
-    /* ── 5. Tip not stalled (fresh advance) → detect FALSE even with a
+    /* ── 6. Tip not stalled (fresh advance) → detect FALSE even with a
      *      stale fork + higher-work header. Conservative on catch-up. ── */
     {
         condition_engine_reset_for_testing();

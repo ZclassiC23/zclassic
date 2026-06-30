@@ -127,6 +127,10 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Harden `header_admit` best-header replay so above-tip fallback requires a
   matching active parent or prior admitted-header hash, preventing stale rows
   from re-advancing the forward-fork cursor loop.
+- [x] Add a native P2P fallback for `tip_fork_stale` when the zclassicd
+  rebuild oracle is unavailable: after the stale fork target is invalidated,
+  queue the best-header ancestor body at the proven stale height so the node
+  fetches the missing canonical parent instead of repeatedly naming tip+1.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1505,6 +1509,12 @@ mega-refactor. This page is the running backlog for those passes.
      beyond. This closes the live hot-loop where a stale h+1 row with the right
      parent shape let h+2 re-advance the cursor after every rewind. Regression
      coverage lives in `test_header_admit_stage`.
+   - Tip-fork-stale now degrades cleanly when zclassicd cannot serve
+     `rebuild_recent`: it invalidates the proven-stale fork target, then queues
+     the best-header ancestor body via native P2P at that same height. This
+     names the live same-height gap directly (canonical h=3165236 body missing,
+     child h=3165237 already present) without adding a new condition or repair
+     ladder. Regression coverage lives in `test_tip_fork_stale`.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

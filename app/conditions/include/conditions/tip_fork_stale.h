@@ -13,6 +13,7 @@ void register_tip_fork_stale(void);
 
 struct main_state;
 struct uint256;
+struct zcl_result;
 
 void tip_fork_stale_test_reset(void);
 /* Pin the no-advance stall timer so detect()'s sustained-window gate is
@@ -25,10 +26,14 @@ void tip_fork_stale_test_set_remedy_stubs(
                                   const struct uint256 *,
                                   struct uint256 *),
     bool (*reb)(int));
+void tip_fork_stale_test_set_queue_body_stub(
+    struct zcl_result (*queue_body)(int height, const char *reason));
 int tip_fork_stale_test_invalidate_calls(void);
 int tip_fork_stale_test_rebuild_calls(void);
+int tip_fork_stale_test_queue_body_calls(void);
 int64_t tip_fork_stale_test_last_invalidate_height(void);
 int tip_fork_stale_test_last_rebuild_from(void);
+int tip_fork_stale_test_last_queue_body_height(void);
 #endif
 
 #endif /* ZCL_CONDITIONS_TIP_FORK_STALE_H */

@@ -222,6 +222,24 @@ static struct block_index *find_active_frontier_child(
     return NULL;
 }
 
+static struct block_index *find_best_header_ancestor(
+    struct main_state *ms,
+    int target_height)
+{
+    if (!ms || target_height < 0)
+        return NULL;
+
+    struct block_index *best = ms->pindex_best_header;
+    if (!best || target_height > best->nHeight)
+        return NULL;
+
+    struct block_index *bi = block_index_get_ancestor(best, target_height);
+    if (!bi || bi->nHeight != target_height || !bi->phashBlock ||
+        block_has_any_failure(bi))
+        return NULL;
+    return bi;
+}
+
 static void reset_local_addnode_backoff(struct connman *cm)
 {
     if (!cm)
@@ -280,9 +298,38 @@ static bool ensure_blocks_download_state(const char *reason)
            sync_get_state() == SYNC_CONNECTING_BLOCKS;
 }
 
-struct zcl_result sync_monitor_queue_active_frontier_body(
+enum body_queue_selector {
+    BODY_QUEUE_ACTIVE_FRONTIER = 0,
+    BODY_QUEUE_BEST_HEADER_ANCESTOR = 1,
+};
+
+static const char *body_queue_selector_name(enum body_queue_selector selector)
+{
+    switch (selector) {
+    case BODY_QUEUE_ACTIVE_FRONTIER: return "active frontier";
+    case BODY_QUEUE_BEST_HEADER_ANCESTOR: return "best-header ancestor";
+    }
+    return "unknown";
+}
+
+static struct block_index *resolve_body_queue_target(
+    struct main_state *ms,
     int target_height,
-    const char *reason)
+    enum body_queue_selector selector)
+{
+    switch (selector) {
+    case BODY_QUEUE_ACTIVE_FRONTIER:
+        return find_active_frontier_child(ms, target_height);
+    case BODY_QUEUE_BEST_HEADER_ANCESTOR:
+        return find_best_header_ancestor(ms, target_height);
+    }
+    return NULL;
+}
+
+static struct zcl_result queue_body_target(
+    int target_height,
+    const char *reason,
+    enum body_queue_selector selector)
 {
     struct main_state *ms = sync_monitor_main_state();
     struct download_manager *dm = sync_monitor_download_manager();
@@ -301,22 +348,25 @@ struct zcl_result sync_monitor_queue_active_frontier_body(
                        target_height);
     }
 
-    struct block_index *child =
-        find_active_frontier_child(ms, target_height);
-    if (!child) {
+    struct block_index *target =
+        resolve_body_queue_target(ms, target_height, selector);
+    if (!target) {
         zcl_mutex_unlock(&ms->cs_main);
         return ZCL_ERR(-3,
-                       "frontier body queue: no visible block at h=%d",
-                       target_height);
+                       "frontier body queue: no %s block at h=%d",
+                       body_queue_selector_name(selector), target_height);
     }
-    if (child->nStatus & BLOCK_FAILED_ANY_MASK) {
+    if (target->nStatus & BLOCK_FAILED_ANY_MASK) {
         zcl_mutex_unlock(&ms->cs_main);
         return ZCL_ERR(-4,
-                       "frontier body queue: child failed h=%d status=%u",
-                       target_height, child->nStatus);
+                       "frontier body queue: %s block failed h=%d status=%u",
+                       body_queue_selector_name(selector), target_height,
+                       target->nStatus);
     }
-    already_have_data = (child->nStatus & BLOCK_HAVE_DATA) != 0;
-    target_hash = *child->phashBlock;
+    already_have_data = (target->nStatus & BLOCK_HAVE_DATA) != 0;
+    target_hash = *target->phashBlock;
+    if (selector == BODY_QUEUE_BEST_HEADER_ANCESTOR)
+        local_h = active_chain_height(&ms->chain_active);
     zcl_mutex_unlock(&ms->cs_main);
 
     if (!already_have_data)
@@ -341,6 +391,22 @@ struct zcl_result sync_monitor_queue_active_frontier_body(
                                  reason ? reason :
                                  "frontier body queue");
     return ZCL_OK;
+}
+
+struct zcl_result sync_monitor_queue_active_frontier_body(
+    int target_height,
+    const char *reason)
+{
+    return queue_body_target(target_height, reason,
+                             BODY_QUEUE_ACTIVE_FRONTIER);
+}
+
+struct zcl_result sync_monitor_queue_best_header_body(
+    int target_height,
+    const char *reason)
+{
+    return queue_body_target(target_height, reason,
+                             BODY_QUEUE_BEST_HEADER_ANCESTOR);
 }
 
 bool sync_monitor_active_next_child_exists(struct main_state *ms,

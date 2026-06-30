@@ -40,6 +40,10 @@
  *   2. rebuild_recent(from ~tip-2) — fetch+connect the canonical chain's
  *      recent bodies from zclassicd through the normal validated accept
  *      path.
+ *   3. If zclassicd is unavailable, degrade to native P2P by queueing the
+ *      best-header ancestor body at the proven stale height. This names the
+ *      same-height missing-parent shape directly without adding a new repair
+ *      condition.
  *   Both are bounded and idempotent. No new consensus writer.
  *
  * witness(): the active tip advanced beyond its detect-time height.
@@ -54,12 +58,14 @@
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "platform/time_compat.h"
+#include "services/sync_monitor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block_invalidate.h"
 
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* Sustained no-advance window before we even consider a stale-fork stall.
  * Matches block_failed_mask_at_tip's 300 s — a normal block is ~75 s, so
@@ -92,6 +98,8 @@ typedef enum invalidate_result (*tfs_invalidate_fn)(
     struct main_state *ms, const struct uint256 *hash,
     struct uint256 *out_hash);
 typedef bool (*tfs_rebuild_fn)(int from_height);
+typedef struct zcl_result (*tfs_queue_body_fn)(int height,
+                                               const char *reason);
 
 static enum invalidate_result tfs_default_invalidate(
     struct main_state *ms, const struct uint256 *hash,
@@ -105,14 +113,23 @@ static bool tfs_default_rebuild(int from_height)
     return rebuild_recent_repair(from_height);
 }
 
+static struct zcl_result tfs_default_queue_body(int height,
+                                                const char *reason)
+{
+    return sync_monitor_queue_best_header_body(height, reason);
+}
+
 static tfs_invalidate_fn g_invalidate_fn = tfs_default_invalidate;
 static tfs_rebuild_fn g_rebuild_fn = tfs_default_rebuild;
+static tfs_queue_body_fn g_queue_body_fn = tfs_default_queue_body;
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_invalidate_calls;
 static _Atomic int g_test_rebuild_calls;
+static _Atomic int g_test_queue_body_calls;
 static _Atomic int64_t g_test_last_invalidate_height = -1;
 static _Atomic int g_test_last_rebuild_from = -1;
+static _Atomic int g_test_last_queue_body_height = -1;
 #endif
 
 static struct main_state *ms_or_null(void)
@@ -299,8 +316,31 @@ static enum condition_remedy_result remedy_tip_fork_stale(void)
         kind_name, (long long)target_h, from_h, rebuilt ? "yes" : "no",
         (long long)tip_at_detect, (long long)tip_now);
 
-    if (!rebuilt)
-        return COND_REMEDY_FAILED;
+    if (!rebuilt) {
+        if (target_h < 0 || target_h > INT32_MAX)
+            return COND_REMEDY_FAILED;
+
+        struct zcl_result qr = g_queue_body_fn((int)target_h,
+            "condition:tip_fork_stale best-header body fallback");
+#ifdef ZCL_TESTING
+        atomic_fetch_add(&g_test_queue_body_calls, 1);
+        atomic_store(&g_test_last_queue_body_height, (int)target_h);
+#endif
+        if (!qr.ok) {
+            LOG_WARN("condition",
+                "[condition:tip_fork_stale] native body fallback failed "
+                "kind=%s h=%lld code=%d msg=%s",
+                kind_name, (long long)target_h, qr.code, qr.message);
+            return COND_REMEDY_FAILED;
+        }
+
+        LOG_WARN("condition",
+            "[condition:tip_fork_stale] queued best-header body fallback "
+            "kind=%s h=%lld after rebuild_recent failed",
+            kind_name, (long long)target_h);
+        return COND_REMEDY_OK;
+    }
+
     /* The engine downgrades to UNWITNESSED if the tip did not actually
      * advance, so returning OK here only sticks when witness() confirms. */
     return COND_REMEDY_OK;
@@ -343,10 +383,13 @@ void tip_fork_stale_test_reset(void)
     atomic_store(&g_stale_target_kind, STALE_TARGET_NONE);
     g_invalidate_fn = tfs_default_invalidate;
     g_rebuild_fn = tfs_default_rebuild;
+    g_queue_body_fn = tfs_default_queue_body;
     atomic_store(&g_test_invalidate_calls, 0);
     atomic_store(&g_test_rebuild_calls, 0);
+    atomic_store(&g_test_queue_body_calls, 0);
     atomic_store(&g_test_last_invalidate_height, -1);
     atomic_store(&g_test_last_rebuild_from, -1);
+    atomic_store(&g_test_last_queue_body_height, -1);
     condition_reset_state(&c_tip_fork_stale);
 }
 
@@ -370,6 +413,12 @@ void tip_fork_stale_test_set_remedy_stubs(
     if (reb) g_rebuild_fn = reb;
 }
 
+void tip_fork_stale_test_set_queue_body_stub(
+    struct zcl_result (*queue_body)(int height, const char *reason))
+{
+    if (queue_body) g_queue_body_fn = queue_body;
+}
+
 int tip_fork_stale_test_invalidate_calls(void)
 {
     return atomic_load(&g_test_invalidate_calls);
@@ -380,6 +429,11 @@ int tip_fork_stale_test_rebuild_calls(void)
     return atomic_load(&g_test_rebuild_calls);
 }
 
+int tip_fork_stale_test_queue_body_calls(void)
+{
+    return atomic_load(&g_test_queue_body_calls);
+}
+
 int64_t tip_fork_stale_test_last_invalidate_height(void)
 {
     return atomic_load(&g_test_last_invalidate_height);
@@ -388,5 +442,10 @@ int64_t tip_fork_stale_test_last_invalidate_height(void)
 int tip_fork_stale_test_last_rebuild_from(void)
 {
     return atomic_load(&g_test_last_rebuild_from);
+}
+
+int tip_fork_stale_test_last_queue_body_height(void)
+{
+    return atomic_load(&g_test_last_queue_body_height);
 }
 #endif
