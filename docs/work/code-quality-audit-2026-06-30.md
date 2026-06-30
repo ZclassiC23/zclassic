@@ -57,6 +57,8 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Add readable-block production fixtures for stale script and proof replay.
 - [x] Fix deploy verification so it installs and verifies the live service
   binary/datadir/port.
+- [x] Harden deploy verification against restart-time cookie races, nested JSON
+  false-greens, and single-RPC hangs.
 - [ ] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
   an advisory-only unavailable dependency while native P2P remains healthy.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
@@ -303,6 +305,24 @@ mega-refactor. This page is the running backlog for those passes.
   `checks.chain_advance.best_header_height=3164991`,
   `checks.chain_advance.projection_height=3164991`, and no chain-evidence
   health reason.
+- Final post-deploy live sample after deploy-verifier hardening commit
+  `5b4888096`: `make deploy` rebuilt the binary with
+  `ZCL_BUILD_COMMIT="5b4888096"`, installed it to the effective service
+  executable `/home/rhett/.local/bin/zclassic23-live`, restarted the service,
+  and `tools/deploy_verify.sh` reported
+  `Deployed + RPC live at block 3165011 (build_commit 5b4888096)`. A final
+  `./tools/z status` sample reports `build_commit=5b4888096`,
+  `healthy=true`, `serving=true`, `sync_state=at_tip`, `checks.peer_count=5`,
+  `checks.tip_lag=0`, `condition_engine.active_count=0`, `local_height=3165012`,
+  `best_header_height=3165012`, `projection_height=3165012`,
+  `projection_lag=0`, `log_head=3165012`, `active_tip=3165012`,
+  `persisted_active_tip=3165012`, `coins_best_block_height=3165012`, and
+  `csr_sqlite_max_height=3165012`. The legacy `zclassicd` mirror remains
+  advisory-unavailable (`reachable=false`,
+  `consensus_authority=local_consensus_validation`,
+  `activation_blocker=rpc-unreachable`,
+  RPC error `-28 Activating best chain... height 0 (1%)`), while zclassic23 is
+  healthy from native P2P/local consensus evidence.
 
 ## Fixed in this pass
 
@@ -794,19 +814,32 @@ mega-refactor. This page is the running backlog for those passes.
      `tools/deploy_verify.sh` polled plain `build/bin/zclassic-cli` against the
      default `~/.zclassic-c23` cookie. A restart could therefore keep the old
      live binary and/or false-fail with "Cannot read cookie" while the
-     full-history service was healthy.
+     full-history service was healthy. Follow-up deployment review found three
+     verifier bugs: it only switched to the service datadir if the service
+     cookie already existed at script startup, it could match nested
+     `"healthy":true` fields while top-level `healthcheck.healthy=false`, and a
+     single slow diagnostic RPC could hang the verifier inside the outer
+     deadline.
    - Fix: `make deploy` now reads the effective `zclassic23.service`
      `ExecStart` binary path and installs the rebuilt `build/bin/zclassic23`
      there before restart when it differs from the in-tree binary. The verifier
      mirrors `tools/z` target selection: it honors explicit `ZCL_DATADIR`,
-     `ZCL_RPCPORT`, and `ZCL_RPCCONNECT`; otherwise, when the default cookie is
-     absent, it reads the service `-datadir` / `-rpcport` and passes those to
-     `zclassic-cli` / `zcl-rpc`. Custom wrapper tools are still called without
-     added options.
+     `ZCL_RPCPORT`, and `ZCL_RPCCONNECT`; otherwise it reads the service
+     `-datadir` / `-rpcport` immediately and passes those to `zclassic-cli` /
+     `zcl-rpc`. It now validates top-level `healthcheck` contract fields with
+     JSON parsing instead of loose grep, and wraps each RPC probe with a bounded
+     timeout (`ZCL_DEPLOY_RPC_TIMEOUT`, default 20s). Custom wrapper tools are
+     still called without added datadir/port options, but they are also bounded
+     by the same timeout wrapper.
    - Tests: ran `sh -n tools/deploy_verify.sh`, then
      `ZCL_DEPLOY_EXPECT_COMMIT=29329bffe ZCL_DEPLOY_VERIFY_TIMEOUT=180
      ./tools/deploy_verify.sh`, which passed against the live full-history
-     service.
+     service. Follow-up tests added a fake RPC fixture proving nested
+     `"healthy":true` no longer hides top-level `healthy=false`, a fake slow RPC
+     fixture proving per-call timeout reporting, direct live verifier runs for
+     `b615dee88`, `f0cd0be9a`, and `5b4888096`, `git diff --check`,
+     `make check-doc-accuracy`, and final `make deploy` at `5b4888096`
+     (`Deployed + RPC live at block 3165011`).
 
 ## High-priority review backlog
 
