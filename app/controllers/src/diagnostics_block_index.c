@@ -126,8 +126,11 @@ bool diag_header_band_dump_state_json(struct json_value *out, const char *key)
 }
 
 static struct block_index *find_block_index_by_key(struct main_state *ms,
-                                                    const char *key)
+                                                    const char *key,
+                                                    const char **source_out)
 {
+    if (source_out)
+        *source_out = "missing";
     if (!ms || !key || !key[0])
         return NULL;
 
@@ -140,14 +143,30 @@ static struct block_index *find_block_index_by_key(struct main_state *ms,
     }
     if (is_num) {
         int height = atoi(key);
-        return active_chain_at(&ms->chain_active, height);
+        struct block_index *bi = active_chain_at(&ms->chain_active, height);
+        if (bi) {
+            if (source_out)
+                *source_out = "active_chain";
+            return bi;
+        }
+        if (ms->pindex_best_header &&
+            height <= ms->pindex_best_header->nHeight) {
+            bi = block_index_get_ancestor(ms->pindex_best_header, height);
+            if (bi && source_out)
+                *source_out = "best_header_ancestor";
+            return bi;
+        }
+        return NULL;
     }
 
     if (!zcl_is_hex_string(key, 64))
         return NULL;
     struct uint256 h;
     uint256_set_hex(&h, key);
-    return block_map_find(&ms->map_block_index, &h);
+    struct block_index *bi = block_map_find(&ms->map_block_index, &h);
+    if (bi && source_out)
+        *source_out = "block_map_hash";
+    return bi;
 }
 
 bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
@@ -156,7 +175,8 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
         LOG_FAIL("diag", "block_index dump: output is NULL");
 
     struct main_state *ms = diag_main_state();
-    struct block_index *bi = find_block_index_by_key(ms, key);
+    const char *lookup_source = "missing";
+    struct block_index *bi = find_block_index_by_key(ms, key, &lookup_source);
     json_set_object(out);
     {
         struct bii_recovery_status status;
@@ -179,6 +199,7 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
     if (!bi) {
         json_push_kv_bool(out, "found", false);
         json_push_kv_str(out, "key", key ? key : "");
+        json_push_kv_str(out, "lookup_source", lookup_source);
         return true;
     }
 
@@ -229,6 +250,7 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
     }
 
     json_push_kv_bool(out, "found", true);
+    json_push_kv_str(out, "lookup_source", lookup_source);
     json_push_kv_int(out, "nHeight", snap.nHeight);
     json_push_kv_int(out, "nVersion", snap.nVersion);
     json_push_kv_int(out, "nTime", snap.nTime);

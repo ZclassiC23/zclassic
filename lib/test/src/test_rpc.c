@@ -19,6 +19,25 @@ struct rpc_fake_clock {
     int64_t wall_ms;
 };
 
+static struct block_index *rpc_test_insert_bi(struct main_state *ms,
+                                              struct uint256 *hash,
+                                              int height,
+                                              struct block_index *prev)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = (uint8_t)(height & 0xff);
+    hash->data[1] = 0x52;
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = height;
+    bi->pprev = prev;
+    bi->nStatus = BLOCK_VALID_HEADER;
+    arith_uint256_set_u64(&bi->nChainWork, (uint64_t)height + 1u);
+    return bi;
+}
+
 static int64_t rpc_fake_now_mono(void *self)
 {
     (void)self;
@@ -226,6 +245,48 @@ int test_rpc(void) {
 
         json_free(&params);
         json_free(&result);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dumpstate block_index resolves best-header height... ");
+    {
+        struct main_state ms;
+        struct uint256 h0, h1;
+        main_state_init(&ms);
+        struct block_index *b0 = rpc_test_insert_bi(&ms, &h0, 0, NULL);
+        struct block_index *b1 = rpc_test_insert_bi(&ms, &h1, 1, b0);
+        bool ok = b0 && b1 &&
+                  active_chain_move_window_tip(&ms.chain_active, b0);
+        if (ok)
+            ms.pindex_best_header = b1;
+
+        diagnostics_controller_set_state(&ms, "");
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, "block_index");
+        ok = ok && json_push_back(&params, &v);
+        json_set_str(&v, "1");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && diag_rpc_dumpstate(&params, false, &result);
+        const struct json_value *state = json_get(&result, "state");
+        ok = ok && state && state->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(state, "found"));
+        ok = ok && json_get_int(json_get(state, "nHeight")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(state, "lookup_source")),
+                          "best_header_ancestor") == 0;
+        ok = ok && !json_get_bool(json_get(state, "on_active_chain"));
+
+        json_free(&params);
+        json_free(&result);
+        diagnostics_controller_set_state(NULL, "");
+        main_state_free(&ms);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

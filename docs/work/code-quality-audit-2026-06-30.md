@@ -119,6 +119,8 @@ mega-refactor. This page is the running backlog for those passes.
   instead of re-entering the same rewind loop.
 - [x] Guard tip-finalize best-header lookahead so a fork-mismatched header child
   holds cleanly instead of writing stale `reorg_detected` residue that caps H*.
+- [x] Teach `dumpstate block_index <height>` to resolve best-header ancestors
+  above the finalized active-chain window and report the lookup source.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -390,6 +392,14 @@ mega-refactor. This page is the running backlog for those passes.
   `mirror_monitor_running=true`,
   `consensus_authority=local_consensus_validation`, and legacy `zclassicd`
   remains advisory-unusable while its RPC is warming up at height 0.
+- Post-deploy live sample after commit `e2db5ca87`: the service binary reports
+  `build_commit=e2db5ca87`, RPC responds at height 3165236, and the reducer is
+  named-stalled rather than silent: `tip_finalize.cursor=3165236`,
+  `utxo_apply.cursor=3165237`, `last_blocked_reason=lookahead_tip_missing`,
+  `chain_advance.best_header_height=3165344`, and active conditions include
+  `block_failed_mask_at_tip`, `local_header_refill_needed`, and
+  `tip_wedged_resnapshot`. The next review seam is the missing-child/body-window
+  path at height 3165237.
 
 ## Fixed in this pass
 
@@ -1298,6 +1308,22 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=utxo_apply`; final gates `git diff --check` and
      `make lint`.
 
+45. **Above-tip block-index diagnostics**
+   - Files: `app/controllers/src/diagnostics_block_index.c`,
+     `lib/test/src/test_rpc.c`
+   - Problem: `dumpstate block_index <height>` resolved numeric heights only
+     through `active_chain_at`, so the diagnostic returned `found=false` for
+     the exact above-finalized best-header entries future agents need while
+     investigating reducer stalls such as `lookahead_tip_missing`.
+   - Fix: numeric lookup now checks the finalized active-chain slot first, then
+     falls back to `pindex_best_header` ancestry for canonical above-tip
+     headers. The JSON reports `lookup_source` (`active_chain`,
+     `best_header_ancestor`, `block_map_hash`, or `missing`) so operators can
+     tell which authority answered the query.
+   - Tests: ran `make t ONLY=rpc`, including a regression that finalizes height
+     0 while `pindex_best_header` reaches height 1 and asserts
+     `dumpstate block_index 1` resolves via `best_header_ancestor`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1445,6 +1471,10 @@ mega-refactor. This page is the running backlog for those passes.
      the reason the socket never opened inside the deploy deadline. This keeps
      deploy fail-closed while naming the active recovery phase for operators and
      future agents.
+   - Block-index dumpstate now resolves numeric heights through finalized
+     active-chain slots first and best-header ancestry second, with an explicit
+     `lookup_source`. This keeps above-tip reducer stalls inspectable without a
+     new bespoke RPC.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
