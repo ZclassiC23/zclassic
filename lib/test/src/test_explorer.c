@@ -209,6 +209,45 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: factoids difficulty section renders records... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER, bits INTEGER, "
+            "chain_work BLOB)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,time,bits,chain_work) VALUES"
+            "(0,1478403829,520617983,x'01000000'),"
+            "(3000000,1780000000,504365055,x'02000000'),"
+            "(3000001,1780000075,504207743,x'03000000')",
+            NULL, NULL, NULL);
+
+        char expected[32] = "";
+        compute_receipt(expected, sizeof(expected), 3000001, "",
+                        "hardest_block");
+
+        uint8_t out[8192];
+        size_t n = factoids_emit_section_16_difficulty(
+            out, sizeof(out) - 1, 0, db);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "16. Difficulty History") != NULL &&
+                  strstr((const char *)out, "Difficulty Records") != NULL &&
+                  strstr((const char *)out, "0x1e0d997f") != NULL &&
+                  strstr((const char *)out, "/explorer/block/3000001") != NULL &&
+                  strstr((const char *)out, "2 distinct targets") != NULL &&
+                  strstr((const char *)out, "recent 2 blocks") != NULL &&
+                  strstr((const char *)out, "Cumulative chain-work at tip") != NULL &&
+                  strstr((const char *)out, "Peak Difficulty") != NULL &&
+                  strstr((const char *)out, expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: difficulty_from_bits handles edge cases... ");
     {
         double d0 = explorer_difficulty_from_bits(0);

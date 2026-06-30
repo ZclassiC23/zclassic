@@ -75,6 +75,8 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Fix stale `download_queue_starved` warn condition so reaching
   `SYNC_AT_TIP` clears the download-only symptom instead of blocking deploy
   health.
+- [x] Continue oversized factoids-view shrinkage with a behavior-preserving
+  difficulty section extraction and regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -988,6 +990,24 @@ mega-refactor. This page is the running backlog for those passes.
      the active condition clears. Ran `make t ONLY=sync_watchdog_conditions`
      and `make lint`.
 
+29. **Oversized factoids difficulty extraction**
+   - Files: `app/views/src/explorer_factoids_chaindata.c`,
+     `app/views/src/explorer_factoids_difficulty.c`,
+     `app/views/include/views/explorer_factoids_internal.h`,
+     `app/views/src/explorer_factoids_view.c`,
+     `lib/test/src/test_explorer.c`
+   - Problem: section 16's difficulty records, yearly peak table, and
+     display-only compact-target/chainwork math still lived inside the
+     oversized chain-data section file.
+   - Fix: moved the Difficulty History section renderer and its display-only
+     decoders into `explorer_factoids_difficulty.c`, leaving
+     `explorer_factoids_chaindata.c` responsible for sections 8-15 only. The
+     chain-data file shrank from 1375 to 1182 lines.
+   - Tests: added a direct explorer regression for the difficulty section that
+     asserts the records card, hardest compact target, block link, bounded
+     recent-retarget count, chainwork line, yearly peak table, and SHA3 receipt
+     remain present. Ran `make t ONLY=explorer` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1048,6 +1068,10 @@ mega-refactor. This page is the running backlog for those passes.
      Data Integrity section now lives in its own private view TU, reducing
      `explorer_factoids_chaindata.c` to 1375 lines while preserving the
      last-100-block receipt contract.
+   - Third behavior-preserving extraction landed for the same view: Difficulty
+     History now lives in its own private view TU, reducing
+     `explorer_factoids_chaindata.c` to 1182 lines while preserving the
+     compact-target/chainwork display contract.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

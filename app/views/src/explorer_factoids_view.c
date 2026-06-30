@@ -16,9 +16,10 @@
  * "verified summary" fallback. The 17 section emitters live in focused
  * sibling translation units sharing views/explorer_factoids_internal.h:
  *   - explorer_factoids_history.c   — sections 1-7 (origin/growth)
- *   - explorer_factoids_chaindata.c — sections 8-16 (archaeology)
- *   - explorer_factoids_checkpoints.c / explorer_factoids_integrity.c
- *     own the larger row/receipt renderers for sections 12 and 17.
+ *   - explorer_factoids_chaindata.c — sections 8-15 (archaeology)
+ *   - explorer_factoids_checkpoints.c / explorer_factoids_difficulty.c /
+ *     explorer_factoids_integrity.c own the larger row/receipt renderers for
+ *     sections 12, 16, and 17.
  *
  * Also provides explorer_factoids_build_json() for /api/factoids. */
 
