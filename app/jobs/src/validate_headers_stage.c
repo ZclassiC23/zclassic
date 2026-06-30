@@ -15,6 +15,7 @@
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"  /* STAGE_REPAIR_SOLUTIONLESS_REASON */
 #include "validate_headers_internal.h"
+#include "validate_headers_pool.h"
 #include "jobs/header_admit_stage.h"
 #include "validate_headers_log_store.h"
 
@@ -26,7 +27,6 @@
 #include "storage/txdb.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
-#include "util/thread_registry.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/check_block.h"
@@ -58,30 +58,12 @@ struct vh_job {
     char                      reason[VH_MAX_REASON];
 };
 
-struct vh_pool {
-    pthread_t       threads[VH_POOL_SIZE];
-    bool            thread_started[VH_POOL_SIZE];
-
-    /* Current batch — pointers stable for the duration of one submit. */
-    struct vh_job  *jobs;
-    int             n_jobs;
-    int             next_to_take;
-    int             n_done;
-
-    bool            stop;
-
-    pthread_mutex_t mu;
-    pthread_cond_t  cv_take;   /* workers wait here for jobs */
-    pthread_cond_t  cv_done;   /* submitter waits here for completion */
-};
-
 /* ── Globals ──────────────────────────────────────────────────────── */
 
 static pthread_mutex_t  g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
 static stage_t          *g_stage = NULL;
 static struct vh_pool    g_pool;
-static bool              g_pool_inited = false;
 
 static _Atomic uint64_t g_passed_total = 0;
 static _Atomic uint64_t g_failed_total = 0;
@@ -136,110 +118,16 @@ static inline bool vh_failure_is_repairable(const char *reason)
 
 /* ── Worker pool ──────────────────────────────────────────────────── */
 
-static void *worker_entry(void *arg)
+static void vh_run_job(void *jobp, void *user)
 {
-    (void)arg;
-    for (;;) {
-        pthread_mutex_lock(&g_pool.mu);
-        while (!g_pool.stop && g_pool.next_to_take >= g_pool.n_jobs)
-            pthread_cond_wait(&g_pool.cv_take, &g_pool.mu);
-        if (g_pool.stop) {
-            pthread_mutex_unlock(&g_pool.mu);
-            break;
-        }
-        int my = g_pool.next_to_take++;
-        struct vh_job *job = &g_pool.jobs[my];
-        pthread_mutex_unlock(&g_pool.mu);
-
-        /* Snapshot validator under no lock — it can only change via
-         * shutdown which joins workers first. */
-        job->reason[0] = 0;
-        job->ok = g_validator(job->bi, g_datadir,
-                               job->reason, sizeof(job->reason),
-                               g_validator_user);
-
-        pthread_mutex_lock(&g_pool.mu);
-        g_pool.n_done++;
-        if (g_pool.n_done >= g_pool.n_jobs)
-            pthread_cond_broadcast(&g_pool.cv_done);
-        pthread_mutex_unlock(&g_pool.mu);
-    }
-    thread_registry_unregister_self();
-    return NULL;
-}
-
-/* Submit a batch and wait for every worker to finish it. Reentrant on
- * the same submitter (the F-2 stage primitive serializes step calls
- * for us, so only one step is active at a time). */
-static void pool_run_batch(struct vh_job *jobs, int n)
-{
-    pthread_mutex_lock(&g_pool.mu);
-    g_pool.jobs         = jobs;
-    g_pool.n_jobs       = n;
-    g_pool.next_to_take = 0;
-    g_pool.n_done       = 0;
-    pthread_cond_broadcast(&g_pool.cv_take);
-    while (g_pool.n_done < g_pool.n_jobs)
-        pthread_cond_wait(&g_pool.cv_done, &g_pool.mu);
-    g_pool.jobs   = NULL;
-    g_pool.n_jobs = 0;
-    pthread_mutex_unlock(&g_pool.mu);
-}
-
-static bool pool_start(void)
-{
-    pthread_mutex_init(&g_pool.mu, NULL);
-    pthread_cond_init(&g_pool.cv_take, NULL);
-    pthread_cond_init(&g_pool.cv_done, NULL);
-    g_pool.jobs         = NULL;
-    g_pool.n_jobs       = 0;
-    g_pool.next_to_take = 0;
-    g_pool.n_done       = 0;
-    g_pool.stop         = false;
-    memset(g_pool.thread_started, 0, sizeof(g_pool.thread_started));
-
-    for (int i = 0; i < VH_POOL_SIZE; i++) {
-        char name[32];
-        snprintf(name, sizeof(name), "vh.worker.%d", i);
-        int rc = thread_registry_spawn_ex(name, worker_entry, NULL,
-                                            &g_pool.threads[i]);
-        if (rc != 0) {
-            LOG_WARN("validate_headers", "[validate_headers] worker %d spawn failed: rc=%d", i, rc);
-            /* Tear down what we started. */
-            pthread_mutex_lock(&g_pool.mu);
-            g_pool.stop = true;
-            pthread_cond_broadcast(&g_pool.cv_take);
-            pthread_mutex_unlock(&g_pool.mu);
-            for (int j = 0; j < i; j++)
-                pthread_join(g_pool.threads[j], NULL);
-            pthread_mutex_destroy(&g_pool.mu);
-            pthread_cond_destroy(&g_pool.cv_take);
-            pthread_cond_destroy(&g_pool.cv_done);
-            return false;
-        }
-        g_pool.thread_started[i] = true;
-    }
-    g_pool_inited = true;
-    return true;
-}
-
-static void pool_stop(void)
-{
-    if (!g_pool_inited) return;
-    pthread_mutex_lock(&g_pool.mu);
-    g_pool.stop = true;
-    pthread_cond_broadcast(&g_pool.cv_take);
-    pthread_mutex_unlock(&g_pool.mu);
-    for (int i = 0; i < VH_POOL_SIZE; i++) {
-        if (g_pool.thread_started[i]) {
-            pthread_join(g_pool.threads[i], NULL);
-            g_pool.thread_started[i] = false;
-        }
-    }
-    pthread_mutex_destroy(&g_pool.mu);
-    pthread_cond_destroy(&g_pool.cv_take);
-    pthread_cond_destroy(&g_pool.cv_done);
-    g_pool_inited = false;
+    (void)user;
+    struct vh_job *job = jobp;
+    /* Snapshot validator under no lock — it can only change via
+     * shutdown which joins workers first. */
+    job->reason[0] = 0;
+    job->ok = g_validator(job->bi, g_datadir,
+                          job->reason, sizeof(job->reason),
+                          g_validator_user);
 }
 
 /* ── Schema + log writes ──────────────────────────────────────────────
@@ -428,7 +316,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         return JOB_IDLE;
     }
 
-    pool_run_batch(jobs, n);
+    vh_pool_run_batch(&g_pool, jobs, sizeof(jobs[0]), n);
     char *err = NULL;
     progress_store_tx_lock();
     /* This path runs both standalone (validate_headers_stage_step_once with no
@@ -487,7 +375,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
      * behavior) re-stranded a repairable row the moment recheck touched it
      * before its solution landed — the same monotonic-strand defect as the
      * forward drain. Verdict-preserving: a row only leaves ok=0 via a genuine
-     * PoW + Equihash pass in pool_run_batch above. */
+     * PoW + Equihash pass in vh_pool_run_batch above. */
     int64_t lowest_still_failing = -1;
     for (int i = 0; i < n; i++)
         if (!jobs[i].ok && vh_failure_is_repairable(jobs[i].reason)) {
@@ -569,7 +457,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     /* Dispatch + await. Pool stays inside this step. */
-    pool_run_batch(jobs, batch_n);
+    vh_pool_run_batch(&g_pool, jobs, sizeof(jobs[0]), batch_n);
 
     /* Write rows + bump cursor, all under the F-2 BEGIN IMMEDIATE txn. */
     for (int i = 0; i < batch_n; i++) {
@@ -665,20 +553,20 @@ bool validate_headers_stage_init(struct main_state *ms)
         return false;
     }
 
-    if (!pool_start()) {
+    if (!vh_pool_start(&g_pool, vh_run_job, NULL)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
 
     stage_t *s = stage_create(STAGE_NAME, step_validate, NULL);
     if (!s) {
-        pool_stop();
+        vh_pool_stop(&g_pool);
         pthread_mutex_unlock(&g_lock);
         LOG_FAIL("validate_headers", "init: stage_create failed");
     }
     if (!stage_set_cursor(s, db, persisted_cursor)) {
         stage_destroy(s);
-        pool_stop();
+        vh_pool_stop(&g_pool);
         pthread_mutex_unlock(&g_lock);
         return false;
     }
@@ -736,7 +624,7 @@ void validate_headers_stage_shutdown(void)
     pthread_mutex_lock(&g_lock);
     /* Pool must stop before stage_destroy so the workers' read of
      * g_validator stays valid. */
-    pool_stop();
+    vh_pool_stop(&g_pool);
     if (g_stage) {
         stage_destroy(g_stage);
         g_stage = NULL;

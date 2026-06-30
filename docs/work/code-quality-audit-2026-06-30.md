@@ -92,6 +92,8 @@ mega-refactor. This page is the running backlog for those passes.
   supervisor helper extraction and supervisor regression test.
 - [x] Continue oversized-file review with a behavior-preserving chain-restore
   backing extraction and seed-anchor provenance regression test.
+- [x] Continue oversized-file review with a behavior-preserving
+  validate-headers worker-pool extraction and stage regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1145,6 +1147,21 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=chain_restore_service`; final gates
      `git diff --check` and `make lint`.
 
+37. **Oversized validate-headers worker-pool extraction**
+   - Files: `app/jobs/src/validate_headers_stage.c`,
+     `app/jobs/src/validate_headers_pool.c`,
+     `app/jobs/src/validate_headers_pool.h`
+   - Problem: `validate_headers_stage.c` still owned both reducer-stage
+     validation/cursor behavior and the pthread worker-pool machinery, leaving
+     the stage above the 800-line advisory ceiling even though the pool only
+     distributes opaque job slots and waits for completion.
+   - Fix: moved the fixed worker pool into a sibling-private helper with a
+     small opaque-job callback. The stage still owns validator selection,
+     validation verdicts, failed-row rechecks, counter updates, log writes, and
+     cursor movement. `validate_headers_stage.c` is now 722 lines.
+   - Tests: ran `make t ONLY=validate_headers_stage`; final gates
+     `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1239,6 +1256,10 @@ mega-refactor. This page is the running backlog for those passes.
      ancestor walks now live in `chain_restore_backing.c`, reducing
      `chain_restore_repair.c` to 650 lines while preserving repair/finalize
      behavior and directly testing seed-anchor provenance.
+   - Eleventh behavior-preserving extraction landed for validate headers:
+     the fixed worker pool now lives in `validate_headers_pool.c`, reducing
+     `validate_headers_stage.c` to 722 lines while preserving validator,
+     recheck, log-write, and cursor semantics.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
