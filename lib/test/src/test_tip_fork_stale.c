@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Tests for the tip_fork_stale Condition — the capstone self-healer for
- * the "stale data-bearing fork at tip+1" wedge class.
+ * stale data-bearing forks at the active frontier.
  *
  * The Condition's detect/remedy/witness function pointers are static in
  * app/conditions/src/tip_fork_stale.c. We drive it the canonical way —
@@ -17,8 +17,9 @@
  *
  * Chain-construction pattern reused from test_orphan_utxo_above_tip.c:
  * a minimal in-RAM main_state chain. We build a MAIN chain (the active
- * tip), then a stale fork branching at the tip, plus a higher-work
- * header-only chain. pindex_best_header points at the higher-work head.
+ * tip), then either a same-height sibling or a stale fork branching at the
+ * tip, plus a higher-work header-only chain. pindex_best_header points at
+ * the higher-work head.
  */
 
 #include "test/test_helpers.h"
@@ -191,7 +192,74 @@ int test_tip_fork_stale(void)
         main_state_free(&ms);
     }
 
-    /* ── 2. Legit catch-up: tip+1 child IS on the best-header chain (just
+    /* ── 2. Active tip is a same-height stale sibling of the best-header
+     *      chain -> detect TRUE, remedy invalidates active tip. ───── */
+    {
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        atomic_store(&g_stub_invalidate_calls, 0);
+        atomic_store(&g_stub_rebuild_calls, 0);
+        atomic_store(&g_stub_rebuild_ret, true);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[256];
+        struct block_index *tip = tfs_build_main(&ms, hashes, TIP_H);
+
+        /* Same-height canonical sibling: branch off tip's parent at TIP_H
+         * with a different hash, then extend headers beyond it. The active
+         * tip remains the data-bearing stale sibling. */
+        struct uint256 canonical_tip_h;
+        struct block_index *canonical_tip = tfs_insert(&ms,
+            &canonical_tip_h, 7, TIP_H, tip ? tip->pprev : NULL,
+            (uint64_t)(TIP_H + 1000), BLOCK_VALID_TREE);
+
+        struct uint256 hdr_h[8];
+        struct block_index *prev = canonical_tip;
+        struct block_index *best_header = canonical_tip;
+        for (int i = 1; i <= 5; i++) {
+            int h = TIP_H + i;
+            prev = tfs_insert(&ms, &hdr_h[i], 7 + i, h, prev,
+                              (uint64_t)(TIP_H + 1000 + i * 1000),
+                              BLOCK_VALID_TREE);
+            best_header = prev;
+        }
+        ms.pindex_best_header = best_header;
+
+        bool setup_ok = (tip != NULL && canonical_tip != NULL &&
+                         best_header != NULL &&
+                         block_index_get_ancestor(best_header, TIP_H) ==
+                             canonical_tip &&
+                         tip->pprev == canonical_tip->pprev);
+
+        condition_engine_set_main_state(&ms);
+        g_advance_ms = &ms;
+        g_advance_to = block_index_get_ancestor(best_header, TIP_H + 1);
+
+        register_tip_fork_stale();
+        tip_fork_stale_test_set_remedy_stubs(stub_invalidate, stub_rebuild);
+        tip_fork_stale_test_force_stall(TIP_H, 400);
+
+        condition_engine_tick();
+
+        bool ok = setup_ok;
+        ok = ok && tip_fork_stale_test_invalidate_calls() == 1;
+        ok = ok && tip_fork_stale_test_rebuild_calls() == 1;
+        /* Same-height stale sibling: invalidate targets the active tip. */
+        ok = ok && tip_fork_stale_test_last_invalidate_height() == TIP_H;
+        ok = ok && tip_fork_stale_test_last_rebuild_from() == TIP_H - 2;
+        ok = ok && condition_engine_get_active_count() == 0;
+        TFS_CHECK("same-height stale active tip -> detect true, "
+                  "invalidate+rebuild, witnessed", ok);
+
+        condition_engine_set_main_state(NULL);
+        g_advance_ms = NULL; g_advance_to = NULL;
+        condition_engine_reset_for_testing();
+        tip_fork_stale_test_reset();
+        main_state_free(&ms);
+    }
+
+    /* ── 3. Legit catch-up: tip+1 child IS on the best-header chain (just
      *      missing body) → detect FALSE, NO invalidate. ──────────── */
     {
         condition_engine_reset_for_testing();
@@ -247,7 +315,7 @@ int test_tip_fork_stale(void)
         main_state_free(&ms);
     }
 
-    /* ── 3. No higher-work header chain (normal at-tip) → detect FALSE. ── */
+    /* ── 4. No higher-work header chain (normal at-tip) → detect FALSE. ── */
     {
         condition_engine_reset_for_testing();
         tip_fork_stale_test_reset();
@@ -283,7 +351,7 @@ int test_tip_fork_stale(void)
         main_state_free(&ms);
     }
 
-    /* ── 4. Tip not stalled (fresh advance) → detect FALSE even with a
+    /* ── 5. Tip not stalled (fresh advance) → detect FALSE even with a
      *      stale fork + higher-work header. Conservative on catch-up. ── */
     {
         condition_engine_reset_for_testing();

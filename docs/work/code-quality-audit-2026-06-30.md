@@ -121,6 +121,9 @@ mega-refactor. This page is the running backlog for those passes.
   holds cleanly instead of writing stale `reorg_detected` residue that caps H*.
 - [x] Teach `dumpstate block_index <height>` to resolve best-header ancestors
   above the finalized active-chain window and report the lookup source.
+- [x] Teach `tip_fork_stale` to name same-height stale active-tip siblings
+  using best-header ancestry and hash comparisons, with a direct condition
+  regression.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1486,6 +1489,13 @@ mega-refactor. This page is the running backlog for those passes.
      active-chain slots first and best-header ancestry second, with an explicit
      `lookup_source`. This keeps above-tip reducer stalls inspectable without a
      new bespoke RPC.
+   - Tip-fork-stale now covers the live same-height stale active-tip sibling
+     shape as well as the older tip+1 stale-child shape. The condition compares
+     block hashes instead of block-index pointer identity, captures a generic
+     stale target, and keeps the same conservative guards: sustained no-advance,
+     strictly higher-work best-header chain, and proof that the data-bearing
+     target is off that best-header chain. Regression coverage lives in
+     `test_tip_fork_stale`.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

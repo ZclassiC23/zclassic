@@ -2,15 +2,13 @@
 
 /* Condition: tip_fork_stale
  *
- * The capstone self-healer for the "stale data-bearing fork at tip+1"
- * wedge class. The active tip stops
- * advancing because a STALE block sits at tip+1 as an active-tip child
- * (it carries BLOCK_HAVE_DATA), the evidence controller correctly
- * refuses to connect it (incomplete_index_evidence, nakamoto=0), and the
- * REAL higher-work chain — visible in the header tree (pindex_best_header
- * now has strictly more chainwork than the active tip) — has bodies the
- * node never fetched. find_most_work_chain keeps re-selecting the stale
- * child and the tip never moves.
+ * The capstone self-healer for stale data-bearing forks at the active
+ * frontier. The active tip stops advancing because a STALE block is either
+ * the active tip itself (same-height sibling of the best-header chain) or
+ * sits at tip+1 as an active-tip child (it carries BLOCK_HAVE_DATA). The
+ * evidence controller correctly refuses to advance through the stale branch,
+ * while the REAL higher-work chain is visible in the header tree
+ * (pindex_best_header has strictly more chainwork than the active tip).
  *
  * detect() fires TRUE only when ALL three hold:
  *   (a) the active tip has not advanced for a sustained window
@@ -19,13 +17,14 @@
  *   (b) a higher-work HEADER chain exists — pindex_best_header has
  *       strictly more nChainWork than the active tip (best_header is
  *       chainwork-ranked);
- *   (c) the block the node keeps trying to connect at tip+1 is a CHILD of
- *       the active tip carrying BLOCK_HAVE_DATA, AND it is NOT on the
- *       best-header chain:
- *         block_index_get_ancestor(best_header, tip+1) != that_child.
- *       i.e. the higher-work chain has a DIFFERENT block at tip+1 — the
- *       data-bearing child the node keeps retrying is a confirmed stale
- *       fork.
+ *   (c) one of the two frontier stale-shapes is present:
+ *       - the active tip is a data-bearing same-height sibling of
+ *         get_ancestor(best_header, tip), sharing the same parent but a
+ *         different hash; or
+ *       - the block the node keeps trying to connect at tip+1 is a CHILD of
+ *         the active tip carrying BLOCK_HAVE_DATA, AND it is NOT on the
+ *         best-header chain:
+ *           block_index_get_ancestor(best_header, tip+1) != that_child.
  *
  * SAFETY: detect is deliberately conservative. We NEVER fire on normal
  * IBD / catch-up where the tip+1 child we are missing data for IS on the
@@ -35,9 +34,9 @@
  * provably NOT on the most-work header chain.
  *
  * remedy():
- *   1. process_block_invalidate(stale tip+1 child) — marks it
- *      BLOCK_FAILED_VALID + disconnects/reorgs via the validated path so
- *      find_most_work_chain stops selecting it.
+ *   1. process_block_invalidate(stale target) — marks it BLOCK_FAILED_VALID
+ *      + disconnects/reorgs via the validated path so find_most_work_chain
+ *      stops selecting it.
  *   2. rebuild_recent(from ~tip-2) — fetch+connect the canonical chain's
  *      recent bodies from zclassicd through the normal validated accept
  *      path.
@@ -70,12 +69,20 @@
 static _Atomic int64_t g_tip_height_at_check = -1;
 static _Atomic int64_t g_tip_unchanged_since = 0;
 static _Atomic int64_t g_tip_at_detect = -1;
-static _Atomic int64_t g_stale_child_height = -1;
-/* Hash of the confirmed-stale tip+1 child captured at detect time, so the
- * remedy invalidates EXACTLY the block detect proved is off the best-header
- * chain (never re-resolves a different block between detect and remedy). */
-static struct uint256 g_stale_child_hash;
-static _Atomic bool g_stale_child_valid = false;
+static _Atomic int64_t g_stale_target_height = -1;
+/* Hash of the confirmed-stale frontier target captured at detect time, so
+ * the remedy invalidates EXACTLY the block detect proved is off the
+ * best-header chain (never re-resolves a different block between detect and
+ * remedy). */
+static struct uint256 g_stale_target_hash;
+static _Atomic bool g_stale_target_valid = false;
+
+enum stale_target_kind {
+    STALE_TARGET_NONE = 0,
+    STALE_TARGET_ACTIVE_TIP = 1,
+    STALE_TARGET_TIP_CHILD = 2,
+};
+static _Atomic int g_stale_target_kind = STALE_TARGET_NONE;
 
 /* Test seams: the remedy's two real side effects are an invalidate (reaches
  * the activation controller) and a rebuild_recent (reaches zclassicd). Both
@@ -118,6 +125,35 @@ static int64_t current_tip_height(struct main_state *ms)
     return ms ? (int64_t)active_chain_height(&ms->chain_active) : -1;
 }
 
+static bool same_index_hash(const struct block_index *a,
+                            const struct block_index *b)
+{
+    return a && b && a->phashBlock && b->phashBlock &&
+           uint256_eq(a->phashBlock, b->phashBlock);
+}
+
+static bool same_parent_hash(const struct block_index *a,
+                             const struct block_index *b)
+{
+    return a && b && a->pprev && b->pprev &&
+           same_index_hash(a->pprev, b->pprev);
+}
+
+static void remember_stale_target(struct block_index *target,
+                                  enum stale_target_kind kind)
+{
+    if (!target || !target->phashBlock) {
+        atomic_store(&g_stale_target_valid, false);
+        atomic_store(&g_stale_target_kind, STALE_TARGET_NONE);
+        return;
+    }
+
+    atomic_store(&g_stale_target_height, target->nHeight);
+    g_stale_target_hash = *target->phashBlock;
+    atomic_store(&g_stale_target_kind, kind);
+    atomic_store(&g_stale_target_valid, true);
+}
+
 /* Among the children at `target` height, return the one that is a CHILD of
  * the active tip carrying BLOCK_HAVE_DATA but NOT itself failed — i.e. the
  * data-bearing block the node keeps retrying at tip+1. NULL if none. */
@@ -131,7 +167,7 @@ static struct block_index *find_active_tip_child_with_data(
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
         if (!p || p->nHeight != target_height)
             continue;
-        if (p->pprev != tip)
+        if (!same_index_hash(p->pprev, tip))
             continue; /* must be a direct child of the active tip */
         if (!(p->nStatus & BLOCK_HAVE_DATA))
             continue;
@@ -179,7 +215,21 @@ static bool detect_tip_fork_stale(void)
     if (bh->nHeight <= tip_h)
         return false; /* best header not actually ahead — not a fork stall */
 
-    /* (c) the data-bearing tip+1 child the node keeps retrying is NOT on
+    /* (c1) The active tip itself is a same-height data-bearing stale
+     * sibling of the best-header chain. Limit this first repair to the
+     * simple sibling shape (same parent, different hash); deeper divergence
+     * will be named by follow-up repair once the frontier rewinds. */
+    struct block_index *bh_at_tip = block_index_get_ancestor(bh, (int)tip_h);
+    if ((tip->nStatus & BLOCK_HAVE_DATA) && !block_has_any_failure(tip) &&
+        bh_at_tip && !same_index_hash(bh_at_tip, tip) &&
+        !block_has_any_failure(bh_at_tip) &&
+        same_parent_hash(bh_at_tip, tip)) {
+        atomic_store(&g_tip_at_detect, tip_h);
+        remember_stale_target(tip, STALE_TARGET_ACTIVE_TIP);
+        return true;
+    }
+
+    /* (c2) The data-bearing tip+1 child the node keeps retrying is NOT on
      * the best-header chain. */
     int target = (int)tip_h + 1;
     struct block_index *child =
@@ -189,46 +239,44 @@ static bool detect_tip_fork_stale(void)
 
     struct block_index *bh_at_target =
         block_index_get_ancestor(bh, target);
-    if (bh_at_target == child)
+    if (same_index_hash(bh_at_target, child))
         return false; /* child IS on the best-header chain — LEGIT, never
                        * invalidate. Just a missing body; let IBD fetch it. */
 
     /* Confirmed stale fork: tip stalled, a higher-work header chain exists,
      * and the data-bearing child at tip+1 is off that chain. */
     atomic_store(&g_tip_at_detect, tip_h);
-    atomic_store(&g_stale_child_height, target);
-    if (child->phashBlock) {
-        g_stale_child_hash = *child->phashBlock;
-        atomic_store(&g_stale_child_valid, true);
-    } else {
-        atomic_store(&g_stale_child_valid, false);
-    }
+    remember_stale_target(child, STALE_TARGET_TIP_CHILD);
     return true;
 }
 
 static enum condition_remedy_result remedy_tip_fork_stale(void)
 {
     struct main_state *ms = ms_or_null();
-    if (!ms || !atomic_load(&g_stale_child_valid))
+    if (!ms || !atomic_load(&g_stale_target_valid))
         return COND_REMEDY_SKIP;
 
     int64_t tip_at_detect = atomic_load(&g_tip_at_detect);
-    int64_t child_h = atomic_load(&g_stale_child_height);
-    struct uint256 stale = g_stale_child_hash;
+    int64_t target_h = atomic_load(&g_stale_target_height);
+    int kind = atomic_load(&g_stale_target_kind);
+    const char *kind_name = kind == STALE_TARGET_ACTIVE_TIP ? "active_tip" :
+        (kind == STALE_TARGET_TIP_CHILD ? "tip_child" : "unknown");
+    struct uint256 stale = g_stale_target_hash;
 
-    /* (1) Invalidate the confirmed-stale tip+1 child so find_most_work_chain
-     * stops selecting it. Reuses the validated disconnect/reorg path. */
+    /* (1) Invalidate the confirmed-stale frontier target so
+     * find_most_work_chain stops selecting it. Reuses the validated
+     * disconnect/reorg path. */
     struct uint256 out_hash;
     enum invalidate_result ir = g_invalidate_fn(ms, &stale, &out_hash);
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_invalidate_calls, 1);
-    atomic_store(&g_test_last_invalidate_height, child_h);
+    atomic_store(&g_test_last_invalidate_height, target_h);
 #endif
     if (ir != INVALIDATE_OK) {
         LOG_WARN("condition",
-            "[condition:tip_fork_stale] invalidate h=%lld result=%s — "
-            "remedy aborted before rebuild",
-            (long long)child_h, invalidate_result_name(ir));
+            "[condition:tip_fork_stale] invalidate kind=%s h=%lld "
+            "result=%s - remedy aborted before rebuild",
+            kind_name, (long long)target_h, invalidate_result_name(ir));
         return COND_REMEDY_FAILED;
     }
 
@@ -246,9 +294,9 @@ static enum condition_remedy_result remedy_tip_fork_stale(void)
 
     int64_t tip_now = current_tip_height(ms);
     LOG_WARN("condition",
-        "[condition:tip_fork_stale] invalidated stale child h=%lld, "
+        "[condition:tip_fork_stale] invalidated stale %s h=%lld, "
         "rebuild_recent from=%d ok=%s tip %lld -> %lld",
-        (long long)child_h, from_h, rebuilt ? "yes" : "no",
+        kind_name, (long long)target_h, from_h, rebuilt ? "yes" : "no",
         (long long)tip_at_detect, (long long)tip_now);
 
     if (!rebuilt)
@@ -290,8 +338,9 @@ void tip_fork_stale_test_reset(void)
     atomic_store(&g_tip_height_at_check, -1);
     atomic_store(&g_tip_unchanged_since, 0);
     atomic_store(&g_tip_at_detect, -1);
-    atomic_store(&g_stale_child_height, -1);
-    atomic_store(&g_stale_child_valid, false);
+    atomic_store(&g_stale_target_height, -1);
+    atomic_store(&g_stale_target_valid, false);
+    atomic_store(&g_stale_target_kind, STALE_TARGET_NONE);
     g_invalidate_fn = tfs_default_invalidate;
     g_rebuild_fn = tfs_default_rebuild;
     atomic_store(&g_test_invalidate_calls, 0);
