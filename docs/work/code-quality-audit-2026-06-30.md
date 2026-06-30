@@ -68,6 +68,8 @@ mega-refactor. This page is the running backlog for those passes.
   descriptions and source comments.
 - [x] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
   an advisory-only unavailable dependency while native P2P remains healthy.
+- [x] Start oversized factoids-view shrinkage with a behavior-preserving
+  checkpoint-row extraction and regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -928,6 +930,24 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=connman_addnode_fallback`, `make t ONLY=mcp_controllers`, and
      `make t ONLY=rebuild_recent`; final gate `make lint`.
 
+26. **Oversized factoids checkpoint-row extraction**
+   - Files: `app/views/src/explorer_factoids_chaindata.c`,
+     `app/views/src/explorer_factoids_checkpoints.c`,
+     `app/views/include/views/explorer_factoids_internal.h`,
+     `lib/test/src/test_explorer.c`
+   - Problem: `explorer_factoids_chaindata.c` is still an oversized view file,
+     and section 12 mixed immutable checkpoint data, row rendering, and section
+     orchestration inside the larger chain-data section file.
+   - Fix: moved the immutable checkpoint table and row renderer into the new
+     private factoids view translation unit
+     `explorer_factoids_checkpoints.c`. Section 12 now only emits the heading
+     and table wrapper, then delegates row rendering. This is display-only and
+     consensus-neutral; checkpoint enforcement remains in chain/validation
+     code. The chain-data file shrank from 1475 to 1439 lines.
+   - Tests: added a direct explorer regression for the checkpoint section that
+     asserts the rendered section, latest checkpoint link/hash preview, and
+     SHA3 receipt remain present. Ran `make t ONLY=explorer` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -982,6 +1002,8 @@ mega-refactor. This page is the running backlog for those passes.
      `stage_repair_coin_backfill.c`, `reducer_frontier_reconcile_light.c`,
      `reducer_frontier_replay.c`, `boot_refold_staged.c`, and `boot.c`.
    - Split only when it reduces real coupling; avoid mechanical churn.
+   - First behavior-preserving extraction landed for the factoids chain-data
+     view: immutable checkpoint row data now lives in its own private view TU.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

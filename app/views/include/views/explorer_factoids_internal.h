@@ -12,6 +12,8 @@
  *   - explorer_factoids_history.c  — sections 1-7: genesis, upgrades,
  *                                    mining eras, milestones, records,
  *                                    supply, addresses (chain structure).
+ *   - explorer_factoids_checkpoints.c — immutable checkpoint row data +
+ *                                    renderer for section 12.
  *   - explorer_factoids_chaindata.c— sections 8-17: privacy, ZSLP,
  *                                    OP_RETURN, dust/UTXO, checkpoints,
  *                                    block times, transactions, empty
@@ -266,6 +268,8 @@ size_t factoids_emit_section_11_dust(uint8_t *buf, size_t cap, size_t off,
                                      sqlite3 *db);
 size_t factoids_emit_section_12_checkpoints(uint8_t *buf, size_t cap, size_t off,
                                             sqlite3 *db, int64_t chain_height);
+size_t factoids_emit_checkpoint_rows(uint8_t *buf, size_t cap, size_t off,
+                                     sqlite3 *db, int64_t chain_height);
 size_t factoids_emit_section_13_blocktimes(uint8_t *buf, size_t cap, size_t off,
                                            sqlite3 *db, int64_t chain_height);
 size_t factoids_emit_section_14_transactions(uint8_t *buf, size_t cap, size_t off,

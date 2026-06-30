@@ -6,6 +6,7 @@
 #include "controllers/explorer_internal.h"
 #include "models/hodl_wave.h"
 #include "crypto/sha3.h"
+#include "views/explorer_factoids_internal.h"
 #include <string.h>
 #include <inttypes.h>
 
@@ -126,6 +127,37 @@ int test_explorer(void)
         sha3_256_finalize(&ctx, d2);
 
         bool ok = (memcmp(d1, d2, 32) != 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: factoids checkpoint section renders receipts... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,hash,time) VALUES"
+            "(30000,x'000000005c2ad200c3c7c8e627f67b306659efca1268c9bb014335fdadc0c392',1482903829)",
+            NULL, NULL, NULL);
+        uint8_t out[8192];
+        size_t n = factoids_emit_section_12_checkpoints(
+            out, sizeof(out) - 1, 0, db, 3054000);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        char expected[32] = "";
+        compute_receipt(expected, sizeof(expected), 3054000,
+                        "000005aa8e8c321cf364788e81b94619434b0dc1a85e658a022b44f23eb85662",
+                        "checkpoint");
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "12. Checkpoint History") != NULL &&
+                  strstr((const char *)out, "/explorer/block/3054000") != NULL &&
+                  strstr((const char *)out, "000005aa8e8c321c...") != NULL &&
+                  strstr((const char *)out, expected) != NULL &&
+                  strstr((const char *)out, "Not yet reached") == NULL;
+        sqlite3_close(db);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
