@@ -577,7 +577,9 @@ int test_header_admit_stage(void)
      * held rows for H+1.. on a different parent. The below-tip reorg scan could
      * not see the stale row because active_chain_at(H+1) is intentionally NULL.
      * The pre-step repair must clamp downstream cursors and rewind header_admit
-     * to H+1 so the correct child can be re-requested and revalidated. */
+     * to H+1. Since header admission is header-only, replay must then source
+     * the canonical child from best-header ancestry instead of idling on the
+     * body-window accessor. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","forward_fork");
@@ -595,6 +597,11 @@ int test_header_admit_stage(void)
         HA_CHECK("forward_fork: admit active prefix",
                  header_admit_stage_drain(100) == 3 &&
                  header_admit_stage_cursor() == 3);
+        ms.pindex_best_header = &sc.blocks[4];
+        HA_CHECK("forward_fork: h3 is above active window",
+                 active_chain_at(&ms.chain_active, 3) == NULL &&
+                 block_index_get_ancestor(ms.pindex_best_header, 3) ==
+                     &sc.blocks[3]);
 
         sqlite3 *db = progress_store_db();
         struct uint256 stale_parent = sc.hashes[2];
@@ -619,11 +626,11 @@ int test_header_admit_stage(void)
                  !header_admit_stage_has_record(3, &sc.hashes[3]));
 
         job_result_t r = header_admit_stage_step_once();
-        HA_CHECK("forward_fork: repair step idles after rewind",
-                 r == JOB_IDLE);
-        HA_CHECK("forward_fork: header cursor rewound to active child",
-                 header_admit_stage_cursor() == 3 &&
-                 cursor_at(db, "header_admit") == 3);
+        HA_CHECK("forward_fork: repair step rewinds and admits h3",
+                 r == JOB_ADVANCED);
+        HA_CHECK("forward_fork: header cursor advanced past h3",
+                 header_admit_stage_cursor() == 4 &&
+                 cursor_at(db, "header_admit") == 4);
         HA_CHECK("forward_fork: downstream cursors clamped",
                  cursor_at(db, "validate_headers") == 3 &&
                  cursor_at(db, "body_fetch") == 3 &&
@@ -633,6 +640,14 @@ int test_header_admit_stage(void)
                  cursor_at(db, "utxo_apply") == 3);
         HA_CHECK("forward_fork: rewind counter incremented",
                  header_admit_stage_reorg_rewind_total() >= 1);
+        HA_CHECK("forward_fork: h3 overwritten with canonical hash",
+                 header_admit_stage_has_record(3, &sc.hashes[3]));
+
+        HA_CHECK("forward_fork: second step admits h4",
+                 header_admit_stage_step_once() == JOB_ADVANCED);
+        HA_CHECK("forward_fork: h4 overwritten with canonical hash",
+                 header_admit_stage_has_record(4, &sc.hashes[4]) &&
+                 header_admit_stage_cursor() == 5);
 
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);

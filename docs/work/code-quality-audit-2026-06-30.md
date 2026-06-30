@@ -108,6 +108,9 @@ mega-refactor. This page is the running backlog for those passes.
   creator-proof extraction and repair regressions.
 - [x] Fix header-admit forward-fork replay so a stale `active_tip+1` parent row
   rewinds header/validation/body cursors before the reducer idles indefinitely.
+- [x] Let header-admit replay canonical best-header ancestors above the active
+  body window after a forward-fork rewind, so stale forward rows are overwritten
+  by audited headers instead of waiting on body-window extension.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.

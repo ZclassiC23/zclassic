@@ -235,6 +235,31 @@ static bool authoritative_admit(struct main_state *ms, struct block_index *bi)
     return true;
 }
 
+/* Resolve the header to admit at `height`.
+ *
+ * active_chain_at() is a body/window accessor; it intentionally returns NULL
+ * above the current visible body frontier. Header admission must be able to
+ * replay one or more heights above that window after a forward-fork cursor
+ * rewind, so fall back to the canonical best-header ancestry exactly like
+ * validate_headers. This changes only the source of the block_index pointer;
+ * authoritative_admit() and downstream PoW/body/script stages still own their
+ * existing verdicts. */
+static struct block_index *ha_resolve_bi(struct main_state *ms, int height)
+{
+    if (!ms || height < 0)
+        return NULL;
+
+    struct block_index *bi = active_chain_at(&ms->chain_active, height);
+    if (bi)
+        return bi;
+
+    if (ms->pindex_best_header &&
+        height <= ms->pindex_best_header->nHeight)
+        return block_index_get_ancestor(ms->pindex_best_header, height);
+
+    return NULL;
+}
+
 
 /* ── Reorg-rewind (mirrors tip_finalize_stage.c rewind) ─────────────── */
 
@@ -452,7 +477,7 @@ static job_result_t step_admit(struct stage_step_ctx *c)
     if (next_h > mint_fold_ceiling_get())
         return JOB_IDLE;
 
-    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
+    struct block_index *bi = ha_resolve_bi(ms, next_h);
     if (!bi || !bi->phashBlock) {
         /* Reducer producer path: the active chain has no block here yet.
          * If a raw header for this height was staged via the inbox, CREATE
