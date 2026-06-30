@@ -122,6 +122,61 @@ static bool log_hash_at(sqlite3 *db, int height,
     return true;
 }
 
+static bool force_cursor(sqlite3 *db, const char *name, int cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO stage_cursor(name, cursor, updated_at) "
+            "VALUES(?,?,0) "
+            "ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor, "
+            "updated_at=excluded.updated_at",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, cursor);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+static int cursor_at(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int out = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        out = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
+static bool put_header_row(sqlite3 *db, int height,
+                           const struct uint256 *hash,
+                           const struct uint256 *parent)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) "
+            "VALUES(?,?,?,0)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    if (parent) {
+        sqlite3_bind_blob(st, 3, parent->data, 32, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(st, 3);
+    }
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
 struct auth_hook_state {
     int calls;
     int height;
@@ -509,6 +564,75 @@ int test_header_admit_stage(void)
                  header_admit_stage_cursor() == 5);
         HA_CHECK("reorg_heal: post log has canonical height 2",
                  header_admit_stage_has_record(2, &sc.hashes[2]));
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── Forward-fork self-heal: stale row at active_tip+1 ────────────
+     * Live regression: active tip H was correct, but header_admit_log already
+     * held rows for H+1.. on a different parent. The below-tip reorg scan could
+     * not see the stale row because active_chain_at(H+1) is intentionally NULL.
+     * The pre-step repair must clamp downstream cursors and rewind header_admit
+     * to H+1 so the correct child can be re-requested and revalidated. */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","forward_fork");
+        mkdir_p_ha(dir);
+        HA_CHECK("forward_fork: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
+
+        HA_CHECK("forward_fork: init", header_admit_stage_init(&ms));
+        HA_CHECK("forward_fork: admit active prefix",
+                 header_admit_stage_drain(100) == 3 &&
+                 header_admit_stage_cursor() == 3);
+
+        sqlite3 *db = progress_store_db();
+        struct uint256 stale_parent = sc.hashes[2];
+        struct uint256 stale_h3 = sc.hashes[3];
+        struct uint256 stale_h4 = sc.hashes[4];
+        stale_parent.data[7] ^= 0x55;
+        stale_h3.data[9] ^= 0x66;
+        stale_h4.data[11] ^= 0x77;
+
+        HA_CHECK("forward_fork: seed stale forward rows",
+                 put_header_row(db, 3, &stale_h3, &stale_parent) &&
+                 put_header_row(db, 4, &stale_h4, &stale_h3));
+        HA_CHECK("forward_fork: force cursors ahead",
+                 force_cursor(db, "header_admit", 5) &&
+                 force_cursor(db, "validate_headers", 5) &&
+                 force_cursor(db, "body_fetch", 5) &&
+                 force_cursor(db, "body_persist", 5) &&
+                 force_cursor(db, "script_validate", 5) &&
+                 force_cursor(db, "proof_validate", 5) &&
+                 force_cursor(db, "utxo_apply", 5));
+        HA_CHECK("forward_fork: stale h3 is not canonical",
+                 !header_admit_stage_has_record(3, &sc.hashes[3]));
+
+        job_result_t r = header_admit_stage_step_once();
+        HA_CHECK("forward_fork: repair step idles after rewind",
+                 r == JOB_IDLE);
+        HA_CHECK("forward_fork: header cursor rewound to active child",
+                 header_admit_stage_cursor() == 3 &&
+                 cursor_at(db, "header_admit") == 3);
+        HA_CHECK("forward_fork: downstream cursors clamped",
+                 cursor_at(db, "validate_headers") == 3 &&
+                 cursor_at(db, "body_fetch") == 3 &&
+                 cursor_at(db, "body_persist") == 3 &&
+                 cursor_at(db, "script_validate") == 3 &&
+                 cursor_at(db, "proof_validate") == 3 &&
+                 cursor_at(db, "utxo_apply") == 3);
+        HA_CHECK("forward_fork: rewind counter incremented",
+                 header_admit_stage_reorg_rewind_total() >= 1);
 
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);

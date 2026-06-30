@@ -590,6 +590,46 @@ bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
     return true;
 }
 
+bool stage_set_named_cursor(sqlite3 *db, const char *name, uint64_t value)
+{
+    if (!db || !name || name[0] == '\0')
+        LOG_FAIL("stage", "set_named_cursor: invalid arg db=%p name=%p",
+                 (void *)db, (const void *)name);
+
+    if (!stage_table_ensure(db))
+        return false;
+
+    progress_store_tx_lock();
+    bool batched = stage_batch_active();
+    char *err = NULL;
+    if (cursor_txn_begin(db, batched, &err) != SQLITE_OK) {
+        fprintf(stderr, "[stage] set_named_cursor BEGIN: %s\n",  // obs-ok:stage-begin-failure
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    if (!cursor_write_locked(db, name, value)) {
+        cursor_txn_rollback(db, batched);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    if (cursor_txn_commit(db, batched, &err) != SQLITE_OK) {
+        fprintf(stderr, "[stage] set_named_cursor COMMIT: %s\n",  // obs-ok:stage-commit-failure
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        cursor_txn_rollback(db, batched);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    if (batched) stage_batch_mark_dirty();
+    progress_store_tx_unlock();
+    return true;
+}
+
 bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
                                       uint64_t value)
 {

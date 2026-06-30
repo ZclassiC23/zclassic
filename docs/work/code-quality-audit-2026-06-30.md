@@ -106,6 +106,8 @@ mega-refactor. This page is the running backlog for those passes.
   state/dump extraction and sentinel regressions.
 - [x] Continue oversized-file review with a behavior-preserving coin-backfill
   creator-proof extraction and repair regressions.
+- [x] Fix header-admit forward-fork replay so a stale `active_tip+1` parent row
+  rewinds header/validation/body cursors before the reducer idles indefinitely.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1394,6 +1396,11 @@ mega-refactor. This page is the running backlog for those passes.
      `stage_repair_coin_backfill.c` to 630 lines while preserving the guarded
      repair API, refusal policy, no-spend scan handoff, and single-write
      transaction.
+   - Header-admit forward-fork liveness repair landed after deploy exposed a
+     stale `header_admit_log` row at active_tip+1 whose parent was not the
+     active tip. `header_admit` now clamps downstream reducer cursors to the
+     replay point and rewinds its own cursor so the correct child is re-fetched
+     and revalidated. Regression coverage lives in `test_header_admit_stage`.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

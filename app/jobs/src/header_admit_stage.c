@@ -19,6 +19,7 @@
 #include "models/header_admit_log.h"
 #include "platform/time_compat.h"
 #include "services/header_admit_inbox.h"
+#include "header_admit_forward_rewind.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
 #include "storage/event_log_singleton.h"
@@ -277,6 +278,55 @@ static bool log_row_active_match(sqlite3 *db, int height,
     return true;
 }
 
+static bool rewind_forward_child_if_stale(sqlite3 *db, uint64_t cursor,
+                                          bool *out_rewound)
+{
+    *out_rewound = false;
+    if (!g_stage || !g_ms || cursor == 0)
+        return true;
+
+    int target = -1;
+    const char *reason = "none";
+    if (!header_admit_forward_rewind_target(
+            db, &g_ms->chain_active, cursor, &target, &reason)) {
+        LOG_WARN("header_admit",
+                 "[header_admit] forward-fork target audit failed "
+                 "cursor=%llu",
+                 (unsigned long long)cursor);
+        return false;  // raw-return-ok:logged-above
+    }
+    if (target < 0)
+        return true;
+
+    if (!header_admit_forward_rewind_clamp_downstream(db, target)) {
+        LOG_WARN("header_admit",
+                 "[header_admit] forward-fork downstream clamp failed "
+                 "target=%d",
+                 target);
+        return false;  // raw-return-ok:logged-above
+    }
+
+    if (!stage_set_cursor(g_stage, db, (uint64_t)target)) {
+        LOG_WARN("header_admit",
+                 "[header_admit] forward-fork cursor rewind failed "
+                 "from=%llu to=%d",
+                 (unsigned long long)cursor, target);
+        return false;  // raw-return-ok:logged-above
+    }
+
+    atomic_fetch_add(&g_reorg_rewind_total, 1);
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    LOG_WARN("header_admit",
+             "[header_admit] forward-fork rewind from=%llu to=%d "
+             "reason=%s",
+             (unsigned long long)cursor, target, reason);
+    event_emitf(EV_REORG_START, 0,
+                "header_admit forward_fork_rewind from=%llu to=%d reason=%s",
+                (unsigned long long)cursor, target, reason);
+    *out_rewound = true;
+    return true;
+}
+
 /* Detect a reorg below the cursor and rewind to the fork point so the
  * stale rows get re-admitted (INSERT OR REPLACE) with the canonical
  * hashes on the forward re-walk.
@@ -309,6 +359,17 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
         LOG_WARN("header_admit", "[header_admit] reorg rewind cursor too large: %llu", (unsigned long long)cursor);
         return false;
     }
+
+    bool rewound_forward = false;
+    if (!rewind_forward_child_if_stale(db, cursor, &rewound_forward)) {
+        LOG_WARN("header_admit",
+                 "[header_admit] forward-child stale audit failed "
+                 "cursor=%llu",
+                 (unsigned long long)cursor);
+        return false;  // raw-return-ok:logged-above
+    }
+    if (rewound_forward)
+        return true;
 
     /* Scan the recent window below the cursor for the deepest height
      * whose logged hash no longer matches the active chain. */

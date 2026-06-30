@@ -184,6 +184,11 @@ bool stage_batch_dirty(void);
 bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value);
 
 /* Stamp a cursor row when the stage object is not locally available.
+ * Unlike stage_set_named_cursor_if_behind(), this may rewind. Use only when a
+ * validated repair has proven that rows at or above value must be replayed. */
+bool stage_set_named_cursor(sqlite3 *db, const char *name, uint64_t value);
+
+/* Stamp a cursor row when the stage object is not locally available.
  * Used by trusted bootstrap/restore anchors that must align a pipeline
  * boundary before the stage's next tick reloads the persisted cursor. This
  * never rewinds: if the stored cursor is already >= value it is a no-op. */

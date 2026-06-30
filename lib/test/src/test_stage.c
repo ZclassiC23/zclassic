@@ -11,7 +11,8 @@
  *   - "crash mid-step" simulation: the step writes to a scratch table,
  *     then signals ERROR; on next run the scratch row is absent (the
  *     framework rolled back) and the cursor is the pre-step value.
- *   - stage_set_cursor: explicit restore round-trips. */
+ *   - stage_set_cursor: explicit restore round-trips
+ *   - stage_set_named_cursor: named cursor stamping can intentionally rewind. */
 
 #include "test/test_helpers.h"
 #include "util/blocker.h"
@@ -267,6 +268,36 @@ int test_stage(void)
         stage_run_once(s2, db);
         STG_CHECK("restored cursor visible after reload",
                   stage_cursor(s2) == 1001);
+
+        stage_destroy(s2);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── stage_set_named_cursor exact restore/rewind ───────────── */
+    {
+        const char *path = "test_stage_named_restore.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+
+        STG_CHECK("set_named_cursor forward ok",
+                  stage_set_named_cursor(db, "named", 42));
+
+        struct ctx_advance_by_one u = { .db = db, .times_called = 0 };
+        stage_t *s = stage_create("named", step_advance_by_one, &u);
+        job_result_t r = stage_run_once(s, db);
+        STG_CHECK("named cursor visible after set",
+                  r == JOB_ADVANCED && stage_cursor(s) == 43);
+        stage_destroy(s);
+
+        STG_CHECK("set_named_cursor rewind ok",
+                  stage_set_named_cursor(db, "named", 7));
+
+        struct ctx_advance_by_one u2 = { .db = db, .times_called = 0 };
+        stage_t *s2 = stage_create("named", step_advance_by_one, &u2);
+        r = stage_run_once(s2, db);
+        STG_CHECK("named cursor visible after rewind",
+                  r == JOB_ADVANCED && stage_cursor(s2) == 8);
 
         stage_destroy(s2);
         sqlite3_close(db);
