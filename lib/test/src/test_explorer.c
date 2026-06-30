@@ -434,6 +434,169 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: factoids records section renders records... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER, num_tx INTEGER, "
+            "bits INTEGER, sapling_value INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE utxos(value INTEGER, height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE tx_outputs(value INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE joinsplits(block_height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE sapling_outputs(block_height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE hodl_history(height INTEGER, older_1y_pct REAL)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,time,num_tx,bits,sapling_value) VALUES"
+            "(1,1478403829,1,520617983,0),"
+            "(2,1478403929,4,504207743,500000000),"
+            "(3,1478404129,2,504365055,-300000000),"
+            "(707000,1600000000,1,504365055,0)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO utxos(value,height) VALUES"
+            "(1200000000,1),(500000000,707000)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO tx_outputs(value) VALUES(2000000000),(300000000)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO joinsplits(block_height) VALUES(2),(2)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO sapling_outputs(block_height) VALUES(3),(3),(3)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO hodl_history(height,older_1y_pct) VALUES"
+            "(3,12.5),(4,15.25)",
+            NULL, NULL, NULL);
+
+        char unspent_expected[32] = "";
+        char ever_expected[32] = "";
+        char hodl_expected[32] = "";
+        compute_receipt(unspent_expected, sizeof(unspent_expected),
+                        1, "", "Largest unspent transparent output");
+        compute_receipt_i64(ever_expected, sizeof(ever_expected),
+                            2000000000LL, 0,
+                            "Largest transparent output ever");
+        compute_receipt_i64(hodl_expected, sizeof(hodl_expected),
+                            4, 15250, "hodl_dormant_1y");
+
+        uint8_t out[16384];
+        size_t n = factoids_emit_section_5_records(
+            out, sizeof(out) - 1, 0, db);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "5. All-Time Records") != NULL &&
+                  strstr((const char *)out,
+                         "Largest unspent transparent output") != NULL &&
+                  strstr((const char *)out, "12.00000000 ZCL") != NULL &&
+                  strstr((const char *)out,
+                         "Largest transparent output ever") != NULL &&
+                  strstr((const char *)out, "20.00000000 ZCL") != NULL &&
+                  strstr((const char *)out, "Most transactions in a block") != NULL &&
+                  strstr((const char *)out, "/explorer/block/2") != NULL &&
+                  strstr((const char *)out, "Most JoinSplits in a block") != NULL &&
+                  strstr((const char *)out, "Most Sapling outputs in a block") != NULL &&
+                  strstr((const char *)out,
+                         "Largest single-block shielding") != NULL &&
+                  strstr((const char *)out, "5.00000000 ZCL") != NULL &&
+                  strstr((const char *)out,
+                         "Largest single-block unshielding") != NULL &&
+                  strstr((const char *)out, "3.00000000 ZCL") != NULL &&
+                  strstr((const char *)out,
+                         "Most blocks mined in one UTC day") != NULL &&
+                  strstr((const char *)out, "Oldest coin still unspent") != NULL &&
+                  strstr((const char *)out,
+                         "Supply dormant &gt; 1 year") != NULL &&
+                  strstr((const char *)out,
+                         "Coins predating Buttercup") != NULL &&
+                  strstr((const char *)out, unspent_expected) != NULL &&
+                  strstr((const char *)out, ever_expected) != NULL &&
+                  strstr((const char *)out, hodl_expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: factoids address section renders holders... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE addresses(address_hash BLOB, balance INTEGER, "
+            "utxo_count INTEGER, first_seen_height INTEGER, "
+            "last_seen_height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,time) VALUES"
+            "(10,1478403829),(20,1478404829),(30,1478405829)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO addresses(address_hash,balance,utxo_count,"
+            "first_seen_height,last_seen_height) VALUES"
+            "(x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',100000000000,2,10,10),"
+            "(x'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',10000000000,1,20,30),"
+            "(x'cccccccccccccccccccccccccccccccccccccccc',0,0,30,30)",
+            NULL, NULL, NULL);
+
+        char stats_expected[32] = "";
+        char concentration_expected[32] = "";
+        compute_receipt_i64(stats_expected, sizeof(stats_expected),
+                            3, 2, "addr_stats");
+        compute_receipt_i64(concentration_expected,
+                            sizeof(concentration_expected),
+                            110000000000LL, 110000000000LL,
+                            "addr_concentration");
+
+        uint8_t out[16384];
+        size_t n = factoids_emit_section_7_addresses(
+            out, sizeof(out) - 1, 0, db);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "7. Address Statistics") != NULL &&
+                  strstr((const char *)out,
+                         "Addresses currently holding coins:</b> 2") != NULL &&
+                  strstr((const char *)out,
+                         "(of 3 in the index; 1 carry a zero balance)") != NULL &&
+                  strstr((const char *)out, "Holding \xe2\x89\xa5 1 ZCL") != NULL &&
+                  strstr((const char *)out, "Holding \xe2\x89\xa5 1,000 ZCL") != NULL &&
+                  strstr((const char *)out,
+                         "None \xe2\x80\x94 no address holds a million ZCL") != NULL &&
+                  strstr((const char *)out,
+                         "Distribution &amp; Concentration") != NULL &&
+                  strstr((const char *)out,
+                         "Top 10 addresses hold</b></td><td>100.00%") != NULL &&
+                  strstr((const char *)out,
+                         "1100.00000000 ZCL held across 2 funded") != NULL &&
+                  strstr((const char *)out, "1000.00000000 ZCL") != NULL &&
+                  strstr((const char *)out, "550.00000000 ZCL") != NULL &&
+                  strstr((const char *)out, "/explorer/block/10") != NULL &&
+                  strstr((const char *)out, "Top 10 Richest Addresses") != NULL &&
+                  strstr((const char *)out, "AAAAAAAAAAAAAAAA...") != NULL &&
+                  strstr((const char *)out, stats_expected) != NULL &&
+                  strstr((const char *)out, concentration_expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: difficulty_from_bits handles edge cases... ");
     {
         double d0 = explorer_difficulty_from_bits(0);

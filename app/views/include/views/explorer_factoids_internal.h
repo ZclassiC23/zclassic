@@ -9,9 +9,10 @@
  *   - explorer_factoids_view.c     — public entry points (HTML page +
  *                                    JSON API orchestration) and the
  *                                    degraded "verified summary" fallback.
- *   - explorer_factoids_history.c  — sections 1-7: genesis, upgrades,
- *                                    mining eras, milestones, records,
- *                                    supply, addresses (chain structure).
+ *   - explorer_factoids_history.c  — sections 1-4 and 6: genesis, upgrades,
+ *                                    mining eras, milestones, and supply.
+ *   - explorer_factoids_records.c  — section 5: all-time records.
+ *   - explorer_factoids_addresses.c — section 7: address statistics.
  *   - explorer_factoids_checkpoints.c — immutable checkpoint row data +
  *                                    renderer for section 12.
  *   - explorer_factoids_blocktimes.c — section 13: cadence and interval
@@ -249,7 +250,7 @@ static inline int64_t get_block_time(sqlite3 *db, int64_t height)
  * `off` and returns the new offset. Project-internal linkage so the
  * orchestrator in explorer_factoids_view.c can call them. */
 
-/* explorer_factoids_history.c — sections 1-7 */
+/* explorer_factoids_history.c — sections 1-4 and 6 */
 size_t factoids_emit_section_1_genesis(uint8_t *buf, size_t cap, size_t off,
                                        sqlite3 *db);
 size_t factoids_emit_section_2_upgrades(uint8_t *buf, size_t cap, size_t off,
@@ -258,10 +259,14 @@ size_t factoids_emit_section_3_mining_eras(uint8_t *buf, size_t cap, size_t off,
                                            int64_t chain_height);
 size_t factoids_emit_section_4_milestones(uint8_t *buf, size_t cap, size_t off,
                                           sqlite3 *db, int64_t chain_height);
-size_t factoids_emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
-                                       sqlite3 *db);
 size_t factoids_emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
                                       sqlite3 *db, int64_t chain_height);
+
+/* explorer_factoids_records.c — section 5 */
+size_t factoids_emit_section_5_records(uint8_t *buf, size_t cap, size_t off,
+                                       sqlite3 *db);
+
+/* explorer_factoids_addresses.c — section 7 */
 size_t factoids_emit_section_7_addresses(uint8_t *buf, size_t cap, size_t off,
                                          sqlite3 *db);
 

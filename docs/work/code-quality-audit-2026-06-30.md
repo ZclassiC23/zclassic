@@ -81,6 +81,8 @@ mega-refactor. This page is the running backlog for those passes.
   empty-block section extraction and regression test.
 - [x] Clear the factoids chain-data file-size warning with behavior-preserving
   blocktime/transaction section extractions and regression tests.
+- [x] Clear the factoids history file-size warning with behavior-preserving
+  records/address section extractions and regression tests.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1051,6 +1053,28 @@ mega-refactor. This page is the running backlog for those passes.
      script-type split, and receipts). Ran `make t ONLY=explorer` and
      `make lint`.
 
+32. **Oversized factoids records/address extraction**
+   - Files: `app/views/src/explorer_factoids_history.c`,
+     `app/views/src/explorer_factoids_records.c`,
+     `app/views/src/explorer_factoids_addresses.c`,
+     `app/views/include/views/explorer_factoids_internal.h`,
+     `app/views/src/explorer_factoids_view.c`,
+     `lib/test/src/test_explorer.c`
+   - Problem: after clearing the chain-data file warning, the sibling
+     `explorer_factoids_history.c` still owned records, supply, and address
+     statistics in one oversized view file.
+   - Fix: moved All-Time Records into `explorer_factoids_records.c` and
+     Address Statistics into `explorer_factoids_addresses.c`, leaving
+     `explorer_factoids_history.c` responsible for genesis, upgrades, mining
+     eras, milestones, and supply only. The history file shrank from 1089 to
+     638 lines, so all factoids section files are now under the 800-line
+     advisory ceiling.
+   - Tests: added direct explorer regressions for the records section
+     (largest unspent/ever outputs, tx/shielding records, HODL and
+     Buttercup-age receipts) and address section (holder counts,
+     concentration table, richest-address row, and receipts). Ran
+     `make t ONLY=explorer`; final gate `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1124,6 +1148,10 @@ mega-refactor. This page is the running backlog for those passes.
      TUs, reducing `explorer_factoids_chaindata.c` to 746 lines and clearing
      that file's advisory ceiling warning while preserving the cadence and
      transaction receipt contracts.
+   - Sixth behavior-preserving extraction landed for the factoids history
+     view: All-Time Records and Address Statistics now live in private view
+     TUs, reducing `explorer_factoids_history.c` to 638 lines. All factoids
+     section files are now below the 800-line advisory ceiling.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

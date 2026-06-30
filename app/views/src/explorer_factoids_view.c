@@ -15,7 +15,9 @@
  * This file owns the public entry points + JSON API + the degraded
  * "verified summary" fallback. The 17 section emitters live in focused
  * sibling translation units sharing views/explorer_factoids_internal.h:
- *   - explorer_factoids_history.c   — sections 1-7 (origin/growth)
+ *   - explorer_factoids_history.c   — sections 1-4 and 6 (origin/supply)
+ *   - explorer_factoids_records.c   — section 5 (all-time records)
+ *   - explorer_factoids_addresses.c — section 7 (address statistics)
  *   - explorer_factoids_chaindata.c — sections 8-12 (archaeology)
  *   - explorer_factoids_checkpoints.c / explorer_factoids_blocktimes.c /
  *     explorer_factoids_transactions.c / explorer_factoids_empty_blocks.c /
