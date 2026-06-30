@@ -11,6 +11,7 @@
 #include "jobs/stage_helpers.h"
 #include "jobs/stage_db_fault.h"
 #include "script_validate_log_store.h"
+#include "script_validate_stage_internal.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -18,7 +19,6 @@
 #include "coins/coins.h"
 #include "core/uint256.h"
 #include "event/event.h"
-#include "json/json.h"
 #include "primitives/block.h"
 #include "script/interpreter.h"
 #include "script/script_error.h"
@@ -223,117 +223,6 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
     return JOB_BLOCKED;
 }
 
-struct created_prevout_view {
-    sqlite3 *db;
-    int height;
-    int frontier;
-    bool have_frontier;
-};
-
-/* Production prevout resolver (P0 §2.1) — resolves an outpoint to its spent
- * output WITHOUT requiring -txindex, correct at the script_validate frontier
- * (which runs ahead of utxo_apply). Two layers, in order:
- *   (1) the forward creation index body_persist maintains — covers every coin
- *       created in a block this node has persisted (body_persist.cursor is
- *       strictly > script_validate.cursor, so the row is present before needed);
- *   (2) coins_kv (the canonical UTXO set in progress.kv) — covers pre-anchor
- *       coins on a fast-synced node (seeded from the snapshot at boot) and the
- *       reducer-applied live set; a spent output is DELETEd, so a hit here is a
- *       currently-live coin.
- * A genuine miss returns false; the caller then FAILS LOUD with the exact
- * outpoint (never silently passes). The verifier (verify_script) is unchanged. */
-static bool created_index_prevout(const struct outpoint *prevout,
-                                  struct tx_out *out, void *user)
-{
-    if (!prevout || !out)
-        return false;
-
-    int64_t value = 0;
-    unsigned char script[MAX_SCRIPT_SIZE];
-    size_t slen = 0;
-
-    const struct created_prevout_view *view = user;
-    sqlite3 *db = view && view->db ? view->db : progress_store_db();
-    if (!db)
-        return false;
-
-    if (view && view->have_frontier) {
-        int min_created = view->frontier <= view->height ? view->frontier : 0;
-        int created_h = -1;
-        if (created_outputs_index_get_bounded(
-                db, prevout->hash.data, prevout->n, min_created,
-                view->height, &value, script, sizeof(script), &slen,
-                &created_h)) {
-            if (slen > MAX_SCRIPT_SIZE)
-                return false;
-            out->value = value;
-            script_set(&out->script_pub_key, script, slen);
-            return true;
-        }
-
-        struct coins c;
-        coins_init(&c);
-        if (coins_kv_get_coins(db, prevout->hash.data, &c)) {
-            bool usable = c.height < view->frontier &&
-                          c.height <= view->height &&
-                          prevout->n < c.num_vout &&
-                          !tx_out_is_null(&c.vout[prevout->n]);
-            if (usable) {
-                const struct tx_out *src = &c.vout[prevout->n];
-                size_t src_len = src->script_pub_key.size;
-                if (src_len <= MAX_SCRIPT_SIZE) {
-                    out->value = src->value;
-                    script_set(&out->script_pub_key,
-                               src->script_pub_key.data, src_len);
-                    coins_free(&c);
-                    return true;
-                }
-            }
-            coins_free(&c);
-        }
-        return false;
-    }
-
-    if (created_outputs_index_get(db, prevout->hash.data, prevout->n,
-                                  &value, script, sizeof(script), &slen)) {
-        if (slen > MAX_SCRIPT_SIZE)
-            return false;  /* never silently truncate a scriptPubKey */
-        out->value = value;
-        script_set(&out->script_pub_key, script, slen);
-        return true;
-    }
-
-    if (db && coins_kv_get(db, prevout->hash.data, prevout->n,
-                           &value, script, sizeof(script), &slen)) {
-        if (slen > MAX_SCRIPT_SIZE)
-            return false;
-        out->value = value;
-        script_set(&out->script_pub_key, script, slen);
-        return true;
-    }
-
-    return false;
-}
-
-static void created_prevout_view_init(struct created_prevout_view *view,
-                                      int height)
-{
-    memset(view, 0, sizeof(*view));
-    view->db = progress_store_db();
-    view->height = height;
-    view->frontier = 0;
-    view->have_frontier = false;
-    if (!view->db)
-        return;
-
-    int32_t frontier = 0;
-    bool found = false;
-    if (coins_kv_get_applied_height(view->db, &frontier, &found) && found) {
-        view->frontier = frontier;
-        view->have_frontier = true;
-    }
-}
-
 static void validate_summary_init(struct validate_summary *s)
 {
     memset(s, 0, sizeof(*s));
@@ -367,12 +256,13 @@ static void validate_block_scripts_with_prevout(
     uint32_t branch_id = consensus_current_epoch_branch_id(
         height, &chain_params_get()->consensus);
 
-    struct created_prevout_view default_view;
-    created_prevout_view_init(&default_view, height);
+    struct script_validate_created_prevout_view default_view;
+    script_validate_created_prevout_view_init(&default_view, height);
     script_validate_prevout_fn default_resolver =
-        g_prevout ? g_prevout : created_index_prevout;
+        g_prevout ? g_prevout : script_validate_created_index_prevout;
     void *default_user = g_prevout_user;
-    if (default_resolver == created_index_prevout && !default_user)
+    if (default_resolver == script_validate_created_index_prevout &&
+        !default_user)
         default_user = &default_view;
 
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
@@ -717,7 +607,7 @@ bool script_validate_stage_init(struct main_state *ms)
     /* Wire the production prevout resolver (P0 §2.1) unless a caller (e.g. a
      * test) already installed one. */
     if (!g_prevout)
-        g_prevout = created_index_prevout;
+        g_prevout = script_validate_created_index_prevout;
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO("script_validate", "[script_validate] stage initialised");
@@ -808,129 +698,37 @@ uint64_t script_validate_stage_inputs_verified_total(void)
     return atomic_load(&g_inputs_verified_total);
 }
 
-/* Emit {blocking_height, status, reason, txid, vin} for the lowest logged
- * height with ok=0 — i.e. the first row holding the pipeline back. Reads the
- * status + first_failure_* columns persisted by step_validate and composes
- * the full typed reason (e.g. "prevout_unresolved tx=<hex> vin=<n>"), so
- * zcl_state answers "why is the pipeline stuck" without a separate query.
- * No-op (emits blocking_height=-1) when nothing is blocking. Mirrors the
- * sqlite access already used by body_persist_log_at in this file. */
-static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
+stage_t *script_validate_stage_handle(void)
 {
-    if (!db) {
-        json_push_kv_int(out, "blocking_height", -1);
-        return;
-    }
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT height, status, first_failure_txid, first_failure_vin, "
-        "       first_failure_serror "
-        "FROM script_validate_log WHERE ok = 0 "
-        "ORDER BY height ASC LIMIT 1",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("script_validate",
-                 "[script_validate] dump blocking prepare failed: %s",
-                 sqlite3_errmsg(db));
-        json_push_kv_int(out, "blocking_height", -1);
-        return;
-    }
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc != SQLITE_ROW) {
-        sqlite3_finalize(st);
-        json_push_kv_int(out, "blocking_height", -1);
-        return;
-    }
-
-    int64_t height = sqlite3_column_int64(st, 0);
-    const unsigned char *status_c = sqlite3_column_text(st, 1);
-    const char *status = status_c ? (const char *)status_c : "(unknown)";
-
-    char txhex[65] = {0};
-    const void *blob = sqlite3_column_blob(st, 2);
-    int blob_len = sqlite3_column_bytes(st, 2);
-    bool have_txid = (blob && blob_len == 32);
-    if (have_txid) {
-        struct uint256 txid;
-        memcpy(txid.data, blob, 32);
-        uint256_get_hex(&txid, txhex);
-    }
-
-    int vin = sqlite3_column_type(st, 3) == SQLITE_NULL
-                  ? -1 : sqlite3_column_int(st, 3);
-
-    /* ScriptError is persisted only for a script-invalid verdict (NULL on
-     * decode/prevout/upstream rows). Map it back to its stable string. */
-    bool have_serror = sqlite3_column_type(st, 4) != SQLITE_NULL;
-    int serror_code = have_serror ? sqlite3_column_int(st, 4)
-                                  : (int)SCRIPT_ERR_OK;
-    const char *serror_str =
-        have_serror ? ScriptErrorString((ScriptError)serror_code) : "";
-
-    /* Compose the full typed reason from the persisted token + columns. */
-    char reason[224];
-    if (have_txid && vin >= 0 && have_serror)
-        snprintf(reason, sizeof(reason), "%s tx=%s vin=%d err=%d (%s)",
-                 status, txhex, vin, serror_code, serror_str);
-    else if (have_txid && vin >= 0)
-        snprintf(reason, sizeof(reason), "%s tx=%s vin=%d",
-                 status, txhex, vin);
-    else if (have_txid)
-        snprintf(reason, sizeof(reason), "%s tx=%s", status, txhex);
-    else
-        snprintf(reason, sizeof(reason), "%s", status);
-
-    json_push_kv_int(out, "blocking_height", height);
-    json_push_kv_str(out, "blocking_status", status);
-    json_push_kv_str(out, "blocking_reason", reason);
-    json_push_kv_str(out, "blocking_txid", have_txid ? txhex : "");
-    json_push_kv_int(out, "blocking_vin", vin);
-    json_push_kv_int(out, "blocking_serror", have_serror ? serror_code : -1);
-    json_push_kv_str(out, "blocking_serror_string", serror_str);
-    sqlite3_finalize(st);
+    return g_stage;
 }
 
-bool script_validate_dump_state_json(struct json_value *out, const char *key)
+uint64_t script_validate_stage_inputs_failed_total(void)
 {
-    (void)key;
-    if (!out) return false;
-    json_set_object(out);
+    return atomic_load(&g_inputs_failed_total);
+}
 
-    sqlite3 *db = progress_store_db();
-    int64_t now = platform_time_wall_unix();
-    int64_t last = atomic_load(&g_last_step_unix);
+uint64_t script_validate_stage_header_event_emit_total(void)
+{
+    return atomic_load(&g_header_event_emit_total);
+}
 
-    stage_dump_header(out, STAGE_NAME, g_stage);
-    json_push_kv_int (out, "verified_total",
-                      (int64_t)atomic_load(&g_verified_total));
-    json_push_kv_int (out, "script_invalid_total",
-                      (int64_t)atomic_load(&g_script_invalid_total));
-    json_push_kv_int (out, "internal_error_total",
-                      (int64_t)atomic_load(&g_internal_error_total));
-    json_push_kv_int (out, "upstream_failed_total",
-                      (int64_t)atomic_load(&g_upstream_failed_total));
-    json_push_kv_int (out, "contextual_reject_total",
-                      (int64_t)script_validate_contextual_reject_total());
-    json_push_kv_int (out, "inputs_verified_total",
-                      (int64_t)atomic_load(&g_inputs_verified_total));
-    json_push_kv_int (out, "inputs_failed_total",
-                      (int64_t)atomic_load(&g_inputs_failed_total));
-    json_push_kv_int (out, "header_event_emit_total",
-                      (int64_t)atomic_load(&g_header_event_emit_total));
-    json_push_kv_int (out, "header_event_emit_fail_total",
-                      (int64_t)atomic_load(&g_header_event_emit_fail_total));
-    json_push_kv_int (out, "last_advance_height",
-                      atomic_load(&g_last_advance_height));
-    json_push_kv_int (out, "last_step_unix", last);
-    json_push_kv_int (out, "last_step_age_seconds",
-                      last > 0 ? now - last : -1);
-    json_push_kv_int (out, "last_blocked_unix",
-                      atomic_load(&g_last_blocked_unix));
-    json_push_kv_int (out, "log_rows",
-                      db ? stage_log_row_count(db, STAGE_NAME,
-                                               "script_validate_log") : 0);
-    /* "Why is the pipeline stuck": surface the lowest ok=0 row's typed
-     * reason (status + txid + vin) so zcl_state pinpoints the blocker. */
-    dump_blocking_failure(out, db);
-    stage_dump_counters(out, g_stage);
-    return true;
+uint64_t script_validate_stage_header_event_emit_fail_total(void)
+{
+    return atomic_load(&g_header_event_emit_fail_total);
+}
+
+int64_t script_validate_stage_last_step_unix(void)
+{
+    return atomic_load(&g_last_step_unix);
+}
+
+int64_t script_validate_stage_last_blocked_unix(void)
+{
+    return atomic_load(&g_last_blocked_unix);
+}
+
+int64_t script_validate_stage_last_advance_height(void)
+{
+    return atomic_load(&g_last_advance_height);
 }

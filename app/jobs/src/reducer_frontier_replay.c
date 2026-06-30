@@ -463,14 +463,15 @@ static bool dry_run_stale_script_replay(
     }
     /* STEP 1 (keystone): the dry-run MUST go through the SAME public dry-run the
      * real stage uses (script_validate_stage_dry_run_block -> the NULL/default
-     * created_index_prevout resolver) so dry.ok==true PROVABLY implies the real
-     * fold writes ok=1 for the same (height, active body). We set up the rolled-
-     * back txn so the default resolver sees the SAME state the real fold will:
+     * script_validate_created_index_prevout resolver) so dry.ok==true PROVABLY
+     * implies the real fold writes ok=1 for the same (height, active body). We
+     * set up the rolled-back txn so the default resolver sees the SAME state
+     * the real fold will:
      *   - created_outputs backfilled over [replay_first, backfill_top] (covers
      *     coins created in the replay span);
      *   - coins_kv rewound (inverse deltas) AND the applied_height marker rolled
-     *     back to replay_first, so created_index_prevout's view frontier matches
-     *     the rewound coin set (pre-replay coins resolve via coins_kv, in-span
+     *     back to replay_first, so the resolver's view frontier matches the
+     *     rewound coin set (pre-replay coins resolve via coins_kv, in-span
      *     coins via the created_outputs index — exactly the real fold's two
      *     layers). Everything is undone by the ROLLBACK below. */
     bool rewind_coins = utxo_cursor > replay_first;

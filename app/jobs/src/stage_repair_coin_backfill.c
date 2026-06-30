@@ -65,13 +65,13 @@ static bool refuse(struct coin_backfill_result *r,
 }
 
 /* G5 enumeration — mirrors the validator's exact resolution order/semantics
- * (created_index_prevout, script_validate_stage.c): intra-block earlier tx,
- * then created_outputs over [frontier..H], then coins_kv usable iff
- * height < frontier && height <= H. A coins row whose HEIGHT is unusable is
- * a metadata tear, not a missing coin → refuse (do not mint); a row whose
- * specific vout is not live mirrors the validator's miss → candidate.
- * Refusal is signalled via reason[0] != 0; returns false only on infra
- * error. Caller holds the progress lock. */
+ * (script_validate_created_index_prevout, script_validate_stage_prevout.c):
+ * intra-block earlier tx, then created_outputs over [frontier..H], then
+ * coins_kv usable iff height < frontier && height <= H. A coins row whose
+ * HEIGHT is unusable is a metadata tear, not a missing coin → refuse (do not
+ * mint); a row whose specific vout is not live mirrors the validator's miss →
+ * candidate. Refusal is signalled via reason[0] != 0; returns false only on
+ * infra error. Caller holds the progress lock. */
 static bool enumerate_unresolved_prevouts(sqlite3 *db, const struct block *blk,
                                           int hole_height, int frontier,
                                           struct coin_backfill_outpoint *set,

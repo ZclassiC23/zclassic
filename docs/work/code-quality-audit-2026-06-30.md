@@ -94,6 +94,8 @@ mega-refactor. This page is the running backlog for those passes.
   backing extraction and seed-anchor provenance regression test.
 - [x] Continue oversized-file review with a behavior-preserving
   validate-headers worker-pool extraction and stage regression test.
+- [x] Continue oversized-file review with a behavior-preserving
+  script-validation dumpstate/prevout extraction and stage regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1162,6 +1164,22 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=validate_headers_stage`; final gates
      `git diff --check` and `make lint`.
 
+38. **Oversized script-validation dumpstate/prevout extraction**
+   - Files: `app/jobs/src/script_validate_stage.c`,
+     `app/jobs/src/script_validate_stage_dump.c`,
+     `app/jobs/src/script_validate_stage_prevout.c`,
+     `app/jobs/src/script_validate_stage_internal.h`
+   - Problem: `script_validate_stage.c` owned validation/cursor behavior, the
+     read-only zcl_state dump/query tail, and the production created-output /
+     `coins_kv` prevout resolver, leaving the stage above the 800-line advisory
+     ceiling.
+   - Fix: moved dumpstate and first-failure reporting into a sibling dump TU,
+     moved the production prevout resolver into a sibling prevout TU, and kept
+     validation verdicts, log writes, counters, and cursor movement in the
+     stage owner. `script_validate_stage.c` is now 734 lines.
+   - Tests: ran `make t ONLY=script_validate_stage`; final gates
+     `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1260,6 +1278,11 @@ mega-refactor. This page is the running backlog for those passes.
      the fixed worker pool now lives in `validate_headers_pool.c`, reducing
      `validate_headers_stage.c` to 722 lines while preserving validator,
      recheck, log-write, and cursor semantics.
+   - Twelfth behavior-preserving extraction landed for script validation:
+     dumpstate now lives in `script_validate_stage_dump.c` and the production
+     prevout resolver now lives in `script_validate_stage_prevout.c`, reducing
+     `script_validate_stage.c` to 734 lines while preserving dry-run, log-write,
+     and cursor semantics.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
