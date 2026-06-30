@@ -138,6 +138,12 @@ debt does not block a working sovereign node and must not jump the queue.
       No live behavior change; teeth-verified by `make test_zcl`.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
+- [ ] **Code-review remediation** (secondary hardening lane; must not displace
+      the #1 spine) — the open, verified subset of the 2026-06-27 audit, batched
+      into parallel-worktree lanes with a fix + proof-gate per item:
+      [`code-review-remediation-2026-06-30.md`](./code-review-remediation-2026-06-30.md).
+      First move = the 3 P1s (qw9 explorer-OOB, qw10 diverged-sapling-tree,
+      Sprout-PHGR13 KAT).
 
 ### B. OWNER-GATED (consensus-critical; explicit owner go + repro-on-copy)
 > NOTE (2026-06-17): the C7 **restart-durability** blocker is now handled by the
