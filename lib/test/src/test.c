@@ -632,6 +632,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "boot_legacy_blocks") == 0) {
+        printf("[test] ZCL_TEST_ONLY=boot_legacy_blocks - running only\n");
+        failures += test_boot_legacy_blocks();
+        printf("\n=== boot_legacy_blocks subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
@@ -783,6 +790,7 @@ int main(void)
     failures += test_boot_shutdown_marker();
     failures += test_boot_stale_locks();
     failures += test_boot_blocktree_cleanup();
+    failures += test_boot_legacy_blocks();
     failures += test_store();
     failures += test_blog();
     failures += test_api();

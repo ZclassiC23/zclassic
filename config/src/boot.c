@@ -8,12 +8,12 @@
 #include "config/boot_blocktree_cleanup.h"
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
+#include "config/boot_legacy_blocks.h"
 #include "config/boot_postmortem.h"
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
 #include "config/boot_stale_locks.h"
-#include "config/file_ops.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_activation_service.h"
 #include "services/chain_restore_boot_snapshot.h"
@@ -124,7 +124,6 @@
 #include <time.h>
 #include <pthread.h>
 #include <malloc.h>
-#include <errno.h>
 #include <limits.h>
 #include <sys/sysinfo.h>
 #include <sqlite3.h>
@@ -175,40 +174,6 @@ static size_t get_system_ram(void)
     if (sysinfo(&si) != 0)
         return 0;
     return (size_t)si.totalram * (size_t)si.mem_unit;
-}
-
-static bool boot_link_or_copy_import_block_file(const char *src,
-                                                const char *dst,
-                                                const char *prefix,
-                                                int file_index,
-                                                long long bytes,
-                                                bool announce)
-{
-    if (link(src, dst) == 0) {
-        if (announce && file_index % 10 == 0)
-            printf("  linked %s%05d.dat (%lld MB)\n",
-                   prefix, file_index, bytes >> 20);
-        return true;
-    }
-
-    int link_errno = errno;
-    if (announce) {
-        printf("  copying %s%05d.dat (%lld MB)...\n",
-               prefix, file_index, bytes >> 20);
-        fflush(stdout);
-    }
-
-    if (file_copy(src, dst))
-        return true;
-
-    int copy_errno = errno;
-    LOG_WARN("boot",
-             "[boot] failed to link/copy %s%05d.dat from %s to %s "
-             "(link errno=%d %s, copy errno=%d %s)",
-             prefix, file_index, src, dst,
-             link_errno, strerror(link_errno),
-             copy_errno, strerror(copy_errno));
-    return false;
 }
 
 static struct db_service *boot_runtime_db_service(void)
@@ -2049,60 +2014,20 @@ bool app_init(struct app_context *ctx)
 
                 /* Copy block files from zclassicd if we don't have them */
                 if (g_state.map_block_index.size > 1000) {
-                    char zcd_blk_dir[1024], c23_blk_dir[1024];
+                    char zcd_blk_dir[1024];
                     if (home)
                         snprintf(zcd_blk_dir, sizeof(zcd_blk_dir),
                                  "%s/.zclassic/blocks", home);
                     else
                         snprintf(zcd_blk_dir, sizeof(zcd_blk_dir),
                                  ".zclassic/blocks");
-                    snprintf(c23_blk_dir, sizeof(c23_blk_dir),
-                             "%s/blocks", ctx->datadir);
-
-                    int copy_failures = 0;
-                    for (int fi = 0; fi < 256; fi++) {
-                        char src_path[1200], dst_path[1200];
-                        snprintf(src_path, sizeof(src_path),
-                                 "%s/blk%05d.dat", zcd_blk_dir, fi);
-                        snprintf(dst_path, sizeof(dst_path),
-                                 "%s/blk%05d.dat", c23_blk_dir, fi);
-                        struct stat src_st, dst_st;
-                        if (stat(src_path, &src_st) != 0) {
-                            if (fi > 2) break; /* stop after gap */
-                            continue;
-                        }
-                        /* Skip if destination already exists and is same size */
-                        if (stat(dst_path, &dst_st) == 0 &&
-                            dst_st.st_size == src_st.st_size)
-                            continue;
-                        int index_failures = 0;
-                        if (!boot_link_or_copy_import_block_file(
-                                src_path, dst_path, "blk", fi,
-                                (long long)src_st.st_size, true))
-                            index_failures++;
-                        /* Also link/copy rev (undo) files */
-                        snprintf(src_path, sizeof(src_path),
-                                 "%s/rev%05d.dat", zcd_blk_dir, fi);
-                        snprintf(dst_path, sizeof(dst_path),
-                                 "%s/rev%05d.dat", c23_blk_dir, fi);
-                        if (stat(src_path, &src_st) == 0) {
-                            if (!boot_link_or_copy_import_block_file(
-                                    src_path, dst_path, "rev", fi,
-                                    (long long)src_st.st_size, false))
-                                index_failures++;
-                        }
-                        if (index_failures > 0) {
-                            copy_failures += index_failures;
-                            LOG_WARN("boot",
-                                     "[boot] %d zclassicd block-file import "
-                                     "operation(s) failed for file index %d",
-                                     index_failures, fi);
-                        }
-                    }
-                    if (copy_failures > 0)
+                    struct boot_legacy_block_file_import_result import_files =
+                        boot_legacy_import_block_files(zcd_blk_dir,
+                                                       ctx->datadir, 256);
+                    if (import_files.failures > 0)
                         printf("Block files linked/copied from zclassicd "
                                "with %d failure(s); see node.log\n",
-                               copy_failures);
+                               import_files.failures);
                     else
                         printf("Block files linked/copied from zclassicd\n");
                     fflush(stdout);
@@ -2125,30 +2050,17 @@ bool app_init(struct app_context *ctx)
         if (!ctx->no_legacy_auto_import &&
             g_state.map_block_index.size > 1000) {
             const char *home = getenv("HOME");
-            char zcd_blk[1024], c23_blk[1024];
+            char zcd_blk[1024];
             if (home)
                 snprintf(zcd_blk, sizeof(zcd_blk), "%s/.zclassic/blocks", home);
             else
                 snprintf(zcd_blk, sizeof(zcd_blk), ".zclassic/blocks");
-            snprintf(c23_blk, sizeof(c23_blk), "%s/blocks", ctx->datadir);
-
-            int linked = 0;
-            for (int fi = 0; fi < 256; fi++) {
-                char src[1200], dst[1200];
-                snprintf(src, sizeof(src), "%s/blk%05d.dat", zcd_blk, fi);
-                snprintf(dst, sizeof(dst), "%s/blk%05d.dat", c23_blk, fi);
-                struct stat ss, ds;
-                if (stat(src, &ss) != 0) { if (fi > 2) break; continue; }
-                if (stat(dst, &ds) == 0) continue; /* already exists */
-                if (link(src, dst) == 0) linked++;
-                /* Also link rev file */
-                snprintf(src, sizeof(src), "%s/rev%05d.dat", zcd_blk, fi);
-                snprintf(dst, sizeof(dst), "%s/rev%05d.dat", c23_blk, fi);
-                if (stat(src, &ss) == 0 && stat(dst, &ds) != 0)
-                    link(src, dst);
-            }
-            if (linked > 0)
-                printf("Linked %d block files from zclassicd\n", linked);
+            struct boot_legacy_block_file_link_result link_files =
+                boot_legacy_link_missing_block_files(zcd_blk,
+                                                     ctx->datadir, 256);
+            if (link_files.linked > 0)
+                printf("Linked %d block files from zclassicd\n",
+                       link_files.linked);
         }
 
         /* Projection top-up: fold the event-log block_index_projection over

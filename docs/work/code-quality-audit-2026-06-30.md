@@ -184,6 +184,10 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Continue oversized-file review with a behavior-preserving app-context
   extraction: context defaults and runtime-profile parsing/capability helpers
   now live in `app_context.c`, with dedicated defaults/profile regressions.
+- [x] Continue oversized-file review with a behavior-preserving legacy
+  block-file extraction: zclassicd `blk`/`rev` import and warm-boot missing-file
+  linking now live in `boot_legacy_blocks.*`, with fixture regressions for
+  import, same-size skip semantics, warm linking, and invalid datadirs.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1555,6 +1559,24 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make -j$(nproc) build-only` and
      `make t ONLY=app_context`.
 
+54. **Boot legacy block-file import split**
+   - Files: `config/src/boot.c`, `config/src/boot_legacy_blocks.c`,
+     `config/include/config/boot_legacy_blocks.h`,
+     `lib/test/src/test_boot_legacy_blocks.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still carried two zclassicd block-file
+     loops inline: a hardlink-or-copy `blk`/`rev` import after loading the
+     legacy LevelDB block index, and a later warm-boot hardlink-only pass for
+     missing files. That duplicated filename/path policy in the middle of the
+     block-index phase and made future boot reviews harder to scan.
+   - Fix: moved both loops and the shared link/copy helper into
+     `boot_legacy_blocks.c`. `boot.c` now asks for legacy block files through a
+     named filesystem helper, while the new helper owns path construction,
+     same-size skip behavior, copy fallback diagnostics, and best-effort warm
+     linking. `boot.c` is now 3616 lines and the new helper is 198 lines.
+   - Tests: ran `make t ONLY=boot_legacy_blocks`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1751,6 +1773,11 @@ mega-refactor. This page is the running backlog for those passes.
      profiles: public context defaults and profile capability predicates now
      live in `app_context.c`. This keeps future boot reviews focused on phase
      ordering while giving argv/profile agents a small file to inspect.
+   - Thirtieth behavior-preserving extraction landed for legacy block-file
+     import/linking: zclassicd `blk`/`rev` filesystem policy now lives in
+     `boot_legacy_blocks.c`. This removes duplicated filename/link/copy loops
+     from `boot.c` while preserving the legacy same-size skip behavior and the
+     warm-boot missing-file link pass.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
