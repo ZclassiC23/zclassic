@@ -63,7 +63,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bn254) X(merkle_tree) X(slp) X(models) X(core) X(znam) X(htlc) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
-    X(explorer) X(explorer_index) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
+    X(explorer) X(explorer_rpc_call) X(explorer_index) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
     X(keystone_utxo_binding) \
     X(flyclient) X(flyclient_chainwork_floor) X(scan_util) X(tor) \
     X(onion_bootstrap) X(cold_start_sync) X(kill9_recovery) \
@@ -128,6 +128,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mempool_limits) X(addrman_integrity) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \
+    X(sprout_phgr13_kat) \
+    X(rescanwitnesses_diverge_guard) \
     X(snark_kat) \
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) X(reorg_parity) \
     X(reorg_projection_parity) X(stage_reorg_unwind_parity) \
@@ -226,7 +228,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_wallet_key_derivation) X(domain_wallet_mnemonic) \
     X(domain_encoding_base58) X(domain_encoding_bech32) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
-    X(utxo_snapshot_inmem) X(hodl_history_port) X(node_health_store_port) \
+    X(utxo_snapshot_inmem) X(snapshot_apply_coins_kv) \
+    X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \
     X(snapshot_store_port) \
     X(block_index_sidecar_port) \

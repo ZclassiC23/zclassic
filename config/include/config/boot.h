@@ -249,6 +249,23 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *datadir,
                                             struct main_state *ms);
 
+/* Testable production transaction used by both SHA3-verified snapshot seed
+ * paths. The caller owns trust: `snapshot` must already be opened by uss_open()
+ * with the intended SHA3 binding. This helper only applies the verified records
+ * into coins_kv under ONE BEGIN IMMEDIATE, requires exactly expected_count
+ * records, stamps COINS_KV_MIGRATION_COMPLETE_KEY in the same transaction, and
+ * rolls back on any mismatch or insert/stamp/commit failure. */
+struct sqlite3;
+struct uss_handle;
+struct boot_snapshot_apply_result {
+    uint64_t inserted;
+    int64_t emitted;
+};
+bool boot_snapshot_apply_to_coins_kv(struct sqlite3 *progress_db,
+                                     struct uss_handle *snapshot,
+                                     uint64_t expected_count,
+                                     struct boot_snapshot_apply_result *out);
+
 /* Zero-flag starter-pack bootstrap. Scan `datadir` for a starter-pack bundle —
  * block_index.bin (the PoW header index) plus a utxo-seed-<H>.snapshot (a
  * SHA3-self-verified, anchor-bound UTXO seed) — and return a malloc'd absolute

@@ -7,8 +7,28 @@
 
 #include "controllers/wallet_rescan_controller_internal.h"
 
+static bool uint256_is_zero_local(const struct uint256 *v)
+{
+    static const uint8_t zero[32] = {0};
+    return !v || memcmp(v->data, zero, sizeof(v->data)) == 0;
+}
+
+bool rescan_result_consensus_valid(const struct uint256 *our_root,
+                                   const struct uint256 *header_root,
+                                   int witness_mismatches)
+{
+    if (!our_root || !header_root)
+        return false;
+    if (witness_mismatches != 0)
+        return false;
+    if (uint256_is_zero_local(header_root))
+        return false;
+    return memcmp(our_root->data, header_root->data,
+                  sizeof(our_root->data)) == 0;
+}
+
 bool rpc_rescanwitnesses(const struct json_value *params, bool help,
-                                  struct json_value *result)
+	                                  struct json_value *result)
 {
     struct wallet_rpc_context *ctx = wallet_ctx();
     (void)params;
@@ -188,18 +208,21 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
            total_commitments, safe_tip);
     fflush(stdout);
 
+    struct uint256 final_tree_root;
+    incremental_tree_root(&tree, &final_tree_root);
+    struct uint256 final_header_root;
+    memset(&final_header_root, 0, sizeof(final_header_root));
+
     /* Verify tree root matches block header at save height */
     {
         const struct block_index *save_block =
             active_chain_at(&ctx->main_state->chain_active, safe_tip);
         if (save_block) {
-            struct uint256 our_root;
-            incremental_tree_root(&tree, &our_root);
+            final_header_root = save_block->hashFinalSaplingRoot;
             char oh[65], bh[65];
-            uint256_get_hex(&our_root, oh);
-            uint256_get_hex(&save_block->hashFinalSaplingRoot, bh);
-            if (memcmp(our_root.data,
-                       save_block->hashFinalSaplingRoot.data, 32) == 0) {
+            uint256_get_hex(&final_tree_root, oh);
+            uint256_get_hex(&final_header_root, bh);
+            if (memcmp(final_tree_root.data, final_header_root.data, 32) == 0) {
                 printf("rescanwitnesses: FINAL tree root matches block header at height %d ✓\n", safe_tip);
             } else {
                 printf("rescanwitnesses: FINAL tree root DOES NOT match block header at height %d!\n"
@@ -208,20 +231,24 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
                        safe_tip, oh, incremental_tree_size(&tree), bh);
             }
             fflush(stdout);
+        } else {
+            printf("rescanwitnesses: FINAL tree root cannot be checked at height %d (missing active-chain block)\n",
+                   safe_tip);
+            fflush(stdout);
         }
     }
 
     /* Verify witness roots match tree root BEFORE saving */
+    int witness_root_mismatches = 0;
     {
-        struct uint256 tree_root;
-        incremental_tree_root(&tree, &tree_root);
-        char tr_hex[65]; uint256_get_hex(&tree_root, tr_hex);
+        char tr_hex[65]; uint256_get_hex(&final_tree_root, tr_hex);
         for (int ni = 0; ni < n_notes; ni++) {
             if (!witness_active[ni]) continue;
             struct uint256 wr;
             incremental_witness_root(&witnesses[ni], &wr);
             char wr_hex[65]; uint256_get_hex(&wr, wr_hex);
-            if (memcmp(wr.data, tree_root.data, 32) != 0) {
+            if (memcmp(wr.data, final_tree_root.data, 32) != 0) {
+                witness_root_mismatches++;
                 printf("rescanwitnesses: WITNESS ROOT MISMATCH for note %d!\n"
                     "  tree root:    %s (size=%zu)\n"
                     "  witness root: %s (fills=%zu)\n",
@@ -232,6 +259,33 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
             }
         }
         fflush(stdout);
+    }
+
+    if (!rescan_result_consensus_valid(&final_tree_root, &final_header_root,
+                                       witness_root_mismatches)) {
+        char our_hex[65], header_hex[65];
+        uint256_get_hex(&final_tree_root, our_hex);
+        uint256_get_hex(&final_header_root, header_hex);
+        printf("rescanwitnesses: refusing to save diverged Sapling tree "
+               "(height=%d mismatches=%d our=%s header=%s)\n",
+               safe_tip, witness_root_mismatches, our_hex, header_hex);
+        fflush(stdout);
+
+        free(witnesses);
+        free(witness_active);
+        free(notes);
+        atomic_store(&g_sapling_rescan_active, false);
+
+        json_set_object(result);
+        json_push_kv_str(result, "status", "diverged");
+        json_push_kv_str(result, "message",
+                         "Sapling tree diverged from consensus header root; refusing to save rescan tree or witnesses");
+        json_push_kv_int(result, "height", safe_tip);
+        json_push_kv_str(result, "our_root", our_hex);
+        json_push_kv_str(result, "header_root", header_hex);
+        json_push_kv_int(result, "witness_root_mismatches",
+                         witness_root_mismatches);
+        return false;
     }
 
     /* Save the authoritative tree state to node_state.

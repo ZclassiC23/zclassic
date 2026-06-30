@@ -46,7 +46,8 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
     if (zcl_is_all_digits(param)) {
         char params[64];
         snprintf(params, sizeof(params), "[%s]", param);
-        rpc_call("getblockhash", params, buf, sizeof(buf));
+        if (rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
+            return explorer_view_block_not_found_rpc(r, max);
         zcl_json_extract_str(buf, "result", hash, sizeof(hash));
     } else if (zcl_is_hex_string(param, 64)) {
         snprintf(hash, sizeof(hash), "%s", param);
@@ -58,7 +59,8 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
     /* Get full block */
     char params2[128];
     snprintf(params2, sizeof(params2), "[\"%s\", true]", hash);
-    rpc_call("getblock", params2, buf, sizeof(buf));
+    if (rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
+        return explorer_view_block_not_found_rpc(r, max);
 
     struct explorer_block_rpc_view_data d;
     memset(&d, 0, sizeof(d));

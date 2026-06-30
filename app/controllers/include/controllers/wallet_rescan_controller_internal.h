@@ -71,6 +71,9 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
                       struct json_value *result);
 
 /* wallet_rescan_controller_witness.c — rescanwitnesses */
+bool rescan_result_consensus_valid(const struct uint256 *our_root,
+                                   const struct uint256 *header_root,
+                                   int witness_mismatches);
 bool rpc_rescanwitnesses(const struct json_value *params, bool help,
                          struct json_value *result);
 

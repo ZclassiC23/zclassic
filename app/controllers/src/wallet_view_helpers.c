@@ -92,6 +92,10 @@ const char *wv_zclassicd_auth(void) {
 int wv_rpc_call(const char *method, const char *params_json,
                 char *out, size_t outmax)
 {
+    if (!out || outmax == 0)
+        LOG_ERR("wallet_view", "rpc_call(%s): invalid output buffer", method);
+    out[0] = '\0';
+
     const char *auth_cookie = wv_zclassicd_auth();
     char cookie[256] = "";
 
@@ -187,6 +191,10 @@ int wv_rpc_call(const char *method, const char *params_json,
         "Content-Type: application/json\r\n"
         "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
         auth_b64, blen, body);
+    if (rlen < 0 || (size_t)rlen >= sizeof(req)) {
+        close(fd);
+        LOG_ERR("wallet_view", "rpc_call(%s): request too large (%d bytes)", method, rlen);
+    }
 
     if (write(fd, req, (size_t)rlen) != rlen) {
         close(fd);

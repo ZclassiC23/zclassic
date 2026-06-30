@@ -13,17 +13,30 @@
 
 ## Status since the review landed
 
-Of the 12 file:line-confirmed HIGH/quick-win bugs, **7 are fixed** (verified in
+Of the 12 file:line-confirmed HIGH/quick-win bugs, **9 are fixed** (verified in
 code 2026-06-30 — note: the memory claim that "items 1–8 shipped" was wrong on
-item 5). The 96 post-review commits went heavily into god-function decomposition
+item 5; this pass closed qw9/qw10). The 96 post-review commits went heavily into god-function decomposition
 (33 `split`/`audit: split`) and live-wedge liveness (~37 sync/boot/cure commits —
 the node now holds tip with 0 blockers). The review's two weakest dimensions —
 **DRY** and **TESTED** — were barely advanced. This doc is the remainder.
 
 ```
-quick-win bug fixes   ████████████░░░░░░░░  7/12   (qw5,9,10,12 open; qw11 reclassified)
+quick-win bug fixes   ███████████████░░░░░  9/12   (qw5,12 open; qw11 reclassified)
 cross-cutting cleanups ██████░░░░░░░░░░░░░░  ~30%   (0 done, 4 partial, 3 not started)
 ```
+
+Update 2026-06-30: the P1 opening batch is implemented and proof-gated in this
+branch: qw9, qw9-callers, qw10, and TESTED gap #1 (`test_sprout_phgr13_kat`).
+Verification: focused `test_parallel --only=...`, `make check-test-registration`,
+`make lint-fast`, and full `make test`.
+
+Update 2026-06-30: TESTED gap #2 (`test_snapshot_apply_coins_kv`) is implemented
+and proof-gated in this branch. It extracts the production snapshot→coins_kv
+apply transaction, proves good apply count+SHA3, wrong-count rollback, and
+tampered-body refusal. Verification: focused `snapshot_apply_coins_kv` plus the
+nearby `load_verify_boot`, `refold_retro_validate`, `refold_auto_arm`,
+`refold_from_anchor_fatal`, `boot_refold_window_extend`, and
+`loader_owns_seed_gate` groups.
 
 ## Trap-check results (the most important planning output)
 
@@ -46,19 +59,39 @@ over-reads 252 B). Folded into **cc-blob-swap** below.
 ## Priority tiers
 
 - **P0** — none. Node is at tip, no live blocker.
-- **P1** — can lose funds / serve bad data / known consensus blind spot: **qw10, qw9, tested-gap #1 (PHGR13 KAT)**.
-- **P2** — silent corruption / class-cure: **qw5, qw12, cc-gtod (timing class), cc-blob, cc-arwrite, cc-mostwork, tested-gap #2/#3**.
-- **P3** — hygiene / documentation: **qw9-callers, qw11, cc-ccoins KAT, cc-arwrite renames, tested-gap #4**.
+- **P1** — closed in this branch: **qw10, qw9, tested-gap #1 (PHGR13 KAT)**.
+- **P2** — silent corruption / class-cure: **qw5, qw12, cc-gtod (timing class), cc-blob, cc-arwrite, cc-mostwork, tested-gap #3**.
+- **P3** — hygiene / documentation: **qw11, cc-ccoins KAT, cc-arwrite renames, tested-gap #4**.
 
-## Recommended first move
+## Restart command
 
-Ship the **three P1s** as the opening of the next push — they are the only
-genuine safety wins and all are small + non-consensus (except the KAT, which is
-consensus-*pinning*, not consensus-*changing*):
+Give the next developer this exact goal:
 
-1. **qw9** — `out[0]='\0'` entry guard (S, no risk).
-2. **qw10** — fail-loud on diverged sapling tree (M, wallet-funds).
-3. **tested-gap #1** — Sprout PHGR13 real-proof KAT (M, pins the blind spot that shipped the 2026-05-30 always-reject flood GREEN).
+```text
+continue zclassic23 hardening from docs/work/code-review-remediation-2026-06-30.md; start at TESTED gap #3 by extracting and testing gap_fill_compute_window(), then continue with qw12, qw5, cc-blob, cc-mostwork, timing cleanup, and remaining P3 tests/docs. Keep changes scoped, update the remediation doc, run focused tests plus make test.
+```
+
+## Completed first moves
+
+The original opening batch is done in this branch:
+
+1. **qw9 + qw9-callers** — RPC output buffer guards and caller failure handling.
+2. **qw10** — fail-loud on diverged Sapling tree.
+3. **tested-gap #1** — Sprout PHGR13 real-proof KAT.
+4. **tested-gap #2** — production snapshot→coins_kv apply transaction KAT.
+
+## Next move
+
+Start with **`test_gap_fill_frontier_window`**. Production
+`gap_fill_service.c` already anchors the refill window at `body_fetch_stage_cursor() - 1`
+when that frontier is behind the active tip, but the logic is embedded inside
+`gap_fill_pass()`. Extract the pure window calculation into
+`gap_fill_compute_window()` and test:
+
+1. active tip ahead of reducer/body-fetch frontier anchors at the frontier, not
+   active tip;
+2. entries with `BLOCK_HAVE_DATA` are excluded by the queue-selection path;
+3. large gaps cap at `GAPFILL_WINDOW` and choose the connectable bottom window.
 
 ---
 
@@ -72,14 +105,14 @@ the wrong order.
 ### Lane A — wallet safety  *(P1 + P3, wallet-funds)*
 | id | sev | fix | files | gate |
 |---|---|---|---|---|
-| **qw10** | P1 | Wire the already-present divergence detection into a hard refusal: extract `bool rescan_result_consensus_valid(our_root, header_root, mismatches)` (false on all-zeros header_root OR root!=our_root OR mismatches>0); gate the save block on it so a divergence does **not** persist `sapling_tree`/witnesses and returns an explicit `status="diverged"` error instead of `witnesses_saved:N`. | `wallet_rescan_controller_witness.c:191-261,293-299` | new `test_rescanwitnesses_diverge_guard.c` truth table → `test_parallel`; copy-prove: force diverged tree on a copy, assert `node.db` `sapling_tree_rescan` unchanged |
+| **qw10** | P1 | **DONE 2026-06-30.** Wire the already-present divergence detection into a hard refusal: extract `bool rescan_result_consensus_valid(our_root, header_root, mismatches)` (false on all-zeros header_root OR root!=our_root OR mismatches>0); gate the save block on it so a divergence does **not** persist `sapling_tree`/witnesses and returns an explicit `status="diverged"` error instead of `witnesses_saved:N`. | `wallet_rescan_controller_witness.c:191-261,293-299` | new `test_rescanwitnesses_diverge_guard.c` truth table → `test_parallel`; copy-prove: force diverged tree on a copy, assert `node.db` `sapling_tree_rescan` unchanged |
 | **qw11** | P3 | Keep the placeholder (intentional). Add a `source='view'` marker so a spend attempt returns "view-only balance synced from zclassicd" not a confusing empty-notes error; guard `db_sapling_note_replace_all` from clobbering real catchup notes; record in `AGENT_TRAPS.md`. | `wallet_view_sync.c:69-102,250-270` | regression test: placeholder `ivk` ≠ real keystore `ivk`; note not returned by `..._for_ivk(real_ivk)` |
 
 ### Lane B — explorer OOB  *(P1 + P3, no risk)*
 | id | sev | fix | files | gate |
 |---|---|---|---|---|
-| **qw9** | P1 | **Root fix = terminate at entry.** Top of `rpc_call()`: `if (!out||outmax==0) return -1; out[0]='\0';` — every `-1` path then leaves a valid empty C-string, so caller `strstr` parsers read one NUL not 64-256 KB of uninit stack. `outmax==0` guard also closes a latent `outmax-1` underflow. Mirror to sibling `wv_rpc_call`. | `explorer_controller.c:254-258` (+latent OOB `:313-318`); `wallet_view_helpers.c:92-102` | new `test_explorer_rpc_call.c`: dead port → assert `n==-1 && buf[0]=='\0'`; build under existing ASan config so a pre-fix `strstr` tail-run trips |
-| **qw9-callers** | P3 | Add `n<=0` guards at the 6 ignoring sites (mirrors the already-correct `_tx.c:56`/`_address.c:192`). Defense-in-depth on top of qw9. | `explorer_controller_dashboard.c:35,40,54,64`; `explorer_controller_block.c:49,61` | extend the same test: dead port → response == not-found view |
+| **qw9** | P1 | **DONE 2026-06-30.** **Root fix = terminate at entry.** Top of `rpc_call()`: `if (!out||outmax==0) return -1; out[0]='\0';` — every `-1` path then leaves a valid empty C-string, so caller `strstr` parsers read one NUL not 64-256 KB of uninit stack. `outmax==0` guard also closes a latent `outmax-1` underflow. Mirror to sibling `wv_rpc_call`. | `explorer_controller.c:254-258` (+latent OOB `:313-318`); `wallet_view_helpers.c:92-102` | new `test_explorer_rpc_call.c`: dead port → assert `n==-1 && buf[0]=='\0'`; build under existing ASan config so a pre-fix `strstr` tail-run trips |
+| **qw9-callers** | P3 | **DONE 2026-06-30.** Add `n<=0` guards at the 6 ignoring sites (mirrors the already-correct `_tx.c:56`/`_address.c:192`). Defense-in-depth on top of qw9. | `explorer_controller_dashboard.c:35,40,54,64`; `explorer_controller_block.c:49,61` | extend the same test: dead port → response == not-found view |
 
 ### Lane C — db import / open  *(P2)*
 | id | sev | fix | files | gate |
@@ -141,8 +174,8 @@ The review's weakest dimension. Four new `test_<name>.c`, each registered in
 **both** `test_parallel.c` (TEST_LIST X-macro) **and** `test.c` (dispatch) or the
 parallel runner silently skips. All deterministic (no datadir / network / `~/.zcash-params`).
 
-1. **`test_sprout_phgr13_kat`** (P1) — **ADD FIRST.** Real PHGR13 verifier (`bn254.c:2143 sprout_verify_phgr13`) is exercised by **zero** tests today (`test_snark_kat` explicitly excludes BN254; `test_proof_validate_stage` uses a fake verifier; `test_phgr13_fix` only pins the VK parser and SKIPs if params absent). Embed the 1449-byte VK + one real 296-byte proof + JoinSplit fields as a byte-array fixture. Positive→`true`; flip a proof byte→`false`; flip a nullifier→`false`. Catches both always-reject **and** always-accept.
-2. **`test_snapshot_apply_coins_kv`** (P2) — the real apply (`boot_refold_staged.c:315 mint_load_record_cb` → `coins_kv`, terminal `commitment==checkpoint && count==utxo_count` assert) is untested. Reuse the in-mem sidecar builder; good→exact-N + matching SHA3; tampered→refuses, leaves `coins_kv` empty (atomic).
+1. **`test_sprout_phgr13_kat`** (P1) — **DONE 2026-06-30.** Real PHGR13 verifier (`bn254.c:2143 sprout_verify_phgr13`) is exercised by **zero** tests today (`test_snark_kat` explicitly excludes BN254; `test_proof_validate_stage` uses a fake verifier; `test_phgr13_fix` only pins the VK parser and SKIPs if params absent). Embed the 1449-byte VK + one real 296-byte proof + JoinSplit fields as a byte-array fixture. Positive→`true`; flip a proof byte→`false`; flip a nullifier→`false`. Catches both always-reject **and** always-accept.
+2. **`test_snapshot_apply_coins_kv`** (P2) — **DONE 2026-06-30.** The real apply (`boot_refold_staged.c:315 mint_load_record_cb` → `coins_kv`, terminal `commitment==checkpoint && count==utxo_count` assert) is now pinned through `boot_snapshot_apply_to_coins_kv`: good→exact-N + matching SHA3; wrong expected count→rollback; tampered→refuses, leaves `coins_kv` empty.
 3. **`test_gap_fill_frontier_window`** (P2) — needs a small seam (`gap_fill_compute_window()`). Assert the refill window anchors at the **reducer frontier**, excludes HAVE_DATA, caps at window. Fails if it anchors at active tip (re-introduces the tip>frontier wedge).
 4. **`test_boot_snapshot_drop_bodiless`** (P3) — seam on `boot_snapshot_drop_bodiless_have_data_above_seed` (`boot_refold_staged.c:203`). Above/below-seed bodiless → HAVE_DATA cleared; **seed protected**.
 

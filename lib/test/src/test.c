@@ -656,6 +656,7 @@ int main(void)
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
+        failures += test_explorer_rpc_call();
         failures += test_explorer_index();
         printf("\n=== explorer subset complete: %d failure(s) ===\n",
                failures);
@@ -796,6 +797,7 @@ int main(void)
       failures += test_ldb_snapshot(); }
     { extern int test_utxo_snapshot_loader(void);
       failures += test_utxo_snapshot_loader(); }
+    failures += test_snapshot_apply_coins_kv();
     { extern int test_load_verify_boot(void);
       failures += test_load_verify_boot(); }
     { extern int test_boot_snapshot_failure_memory(void);
@@ -811,6 +813,7 @@ int main(void)
     failures += test_blog();
     failures += test_api();
     failures += test_explorer();
+    failures += test_explorer_rpc_call();
     failures += test_explorer_index();
     failures += test_mining();
     failures += test_regtest_generate();
@@ -1005,6 +1008,8 @@ int main(void)
     failures += test_ws_events();
     failures += test_trace();
     failures += test_phgr13_fix();
+    failures += test_sprout_phgr13_kat();
+    failures += test_rescanwitnesses_diverge_guard();
     failures += test_snark_kat();
     failures += test_unclean_shutdown_advance();
     { extern int test_no_hardcoded_home(void);

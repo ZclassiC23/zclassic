@@ -325,6 +325,63 @@ static bool mint_load_record_cb(const struct uss_record *r, void *vctx)
     return true;
 }
 
+bool boot_snapshot_apply_to_coins_kv(sqlite3 *progress_db,
+                                     struct uss_handle *snapshot,
+                                     uint64_t expected_count,
+                                     struct boot_snapshot_apply_result *out)
+{
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!progress_db || !snapshot)
+        LOG_FAIL("boot", "snapshot_apply: NULL argument");
+    if (expected_count > (uint64_t)INT64_MAX) {
+        LOG_WARN("boot", "snapshot_apply: expected_count=%llu exceeds int64",
+                 (unsigned long long)expected_count);
+        return false;
+    }
+
+    char *terr = NULL;
+    if (sqlite3_exec(progress_db, "BEGIN IMMEDIATE", NULL, NULL, &terr)
+        != SQLITE_OK) {
+        LOG_WARN("boot", "snapshot_apply: BEGIN failed: %s",
+                 terr ? terr : "(no msg)");
+        if (terr) sqlite3_free(terr);
+        return false;
+    }
+
+    struct mint_load_ctx lc = { .pdb = progress_db };
+    int64_t emitted = uss_iter(snapshot, mint_load_record_cb, &lc);
+    bool ok = !lc.failed && emitted == (int64_t)expected_count &&
+              lc.inserted == expected_count;
+    if (ok) {
+        uint8_t one = 1;
+        if (!progress_meta_set_in_tx(progress_db,
+                                     COINS_KV_MIGRATION_COMPLETE_KEY,
+                                     &one, 1))
+            ok = false;
+    }
+    if (ok && sqlite3_exec(progress_db, "COMMIT", NULL, NULL, &terr)
+        != SQLITE_OK)
+        ok = false;
+    if (!ok)
+        sqlite3_exec(progress_db, "ROLLBACK", NULL, NULL, NULL);
+    if (terr)
+        sqlite3_free(terr);
+
+    if (out) {
+        out->inserted = lc.inserted;
+        out->emitted = emitted;
+    }
+    if (!ok) {
+        LOG_WARN("boot", "snapshot_apply: refused snapshot load "
+                 "(emitted=%lld inserted=%llu expected=%llu failed=%d)",
+                 (long long)emitted, (unsigned long long)lc.inserted,
+                 (unsigned long long)expected_count, lc.failed ? 1 : 0);
+        return false;
+    }
+    return true;
+}
+
 /* Re-seed coins_kv from the MINTED, SHA3-committed anchor snapshot (the artifact
  * the -mint-anchor ceremony produced). uss_open verifies the body SHA3 AND binds
  * it to the compiled checkpoint root (expected_sha3 = cp->sha3_hash), so a loaded
@@ -364,35 +421,15 @@ static bool boot_anchor_seed_from_snapshot(struct node_db *ndb, sqlite3 *rpdb,
         uss_close(h);
         return false;
     }
-    char *terr = NULL;
-    if (sqlite3_exec(rpdb, "BEGIN IMMEDIATE", NULL, NULL, &terr) != SQLITE_OK) {
-        if (terr) sqlite3_free(terr);
-        uss_close(h);
-        return false;
-    }
-    struct mint_load_ctx lc = { .pdb = rpdb };
-    int64_t emitted = uss_iter(h, mint_load_record_cb, &lc);
-    bool ok = !lc.failed && emitted == (int64_t)hdr.count;
-    /* Stamp the migration-complete key inside the SAME txn (parity with the
-     * node.db reseed path): coins_kv provably holds the live anchor set. */
-    if (ok) {
-        uint8_t one = 1;
-        if (!progress_meta_set_in_tx(rpdb, COINS_KV_MIGRATION_COMPLETE_KEY,
-                                     &one, 1))
-            ok = false;
-    }
-    if (ok && sqlite3_exec(rpdb, "COMMIT", NULL, NULL, &terr) != SQLITE_OK)
-        ok = false;
-    if (!ok)
-        sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
-    if (terr) sqlite3_free(terr);
+    struct boot_snapshot_apply_result ar = {0};
+    bool ok = boot_snapshot_apply_to_coins_kv(rpdb, h, hdr.count, &ar);
     uss_close(h);
 
     if (ok)
         fprintf(stderr,
                 "[boot] -refold-from-anchor: loaded %llu coins from the MINTED "
                 "snapshot %s (SHA3 verified vs the compiled checkpoint)\n",
-                (unsigned long long)lc.inserted, path);
+                (unsigned long long)ar.inserted, path);
     return ok;
 }
 
@@ -1088,44 +1125,29 @@ retry_authority_store:
         _exit(EXIT_FAILURE);
     }
 
-    char *terr = NULL;
-    if (sqlite3_exec(rpdb, "BEGIN IMMEDIATE", NULL, NULL, &terr) != SQLITE_OK) {
-        if (!authority_retry_used) {
-            if (terr) {
-                sqlite3_free(terr);
-                terr = NULL;
-            }
-            uss_close(h);
-            h = NULL;
-            authority_retry_used = true;
-            if (reopen_progress_store_after_verified_snapshot(
-                    datadir, &rpdb, "progress_begin_failed"))
-                goto retry_authority_store;
-        }
-        fprintf(stderr, "FATAL: -load-snapshot-at-own-height: BEGIN failed: %s\n",
-                terr ? terr : "(no msg)");
-        if (terr) sqlite3_free(terr);
+    struct boot_snapshot_apply_result ar = {0};
+    bool load_ok = boot_snapshot_apply_to_coins_kv(rpdb, h, hdr.count, &ar);
+    if (!load_ok && !authority_retry_used) {
         uss_close(h);
-        _exit(EXIT_FAILURE);
+        h = NULL;
+        authority_retry_used = true;
+        if (reopen_progress_store_after_verified_snapshot(
+                datadir, &rpdb, "snapshot_apply_failed"))
+            goto retry_authority_store;
+        h = uss_open(path, /*verify_full_sha3=*/true,
+                     /*expected_sha3=*/NULL, &hdr2, err2, sizeof(err2));
+        if (!h || !snapshot_headers_equal(&hdr, &hdr2)) {
+            fprintf(stderr,
+                    "FATAL: -load-snapshot-at-own-height: snapshot changed "
+                    "while recovering authority store (%s) — refusing to seed\n",
+                    h ? "header mismatch" : err2);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "load_snapshot_at_own_height snapshot_changed_after_apply_retry");
+            if (h)
+                uss_close(h);
+            _exit(EXIT_FAILURE);
+        }
     }
-    struct mint_load_ctx lc = { .pdb = rpdb };
-    int64_t emitted = uss_iter(h, mint_load_record_cb, &lc);
-    /* (i) the ONLY trust gate: body SHA3 already matched in uss_open; here we
-     * require uss_iter to have consumed EXACTLY hdr.count records (records_parsed
-     * == hdr.count) with no insert failure. */
-    bool load_ok = !lc.failed && emitted == (int64_t)hdr.count &&
-                   lc.inserted == hdr.count;
-    if (load_ok) {
-        uint8_t one = 1;
-        if (!progress_meta_set_in_tx(rpdb, COINS_KV_MIGRATION_COMPLETE_KEY,
-                                     &one, 1))
-            load_ok = false;
-    }
-    if (load_ok && sqlite3_exec(rpdb, "COMMIT", NULL, NULL, &terr) != SQLITE_OK)
-        load_ok = false;
-    if (!load_ok)
-        sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
-    if (terr) sqlite3_free(terr);
 
     /* While the (re-opened) handle is still mapped, capture a heap copy of any
      * embedded Sapling frontier (v2 snapshot). The section is inside the body
@@ -1163,13 +1185,13 @@ retry_authority_store:
                 goto retry_authority_store;
         }
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: load FAILED "
-                "(inserted=%llu emitted=%lld want count=%llu, insert_failed=%d) "
+                "(inserted=%llu emitted=%lld want count=%llu) "
                 "— REFUSING to seed\n",
-                (unsigned long long)lc.inserted, (long long)emitted,
-                (unsigned long long)hdr.count, lc.failed ? 1 : 0);
+                (unsigned long long)ar.inserted, (long long)ar.emitted,
+                (unsigned long long)hdr.count);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "load_snapshot_at_own_height load_mismatch inserted=%llu "
-                    "want=%llu", (unsigned long long)lc.inserted,
+                    "want=%llu", (unsigned long long)ar.inserted,
                     (unsigned long long)hdr.count);
         _exit(EXIT_FAILURE);
     }

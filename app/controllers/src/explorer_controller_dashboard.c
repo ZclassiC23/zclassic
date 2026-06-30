@@ -32,12 +32,16 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
     char buf[65536];
 
     /* Get blockchain info */
-    rpc_call("getblockchaininfo", "[]", buf, sizeof(buf));
+    if (rpc_call("getblockchaininfo", "[]", buf, sizeof(buf)) <= 0) {
+        struct explorer_dashboard_rpc_view v = {0};
+        return explorer_dashboard_view_rpc(r, max, &v);
+    }
     int tip = (int)zcl_json_int(buf, "blocks");
     double diff = zcl_json_real(buf, "difficulty");
 
     /* Get mempool info */
-    rpc_call("getmempoolinfo", "[]", buf, sizeof(buf));
+    if (rpc_call("getmempoolinfo", "[]", buf, sizeof(buf)) <= 0)
+        buf[0] = '\0';
     int64_t mp_count = zcl_json_int(buf, "size");
     int64_t mp_bytes = zcl_json_int(buf, "bytes");
 
@@ -51,7 +55,8 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
     for (int h = tip; h > tip - show && h >= 0 && n < show; h--) {
         char params[64];
         snprintf(params, sizeof(params), "[%d]", h);
-        rpc_call("getblockhash", params, buf, sizeof(buf));
+        if (rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
+            continue;
 
         /* Extract hash from {"result":"<hash>",...} */
         char hash[65] = "";
@@ -61,7 +66,8 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         /* Get block details */
         char params2[128];
         snprintf(params2, sizeof(params2), "[\"%s\"]", hash);
-        rpc_call("getblock", params2, buf, sizeof(buf));
+        if (rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
+            continue;
 
         int64_t blk_time = zcl_json_int(buf, "time");
         if (first_blk_time == 0) first_blk_time = blk_time;

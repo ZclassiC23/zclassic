@@ -252,8 +252,12 @@ void explorer_set_state(struct main_state *ms, struct tx_mempool *mp,
 /* ── RPC proxy to local zclassicd ─────────────────────────── */
 
 int rpc_call(const char *method, const char *params_json,
-                     char *out, size_t outmax)
+	                     char *out, size_t outmax)
 {
+    if (!out || outmax == 0)
+        LOG_ERR("explorer", "rpc_call(%s): invalid output buffer", method);
+    out[0] = '\0';
+
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) LOG_ERR("explorer", "rpc_call(%s): socket() failed", method);
 
@@ -276,6 +280,10 @@ int rpc_call(const char *method, const char *params_json,
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
         method, params_json);
+    if (blen < 0 || (size_t)blen >= sizeof(body)) {
+        close(fd);
+        LOG_ERR("explorer", "rpc_call(%s): request body too large (%d bytes)", method, blen);
+    }
 
     /* Base64 encode auth (simple inline for user:pass) */
     char auth_plain[256];
@@ -305,6 +313,10 @@ int rpc_call(const char *method, const char *params_json,
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n%s",
         auth_b64, blen, body);
+    if (rlen < 0 || (size_t)rlen >= sizeof(req)) {
+        close(fd);
+        LOG_ERR("explorer", "rpc_call(%s): request too large (%d bytes)", method, rlen);
+    }
 
     if (write(fd, req, (size_t)rlen) != rlen) { close(fd); LOG_ERR("explorer", "rpc_call(%s): write failed", method); }
 
