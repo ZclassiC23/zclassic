@@ -13,7 +13,8 @@
  *
  * The fast-sync snapshot-offer worker (build_snapshot_offer_thread) moved to
  * boot_snapshot_offer.{c,h} to keep this unit under the E1 ceiling; it shares
- * the worker_on_stall / boot_register_worker_supervisor helpers exposed below.
+ * the worker_on_stall / boot_register_worker_supervisor helpers declared below
+ * and implemented in boot_worker_supervisor.c.
  *
  * Each worker has a boot_start_ / boot_join_ pair declared below; the start
  * calls live at their existing scattered points in app_init_services (boot
@@ -56,8 +57,8 @@ void boot_join_thread_service_named(pthread_t *thread, bool *started,
 /* ── Shared background-worker supervision (Shape 5 — MONITOR) ──────────
  * One observe-only stall handler + one register helper, shared by every
  * background worker in this unit AND the snapshot-offer worker that was
- * lifted into boot_snapshot_offer.c. Single source — the offer TU calls
- * these rather than duplicating them. */
+ * lifted into boot_snapshot_offer.c. Single source: the offer TU calls these
+ * rather than duplicating them. */
 
 /* Observe-only stall handler installed on every worker contract: logs and
  * emits EV_RECOVERY_ACTION but never blocks or tears down the worker (the

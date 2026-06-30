@@ -88,6 +88,8 @@ mega-refactor. This page is the running backlog for those passes.
   test.
 - [x] Continue oversized-file review with a behavior-preserving
   proof-validation dumpstate extraction and stage regression test.
+- [x] Continue oversized-file review with a behavior-preserving boot-worker
+  supervisor helper extraction and supervisor regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1108,6 +1110,22 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=proof_validate_stage`; final gates
      `git diff --check` and `make lint`.
 
+35. **Oversized boot-worker supervisor helper extraction**
+   - Files: `config/src/boot_background_workers.c`,
+     `config/src/boot_worker_supervisor.c`,
+     `config/src/boot_snapshot_offer.c`,
+     `config/include/config/boot_background_workers.h`
+   - Problem: `boot_background_workers.c` still owned both worker loops and the
+     shared observe-only supervisor stall/register helper bodies used by the
+     snapshot-offer worker, leaving the unit above the 800-line advisory
+     ceiling even though the helper concern was already shared.
+   - Fix: moved the shared `worker_on_stall` and
+     `boot_register_worker_supervisor` implementations into a focused config
+     translation unit, leaving each worker's contract/id and thread loop in the
+     existing owner. `boot_background_workers.c` is now 731 lines.
+   - Tests: ran `make t ONLY=supervisor_production_tree`; final gates
+     `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1193,6 +1211,10 @@ mega-refactor. This page is the running backlog for those passes.
      proof-validation dumpstate now lives in `proof_validate_stage_dump.c`,
      reducing `proof_validate_stage.c` to 749 lines while preserving the
      proof-validation stage and dumpstate contracts.
+   - Ninth behavior-preserving extraction landed for boot workers:
+     shared observe-only worker supervisor helpers now live in
+     `boot_worker_supervisor.c`, reducing `boot_background_workers.c` to 731
+     lines while preserving worker registration and stall handling contracts.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

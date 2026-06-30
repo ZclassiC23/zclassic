@@ -9,10 +9,11 @@
  * publishes the snapshot / chunk / block-piece manifests for fast-sync peers.
  * It is a supervised background worker (Shape 5 — MONITOR): it shares the
  * worker_on_stall handler + boot_register_worker_supervisor helper exposed by
- * boot_background_workers.h (single source — not duplicated here), reaches the
- * boot context through the boot_services.c accessors declared in
- * boot_internal.h (boot_node_db / boot_profile_has_file_service /
- * boot_serialize_utxo_snapshot), and reaches the single MMB leaf store via the
+ * boot_background_workers.h and implemented in boot_worker_supervisor.c
+ * (single source, not duplicated here), reaches the boot context through the
+ * boot_services.c accessors declared in boot_internal.h (boot_node_db /
+ * boot_profile_has_file_service / boot_serialize_utxo_snapshot), and reaches
+ * the single MMB leaf store via the
  * g_mmb_leaf_store extern (also in boot_internal.h).
  *
  * The start/join pair is called from its existing sites in app_init_services /
@@ -56,9 +57,8 @@ static void *build_snapshot_offer_thread(void *arg);
 /* The supervisor register helper (boot_register_worker_supervisor), the
  * observe-only stall handler (worker_on_stall), and the generic thread
  * start/named-join plumbing (boot_start_thread_service /
- * boot_join_thread_service_named) all live in boot_background_workers.c and
- * are shared via boot_background_workers.h — single source, so this TU spawns
- * no raw worker thread of its own. */
+ * boot_join_thread_service_named) are shared via boot_background_workers.h,
+ * so this TU spawns no raw worker thread of its own. */
 
 bool boot_start_offer_service(struct boot_svc_ctx *svc)
 {
