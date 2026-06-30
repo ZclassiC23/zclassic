@@ -158,6 +158,10 @@ mega-refactor. This page is the running backlog for those passes.
   now lives in `boot_snapshot_failure_memory.*`, with direct regressions for
   marker write, prior-marker skip, proven-authority skip, and fail-closed
   no-marker behavior.
+- [x] Continue oversized-file review with a behavior-preserving boot
+  postmortem extraction: boot-owned crash-capsule directory, seed-tape event,
+  restart compression, and pruning policy now live in
+  `boot_postmortem.*`, keeping `boot.c` focused on phase ordering.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1419,6 +1423,25 @@ mega-refactor. This page is the running backlog for those passes.
      `build/bin/test_parallel --only=boot_refold_window_extend`, and
      `build/bin/test_parallel --only=load_verify_boot`.
 
+48. **Boot postmortem lifecycle split**
+   - Files: `config/src/boot.c`, `config/src/boot_postmortem.c`,
+     `config/include/config/boot_postmortem.h`,
+     `config/include/config/boot.h`, `lib/test/src/test_postmortem.c`
+   - Problem: the boot composition root still carried the crash-capsule
+     lifecycle inline: postmortem directory policy, seed-tape boot event,
+     restart-time capsule compression, retention pruning, and testing hooks.
+     That made it harder for future agents to distinguish boot phase order from
+     crash-capsule policy.
+   - Fix: moved the boot-owned postmortem lifecycle into
+     `boot_postmortem_start()` / `boot_postmortem_stop()`. `boot.c` now calls a
+     named lifecycle boundary during prologue and shutdown, while the new
+     module owns the policy constants and seed-tape state. `boot.c` is now
+     3965 lines and the new helper is 114 lines.
+   - Tests: ran `make -j$(nproc) build-only` and `make t ONLY=postmortem`;
+     the existing boot postmortem install/restart tests still cover signal
+     capture, boot-event replay, and restart compression through the moved
+     hooks.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1584,6 +1607,12 @@ mega-refactor. This page is the running backlog for those passes.
      `boot_snapshot_failure_memory.c`. This keeps `boot.c` focused on boot
      phase order while preserving the one-crash-then-P2P seed recovery policy
      and adding direct regression coverage.
+   - Twenty-fourth behavior-preserving extraction landed for boot postmortem
+     lifecycle: crash-capsule directory selection, seed-tape boot event,
+     restart-time compression, and retention pruning now live in
+     `boot_postmortem.c`. This keeps future boot reviews focused on phase
+     ordering while preserving the existing boot postmortem signal-capture and
+     restart-compression regressions.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the

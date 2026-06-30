@@ -28,7 +28,7 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 
 | Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
 |------|------|--------------|-------------------------------|------|
-| 1 | `config/` boot monolith | boot_services.c **1766** (was 4100; `boot_tip_hooks.c`+`boot_projections.c` extracted), boot.c **3625**, boot_index.c **701** — GATED (E1 covers app/ AND config/; these files are grandfathered in `file_size_ceiling_baseline.txt` so they can only shrink) | pure verbatim extraction **EXHAUSTED** (prove-first, 5-agent audit: 0 of 6 remaining units cleanly movable — all blocked by the shared `S` static or a cross-TU call-seam). Next = `S`-into-handle seam redesign, then unit moves. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
+| 1 | `config/` boot monolith | boot.c **3965** after the 2026-06-30 `boot_snapshot_failure_memory` + `boot_postmortem` splits, boot_services.c **1865**, boot_refold_staged.c **1840**, boot_index.c **701** — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
 | 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 13 ports + 13 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), same reserved-empty-by-design posture as `app/events/` (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
@@ -123,10 +123,13 @@ node soak.
 ### E1 Oversized App Files
 
 `tools/scripts/file_size_ceiling_baseline.txt` has 3 grandfathered entries:
-`config/src/boot.c` (3625), `config/src/boot_services.c` (1768), and
-`app/jobs/src/tip_finalize_stage.c` (809). The first two are config/ boot
-mega-files; the third is an app/ job file 9 lines over the 800 ceiling. Shrink
-them to drive this gate to zero.
+`config/src/boot.c`, `config/src/boot_services.c`, and
+`app/jobs/src/tip_finalize_stage.c`. Current oversized review targets are
+`config/src/boot.c` (3965), `config/src/boot_services.c` (1865),
+`config/src/boot_refold_staged.c` (1840, advisory/new), and
+`app/jobs/src/tip_finalize_stage.c` (799). The baseline remains a ratchet and
+should not be raised; shrink these files through behavior-preserving splits or
+explicit seam designs until the gate can go to zero.
 
 ### E2 Service Result Debt
 
@@ -184,4 +187,3 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
    mixed-purpose file cleanup.
 6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
    node progress with a soak.
-
