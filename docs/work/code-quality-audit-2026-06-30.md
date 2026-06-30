@@ -83,6 +83,9 @@ mega-refactor. This page is the running backlog for those passes.
   blocktime/transaction section extractions and regression tests.
 - [x] Clear the factoids history file-size warning with behavior-preserving
   records/address section extractions and regression tests.
+- [x] Continue oversized-file review with a behavior-preserving diagnostics
+  block-index/header-band extraction and diagnostics controller regression
+  test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1070,10 +1073,24 @@ mega-refactor. This page is the running backlog for those passes.
      638 lines, so all factoids section files are now under the 800-line
      advisory ceiling.
    - Tests: added direct explorer regressions for the records section
-     (largest unspent/ever outputs, tx/shielding records, HODL and
-     Buttercup-age receipts) and address section (holder counts,
-     concentration table, richest-address row, and receipts). Ran
-     `make t ONLY=explorer`; final gate `make lint`.
+   (largest unspent/ever outputs, tx/shielding records, HODL and
+   Buttercup-age receipts) and address section (holder counts,
+   concentration table, richest-address row, and receipts). Ran
+   `make t ONLY=explorer`; final gate `make lint`.
+
+33. **Oversized diagnostics block-index/header-band extraction**
+   - Files: `app/controllers/src/diagnostics_registry.c`,
+     `app/controllers/src/diagnostics_block_index.c`,
+     `app/controllers/include/controllers/diagnostics_internal.h`
+   - Problem: `diagnostics_registry.c` mixed the routing table and
+     controller-owned state with the heavier block-index/header-band dump JSON
+     implementation, leaving the registry above the 800-line advisory target.
+   - Fix: moved the read-only block-index and header-band dumpers into a
+     focused controller translation unit, added a `diag_main_state()` accessor
+     for the shared controller state, and kept `g_dumpers[]` as the only
+     routing authority. The registry is now 798 lines.
+   - Tests: ran `make t ONLY=mcp_controllers` and `git diff --check`; final
+     gate `make lint`.
 
 ## High-priority review backlog
 
@@ -1152,6 +1169,10 @@ mega-refactor. This page is the running backlog for those passes.
      view: All-Time Records and Address Statistics now live in private view
      TUs, reducing `explorer_factoids_history.c` to 638 lines. All factoids
      section files are now below the 800-line advisory ceiling.
+   - Seventh behavior-preserving extraction landed for diagnostics:
+     block-index and header-band dump JSON now live in
+     `diagnostics_block_index.c`, reducing `diagnostics_registry.c` to 798
+     lines while preserving the dumpstate registry contract.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

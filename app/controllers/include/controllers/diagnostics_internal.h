@@ -23,6 +23,7 @@ struct main_state;
 /* Wired controller-level state, owned by diagnostics_registry.c.
  * `diag_datadir()` returns "" until set_state() runs. */
 const char *diag_datadir(void);
+struct main_state *diag_main_state(void);
 
 /* ── Fast-sync starter-pack (bundle) freshness — pure read-only helpers ──
  *
@@ -66,6 +67,10 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
  * a fresh json_value; the function sets it to an object. */
 bool diag_chain_evidence_dump_state_json(struct json_value *out,
                                          const char *key);
+bool diag_block_index_dump_state_json(struct json_value *out,
+                                      const char *key);
+bool diag_header_band_dump_state_json(struct json_value *out,
+                                      const char *key);
 
 /* nodelog_controller.c */
 bool diag_rpc_getnodelog(const struct json_value *params, bool help,

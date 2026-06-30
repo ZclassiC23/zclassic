@@ -1,27 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Diagnostics registry — the `g_dumpers[]` table and the `dumpstate` /
- * `zcl_state` dispatcher. A single declarative registry that maps a
- * subsystem name to its `*_dump_state_json` function, so adding a new
- * introspectable subsystem is one line here plus one dump function in
- * the owning module (see CLAUDE.md "Adding state introspection").
+ * Diagnostics registry: the `g_dumpers[]` table plus the `dumpstate` /
+ * `zcl_state` dispatcher. Adding a subsystem is one registry line plus one
+ * dump function in the owning module.
  *
- * It also owns the controller-level state (main_state + datadir) shared
- * across the diagnostics controller family, because the block_index dump
- * here is the primary consumer of main_state.
+ * It also owns controller-level state (main_state + datadir) shared across
+ * the diagnostics controller family.
  */
 
 #include "platform/time_compat.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 
-#include "views/format_helpers.h"
 #include "validation/main_state.h"
-#include "validation/chainstate.h"
 #include "validation/contextual_check_tx.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
-#include "core/arith_uint256.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include "controllers/explorer_internal.h"
@@ -42,11 +36,8 @@
 #include "services/quorum_oracle_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/seal_service.h"
-#include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
 #include "services/chain_evidence_authority_service.h"
-#include "services/utxo_recovery_service.h"
-#include "sync/sync_planner.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/validate_headers_stage.h"
@@ -87,7 +78,6 @@
 #include "util/blocker.h"
 
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -113,238 +103,9 @@ const char *diag_datadir(void)
     return g_diag.datadir;
 }
 
-/* ── block_index dump ─────────────────────────────────────────────
- *
- * Lives here (not lib/chain) because the lookup needs main_state, which
- * is an app/validation layering concern. Decodes nStatus flags by name
- * so callers don't have to remember the bit positions.
- */
-
-static void push_block_status_flags(struct json_value *arr, unsigned nStatus)
+struct main_state *diag_main_state(void)
 {
-    /* Lower 3 bits = validity level (enum); the rest are flag bits. */
-    static const struct { unsigned mask; const char *name; } flags[] = {
-        { BLOCK_HAVE_DATA,    "BLOCK_HAVE_DATA" },
-        { BLOCK_HAVE_UNDO,    "BLOCK_HAVE_UNDO" },
-        { BLOCK_FAILED_VALID, "BLOCK_FAILED_VALID" },
-        { BLOCK_FAILED_CHILD, "BLOCK_FAILED_CHILD" },
-    };
-    for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
-        if (nStatus & flags[i].mask) {
-            struct json_value v = {0};
-            json_set_str(&v, flags[i].name);
-            json_push_back(arr, &v);
-            json_free(&v);
-        }
-    }
-}
-
-static const char *block_validity_level_name(unsigned nStatus)
-{
-    switch (nStatus & BLOCK_VALID_MASK) {
-        case BLOCK_VALID_UNKNOWN:      return "BLOCK_VALID_UNKNOWN";
-        case BLOCK_VALID_HEADER:       return "BLOCK_VALID_HEADER";
-        case BLOCK_VALID_TREE:         return "BLOCK_VALID_TREE";
-        case BLOCK_VALID_TRANSACTIONS: return "BLOCK_VALID_TRANSACTIONS";
-        case BLOCK_VALID_CHAIN:        return "BLOCK_VALID_CHAIN";
-        case BLOCK_VALID_SCRIPTS:      return "BLOCK_VALID_SCRIPTS";
-    }
-    return "UNKNOWN";
-}
-
-static void push_block_ref(struct json_value *out, const char *prefix,
-                           const struct block_index *bi)
-{
-    char key[64];
-    snprintf(key, sizeof(key), "%s_height", prefix);
-    json_push_kv_int(out, key, bi ? bi->nHeight : -1);
-
-    snprintf(key, sizeof(key), "%s_hash", prefix);
-    if (bi && bi->phashBlock) {
-        char hex[65];
-        uint256_get_hex(bi->phashBlock, hex);
-        json_push_kv_str(out, key, hex);
-    } else {
-        json_push_kv_str(out, key, "");
-    }
-}
-
-static bool header_band_dump_state_json(struct json_value *out,
-                                        const char *key)
-{
-    (void)key;
-    if (!out)
-        return false;
-    json_set_object(out);
-
-    struct main_state *ms = g_diag.main_state;
-    bool blocker = blocker_exists(HEADER_BAND_BLOCKER_ID);
-    json_push_kv_bool(out, "has_main_state", ms != NULL);
-    json_push_kv_bool(out, "blocker_recorded", blocker);
-
-    if (!ms) {
-        json_push_kv_str(out, "state", blocker ? "blocker_without_state"
-                                                : "unknown_no_state");
-        json_push_kv_int(out, "remaining_headers", -1);
-        return true;
-    }
-
-    struct active_chain *chain = &ms->chain_active;
-    struct block_index *tip = active_chain_tip(chain);
-    const struct block_index *island_root =
-        tip ? utxo_recovery_block_ancestry_break(tip) : NULL;
-    struct block_index *anchor =
-        blocker ? syncsvc_header_band_backfill_anchor(chain) : NULL;
-
-    push_block_ref(out, "active_tip", tip);
-    push_block_ref(out, "island_root", island_root);
-    push_block_ref(out, "backfill_anchor", anchor);
-    json_push_kv_bool(out, "band_open", island_root != NULL);
-
-    int remaining = -1;
-    if (island_root && anchor && island_root->nHeight > anchor->nHeight)
-        remaining = island_root->nHeight - anchor->nHeight;
-    else if (!island_root)
-        remaining = 0;
-    json_push_kv_int(out, "remaining_headers", remaining);
-
-    const char *state = "healthy";
-    if (blocker && island_root && anchor)
-        state = "backfilling";
-    else if (blocker && island_root)
-        state = "blocked_no_anchor";
-    else if (blocker && !island_root)
-        state = "closing_or_stale_blocker";
-    else if (!blocker && island_root)
-        state = "derived_band_without_blocker";
-    json_push_kv_str(out, "state", state);
-    return true;
-}
-
-static struct block_index *find_block_index_by_key(struct main_state *ms,
-                                                    const char *key)
-{
-    if (!ms || !key || !key[0]) return NULL;
-
-    /* Numeric → height lookup via active_chain. */
-    bool is_num = true;
-    for (const char *c = key; *c; c++) {
-        if (*c < '0' || *c > '9') { is_num = false; break; }
-    }
-    if (is_num) {
-        int height = atoi(key);
-        return active_chain_at(&ms->chain_active, height);
-    }
-
-    /* Hex → hash lookup via block_map. */
-    if (!zcl_is_hex_string(key, 64)) return NULL;
-    struct uint256 h;
-    uint256_set_hex(&h, key);
-    return block_map_find(&ms->map_block_index, &h);
-}
-
-static bool block_index_dump_state_json(struct json_value *out, const char *key)
-{
-    if (!out) return false;
-    struct block_index *bi = find_block_index_by_key(g_diag.main_state, key);
-    json_set_object(out);
-    {
-        struct bii_recovery_status status;
-        struct json_value integrity = {0};
-        bii_get_recovery_status(&status);
-        json_set_object(&integrity);
-        json_push_kv_str(&integrity, "verdict",
-                         bii_verdict_name(status.verdict));
-        json_push_kv_str(&integrity, "action",
-                         bii_recovery_action_name(status.action));
-        json_push_kv_bool(&integrity, "degraded", status.degraded);
-        json_push_kv_bool(&integrity, "unsafe_override",
-                          status.unsafe_override);
-        json_push_kv_int(&integrity, "last_check_unix", status.unix_time);
-        if (status.reason[0])
-            json_push_kv_str(&integrity, "reason", status.reason);
-        json_push_kv(out, "integrity", &integrity);
-        json_free(&integrity);
-    }
-    if (!bi) {
-        json_push_kv_bool(out, "found", false);
-        json_push_kv_str(out, "key", key ? key : "");
-        return true;
-    }
-
-    /* Snapshot every field we report under cs_main and release before any
-     * JSON formatting. A concurrent reorg/restore writer mutates these
-     * block_index fields (nStatus/nFile/nDataPos via
-     * stage_repair_reducer_frontier.c, pprev/nChainWork via reorg) while
-     * holding cs_main, so a lock-free read here can tear the multi-word
-     * nChainWork or report a half-updated field set. cs_main is the inner
-     * lock relative to the reducer's coins_kv/progress_store tx lock (that
-     * lock is always taken first); taking ONLY cs_main here, and never
-     * coins_kv while holding it, keeps the established order and cannot form
-     * the ABBA cycle the lock-order law guards against. */
-    struct {
-        int64_t nHeight, nVersion, nTime, nBits, nChainTx, nTx;
-        int64_t nFile, nDataPos, nUndoPos, nSequenceId, nStatus;
-        bool have_hash, have_prev_hash, on_chain;
-        char hash[65], hash_prev[65], chain_work[65];
-    } snap = {0};
-
-    if (g_diag.main_state)
-        zcl_mutex_lock(&g_diag.main_state->cs_main);
-    snap.nHeight = (int64_t)bi->nHeight;
-    snap.nVersion = (int64_t)bi->nVersion;
-    snap.nTime = (int64_t)bi->nTime;
-    snap.nBits = (int64_t)bi->nBits;
-    snap.nChainTx = (int64_t)bi->nChainTx;
-    snap.nTx = (int64_t)bi->nTx;
-    snap.nFile = (int64_t)bi->nFile;
-    snap.nDataPos = (int64_t)bi->nDataPos;
-    snap.nUndoPos = (int64_t)bi->nUndoPos;
-    snap.nSequenceId = (int64_t)bi->nSequenceId;
-    snap.nStatus = (int64_t)bi->nStatus;
-    if (bi->phashBlock) {
-        uint256_get_hex(bi->phashBlock, snap.hash);
-        snap.have_hash = true;
-    }
-    if (bi->pprev && bi->pprev->phashBlock) {
-        uint256_get_hex(bi->pprev->phashBlock, snap.hash_prev);
-        snap.have_prev_hash = true;
-    }
-    arith_uint256_get_hex(&bi->nChainWork, snap.chain_work);
-    if (g_diag.main_state) {
-        struct block_index *at = active_chain_at(
-            &g_diag.main_state->chain_active, bi->nHeight);
-        snap.on_chain = (at == bi);
-        zcl_mutex_unlock(&g_diag.main_state->cs_main);
-    }
-
-    json_push_kv_bool(out, "found", true);
-    json_push_kv_int(out, "nHeight", snap.nHeight);
-    json_push_kv_int(out, "nVersion", snap.nVersion);
-    json_push_kv_int(out, "nTime", snap.nTime);
-    json_push_kv_int(out, "nBits", snap.nBits);
-    json_push_kv_int(out, "nChainTx", snap.nChainTx);
-    json_push_kv_int(out, "nTx", snap.nTx);
-    json_push_kv_int(out, "nFile", snap.nFile);
-    json_push_kv_int(out, "nDataPos", snap.nDataPos);
-    json_push_kv_int(out, "nUndoPos", snap.nUndoPos);
-    json_push_kv_int(out, "nSequenceId", snap.nSequenceId);
-    json_push_kv_int(out, "nStatus_raw", snap.nStatus);
-    json_push_kv_str(out, "nStatus_validity",
-                     block_validity_level_name((unsigned)snap.nStatus));
-    {
-        struct json_value flags_arr = {0};
-        json_set_array(&flags_arr);
-        push_block_status_flags(&flags_arr, (unsigned)snap.nStatus);
-        json_push_kv(out, "nStatus_flags", &flags_arr);
-        json_free(&flags_arr);
-    }
-    json_push_kv_str(out, "hash", snap.have_hash ? snap.hash : "");
-    json_push_kv_str(out, "hash_prev",
-                     snap.have_prev_hash ? snap.hash_prev : "");
-    json_push_kv_str(out, "nChainWork", snap.chain_work);
-    json_push_kv_bool(out, "on_active_chain", snap.on_chain);
-    return true;
+    return g_diag.main_state;
 }
 
 static void push_evidence_record_json(struct json_value *out, const char *key,
@@ -499,9 +260,8 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
  * missing cert silently leaves the node onion-only. This dumper surfaces
  * that condition without grepping node.log + ss + openssl by hand.
  *
- * Lives here (not lib/net) because it needs the controller-level datadir
- * (diag_datadir), same rationale as block_index_dump_state_json above.
- * access()-only existence checks — no sqlite, no cert parsing. */
+ * Lives here because it needs diag_datadir; access()-only existence checks,
+ * no sqlite and no cert parsing. */
 static bool explorer_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -533,10 +293,8 @@ static bool explorer_dump_state_json(struct json_value *out, const char *key)
 
 /* ── bundle/snapshot staleness dump ────────────────────────────────
  *
- * Read-only freshness signal for the published fast-sync starter pack
- * (block_index.bin + utxo-seed-<h>.snapshot, autodetected at boot by
- * boot_autodetect_bundle_snapshot). A fresh install seeds at the bundle's
- * seed height then P2P-fetches the gap to the network tip at a few blocks/sec,
+ * Read-only freshness signal for the published fast-sync starter pack. A
+ * fresh install seeds at the bundle height then P2P-fetches the gap to tip,
  * so a bundle far below the tip turns "seconds to tip" into minutes. This
  * dumper computes (network_header_tip - bundle_seed_height), turns it into an
  * estimated catch-up time, and surfaces a re-mint recommendation so an
@@ -545,10 +303,9 @@ static bool explorer_dump_state_json(struct json_value *out, const char *key)
  * tools/mint_v2_snapshot.c and the runbook in docs/work).
  *
  * Lives here (not config/boot_refold_staged.c) because it needs BOTH the
- * controller-level datadir (diag_datadir) AND main_state (the network tip),
- * the same rationale as block_index_dump_state_json / explorer_dump_state_json.
- * Pure opendir/readdir/access + one locked best-header read — no mutation, no
- * sqlite, parity-neutral. */
+ * controller-level datadir (diag_datadir) and main_state (the network tip).
+ * Pure opendir/readdir/access + one locked best-header read; no mutation, no
+ * sqlite, and parity-neutral. */
 
 /* Conservative above-seed P2P body-fetch+fold rate (blocks/sec). The published
  * gap divided by this estimates a fresh install's catch-up time. Tracks the
@@ -790,7 +547,7 @@ static const struct dump_entry g_dumpers[] = {
                      "canonical runtime operational mode "
                      "(boot/restore/reconcile/degraded_serving/syncing/"
                      "healthy/repairing) + last transition reason" },
-    { "block_index", block_index_dump_state_json,
+    { "block_index", diag_block_index_dump_state_json,
                      "block_index entry by height or hash (in `key`)" },
     { "health",      health_dump_state_json,
                      "unified heartbeat ring: registered subsystems, ages, stall fires" },
@@ -809,7 +566,7 @@ static const struct dump_entry g_dumpers[] = {
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "header_probe", header_probe_dump_state_json,
                      "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
-    { "header_band", header_band_dump_state_json,
+    { "header_band", diag_header_band_dump_state_json,
                      "header band backfill: derived island root, current getheaders anchor, remaining span, and blocker state" },
     { "utxo_parity", utxo_parity_dump_state_json,
                      "standing UTXO-set parity vs reference commitment at the finalized frontier: checks/matches/mismatches, finalized_frontier, last_checked_height, source name+exact flag" },
