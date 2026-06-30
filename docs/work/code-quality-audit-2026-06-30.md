@@ -113,6 +113,8 @@ mega-refactor. This page is the running backlog for those passes.
   by audited headers instead of waiting on body-window extension; guard the
   fallback so fork-mismatched best-header children hold at the replay cursor
   instead of re-entering the same rewind loop.
+- [x] Guard tip-finalize best-header lookahead so a fork-mismatched header child
+  holds cleanly instead of writing stale `reorg_detected` residue that caps H*.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1406,6 +1408,12 @@ mega-refactor. This page is the running backlog for those passes.
      active tip. `header_admit` now clamps downstream reducer cursors to the
      replay point and rewinds its own cursor so the correct child is re-fetched
      and revalidated. Regression coverage lives in `test_header_admit_stage`.
+   - Tip-finalize fork-lookahead guard landed after deploy exposed stale
+     `tip_finalize_log` residue from accepting a best-header child whose parent
+     did not match the finalized tip. `tip_finalize` now uses best-header
+     ancestry to fill a missing lookahead only when it extends the resolved tip;
+     fork candidates hold for the reorg/window owner instead of writing ok=0
+     residue. Regression coverage lives in `test_tip_finalize_stage`.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

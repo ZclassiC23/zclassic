@@ -987,6 +987,62 @@ int test_tip_finalize_stage(void)
     }
 
     {
+        /* FORK-LOOKAHEAD GUARD: best_header can rescue a missing N+1 only when
+         * that header is the direct child of the already-finalized N. A
+         * higher-work header fork whose parent hash differs from active N is a
+         * reorg candidate, not a successor witness. tip_finalize must HOLD
+         * without writing a height-keyed reorg_detected row; otherwise stale
+         * ok=0 residue caps H* after the window later catches up. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("header_witness_fork_guard: setup",
+                 tf_setup("header_witness_fork_guard", 3,
+                          TF_FAIL_PRECONDITION, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("header_witness_fork_guard: collapse window to body frontier",
+                 active_chain_move_window_tip(&ms.chain_active, &sc.blocks[1]));
+
+        struct block_index fork_blocks[4];
+        struct uint256 fork_hashes[4];
+        for (int i = 1; i <= 3; i++) {
+            block_index_init(&fork_blocks[i]);
+            uint256_set_null(&fork_hashes[i]);
+            fork_hashes[i].data[0] = (uint8_t)(0xe0 + i);
+            fork_hashes[i].data[1] = (uint8_t)i;
+            fork_blocks[i].hashBlock = fork_hashes[i];
+            fork_blocks[i].phashBlock = &fork_hashes[i];
+            fork_blocks[i].nHeight = i;
+            fork_blocks[i].nVersion = 4;
+            fork_blocks[i].nTime = (uint32_t)(1700010000u + (uint32_t)i);
+            fork_blocks[i].nBits = 0x1f07ffff;
+            fork_blocks[i].nStatus = BLOCK_VALID_HEADER;  /* header-only */
+            arith_uint256_set_u64(&fork_blocks[i].nChainWork,
+                                  (uint64_t)100 + (uint64_t)i);
+        }
+        fork_blocks[1].pprev = &sc.blocks[0];
+        fork_blocks[2].pprev = &fork_blocks[1];
+        fork_blocks[3].pprev = &fork_blocks[2];
+        for (int i = 1; i <= 3; i++)
+            block_index_build_skip(&fork_blocks[i]);
+        ms.pindex_best_header = &fork_blocks[3];
+
+        TF_CHECK("header_witness_fork_guard: finalizes only h0, holds at 1",
+                 tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("header_witness_fork_guard: cursor held at 1",
+                 tip_finalize_stage_cursor() == 1);
+        TF_CHECK("header_witness_fork_guard: no header-witness finalize",
+                 tip_finalize_stage_header_witness_total() == 0);
+        TF_CHECK("header_witness_fork_guard: no reorg row/counter",
+                 tip_finalize_stage_reorg_detected_total() == 0);
+        {
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            TF_CHECK("header_witness_fork_guard: NO junk row written at h=1",
+                     log_row_at(progress_store_db(), 1, &ok, status,
+                                sizeof(status), &depth, &utxos) == false);
+        }
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
         /* The block_index BLOCK_VALID_SCRIPTS mirror drifted CLEAR for the
          * lookahead (block[2]) — the live 3134954 wedge. The reducer's
          * hash-bound script_validate_log proves the scripts WERE validated, so

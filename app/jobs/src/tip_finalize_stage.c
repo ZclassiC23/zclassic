@@ -315,6 +315,24 @@ static bool is_canonical_header_successor(struct block_index *old_tip,
     return true;
 }
 
+/* HEADER-LOOKAHEAD RESOLUTION GUARD. best_header ancestry is a useful fallback
+ * when the have-data window is a block behind the header frontier, but only for
+ * the direct child of the already-resolved finalized tip. If the header
+ * candidate's parent hash differs from old_tip, it is a competing fork/reorg
+ * candidate. Leave new_tip unresolved so tip_finalize HOLDS and the reorg/window
+ * owner handles the branch; writing a height-keyed reorg_detected row here
+ * poisons H* with stale residue once the canonical window catches up. */
+static bool header_lookahead_extends_tip(const struct block_index *old_tip,
+                                         const struct block_index *candidate)
+{
+    if (!old_tip)
+        return true; /* old_tip may be resolved from the same best_header path. */
+    if (!candidate || !candidate->pprev || !candidate->pprev->phashBlock ||
+        !old_tip->phashBlock)
+        return false;
+    return uint256_eq(candidate->pprev->phashBlock, old_tip->phashBlock);
+}
+
 /* Authoritative, reorg-safe script-validity check for the finalize gate.
  *
  * The block_index BLOCK_VALID_SCRIPTS bit consulted by precondition_block_reason
@@ -552,9 +570,12 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     if (ms->pindex_best_header) {
         if (!old_tip && next_h <= ms->pindex_best_header->nHeight)
             old_tip = block_index_get_ancestor(ms->pindex_best_header, next_h);
-        if (!new_tip && next_h + 1 <= ms->pindex_best_header->nHeight)
-            new_tip = block_index_get_ancestor(ms->pindex_best_header,
-                                               next_h + 1);
+        if (!new_tip && next_h + 1 <= ms->pindex_best_header->nHeight) {
+            struct block_index *header_tip =
+                block_index_get_ancestor(ms->pindex_best_header, next_h + 1);
+            if (header_lookahead_extends_tip(old_tip, header_tip))
+                new_tip = header_tip;
+        }
     }
     if (!new_tip) {
         tf_mark_blocked(TF_BLOCKED_LOOKAHEAD_MISSING);
