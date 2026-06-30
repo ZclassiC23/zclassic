@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
+#include "config/boot_blocktree_cleanup.h"
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_postmortem.h"
@@ -1514,40 +1515,15 @@ bool app_init(struct app_context *ctx)
          * ownership of background jobs, so shutdown can join it cleanly. */
     }
 
-    /* Open block index database.
-     * Remove stale LOCK files — left behind by unclean legacy import exit. */
+    /* Open block index database after removing stale filesystem artifacts left
+     * behind by interrupted legacy import/copy paths. */
     char blocktree_path[1024];
-    snprintf(blocktree_path, sizeof(blocktree_path), "%s/blocks/index",
-             ctx->datadir);
-    {
-        char lock_path[1100];
-        snprintf(lock_path, sizeof(lock_path), "%s/LOCK", blocktree_path);
-        unlink(lock_path); /* harmless if doesn't exist */
-    }
-    /* Remove scratch dirs a crashed prior boot may have stranded: a kill -9
-     * mid legacy-chainstate copy leaves chainstate_import_tmp /
-     * .legacy_ldb_snap on disk forever (their only cleanup is on the
-     * normal-return path of the import that created them). They are
-     * recreated from scratch whenever the import re-runs, so a torn copy
-     * has no recovery value — same proactive hygiene as the stale LOCK
-     * unlink above. */
-    {
-        const char *scratch[] = { "chainstate_import_tmp",
-                                  ".legacy_ldb_snap" };
-        for (size_t si = 0; si < sizeof(scratch) / sizeof(scratch[0]); si++) {
-            char spath[1100];
-            snprintf(spath, sizeof(spath), "%s/%s", ctx->datadir,
-                     scratch[si]);
-            struct stat sst;
-            if (stat(spath, &sst) == 0 && S_ISDIR(sst.st_mode)) {
-                char cmd[1300];
-                snprintf(cmd, sizeof(cmd), "rm -rf '%s'", spath);
-                int rc = system(cmd); // obs-ok:boot-scratch-hygiene
-                printf("[boot] removed stranded scratch dir %s (rc=%d)\n",
-                       spath, rc);
-            }
-        }
-    }
+    struct boot_blocktree_cleanup_result blocktree_cleanup =
+        boot_blocktree_cleanup_prepare(ctx->datadir, blocktree_path,
+                                       sizeof(blocktree_path));
+    if (!blocktree_cleanup.blocktree_path_ready)
+        fprintf(stderr, "Warning: block tree path unavailable for datadir %s\n",
+                ctx->datadir ? ctx->datadir : "(null)");
     if (block_tree_db_open(&g_block_tree, blocktree_path,
                            256 << 20, false, false)) {
         g_block_tree_open = true;

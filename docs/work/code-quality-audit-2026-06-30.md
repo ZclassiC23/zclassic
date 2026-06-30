@@ -175,6 +175,12 @@ mega-refactor. This page is the running backlog for those passes.
   preflight extraction: LevelDB/chainstate LOCK hygiene and SQLite WAL notice
   now live in `boot_stale_locks.*`, with regressions for stale PID removal,
   live PID retention, WAL detection, and invalid datadir guards.
+- [x] Continue oversized-file review with a behavior-preserving boot blocktree
+  cleanup extraction: stale block-index LOCK removal and stranded legacy
+  scratch-dir cleanup now live in `boot_blocktree_cleanup.*`, replacing the
+  boot-time shell `rm -rf` path with `dir_remove_tree()` and regressions for
+  lock removal, nested scratch removal, regular-file retention, and invalid
+  path guards.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1512,6 +1518,26 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=boot_stale_locks`, and
      `ZCL_TEST_ONLY=boot_stale_locks build/bin/test_zcl`.
 
+52. **Boot blocktree cleanup split**
+   - Files: `config/src/boot.c`, `config/src/boot_blocktree_cleanup.c`,
+     `config/include/config/boot_blocktree_cleanup.h`,
+     `lib/test/src/test_boot_blocktree_cleanup.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still carried block-index filesystem
+     hygiene inline before opening the LevelDB block tree. That mixed phase
+     order with stale `blocks/index/LOCK` removal and stranded
+     `chainstate_import_tmp` / `.legacy_ldb_snap` cleanup, including a
+     boot-time `system("rm -rf ...")` shell path.
+   - Fix: moved the policy into `boot_blocktree_cleanup_prepare()`. `boot.c`
+     now asks for a prepared blocktree path, while the helper owns path
+     construction, stale lock unlink, stranded scratch-directory removal via
+     `dir_remove_tree()`, and fail-closed invalid/truncated path handling.
+     `boot.c` is now 3796 lines and the new helper is 96 lines.
+   - Tests: ran `make -j$(nproc) build-only`,
+     `make t ONLY=boot_blocktree_cleanup`, and
+     `ZCL_TEST_ONLY=boot_blocktree_cleanup build/bin/test_zcl`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1699,6 +1725,11 @@ mega-refactor. This page is the running backlog for those passes.
      retention, and SQLite WAL notices now live in `boot_stale_locks.c`. This
      keeps future boot reviews focused on phase ordering while preserving
      startup recovery hygiene before SQLite opens.
+   - Twenty-eighth behavior-preserving extraction landed for boot blocktree
+     cleanup: stale block-index LOCK removal and stranded legacy scratch-dir
+     cleanup now live in `boot_blocktree_cleanup.c`. This keeps future boot
+     reviews focused on phase ordering and removes the boot-time shell `rm -rf`
+     path in favor of the repo's recursive directory helper.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
