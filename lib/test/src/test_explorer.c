@@ -299,6 +299,141 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: factoids blocktime section renders cadence records... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,time) VALUES"
+            "(1,1478403829),"
+            "(2,1478403979),"
+            "(3,1478404139),"
+            "(707000,1600000000),"
+            "(707001,1600000005),"
+            "(707002,1600003706)",
+            NULL, NULL, NULL);
+
+        char pre_expected[32] = "";
+        char post_expected[32] = "";
+        char records_expected[32] = "";
+        compute_receipt_i64(pre_expected, sizeof(pre_expected),
+                            155, 2, "blocktime_pre_bc");
+        compute_receipt_i64(post_expected, sizeof(post_expected),
+                            1853, 2, "blocktime_post_bc");
+        compute_receipt_i64(records_expected, sizeof(records_expected),
+                            1, 1, "blocktime_records");
+
+        uint8_t out[8192];
+        size_t n = factoids_emit_section_13_blocktimes(
+            out, sizeof(out) - 1, 0, db, 707002);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "13. Block Time Analysis") != NULL &&
+                  strstr((const char *)out, "Pre-Buttercup") != NULL &&
+                  strstr((const char *)out, "155.0s") != NULL &&
+                  strstr((const char *)out, "150s") != NULL &&
+                  strstr((const char *)out, "160s") != NULL &&
+                  strstr((const char *)out, "Post-Buttercup") != NULL &&
+                  strstr((const char *)out, "1853.0s") != NULL &&
+                  strstr((const char *)out, "5s") != NULL &&
+                  strstr((const char *)out, "3701s") != NULL &&
+                  strstr((const char *)out, "Block Interval Records") != NULL &&
+                  strstr((const char *)out, "1 (25.0%)") != NULL &&
+                  strstr((const char *)out, "Blocks over 1 hour apart:</b></td><td>1") != NULL &&
+                  strstr((const char *)out, pre_expected) != NULL &&
+                  strstr((const char *)out, post_expected) != NULL &&
+                  strstr((const char *)out, records_expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: factoids transaction section renders records... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash TEXT, time INTEGER, num_tx INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE transactions(block_hash TEXT, block_height INTEGER, "
+            "is_coinbase INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE tx_inputs(block_height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE tx_outputs(txid TEXT, vout INTEGER, value INTEGER, "
+            "script_type INTEGER, block_height INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "CREATE TABLE op_returns(block_height INTEGER, is_slp INTEGER)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,hash,time,num_tx) VALUES"
+            "(1,'h1',1478403829,2),"
+            "(2,'h2',1478403979,2)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO transactions(block_hash,block_height,is_coinbase) VALUES"
+            "('h1',1,1),('h1',1,0),('h2',2,1),('h2',2,0)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO tx_inputs(block_height) VALUES(1),(2),(2)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO tx_outputs(txid,vout,value,script_type,block_height) VALUES"
+            "('a',0,100000000,0,1),"
+            "('b',0,200000000,0,1),"
+            "('c',1,300000000,1,2),"
+            "('d',2,400000000,2,2)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO op_returns(block_height,is_slp) VALUES(1,0),(2,1)",
+            NULL, NULL, NULL);
+
+        char summary_expected[32] = "";
+        char records_expected[32] = "";
+        compute_receipt_i64(summary_expected, sizeof(summary_expected),
+                            4, 3, "tx_archaeology");
+        compute_receipt_i64(records_expected, sizeof(records_expected),
+                            1000000000, 4, "tx_records");
+
+        uint8_t out[8192];
+        size_t n = factoids_emit_section_14_transactions(
+            out, sizeof(out) - 1, 0, db);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        bool ok = n > 0 &&
+                  strstr((const char *)out, "14. Transaction Archaeology") != NULL &&
+                  strstr((const char *)out, "Total transactions:</b></td><td>4") != NULL &&
+                  strstr((const char *)out, "Coinbase transactions:</b></td><td>2") != NULL &&
+                  strstr((const char *)out, "Non-coinbase transactions:</b></td><td>2") != NULL &&
+                  strstr((const char *)out, "Total transparent inputs:</b></td><td>3") != NULL &&
+                  strstr((const char *)out, "Total transparent outputs:</b></td><td>4") != NULL &&
+                  strstr((const char *)out, "Total OP_RETURN outputs:</b></td><td>2") != NULL &&
+                  strstr((const char *)out,
+                         "<tr><td>2016</td><td>4</td><td>2</td><td>2</td><td>2.00</td></tr>") != NULL &&
+                  strstr((const char *)out, "10.00000000 ZCL across 4 outputs") != NULL &&
+                  strstr((const char *)out, "3 outputs at block") != NULL &&
+                  strstr((const char *)out, "/explorer/block/2") != NULL &&
+                  strstr((const char *)out, "4.00000000 ZCL") != NULL &&
+                  strstr((const char *)out, "/explorer/block/1") != NULL &&
+                  strstr((const char *)out, "Avg inputs per spending tx:</b></td><td>1.50") != NULL &&
+                  strstr((const char *)out, "<tr><td>P2PKH</td><td>2</td></tr>") != NULL &&
+                  strstr((const char *)out, "<tr><td>P2SH</td><td>1</td></tr>") != NULL &&
+                  strstr((const char *)out, "<tr><td>OP_RETURN</td><td>1</td></tr>") != NULL &&
+                  strstr((const char *)out, summary_expected) != NULL &&
+                  strstr((const char *)out, records_expected) != NULL;
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: difficulty_from_bits handles edge cases... ");
     {
         double d0 = explorer_difficulty_from_bits(0);

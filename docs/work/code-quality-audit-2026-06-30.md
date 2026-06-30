@@ -79,6 +79,8 @@ mega-refactor. This page is the running backlog for those passes.
   difficulty section extraction and regression test.
 - [x] Continue oversized factoids-view shrinkage with a behavior-preserving
   empty-block section extraction and regression test.
+- [x] Clear the factoids chain-data file-size warning with behavior-preserving
+  blocktime/transaction section extractions and regression tests.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1028,6 +1030,27 @@ mega-refactor. This page is the running backlog for those passes.
      empty run, and both SHA3 receipts remain present. Ran
      `make t ONLY=explorer` and `make lint`.
 
+31. **Oversized factoids blocktime/transaction extraction**
+   - Files: `app/views/src/explorer_factoids_chaindata.c`,
+     `app/views/src/explorer_factoids_blocktimes.c`,
+     `app/views/src/explorer_factoids_transactions.c`,
+     `app/views/include/views/explorer_factoids_internal.h`,
+     `app/views/src/explorer_factoids_view.c`,
+     `lib/test/src/test_explorer.c`
+   - Problem: after the first four factoids splits, sections 13 and 14 still
+     kept block cadence and transaction archaeology inside the chain-data view
+     file, leaving it above the 800-line file-size advisory ceiling.
+   - Fix: moved Block Time Analysis into `explorer_factoids_blocktimes.c` and
+     Transaction Archaeology into `explorer_factoids_transactions.c`, leaving
+     `explorer_factoids_chaindata.c` responsible for sections 8-12 only. The
+     chain-data file shrank from 1076 to 746 lines, clearing its advisory
+     file-size warning.
+   - Tests: added direct explorer regressions for the blocktime section
+     (pre/post Buttercup cadence, fast/slow interval records, and receipts) and
+     transaction section (canonical totals, yearly row, records, output
+     script-type split, and receipts). Ran `make t ONLY=explorer` and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1096,6 +1119,11 @@ mega-refactor. This page is the running backlog for those passes.
      Blocks now lives in its own private view TU, reducing
      `explorer_factoids_chaindata.c` to 1076 lines while preserving the
      empty-block summary/record receipt contract.
+   - Fifth behavior-preserving extraction landed for the same view:
+     Block Time Analysis and Transaction Archaeology now live in private view
+     TUs, reducing `explorer_factoids_chaindata.c` to 746 lines and clearing
+     that file's advisory ceiling warning while preserving the cadence and
+     transaction receipt contracts.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

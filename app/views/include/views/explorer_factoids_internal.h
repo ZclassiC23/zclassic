@@ -14,15 +14,18 @@
  *                                    supply, addresses (chain structure).
  *   - explorer_factoids_checkpoints.c — immutable checkpoint row data +
  *                                    renderer for section 12.
+ *   - explorer_factoids_blocktimes.c — section 13: cadence and interval
+ *                                    records.
+ *   - explorer_factoids_transactions.c — section 14: transaction totals,
+ *                                    records, and output script split.
  *   - explorer_factoids_empty_blocks.c — section 15: empty-block totals,
  *                                    yearly table, and records.
  *   - explorer_factoids_difficulty.c — section 16: difficulty records,
  *                                    chainwork decoding, and yearly peaks.
  *   - explorer_factoids_integrity.c — section 17: last-100-block integrity
  *                                    hash and verification instructions.
- *   - explorer_factoids_chaindata.c— sections 8-14: privacy, ZSLP,
- *                                    OP_RETURN, dust/UTXO, block times,
- *                                    transactions.
+ *   - explorer_factoids_chaindata.c— sections 8-12: privacy, ZSLP,
+ *                                    OP_RETURN, dust/UTXO, checkpoints.
  *
  * Each section emitter appends one logical section of HTML starting at
  * `off` and returns the new offset. The SHA3 receipt + format helpers are
@@ -262,7 +265,7 @@ size_t factoids_emit_section_6_supply(uint8_t *buf, size_t cap, size_t off,
 size_t factoids_emit_section_7_addresses(uint8_t *buf, size_t cap, size_t off,
                                          sqlite3 *db);
 
-/* explorer_factoids_chaindata.c — sections 8-14 */
+/* explorer_factoids_chaindata.c — sections 8-12 */
 size_t factoids_emit_section_8_privacy(uint8_t *buf, size_t cap, size_t off,
                                        sqlite3 *db);
 size_t factoids_emit_section_9_zslp(uint8_t *buf, size_t cap, size_t off,
@@ -275,8 +278,12 @@ size_t factoids_emit_section_12_checkpoints(uint8_t *buf, size_t cap, size_t off
                                             sqlite3 *db, int64_t chain_height);
 size_t factoids_emit_checkpoint_rows(uint8_t *buf, size_t cap, size_t off,
                                      sqlite3 *db, int64_t chain_height);
+
+/* explorer_factoids_blocktimes.c — section 13 */
 size_t factoids_emit_section_13_blocktimes(uint8_t *buf, size_t cap, size_t off,
                                            sqlite3 *db, int64_t chain_height);
+
+/* explorer_factoids_transactions.c — section 14 */
 size_t factoids_emit_section_14_transactions(uint8_t *buf, size_t cap, size_t off,
                                              sqlite3 *db);
 
