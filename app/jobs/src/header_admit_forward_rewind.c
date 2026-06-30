@@ -2,9 +2,12 @@
 
 #include "header_admit_forward_rewind.h"
 
+#include "chain/chain.h"
+#include "core/uint256.h"
 #include "jobs/stage_helpers.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
+#include "validation/main_state.h"
 
 #include <string.h>
 
@@ -45,6 +48,71 @@ static bool log_row_parent_match(sqlite3 *db, int height,
     }
     sqlite3_finalize(st);
     return true;
+}
+
+static bool log_row_hash_match(sqlite3 *db, int height,
+                               const struct uint256 *expected_hash,
+                               bool *out_known, bool *out_matches)
+{
+    *out_known = false;
+    *out_matches = false;
+    if (!db || height < 0 || !expected_hash)
+        return true;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT hash FROM header_admit_log WHERE height=?",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("header_admit",
+                 "[header_admit] replay-parent prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out_known = true;
+        const void *blob = sqlite3_column_blob(st, 0);
+        int nb = sqlite3_column_bytes(st, 0);
+        *out_matches = blob && nb == 32 &&
+            memcmp(blob, expected_hash->data, 32) == 0;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("header_admit",
+                 "[header_admit] replay-parent step failed rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+bool header_admit_forward_replay_parent_ok(sqlite3 *db,
+                                           struct main_state *ms,
+                                           const struct block_index *bi,
+                                           int height)
+{
+    if (height <= 0)
+        return true;
+    if (!ms || !bi || !bi->pprev || !bi->pprev->phashBlock)
+        return false;
+
+    int active_h = active_chain_height(&ms->chain_active);
+    if (height <= active_h)
+        return false;
+
+    if (height > active_h + 1) {
+        bool known = false, matches = false;
+        if (!log_row_hash_match(db, height - 1, bi->pprev->phashBlock,
+                                &known, &matches))
+            return false;
+        return known && matches;
+    }
+
+    struct block_index *parent =
+        active_chain_at(&ms->chain_active, height - 1);
+    return parent && parent->phashBlock &&
+           uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
 }
 
 bool header_admit_forward_rewind_target(sqlite3 *db,

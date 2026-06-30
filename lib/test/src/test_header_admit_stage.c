@@ -723,6 +723,56 @@ int test_header_admit_stage(void)
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }
+
+    /* ── Forward-fork guard: h+2 fallback must link through the prior
+     *      admitted header row, not through a stale row with the right
+     *      parent. This is the live hot-loop shape after a fork rewind:
+     *      parent-only checks let h+2 re-advance the cursor even though h+1
+     *      still names the wrong header. */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","prior_hash_guard");
+        mkdir_p_ha(dir);
+        HA_CHECK("prior_hash_guard: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
+
+        HA_CHECK("prior_hash_guard: init", header_admit_stage_init(&ms));
+        HA_CHECK("prior_hash_guard: admit active prefix",
+                 header_admit_stage_drain(100) == 3 &&
+                 header_admit_stage_cursor() == 3);
+        ms.pindex_best_header = &sc.blocks[4];
+
+        sqlite3 *db = progress_store_db();
+        struct uint256 stale_h3 = sc.hashes[3];
+        stale_h3.data[5] ^= 0x44;
+        HA_CHECK("prior_hash_guard: seed stale h3 with matching parent",
+                 put_header_row(db, 3, &stale_h3, &sc.hashes[2]));
+        HA_CHECK("prior_hash_guard: force cursor to h4",
+                 force_cursor(db, "header_admit", 4));
+
+        job_result_t r = header_admit_stage_step_once();
+        HA_CHECK("prior_hash_guard: h4 holds on stale h3 hash",
+                 r == JOB_IDLE);
+        HA_CHECK("prior_hash_guard: cursor stays at h4",
+                 header_admit_stage_cursor() == 4 &&
+                 cursor_at(db, "header_admit") == 4);
+        HA_CHECK("prior_hash_guard: stale h3 not treated as canonical",
+                 !header_admit_stage_has_record(3, &sc.hashes[3]));
+        HA_CHECK("prior_hash_guard: h4 not admitted through stale h3",
+                 !header_admit_stage_has_record(4, &sc.hashes[4]));
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
     printf("header_admit_stage: %d failures\n", failures);
     return failures;
 }

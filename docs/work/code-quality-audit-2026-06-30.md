@@ -124,6 +124,9 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Teach `tip_fork_stale` to name same-height stale active-tip siblings
   using best-header ancestry and hash comparisons, with a direct condition
   regression.
+- [x] Harden `header_admit` best-header replay so above-tip fallback requires a
+  matching active parent or prior admitted-header hash, preventing stale rows
+  from re-advancing the forward-fork cursor loop.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1496,6 +1499,12 @@ mega-refactor. This page is the running backlog for those passes.
      strictly higher-work best-header chain, and proof that the data-bearing
      target is off that best-header chain. Regression coverage lives in
      `test_tip_fork_stale`.
+   - Header-admit best-header replay now requires an explicit contiguous
+     parent proof before admitting above the active body window: active parent
+     hash at active_tip+1, then prior `header_admit_log` hash for h+2 and
+     beyond. This closes the live hot-loop where a stale h+1 row with the right
+     parent shape let h+2 re-advance the cursor after every rewind. Regression
+     coverage lives in `test_header_admit_stage`.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

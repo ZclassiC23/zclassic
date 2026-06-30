@@ -235,23 +235,6 @@ static bool authoritative_admit(struct main_state *ms, struct block_index *bi)
     return true;
 }
 
-static bool ha_parent_links_to_active_window(struct main_state *ms,
-                                             const struct block_index *bi,
-                                             int height)
-{
-    if (height <= 0)
-        return true;
-    if (!ms || !bi || !bi->pprev || !bi->pprev->phashBlock)
-        return false;
-
-    struct block_index *parent =
-        active_chain_at(&ms->chain_active, height - 1);
-    if (!parent || !parent->phashBlock)
-        return true;
-
-    return uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
-}
-
 /* Resolve the header to admit at `height`.
  *
  * active_chain_at() is a body/window accessor; it intentionally returns NULL
@@ -259,12 +242,16 @@ static bool ha_parent_links_to_active_window(struct main_state *ms,
  * replay one or more heights above that window after a forward-fork cursor
  * rewind, so fall back to the canonical best-header ancestry exactly like
  * validate_headers. The fallback is accepted only when the candidate links to
- * the already-visible active parent; a fork child at active_tip+1 must wait for
- * the reorg/window owner instead of being re-admitted into the same mismatch
- * loop. This changes only the source of the block_index pointer;
+ * either the already-visible active parent (height active_tip+1) or a matching
+ * prior header_admit row above that point. A fork child at active_tip+1, or a
+ * stale prior row, must wait for the reorg/window owner instead of being
+ * re-admitted into the same mismatch loop. This changes only the source of the
+ * block_index pointer;
  * authoritative_admit() and downstream PoW/body/script stages still own their
  * existing verdicts. */
-static struct block_index *ha_resolve_bi(struct main_state *ms, int height)
+static struct block_index *ha_resolve_bi(sqlite3 *db,
+                                         struct main_state *ms,
+                                         int height)
 {
     if (!ms || height < 0)
         return NULL;
@@ -276,7 +263,8 @@ static struct block_index *ha_resolve_bi(struct main_state *ms, int height)
     if (ms->pindex_best_header &&
         height <= ms->pindex_best_header->nHeight) {
         bi = block_index_get_ancestor(ms->pindex_best_header, height);
-        if (bi && ha_parent_links_to_active_window(ms, bi, height))
+        if (bi &&
+            header_admit_forward_replay_parent_ok(db, ms, bi, height))
             return bi;
     }
 
@@ -500,7 +488,7 @@ static job_result_t step_admit(struct stage_step_ctx *c)
     if (next_h > mint_fold_ceiling_get())
         return JOB_IDLE;
 
-    struct block_index *bi = ha_resolve_bi(ms, next_h);
+    struct block_index *bi = ha_resolve_bi(db, ms, next_h);
     if (!bi || !bi->phashBlock) {
         /* Reducer producer path: the active chain has no block here yet.
          * If a raw header for this height was staged via the inbox, CREATE
