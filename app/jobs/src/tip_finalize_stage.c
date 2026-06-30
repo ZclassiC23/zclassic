@@ -8,23 +8,22 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/block_header_emit.h"
 #include "tip_finalize_anchor_internal.h"
+#include "tip_finalize_stage_durable.h"
 #include "tip_finalize_post_step.h"
 #include "tip_finalize_log_store.h"
+#include "tip_finalize_stage_observe.h"
 #include "script_validate_log_store.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
 #include "event/event.h"
-#include "json/json.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
 
 #include <pthread.h>
 #include <sqlite3.h>
-#include <stdatomic.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,157 +37,6 @@ static struct main_state *g_ms = NULL;
 static stage_t *g_stage = NULL;
 static tip_finalize_utxo_count_fn g_utxo_counter = NULL;
 static void *g_utxo_counter_user = NULL;
-
-static _Atomic uint64_t g_finalized_total = 0;
-static _Atomic uint64_t g_upstream_failed_total = 0;
-static _Atomic uint64_t g_reorg_detected_total = 0;
-static _Atomic uint64_t g_utxo_count_diverged_total = 0;
-static _Atomic uint64_t g_precondition_failed_total = 0;
-/* Lookahead successor (H+1) is not yet body-on-disk / script-valid: the
- * finalize of H is correctly DEFERRED (cursor held, JOB_IDLE), not skipped.
- * Distinct from g_precondition_failed_total, which counts ONLY the genuine
- * competing-fork skip (chainwork_not_greater). */
-static _Atomic uint64_t g_successor_pending_total = 0;
-/* Header-only canonical-successor finalizes (deadlock-cure step 3): N finalized
- * on N+1's HEADER witness because N+1's body/scripts were not yet pipelined.
- * A SUBSET of g_finalized_total (which counts these too); the complement of
- * g_successor_pending_total (the HOLD when N+1 is NOT yet a canonical successor).
- * One zcl_state call confirms the cure is firing live. */
-static _Atomic uint64_t g_header_witness_total = 0;
-static _Atomic uint64_t g_total_work_added_high = 0;
-static _Atomic uint64_t g_total_work_added_low = 0;
-static _Atomic int64_t  g_last_step_unix = 0;
-static _Atomic int64_t  g_last_blocked_unix = 0;
-static _Atomic int64_t  g_last_advance_height = -1;
-
-/* WHY the last idle/blocked tick idled. step_finalize has five distinct
- * JOB_IDLE exits; a held frontier is observationally identical across all
- * five in zcl_state, so one token + one counter per class makes the cause
- * one zcl_state call away (no code read needed to tell them apart).
- * TF_BLOCKED_AT_UV_FRONTIER is the HEALTHY at-tip steady state (waiting
- * for the next block), not a fault. */
-enum tf_blocked_class {
-    TF_BLOCKED_NONE = 0,
-    TF_BLOCKED_UV_CURSOR_GAP,     /* cursor ran ahead of utxo_apply */
-    TF_BLOCKED_AT_UV_FRONTIER,    /* caught up; next block not applied yet */
-    TF_BLOCKED_UV_ROW_MISSING,    /* utxo_apply log row absent at cursor */
-    TF_BLOCKED_LOOKAHEAD_MISSING, /* chain window has no successor H+1 */
-    TF_BLOCKED_TIP_MISSING,       /* chain window has no block at H */
-    TF_BLOCKED_SUCCESSOR_PENDING, /* successor known but not yet finalizable
-                                   * (detail in last_precondition_reason) */
-    TF_BLOCKED_CLASS_N
-};
-static const char *const k_tf_blocked_name[TF_BLOCKED_CLASS_N] = {
-    "", "uv_cursor_gap", "at_utxo_frontier", "utxo_apply_row_missing",
-    "lookahead_tip_missing", "current_tip_missing", "successor_pending",
-};
-static _Atomic int      g_last_blocked_class = TF_BLOCKED_NONE;
-static _Atomic uint64_t g_blocked_class_total[TF_BLOCKED_CLASS_N];
-
-static void tf_mark_blocked(enum tf_blocked_class cls)
-{
-    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-    atomic_store(&g_last_blocked_class, (int)cls);
-    if (cls > TF_BLOCKED_NONE && cls < TF_BLOCKED_CLASS_N)
-        atomic_fetch_add(&g_blocked_class_total[cls], 1);
-}
-static uint8_t         g_last_advance_hash[32];
-static zcl_mutex_t     g_last_advance_hash_mu;
-
-/* Last specific precondition that blocked tip_finalize. The persisted
- * tip_finalize_log status column stays the generic "precondition_failed"
- * token (downstream + tests match on it); this names WHICH check failed so
- * a script-validation stall is not masked. Updated on EVERY blocked tick for
- * zcl_state freshness even when the WARN is throttled (below). Guarded by
- * g_block_reason_mu. */
-static _Atomic int64_t  g_last_precondition_height = -1;
-static char             g_last_precondition_reason[40] = "";
-static zcl_mutex_t      g_block_reason_mu;
-
-/* CS-F1/F3 WARN-storm throttle. reducer_drain_to_convergence runs up to 4096
- * rounds per activation kick, so a per-tick WARN on a held frontier repeats
- * the SAME line millions of times in minutes. Emit only on a pair TRANSITION
- * (reporting the prior pair's suppressed count) or as a 300 s keep-alive with
- * the running count; suppressed calls still count. Both throttles are the
- * shared log_throttle de-storm primitive: F1 (precondition) keys on a
- * (height, reason-string) tuple so it uses the boolean-change entry point and
- * is updated under g_block_reason_mu while its repeat counter is read
- * lock-free by the dump; F3 (cursor-gap) keys on the (cursor_in, utxo_apply)
- * height pair and is touched only by the single-threaded step path. */
-static struct log_throttle g_precondition_throttle = LOG_THROTTLE_INIT;
-static struct log_throttle g_cursor_gap_throttle = LOG_THROTTLE_INIT;
-
-static void update_last_advance(int height, const uint8_t hash[32])
-{
-    atomic_store(&g_last_advance_height, (int64_t)height);
-    zcl_mutex_lock(&g_last_advance_hash_mu);
-    memcpy(g_last_advance_hash, hash, 32);
-    zcl_mutex_unlock(&g_last_advance_hash_mu);
-}
-
-static bool get_last_advance(int64_t *height, uint8_t hash[32])
-{
-    *height = atomic_load(&g_last_advance_height);
-    if (*height < 0) return false;
-    zcl_mutex_lock(&g_last_advance_hash_mu);
-    memcpy(hash, g_last_advance_hash, 32);
-    zcl_mutex_unlock(&g_last_advance_hash_mu);
-    return true;
-}
-
-static bool publish_resolved_durable_tip(sqlite3 *db, const char *reason)
-{
-    int h = -1;
-    uint8_t hash[32];
-    if (!tip_finalize_stage_resolve_durable_tip(db, &h, hash))
-        return false;
-    update_last_advance(h, hash);
-    LOG_INFO("tip_finalize",
-             "[tip_finalize] authority publish durable h=%d reason=%s",
-             h, reason ? reason : "");
-    return true;
-}
-
-static bool has_no_durable_tip_history(sqlite3 *db)
-{
-    uint64_t cursor = 0;
-    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
-        return false;
-    return cursor == 0 &&
-           stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") <= 0;
-}
-
-static bool hydrate_stage_cursor_from_store(sqlite3 *db, stage_t *stage,
-                                            const char *reason)
-{
-    if (!stage)
-        return true;
-    uint64_t cursor = 0;
-    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
-        return false;
-    if (!stage_set_cursor(stage, db, cursor)) {
-        LOG_WARN("tip_finalize",
-                 "[tip_finalize] cursor hydrate failed cursor=%llu reason=%s",
-                 (unsigned long long)cursor, reason ? reason : "");
-        return false;
-    }
-    return true;
-}
-
-static void publish_resolved_or_fresh_tip(
-    sqlite3 *db, const struct block_index *existing_tip, const char *reason)
-{
-    if (publish_resolved_durable_tip(db, reason))
-        return;
-    if (existing_tip && existing_tip->phashBlock &&
-        has_no_durable_tip_history(db)) {
-        update_last_advance(existing_tip->nHeight,
-                            existing_tip->phashBlock->data);
-        LOG_INFO("tip_finalize",
-                 "[tip_finalize] authority publish fresh h=%d reason=%s",
-                 existing_tip->nHeight, reason ? reason : "");
-    }
-}
 
 /* Recompute H* (the deepest provably-consistent height) from the durable
  * progress.kv state and publish it into the external provable-tip cache.
@@ -229,7 +77,7 @@ stage_t *tip_finalize_stage_handle(void)
 
 void tip_finalize_publish_last_advance(int height, const uint8_t hash[32])
 {
-    update_last_advance(height, hash);
+    tip_finalize_observe_update_last_advance(height, hash);
 }
 
 static int reorg_depth_from(struct block_index *old_tip,
@@ -359,24 +207,6 @@ static int finalize_script_log_ok(sqlite3 *db, int height, const struct uint256 
             uint256_eq(&row.block_hash, want_hash)) ? 1 : 0;
 }
 
-static void record_precondition_block(int height, const char *reason)
-{
-    const char *r = reason ? reason : "";
-    int64_t now = platform_time_wall_unix();
-    uint64_t shown = 0;
-    zcl_mutex_lock(&g_block_reason_mu);
-    bool changed = (int64_t)height != atomic_load(&g_last_precondition_height)
-                   || strcmp(r, g_last_precondition_reason) != 0;
-    atomic_store(&g_last_precondition_height, (int64_t)height);
-    snprintf(g_last_precondition_reason, sizeof g_last_precondition_reason, "%s", r);
-    bool emit = log_throttle_should_emit_changed(&g_precondition_throttle,
-                                                 changed, now, 300, &shown);
-    zcl_mutex_unlock(&g_block_reason_mu);
-    if (emit)
-        LOG_WARN("tip_finalize", "[tip_finalize] precondition_failed height=%d reason=%s repeats=%llu",
-                 height, r, (unsigned long long)shown);
-}
-
 static bool finalized_row_active_match(sqlite3 *db, int row_height,
                                        bool *out_known, bool *out_matches)
 {
@@ -458,8 +288,7 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
      * drain, so refreshing here lowers the cache for ALL of them. */
     tf_refresh_provable_tip(db);
 
-    atomic_fetch_add(&g_reorg_detected_total, 1);
-    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    tip_finalize_observe_note_reorg_rewind();
     event_emitf(EV_BLOCK_REJECTED, 0,
                 "tip_finalize reorg_cursor_rewind from=%llu to=%llu",
                 (unsigned long long)cursor, (unsigned long long)rewind_to);
@@ -476,7 +305,7 @@ static bool live_utxo_count_after(int height_after, int64_t *out_count)
 
 static job_result_t step_finalize(struct stage_step_ctx *c)
 {
-    atomic_store(&g_last_step_unix, platform_time_wall_unix());
+    tip_finalize_observe_mark_step();
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
@@ -491,24 +320,12 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                                    &uv_cursor))
         return JOB_FATAL;
     if ((uint64_t)next_h > uv_cursor) {
-        int64_t now = platform_time_wall_unix();
-        /* Key the de-storm on the (cursor_in, utxo_apply) height pair: a
-         * change in either height re-emits immediately, otherwise a 300 s
-         * keep-alive. Both fit 32 bits (block heights), so the pack is
-         * lossless and key-equality is exact. */
-        uint64_t key = ((uint64_t)(uint32_t)next_h << 32)
-                       | (uint32_t)uv_cursor;
-        uint64_t shown = 0;
-        if (log_throttle_should_emit(&g_cursor_gap_throttle, key, now, 300,
-                                     &shown))
-            LOG_WARN("tip_finalize",
-                "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu repeats=%llu",
-                next_h, (unsigned long long)uv_cursor, (unsigned long long)shown);
-        tf_mark_blocked(TF_BLOCKED_UV_CURSOR_GAP);
+        tip_finalize_observe_note_cursor_gap(next_h, uv_cursor);
         return JOB_IDLE;
     }
     if ((uint64_t)next_h >= uv_cursor) {
-        tf_mark_blocked(TF_BLOCKED_AT_UV_FRONTIER);
+        tip_finalize_observe_mark_blocked(
+            TIP_FINALIZE_BLOCKED_AT_UV_FRONTIER);
         return JOB_IDLE;
     }
 
@@ -516,7 +333,8 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     int found = utxo_apply_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
-        tf_mark_blocked(TF_BLOCKED_UV_ROW_MISSING);
+        tip_finalize_observe_mark_blocked(
+            TIP_FINALIZE_BLOCKED_UV_ROW_MISSING);
         return JOB_IDLE;
     }
 
@@ -525,7 +343,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         arith_uint256_set_zero(&zero);
         if (!log_insert(db, next_h, "upstream_failed", false, &zero, -1, 0, NULL))
             return JOB_FATAL;
-        atomic_fetch_add(&g_upstream_failed_total, 1);
+        tip_finalize_observe_inc_upstream_failed();
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
@@ -578,11 +396,13 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         }
     }
     if (!new_tip) {
-        tf_mark_blocked(TF_BLOCKED_LOOKAHEAD_MISSING);
+        tip_finalize_observe_mark_blocked(
+            TIP_FINALIZE_BLOCKED_LOOKAHEAD_MISSING);
         return JOB_IDLE;
     }
     if (!old_tip) {
-        tf_mark_blocked(TF_BLOCKED_TIP_MISSING);
+        tip_finalize_observe_mark_blocked(
+            TIP_FINALIZE_BLOCKED_TIP_MISSING);
         return JOB_IDLE;
     }
 
@@ -603,7 +423,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         int depth = reorg_depth_from(old_tip, new_tip);
         if (!log_insert(db, next_h, "reorg_detected", false, &work_delta, -1, depth, NULL))
             return JOB_FATAL;
-        atomic_fetch_add(&g_reorg_detected_total, 1);
+        tip_finalize_observe_inc_reorg_detected();
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "tip_finalize reorg_detected height=%d depth=%d", next_h, depth);
         c->cursor_out = c->cursor_in + 1;
@@ -672,12 +492,14 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
          * pinning a bodiless slot or advertising an unbodied active-chain tip. */
         if (is_canonical_header_successor(old_tip, new_tip,
                                           ms->pindex_best_header)) {
-            atomic_fetch_add(&g_header_witness_total, 1);
+            tip_finalize_observe_inc_header_witness();
             transient_reason = NULL;  /* proceed to the normal finalize tail */
         } else {
-            atomic_fetch_add(&g_successor_pending_total, 1);
-            record_precondition_block(next_h, transient_reason);
-            tf_mark_blocked(TF_BLOCKED_SUCCESSOR_PENDING);
+            tip_finalize_observe_inc_successor_pending();
+            tip_finalize_observe_record_precondition_block(next_h,
+                                                           transient_reason);
+            tip_finalize_observe_mark_blocked(
+                TIP_FINALIZE_BLOCKED_SUCCESSOR_PENDING);
             /* Genuinely not a canonical successor (no/!PoW header, off
              * best_header, or not greater work): hold H until its successor is
              * ready. No DB row, no cursor move. */
@@ -687,8 +509,9 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     if (arith_uint256_compare(&new_tip->nChainWork, &old_tip->nChainWork) <= 0) {
         if (!log_insert(db, next_h, "precondition_failed", false, &work_delta, -1, 0, NULL))
             return JOB_FATAL;
-        atomic_fetch_add(&g_precondition_failed_total, 1);
-        record_precondition_block(next_h, "chainwork_not_greater");
+        tip_finalize_observe_inc_precondition_failed();
+        tip_finalize_observe_record_precondition_block(
+            next_h, "chainwork_not_greater");
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "tip_finalize precondition_failed height=%d reason=%s",
                     next_h, "chainwork_not_greater");
@@ -710,7 +533,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
             if (!log_insert(db, next_h, "utxo_count_diverged", false,
                             &work_delta, utxo_size_after, 0, NULL))
                 return JOB_FATAL;
-            atomic_fetch_add(&g_utxo_count_diverged_total, 1);
+            tip_finalize_observe_inc_utxo_count_diverged();
             event_emitf(EV_BLOCK_REJECTED, 0,
                         "tip_finalize utxo_count_diverged height=%d live=%lld expected=%lld",
                         next_h, (long long)utxo_size_after, (long long)expected);
@@ -723,7 +546,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                     utxo_size_after, 0, new_tip->phashBlock))
         return JOB_FATAL;
 
-    int64_t published_before = atomic_load(&g_last_advance_height);
+    int64_t published_before = tip_finalize_observe_last_height();
     /* Advertise the served-tip authority (g_last_advance_height ->
      * active_chain_height / active_chain_tip) ONLY when new_tip has its body: a
      * header-only finalize of N on a still-bodiless N+1 must not move the
@@ -759,10 +582,8 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         return JOB_FATAL;
     }
 
-    atomic_fetch_add(&g_finalized_total, 1);
-    atomic_fetch_add(&g_total_work_added_low, arith_uint256_get_low64(&work_delta));
-    atomic_fetch_add(&g_total_work_added_high,
-                     ((uint64_t)work_delta.pn[3] << 32) | work_delta.pn[2]);
+    tip_finalize_observe_inc_finalized();
+    tip_finalize_observe_add_work(&work_delta);
     if (publish) {
         tip_finalize_run_post_finalize(new_tip);
         /* Publish the SELF-CONSISTENT authority pair: the served tip block's
@@ -772,7 +593,8 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
          * finalize frontier, and accept_block_header's label-trust install
          * turns that inconsistent pair into a -1 height splice across the
          * whole header graph when a peer re-delivers the tip header. */
-        update_last_advance(new_tip->nHeight, new_tip->phashBlock->data);
+        tip_finalize_observe_update_last_advance(new_tip->nHeight,
+                                                 new_tip->phashBlock->data);
     }
     /* Refresh the EXTERNAL provable-tip cache (H*) on the finalize advance.
      * The durable "finalized" ok=1 row was inserted above (log_insert), and we
@@ -799,7 +621,7 @@ static int64_t get_height(void)
 static bool get_hash(uint8_t hash[32])
 {
     int64_t h;
-    return get_last_advance(&h, hash);
+    return tip_finalize_observe_get_last_advance(&h, hash);
 }
 
 bool tip_finalize_stage_init(struct main_state *ms)
@@ -810,8 +632,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
     if (!db) LOG_FAIL("tip_finalize", "init: progress_store not open");
 
     pthread_mutex_lock(&g_lock);
-    zcl_mutex_init(&g_last_advance_hash_mu);
-    zcl_mutex_init(&g_block_reason_mu);
+    tip_finalize_observe_init();
     g_ms = ms;
 
     struct block_index *existing_tip = active_chain_cached_tip(&ms->chain_active);
@@ -828,13 +649,13 @@ bool tip_finalize_stage_init(struct main_state *ms)
             pthread_mutex_unlock(&g_lock);
             return false;
         }
-        if (!hydrate_stage_cursor_from_store(db, g_stage,
-                                             "init_existing_tip_reanchor")) {
+        if (!tip_finalize_stage_hydrate_cursor_from_store(
+                db, g_stage, "init_existing_tip_reanchor")) {
             pthread_mutex_unlock(&g_lock);
             return false;
         }
-        publish_resolved_or_fresh_tip(db, existing_tip,
-                                      "init_existing_tip_reanchor");
+        tip_finalize_stage_publish_resolved_or_fresh_tip(
+            db, existing_tip, "init_existing_tip_reanchor");
         pthread_mutex_unlock(&g_lock);
         return true;
     }
@@ -865,13 +686,15 @@ bool tip_finalize_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-    if (!hydrate_stage_cursor_from_store(db, s, "init_existing_tip")) {
+    if (!tip_finalize_stage_hydrate_cursor_from_store(
+            db, s, "init_existing_tip")) {
         stage_destroy(s);
         g_stage = NULL;
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-    publish_resolved_or_fresh_tip(db, existing_tip, "init_existing_tip");
+    tip_finalize_stage_publish_resolved_or_fresh_tip(
+        db, existing_tip, "init_existing_tip");
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO("tip_finalize", "[tip_finalize] stage initialised (authoritative)");
@@ -928,120 +751,15 @@ void tip_finalize_stage_shutdown(void)
     g_ms = NULL;
     g_utxo_counter = NULL;
     g_utxo_counter_user = NULL;
-    atomic_store(&g_finalized_total, (uint64_t)0);
-    atomic_store(&g_upstream_failed_total, (uint64_t)0);
-    atomic_store(&g_reorg_detected_total, (uint64_t)0);
-    atomic_store(&g_utxo_count_diverged_total, (uint64_t)0);
-    atomic_store(&g_precondition_failed_total, (uint64_t)0);
-    atomic_store(&g_successor_pending_total, (uint64_t)0);
-    atomic_store(&g_header_witness_total, (uint64_t)0);
-    atomic_store(&g_total_work_added_high, (uint64_t)0);
-    atomic_store(&g_total_work_added_low, (uint64_t)0);
-    atomic_store(&g_last_step_unix, (int64_t)0);
-    atomic_store(&g_last_blocked_unix, (int64_t)0);
-    atomic_store(&g_last_blocked_class, TF_BLOCKED_NONE);
-    for (int i = 0; i < TF_BLOCKED_CLASS_N; i++)
-        atomic_store(&g_blocked_class_total[i], (uint64_t)0);
-    atomic_store(&g_last_advance_height, (int64_t)-1);
+    tip_finalize_observe_shutdown();
     /* Mirror the served-tip reset into the external provable-tip cache so a
      * stale-high H* from this run cannot leak into the next boot. */
     reducer_frontier_provable_tip_reset();
-    atomic_store(&g_last_precondition_height, (int64_t)-1);
-    log_throttle_reset(&g_precondition_throttle);
-    log_throttle_reset(&g_cursor_gap_throttle);
-    zcl_mutex_lock(&g_block_reason_mu);
-    g_last_precondition_reason[0] = '\0';
-    zcl_mutex_unlock(&g_block_reason_mu);
-    zcl_mutex_destroy(&g_last_advance_hash_mu);
-    zcl_mutex_destroy(&g_block_reason_mu);
     pthread_mutex_unlock(&g_lock);
 }
 
-/* tip_finalize_stage_set_authoritative_tip and tip_finalize_stage_seed_anchor
- * live in tip_finalize_anchor.c. */
-
-bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
-                                         uint8_t out_hash[32])
-{
-    if (!db || !out_hash || height < 0)
-        return false;
-    progress_store_tx_lock();
-    struct finalized_tip_row row;
-    if (!finalized_tip_row_at(db, height, &row)) {
-        progress_store_tx_unlock();
-        return false;
-    }
-    if (!row.found || !row.ok || !row.has_tip_hash) {
-        progress_store_tx_unlock();
-        return false;
-    }
-    memcpy(out_hash, row.tip_hash.data, 32);
-    progress_store_tx_unlock();
-    return true;
-}
-
-bool tip_finalize_stage_block_hash_at(sqlite3 *db, int height,
-                                      uint8_t out_hash[32])
-{
-    if (!db || !out_hash || height < 0)
-        return false;
-    progress_store_tx_lock();
-
-    /* FINALIZED convention (step_finalize): the ok=1 row at height-1 binds
-     * the LOOKAHEAD new_tip = active_chain_at(height), so its tip_hash IS
-     * this height's own hash. An anchor row at height-1 carries hash(height-1)
-     * (the seed's own hash) and must be skipped here — exactly the
-     * finalized_row_active_match discrimination. */
-    if (height > 0) {
-        struct finalized_tip_row prev;
-        if (finalized_tip_row_at(db, height - 1, &prev) &&
-            prev.found && prev.ok && prev.has_tip_hash && !prev.is_anchor) {
-            memcpy(out_hash, prev.tip_hash.data, 32);
-            progress_store_tx_unlock();
-            return true;
-        }
-    }
-
-    /* ANCHOR convention (tip_finalize_stage_seed_anchor): a seed row at
-     * height carries the block's OWN hash. A finalized row at height carries
-     * hash(height+1) — the successor's hash — and must NOT be returned as
-     * this height's hash (an inconsistent authority pair). */
-    struct finalized_tip_row own;
-    if (finalized_tip_row_at(db, height, &own) &&
-        own.found && own.ok && own.has_tip_hash && own.is_anchor) {
-        memcpy(out_hash, own.tip_hash.data, 32);
-        progress_store_tx_unlock();
-        return true;
-    }
-
-    progress_store_tx_unlock();
-    return false;
-}
-
-bool tip_finalize_stage_resolve_durable_tip(sqlite3 *db, int *out_height,
-                                            uint8_t out_hash[32])
-{
-    if (!db || !out_height || !out_hash)
-        return false;
-    uint64_t cursor = 0;
-    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
-        return false;
-    if (cursor == 0)
-        return false;
-    /* Try cursor (anchor-at-cursor steady state), then cursor-1 (legacy +1
-     * lattice / finalized-row convention). block_hash_at discriminates the
-     * row types, so whichever height resolves owns the returned hash. */
-    for (int back = 0; back <= 1; back++) {
-        int h = (int)cursor - back;
-        if (h < 0)
-            break;
-        if (tip_finalize_stage_block_hash_at(db, h, out_hash)) {
-            *out_height = h;
-            return true;
-        }
-    }
-    return false;
-}
+/* tip_finalize_stage_set_authoritative_tip, tip_finalize_stage_seed_anchor,
+ * and the durable tip readers live in sibling TUs. */
 
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *user)
 {
@@ -1052,81 +770,30 @@ void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *us
 }
 
 uint64_t tip_finalize_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
-int64_t tip_finalize_stage_last_height(void) { return atomic_load(&g_last_advance_height); }
+int64_t tip_finalize_stage_last_height(void) { return tip_finalize_observe_last_height(); }
 
 /* Test-only: reset the published served-tip height to -1 (a stale high value
  * from a prior group without shutdown() poisons later active_chain_tip reads). */
-void tip_finalize_stage_test_reset(void) { atomic_store(&g_last_advance_height, (int64_t)-1); reducer_frontier_provable_tip_reset(); }
-uint64_t tip_finalize_stage_finalized_total(void) { return atomic_load(&g_finalized_total); }
-uint64_t tip_finalize_stage_upstream_failed_total(void) { return atomic_load(&g_upstream_failed_total); }
-uint64_t tip_finalize_stage_reorg_detected_total(void) { return atomic_load(&g_reorg_detected_total); }
-uint64_t tip_finalize_stage_utxo_count_diverged_total(void) { return atomic_load(&g_utxo_count_diverged_total); }
-uint64_t tip_finalize_stage_precondition_failed_total(void) { return atomic_load(&g_precondition_failed_total); }
-uint64_t tip_finalize_stage_successor_pending_total(void) { return atomic_load(&g_successor_pending_total); }
-uint64_t tip_finalize_stage_header_witness_total(void) { return atomic_load(&g_header_witness_total); }
-uint64_t tip_finalize_stage_total_work_added_high(void) { return atomic_load(&g_total_work_added_high); }
-uint64_t tip_finalize_stage_total_work_added_low(void) { return atomic_load(&g_total_work_added_low); }
+void tip_finalize_stage_test_reset(void) { tip_finalize_observe_reset_last_height(); reducer_frontier_provable_tip_reset(); }
+uint64_t tip_finalize_stage_finalized_total(void) { return tip_finalize_observe_finalized_total(); }
+uint64_t tip_finalize_stage_upstream_failed_total(void) { return tip_finalize_observe_upstream_failed_total(); }
+uint64_t tip_finalize_stage_reorg_detected_total(void) { return tip_finalize_observe_reorg_detected_total(); }
+uint64_t tip_finalize_stage_utxo_count_diverged_total(void) { return tip_finalize_observe_utxo_count_diverged_total(); }
+uint64_t tip_finalize_stage_precondition_failed_total(void) { return tip_finalize_observe_precondition_failed_total(); }
+uint64_t tip_finalize_stage_successor_pending_total(void) { return tip_finalize_observe_successor_pending_total(); }
+uint64_t tip_finalize_stage_header_witness_total(void) { return tip_finalize_observe_header_witness_total(); }
+uint64_t tip_finalize_stage_total_work_added_high(void) { return tip_finalize_observe_total_work_added_high(); }
+uint64_t tip_finalize_stage_total_work_added_low(void) { return tip_finalize_observe_total_work_added_low(); }
 
 /* Lock-free blocked-class snapshot for the supervisor stall log. Returns a
  * process-lifetime string literal (safe for LOG_WARN); "" when none yet. */
 const char *tip_finalize_stage_last_blocked_reason(void)
 {
-    int cls = atomic_load(&g_last_blocked_class);
-    if (cls <= TF_BLOCKED_NONE || cls >= TF_BLOCKED_CLASS_N) return "";
-    return k_tf_blocked_name[cls];
+    return tip_finalize_observe_last_blocked_reason();
 }
 
 bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
 {
-    (void)key;
-    if (!out) return false;
-    json_set_object(out);
-
     sqlite3 *db = progress_store_db();
-    int64_t now = platform_time_wall_unix();
-    int64_t last = atomic_load(&g_last_step_unix);
-
-    stage_dump_header(out, STAGE_NAME, g_stage);
-    json_push_kv_int (out, "finalized_total", (int64_t)atomic_load(&g_finalized_total));
-    json_push_kv_int (out, "upstream_failed_total", (int64_t)atomic_load(&g_upstream_failed_total));
-    json_push_kv_int (out, "reorg_detected_total", (int64_t)atomic_load(&g_reorg_detected_total));
-    json_push_kv_int (out, "utxo_count_diverged_total", (int64_t)atomic_load(&g_utxo_count_diverged_total));
-    json_push_kv_int (out, "precondition_failed_total", (int64_t)atomic_load(&g_precondition_failed_total));
-    json_push_kv_int (out, "successor_pending_total", (int64_t)atomic_load(&g_successor_pending_total));
-    json_push_kv_int (out, "header_witness_total", (int64_t)atomic_load(&g_header_witness_total));
-    json_push_kv_int (out, "last_precondition_height", atomic_load(&g_last_precondition_height));
-    json_push_kv_int (out, "precondition_repeat_count", (int64_t)log_throttle_reps(&g_precondition_throttle));
-    {
-        /* g_block_reason_mu is only live while the stage is (init..shutdown);
-         * guard the read so a dump before init / after shutdown is safe. */
-        char reason_buf[40] = "";
-        if (g_stage) {
-            zcl_mutex_lock(&g_block_reason_mu);
-            snprintf(reason_buf, sizeof reason_buf, "%s", g_last_precondition_reason);
-            zcl_mutex_unlock(&g_block_reason_mu);
-        }
-        json_push_kv_str(out, "last_precondition_reason", reason_buf);
-    }
-    json_push_kv_int (out, "total_work_added_high", (int64_t)atomic_load(&g_total_work_added_high));
-    json_push_kv_int (out, "total_work_added_low", (int64_t)atomic_load(&g_total_work_added_low));
-    json_push_kv_int (out, "last_advance_height", atomic_load(&g_last_advance_height));
-    json_push_kv_int (out, "last_step_unix", last);
-    json_push_kv_int (out, "last_step_age_seconds", last > 0 ? now - last : -1);
-    json_push_kv_int (out, "last_blocked_unix", atomic_load(&g_last_blocked_unix));
-    {
-        int cls = atomic_load(&g_last_blocked_class);
-        if (cls < 0 || cls >= TF_BLOCKED_CLASS_N)
-            cls = TF_BLOCKED_NONE;
-        json_push_kv_str(out, "last_blocked_reason", k_tf_blocked_name[cls]);
-        for (int i = TF_BLOCKED_NONE + 1; i < TF_BLOCKED_CLASS_N; i++) {
-            char key[64];
-            snprintf(key, sizeof key, "blocked_%s_total",
-                     k_tf_blocked_name[i]);
-            json_push_kv_int(out, key,
-                             (int64_t)atomic_load(&g_blocked_class_total[i]));
-        }
-    }
-    json_push_kv_int (out, "log_rows", db ? stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") : 0);
-    stage_dump_counters(out, g_stage);
-    return true;
+    return tip_finalize_observe_dump_state_json(out, key, db, g_stage);
 }

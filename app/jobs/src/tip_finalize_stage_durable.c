@@ -1,0 +1,158 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * tip_finalize_stage_durable — implementation. See
+ * tip_finalize_stage_durable.h. */
+
+#include "tip_finalize_stage_durable.h"
+
+#include "jobs/tip_finalize_stage.h"
+#include "jobs/stage_helpers.h"
+#include "tip_finalize_log_store.h"
+#include "tip_finalize_stage_observe.h"
+
+#include "chain/chain.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
+
+#include <stdint.h>
+#include <string.h>
+
+#define STAGE_NAME "tip_finalize"
+
+static bool publish_resolved_durable_tip(sqlite3 *db, const char *reason)
+{
+    int h = -1;
+    uint8_t hash[32];
+    if (!tip_finalize_stage_resolve_durable_tip(db, &h, hash))
+        return false; // raw-return-ok:durable-tip-absent
+    tip_finalize_observe_update_last_advance(h, hash);
+    LOG_INFO("tip_finalize",
+             "[tip_finalize] authority publish durable h=%d reason=%s",
+             h, reason ? reason : "");
+    return true;
+}
+
+static bool has_no_durable_tip_history(sqlite3 *db)
+{
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        LOG_FAIL("tip_finalize", "durable history cursor read failed");
+    return cursor == 0 &&
+           stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") <= 0;
+}
+
+bool tip_finalize_stage_hydrate_cursor_from_store(sqlite3 *db,
+                                                  stage_t *stage,
+                                                  const char *reason)
+{
+    if (!stage)
+        return true;
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        LOG_FAIL("tip_finalize", "cursor hydrate read failed");
+    if (!stage_set_cursor(stage, db, cursor)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] cursor hydrate failed cursor=%llu reason=%s",
+                 (unsigned long long)cursor, reason ? reason : "");
+        return false;
+    }
+    return true;
+}
+
+void tip_finalize_stage_publish_resolved_or_fresh_tip(
+    sqlite3 *db, const struct block_index *existing_tip, const char *reason)
+{
+    if (publish_resolved_durable_tip(db, reason))
+        return;
+    if (existing_tip && existing_tip->phashBlock &&
+        has_no_durable_tip_history(db)) {
+        tip_finalize_observe_update_last_advance(
+            existing_tip->nHeight, existing_tip->phashBlock->data);
+        LOG_INFO("tip_finalize",
+                 "[tip_finalize] authority publish fresh h=%d reason=%s",
+                 existing_tip->nHeight, reason ? reason : "");
+    }
+}
+
+bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
+                                         uint8_t out_hash[32])
+{
+    if (!db || !out_hash || height < 0)
+        return false;
+    progress_store_tx_lock();
+    struct finalized_tip_row row;
+    if (!finalized_tip_row_at(db, height, &row)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (!row.found || !row.ok || !row.has_tip_hash) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    memcpy(out_hash, row.tip_hash.data, 32);
+    progress_store_tx_unlock();
+    return true;
+}
+
+bool tip_finalize_stage_block_hash_at(sqlite3 *db, int height,
+                                      uint8_t out_hash[32])
+{
+    if (!db || !out_hash || height < 0)
+        return false;
+    progress_store_tx_lock();
+
+    /* FINALIZED convention (step_finalize): the ok=1 row at height-1 binds
+     * the LOOKAHEAD new_tip = active_chain_at(height), so its tip_hash IS
+     * this height's own hash. An anchor row at height-1 carries hash(height-1)
+     * (the seed's own hash) and must be skipped here — exactly the
+     * finalized_row_active_match discrimination. */
+    if (height > 0) {
+        struct finalized_tip_row prev;
+        if (finalized_tip_row_at(db, height - 1, &prev) &&
+            prev.found && prev.ok && prev.has_tip_hash && !prev.is_anchor) {
+            memcpy(out_hash, prev.tip_hash.data, 32);
+            progress_store_tx_unlock();
+            return true;
+        }
+    }
+
+    /* ANCHOR convention (tip_finalize_stage_seed_anchor): a seed row at height
+     * carries the block's OWN hash. A finalized row at height carries
+     * hash(height+1) — the successor's hash — and must NOT be returned as this
+     * height's hash (an inconsistent authority pair). */
+    struct finalized_tip_row own;
+    if (finalized_tip_row_at(db, height, &own) &&
+        own.found && own.ok && own.has_tip_hash && own.is_anchor) {
+        memcpy(out_hash, own.tip_hash.data, 32);
+        progress_store_tx_unlock();
+        return true;
+    }
+
+    progress_store_tx_unlock();
+    return false;
+}
+
+bool tip_finalize_stage_resolve_durable_tip(sqlite3 *db, int *out_height,
+                                            uint8_t out_hash[32])
+{
+    if (!db || !out_height || !out_hash)
+        return false;
+    uint64_t cursor = 0;
+    if (!stage_cursor_read_or_zero(db, STAGE_NAME, STAGE_NAME, &cursor))
+        LOG_FAIL("tip_finalize", "durable tip cursor read failed");
+    if (cursor == 0)
+        return false;
+    /* Try cursor (anchor-at-cursor steady state), then cursor-1 (legacy +1
+     * lattice / finalized-row convention). block_hash_at discriminates the row
+     * types, so whichever height resolves owns the returned hash. */
+    for (int back = 0; back <= 1; back++) {
+        int h = (int)cursor - back;
+        if (h < 0)
+            break;
+        if (tip_finalize_stage_block_hash_at(db, h, out_hash)) {
+            *out_height = h;
+            return true;
+        }
+    }
+    return false;
+}

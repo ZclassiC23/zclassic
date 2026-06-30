@@ -136,6 +136,12 @@ mega-refactor. This page is the running backlog for those passes.
   warning state, label-splice refusal logging, and fold-progress heartbeat now
   live in a sibling helper, bringing `utxo_apply_stage.c` below the advisory
   ceiling without changing the coin-authoring path.
+- [x] Continue oversized-file review with a behavior-preserving
+  `tip_finalize_stage` observability extraction: counters, blocked-reason
+  names, throttled warn state, dumpstate serialization, and the published
+  served-tip snapshot now live in a sibling helper; durable-tip restore/read
+  helpers live in a second sibling helper, leaving the stage file focused on
+  finalization decisions and durable reducer writes.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1487,6 +1493,14 @@ mega-refactor. This page is the running backlog for those passes.
      heartbeat state now live in `utxo_apply_stage_observe.c`, reducing
      `utxo_apply_stage.c` to 759 lines while preserving the stage's
      consensus write path and public API.
+   - Twentieth behavior-preserving extraction landed for tip finalize:
+     counters, blocked-class state, throttled precondition/cursor-gap WARN
+     state, dumpstate JSON serialization, and the published served-tip snapshot
+     now live in `tip_finalize_stage_observe.c`; convention-aware durable-tip
+     reads plus init cursor hydration now live in `tip_finalize_stage_durable.c`.
+     This reduces `tip_finalize_stage.c` to 799 lines while preserving
+     finalization decisions, durable `tip_finalize_log` writes, and the public
+     stage API.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
