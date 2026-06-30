@@ -366,6 +366,28 @@ static int test_cac_stale_p2p_can_still_advance_when_alone(void)
     return failures;
 }
 
+static int test_cac_unknown_height_source_is_not_selectable(void)
+{
+    int failures = 0;
+    TEST_CASE("chain_advance_coordinator: unknown-height source is not selected")
+    {
+        struct cac_plan_input in = base_input();
+        struct cac_decision out;
+        in.local_height = 120;
+        in.best_header_height = 120;
+        in.target_height = 120;
+        init_source(&in, CAC_SOURCE_P2P, true, true, -1);
+
+        block_source_policy_plan(&in, &out);
+        ASSERT(out.result == CAC_DECISION_RECOVER);
+        ASSERT(out.selected_source == CAC_SOURCE_NONE);
+        ASSERT(!out.sources[CAC_SOURCE_P2P].selectable);
+        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_reason,
+                      "unknown_height");
+    } TEST_END
+    return failures;
+}
+
 static int test_cac_projection_status_propagates(void)
 {
     int failures = 0;
@@ -1862,6 +1884,7 @@ int test_chain_advance_coordinator(void)
     failures += test_cac_snapshot_can_outrank_mirror();
     failures += test_cac_fresh_snapshot_outranks_stale_p2p();
     failures += test_cac_stale_p2p_can_still_advance_when_alone();
+    failures += test_cac_unknown_height_source_is_not_selectable();
     failures += test_cac_projection_status_propagates();
     failures += test_cac_snapshot_offer_helper_allows_valid_offer();
     failures += test_cac_snapshot_offer_helper_blocks_invalid_offer();

@@ -61,7 +61,12 @@ mega-refactor. This page is the running backlog for those passes.
   false-greens, and single-RPC hangs.
 - [x] Fix deploy verification's `zcl-rpc` fallback so it uses the client's env
   contract, unwraps JSON-RPC envelopes, and reports finalized `log_head`.
-- [ ] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
+- [x] Fail closed on unknown-height chain sources before source selection.
+- [x] Align outbound peer-floor counting with block-serving `NODE_NETWORK`
+  peers.
+- [x] Remove stale zclassicd-authority wording from operator recovery tool
+  descriptions and source comments.
+- [x] Decide whether to repair/restart the C++ `zclassicd` oracle or leave it as
   an advisory-only unavailable dependency while native P2P remains healthy.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
@@ -325,6 +330,15 @@ mega-refactor. This page is the running backlog for those passes.
   `activation_blocker=rpc-unreachable`,
   RPC error `-28 Activating best chain... height 0 (1%)`), while zclassic23 is
   healthy from native P2P/local consensus evidence.
+- Pre-patch live sample for the source-selection/peer-floor wording pass:
+  `./tools/z status` reports `build_commit=6e5e60f6a`, `healthy=true`,
+  `serving=true`, `sync_state=at_tip`, `checks.peer_count=5`,
+  `checks.tip_lag=0`, `condition_engine.active_count=0`,
+  `checks.log_head=3165042`, and `chain_advance.selected_source=p2p`.
+  `./tools/z mirror --json` reports `zclassic23_height=3165042`,
+  `mirror_monitor_running=true`,
+  `consensus_authority=local_consensus_validation`, and legacy `zclassicd`
+  remains advisory-unusable while its RPC is warming up at height 0.
 
 ## Fixed in this pass
 
@@ -873,6 +887,47 @@ mega-refactor. This page is the running backlog for those passes.
      and the full `build/bin/test_parallel` suite (`0/466` groups failed,
      14 self-skipped).
 
+24. **Source-selection and operator-authority cleanup**
+   - Files: `app/services/src/block_source_policy.c`,
+     `lib/net/src/connman.c`, `lib/net/include/net/connman.h`,
+     `tools/mcp/controllers/ops_controller.c`,
+     `app/controllers/include/controllers/repair_controller.h`,
+     `app/controllers/src/repair_controller_rebuild.c`,
+     `app/views/src/explorer_factoids_chaindata.c`,
+     `lib/test/src/test_chain_advance_coordinator.c`,
+     `lib/test/src/test_connman_addnode_fallback.c`,
+     `lib/test/src/test_mcp_controllers.c`,
+     `lib/test/src/test_rebuild_recent.c`
+   - Problem: pure source-selection policy could mark a source with
+     `height=-1` selectable when local/target heights were already equal;
+     the outbound peer-floor helper counted any handshaked outbound peer even
+     if it did not advertise `NODE_NETWORK`; and recovery operator wording
+     still gave local `zclassicd` authority semantics despite the current
+     consensus model making it an advisory source only.
+   - Fix: `source_selection_blocker` now treats unknown source height as a
+     named blocker, `connman_outbound_healthy_count` now matches
+     `connman_get_outbound_health` by requiring block-serving `NODE_NETWORK`
+     peers, and the rebuild-recent/MCP/help/comment wording now says
+     "legacy advisory source" plus local consensus validation.
+   - Tests: ran `make t ONLY=chain_advance_coordinator`,
+     `make t ONLY=connman_addnode_fallback`, and
+     `make t ONLY=mcp_controllers`; final gate `make lint`.
+
+25. **Advisory zclassicd oracle decision**
+   - Files: `docs/work/code-quality-audit-2026-06-30.md`
+   - Decision: do not restart or repair the C++ `zclassicd` oracle as part of
+     this code-review pass. The live zclassic23 node is healthy from native
+     P2P/local consensus validation, while the legacy process is only an
+     advisory dependency and is currently unusable at the RPC layer
+     (`-28 Activating best chain... height 0 (1%)`). Leave it running and
+     unavailable rather than mutating the operator's reference process during a
+     code-quality pass. Revisit only for the C8 exact-parity/soak gate, where
+     the oracle repair is an explicit operational task.
+   - Tests: no code change. Current batch verification for the surrounding
+     operator surface includes `make t ONLY=chain_advance_coordinator`,
+     `make t ONLY=connman_addnode_fallback`, `make t ONLY=mcp_controllers`, and
+     `make t ONLY=rebuild_recent`; final gate `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -908,6 +963,8 @@ mega-refactor. This page is the running backlog for those passes.
    - Fixed this pass: stale `SYNC_AT_TIP` plus source gap/blocker, missing
      active-tip evidence, unknown reducer log-head, shell lag-known/lag-valid
      collapse, and mirror blocker-class drift now have regressions.
+   - Fixed this pass: unknown-height source candidates now fail closed, and
+     the outbound peer-floor counter now requires block-serving peers.
    - Follow-up after deployment: verify the live binary preserves
      `healthy=true` when local reducer evidence is ahead of peers
      (`log_head_gap < 0`) and still turns red for unknown `log_head=-1`.
@@ -915,9 +972,10 @@ mega-refactor. This page is the running backlog for those passes.
 3. **zclassicd oracle availability**
    - Status output now distinguishes the process, RPC transport, and usable
      height/hash oracle.
-   - The remaining operational decision is whether to repair/restart the C++
-     `zclassicd` service, or keep it unavailable while zclassic23 advances from
-     native P2P/local consensus validation.
+   - Decision for this code-review pass: keep it unavailable while zclassic23
+     advances from native P2P/local consensus validation. Repair/restart is a
+     separate operational task for the exact-parity/soak gate, not a prerequisite
+     for this audit batch.
 
 4. **Oversized files**
    - `make lint` reports advisory file-size warnings, including

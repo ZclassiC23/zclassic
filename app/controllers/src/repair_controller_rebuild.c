@@ -456,8 +456,8 @@ static bool rpc_rebuild_recent(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "rebuild_recent ( from_height )\n"
         "\nDeterministic, bounded recovery: fetch the canonical recent\n"
-        "block range from the authoritative local zclassicd and connect\n"
-        "each block through the normal validated accept path, reorging\n"
+        "block range from the legacy advisory source and connect\n"
+        "each block through local consensus validation, reorging\n"
         "off any stale local fork.\n"
         "\nThis is NOT a reindex: it does not wipe the UTXO set, does not\n"
         "replay from genesis, and does not bypass validation. The range\n"

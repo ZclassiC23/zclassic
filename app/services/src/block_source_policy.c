@@ -160,6 +160,7 @@ static const char *source_selection_blocker(const struct cac_plan_input *in,
     if (!s->available) return "unavailable";
     if (!s->healthy) return "unhealthy";
     if (s->blocked) return s->blocker[0] ? s->blocker : "blocked";
+    if (s->height < 0) return "unknown_height";
     if (s->source == CAC_SOURCE_ZCLASSICD_MIRROR &&
         !mirror_fallback_allowed(in))
         return "local_recovery_gate";

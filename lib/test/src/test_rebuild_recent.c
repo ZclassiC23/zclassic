@@ -2,10 +2,9 @@
  *
  * Tests for the rebuild_recent recovery primitive.
  *
- * rebuild_recent fetches the canonical recent block range from the
- * authoritative local zclassicd and submits each block through the
- * normal validated accept/connect path (process_new_block), reorging
- * off any stale local fork.
+ * rebuild_recent fetches the recent block range from the legacy advisory
+ * source and submits each block through local consensus validation
+ * (process_new_block), reorging off any stale local fork.
  *
  * WHAT THESE TESTS COVER (pure, no live node required):
  *   - The range resolution math: default look-back below the tip,

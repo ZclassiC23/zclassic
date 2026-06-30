@@ -563,11 +563,11 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
     return 0;
 }
 
-/* zcl_rebuild_recent — bounded recovery: fetch the canonical recent
- * block range from the authoritative local zclassicd and connect it
- * through the normal validated accept path, reorging off any stale
- * local fork. Destructive (mutates the live chainstate) but never wipes
- * the UTXO set and never bypasses validation. */
+/* zcl_rebuild_recent — bounded recovery: fetch the recent block range from
+ * the legacy advisory source and connect it through local consensus
+ * validation, reorging off any stale local fork. Destructive (mutates the
+ * live chainstate) but never wipes the UTXO set and never bypasses
+ * validation. */
 static int h_zcl_rebuild_recent(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
@@ -937,9 +937,9 @@ static const struct mcp_tool_route k_routes[] = {
       "and in-flight count. The single tool for diagnosing sync stalls.",
       NULL, 0, h_zcl_syncdiag, 0, NULL },
     { "zcl_rebuild_recent", "ops",
-      "Bounded recovery: fetch the canonical recent block range from the "
-      "authoritative local zclassicd and connect each block through the "
-      "normal validated accept path, reorging off any stale local fork. "
+      "Bounded recovery: fetch the recent block range from the legacy "
+      "advisory source and connect each block through local consensus "
+      "validation, reorging off any stale local fork. "
       "NOT a reindex — does not wipe the UTXO set, does not replay from "
       "genesis, does not bypass validation; the range is capped. "
       "Idempotent: a no-op when already at tip. Destructive because it "

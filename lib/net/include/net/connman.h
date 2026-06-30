@@ -141,9 +141,9 @@ void connman_set_known_zcl23_peer_source(
 
 size_t connman_get_node_count(const struct connman *cm);
 
-/* Count of outbound peers in PEER_HANDSHAKE_COMPLETE or later. Used by
- * the sync watchdog to distinguish slot-burning peers stuck in
- * PEER_CONNECTING from peers actually able to serve us blocks. */
+/* Count of outbound peers in PEER_HANDSHAKE_COMPLETE or later that also
+ * advertise NODE_NETWORK. Used by the sync watchdog to distinguish
+ * slot-burning peers from peers actually able to serve us blocks. */
 size_t connman_outbound_healthy_count(struct connman *cm);
 
 /* Return the highest starting_height among handshaked, non-disconnecting

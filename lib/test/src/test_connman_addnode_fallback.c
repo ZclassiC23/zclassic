@@ -161,6 +161,41 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("connman_addnode_fallback: non-network peers do not satisfy "
+           "outbound floor... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct connman_outbound_health health;
+        struct p2p_node *no_network = NULL;
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&health, 0, sizeof(health));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        ok = ok && add_test_peer(&cm, 10, 9, 0, 1,
+                                 PEER_HANDSHAKE_COMPLETE,
+                                 false, false) != NULL;
+        ok = ok && add_test_peer(&cm, 172, 20, 0, 1,
+                                 PEER_ACTIVE,
+                                 false, false) != NULL;
+        ok = ok && (no_network = add_test_peer(&cm, 198, 51, 100, 9,
+                                               PEER_ACTIVE,
+                                               false, false)) != NULL;
+        if (ok)
+            no_network->services = 0;
+
+        connman_get_outbound_health(&cm, &health);
+        ok = ok && health.outbound_total == 3;
+        ok = ok && health.healthy == 2;
+        ok = ok && connman_outbound_healthy_count(&cm) == 2;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("connman_addnode_fallback: max peer height ignores unusable slots... ");
     {
         chain_params_select(CHAIN_MAIN);

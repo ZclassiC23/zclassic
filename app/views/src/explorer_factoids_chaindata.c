@@ -785,8 +785,8 @@ size_t factoids_emit_section_12_checkpoints(uint8_t *buf, size_t cap, size_t off
         "<tr><th>Height</th><th>Date</th><th>Block Hash</th><th>SHA3</th></tr>");
 
     {
-        /* Checkpoint data: heights + authoritative hashes from zclassicd.
-         * These are immutable blockchain facts — no SQLite dependency. */
+        /* Checkpoint data: heights + consensus checkpoint hashes. These are
+         * immutable blockchain facts — no SQLite dependency. */
         struct { int64_t height; const char *hash; } checkpoints[] = {
             { 0,       "0007104ccda289427919efc39dc9e4d499804b7bebc22df55f8b834301260602" },
             { 30000,   "000000005c2ad200c3c7c8e627f67b306659efca1268c9bb014335fdadc0c392" },

@@ -2029,7 +2029,8 @@ size_t connman_outbound_healthy_count(struct connman *cm)
     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
         const struct p2p_node *n = cm->manager.nodes[i];
         if (n && !n->inbound && !n->disconnect &&
-            n->state >= PEER_HANDSHAKE_COMPLETE)
+            n->state >= PEER_HANDSHAKE_COMPLETE &&
+            (n->services & NODE_NETWORK) != 0)
             healthy++;
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);

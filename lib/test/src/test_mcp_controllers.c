@@ -281,6 +281,29 @@ static int test_every_tool_has_description(void)
     return failures;
 }
 
+static int test_tool_descriptions_do_not_claim_zclassicd_authority(void)
+{
+    int failures = 0;
+    TEST("controllers: tool descriptions do not claim zclassicd authority") {
+        register_all();
+        for (size_t i = 0; i < mcp_router_count(); i++) {
+            const struct mcp_tool_route *r = mcp_router_at(i);
+            ASSERT(r != NULL);
+            ASSERT(r->description != NULL);
+            ASSERT(!contains(r->description, "authoritative local "
+                             "zclassicd"));
+        }
+        const struct mcp_tool_route *rebuild =
+            mcp_router_find("zcl_rebuild_recent");
+        ASSERT(rebuild != NULL);
+        ASSERT(contains(rebuild->description, "legacy advisory source"));
+        ASSERT(contains(rebuild->description,
+                        "local consensus validation"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_every_tool_has_known_domain(void)
 {
     int failures = 0;
@@ -1931,6 +1954,7 @@ int test_mcp_controllers(void)
     failures += test_app_domain_count();
     failures += test_every_tool_has_handler();
     failures += test_every_tool_has_description();
+    failures += test_tool_descriptions_do_not_claim_zclassicd_authority();
     failures += test_every_tool_has_known_domain();
     failures += test_every_tool_name_prefixed();
     failures += test_no_duplicate_names();
