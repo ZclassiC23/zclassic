@@ -181,6 +181,9 @@ mega-refactor. This page is the running backlog for those passes.
   boot-time shell `rm -rf` path with `dir_remove_tree()` and regressions for
   lock removal, nested scratch removal, regular-file retention, and invalid
   path guards.
+- [x] Continue oversized-file review with a behavior-preserving app-context
+  extraction: context defaults and runtime-profile parsing/capability helpers
+  now live in `app_context.c`, with dedicated defaults/profile regressions.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1538,6 +1541,20 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=boot_blocktree_cleanup`, and
      `ZCL_TEST_ONLY=boot_blocktree_cleanup build/bin/test_zcl`.
 
+53. **App context/runtime profile split**
+   - Files: `config/src/boot.c`, `config/src/app_context.c`,
+     `lib/test/src/test_app_context.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still owned the pure
+     `app_context_defaults()` and runtime-profile parse/capability helpers.
+     Those helpers are part of the public config API, not boot phase ordering,
+     so keeping them in `boot.c` made future boot reviews harder.
+   - Fix: moved the context/default/profile contract into `app_context.c`.
+     `boot.c` is now 3704 lines and the new helper is 97 lines.
+   - Tests: ran `make -j$(nproc) build-only` and
+     `make t ONLY=app_context`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1730,6 +1747,10 @@ mega-refactor. This page is the running backlog for those passes.
      cleanup now live in `boot_blocktree_cleanup.c`. This keeps future boot
      reviews focused on phase ordering and removes the boot-time shell `rm -rf`
      path in favor of the repo's recursive directory helper.
+   - Twenty-ninth behavior-preserving extraction landed for app context/runtime
+     profiles: public context defaults and profile capability predicates now
+     live in `app_context.c`. This keeps future boot reviews focused on phase
+     ordering while giving argv/profile agents a small file to inspect.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the

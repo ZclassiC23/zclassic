@@ -240,7 +240,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
     X(failed_child_cap) X(header_probe) \
     X(power_node_contract_spec) X(process_block_revalidate) \
-    X(rpc_safety) X(service_kernel) X(thread_registry) X(sync_state_fsm) \
+    X(rpc_safety) X(app_context) X(service_kernel) X(thread_registry) X(sync_state_fsm) \
     X(unclean_shutdown_advance) X(utxo_audit) X(utxo_parity_service) \
     X(soak_attestation) \
     X(zclassicd_oracle) X(oracle_policy) \

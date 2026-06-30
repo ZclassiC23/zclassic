@@ -575,6 +575,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "app_context") == 0) {
+        printf("[test] ZCL_TEST_ONLY=app_context - running only\n");
+        failures += test_app_context();
+        printf("\n=== app_context subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "tor") == 0) {
         printf("[test] ZCL_TEST_ONLY=tor - running Tor integration subset\n");
         failures += test_tor();
@@ -1006,6 +1013,7 @@ int main(void)
     failures += test_rpc_error_envelope();
     failures += test_tx_property();
     failures += test_workpool();
+    failures += test_app_context();
     failures += test_service_kernel();
     { extern int test_thread_registry(void);
       failures += test_thread_registry(); }

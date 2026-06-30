@@ -442,6 +442,7 @@ int test_htlc(void);
 int test_file_market(void);
 int test_strong_params(void);
 int test_workpool(void);
+int test_app_context(void);
 int test_service_kernel(void);
 int test_bip113_bip65(void);
 int test_mempool_orphan(void);
