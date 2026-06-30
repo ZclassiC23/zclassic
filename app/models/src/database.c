@@ -458,6 +458,17 @@ bool node_db_open(struct node_db *ndb, const char *path)
 
     if (!create_schema(ndb)) {
         sqlite3_close(ndb->db);
+        ndb->db = NULL;
+        node_db_state_destroy(ndb);
+        return false;
+    }
+
+    ndb->open = true; /* node_db_migrate uses node_db_state_* helpers. */
+    int migrated = node_db_migrate(ndb, NULL);
+    ndb->open = false;
+    if (migrated < 0) {
+        sqlite3_close(ndb->db);
+        ndb->db = NULL;
         node_db_state_destroy(ndb);
         return false;
     }
@@ -472,18 +483,19 @@ bool node_db_open(struct node_db *ndb, const char *path)
             "DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'",
             "snapshot_staging_state_boot_cleanup") != SQLITE_OK) {
         sqlite3_close(ndb->db);
+        ndb->db = NULL;
         node_db_state_destroy(ndb);
         return false;
     }
 
     if (!prepare_statements(ndb)) {
         sqlite3_close(ndb->db);
+        ndb->db = NULL;
         node_db_state_destroy(ndb);
         return false;
     }
 
     ndb->open = true;
-    node_db_migrate(ndb, NULL);
     /* Register model validators once per process.  Idempotent. */
     db_register_all_validators();
     node_db_note_activity(ndb, "open", SQLITE_OK);

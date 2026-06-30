@@ -13,16 +13,17 @@
 
 ## Status since the review landed
 
-Of the 12 file:line-confirmed HIGH/quick-win bugs, **9 are fixed** (verified in
+Of the 12 file:line-confirmed HIGH/quick-win bugs, **10 are fixed** (verified in
 code 2026-06-30 — note: the memory claim that "items 1–8 shipped" was wrong on
-item 5; this pass closed qw9/qw10). The 96 post-review commits went heavily into god-function decomposition
+item 5; this pass closed qw9/qw10/qw12). The 96 post-review commits went heavily into god-function decomposition
 (33 `split`/`audit: split`) and live-wedge liveness (~37 sync/boot/cure commits —
 the node now holds tip with 0 blockers). The review's two weakest dimensions —
 **DRY** and **TESTED** — were barely advanced. This doc is the remainder.
 
 ```
-quick-win bug fixes   ███████████████░░░░░  9/12   (qw5,12 open; qw11 reclassified)
+quick-win bug fixes   █████████████████░░░  10/12  (qw5 open; qw11 reclassified)
 cross-cutting cleanups ██████░░░░░░░░░░░░░░  ~30%   (0 done, 4 partial, 3 not started)
+TESTED gap gates      ███████████████░░░░░  3/4    (`test_boot_snapshot_drop_bodiless` open)
 ```
 
 Update 2026-06-30: the P1 opening batch is implemented and proof-gated in this
@@ -37,6 +38,27 @@ tampered-body refusal. Verification: focused `snapshot_apply_coins_kv` plus the
 nearby `load_verify_boot`, `refold_retro_validate`, `refold_auto_arm`,
 `refold_from_anchor_fatal`, `boot_refold_window_extend`, and
 `loader_owns_seed_gate` groups.
+
+Update 2026-06-30: TESTED gap #3 (`test_gap_fill_frontier_window`) is
+implemented and proof-gated in this branch. It extracts the production
+gap-fill window seam (`gap_fill_compute_window` +
+`gap_fill_window_walk_start`) and pins reducer-frontier anchoring, HAVE_DATA
+exclusion, and bottom-window selection for large gaps. Verification:
+`build/bin/test_parallel --only=gap_fill_frontier_window`,
+`build/bin/test_parallel --only=download`, `make check-test-registration`, and
+`make lint-fast`; full `make test` passed 0/480 groups failed, 14 self-skipped
+(102.7 s wall).
+
+Update 2026-06-30: qw12 is implemented and proof-gated in this branch.
+`node_db_open()` now checks `node_db_migrate()` before snapshot staging cleanup
+and fails closed on newer on-disk schema versions (`schema_version >
+NODE_DB_MAX_SCHEMA`). The regression test proves the refused open returns
+false, leaves `ndb.open=false`/`ndb.db=NULL`, and does **not** delete staged
+snapshot rows or `snapshot_staging_%` state. Verification:
+`build/bin/test_parallel --only=db_migration_idempotent`,
+`--only=schema_migration`, `--only=sqlite`, `make check-test-registration`,
+`make lint-fast`; full `make test` passed 0/480 groups failed, 14 self-skipped
+(101.2 s wall).
 
 ## Trap-check results (the most important planning output)
 
@@ -58,9 +80,11 @@ over-reads 252 B). Folded into **cc-blob-swap** below.
 
 ## Priority tiers
 
-- **P0** — none. Node is at tip, no live blocker.
+- **P0** — none in this code-review lane. Live soak is **not** green at the
+  latest check (2026-06-30: `download_queue_starved` operator-needed); track
+  that under the MVP/soak spine, not as a review-remediation P0.
 - **P1** — closed in this branch: **qw10, qw9, tested-gap #1 (PHGR13 KAT)**.
-- **P2** — silent corruption / class-cure: **qw5, qw12, cc-gtod (timing class), cc-blob, cc-arwrite, cc-mostwork, tested-gap #3**.
+- **P2** — silent corruption / class-cure: **qw5, cc-gtod (timing class), cc-blob, cc-arwrite, cc-mostwork**.
 - **P3** — hygiene / documentation: **qw11, cc-ccoins KAT, cc-arwrite renames, tested-gap #4**.
 
 ## Restart command
@@ -68,7 +92,7 @@ over-reads 252 B). Folded into **cc-blob-swap** below.
 Give the next developer this exact goal:
 
 ```text
-continue zclassic23 hardening from docs/work/code-review-remediation-2026-06-30.md; start at TESTED gap #3 by extracting and testing gap_fill_compute_window(), then continue with qw12, qw5, cc-blob, cc-mostwork, timing cleanup, and remaining P3 tests/docs. Keep changes scoped, update the remediation doc, run focused tests plus make test.
+continue zclassic23 hardening from docs/work/code-review-remediation-2026-06-30.md; start at qw5 (widen UTXO import value_len from uint16_t to uint32_t and hard-fail oversize CCoins blobs instead of clipping), then continue with cc-blob, cc-mostwork, timing cleanup, and remaining P3 tests/docs. Keep changes scoped, update the remediation doc, run focused tests plus make test.
 ```
 
 ## Completed first moves
@@ -79,19 +103,16 @@ The original opening batch is done in this branch:
 2. **qw10** — fail-loud on diverged Sapling tree.
 3. **tested-gap #1** — Sprout PHGR13 real-proof KAT.
 4. **tested-gap #2** — production snapshot→coins_kv apply transaction KAT.
+5. **tested-gap #3** — gap-fill reducer-frontier window KAT.
+6. **qw12** — fail-closed on newer `node.db` schema before staging cleanup.
 
 ## Next move
 
-Start with **`test_gap_fill_frontier_window`**. Production
-`gap_fill_service.c` already anchors the refill window at `body_fetch_stage_cursor() - 1`
-when that frontier is behind the active tip, but the logic is embedded inside
-`gap_fill_pass()`. Extract the pure window calculation into
-`gap_fill_compute_window()` and test:
-
-1. active tip ahead of reducer/body-fetch frontier anchors at the frontier, not
-   active tip;
-2. entries with `BLOCK_HAVE_DATA` are excluded by the queue-selection path;
-3. large gaps cap at `GAPFILL_WINDOW` and choose the connectable bottom window.
+Start with **qw5**. A coins `'c'` value is a whole-tx CCoins blob and can
+legitimately exceed 65535 B. Widen `value_len` `uint16_t`→`uint32_t`; replace
+the silent clip with a generous cap (~4 MB) that hard-fails on exceed instead
+of truncating. Add a focused test with a synthetic CCoins blob >65535 B and an
+oversize refusal case.
 
 ---
 
@@ -118,7 +139,7 @@ the wrong order.
 | id | sev | fix | files | gate |
 |---|---|---|---|---|
 | **qw5** | P2 | A coins `'c'` value is a whole-tx CCoins blob and can legitimately exceed 65535 B (multi-output payouts; the 413 grandfathered oversize txs up to 1.92 MB). **Widen** `value_len` `uint16_t`→`uint32_t`; replace the silent clip with a generous cap (~4 MB) that on exceed does `iter_error=true` + `request_stop` (hard ZCL_ERR, matches truncation doctrine), not a clip. | `utxo_import_pipeline.h:18`; `node_db_import_service.c:352,359` | unit test: synthetic CCoins >65535 B (~3000 outputs + nonzero height varint) decodes all outputs with correct heights; oversize → hard-fail |
-| **qw12** | P2 | Capture `node_db_migrate`'s return at `database.c:486`; on `-2` (on-disk schema > `NODE_DB_MAX_SCHEMA`) `sqlite3_close` + `open=false` + `return false` (run before the staging DELETE so no transient writes hit a newer DB). Callers already handle a false open. | `database.c:485-490` | test: stamp `schema_version = MAX+1`, assert `node_db_open()==false` |
+| **qw12** | P2 | **DONE 2026-06-30.** Capture `node_db_migrate`'s return before snapshot staging cleanup; on newer on-disk schema, `sqlite3_close` + `open=false` + `db=NULL` + `return false`. The test also proves staging rows/state are not deleted by the refused open. | `database.c:485-490`; `test_db_migration_idempotent.c` | `test_parallel --only=db_migration_idempotent`; nearby `schema_migration` + `sqlite`; full `make test` |
 
 ### Lane D — timing class (Gate #19)  *(P2/P3, no risk)* — **land as ONE PR**
 > **Ordering law:** convert **every** site first, flip the ban regex **last** (same
@@ -176,7 +197,7 @@ parallel runner silently skips. All deterministic (no datadir / network / `~/.zc
 
 1. **`test_sprout_phgr13_kat`** (P1) — **DONE 2026-06-30.** Real PHGR13 verifier (`bn254.c:2143 sprout_verify_phgr13`) is exercised by **zero** tests today (`test_snark_kat` explicitly excludes BN254; `test_proof_validate_stage` uses a fake verifier; `test_phgr13_fix` only pins the VK parser and SKIPs if params absent). Embed the 1449-byte VK + one real 296-byte proof + JoinSplit fields as a byte-array fixture. Positive→`true`; flip a proof byte→`false`; flip a nullifier→`false`. Catches both always-reject **and** always-accept.
 2. **`test_snapshot_apply_coins_kv`** (P2) — **DONE 2026-06-30.** The real apply (`boot_refold_staged.c:315 mint_load_record_cb` → `coins_kv`, terminal `commitment==checkpoint && count==utxo_count` assert) is now pinned through `boot_snapshot_apply_to_coins_kv`: good→exact-N + matching SHA3; wrong expected count→rollback; tampered→refuses, leaves `coins_kv` empty.
-3. **`test_gap_fill_frontier_window`** (P2) — needs a small seam (`gap_fill_compute_window()`). Assert the refill window anchors at the **reducer frontier**, excludes HAVE_DATA, caps at window. Fails if it anchors at active tip (re-introduces the tip>frontier wedge).
+3. **`test_gap_fill_frontier_window`** (P2) — **DONE 2026-06-30.** The small seam (`gap_fill_compute_window()` + `gap_fill_window_walk_start()`) pins that the refill window anchors at the **reducer frontier**, excludes HAVE_DATA, caps at window, and starts from the connectable bottom window. Fails if it anchors at active tip (re-introduces the tip>frontier wedge).
 4. **`test_boot_snapshot_drop_bodiless`** (P3) — seam on `boot_snapshot_drop_bodiless_have_data_above_seed` (`boot_refold_staged.c:203`). Above/below-seed bodiless → HAVE_DATA cleared; **seed protected**.
 
 ---

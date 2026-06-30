@@ -146,6 +146,61 @@ static int collect_pprev_window(struct block_index *start,
     return count;
 }
 
+bool gap_fill_compute_window(int active_tip_h, int best_header_h,
+                             uint64_t body_fetch_cursor,
+                             struct gap_fill_window *out)
+{
+    if (!out)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    out->effective_tip_h = active_tip_h;
+    out->best_h = best_header_h;
+    out->lo = active_tip_h + 1;
+    out->hi = active_tip_h;
+
+    if (body_fetch_cursor > 0 &&
+        (int64_t)body_fetch_cursor - 1 < (int64_t)out->effective_tip_h) {
+        out->effective_tip_h = (int)body_fetch_cursor - 1;
+    }
+
+    out->lo = out->effective_tip_h + 1;
+    out->hi = out->effective_tip_h;
+    if (best_header_h <= out->effective_tip_h)
+        return false;
+
+    int gap = best_header_h - out->effective_tip_h;
+    int count = gap < GAPFILL_WINDOW ? gap : GAPFILL_WINDOW;
+    out->count = count;
+    out->hi = out->effective_tip_h + count;
+    out->has_work = count > 0;
+    return out->has_work;
+}
+
+struct block_index *gap_fill_window_walk_start(
+    struct block_index *best, const struct gap_fill_window *window)
+{
+    if (!best || !window || !window->has_work)
+        return NULL;
+    if (best->nHeight <= window->hi)
+        return best;
+
+    struct block_index *walk_start = best;
+    int steps = 0;
+    while (walk_start && walk_start->nHeight > window->hi &&
+           steps++ < GAPFILL_WALK_CAP) {
+        walk_start = walk_start->pprev;
+    }
+    if (!walk_start || walk_start->nHeight != window->hi)
+        return best;
+    return walk_start;
+}
+
+bool gap_fill_block_needs_queue(const struct block_index *bi)
+{
+    return bi && bi->phashBlock && !(bi->nStatus & BLOCK_HAVE_DATA);
+}
+
 /* One pass: scan [tip+1, best_header] for missing data, queue
  * downloads. Returns number of blocks enqueued (0 = idle, -1 =
  * corrupt walk detected). */
@@ -162,24 +217,13 @@ static int gap_fill_pass(void)
     int tip_h = active_chain_height(&ms->chain_active);
     struct block_index *best = ms->pindex_best_header;
     int best_h = best ? best->nHeight : 0;
+    struct gap_fill_window gf_window;
+    bool has_window =
+        gap_fill_compute_window(tip_h, best_h, body_fetch_stage_cursor(),
+                                &gf_window) && best;
+    tip_h = gf_window.effective_tip_h;
 
-    /* The refill window must start at the REDUCER FRONTIER, not the
-     * active tip. After a boot that restores the tip above the staged
-     * cursors (e.g. a hard kill cleared HAVE_DATA on the bodies the
-     * reducer still has to apply), body_fetch waits on heights BELOW
-     * the tip — and nothing else re-downloads below tip+1, so the
-     * pipeline wedges with the tip_finalize>utxo_apply cursor
-     * inversion (tracka 2026-06-10: tip=7253, frontier=6763, bodies
-     * 6764..7253 needed but only [7254..] ever queued). The download
-     * queue is height-sorted, so these lower heights also preempt the
-     * far-ahead tail automatically. */
-    {
-        uint64_t bf_cursor = body_fetch_stage_cursor();
-        if (bf_cursor > 0 && (int64_t)bf_cursor - 1 < (int64_t)tip_h)
-            tip_h = (int)bf_cursor - 1;
-    }
-
-    if (!best || best_h <= tip_h) {
+    if (!has_window) {
         zcl_mutex_unlock(&ms->cs_main);
         g_gf.stats.last_tip_h  = tip_h;
         g_gf.stats.last_best_h = best_h;
@@ -202,24 +246,9 @@ static int gap_fill_pass(void)
      * (discarding those entries), then collect the next `window`
      * entries which end at tip_h+1. That gives the bottom window
      * of the gap, which is what the active chain needs next. */
-    int window = GAPFILL_WINDOW;
-    if (best_h - tip_h < window) window = best_h - tip_h;
-
-    struct block_index *walk_start = best;
-    if (best_h - tip_h > window) {
-        /* Step pprev until walk_start->nHeight == tip_h + window. */
-        int target_h = tip_h + window;
-        int steps = 0;
-        while (walk_start && walk_start->nHeight > target_h &&
-               steps++ < GAPFILL_WALK_CAP) {
-            walk_start = walk_start->pprev;
-        }
-        /* If the descent failed (pprev chain broken or step cap),
-         * fall back to original behavior — walk from `best`. */
-        if (!walk_start || walk_start->nHeight != target_h) {
-            walk_start = best;
-        }
-    }
+    int window = gf_window.count;
+    struct block_index *walk_start =
+        gap_fill_window_walk_start(best, &gf_window);
 
     struct block_index **bis = zcl_malloc((size_t)window * sizeof(*bis),
                                           "gap_fill_window");
@@ -260,8 +289,7 @@ static int gap_fill_pass(void)
     int hi = bis[0] ? bis[0]->nHeight : tip_h;
     for (int i = 0; i < collected; i++) {
         struct block_index *bi = bis[i];
-        if (!bi || !bi->phashBlock) continue;
-        if (bi->nStatus & BLOCK_HAVE_DATA) continue;
+        if (!gap_fill_block_needs_queue(bi)) continue;
         if (dl_is_in_flight(dm, bi->phashBlock)) continue;
         hashes[n_need]  = *bi->phashBlock; /* value copy */
         heights[n_need] = bi->nHeight;
@@ -418,4 +446,3 @@ void gap_fill_kick(void)
     pthread_cond_broadcast(&g_gf.cv);
     pthread_mutex_unlock(&g_gf.mu);
 }
-

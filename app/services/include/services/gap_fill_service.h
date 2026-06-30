@@ -32,6 +32,7 @@
 
 struct main_state;
 struct download_manager;
+struct block_index;
 
 #define GAPFILL_TICK_SECS    5       /* periodic refill cadence */
 #define GAPFILL_WINDOW       65536   /* max blocks per pass — needs to be
@@ -59,6 +60,30 @@ struct gap_fill_stats {
     int      last_window_lo;
     int      last_window_hi;
 };
+
+struct gap_fill_window {
+    int  effective_tip_h;
+    int  best_h;
+    int  lo;
+    int  hi;
+    int  count;
+    bool has_work;
+};
+
+/* Pure window calculation used by the worker and pinned by tests. The body
+ * fetch cursor is the reducer frontier: when it is behind active tip, gap-fill
+ * must refill from body_fetch_cursor, not active_tip+1. */
+bool gap_fill_compute_window(int active_tip_h, int best_header_h,
+                             uint64_t body_fetch_cursor,
+                             struct gap_fill_window *out);
+
+/* Return the pprev node that starts the connectable bottom window, falling
+ * back to `best` on broken ancestry so the worker preserves legacy behavior. */
+struct block_index *gap_fill_window_walk_start(
+    struct block_index *best, const struct gap_fill_window *window);
+
+/* Candidate predicate before the download-manager in-flight check. */
+bool gap_fill_block_needs_queue(const struct block_index *bi);
 
 /* Start the service. Spawns one pthread. ms and dm must outlive the
  * service. Returns ZCL_OK on success (including the already-running

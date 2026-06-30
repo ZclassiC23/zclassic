@@ -1010,6 +1010,7 @@ int main(void)
     failures += test_phgr13_fix();
     failures += test_sprout_phgr13_kat();
     failures += test_rescanwitnesses_diverge_guard();
+    failures += test_gap_fill_frontier_window();
     failures += test_snark_kat();
     failures += test_unclean_shutdown_advance();
     { extern int test_no_hardcoded_home(void);

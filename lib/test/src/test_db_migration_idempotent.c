@@ -13,6 +13,7 @@
 #include "models/database.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -29,6 +30,34 @@ static int mkdir_p(const char *p)
 static void db_mig_path(char *buf, size_t n, const char *tag)
 {
     snprintf(buf, n, "./test-tmp/db_mig_%d_%s", (int)getpid(), tag);
+}
+
+static bool db_mig_stamp_schema(sqlite3 *db, int32_t version)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "UPDATE node_state SET value=? WHERE key='schema_version'",
+        -1, &st, NULL);
+    if (rc != SQLITE_OK)
+        return false;
+    rc = sqlite3_bind_blob(st, 1, &version, sizeof(version),
+                           SQLITE_TRANSIENT);
+    bool ok = rc == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE &&
+              sqlite3_changes(db) == 1;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static int db_mig_count(sqlite3 *db, const char *sql)
+{
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &st, NULL);
+    if (rc != SQLITE_OK)
+        return -1;
+    rc = sqlite3_step(st);
+    int out = rc == SQLITE_ROW ? sqlite3_column_int(st, 0) : -1;
+    sqlite3_finalize(st);
+    return out;
 }
 
 static int t_fresh_reaches_latest(void)
@@ -122,6 +151,54 @@ static int t_turbo_mode_roundtrip(void)
     return failures;
 }
 
+static int t_newer_schema_refuses_open_before_staging_cleanup(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "newer");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: newer schema fails closed before staging cleanup") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        ASSERT(node_db_exec(&seed,
+            "INSERT INTO snapshot_staging_utxos"
+            "(txid,vout,value,script,script_type,height,is_coinbase)"
+            " VALUES(X'4200000000000000000000000000000000000000000000000000000000000000',0,1,X'51',0,1,0)"));
+        ASSERT(node_db_state_set(&seed, "snapshot_staging_phase",
+                                 "chunk_receive", strlen("chunk_receive")));
+        node_db_close(&seed);
+
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_stamp_schema(raw, NODE_DB_MAX_SCHEMA + 1));
+        sqlite3_close(raw);
+        raw = NULL;
+
+        struct node_db newer;
+        bool opened = node_db_open(&newer, dbpath);
+        ASSERT(!opened);
+        ASSERT(!newer.open);
+        ASSERT(newer.db == NULL);
+
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM snapshot_staging_utxos") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM node_state "
+            "WHERE key='snapshot_staging_phase'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM node_state "
+            "WHERE key='schema_version'") == 1);
+        sqlite3_close(raw);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_db_migration_idempotent(void);
 
 int test_db_migration_idempotent(void)
@@ -133,5 +210,6 @@ int test_db_migration_idempotent(void)
     failures += t_reopen_is_idempotent();
     failures += t_memory_open();
     failures += t_turbo_mode_roundtrip();
+    failures += t_newer_schema_refuses_open_before_staging_cleanup();
     return failures;
 }
