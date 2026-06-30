@@ -349,6 +349,37 @@ static bool rf_header_admit_hash_at(sqlite3 *db, int height,
     return rc_ok;
 }
 
+/* Caller holds progress_store_tx_lock(). A header_admit_log row is trusted by
+ * this repair only when the durable header_admit cursor has advanced past that
+ * row. Rows at or above the cursor are replay territory after a reorg rewind
+ * and may still describe the stale branch being replaced. */
+static bool rf_header_admit_cursor_locked(sqlite3 *db, uint64_t *out_cursor)
+{
+    *out_cursor = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = 'header_admit'",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reorg-residue header_admit cursor prepare "
+                 "failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out_cursor = (uint64_t)sqlite3_column_int64(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reorg-residue header_admit cursor step "
+                 "failed rc=%d: %s", rc, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
 static bool rf_tipfin_status_is_reorg_residue(const char *status)
 {
     return status &&
@@ -390,6 +421,11 @@ bool stage_reducer_frontier_purge_stale_reorg_tipfin(
         LOG_FAIL("stage_repair",
                  "purge_stale_reorg_tipfin: schema ensure failed");
     }
+    uint64_t header_admit_cursor = 0;
+    if (!rf_header_admit_cursor_locked(db, &header_admit_cursor)) {
+        progress_store_tx_unlock();
+        return false;
+    }
 
     struct arith_uint256 zero_work;
     arith_uint256_set_u64(&zero_work, 0);
@@ -417,7 +453,13 @@ bool stage_reducer_frontier_purge_stale_reorg_tipfin(
          * active_chain_at(h+1) — reorg-correct). The residue verdict pins H*
          * one below h, so the column at h+1 is precisely the rowless gap the
          * existing header_admit-keyed refill re-derives. A missing binder
-         * leaves the row alone (no fabricated hash). */
+         * leaves the row alone (no fabricated hash). A binder row at or above
+         * the durable header_admit cursor is also ignored: after a forward-fork
+         * rewind, stale H+1 rows remain in replay territory until header_admit
+         * re-admits the canonical child and advances past them. */
+        if ((uint64_t)(h + 1) >= header_admit_cursor)
+            continue;
+
         struct uint256 lookahead;
         bool admit_here = false;
         bool admit_next = false;

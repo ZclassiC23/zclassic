@@ -33,26 +33,31 @@
  * is NOT a coin tear and no longer drives a refusal. The reconcile now
  * proceeds straight to the downstream heal in BOTH controls.
  *
- * GREEN — header_admit present at R+1: FIX-A's lookahead binder succeeds, so
- * it REPLACES the residue verdict in place (never deletes — served_floor
- * preserved) with a fresh ok=1 'finalize_backfill' row carrying hash(R+1); H*
- * lifts to R and the existing header_admit-keyed refill clamps
- * validate_headers/body_fetch/body_persist (and tip_finalize) to the column
- * hole R+1; coins/utxo_apply are untouched.
+ * GREEN — header_admit present at R+1 and header_admit cursor past R+1:
+ * FIX-A's lookahead binder succeeds, so it REPLACES the residue verdict in
+ * place (never deletes — served_floor preserved) with a fresh ok=1
+ * 'finalize_backfill' row carrying hash(R+1); H* lifts to R and the existing
+ * header_admit-keyed refill clamps validate_headers/body_fetch/body_persist
+ * (and tip_finalize) to the column hole R+1; coins/utxo_apply are untouched.
  *
- * RED — header_admit ABSENT at R+1: FIX-A's gate-2 (lookahead binder) fails,
- * so the residue row is NOT replaced (reorg_residue_tipfin_found==1,
- * replaced==0) and H* stays pinned at R-1. With the false coin-tear gone the
- * reconcile no longer early-returns; it falls through to the downstream
- * refill, which SAFELY re-derives the still-unfinalized column WITHOUT
- * touching coins: validate_headers clamps to the lowest header_admit-evidenced
- * rowless hole (R+2), body_fetch/body_persist re-walk from R, and tip_finalize
- * clamps to the H*+1 floor R (re-finalizing from R re-evaluates the residue).
- * utxo_apply and coins_applied stay at R+1 (no coin rewind). The RED control
- * therefore still asserts the REAL gate that distinguishes FIX-A: residue
- * REPLACED iff header_admit is present at the gap (GREEN) and NOT replaced
- * when absent (RED) — it just no longer asserts the (false) coin-tear refusal,
- * which the semantics change correctly removed.
+ * REWOUND — header_admit present at R+1 but cursor == R+1: this is replay
+ * territory after a forward-fork rewind, not trusted evidence. The residue row
+ * is NOT replaced until header_admit re-admits the canonical child and advances
+ * past R+1.
+ *
+ * RED — header_admit ABSENT at R+1: FIX-A's lookahead binder gate fails before
+ * the row is counted as replaceable, so the residue row is NOT replaced and H*
+ * stays pinned at R-1. With the false coin-tear gone the reconcile no longer
+ * early-returns; it falls through to the downstream refill, which SAFELY
+ * re-derives the still-unfinalized column WITHOUT touching coins:
+ * validate_headers clamps to the lowest header_admit-evidenced rowless hole
+ * (R+2), body_fetch/body_persist re-walk from R, and tip_finalize clamps to
+ * the H*+1 floor R (re-finalizing from R re-evaluates the residue). utxo_apply
+ * and coins_applied stay at R+1 (no coin rewind). The RED control therefore
+ * still asserts the REAL gate that distinguishes FIX-A: residue REPLACED iff
+ * header_admit is present at the gap (GREEN) and NOT replaced when absent
+ * (RED) — it just no longer asserts the (false) coin-tear refusal, which the
+ * semantics change correctly removed.
  */
 
 #include "test/test_helpers.h"
@@ -438,6 +443,7 @@ static bool seed_wedge_with_tip_status(sqlite3 *db, int R, int top_cursor,
     }
     /* Cursors: upstream all high; utxo_apply at the gap (R+1 unapplied). */
     ok = ok && seed_cursor(db, "validate_headers", top_cursor) &&
+         seed_cursor(db, "header_admit", top_cursor) &&
          seed_cursor(db, "body_fetch", top_cursor) &&
          seed_cursor(db, "body_persist", top_cursor) &&
          seed_cursor(db, "script_validate", top_cursor) &&
@@ -531,6 +537,44 @@ int test_reorg_residue_tipfin_replace(void)
          * coins_applied are never rewound by the downstream refill. */
         RR_CHECK("RED utxo_apply + coins UNCHANGED at R+1 (no coin rewind)",
                  cursor_value(db, "utxo_apply") == R + 1 && coins2 == R + 1);
+        main_state_free(&ms);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── REWOUND guard — header_admit_log at R+1 exists, but the durable
+     * header_admit cursor was rewound TO R+1. That row is stale replay
+     * territory until header_admit advances past it, so FIX-A must not use it
+     * as a lookahead binder. This models the live 2026-06-30 forward-fork
+     * recovery after header_admit clamped from far-ahead stale rows. ── */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir),
+                         "reorg_residue_tipfin_replace", "rewound");
+        RR_CHECK("REWOUND open", progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        RR_CHECK("REWOUND schema", seed_schema(db));
+        RR_CHECK("REWOUND seed with header_admit row at gap",
+                 seed_wedge(db, R, top_cursor, /*admit_at_gap=*/true));
+        RR_CHECK("REWOUND force header_admit cursor to gap",
+                 seed_cursor(db, "header_admit", R + 1) &&
+                 cursor_value(db, "header_admit") == R + 1);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct stage_reducer_frontier_reconcile_result rr;
+        RR_CHECK("REWOUND reconcile refuses row at header_admit cursor",
+                 stage_reducer_frontier_reconcile_light(db, &ms, &rr) &&
+                 rr.reorg_residue_tipfin_found == 0 &&
+                 rr.reorg_residue_tipfin_replaced == 0 &&
+                 rr.lowest_reorg_residue_tipfin == -1);
+        struct tip_view row;
+        RR_CHECK("REWOUND residue row untouched",
+                 tip_at(db, R, &row) && row.found && row.ok == 0 &&
+                 strcmp(row.status, "reorg_detected") == 0);
+        RR_CHECK("REWOUND header_admit cursor remains at replay point",
+                 cursor_value(db, "header_admit") == R + 1);
         main_state_free(&ms);
 
         progress_store_close();

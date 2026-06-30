@@ -161,16 +161,17 @@ bool stage_reducer_frontier_purge_noncanonical(
  * diverged) that pins H* below the coins frontier and so manufactures a
  * FALSE coin-tear refusal. A row at height h is eligible ONLY when it is
  * present with ok=0 AND h <= coins_applied_height - 1 (already covered by
- * coins, so no coin can tear) AND header_admit_log holds a row at h (the
- * verdict is re-evidenced upstream — h is a real admitted block). The
- * replacement is a fresh ok=1 'finalize_backfill' row carrying the lookahead
- * hash(h+1) sourced from header_admit_log (the row-H -> hash-H+1 finalized
- * convention, so finalized_row_active_match stays reorg-correct), written via
- * the production log_insert (INSERT OR REPLACE — the row persists, never
- * vanishes from served history). Touches ONLY tip_finalize ok=0 skip rows
- * meeting BOTH gates; never coins, never a cursor, never a row at/above the
- * coins frontier. Dry-run (apply=false) only counts into
- * out->reorg_residue_tipfin_*. The caller MUST re-read the frontier snapshot
+ * coins, so no coin can tear) AND header_admit_log holds rows at h and h+1
+ * below the durable header_admit cursor (the verdict and lookahead binder are
+ * re-evidenced upstream, not stale replay rows left at/above the cursor after a
+ * reorg rewind). The replacement is a fresh ok=1 'finalize_backfill' row
+ * carrying the lookahead hash(h+1) sourced from header_admit_log (the row-H ->
+ * hash-H+1 finalized convention, so finalized_row_active_match stays
+ * reorg-correct), written via the production log_insert (INSERT OR REPLACE —
+ * the row persists, never vanishes from served history). Touches ONLY
+ * tip_finalize ok=0 skip rows meeting BOTH gates; never coins, never a cursor,
+ * never a row at/above the coins frontier. Dry-run (apply=false) only counts
+ * into out->reorg_residue_tipfin_*. The caller MUST re-read the frontier snapshot
  * after an apply that replaced a row (H* moves). Returns false only on store
  * errors. Implemented in stage_repair_reducer_frontier_purge.c. */
 bool stage_reducer_frontier_purge_stale_reorg_tipfin(
