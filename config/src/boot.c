@@ -9,6 +9,7 @@
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_legacy_blocks.h"
+#include "config/boot_memory_guard.h"
 #include "config/boot_postmortem.h"
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_snapshot_failure_memory.h"
@@ -125,7 +126,6 @@
 #include <pthread.h>
 #include <malloc.h>
 #include <limits.h>
-#include <sys/sysinfo.h>
 #include <sqlite3.h>
 
 static struct main_state g_state;
@@ -165,16 +165,6 @@ static struct ibd_throttle_config g_ibd_throttle_cfg;
 static struct zcl_service_kernel g_guard_kernel;
 static struct zcl_service_kernel g_maintenance_kernel;
 static struct zcl_service_kernel g_boot_db_kernel;
-
-/* ── System RAM query ────────────────────────────────────────── */
-
-static size_t get_system_ram(void)
-{
-    struct sysinfo si;
-    if (sysinfo(&si) != 0)
-        return 0;
-    return (size_t)si.totalram * (size_t)si.mem_unit;
-}
 
 static struct db_service *boot_runtime_db_service(void)
 {
@@ -1650,30 +1640,10 @@ bool app_init(struct app_context *ctx)
     /* OOM protection: estimate block index memory before loading.
      * Warn if it would exceed 50% of system RAM. */
     {
-        size_t sys_ram = get_system_ram();
-        if (sys_ram > 0) {
-            /* Estimate from SQLite or flat file entry count */
-            int64_t est_count = 0;
-            if (g_node_db.open)
-                est_count = db_block_max_height(&g_node_db);
-            if (est_count <= 0)
-                est_count = 3000000; /* conservative default */
-            size_t est_mem = (size_t)est_count * sizeof(struct block_index)
-                           + (size_t)est_count * 2 * sizeof(struct block_map_entry);
-            if (est_mem > sys_ram / 2) {
-                fprintf(stderr,
-                    "[boot] WARNING: block index estimated at %zuMB "
-                    "(%lld entries x %zu bytes + hash map)\n"
-                    "[boot] System has %zuMB RAM. This may cause OOM.\n",
-                    est_mem / (1024 * 1024), (long long)est_count,
-                    sizeof(struct block_index),
-                    sys_ram / (1024 * 1024));
-            }
-            printf("[boot] system_ram=%zuMB block_index_estimate=%zuMB "
-                   "(%lld entries)\n",
-                   sys_ram / (1024 * 1024), est_mem / (1024 * 1024),
-                   (long long)est_count);
-        }
+        int64_t est_count = g_node_db.open
+            ? db_block_max_height(&g_node_db)
+            : 0;
+        boot_block_index_memory_warn(est_count);
     }
 
     /* Block index load: flat file first (mmap, <2s), then SQLite, then LevelDB.
@@ -2166,19 +2136,8 @@ bool app_init(struct app_context *ctx)
            (long long)(boot_clock_ms() - t_phase));
 
     /* Log block index memory usage */
-    {
-        size_t entry_count = g_state.map_block_index.size;
-        size_t entry_bytes = entry_count * sizeof(struct block_index);
-        size_t map_bytes = g_state.map_block_index.capacity *
-                           sizeof(struct block_map_entry);
-        size_t total_bytes = entry_bytes + map_bytes;
-        printf("[boot] block_index: %zu entries, %zu bytes/entry, "
-               "index=%zuMB map=%zuMB total=%zuMB\n",
-               entry_count, sizeof(struct block_index),
-               entry_bytes / (1024 * 1024),
-               map_bytes / (1024 * 1024),
-               total_bytes / (1024 * 1024));
-    }
+    boot_block_index_memory_log_loaded(g_state.map_block_index.size,
+                                       g_state.map_block_index.capacity);
 
     /* Bulk height repair: fix scrambled nHeight values from LDB import.
      * This must run AFTER block index is loaded but BEFORE header sync.

@@ -22,13 +22,13 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
   blocker/layering gates pass with zero grandfathered exceptions) — but the
   file-size baseline is NOT empty: it carries 3 grandfathered entries
   (`config/src/boot.c`, `config/src/boot_services.c`, `app/jobs/src/tip_finalize_stage.c`).
-  `app/` largest file = `app/jobs/src/tip_finalize_stage.c` at 809 (over the 800 ceiling, baselined).
+  `app/` largest file = `app/jobs/src/tip_finalize_stage.c` at 799 (still baselined until the ratchet entry is removed deliberately).
 
 **Remaining debt, ranked (tracked as session Waves A–E):**
 
 | Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
 |------|------|--------------|-------------------------------|------|
-| 1 | `config/` boot monolith | boot.c **3616** after the 2026-06-30 `boot_snapshot_failure_memory`, `boot_postmortem`, `boot_datadir_lock`, `boot_shutdown_marker`, `boot_stale_locks`, `boot_blocktree_cleanup`, `app_context`, and `boot_legacy_blocks` splits, boot_services.c **1865**, boot_refold_staged.c **1840**, boot_index.c **701** — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
+| 1 | `config/` boot monolith | boot.c **3575** after the 2026-06-30 `boot_snapshot_failure_memory`, `boot_postmortem`, `boot_datadir_lock`, `boot_shutdown_marker`, `boot_stale_locks`, `boot_blocktree_cleanup`, `app_context`, `boot_legacy_blocks`, and `boot_memory_guard` splits, boot_services.c **1865**, boot_refold_staged.c **1840**, boot_index.c **701** — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
 | 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 13 ports + 13 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), same reserved-empty-by-design posture as `app/events/` (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
@@ -125,7 +125,7 @@ node soak.
 `tools/scripts/file_size_ceiling_baseline.txt` has 3 grandfathered entries:
 `config/src/boot.c`, `config/src/boot_services.c`, and
 `app/jobs/src/tip_finalize_stage.c`. Current oversized review targets are
-`config/src/boot.c` (3616), `config/src/boot_services.c` (1865),
+`config/src/boot.c` (3575), `config/src/boot_services.c` (1865),
 `config/src/boot_refold_staged.c` (1840, advisory/new), and
 `app/jobs/src/tip_finalize_stage.c` (799). The baseline remains a ratchet and
 should not be raised; shrink these files through behavior-preserving splits or

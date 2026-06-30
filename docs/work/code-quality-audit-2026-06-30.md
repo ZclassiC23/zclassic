@@ -188,6 +188,11 @@ mega-refactor. This page is the running backlog for those passes.
   block-file extraction: zclassicd `blk`/`rev` import and warm-boot missing-file
   linking now live in `boot_legacy_blocks.*`, with fixture regressions for
   import, same-size skip semantics, warm linking, and invalid datadirs.
+- [x] Continue oversized-file review with a behavior-preserving boot memory
+  guard extraction: block-index RAM estimate/warning and loaded-index memory
+  logging now live in `boot_memory_guard.*`, with direct regressions for
+  fallback counts, exact estimate sizing, overflow saturation, and warn
+  threshold semantics.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1577,6 +1582,24 @@ mega-refactor. This page is the running backlog for those passes.
      linking. `boot.c` is now 3616 lines and the new helper is 198 lines.
    - Tests: ran `make t ONLY=boot_legacy_blocks`.
 
+55. **Boot memory guard split**
+   - Files: `config/src/boot.c`, `config/src/boot_memory_guard.c`,
+     `config/include/config/boot_memory_guard.h`,
+     `lib/test/src/test_boot_memory_guard.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still carried block-index memory
+     estimation, OOM warning policy, and loaded-index accounting inline. That
+     made the block-index phase harder to scan and left the arithmetic without
+     direct unit coverage.
+   - Fix: moved the RAM estimate, warning predicate, and loaded-index log
+     formatting into `boot_memory_guard.c`. `boot.c` now names the memory
+     guard boundary from the block-index phase, while the helper owns the
+     fallback count, exact entry/map estimate formula, system-RAM lookup, and
+     overflow-saturating estimate arithmetic. `boot.c` is now 3575 lines and
+     the new helper is 79 lines.
+   - Tests: ran `make t ONLY=boot_memory_guard`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1778,6 +1801,11 @@ mega-refactor. This page is the running backlog for those passes.
      `boot_legacy_blocks.c`. This removes duplicated filename/link/copy loops
      from `boot.c` while preserving the legacy same-size skip behavior and the
      warm-boot missing-file link pass.
+   - Thirty-first behavior-preserving extraction landed for boot memory guard:
+     block-index RAM estimate/warning policy and loaded-index accounting now
+     live in `boot_memory_guard.c`. This keeps future boot reviews focused on
+     phase order while giving the estimate/count/threshold arithmetic direct
+     regression coverage.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the

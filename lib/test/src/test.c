@@ -639,6 +639,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "boot_memory_guard") == 0) {
+        printf("[test] ZCL_TEST_ONLY=boot_memory_guard - running only\n");
+        failures += test_boot_memory_guard();
+        printf("\n=== boot_memory_guard subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
@@ -791,6 +798,7 @@ int main(void)
     failures += test_boot_stale_locks();
     failures += test_boot_blocktree_cleanup();
     failures += test_boot_legacy_blocks();
+    failures += test_boot_memory_guard();
     failures += test_store();
     failures += test_blog();
     failures += test_api();
