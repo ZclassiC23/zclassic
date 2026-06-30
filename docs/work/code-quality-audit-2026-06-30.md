@@ -400,6 +400,17 @@ mega-refactor. This page is the running backlog for those passes.
   `block_failed_mask_at_tip`, `local_header_refill_needed`, and
   `tip_wedged_resnapshot`. The next review seam is the missing-child/body-window
   path at height 3165237.
+- Post-deploy live sample after commit `57ce22e78`: `make deploy` installed
+  and restarted the service with `build_commit=57ce22e78`, but verifier failed
+  health after 600s because the same named stall remains. The new
+  `dumpstate block_index` lookup shows height 3165236 resolves from
+  `lookup_source=active_chain` with hash
+  `00000ba2a2017615a140c648b13540e93115f0edced6fd606e2d34d76b9b1ac7`,
+  while height 3165237 resolves only from `lookup_source=best_header_ancestor`
+  with `hash_prev=000000c753e149fd16ecb9556ca7ca9ae5d4d36881e4b3db49d8856e6b1fd74d`.
+  That above-tip best-header block is therefore not the finalized tip's child;
+  `tip_finalize` correctly holds at `lookahead_tip_missing` instead of
+  finalizing across a fork.
 
 ## Fixed in this pass
 
