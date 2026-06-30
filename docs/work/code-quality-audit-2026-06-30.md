@@ -142,6 +142,11 @@ mega-refactor. This page is the running backlog for those passes.
   served-tip snapshot now live in a sibling helper; durable-tip restore/read
   helpers live in a second sibling helper, leaving the stage file focused on
   finalization decisions and durable reducer writes.
+- [x] Continue oversized-file review with a behavior-preserving
+  `reducer_frontier_replay` transaction-mechanics extraction: replay SQL probes,
+  created-output backfill, inverse-delta checks, log deletion, dry-run setup,
+  and script/proof replay transactions now live in a sibling helper, leaving
+  the original file focused on repair detection, routing, and blocker naming.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1501,6 +1506,13 @@ mega-refactor. This page is the running backlog for those passes.
      This reduces `tip_finalize_stage.c` to 799 lines while preserving
      finalization decisions, durable `tip_finalize_log` writes, and the public
      stage API.
+   - Twenty-first behavior-preserving extraction landed for reducer-frontier
+     replay: low-level SQL probes, created-output backfill, inverse-delta
+     checks, log-range deletion, dry-run transaction setup, and script/proof
+     replay transaction bodies now live in `reducer_frontier_replay_tx.c`.
+     This reduces `reducer_frontier_replay.c` to 800 lines while preserving
+     repair detection, hash-split classification, blocker naming, and the
+     existing private repair API.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
