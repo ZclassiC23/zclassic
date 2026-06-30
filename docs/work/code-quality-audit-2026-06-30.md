@@ -61,6 +61,8 @@ mega-refactor. This page is the running backlog for those passes.
   false-greens, and single-RPC hangs.
 - [x] Fix deploy verification's `zcl-rpc` fallback so it uses the client's env
   contract, unwraps JSON-RPC envelopes, and reports finalized `log_head`.
+- [x] Teach deploy verification to name pre-RPC crash-only chainstate reindex
+  progress instead of timing out with only a socket error.
 - [x] Fail closed on unknown-height chain sources before source selection.
 - [x] Align outbound peer-floor counting with block-serving `NODE_NETWORK`
   peers.
@@ -1414,6 +1416,11 @@ mega-refactor. This page is the running backlog for those passes.
      ancestry to fill a missing lookahead only when it extends the resolved tip;
      fork candidates hold for the reorg/window owner instead of writing ok=0
      residue. Regression coverage lives in `test_tip_finalize_stage`.
+   - Deploy verification now inspects the node log on RPC timeout and reports
+     pre-RPC crash-only `reindex-chainstate` progress when an auto-reindex is
+     the reason the socket never opened inside the deploy deadline. This keeps
+     deploy fail-closed while naming the active recovery phase for operators and
+     future agents.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

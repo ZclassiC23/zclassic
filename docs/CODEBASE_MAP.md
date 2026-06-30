@@ -177,7 +177,7 @@ Confirm the target before acting.
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
 | `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |
 | `make ci` | lint + bench-regress + build + `test_parallel` (retry-once for flakes) + symbol-floor. Pre-push hook runs this. |
-| `make deploy` | `rm` stale binary, rebuild fresh, WAL checkpoint, verify running `build_commit` (`deploy_verify.sh`), `systemctl restart`. |
+| `make deploy` | `rm` stale binary, rebuild fresh, WAL checkpoint, `systemctl restart`, verify running `build_commit` (`deploy_verify.sh`). If RPC stays closed during crash-only recovery, the verifier reports the pre-RPC `reindex-chainstate` progress from `node.log`. |
 | `make deploy-dev` | Hot-swap into the dev node (ports 8053/18252) via `tools/dev/deploy-dev-lane.sh`. Never touches live. |
 | `build/bin/test_zcl` | Run all tests directly. |
 | `build/bin/zclassic-cli <method>` | RPC without MCP (default port 18232 = zclassic23). |

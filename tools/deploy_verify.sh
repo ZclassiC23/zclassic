@@ -67,6 +67,11 @@ if [ -z "${ZCL_RPCPORT:-}" ]; then
     fi
 fi
 
+NODE_LOG="${ZCL_DEPLOY_NODE_LOG:-$HOME/.zclassic-c23/node.log}"
+if [ ! -r "$NODE_LOG" ] && [ -r "$RPC_DATADIR/node.log" ]; then
+    NODE_LOG="$RPC_DATADIR/node.log"
+fi
+
 rpc_exec() {
     rc=0
     if command -v timeout >/dev/null 2>&1; then
@@ -210,6 +215,29 @@ extract_build_commit() {
 
 # Normalise a build_commit for comparison: lowercase, drop a trailing -dirty.
 norm_commit() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed -E 's/-dirty$//'; }
+
+pre_rpc_boot_diagnostic() {
+    [ -r "$NODE_LOG" ] || return 0
+    tail -n 500 "$NODE_LOG" | awk '
+        /crash-only recovery: consuming auto-reindex request/ {
+            recovery=$0
+        }
+        /reindex-chainstate: rebuilding UTXO set/ {
+            reindex=1
+        }
+        /height [0-9]+\/[0-9]+ .*ETA/ {
+            progress=$0
+        }
+        END {
+            if (progress != "") {
+                print "pre-RPC recovery: reindex-chainstate " progress
+            } else if (reindex) {
+                print "pre-RPC recovery: reindex-chainstate active"
+            } else if (recovery != "") {
+                print "pre-RPC recovery: " recovery
+            }
+        }'
+}
 
 rpc_dumpstate() {
     component="$1"
@@ -386,5 +414,10 @@ done
 echo "DEPLOY FAILED: RPC/diagnostic contract did not become ready within ${TIMEOUT}s (attempts=$attempt)"
 if [ -n "$last_err" ]; then
     echo "last error: $last_err"
+fi
+boot_diag=$(pre_rpc_boot_diagnostic || true)
+if [ -n "$boot_diag" ]; then
+    echo "boot diagnostic: $boot_diag"
+    echo "boot log: $NODE_LOG"
 fi
 exit 1

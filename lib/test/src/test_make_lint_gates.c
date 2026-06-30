@@ -2010,6 +2010,8 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "local_consensus_validation") != NULL);
         ASSERT(strstr(buf, "ZCL_DATADIR=$RPC_DATADIR") != NULL);
         ASSERT(strstr(buf, "ZCL_RPCPORT=$RPCPORT") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEPLOY_NODE_LOG") != NULL);
+        ASSERT(strstr(buf, "pre-RPC recovery: reindex-chainstate") != NULL);
         ASSERT(strstr(buf, "zclassic-cli|zcl-rpc") == NULL);
         ASSERT(strstr(buf, "json_rpc_result") != NULL);
         ASSERT(strstr(buf, "checks.get(\"log_head\")") != NULL);
