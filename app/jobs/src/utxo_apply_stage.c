@@ -13,10 +13,10 @@
 #include "jobs/stage_helpers.h"
 #include "utxo_apply_log_store.h"
 #include "utxo_apply_stage_internal.h"
+#include "utxo_apply_stage_observe.h"
 #include "script_validate_log_store.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
-#include "event/event.h"
 #include "services/seal_service.h"
 #include "services/anchor_selfmint.h"
 #include "primitives/block.h"
@@ -42,14 +42,6 @@
 #include <string.h>
 
 #define STAGE_NAME "utxo_apply"
-
-/* Fold-progress heartbeat cadence (Task A — mint/catch-up observability). One
- * LOG_INFO every UA_PROGRESS_LOG_EVERY applied heights so a from-genesis fold
- * (the mint, whose own log is ~88% schema-version spam) and the daily catch-up
- * are MEASURABLE — ETA + termination become observable from node.log alone.
- * Log-only: never touches consensus/fold behavior, O(1) per block (guarded by
- * height % N == 0). */
-#define UA_PROGRESS_LOG_EVERY 10000
 
 /* struct proof_validate_row + the utxo_apply_log schema/read/write helpers
  * live in utxo_apply_log_store.c (pure sqlite kernel helpers below the AR
@@ -89,152 +81,6 @@ _Atomic int64_t  g_ua_upstream_hole_first_unix = 0;
 _Atomic uint64_t g_ua_upstream_hole_consec = 0;
 _Atomic uint64_t g_ua_upstream_hole_warn_total = 0;
 _Atomic uint64_t g_ua_label_splice_total = 0;
-
-/* CS-F4 blocked-reject dedup. A consensus-rejected height returns
- * JOB_BLOCKED and recomputes every tick BY DESIGN (an upstream repair can
- * clear it), but the per-status totals must count BLOCKS — not ticks — and
- * re-emitting the same EV_BLOCK_REJECTED every tick evicts the
- * original-failure evidence from the bounded event ring. Counter + emit
- * fire only on a NEW (height,status) pair, plus a keep-alive re-emit every
- * REJECT_REEMIT_SECS carrying the cumulative suppressed-tick count (counter
- * NOT re-bumped). Cleared on JOB_ADVANCED (and shutdown) so a pair re-hit
- * after a rewind-then-reapply counts as a new block. g_reject_lock guards
- * the non-atomic fields. */
-#define REJECT_REEMIT_SECS 300
-static _Atomic int64_t g_last_reject_height = -1;
-static pthread_mutex_t g_reject_lock = PTHREAD_MUTEX_INITIALIZER;
-static char     g_last_reject_status[24];
-static int64_t  g_last_reject_emit_unix;
-static uint64_t g_reject_repeat_ticks;
-
-static void reject_count_and_emit(int height, const char *status,
-                                  _Atomic uint64_t *counter,
-                                  const char *label)
-{
-    if (!status) status = "unknown";
-    int64_t now = platform_time_wall_unix();
-    uint64_t repeats = 0;
-    pthread_mutex_lock(&g_reject_lock);
-    bool same = atomic_load(&g_last_reject_height) == (int64_t)height &&
-                strncmp(g_last_reject_status, status,
-                        sizeof(g_last_reject_status) - 1) == 0;
-    if (same) {
-        repeats = ++g_reject_repeat_ticks;
-        if (now - g_last_reject_emit_unix < REJECT_REEMIT_SECS) {
-            pthread_mutex_unlock(&g_reject_lock);
-            return;
-        }
-    } else {
-        atomic_store(&g_last_reject_height, (int64_t)height);
-        snprintf(g_last_reject_status, sizeof(g_last_reject_status), "%s",
-                 status);
-        g_reject_repeat_ticks = 0;
-    }
-    g_last_reject_emit_unix = now;
-    pthread_mutex_unlock(&g_reject_lock);
-    if (!same) {
-        atomic_fetch_add(counter, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0, "utxo_apply %s height=%d",
-                    label, height);
-    } else {
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply %s height=%d repeats=%llu",
-                    label, height, (unsigned long long)repeats);
-    }
-}
-
-static void reject_memo_clear(void)
-{
-    pthread_mutex_lock(&g_reject_lock);
-    atomic_store(&g_last_reject_height, (int64_t)-1);
-    g_last_reject_status[0] = '\0';
-    g_reject_repeat_ticks = 0;
-    pthread_mutex_unlock(&g_reject_lock);
-}
-
-/* Durable-upstream-hole observability (counters declared above, dumped
- * by utxo_apply_stage_dump.c). The transition memo is touched ONLY by the
- * single-threaded step path — the g_cursor_gap_warn convention from
- * tip_finalize_stage.c — so it needs no lock. */
-static struct { int64_t h; uint64_t reps; int64_t last_log; }
-    g_upstream_hole_warn = { .h = -1 };
-
-/* label_splice WARN memo — same shape/contract as g_upstream_hole_warn. */
-static struct { int64_t h; uint64_t reps; int64_t last_log; }
-    g_label_splice_warn = { .h = -1 };
-
-/* Fold-progress heartbeat memo (Task A). Touched ONLY by the single-threaded
- * step_apply path, so it needs no lock. first_h/first_unix anchor the rate
- * estimate to the first successful apply THIS process (so a daily catch-up that
- * resumes high still reports a meaningful blocks/sec over its own run, not a
- * since-genesis average). last_logged_h dedups the heartbeat to one line per
- * UA_PROGRESS_LOG_EVERY boundary even if the same boundary is re-reached after
- * a reorg rewind. */
-static struct { int64_t first_h; int64_t first_unix; int64_t last_logged_h; }
-    g_ua_progress = { .first_h = -1, .first_unix = 0, .last_logged_h = -1 };
-
-/* tipfin_warn_throttled shape (tip_finalize_stage.c:78): emit on a height
- * TRANSITION (first occurrence never suppressed) or as a 300 s keep-alive
- * carrying the suppressed-tick count; suppressed calls still count. */
-static bool upstream_hole_warn_throttled(bool changed, int64_t now,
-                                         uint64_t *reps, int64_t *last_log,
-                                         uint64_t *out_shown)
-{
-    if (changed) {
-        *out_shown = *reps;  /* repeats of the PRIOR hole */
-        *reps = 0;
-        *last_log = now;
-        return true;
-    }
-    *out_shown = ++*reps;
-    if (now - *last_log < 300) return false;
-    *last_log = now;
-    return true;
-}
-
-static void upstream_hole_note(int height, uint64_t pv_cursor)
-{
-    int64_t now = platform_time_wall_unix();
-    bool changed = g_upstream_hole_warn.h != (int64_t)height;
-    if (changed) {
-        g_upstream_hole_warn.h = (int64_t)height;
-        atomic_fetch_add(&g_ua_upstream_hole_total, 1);
-        atomic_store(&g_ua_upstream_hole_height, (int64_t)height);
-        atomic_store(&g_ua_upstream_hole_first_unix, now);
-        atomic_store(&g_ua_upstream_hole_consec, (uint64_t)1);
-    } else {
-        atomic_fetch_add(&g_ua_upstream_hole_consec, 1);
-    }
-    uint64_t shown = 0;
-    if (upstream_hole_warn_throttled(changed, now,
-                                     &g_upstream_hole_warn.reps,
-                                     &g_upstream_hole_warn.last_log,
-                                     &shown)) {
-        atomic_fetch_add(&g_ua_upstream_hole_warn_total, 1);
-        LOG_WARN(STAGE_NAME,
-                 "[utxo_apply] durable upstream hole: proof_validate_log row "
-                 "ABSENT at height=%d while proof_validate cursor=%llu is "
-                 "already past it (suppressed=%llu); stage stays JOB_IDLE by "
-                 "design — the reconcile-light Condition is the healer, this "
-                 "WARN/dump is the alarm",
-                 height, (unsigned long long)pv_cursor,
-                 (unsigned long long)shown);
-    }
-}
-
-/* The row at the previously-holed height is present again: close the
- * transition memo so a RE-opened hole at the same height counts and logs as
- * a new hole, and zero consec (the dump's "currently observing" signal).
- * total/height/first_unix stay as last-hole evidence. */
-static void upstream_hole_healed(int height)
-{
-    if (g_upstream_hole_warn.h == (int64_t)height) {
-        g_upstream_hole_warn.h = -1;
-        g_upstream_hole_warn.reps = 0;
-        g_upstream_hole_warn.last_log = 0;
-        atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
-    }
-}
 
 /* Author the validated block delta into the progress.kv `coins` table
  * (coins_kv) on the stage's own db handle, INSIDE stage_run_once's BEGIN
@@ -411,11 +257,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
          * is what manufactured this hole class in the first place. The L1
          * reconcile-light Condition is the healer; the counters/WARN here
          * are the alarm. */
-        upstream_hole_note(next_h, pv_cursor);
+        utxo_apply_upstream_hole_note(next_h, pv_cursor);
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
-    upstream_hole_healed(next_h);
+    utxo_apply_upstream_hole_healed(next_h);
 
     if (upstream.ok == 0) {
         atomic_fetch_add(&g_ua_upstream_failed_total, 1);
@@ -449,50 +295,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
     if (sv_found == 1 && sv_row.has_block_hash &&
         !uint256_eq(&sv_row.block_hash, bi->phashBlock)) {
-        char want_hex[65] = {0}, got_hex[65] = {0};
-        uint256_get_hex(bi->phashBlock, want_hex);
-        uint256_get_hex(&sv_row.block_hash, got_hex);
-        /* WARN on a height TRANSITION or as a 300 s keep-alive (memo touched
-         * only by this single-threaded step path — the g_upstream_hole_warn
-         * convention); the counter counts refusal HEIGHTS, not ticks. The
-         * blocker registry's rate limit dedups the JOB_BLOCKED re-fires. */
-        int64_t now_w = platform_time_wall_unix();
-        bool changed = g_label_splice_warn.h != (int64_t)next_h;
-        if (changed) {
-            g_label_splice_warn.h = (int64_t)next_h;
-            atomic_fetch_add(&g_ua_label_splice_total, 1);
-        }
-        uint64_t shown = 0;
-        if (upstream_hole_warn_throttled(changed, now_w,
-                                         &g_label_splice_warn.reps,
-                                         &g_label_splice_warn.last_log,
-                                         &shown))
-            LOG_WARN(STAGE_NAME,
-                     "[utxo_apply] label_splice height=%d: script_validate_log "
-                     "row is hash-bound to %s but the block being applied is "
-                     "%s; refusing apply until the verdict is re-bound "
-                     "(suppressed=%llu)",
-                     next_h, got_hex, want_hex, (unsigned long long)shown);
-        char reason[BLOCKER_REASON_MAX];
-        snprintf(reason, sizeof(reason),
-                 "height=%d script_validate_log block_hash %.16s.. != "
-                 "applying block %.16s..; height-keyed verdict belongs to a "
-                 "different block (label splice) — apply refused",
-                 next_h, got_hex, want_hex);
-        blocker_init(&c->blocker, "utxo_apply.label_splice", STAGE_NAME,
-                     BLOCKER_TRANSIENT, reason);
-        c->blocker.escape_deadline_secs = 60;
-        c->blocker.retry_budget = 5;
-        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
-        return JOB_BLOCKED;
+        return utxo_apply_label_splice_refuse(
+            c, next_h, bi->phashBlock, &sv_row.block_hash);
     }
-    if (g_label_splice_warn.h == (int64_t)next_h) {
-        /* The previously-refused verdict is re-bound (or no longer provably
-         * foreign): close the memo so a re-opened splice counts as new. */
-        g_label_splice_warn.h = -1;
-        g_label_splice_warn.reps = 0;
-        g_label_splice_warn.last_log = 0;
-    }
+    /* The previously-refused verdict is re-bound (or no longer provably
+     * foreign): close the memo so a re-opened splice counts as new. */
+    utxo_apply_label_splice_healed(next_h);
 
     struct block blk;
     block_init(&blk);
@@ -614,7 +422,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             counter = &g_ua_shielded_double_spend_total;
             label = "bad-txns-joinsplit-requirements-not-met";
         }
-        reject_count_and_emit(next_h, summary.status, counter, label);
+        utxo_apply_reject_count_and_emit(next_h, summary.status, counter,
+                                         label);
     }
 
     if (!utxo_apply_log_insert(db, next_h, summary.status, summary.ok,
@@ -664,34 +473,10 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     anchor_selfmint_hook_in_tx(db, g_datadir, (int32_t)next_cursor);
 
     atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
-    reject_memo_clear();
+    utxo_apply_reject_memo_clear();
     c->cursor_out = next_cursor;
 
-    /* Fold-progress heartbeat (Task A — log-only, O(1), no consensus effect).
-     * Anchor the rate estimate to the first apply this process, then emit ONE
-     * LOG_INFO per UA_PROGRESS_LOG_EVERY-height boundary. coins_applied_height
-     * (next_cursor == applied-through) is the canonical fold frontier. */
-    {
-        int64_t now = platform_time_wall_unix();
-        if (g_ua_progress.first_h < 0) {
-            g_ua_progress.first_h = (int64_t)next_h;
-            g_ua_progress.first_unix = now;
-        }
-        if ((next_h % UA_PROGRESS_LOG_EVERY) == 0 &&
-            g_ua_progress.last_logged_h != (int64_t)next_h) {
-            g_ua_progress.last_logged_h = (int64_t)next_h;
-            int64_t elapsed = now - g_ua_progress.first_unix;
-            int64_t done = (int64_t)next_h - g_ua_progress.first_h;
-            double rate = (elapsed > 0 && done > 0)
-                          ? (double)done / (double)elapsed : 0.0;
-            LOG_INFO(STAGE_NAME,
-                     "[utxo_apply] fold progress: applied_height=%d "
-                     "(coins_applied_height=%lld, base_this_run=%lld) "
-                     "rate=%.1f blocks/s",
-                     next_h, (long long)next_cursor,
-                     (long long)g_ua_progress.first_h, rate);
-        }
-    }
+    utxo_apply_progress_note(next_h, next_cursor);
 
     /* REPLAY GATE coverage accounting (no-op unless ZCL_REPLAY_COUNT_ONLY):
      * count every successfully-applied block toward blocks_replayed so the
@@ -936,16 +721,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
     atomic_store(&g_ua_upstream_hole_warn_total, (uint64_t)0);
     atomic_store(&g_ua_label_splice_total, (uint64_t)0);
-    g_upstream_hole_warn.h = -1;
-    g_upstream_hole_warn.reps = 0;
-    g_upstream_hole_warn.last_log = 0;
-    g_label_splice_warn.h = -1;
-    g_label_splice_warn.reps = 0;
-    g_label_splice_warn.last_log = 0;
-    g_ua_progress.first_h = -1;
-    g_ua_progress.first_unix = 0;
-    g_ua_progress.last_logged_h = -1;
-    reject_memo_clear();
+    utxo_apply_observe_reset();
     pthread_mutex_unlock(&g_lock);
 }
 

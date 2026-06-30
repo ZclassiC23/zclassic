@@ -131,6 +131,11 @@ mega-refactor. This page is the running backlog for those passes.
   rebuild oracle is unavailable: after the stale fork target is invalidated,
   queue the best-header ancestor body at the proven stale height so the node
   fetches the missing canonical parent instead of repeatedly naming tip+1.
+- [x] Continue oversized-file review with a behavior-preserving
+  `utxo_apply_stage` observability extraction: reject dedup, upstream-hole
+  warning state, label-splice refusal logging, and fold-progress heartbeat now
+  live in a sibling helper, bringing `utxo_apply_stage.c` below the advisory
+  ceiling without changing the coin-authoring path.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1476,6 +1481,12 @@ mega-refactor. This page is the running backlog for those passes.
      `utxo_apply_stage_lookup.c`, reducing `utxo_apply_stage.c` to 983 lines
      while preserving live-coin freshness, RAM-overlay lookup, and
      double-spend-safe "currently unspent" semantics.
+   - Nineteenth behavior-preserving extraction landed for utxo apply:
+     reject/event dedup, durable upstream-hole warning memo state,
+     label-splice refusal logging/blocker decoration, and fold-progress
+     heartbeat state now live in `utxo_apply_stage_observe.c`, reducing
+     `utxo_apply_stage.c` to 759 lines while preserving the stage's
+     consensus write path and public API.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
