@@ -90,6 +90,8 @@ mega-refactor. This page is the running backlog for those passes.
   proof-validation dumpstate extraction and stage regression test.
 - [x] Continue oversized-file review with a behavior-preserving boot-worker
   supervisor helper extraction and supervisor regression test.
+- [x] Continue oversized-file review with a behavior-preserving chain-restore
+  backing extraction and seed-anchor provenance regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1126,6 +1128,23 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=supervisor_production_tree`; final gates
      `git diff --check` and `make lint`.
 
+36. **Oversized chain-restore backing extraction**
+   - Files: `app/services/src/chain_restore_repair.c`,
+     `app/services/src/chain_restore_backing.c`,
+     `lib/test/src/test_chain_restore_service.c`
+   - Problem: `chain_restore_repair.c` mixed the post-restore repair/finalize
+     flow with public consensus-backed and on-disk-backed block predicates,
+     leaving the repair unit above the 800-line advisory ceiling. The
+     cold-import seed-anchor carve-out also lacked a direct regression pinning
+     exact hash/height provenance.
+   - Fix: moved the backing predicates and nearest-backed-ancestor walkers into
+     a focused service translation unit while leaving repair orchestration in
+     `chain_restore_repair.c`. Added a disk-backed seed-anchor test proving the
+     no-`pprev` carve-out only applies to the exact supplied seed hash and
+     height. `chain_restore_repair.c` is now 650 lines.
+   - Tests: ran `make t ONLY=chain_restore_service`; final gates
+     `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1215,6 +1234,11 @@ mega-refactor. This page is the running backlog for those passes.
      shared observe-only worker supervisor helpers now live in
      `boot_worker_supervisor.c`, reducing `boot_background_workers.c` to 731
      lines while preserving worker registration and stall handling contracts.
+   - Tenth behavior-preserving extraction landed for chain restore:
+     consensus-backed/on-disk-backed block predicates and nearest-backed
+     ancestor walks now live in `chain_restore_backing.c`, reducing
+     `chain_restore_repair.c` to 650 lines while preserving repair/finalize
+     behavior and directly testing seed-anchor provenance.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and

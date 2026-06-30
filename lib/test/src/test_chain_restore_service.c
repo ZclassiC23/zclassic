@@ -980,6 +980,61 @@ static bool next_block_append_pos(const char *datadir,
     return true;
 }
 
+static int test_seed_anchor_backing_requires_exact_provenance(void) {
+    int failures = 0;
+    TEST("chain_restore_backing: seed anchor disk carve-out requires exact provenance") {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_seed_backing",
+                 (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        char blocksdir[320];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", tmpdir);
+        mkdir(blocksdir, 0755);
+
+        struct disk_block_pos pos = { .nFile = 0, .nPos = 0 };
+        struct uint256 hash;
+        const uint32_t expected_nbits = 0x1e14f400;
+        ASSERT(write_chain_block_fixture(tmpdir, &pos, NULL,
+                                         expected_nbits, 1700000000,
+                                         &hash));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *seed = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &hash);
+        ASSERT(seed != NULL);
+        seed->nHeight = 500000;
+        seed->pprev = NULL;
+        seed->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        seed->nFile = pos.nFile;
+        seed->nDataPos = pos.nPos;
+        seed->nBits = expected_nbits;
+        seed->nTx = 1;
+        seed->nChainTx = 1;
+
+        ASSERT(!chain_restore_block_is_consensus_backed_on_disk(seed, tmpdir));
+        ASSERT(chain_restore_block_is_consensus_backed_on_disk_seeded(
+            seed, tmpdir, &hash, seed->nHeight));
+
+        struct uint256 wrong_hash = hash;
+        wrong_hash.data[0] ^= 0x01;
+        ASSERT(!chain_restore_block_is_consensus_backed_on_disk_seeded(
+            seed, tmpdir, &wrong_hash, seed->nHeight));
+        ASSERT(!chain_restore_block_is_consensus_backed_on_disk_seeded(
+            seed, tmpdir, &hash, seed->nHeight - 1));
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+
+        char rm_cmd[512];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_rebuild_active_chain_scans_block_files_for_canonical_positions(void) {
     int failures = 0;
     TEST("chain_restore_rebuild: scans block files when index disk positions are stale") {
@@ -1353,6 +1408,7 @@ int test_chain_restore_service(void) {
     failures += test_rebuild_active_chain_scales_at_100k();
     failures += test_rebuild_high_tip_prefers_pprev_lineage_over_height_guess();
     failures += test_rebuild_populates_skiplist_for_log_n_ancestor();
+    failures += test_seed_anchor_backing_requires_exact_provenance();
     failures += test_rebuild_active_chain_scans_block_files_for_canonical_positions();
     failures += test_backfill_nbits_reads_from_block_file();
     failures += test_connect_tip_hydrates_placeholder_from_disk();
