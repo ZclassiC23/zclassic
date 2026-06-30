@@ -190,7 +190,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_premature_clear) \
     X(refold_from_anchor_fatal) X(refold_auto_arm) X(anchor_selfmint) \
-    X(loader_owns_seed_gate) X(boot_refold_window_extend) \
+    X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) \
+    X(boot_refold_window_extend) \
     X(refold_retro_validate) X(refold_body_span_contiguous) \
     X(contaminated_coin_above_anchor) X(boot_reindex_terminates) \
     X(chain_linkage_check) X(invariant_sentinel) \

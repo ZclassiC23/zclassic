@@ -92,6 +92,10 @@ boot log shows the autodetected seed being accepted:
   needed); delete the marker to retry the bundle. So a bad / stale / incompatible
   bundle is self-healing — at worst it costs one restart before the node falls
   back to a full P2P sync. A `.snapshot.failed` line in the log is the tell.
+- If that marker cannot be written (read-only datadir, ENOSPC, permission
+  error, or a path too long to record safely), the node does **not** try the
+  snapshot. It skips the seed and uses normal P2P sync, because entering a
+  fail-closed loader without durable failure memory could restart-loop forever.
 - **Opt out (full from-genesis sync).** There is no flag to toggle; autodetect
   fires only when a fresh datadir (`coins_kv` not yet the proven authority) holds
   **both** `block_index.bin` and a `utxo-seed-<digits>.snapshot`. To do a plain

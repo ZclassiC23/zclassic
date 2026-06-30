@@ -6,6 +6,7 @@
 
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
+#include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
 #include "config/file_ops.h"
 #include "platform/rng.h"
@@ -3580,101 +3581,13 @@ sapling_tree_boot_check_done:
      * SHA3-verifies + anchor-binds, so this only auto-selects a file the explicit
      * flag could have loaded. No-op when no bundle is present. */
     bool snap_from_autodetect = false;
-    char snapshot_fail_marker[1200] = {0};
-    if (!ctx->load_snapshot_at_own_height &&
-        !coins_kv_is_proven_authority(progress_store_db(), NULL)) {
-        char *auto_snap = boot_autodetect_bundle_snapshot(ctx->datadir);
-        if (auto_snap) {
-            LOG_INFO("boot",
-                     "[boot] starter-pack bundle detected in datadir — auto-"
-                     "loading %s (no -load-snapshot-at-own-height flag needed)",
-                     auto_snap);
-            ctx->load_snapshot_at_own_height = auto_snap;
-            snap_from_autodetect = true;
-            /* Failure memory (never-stuck): write a "<snap>.failed" marker BEFORE
-             * the seed attempt and remove it only AFTER the loader returns
-             * cleanly. The loader _exit()s on an unseedable bundle (corrupt
-             * index, anchor mismatch, sapling-rebuild fail, OOM), so if that
-             * happens the marker SURVIVES — and the next (systemd Restart=always)
-             * boot's autodetect skips this snapshot and falls back to normal P2P
-             * IBD. Turns a crash-loop-needing-a-human into crash-once-then-self-
-             * heal. The explicit -load-snapshot flag uses the SAME marker
-             * primitive below (explicit-snapshot failure memory) so a corrupt explicit bundle also self-heals
-             * to P2P IBD after exactly one crash instead of crash-looping. */
-            int mn = snprintf(snapshot_fail_marker, sizeof(snapshot_fail_marker),
-                              "%s.failed", auto_snap);
-            bool marker_ok = false;
-            if (mn > 0 && (size_t)mn < sizeof(snapshot_fail_marker)) {
-                FILE *mf = fopen(snapshot_fail_marker, "we");
-                if (mf) { fclose(mf); marker_ok = true; }
-            }
-            if (!marker_ok) {
-                /* Could not write the failure-memory marker (read-only datadir /
-                 * ENOSPC / EACCES). Do NOT gamble on an autodetect seed whose
-                 * failure we cannot remember: a bad bundle _exit()s the loader,
-                 * and the next (Restart=always) boot would re-select the SAME
-                 * bundle forever — a fresh-install crash-loop needing a human.
-                 * Abandon the seed and fall back to plain P2P IBD instead. */
-                LOG_WARN("boot",
-                         "[boot] autodetect seed marker unwritable (%s.failed) — "
-                         "skipping snapshot seed, using P2P IBD",
-                         auto_snap);
-                free(auto_snap);  /* owned via load_snapshot_at_own_height (autodetect path) */
-                ctx->load_snapshot_at_own_height = NULL;
-                snap_from_autodetect = false;
-                snapshot_fail_marker[0] = '\0';
-            }
-        }
-    }
-    /* EXPLICIT -load-snapshot-at-own-height failure memory. The explicit
-     * loader (boot_load_snapshot_at_own_height_reset) fail-closes with
-     * _exit(EXIT_FAILURE) on a corrupt/mismatched bundle. Under systemd
-     * Restart=always that crash-loops FOREVER needing a human. Fold the explicit
-     * path onto the SAME "<snap>.failed" marker primitive the autodetect path
-     * uses above: (a) HONOR an existing marker — a prior boot already crashed on
-     * THIS exact file — by skipping the seed and degrading to P2P IBD; (b) WRITE
-     * the marker BEFORE the seed; (c) REMOVE it only AFTER the loader returns
-     * cleanly (below). Result: a bad explicit bundle crashes AT MOST ONCE, then
-     * self-heals to P2P IBD — a named/observable degrade, never a silent crash-
-     * loop. Marker-unwritable (read-only datadir / ENOSPC) → same policy as
-     * autodetect: abandon the seed rather than gamble on a failure we cannot
-     * remember. */
-    if (ctx->load_snapshot_at_own_height && !snap_from_autodetect) {
-        int mn = snprintf(snapshot_fail_marker, sizeof(snapshot_fail_marker),
-                          "%s.failed", ctx->load_snapshot_at_own_height);
-        if (mn <= 0 || (size_t)mn >= sizeof(snapshot_fail_marker)) {
-            /* Path too long to form a marker — we could not remember a failure,
-             * so do not enter the fail-closed _exit path; degrade to P2P IBD. */
-            LOG_WARN("boot",
-                     "[boot] -load-snapshot-at-own-height marker path too long "
-                     "for %s — skipping snapshot seed, using P2P IBD",
-                     ctx->load_snapshot_at_own_height);
-            ctx->load_snapshot_at_own_height = NULL;
-            snapshot_fail_marker[0] = '\0';
-        } else if (access(snapshot_fail_marker, F_OK) == 0) {
-            /* HONOR: a prior boot crash-failed seeding this exact bundle. Skip it
-             * (degrade to P2P IBD) instead of re-entering the _exit crash-loop. */
-            LOG_WARN("boot",
-                     "[boot] -load-snapshot-at-own-height bundle %s has a .failed "
-                     "marker from a prior crashed seed — skipping it; using normal "
-                     "P2P IBD. Delete %s to retry the bundle.",
-                     ctx->load_snapshot_at_own_height, snapshot_fail_marker);
-            ctx->load_snapshot_at_own_height = NULL;
-            snapshot_fail_marker[0] = '\0';
-        } else {
-            FILE *mf = fopen(snapshot_fail_marker, "we");
-            if (mf) {
-                fclose(mf);
-            } else {
-                LOG_WARN("boot",
-                         "[boot] -load-snapshot-at-own-height marker unwritable "
-                         "(%s) — skipping snapshot seed, using P2P IBD",
-                         snapshot_fail_marker);
-                ctx->load_snapshot_at_own_height = NULL;
-                snapshot_fail_marker[0] = '\0';
-            }
-        }
-    }
+    char snapshot_fail_marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX] = {0};
+    (void)boot_snapshot_failure_memory_prepare(
+        ctx,
+        coins_kv_is_proven_authority(progress_store_db(), NULL),
+        &snap_from_autodetect,
+        snapshot_fail_marker,
+        sizeof(snapshot_fail_marker));
     /* -load-snapshot-at-own-height=PATH (EXPLICIT-ONLY recovery): seed coins_kv
      * from a SELF-SHA3-verified ZCLUTXO snapshot at the snapshot's OWN header
      * height and fold forward from there. NULL unless the operator set the flag,
@@ -3688,8 +3601,7 @@ sapling_tree_boot_check_done:
     /* The snapshot seed returned cleanly (the loader _exit()s on failure, so
      * reaching here means success) — drop the failure-memory marker (autodetect
      * OR explicit) so a later deliberate re-seed of the same bundle is allowed. */
-    if (snapshot_fail_marker[0])
-        (void)remove(snapshot_fail_marker);
+    boot_snapshot_failure_memory_clear(snapshot_fail_marker);
     /* The from-anchor reset (LOAD+VERIFY the SHA3 anchor set into coins_kv, then
      * fold ONLY the anchor->tip delta) runs when EITHER:
      *   (a) the explicit -refold-from-anchor override is set, OR

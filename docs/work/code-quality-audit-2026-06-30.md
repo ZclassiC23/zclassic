@@ -153,6 +153,11 @@ mega-refactor. This page is the running backlog for those passes.
   tear-bypass/remedy counters, and testing reset support now live in
   `reducer_frontier_light_observe.*`, leaving the condition file focused on
   detect/remedy/witness/progress decisions.
+- [x] Continue oversized-file review with a behavior-preserving boot snapshot
+  failure-memory extraction: autodetect/explicit seed `.failed` marker policy
+  now lives in `boot_snapshot_failure_memory.*`, with direct regressions for
+  marker write, prior-marker skip, proven-authority skip, and fail-closed
+  no-marker behavior.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1391,6 +1396,29 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=refold_premature_clear`, `git diff --check`, and
      `make lint`.
 
+47. **Boot snapshot failure-memory split**
+   - Files: `config/src/boot.c`,
+     `config/src/boot_snapshot_failure_memory.c`,
+     `config/include/config/boot_snapshot_failure_memory.h`,
+     `lib/test/src/test_boot_snapshot_failure_memory.c`
+   - Problem: the `app_init` boot path still carried the full starter-pack
+     failure-memory policy inline: autodetect selection, `.failed` marker
+     creation, explicit prior-marker skip, marker-unwritable fallback, and
+     success cleanup. This made the fresh-judge crash-loop guard harder for
+     future agents to find and review.
+   - Fix: moved the policy into `boot_snapshot_failure_memory_prepare()` and
+     `boot_snapshot_failure_memory_clear()`. `boot.c` now reads as "prepare
+     failure memory, run the loader if selected, clear the marker after a clean
+     return"; the helper owns the concrete autodetect/explicit branches and
+     fail-closed no-marker behavior.
+   - Tests: added `test_boot_snapshot_failure_memory`, covering explicit marker
+     write+clear, prior explicit marker skip, autodetect marker creation,
+     proven-authority autodetect suppression, and too-small marker buffer
+     fallback to P2P. Ran `make t ONLY=boot_snapshot_failure_memory`,
+     `build/bin/test_parallel --only=loader_owns_seed_gate`,
+     `build/bin/test_parallel --only=boot_refold_window_extend`, and
+     `build/bin/test_parallel --only=load_verify_boot`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1549,6 +1577,13 @@ mega-refactor. This page is the running backlog for those passes.
      `reducer_frontier_reconcile_light.c` to 583 lines while preserving
      detect/remedy/witness/progress semantics and the condition's public test
      hooks.
+   - Twenty-third behavior-preserving extraction landed for boot snapshot
+     failure memory: autodetect starter-pack selection, explicit
+     `-load-snapshot-at-own-height` prior-marker handling, marker-unwritable
+     fail-closed fallback, and success cleanup now live in
+     `boot_snapshot_failure_memory.c`. This keeps `boot.c` focused on boot
+     phase order while preserving the one-crash-then-P2P seed recovery policy
+     and adding direct regression coverage.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the

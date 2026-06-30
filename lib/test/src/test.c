@@ -589,6 +589,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "boot_snapshot_failure_memory") == 0) {
+        printf("[test] ZCL_TEST_ONLY=boot_snapshot_failure_memory - running only\n");
+        { extern int test_boot_snapshot_failure_memory(void);
+          failures += test_boot_snapshot_failure_memory(); }
+        printf("\n=== boot_snapshot_failure_memory subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "explorer") == 0) {
         printf("[test] ZCL_TEST_ONLY=explorer — running explorer subset\n");
         failures += test_explorer();
@@ -734,6 +742,8 @@ int main(void)
       failures += test_utxo_snapshot_loader(); }
     { extern int test_load_verify_boot(void);
       failures += test_load_verify_boot(); }
+    { extern int test_boot_snapshot_failure_memory(void);
+      failures += test_boot_snapshot_failure_memory(); }
     failures += test_store();
     failures += test_blog();
     failures += test_api();
