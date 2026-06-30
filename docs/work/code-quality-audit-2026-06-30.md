@@ -98,6 +98,8 @@ mega-refactor. This page is the running backlog for those passes.
   script-validation dumpstate/prevout extraction and stage regression test.
 - [x] Continue oversized-file review with a behavior-preserving
   reducer-frontier reader extraction and frontier/coins-best regressions.
+- [x] Continue oversized-file review with a behavior-preserving chain-state
+  result-name extraction and repository regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1196,6 +1198,18 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=coins_best_derivation`; final gates `git diff --check` and
      `make lint`.
 
+40. **Oversized chain-state result-name extraction**
+   - Files: `app/services/src/chain_state_service.c`,
+     `app/services/src/chain_state_result.c`
+   - Problem: `chain_state_service.c` mixed repository validation/persistence
+     with the standalone public result-name table, keeping the service just
+     above the 800-line advisory ceiling.
+   - Fix: moved `csr_result_name()` into a sibling service translation unit.
+     The repository file retains validation, persistence, event emission, and
+     chain-tip state mutation. `chain_state_service.c` is now 794 lines.
+   - Tests: ran `make t ONLY=chain_state_repo`; final gates
+     `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1303,6 +1317,10 @@ mega-refactor. This page is the running backlog for those passes.
      coins-best derivation and coverage-floor readers now live in
      `reducer_frontier_readers.c`, reducing `reducer_frontier.c` to 783 lines
      while preserving H* computation and derived-state reader contracts.
+   - Fourteenth behavior-preserving extraction landed for chain state:
+     result-code names now live in `chain_state_result.c`, reducing
+     `chain_state_service.c` to 794 lines while preserving the repository
+     contract and all existing callers.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
