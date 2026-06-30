@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
+#include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_postmortem.h"
 #include "config/boot_snapshot_failure_memory.h"
@@ -205,56 +206,6 @@ static bool boot_link_or_copy_import_block_file(const char *src,
              link_errno, strerror(link_errno),
              copy_errno, strerror(copy_errno));
     return false;
-}
-
-/* ── PID lock file for data directory ─────────────────────────── */
-
-static char g_pidfile_path[1024];
-
-/* Acquire data directory lock. Returns true if lock acquired,
- * false if another instance is running. */
-static bool acquire_datadir_lock(const char *datadir)
-{
-    snprintf(g_pidfile_path, sizeof(g_pidfile_path), "%s/zclassic23.pid",
-             datadir);
-
-    /* Check existing PID file */
-    FILE *f = fopen(g_pidfile_path, "r");
-    if (f) {
-        char buf[32] = {0};
-        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-        if (n > 0) {
-            long old_pid = strtol(buf, NULL, 10);
-            if (old_pid > 0) {
-                if (kill((pid_t)old_pid, 0) == 0) {
-                    fprintf(stderr,
-                        "[boot] Data directory locked by PID %ld (running). "
-                        "Cannot start.\n", old_pid);
-                    return false;
-                }
-                printf("[boot] Stale lock detected (PID %ld is not running). "
-                       "Removing lock file.\n", old_pid);
-            }
-        }
-    }
-
-    /* Write our PID */
-    f = fopen(g_pidfile_path, "w");
-    if (!f) {
-        fprintf(stderr, "[boot] Cannot create PID file %s: %s\n",
-                g_pidfile_path, strerror(errno));
-        return true; /* non-fatal — proceed without lock */
-    }
-    fprintf(f, "%ld\n", (long)getpid());
-    fclose(f);
-    return true;
-}
-
-static void release_datadir_lock(void)
-{
-    if (g_pidfile_path[0])
-        unlink(g_pidfile_path);
 }
 
 static struct db_service *boot_runtime_db_service(void)
@@ -564,7 +515,7 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
 
     /* Acquire data directory lock — prevents two instances from
      * corrupting SQLite / LevelDB by writing concurrently. */
-    if (!acquire_datadir_lock(ctx->datadir))
+    if (!boot_datadir_lock_acquire(ctx->datadir))
         return false;
 
     boot_stage_advance_to(BOOT_STAGE_DATADIR_LOCKED);
@@ -3957,7 +3908,7 @@ void app_shutdown(void)
     app_shutdown_svc(&g_svc);
     boot_postmortem_stop();
     write_clean_shutdown_marker();
-    release_datadir_lock();
+    boot_datadir_lock_release();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }
 bool app_is_running(void) { return atomic_load(&g_running); }

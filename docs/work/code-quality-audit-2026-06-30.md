@@ -162,6 +162,10 @@ mega-refactor. This page is the running backlog for those passes.
   postmortem extraction: boot-owned crash-capsule directory, seed-tape event,
   restart compression, and pruning policy now live in
   `boot_postmortem.*`, keeping `boot.c` focused on phase ordering.
+- [x] Continue oversized-file review with a behavior-preserving boot datadir
+  lock extraction: PID lock acquire/release now live in
+  `boot_datadir_lock.*`, with regressions for current-PID refusal, stale PID
+  overwrite, release cleanup, and invalid datadir guards.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1442,6 +1446,24 @@ mega-refactor. This page is the running backlog for those passes.
      capture, boot-event replay, and restart compression through the moved
      hooks.
 
+49. **Boot datadir lock split**
+   - Files: `config/src/boot.c`, `config/src/boot_datadir_lock.c`,
+     `config/include/config/boot_datadir_lock.h`,
+     `lib/test/src/test_boot_datadir_lock.c`,
+     `lib/test/include/test/test_helpers.h`, `lib/test/src/test.c`,
+     `lib/test/src/test_parallel.c`
+   - Problem: the boot composition root still carried PID-file datadir lock
+     policy inline. That obscured the boot phase order with single-process
+     guard details: path construction, running-PID refusal, stale-PID
+     overwrite, and non-fatal PID-file creation failure.
+   - Fix: moved the lock lifecycle into `boot_datadir_lock_acquire()` /
+     `boot_datadir_lock_release()`. `boot.c` now calls a named phase boundary,
+     while the new helper owns PID-file policy and fails closed for null,
+     empty, or truncated datadir paths. `boot.c` is now 3916 lines and the new
+     helper is 67 lines.
+   - Tests: ran `make -j$(nproc) build-only` and
+     `make t ONLY=boot_datadir_lock`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1613,6 +1635,11 @@ mega-refactor. This page is the running backlog for those passes.
      `boot_postmortem.c`. This keeps future boot reviews focused on phase
      ordering while preserving the existing boot postmortem signal-capture and
      restart-compression regressions.
+   - Twenty-fifth behavior-preserving extraction landed for boot datadir lock
+     lifecycle: PID-file path construction, running-PID refusal, stale-PID
+     overwrite, and shutdown release now live in `boot_datadir_lock.c`. This
+     keeps future boot reviews focused on phase ordering while preserving the
+     single-process guard and non-fatal PID-file creation posture.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
