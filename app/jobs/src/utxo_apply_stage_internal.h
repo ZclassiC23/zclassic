@@ -15,7 +15,11 @@
 #include "util/stage.h"
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
+
+struct uint256;
+struct utxo_apply_lookup;
 
 /* Per-status verdict totals (count BLOCKS, not ticks — see the CS-F4 dedup
  * in utxo_apply_stage.c) plus output-flow totals. */
@@ -62,5 +66,11 @@ extern _Atomic uint64_t g_ua_label_splice_total;
 /* The live stage handle (NULL before init / after shutdown). The dump reads
  * it lock-free. */
 stage_t *utxo_apply_stage_handle(void);
+
+/* Production prevout resolver installed by utxo_apply_stage_init when tests
+ * have not injected a custom lookup. Read-only; writes stay in
+ * utxo_apply_stage.c. */
+bool utxo_apply_stage_lookup_live(const struct uint256 *txid, uint32_t vout,
+                                  struct utxo_apply_lookup *out, void *user);
 
 #endif /* ZCL_JOBS_UTXO_APPLY_STAGE_INTERNAL_H */

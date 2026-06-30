@@ -108,6 +108,8 @@ mega-refactor. This page is the running backlog for those passes.
   state/dump extraction and sentinel regressions.
 - [x] Continue oversized-file review with a behavior-preserving coin-backfill
   creator-proof extraction and repair regressions.
+- [x] Continue oversized-file review with a behavior-preserving utxo-apply
+  live-lookup extraction and stage regression test.
 - [x] Fix header-admit forward-fork replay so a stale `active_tip+1` parent row
   rewinds header/validation/body cursors before the reducer idles indefinitely.
 - [x] Let header-admit replay canonical best-header ancestors above the active
@@ -1279,6 +1281,23 @@ mega-refactor. This page is the running backlog for those passes.
      `make t ONLY=script_validate_stage`; final gates `git diff --check` and
      `make lint`.
 
+44. **Oversized utxo-apply live-lookup extraction**
+   - Files: `app/jobs/src/utxo_apply_stage.c`,
+     `app/jobs/src/utxo_apply_stage_lookup.c`,
+     `app/jobs/src/utxo_apply_stage_internal.h`
+   - Problem: `utxo_apply_stage.c` mixed the stage cursor/write transaction
+     flow with the production live-prevout resolver. That resolver is
+     read-only but consensus-sensitive: it must resolve only currently
+     unspent `coins_kv` / `coins_ram` outputs so an already-spent prevout
+     cannot look live.
+   - Fix: moved the production resolver to a sibling-private lookup TU behind
+     `utxo_apply_stage_internal.h`. The stage file now owns orchestration,
+     blockers, cursor movement, `coins_kv` writes, and the `coins_ram` writer
+     bracket; the lookup file owns the live UTXO read contract and RAM-overlay
+     fast path. `utxo_apply_stage.c` is now 983 lines.
+   - Tests: ran `make t ONLY=utxo_apply`; final gates `git diff --check` and
+     `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1405,6 +1424,11 @@ mega-refactor. This page is the running backlog for those passes.
      `stage_repair_coin_backfill.c` to 630 lines while preserving the guarded
      repair API, refusal policy, no-spend scan handoff, and single-write
      transaction.
+   - Eighteenth behavior-preserving extraction landed for utxo apply:
+     production live-prevout lookup now lives in
+     `utxo_apply_stage_lookup.c`, reducing `utxo_apply_stage.c` to 983 lines
+     while preserving live-coin freshness, RAM-overlay lookup, and
+     double-spend-safe "currently unspent" semantics.
    - Header-admit forward-fork liveness repair landed after deploy exposed a
      stale `header_admit_log` row at active_tip+1 whose parent was not the
      active tip. `header_admit` now clamps downstream reducer cursors to the
