@@ -655,6 +655,74 @@ int test_header_admit_stage(void)
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }
+
+    /* ── Forward-fork guard: best-header child must link to active tip ──
+     * Live follow-up: after the rewind above, blindly sourcing H+1 from
+     * pindex_best_header can re-admit the SAME fork child whose parent does
+     * not match the active tip, so the next tick rewinds again forever. A
+     * best-header fallback is useful only when it extends the already-visible
+     * active parent. */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","fork_parent_guard");
+        mkdir_p_ha(dir);
+        HA_CHECK("fork_guard: store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        active_chain_init(&ms.chain_active);
+        struct synth_chain sc;
+        synth_chain_build(&sc, 5);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
+
+        HA_CHECK("fork_guard: init", header_admit_stage_init(&ms));
+        HA_CHECK("fork_guard: admit active prefix",
+                 header_admit_stage_drain(100) == 3 &&
+                 header_admit_stage_cursor() == 3);
+
+        struct block_index fork_blocks[3];
+        struct uint256 fork_hashes[3];
+        for (int i = 0; i < 3; i++) {
+            block_index_init(&fork_blocks[i]);
+            memset(&fork_hashes[i], 0, sizeof(fork_hashes[i]));
+            fork_hashes[i].data[0] = (uint8_t)(0xE0 + i);
+            fork_hashes[i].data[1] = 0xFA;
+            fork_blocks[i].phashBlock = &fork_hashes[i];
+            fork_blocks[i].nHeight = 2 + i;
+            if (i > 0)
+                fork_blocks[i].pprev = &fork_blocks[i - 1];
+        }
+        ms.pindex_best_header = &fork_blocks[2];
+
+        sqlite3 *db = progress_store_db();
+        HA_CHECK("fork_guard: seed fork forward rows",
+                 put_header_row(db, 3, &fork_hashes[1], &fork_hashes[0]) &&
+                 put_header_row(db, 4, &fork_hashes[2], &fork_hashes[1]));
+        HA_CHECK("fork_guard: force header cursor ahead",
+                 force_cursor(db, "header_admit", 5));
+        HA_CHECK("fork_guard: fork h3 parent mismatches active h2",
+                 !uint256_eq(fork_blocks[1].pprev->phashBlock,
+                             sc.blocks[2].phashBlock));
+
+        job_result_t r = header_admit_stage_step_once();
+        HA_CHECK("fork_guard: rewind fires but step holds",
+                 r == JOB_IDLE);
+        HA_CHECK("fork_guard: cursor held at replay point",
+                 header_admit_stage_cursor() == 3 &&
+                 cursor_at(db, "header_admit") == 3);
+        HA_CHECK("fork_guard: stale h3 not overwritten as canonical",
+                 !header_admit_stage_has_record(3, &sc.hashes[3]));
+
+        HA_CHECK("fork_guard: second step still holds, no hot loop advance",
+                 header_admit_stage_step_once() == JOB_IDLE &&
+                 header_admit_stage_cursor() == 3);
+
+        header_admit_stage_shutdown();
+        active_chain_free(&ms.chain_active);
+        synth_chain_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
     printf("header_admit_stage: %d failures\n", failures);
     return failures;
 }

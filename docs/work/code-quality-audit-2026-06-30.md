@@ -110,7 +110,9 @@ mega-refactor. This page is the running backlog for those passes.
   rewinds header/validation/body cursors before the reducer idles indefinitely.
 - [x] Let header-admit replay canonical best-header ancestors above the active
   body window after a forward-fork rewind, so stale forward rows are overwritten
-  by audited headers instead of waiting on body-window extension.
+  by audited headers instead of waiting on body-window extension; guard the
+  fallback so fork-mismatched best-header children hold at the replay cursor
+  instead of re-entering the same rewind loop.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.

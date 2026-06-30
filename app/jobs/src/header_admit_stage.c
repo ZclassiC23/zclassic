@@ -235,13 +235,33 @@ static bool authoritative_admit(struct main_state *ms, struct block_index *bi)
     return true;
 }
 
+static bool ha_parent_links_to_active_window(struct main_state *ms,
+                                             const struct block_index *bi,
+                                             int height)
+{
+    if (height <= 0)
+        return true;
+    if (!ms || !bi || !bi->pprev || !bi->pprev->phashBlock)
+        return false;
+
+    struct block_index *parent =
+        active_chain_at(&ms->chain_active, height - 1);
+    if (!parent || !parent->phashBlock)
+        return true;
+
+    return uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
+}
+
 /* Resolve the header to admit at `height`.
  *
  * active_chain_at() is a body/window accessor; it intentionally returns NULL
  * above the current visible body frontier. Header admission must be able to
  * replay one or more heights above that window after a forward-fork cursor
  * rewind, so fall back to the canonical best-header ancestry exactly like
- * validate_headers. This changes only the source of the block_index pointer;
+ * validate_headers. The fallback is accepted only when the candidate links to
+ * the already-visible active parent; a fork child at active_tip+1 must wait for
+ * the reorg/window owner instead of being re-admitted into the same mismatch
+ * loop. This changes only the source of the block_index pointer;
  * authoritative_admit() and downstream PoW/body/script stages still own their
  * existing verdicts. */
 static struct block_index *ha_resolve_bi(struct main_state *ms, int height)
@@ -254,8 +274,11 @@ static struct block_index *ha_resolve_bi(struct main_state *ms, int height)
         return bi;
 
     if (ms->pindex_best_header &&
-        height <= ms->pindex_best_header->nHeight)
-        return block_index_get_ancestor(ms->pindex_best_header, height);
+        height <= ms->pindex_best_header->nHeight) {
+        bi = block_index_get_ancestor(ms->pindex_best_header, height);
+        if (bi && ha_parent_links_to_active_window(ms, bi, height))
+            return bi;
+    }
 
     return NULL;
 }
