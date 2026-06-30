@@ -24,6 +24,7 @@ set -eu
 
 RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
+RPC_CALL_TIMEOUT="${ZCL_DEPLOY_RPC_TIMEOUT:-20}"
 INTERVAL=2
 
 systemd_exec_arg() {
@@ -66,19 +67,32 @@ if [ -z "${ZCL_RPCPORT:-}" ]; then
     fi
 fi
 
+rpc_exec() {
+    rc=0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${RPC_CALL_TIMEOUT}s" "$@" || rc=$?
+        if [ "$rc" -eq 124 ]; then
+            echo "rpc timed out after ${RPC_CALL_TIMEOUT}s: $*" >&2
+        fi
+    else
+        "$@" || rc=$?
+    fi
+    return "$rc"
+}
+
 rpc_call() {
     name=$(basename "$RPC_TOOL")
     case "$name" in
         zclassic-cli|zcl-rpc)
             if [ -n "${ZCL_RPCCONNECT:-}" ]; then
-                "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" \
+                rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" \
                     "-rpcconnect=$ZCL_RPCCONNECT" "$@"
             else
-                "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" "$@"
+                rpc_exec "$RPC_TOOL" "-datadir=$RPC_DATADIR" "-rpcport=$RPCPORT" "$@"
             fi
             ;;
         *)
-            "$RPC_TOOL" "$@"
+            rpc_exec "$RPC_TOOL" "$@"
             ;;
     esac
 }
