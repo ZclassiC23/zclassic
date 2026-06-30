@@ -437,37 +437,6 @@ static void tipfin_refuse(struct stage_reducer_frontier_reconcile_result *out,
              suppressed);
 }
 
-/* G7 — one-shot span marker, the reducer_repair_marker pattern
- * (stage_repair_reducer_frontier_coin.c:161-189; those helpers are
- * file-static there, so the shape is mirrored here). */
-static bool tipfin_marker_key(char key[192], int first_p,
-                              const struct uint256 *binder_hash)
-{
-    char hex[65];
-    uint256_get_hex(binder_hash, hex);
-    int n = snprintf(key, 192, "reducer_frontier.tipfin_backfill_repair.%d.%s",
-                     first_p, hex);
-    return n > 0 && n < 192;
-}
-
-static bool tipfin_marker_seen(sqlite3 *db, const char *key, bool *seen)
-{
-    *seen = false;
-    uint8_t blob[8] = {0};
-    size_t n = 0;
-    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, seen))
-        LOG_FAIL("stage_repair", "tipfin marker read failed key=%s", key);
-    return true;
-}
-
-static bool tipfin_marker_record_in_tx(sqlite3 *db, const char *key)
-{
-    uint8_t one = 1;
-    if (!progress_meta_set_in_tx(db, key, &one, sizeof(one)))
-        LOG_FAIL("stage_repair", "tipfin marker write failed key=%s", key);
-    return true;
-}
-
 /* W — witness record codec: [last_backfilled_height i32 LE][total u32 LE]. */
 static void tipfin_witness_encode(uint8_t buf[8], int32_t last, uint32_t total)
 {
@@ -558,7 +527,9 @@ static bool tipfin_batch_tx(sqlite3 *db, int span_first, int served_floor,
     }
 
     if (ok && *inserted > 0) {
-        if (marker && !tipfin_marker_record_in_tx(db, marker))
+        if (marker &&
+            !stage_reducer_frontier_repair_marker_record_in_tx(
+                db, marker, "tipfin"))
             ok = false;
         if (ok && *exhausted) {
             /* The ONLY deletion in this repair: its own witness record,
@@ -672,21 +643,27 @@ bool stage_reducer_frontier_try_tipfin_backfill(
         progress_store_tx_unlock();
         return false;
     }
-    if (resuming && witness_last + 1 != span_first)
+    if (resuming && witness_last + 1 != span_first) {
         LOG_WARN("stage_repair",
                  "[stage_repair] tipfin witness resume skew last=%d "
-                 "span_first=%d (H* recompute moved the pin; continuing)",
+                 "span_first=%d (H* recompute moved the pin; treating "
+                 "witness as stale and restarting marker gate)",
                  witness_last, span_first);
+        resuming = false;
+        witness_last = -1;
+        prior_total = 0;
+    }
 
     char marker[192];
-    if (!tipfin_marker_key(marker, span_first, &ev.tip_hash)) {
+    if (!stage_reducer_frontier_repair_marker_key(
+            marker, "tipfin_backfill", span_first, &ev.tip_hash)) {
         progress_store_tx_unlock();
-        LOG_FAIL("stage_repair", "tipfin marker key overflow h=%d",
-                 span_first);
+        return false;
     }
     if (!resuming) {
         bool seen = false;
-        if (!tipfin_marker_seen(db, marker, &seen)) {
+        if (!stage_reducer_frontier_repair_marker_seen(
+                db, marker, "tipfin", &seen)) {
             progress_store_tx_unlock();
             return false;
         }

@@ -65,10 +65,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Internal exports from app/jobs/src/stage_repair_reducer_frontier_refill.c
- * (declared in the private stage_repair_reducer_frontier_internal.h, which
- * only app/jobs/src includes) — local prototypes, kept in sync by the
- * linker. */
+/* Internal exports from the private reducer-frontier repair translation units
+ * (declared in stage_repair_reducer_frontier_internal.h, which only
+ * app/jobs/src includes) — local prototypes, kept in sync by the linker. */
 extern bool stage_reducer_frontier_try_unapplied_hole_clamp(
     sqlite3 *db,
     bool apply,

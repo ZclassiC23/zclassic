@@ -129,6 +129,52 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: health escapes runtime error strings... ");
+    {
+        test_reset_shared_globals();
+        struct error_ring *er = error_ring_global();
+        const char *msg = "bad \"msg\"\n\"healthy\":true";
+        error_ring_init(er);
+        error_ring_observer(EV_BLOCK_REJECTED, 0, msg, (uint32_t)strlen(msg),
+                            er);
+
+        size_t n = api_handle_request("GET", "/api/health", NULL, 0,
+                                      resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        const char *body = strstr((char *)resp, "\r\n\r\n");
+        bool ok = n > 0 && body != NULL;
+        struct json_value root;
+        json_init(&root);
+        if (ok) {
+            body += 4;
+            ok = json_read(&root, body, strlen(body));
+            const struct json_value *errors =
+                ok ? json_get(&root, "errors") : NULL;
+            ok = errors != NULL;
+            ok = ok && strcmp(json_get_str(json_get(errors, "last")),
+                              msg) == 0;
+            ok = ok && strcmp(json_get_str(json_get(errors, "last_type")),
+                              event_type_name(EV_BLOCK_REJECTED)) == 0;
+            ok = ok && !json_get_bool(json_get(&root, "serving"));
+            ok = ok && json_get_int(json_get(&root, "warning_count")) >= 1;
+            const struct json_value *status =
+                ok ? json_get(&root, "status") : NULL;
+            ok = ok && status != NULL;
+            ok = ok && !json_get_bool(json_get(status, "serving"));
+            ok = ok && strcmp(json_get_str(json_get(status,
+                                                    "blocking_reason")),
+                              "no_peers") == 0;
+            ok = ok && json_get_bool(json_get(status, "warning"));
+            ok = ok && strstr(json_get_str(json_get(status,
+                                                    "warning_reasons")),
+                              "recent_error") != NULL;
+        }
+        json_free(&root);
+        error_ring_init(er);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: json route emits oversized names payload safely... ");
     {
         char dbdir[256];

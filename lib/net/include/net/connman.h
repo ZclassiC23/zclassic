@@ -146,7 +146,8 @@ size_t connman_get_node_count(const struct connman *cm);
  * PEER_CONNECTING from peers actually able to serve us blocks. */
 size_t connman_outbound_healthy_count(struct connman *cm);
 
-/* Return the highest starting_height among all connected peers, or -1. */
+/* Return the highest starting_height among handshaked, non-disconnecting
+ * NODE_NETWORK peers, or -1 if no usable block-serving peer is present. */
 int connman_max_peer_height(struct connman *cm);
 void connman_get_outbound_health(struct connman *cm,
                                  struct connman_outbound_health *out);

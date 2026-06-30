@@ -459,6 +459,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
     bool snap_present = false;
     bool reseed_ok =
         boot_anchor_seed_from_snapshot(ndb, rpdb, cp, &snap_present);
+    bool seeded_from_minted_snapshot = reseed_ok;
     if (!reseed_ok) {
         if (snap_present)
             LOG_WARN("boot", "[boot] -refold-from-anchor: minted snapshot "
@@ -546,6 +547,11 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
      * means the frontier value is anchor+1. */
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, anchor + 1))
         refold_ok = false;
+    if (refold_ok && seeded_from_minted_snapshot) {
+        uint8_t one = 1;
+        if (!progress_meta_set_in_tx(rpdb, COINS_KV_SELF_FOLDED_KEY, &one, 1))
+            refold_ok = false;
+    }
     if (refold_ok) {
         (void)progress_meta_delete_in_tx(rpdb, REDUCER_TRUSTED_BASE_HEIGHT_KEY);
         (void)progress_meta_delete_in_tx(rpdb, REDUCER_TRUSTED_BASE_HASH_KEY);

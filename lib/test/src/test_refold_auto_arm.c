@@ -138,7 +138,7 @@ static bool raa_seed_backfill_refused(sqlite3 *db, int height,
                      height, hex);
     if (n <= 0 || n >= (int)sizeof(key))
         return false;
-    return progress_meta_set(db, key, "spent", 5);
+    return progress_meta_set(db, key, "spent:v2", 8);
 }
 
 /* Stamp coins_applied_height = frontier (the forward-apply ceiling). */
@@ -348,6 +348,14 @@ static void raa_t2_child(const char *dir, const struct sha3_utxo_checkpoint *cp)
     bool proven = coins_kv_is_proven_authority(progress_store_db(), &applied);
     if (!(proven && applied == cp->height + 1))
         fails++;
+    if (!coins_kv_contains_refold_marker(progress_store_db()))
+        fails++;
+    {
+        char reason[96] = {0};
+        if (!coins_kv_tip_is_self_derived(progress_store_db(), cp->height,
+                                          reason, sizeof(reason)))
+            fails++;
+    }
     if (!refold_from_anchor_active())
         fails++;
     /* coins_kv now holds EXACTLY the snapshot's anchor set (count + root). */

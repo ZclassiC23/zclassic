@@ -46,11 +46,12 @@
  *       present. coin_backfill (the RUNTIME reducer self-heal stage) writes
  *       this row from persist_terminal_refusal() at every TERMINAL
  *       REFUSED_UNPROVABLE/REFUSED_SPENT verdict that carries a bound hole
- *       hash — the live tear's txindex_miss path (resolve_creator ->
- *       persist_terminal_refusal, guarded on node.db tx_index_complete>=3 so
- *       an in-progress IBD miss is never marked terminal), plus the corrupt
- *       creator_* classes, enumerate metadata-tear, round-cap, scan-gap, and
- *       the proven-spend write at stage_repair_coin_backfill.c. This is the
+ *       hash — the txindex_miss:v2 path (resolve_creator -> active-chain
+ *       bounded fallback -> persist_terminal_refusal, guarded on node.db
+ *       tx_index_complete>=3 so an in-progress IBD miss is never marked
+ *       terminal), plus the corrupt creator_* classes, enumerate metadata-tear,
+ *       round-cap, and the proven-spend write at stage_repair_coin_backfill.c.
+ *       This is the
  *       DURABLE, COPY-PORTABLE proof the boot gate reads via
  *       coin_backfill_meta_present — NOT the in-memory, non-persisted blocker
  *       coin_backfill.unprovable.<h> (that is raised per-tick by the page latch
@@ -97,8 +98,8 @@
 #include "util/log_macros.h"
 #include "util/blocker.h"
 
-/* The read-only progress.kv hole scanner + the two coin_backfill durable-state
- * accessors live in the jobs backfill-util TU
+/* The read-only progress.kv hole scanner + coin_backfill key builder live in
+ * the jobs backfill-util TU
  * (app/jobs/src/stage_repair_coin_backfill_util.h, private to the backfill
  * TUs) and are exported non-static. Forward-declare their EXACT signatures
  * here rather than dragging the private jobs header onto this services TU's
@@ -110,8 +111,10 @@ bool find_lowest_prevout_unresolved_hole_unlocked(
     char status_out[32], struct uint256 *hash_out, bool *hash_found);
 bool coin_backfill_key_h_hash(char out[192], const char *prefix, int height,
                               const struct uint256 *hash);
-bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
-                                bool *present);
+bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
+                                       bool *out_active,
+                                       bool *out_legacy_spent,
+                                       bool *out_legacy_txindex_miss);
 
 /* PURE detect predicate (B2 1c): runs the EXACT three-condition durability
  * guard of the verdict below but with NO event/blocker side-effects, so the
@@ -173,10 +176,19 @@ bool block_index_loader_torn_import_detect(struct main_state *ms,
          * never fires. */
         if (hole_found && hole_hash_found) {
             char refused_key[192];
+            bool legacy_spent = false;
+            bool legacy_txindex_miss = false;
             if (coin_backfill_key_h_hash(refused_key, "coin_backfill.refused",
                                          hole_h, &hole_hash))
-                (void)coin_backfill_meta_present(progress_db, refused_key,
-                                                 &backfill_refused);
+                (void)coin_backfill_refusal_marker_read(
+                    progress_db, refused_key, &backfill_refused,
+                    &legacy_spent, &legacy_txindex_miss);
+            if (legacy_spent || legacy_txindex_miss) {
+                LOG_WARN("torn_gate",
+                         "ignoring legacy coin_backfill refusal marker h=%d; "
+                         "runtime repair must re-prove it", hole_h);
+                backfill_refused = false;
+            }
         }
     }
     progress_store_tx_unlock();

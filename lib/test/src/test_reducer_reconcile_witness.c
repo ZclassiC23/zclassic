@@ -36,6 +36,7 @@
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
 #include "framework/condition.h"
+#include "json/json.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "net/connman.h"
@@ -283,11 +284,32 @@ static bool seed_coins_applied(sqlite3 *db, int64_t height)
 }
 
 /* Write/bump the tipfin_backfill.progress record exactly as the TIPFIN
- * backfill does: value begins [progress i32 LE]. */
+ * backfill does: [last_backfilled_height i32 LE][total u32 LE]. */
 static bool set_tipfin_progress(sqlite3 *db, int v)
 {
+    uint8_t blob[8] = {0};
+    for (int i = 0; i < 4; i++)
+        blob[i] = (uint8_t)((uint32_t)v >> (8 * i));
+    uint32_t total = 1;
+    for (int i = 0; i < 4; i++)
+        blob[4 + i] = (uint8_t)(total >> (8 * i));
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "tipfin_backfill.progress", -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool set_tipfin_progress_malformed(sqlite3 *db, int v)
+{
     uint8_t blob[4] = {
-        (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)
+        (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16),
+        (uint8_t)(v >> 24)
     };
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
@@ -375,6 +397,22 @@ static void teardown_fixture(struct rrw_fixture *fx)
     main_state_free(&fx->ms);
     progress_store_close();
     test_cleanup_tmpdir(fx->dir);
+}
+
+static const struct json_value *rrw_json_condition(
+    const struct json_value *root,
+    const char *name)
+{
+    const struct json_value *conditions = json_get(root, "conditions");
+    if (!conditions || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = json_get(cond, "name");
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return cond;
+    }
+    return NULL;
 }
 
 static int cursor_value(sqlite3 *db, const char *name)
@@ -608,6 +646,55 @@ int test_reducer_reconcile_witness(void)
                   snap.attempts >= 5 &&
                   snap.last_outcome == COND_REMEDY_FAILED &&
                   snap.operator_needed_emitted);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    /* ── T10b2: malformed TIPFIN progress is diagnostic-absent ─────── */
+    {
+        struct rrw_fixture fx;
+        RRW_CHECK("T10b2: setup tear fixture",
+                  setup_fixture(&fx, "t10_malformed"));
+        sqlite3 *db = progress_store_db();
+        RRW_CHECK("T10b2: poke real utxo_apply hole at K=A+2",
+                  poke_utxo_apply_hole(db, A + 2));
+        RRW_CHECK("T10b2: seed coins_applied above the hole (tear)",
+                  seed_coins_applied(db, A + 3));
+        RRW_CHECK("T10b2: malformed 4-byte progress record present",
+                  set_tipfin_progress_malformed(db, 77));
+
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+        reducer_frontier_reconcile_light_test_clear_backoff();
+        condition_engine_tick();
+
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        bool ok = condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond =
+            ok ? rrw_json_condition(&dump, COND_NAME) : NULL;
+        const struct json_value *detail = cond ? json_get(cond, "detail") : NULL;
+        ok = ok && detail &&
+             json_get_int(json_get(
+                 detail, "tipfin_backfill_present_at_detect")) == 0 &&
+             json_get_int(json_get(
+                 detail, "tipfin_backfill_progress_at_detect")) == -1;
+        RRW_CHECK("T10b2: malformed progress treated as absent", ok);
+        json_free(&dump);
 
         sync_monitor_set_context(NULL, NULL, NULL);
         sync_monitor_test_set_tip_advance_ts(0);

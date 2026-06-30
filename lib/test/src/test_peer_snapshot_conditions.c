@@ -8,6 +8,7 @@
 #include "framework/condition.h"
 #include "platform/clock.h"
 #include "jobs/header_admit_stage.h"
+#include "net/protocol.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/sync_monitor.h"
 #include "jobs/validate_headers_stage.h"
@@ -156,6 +157,7 @@ int test_peer_snapshot_conditions(void)
         peer.id = 1;
         peer.starting_height = 250;
         peer.state = PEER_ACTIVE;
+        peer.services = NODE_NETWORK;
         struct p2p_node *peers[1] = { &peer };
         cm.manager.nodes = peers;
         cm.manager.num_nodes = 1;
@@ -166,10 +168,11 @@ int test_peer_snapshot_conditions(void)
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 1;
         ok = ok && peer.disconnect;
-        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && condition_engine_get_unresolved_count() == 0;
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 1;
-        PEER_SNAPSHOT_CHECK("sync violation rotates peers once and pages", ok);
+        PEER_SNAPSHOT_CHECK("sync violation rotates peers and clears", ok);
         cleanup_peer_snapshot_conditions();
     }
 

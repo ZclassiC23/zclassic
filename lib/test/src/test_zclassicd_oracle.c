@@ -65,6 +65,7 @@ struct mock_server {
     bool chain_omit_headers;      /* true → omit optional result.headers */
     bool chain_empty_result;      /* true → malformed empty chain-info result */
     bool chain_warmup;            /* true → getblockchaininfo RPC warmup */
+    bool blockhash_warmup;        /* true → getblockhash RPC warmup */
     _Atomic int requests_served;
     _Atomic bool stop;
     pthread_t thread;
@@ -98,7 +99,8 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
         /* Build JSON-RPC body */
         char body[256];
         int bl;
-        if (m->chain_warmup && strstr(buf, "getblockchaininfo")) {
+        if ((m->chain_warmup && strstr(buf, "getblockchaininfo")) ||
+            (m->blockhash_warmup && strstr(buf, "getblockhash"))) {
             bl = snprintf(body, sizeof(body),
                 "{\"result\":null,\"error\":{\"code\":-28,"
                 "\"message\":\"Activating best chain... height 0 (1%%)\"},"
@@ -218,6 +220,14 @@ static bool mock_server_start_chain_warmup(struct mock_server *m,
     return ok;
 }
 
+static bool mock_server_start_blockhash_warmup(struct mock_server *m)
+{
+    bool ok = mock_server_start(m, NULL);
+    if (ok)
+        m->blockhash_warmup = true;
+    return ok;
+}
+
 static void mock_server_stop(struct mock_server *m)
 {
     atomic_store(&m->stop, true);
@@ -315,10 +325,17 @@ int test_zclassicd_oracle(void)
 
         struct zclassicd_oracle_stats st;
         zclassicd_oracle_stats_snapshot(&st);
+        ZO_CHECK("attempts_total=1",  st.attempts_total == 1);
         ZO_CHECK("probes_total=1",    st.probes_total == 1);
         ZO_CHECK("probes_agree=1",    st.probes_agree == 1);
         ZO_CHECK("probes_disagree=0", st.probes_disagree == 0);
         ZO_CHECK("rpc_errors=0",      st.rpc_errors == 0);
+        ZO_CHECK("transport reachable", st.rpc_transport_reachable);
+        ZO_CHECK("oracle usable",       st.oracle_usable);
+        ZO_CHECK("reachable alias true", st.reachable);
+        ZO_CHECK("last error empty",    st.last_error[0] == '\0');
+        ZO_CHECK("last attempt height", st.last_attempt_height == 7);
+        ZO_CHECK("last attempt time",   st.last_attempt_unix_us > 0);
 
         mock_server_stop(&srv);
         zo_teardown();
@@ -490,6 +507,35 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror warmup last_error is precise",
                  strstr(lms.last_error,
                         "rpc error -28: Activating best chain") != NULL);
+        ZO_CHECK("legacy mirror warmup transport reachable",
+                 lms.zclassicd_rpc_transport_reachable);
+        ZO_CHECK("legacy mirror warmup oracle unusable",
+                 !lms.legacy_oracle_usable);
+        ZO_CHECK("legacy mirror warmup old reachable false", !lms.reachable);
+        ZO_CHECK("legacy mirror warmup code",
+                 lms.zclassicd_rpc_error_code == -28);
+        ZO_CHECK("legacy mirror warmup message",
+                 strstr(lms.zclassicd_rpc_error_message,
+                        "Activating best chain") != NULL);
+        struct json_value warmup_dump;
+        json_init(&warmup_dump);
+        json_set_object(&warmup_dump);
+        ZO_CHECK("legacy mirror warmup dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&warmup_dump, NULL));
+        ZO_CHECK("legacy mirror warmup dump transport",
+                 json_get_bool(json_get(&warmup_dump,
+                                        "zclassicd_rpc_transport_reachable")));
+        ZO_CHECK("legacy mirror warmup dump unusable",
+                 !json_get_bool(json_get(&warmup_dump,
+                                         "legacy_oracle_usable")));
+        ZO_CHECK("legacy mirror warmup dump code",
+                 json_get_int(json_get(&warmup_dump,
+                                       "zclassicd_rpc_error_code")) == -28);
+        ZO_CHECK("legacy mirror warmup dump message",
+                 strstr(json_get_str(json_get(
+                            &warmup_dump, "zclassicd_rpc_error_message")),
+                        "Activating best chain") != NULL);
+        json_free(&warmup_dump);
 
         mock_server_stop(&srv);
         legacy_mirror_sync_reset_for_test();
@@ -549,12 +595,77 @@ int test_zclassicd_oracle(void)
 
         struct zclassicd_oracle_stats st;
         zclassicd_oracle_stats_snapshot(&st);
+        ZO_CHECK("err attempts_total=1", st.attempts_total == 1);
         ZO_CHECK("rpc_errors >= 1", st.rpc_errors >= 1);
+        ZO_CHECK("err transport unreachable", !st.rpc_transport_reachable);
+        ZO_CHECK("err oracle unusable", !st.oracle_usable);
+        ZO_CHECK("err reachable alias false", !st.reachable);
+        ZO_CHECK("err last attempt height", st.last_attempt_height == 7);
+        ZO_CHECK("err last error height", st.last_error_height == 7);
+        ZO_CHECK("err last error time", st.last_error_unix_us > 0);
+        ZO_CHECK("err last error populated", st.last_error[0] != '\0');
 
         zo_teardown();
     }
 
-    /* Test 4: supervisor tick increments probes_total. We fire the
+    /* Test 4: JSON-RPC warmup error on getblockhash is a reachable transport
+     * dependency but an unusable oracle. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (oracle warmup)",
+                 mock_server_start_blockhash_warmup(&srv));
+
+        struct zclassicd_oracle_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u", .rpc_password = "p",
+            .cadence_secs = 60, .heights_per_tick = 1,
+        };
+        ZO_CHECK("init (oracle warmup)", zclassicd_oracle_init(&cfg).ok);
+
+        struct zclassicd_oracle_probe_result r;
+        (void)zclassicd_oracle_probe(7, &r);
+        ZO_CHECK("oracle warmup sets error", r.error);
+        ZO_CHECK("oracle warmup preserves code",
+                 strstr(r.error_msg, "rpc error -28") != NULL);
+
+        struct zclassicd_oracle_stats st;
+        zclassicd_oracle_stats_snapshot(&st);
+        ZO_CHECK("oracle warmup attempts_total=1", st.attempts_total == 1);
+        ZO_CHECK("oracle warmup no usable probe", st.probes_total == 0);
+        ZO_CHECK("oracle warmup rpc_errors=1", st.rpc_errors == 1);
+        ZO_CHECK("oracle warmup transport reachable",
+                 st.rpc_transport_reachable);
+        ZO_CHECK("oracle warmup unusable", !st.oracle_usable);
+        ZO_CHECK("oracle warmup reachable alias false", !st.reachable);
+        ZO_CHECK("oracle warmup last attempt height",
+                 st.last_attempt_height == 7);
+        ZO_CHECK("oracle warmup last error height", st.last_error_height == 7);
+        ZO_CHECK("oracle warmup last error code", st.last_error_code == -28);
+        ZO_CHECK("oracle warmup last error text",
+                 strstr(st.last_error, "Activating best chain") != NULL);
+
+        struct json_value root;
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("oracle warmup dump succeeds",
+                 zclassicd_oracle_dump_state_json(&root, NULL));
+        ZO_CHECK("oracle dump transport reachable",
+                 json_get_bool(json_get(&root, "rpc_transport_reachable")));
+        ZO_CHECK("oracle dump unusable",
+                 !json_get_bool(json_get(&root, "oracle_usable")));
+        ZO_CHECK("oracle dump last error code",
+                 json_get_int(json_get(&root, "last_error_code")) == -28);
+        ZO_CHECK("oracle dump last attempt nonzero",
+                 json_get_int(json_get(&root, "last_attempt_unix_us")) > 0);
+        json_free(&root);
+
+        mock_server_stop(&srv);
+        zo_teardown();
+    }
+
+    /* Test 5: supervisor tick increments probes_total. We fire the
      * supervisor at sub-second cadence by setting a small interval, and
      * lower the tip safety margin so our synthetic chain at h=7 still
      * has a valid probe range. */
@@ -670,6 +781,24 @@ int test_zclassicd_oracle(void)
                  strstr(events, "blockers=1") != NULL);
         ZO_CHECK("mirror blocker event blocker code",
                  strstr(events, "blk=activation-no-progress") != NULL);
+        ZO_CHECK("hash disagreement remains transient",
+                 mirror_consensus_classify_blocker_reason(
+                     "hash-disagreement") == BLOCKER_TRANSIENT);
+        ZO_CHECK("body hash mismatch is permanent",
+                 mirror_consensus_classify_blocker_reason(
+                     "body-hash-mismatch") == BLOCKER_PERMANENT);
+        ZO_CHECK("header hash mismatch is permanent",
+                 mirror_consensus_classify_blocker_reason(
+                     "header-hash-mismatch") == BLOCKER_PERMANENT);
+        ZO_CHECK("merkle root mismatch is permanent",
+                 mirror_consensus_classify_blocker_reason(
+                     "merkle-root-mismatch") == BLOCKER_PERMANENT);
+        ZO_CHECK("consensus reject is permanent",
+                 mirror_consensus_classify_blocker_reason(
+                     "consensus-reject") == BLOCKER_PERMANENT);
+        ZO_CHECK("rpc unreachable is transient",
+                 mirror_consensus_classify_blocker_reason(
+                     "rpc-unreachable") == BLOCKER_TRANSIENT);
         mirror_consensus_reset_for_test();
     }
 

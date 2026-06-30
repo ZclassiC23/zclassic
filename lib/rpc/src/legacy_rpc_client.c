@@ -255,9 +255,20 @@ static bool lrc_error_message(const struct json_value *root,
 {
     const struct json_value *jerr = json_get(root, "error");
     if (jerr && jerr->type == JSON_OBJ) {
+        const struct json_value *code = json_get(jerr, "code");
         const struct json_value *msg = json_get(jerr, "message");
+        if (code && code->type == JSON_INT && msg && msg->type == JSON_STR) {
+            lrc_set_error(err, err_sz, "rpc error %lld: %s",
+                          (long long)json_get_int(code), json_get_str(msg));
+            return true;
+        }
         if (msg && msg->type == JSON_STR) {
             lrc_set_error(err, err_sz, "rpc error: %s", json_get_str(msg));
+            return true;
+        }
+        if (code && code->type == JSON_INT) {
+            lrc_set_error(err, err_sz, "rpc error %lld",
+                          (long long)json_get_int(code));
             return true;
         }
     }

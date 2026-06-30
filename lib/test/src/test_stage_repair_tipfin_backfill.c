@@ -9,6 +9,7 @@
 
 #include "test/test_helpers.h"
 
+#include "core/uint256.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "storage/coins_kv.h"
@@ -402,6 +403,16 @@ static bool witness_at(sqlite3 *db, bool *found, int32_t *last,
     return true;
 }
 
+static bool put_tipfin_witness(sqlite3 *db, int32_t last, uint32_t total)
+{
+    uint8_t buf[8] = {0};
+    for (int i = 0; i < 4; i++)
+        buf[i] = (uint8_t)((uint32_t)last >> (8 * i));
+    for (int i = 0; i < 4; i++)
+        buf[4 + i] = (uint8_t)(total >> (8 * i));
+    return progress_meta_set(db, TIPFIN_WITNESS_KEY, buf, sizeof(buf));
+}
+
 static long long marker_count(sqlite3 *db)
 {
     sqlite3_stmt *st = NULL;
@@ -414,6 +425,40 @@ static long long marker_count(sqlite3 *db)
         n = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return n;
+}
+
+static bool tipfin_marker_key(char key[192], int first_p,
+                              const struct uint256 *binder_hash)
+{
+    char hex[65];
+    uint256_get_hex(binder_hash, hex);
+    int n = snprintf(key, 192,
+                     "reducer_frontier.tipfin_backfill_repair.%d.%s",
+                     first_p, hex);
+    return n > 0 && (size_t)n < 192;
+}
+
+static bool put_tipfin_marker(sqlite3 *db, int first_p,
+                              const struct uint256 *binder_hash)
+{
+    char key[192];
+    if (!tipfin_marker_key(key, first_p, binder_hash))
+        return false;
+    uint8_t one = 1;
+    return progress_meta_set(db, key, &one, sizeof(one));
+}
+
+static bool tipfin_marker_is_one(sqlite3 *db, int first_p,
+                                 const struct uint256 *binder_hash)
+{
+    char key[192];
+    if (!tipfin_marker_key(key, first_p, binder_hash))
+        return false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    bool found = false;
+    return progress_meta_get(db, key, blob, sizeof(blob), &n, &found) &&
+           found && n == 1 && blob[0] == 1;
 }
 
 /* The read_frontier_snapshot subset the WP-B repairs consume (the tests
@@ -553,7 +598,8 @@ int test_stage_repair_tipfin_backfill(void)
                      memcmp(row.hash.data, h[3].data, 32) == 0);
         TIPFIN_CHECK("T2 pass1 witness created + marker recorded",
                      witness_at(db, &found, &wlast, &wtotal) && found &&
-                     wlast == A + 2 && wtotal == 1 && marker_count(db) == 1);
+                     wlast == A + 2 && wtotal == 1 && marker_count(db) == 1 &&
+                     tipfin_marker_is_one(db, A + 2, &h[3]));
 
         /* Pass 2: binder still missing at A+4 — zero progress, named G5. */
         TIPFIN_CHECK("T2 snapshot pass2",
@@ -611,6 +657,85 @@ int test_stage_repair_tipfin_backfill(void)
                          db, true, &rr, &handled) &&
                      !handled &&
                      rr.tipfin_backfill_refused_reason == T_REFUSED_NONE);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── T2b — one-shot marker blocks a repeated span start ── */
+    {
+        char dir[256];
+        TIPFIN_CHECK("T2b setup", open_fixture(dir, sizeof(dir), "t2b", A + 7));
+        sqlite3 *db = progress_store_db();
+
+        struct uint256 h[8];
+        for (int i = 1; i <= 7; i++)
+            mk_hash(&h[i], A + i);
+
+        bool seeded = true;
+        for (int i = 1; i <= 6; i++)
+            seeded = seeded && put_upstream_ok(db, A + i, &h[i]);
+        seeded = seeded && put_tip(db, A + 1, "finalized", 1, &h[2]) &&
+                 put_tip(db, A + 5, "finalized", 1, &h[6]) &&
+                 put_tip(db, A + 6, "finalized", 1, &h[7]) &&
+                 seed_coins_applied(db, A + 6) &&
+                 put_tipfin_marker(db, A + 2, &h[3]);
+        TIPFIN_CHECK("T2b seed pre-existing marker", seeded);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        bool handled = false;
+        TIPFIN_CHECK("T2b snapshot torn",
+                     snapshot(db, &rr) && rr.hstar == A + 1 &&
+                     rr.refused_coin_tear);
+        TIPFIN_CHECK("T2b marker refuses repeated span",
+                     stage_reducer_frontier_try_tipfin_backfill(
+                         db, true, &rr, &handled) &&
+                     !handled && !rr.repaired &&
+                     rr.tipfin_backfill_marker_seen &&
+                     rr.tipfin_backfill_refused_reason ==
+                         STAGE_REPAIR_TIPFIN_REFUSED_G7_MARKER_SEEN &&
+                     rr.tipfin_backfill_count == 0 &&
+                     tip_row_count(db) == 3 && marker_count(db) == 1);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── T2c — stale witness must not bypass the one-shot marker ── */
+    {
+        char dir[256];
+        TIPFIN_CHECK("T2c setup", open_fixture(dir, sizeof(dir), "t2c", A + 7));
+        sqlite3 *db = progress_store_db();
+
+        struct uint256 h[8];
+        for (int i = 1; i <= 7; i++)
+            mk_hash(&h[i], A + i);
+
+        bool seeded = true;
+        for (int i = 1; i <= 6; i++)
+            seeded = seeded && put_upstream_ok(db, A + i, &h[i]);
+        seeded = seeded && put_tip(db, A + 1, "finalized", 1, &h[2]) &&
+                 put_tip(db, A + 5, "finalized", 1, &h[6]) &&
+                 put_tip(db, A + 6, "finalized", 1, &h[7]) &&
+                 seed_coins_applied(db, A + 6) &&
+                 put_tipfin_marker(db, A + 2, &h[3]) &&
+                 put_tipfin_witness(db, A + 5, 9);
+        TIPFIN_CHECK("T2c seed stale witness + marker", seeded);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        bool handled = false;
+        TIPFIN_CHECK("T2c snapshot torn",
+                     snapshot(db, &rr) && rr.hstar == A + 1 &&
+                     rr.refused_coin_tear);
+        TIPFIN_CHECK("T2c stale witness restarts G7 marker gate",
+                     stage_reducer_frontier_try_tipfin_backfill(
+                         db, true, &rr, &handled) &&
+                     !handled && !rr.repaired &&
+                     rr.tipfin_backfill_marker_seen &&
+                     rr.tipfin_backfill_refused_reason ==
+                         STAGE_REPAIR_TIPFIN_REFUSED_G7_MARKER_SEEN &&
+                     rr.tipfin_backfill_count == 0 &&
+                     tip_row_count(db) == 3 && marker_count(db) == 1);
 
         progress_store_close();
         test_cleanup_tmpdir(dir);

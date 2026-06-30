@@ -258,23 +258,24 @@ bool coins_kv_is_proven_authority(struct sqlite3 *db, int32_t *out_applied);
 
 /* ── Self-folded provenance marker (the sovereign-cure G-SOV part 3) ──────────
  *
- * THE bit that distinguishes a SELF-VERIFIED tip from a BORROWED-and-stamped
- * one. coins_kv_is_proven_authority() is true in BOTH cases — the borrowed
+ * THE bit that distinguishes a CHECKPOINT-ROOT-VERIFIED anchor seed from a
+ * BORROWED-and-stamped one. coins_kv_is_proven_authority() is true in BOTH
+ * cases — the borrowed
  * zclassicd-chainstate copy (coins_kv_seed_from_node_db) also stamps
  * COINS_KV_MIGRATION_COMPLETE_KEY — so the migration stamp ALONE cannot prove
- * the UTXO trust root is the node's own fold. This durable progress.kv key is
- * SET only by a SELF-DERIVED path: a from-anchor reseed from the node's OWN
+ * the UTXO trust root is checkpoint-bound. This durable progress.kv key is SET
+ * only by a self-derived/checkpoint-verified path: a from-anchor reseed from a
  * SHA3-checkpoint-bound minted snapshot, or a from-genesis bodies-only refold.
+ * It proves the loaded set equals the compiled checkpoint root; it does not, by
+ * itself, prove which machine produced the snapshot file.
  *
- * LIFECYCLE — wired by the -refold-from-anchor cutover (docs/work/
- * self-verified-tip-plan.md Act 3); this groundwork ships the marker + the
- * predicate, NOT the boot wiring, so NO default boot path changes. The cutover
- * must: SET the marker (coins_kv_mark_self_folded) on the self-derived path
- * AFTER it reproduces the compiled checkpoint, and CLEAR it
- * (coins_kv_clear_self_folded, also folded into coins_kv_reset_for_reseed) on
- * any borrowed reseed so a later borrow cannot inherit a stale claim. Until the
- * cutover wires the SET, the marker is absent and coins_kv_tip_is_self_derived
- * correctly reports the live node as NOT-yet-sovereign (borrowed-and-stamped). */
+ * LIFECYCLE — the explicit -refold-from-anchor path SETs this marker only after
+ * a verified minted snapshot reproduces the compiled checkpoint and the anchor
+ * cursor arm commits. Borrowed/node.db reseeds CLEAR it (coins_kv_clear_self_
+ * folded, also folded into coins_kv_reset_for_reseed) so a later borrow cannot
+ * inherit a stale claim. The default live borrowed-snapshot path still does not
+ * set it, so coins_kv_tip_is_self_derived correctly reports that shape as
+ * NOT-yet-sovereign (borrowed-and-stamped). */
 #define COINS_KV_SELF_FOLDED_KEY "coins_kv_self_folded"
 
 /* Stamp the self-folded marker (own-txn, the same standalone-txn justification

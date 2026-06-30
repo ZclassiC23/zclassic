@@ -165,7 +165,8 @@ static bool stig_insert_hole(sqlite3 *db, int height,
 /* Seed coin_backfill's durable refusal of the hole at (height, hash): the
  * 'coin_backfill.refused.<h>.<holehash-hex>' progress.kv marker, byte-identical
  * to the producer (coin_backfill_key_h_hash builds "<prefix>.<height>.<hex>"
- * via uint256_get_hex; value "spent", a real-path REFUSED_SPENT value). The
+ * via uint256_get_hex; value "spent:v2", a real-path terminal-linkage-proven
+ * REFUSED_SPENT value). The
  * loader's durability guard requires this marker before firing the verdict.
  *
  * These gate-side cases hand-seed the marker to exercise the gate's READER at
@@ -187,7 +188,7 @@ static bool stig_seed_backfill_refused(sqlite3 *db, int height,
                      height, hex);
     if (n <= 0 || n >= (int)sizeof(key))
         return false;
-    return progress_meta_set(db, key, "spent", 5);
+    return progress_meta_set(db, key, "spent:v2", 8);
 }
 
 /* Seed coins_kv with `n` synthetic live outputs so the canonical

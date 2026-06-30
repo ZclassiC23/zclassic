@@ -40,6 +40,7 @@ static struct p2p_node *add_test_peer(struct connman *cm,
     node->state = state;
     node->disconnect = disconnect;
     node->starting_height = 3117074;
+    node->services = NODE_NETWORK;
     cm->manager.nodes[cm->manager.num_nodes++] = node;
     return node;
 }
@@ -154,6 +155,45 @@ int test_connman_addnode_fallback(void)
         ok = ok && health.ipv4_group_count == 3;
         ok = ok && health.ipv4_max_group_size == 2;
         ok = ok && connman_outbound_healthy_count(&cm) == 3;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: max peer height ignores unusable slots... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        struct p2p_node *usable = NULL;
+        struct p2p_node *connecting = NULL;
+        struct p2p_node *disconnecting = NULL;
+        struct p2p_node *no_network = NULL;
+        ok = ok && (usable = add_test_peer(&cm, 10, 2, 0, 1,
+                                           PEER_HANDSHAKE_COMPLETE,
+                                           false, false)) != NULL;
+        ok = ok && (connecting = add_test_peer(&cm, 10, 2, 0, 2,
+                                               PEER_CONNECTING,
+                                               false, false)) != NULL;
+        ok = ok && (disconnecting = add_test_peer(&cm, 10, 2, 0, 3,
+                                                  PEER_ACTIVE,
+                                                  false, true)) != NULL;
+        ok = ok && (no_network = add_test_peer(&cm, 10, 2, 0, 4,
+                                               PEER_ACTIVE,
+                                               false, false)) != NULL;
+        if (ok) {
+            usable->starting_height = 120;
+            connecting->starting_height = 900;
+            disconnecting->starting_height = 800;
+            no_network->starting_height = 700;
+            no_network->services = 0;
+            ok = connman_max_peer_height(&cm) == 120;
+        }
 
         connman_free(&cm);
         if (ok) printf("OK\n");

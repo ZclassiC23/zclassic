@@ -158,12 +158,49 @@ lie (H*=3,056,759 ≪ served 3,151,411) intact.
 | **Needs rework (not delete)** | 1 | 799 | `stage_repair_reducer_frontier.c` — the orchestrator. Its tear pivot dies; its reorg/flag-reconcile guts must be re-homed. |
 | **Genuine support — KEEP** | 13 | 4,568 | Reorg unwind, header-solution cache/poison-rewind, body-fetch self-heal, legacy/utxo mirror + oracle drift detectors, wallet/explorer read-model feeder. NOT lie-cover. |
 
-The 8 cleanly deletable (post-cure): `stage_repair_reducer_frontier_coin.c` (787),
-`_refill.c` (743), `_tipfin.c` (650), `stage_repair_coin_backfill.c` (795),
-`_scan.c` (539), `_util.c` (483), `utxo_apply_delta_repair.c` (456),
-`quorum_oracle_service.c` (442). Plus `block_index_loader_torn_gate.c` (orphaned by
-removing `coin_backfill_util` — forward-declares util symbols, won't link alone;
-delete in the same change with its call site `block_index_loader_rebuild.c:596`).
+**2026-06-30 refresh (current tree).** The old clean-delete list above has
+rotted in two important ways: `_refill.c` now contains retained cursor-refill
+machinery, and `_coin.c` is mixed (coin-backfill hook plus stale script/proof /
+hash-split replay helpers). Treat the post-cure set this way until another code
+map proves otherwise:
+
+- **DELETE after sovereign cure:** `stage_repair_coin_backfill.c`,
+  `stage_repair_coin_backfill_scan.c`,
+  `stage_repair_coin_backfill_util.c`,
+  `app/jobs/include/jobs/stage_repair_coin_backfill.h`, the private
+  `stage_repair_coin_backfill_{internal,util}.h` headers,
+  `stage_repair_reducer_frontier_pre_refusal.c`,
+  the tear-gated branch of `stage_repair_reducer_frontier_tipfin.c`,
+  the coin-backfill slice in `stage_repair_reducer_frontier_coin.c`, and
+  `block_index_loader_torn_gate.c` once its callers are gone.
+- **KEEP / re-home before delete:** `stage_repair_reducer_frontier_refill.c`
+  (`stage_reducer_frontier_reconcile_refill_cursors` and
+  `stage_reducer_frontier_force_stage_cursor_in_tx`) is the retained
+  crash/reorg cursor-refill consumer. `stage_repair_reducer_frontier_purge.c`
+  remains the kept reorg-residue owner. `stage_repair_reducer_frontier_coin.c`
+  must be split or rewritten before deletion because it also owns transient
+  script/proof re-derivation and validate/script hash-split routing, not just
+  the coin-backfill call. `stage_repair_reducer_frontier_tipfin.c` is also
+  mixed: it is currently reached through the coin-tear branch, but it writes
+  only `tip_finalize_log` rows, so prune/re-home its retained row-recovery
+  semantics instead of blanket-deleting the file.
+- **Diagnostics/coupling to remove with the delete:** the boot torn gate
+  forward-declares `find_lowest_prevout_unresolved_hole_unlocked`,
+  `coin_backfill_key_h_hash`, and `coin_backfill_refusal_marker_read`
+  from `stage_repair_coin_backfill_util.c`; `diagnostics_registry.c` registers
+  `zcl_state subsystem=coin_backfill`; and
+  `reducer_frontier_reconcile_light.c` publishes
+  `last_reconcile_coin_backfill_*` and the resumable
+  `coin_backfill.scan.*` progress witness. Remove those diagnostics only in
+  the same change that removes the runtime owner, or operator surfaces will
+  lie about a repair path that no longer exists.
+- **Producer signal to remove or rename with the delete:** `script_validate_stage.c`
+  publishes `script_validate.pending_prevout` via
+  `coin_backfill_pending_prevout_set/clear`. That signal is coin-backfill /
+  torn-gate infrastructure even though the producer is the retained script
+  validation stage. After the cure, delete it or replace it with a non-
+  coin-backfill diagnostic; do not leave `coin_backfill_*` utility calls in
+  retained validation code.
 
 ### Deletion order (leaves before orchestrators, tree always links)
 
@@ -176,29 +213,40 @@ delete in the same change with its call site `block_index_loader_rebuild.c:596`)
    `stage_repair_reducer_frontier.c:503-504`). **KEEP** `utxo_apply_delta_reorg.c`'s
    primitives (`emit_inverse_delta`/`delete_rows_above`/`unwind_write_cursor`) —
    shared with the LIVE reorg path `utxo_apply_stage.c:703`.
-2. **`stage_repair_coin_backfill_scan.c`** (539) — sever callers in
-   `stage_repair_coin_backfill.c:280,295,650,659`.
-3. **`stage_repair_coin_backfill.c`** (795) — sever sole external caller
-   `stage_repair_reducer_frontier_coin.c:748`.
-4. **`stage_repair_coin_backfill_util.c`** (483) — sever
-   `block_index_loader_torn_gate.c:108/111/113` (fwd-decls) + `:156/167/169`; remove
-   torn-gate call site `block_index_loader_rebuild.c:596`; remove MCP `zcl_state
-   subsystem=coin_backfill` row `diagnostics_registry.c:512`; delete
-   `block_index_loader_torn_gate.c` itself.
-5. **`stage_repair_reducer_frontier_coin.c`** (787) — sever sole caller
-   `stage_repair_reducer_frontier.c:625`. Callees now gone, deletes cleanly.
-6. **`stage_repair_reducer_frontier_tipfin.c`** (650) — sever tear-gated caller
-   `stage_repair_reducer_frontier.c:650` (if-block 644-658).
-7. **`stage_repair_reducer_frontier_refill.c`** (743) — sever tear-gated callers
-   `stage_repair_reducer_frontier.c:646` + `:661`. See blocker #2:
-   `force_stage_cursor_in_tx` (:452) + `reconcile_refill_cursors` (:709) are UNGATED;
-   re-home a reorg-residue cursor-clamp into the KEEP purge TU first.
-8. **`quorum_oracle_service.c`** (442) — independent. Sever dead
+2. **`stage_repair_coin_backfill_scan.c`** — sever callers in
+   `stage_repair_coin_backfill.c`.
+3. **`stage_repair_coin_backfill.c` + public/private coin-backfill headers** —
+   sever the currently ratcheted sole production caller:
+   `stage_repair_reducer_frontier_coin.c` calls
+   `stage_repair_coin_backfill_try`.
+4. **`stage_repair_coin_backfill_util.c`** — sever the boot torn gate's
+   forward declarations and marker reads; remove MCP `zcl_state
+   subsystem=coin_backfill` from `diagnostics_registry.c`; remove
+   `last_reconcile_coin_backfill_*` and `coin_backfill.scan.*` condition
+   diagnostics when the condition no longer has a coin-backfill owner; remove or
+   rename the `script_validate.pending_prevout` producer calls in
+   `script_validate_stage.c`.
+5. **`block_index_loader_torn_gate.c`** — delete only after removing every
+   caller: the side-effecting gate in `block_index_loader_rebuild.c`, the pure
+   detect auto-arm path in `boot_refold_staged.c`, the declarations in
+   `services/block_index_loader.h`, and the now-stale boot-service comments.
+6. **`stage_repair_reducer_frontier_coin.c`** — split before deleting. Remove
+   the coin-backfill hook with step 3; classify the stale script/proof and
+   validate/script hash-split replay separately.
+7. **`stage_repair_reducer_frontier_tipfin.c`** — prune/re-home. Sever the
+   tear-gated caller from `stage_repair_reducer_frontier.c`, but first decide
+   whether its row-only `tip_finalize_log` backfill semantics should survive as
+   retained crash/reorg residue recovery.
+8. **`stage_repair_reducer_frontier_pre_refusal.c`** — sever the tear-gated
+   pre-refusal calls from `stage_repair_reducer_frontier.c`. Do not delete
+   `_refill.c` with it; `_refill.c` is the kept cursor-refill core unless a
+   later split moves that retained core elsewhere.
+9. **`quorum_oracle_service.c`** (442) — independent. Sever dead
    `rolling_anchor_service.c:384` ref + the two repair-only callers via
    `process_block_revalidate.c:124` (`block_failed_mask_at_tip.c:117` +
    `chain_supervisor.c:83`); remove MCP `zcl_state subsystem=quorum_oracle` row
    `diagnostics_registry.c:514`. `quorum_oracle_init` is never started in prod.
-9. **REWORK `stage_repair_reducer_frontier.c`** (799) — LAST. Remove the dead tear
+10. **REWORK `stage_repair_reducer_frontier.c`** (799) — LAST. Remove the dead tear
    branch (295-296 pivot, 644-703 dispatch, 234-296 `read_frontier_snapshot`
    `utxo_apply_contig`). **Preserve / re-home** the genuine self-heal:
    `reconcile_block_index_flags` (311-403, HAVE_DATA/VALID_SCRIPTS/FAILED_MASK), purge
@@ -221,8 +269,10 @@ delete in the same change with its call site `block_index_loader_rebuild.c:596`)
    reorg-residue purge (KEEP). A replacement cursor-clamp must live in the kept
    purge/reconcile TU before `refill.c` is removed, or depth-N reorgs lose their clamp
    consumer.
-3. **TORN-GATE COUPLING** (blocks step 4): delete `block_index_loader_torn_gate.c`
-   together with `coin_backfill_util` + its call site, or the tree won't link.
+3. **TORN-GATE COUPLING** (blocks steps 4-5): delete
+   `block_index_loader_torn_gate.c` together with `coin_backfill_util`, the
+   rebuild call site, the from-anchor auto-arm detect call, and the exported
+   declarations, or the tree won't link.
 4. **CONDITION DEREGISTRATION** (blocks steps 5-9): the Condition
    `reducer_frontier_reconcile_light` (`condition_registry.c:59`) is the sole live
    entry into the whole reducer-frontier repair family — deregister or rewrite it,

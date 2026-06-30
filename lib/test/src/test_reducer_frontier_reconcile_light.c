@@ -2,24 +2,38 @@
 
 #include "test/test_helpers.h"
 
+#include "bloom/merkle.h"
 #include "conditions/reducer_frontier_reconcile_light.h"
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/subsidy.h"
 #include "core/arith_uint256.h"
+#include "domain/consensus/coinbase.h"
 #include "framework/condition.h"
+#include "mining/miner.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "json/json.h"
 #include "net/net.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "script/script.h"
 #include "services/sync_monitor.h"
+#include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
+#include "util/safe_alloc.h"
+#include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define RFRL_CHECK(name, expr) do { \
     printf("reducer_frontier_reconcile_light: %s... ", (name)); \
@@ -29,12 +43,23 @@
 
 #define A REDUCER_FRONTIER_TRUSTED_ANCHOR
 
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
+
 struct rfrl_fixture {
     char dir[256];
     struct main_state ms;
     struct uint256 hashes[4];
     struct block_index *idx[4];
 };
+
+static int rfrl_mkdir_p(const char *p)
+{
+    if (mkdir(p, 0700) == 0)
+        return 0;
+    if (errno == EEXIST)
+        return 0;
+    return -1;
+}
 
 static bool exec_sql(sqlite3 *db, const char *sql)
 {
@@ -218,6 +243,23 @@ static bool put_simple_log(sqlite3 *db, const char *table, int height,
     return ok;
 }
 
+static bool put_proof_status(sqlite3 *db, int height, int ok_flag,
+                             const char *status)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO proof_validate_log"
+            "(height,status,ok) VALUES(?,?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 3, ok_flag);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool delete_height(sqlite3 *db, const char *table, int height)
 {
     char sql[128];
@@ -230,6 +272,25 @@ static bool delete_height(sqlite3 *db, const char *table, int height)
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
+}
+
+static int count_range(sqlite3 *db, const char *table, int first,
+                       int end_exclusive)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM %s WHERE height >= ? AND height < ?",
+             table);
+    sqlite3_stmt *st = NULL;
+    int value = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, first);
+        sqlite3_bind_int(st, 2, end_exclusive);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            value = sqlite3_column_int(st, 0);
+    }
+    sqlite3_finalize(st);
+    return value;
 }
 
 static bool put_tip_log(sqlite3 *db, int height, int ok_flag,
@@ -247,6 +308,56 @@ static bool put_tip_log(sqlite3 *db, int height, int ok_flag,
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
+}
+
+static bool rfrl_build_regtest_block(struct block *blk, int height,
+                                     const struct uint256 *prev_hash,
+                                     const struct chain_params *cp)
+{
+    block_init(blk);
+    blk->vtx = zcl_calloc(1, sizeof(struct transaction), "rfrl_vtx");
+    if (!blk->vtx)
+        return false;
+    blk->num_vtx = 1;
+
+    struct transaction *coinbase = &blk->vtx[0];
+    transaction_init(coinbase);
+    if (!transaction_alloc(coinbase, 1, 1))
+        return false;
+
+    struct script miner_script;
+    script_init(&miner_script);
+    miner_script.data[0] = 0x76; /* OP_DUP */
+    miner_script.data[1] = 0xa9; /* OP_HASH160 */
+    miner_script.data[2] = 0x14; /* push 20 */
+    for (int i = 0; i < 20; i++)
+        miner_script.data[3 + i] = (unsigned char)(0x20 + i);
+    miner_script.data[23] = 0x88; /* OP_EQUALVERIFY */
+    miner_script.data[24] = 0xac; /* OP_CHECKSIG */
+    miner_script.size = 25;
+
+    int64_t subsidy = get_block_subsidy(height, &cp->consensus);
+    struct domain_consensus_coinbase_inputs cb_in = {
+        .n_height     = height,
+        .subsidy      = subsidy,
+        .total_fees   = 0,
+        .miner_script = &miner_script,
+        .params       = &cp->consensus,
+    };
+    struct zcl_result r = domain_consensus_coinbase_build(&cb_in, coinbase);
+    if (!r.ok)
+        return false;
+
+    struct uint256 txid = blk->vtx[0].hash;
+    blk->header.hashMerkleRoot = compute_merkle_root(&txid, 1);
+    blk->header.hashPrevBlock = *prev_hash;
+    uint256_set_null(&blk->header.hashFinalSaplingRoot);
+    blk->header.nTime = 1600000000u + (uint32_t)height;
+
+    struct arith_uint256 pow_limit;
+    uint256_to_arith(&pow_limit, &cp->consensus.powLimit);
+    blk->header.nBits = arith_uint256_get_compact(&pow_limit, false);
+    return true;
 }
 
 static bool put_upstream_ok(sqlite3 *db, int height,
@@ -331,6 +442,62 @@ static struct block_index *insert_index(struct main_state *ms,
     return bi;
 }
 
+static bool make_fixture_block_readable(struct rfrl_fixture *fx, int slot)
+{
+    if (!fx || slot <= 0 || slot >= 4 || !fx->idx[slot] ||
+        !fx->idx[slot]->pprev || !fx->idx[slot]->pprev->phashBlock)
+        return false;
+
+    chain_params_select(CHAIN_REGTEST);
+    reducer_frontier_test_set_compiled_anchor(A);
+    const struct chain_params *cp = chain_params_get();
+    if (!cp)
+        return false;
+
+    SetDataDir(fx->dir);
+    char netdir[512];
+    GetDataDir(true, netdir, sizeof(netdir));
+    if (rfrl_mkdir_p(netdir) != 0)
+        return false;
+    char blocksdir[640];
+    snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
+    if (rfrl_mkdir_p(blocksdir) != 0)
+        return false;
+
+    struct block blk;
+    bool ok = rfrl_build_regtest_block(
+        &blk, fx->idx[slot]->nHeight, fx->idx[slot]->pprev->phashBlock, cp);
+    if (ok)
+        ok = mine_block_pow(&blk, fx->idx[slot]->nHeight, cp, 0);
+
+    struct uint256 block_hash;
+    if (ok) {
+        block_get_hash(&blk, &block_hash);
+        fx->hashes[slot] = block_hash;
+        fx->idx[slot]->hashBlock = block_hash;
+        fx->idx[slot]->phashBlock = &fx->idx[slot]->hashBlock;
+
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        ok = write_block_to_disk(&blk, &pos, netdir, cp->pchMessageStart) &&
+             block_index_set_have_data_verified(fx->idx[slot], &pos, netdir);
+    }
+    block_free(&blk);
+    if (!ok)
+        return false;
+
+    sqlite3 *db = progress_store_db();
+    const struct uint256 *parent_hash = fx->idx[slot]->pprev->phashBlock;
+    return put_header_admit(db, fx->idx[slot]->nHeight, &fx->hashes[slot],
+                            parent_hash) &&
+           put_hash_log(db, "validate_headers_log", "hash",
+                        fx->idx[slot]->nHeight, 1, &fx->hashes[slot]) &&
+           put_body_fetch_ok(db, fx->idx[slot]->nHeight, &fx->hashes[slot]) &&
+           put_hash_log(db, "script_validate_log", "block_hash",
+                        fx->idx[slot]->nHeight, 1, &fx->hashes[slot]) &&
+           active_chain_move_window_tip(&fx->ms.chain_active, fx->idx[3]);
+}
+
 static bool setup_fixture(struct rfrl_fixture *fx, const char *tag)
 {
     memset(fx, 0, sizeof(*fx));
@@ -374,6 +541,7 @@ static bool setup_fixture(struct rfrl_fixture *fx, const char *tag)
         return false;
     if (!seed_coins_applied(progress_store_db(), A + 2))
         return false;
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
     return true;
 }
 
@@ -381,7 +549,11 @@ static void teardown_fixture(struct rfrl_fixture *fx)
 {
     main_state_free(&fx->ms);
     progress_store_close();
-    test_cleanup_tmpdir(fx->dir);
+    SetDataDir("");
+    ClearDataDirCache();
+    reducer_frontier_test_set_compiled_anchor(-1);
+    chain_params_select(CHAIN_MAIN);
+    test_rm_rf_recursive(fx->dir);
 }
 
 static const struct json_value *rfrl_json_condition(
@@ -411,6 +583,21 @@ static void *progress_lock_probe(void *arg)
     return NULL;
 }
 
+struct active_chain_lock_probe_arg {
+    struct active_chain *chain;
+    bool probed;
+};
+
+static void *active_chain_lock_probe(void *arg)
+{
+    struct active_chain_lock_probe_arg *a = arg;
+    if (zcl_mutex_trylock(&a->chain->write_lock)) {
+        zcl_mutex_unlock(&a->chain->write_lock);
+        a->probed = true;
+    }
+    return NULL;
+}
+
 static int cursor_value(sqlite3 *db, const char *name)
 {
     sqlite3_stmt *st = NULL;
@@ -432,6 +619,44 @@ int test_reducer_frontier_reconcile_light(void)
     test_reset_shared_globals();   /* monolith isolation: see test_helpers.c */
     printf("\n=== reducer_frontier_reconcile_light tests ===\n");
     int failures = 0;
+
+    {
+        struct stage_reducer_frontier_reconcile_result rr;
+        memset(&rr, 0, sizeof(rr));
+        RFRL_CHECK("result helpers: clean baseline",
+                   !stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
+                   !stage_reducer_frontier_result_has_row_residue_evidence(&rr) &&
+                   !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
+                   stage_reducer_frontier_result_is_memo_clean(&rr));
+
+        memset(&rr, 0, sizeof(rr));
+        rr.coin_backfill_attempted = true;
+        RFRL_CHECK("result helpers: coin repair evidence",
+                   stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
+                   !stage_reducer_frontier_result_has_row_residue_evidence(&rr) &&
+                   stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
+                   !stage_reducer_frontier_result_is_memo_clean(&rr));
+
+        memset(&rr, 0, sizeof(rr));
+        rr.noncanonical_found = 1;
+        RFRL_CHECK("result helpers: row residue evidence",
+                   !stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
+                   stage_reducer_frontier_result_has_row_residue_evidence(&rr) &&
+                   stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
+                   !stage_reducer_frontier_result_is_memo_clean(&rr));
+
+        memset(&rr, 0, sizeof(rr));
+        rr.refused_coin_tear = true;
+        RFRL_CHECK("result helpers: coin tear bypass separate",
+                   !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
+                   !stage_reducer_frontier_result_is_memo_clean(&rr));
+
+        memset(&rr, 0, sizeof(rr));
+        rr.repaired = true;
+        RFRL_CHECK("result helpers: repaired is not memo-clean",
+                   !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
+                   !stage_reducer_frontier_result_is_memo_clean(&rr));
+    }
 
     {
         struct rfrl_fixture fx;
@@ -790,6 +1015,33 @@ int test_reducer_frontier_reconcile_light(void)
         ok = ok && json_get_int(json_get(
                      detail, "last_reconcile_body_fetch_cursor_after"))
                      == A + 2;
+        ok = ok && !json_get_bool(json_get(
+                     detail, "last_reconcile_clamped_script_validate"));
+        ok = ok && !json_get_bool(json_get(
+                     detail, "last_reconcile_clamped_proof_validate"));
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_script_validate_cursor_before"))
+                     == A + 4;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_script_validate_cursor_after"))
+                     == A + 4;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_proof_validate_cursor_before"))
+                     == A + 4;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_proof_validate_cursor_after"))
+                     == A + 4;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_lowest_script_validate_hash_split"))
+                     == -1;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_lowest_script_validate_refill_hole"))
+                     == -1;
+        ok = ok && json_get_int(json_get(
+                     detail, "last_reconcile_lowest_proof_validate_refill_hole"))
+                     == -1;
+        ok = ok && !json_get_bool(json_get(
+                     detail, "last_reconcile_pre_refusal_unapplied_clamp"));
         ok = ok && json_get_int(json_get(
                      detail, "last_reconcile_tip_finalize_cursor_before"))
                      == A + 4;
@@ -957,6 +1209,149 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup readable stale-script fixture",
+                   setup_fixture(&fx, "stale_script_readable"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("readable stale-script: canonical body is readable",
+                   make_fixture_block_readable(&fx, 2));
+        RFRL_CHECK("readable stale-script: seed one-body replay span",
+                   seed_cursor(db, "body_persist", A + 3) &&
+                   seed_cursor(db, "utxo_apply", A + 2) &&
+                   put_script_status(db, A + 2, 0, "internal_error",
+                                     &fx.hashes[2]));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        RFRL_CHECK("readable stale-script: dry-run succeeds",
+                   stage_reducer_frontier_reconcile_light_needed(
+                       db, &fx.ms, &dry));
+        RFRL_CHECK("readable stale-script: dry-run reports without mutation",
+                   dry.repaired &&
+                   !dry.refused_coin_tear &&
+                   dry.hstar == A + 1 &&
+                   dry.stale_script_repair_height == A + 2 &&
+                   dry.stale_script_backfill_first == A + 2 &&
+                   dry.stale_script_backfill_last == A + 2 &&
+                   !dry.stale_script_repaired &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "proof_validate") == A + 4 &&
+                   cursor_value(db, "utxo_apply") == A + 2);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("readable stale-script: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("readable stale-script: production replay rewinds rows",
+                   rr.stale_script_repair_attempted &&
+                   rr.stale_script_repaired &&
+                   rr.stale_script_repair_height == A + 2 &&
+                   rr.stale_script_cursor_before == A + 4 &&
+                   rr.stale_script_cursor_after == A + 2 &&
+                   rr.stale_script_backfill_first == A + 2 &&
+                   rr.stale_script_backfill_last == A + 2 &&
+                   !rr.stale_script_repair_genuinely_invalid &&
+                   !rr.refused_coin_tear &&
+                   cursor_value(db, "script_validate") == A + 2 &&
+                   cursor_value(db, "proof_validate") == A + 2 &&
+                   cursor_value(db, "tip_finalize") == A + 2 &&
+                   cursor_value(db, "utxo_apply") == A + 2 &&
+                   cursor_value(db, "body_persist") == A + 3 &&
+                   count_range(db, "script_validate_log", A + 2, A + 4) == 0 &&
+                   count_range(db, "proof_validate_log", A + 2, A + 4) == 0 &&
+                   count_range(db, "validate_headers_log", A + 2, A + 4) == 2);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup readable stale-proof fixture",
+                   setup_fixture(&fx, "stale_proof_readable"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("readable stale-proof: canonical body is readable",
+                   make_fixture_block_readable(&fx, 2));
+        RFRL_CHECK("readable stale-proof: seed proof-only internal_error",
+                   seed_cursor(db, "utxo_apply", A + 2) &&
+                   put_script_status(db, A + 2, 1, "verified",
+                                     &fx.hashes[2]) &&
+                   put_proof_status(db, A + 2, 0, "internal_error"));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        RFRL_CHECK("readable stale-proof: dry-run succeeds",
+                   stage_reducer_frontier_reconcile_light_needed(
+                       db, &fx.ms, &dry));
+        RFRL_CHECK("readable stale-proof: dry-run reports without mutation",
+                   dry.repaired &&
+                   !dry.refused_coin_tear &&
+                   dry.hstar == A + 1 &&
+                   dry.stale_script_repair_attempted &&
+                   dry.stale_script_repair_height == A + 2 &&
+                   dry.stale_script_cursor_before == A + 4 &&
+                   dry.stale_script_cursor_after == A + 4 &&
+                   !dry.stale_script_repaired &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "proof_validate") == A + 4 &&
+                   cursor_value(db, "utxo_apply") == A + 2);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("readable stale-proof: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("readable stale-proof: production replay rewinds proof only",
+                   rr.stale_script_repair_attempted &&
+                   rr.stale_script_repaired &&
+                   rr.stale_script_repair_height == A + 2 &&
+                   rr.stale_script_cursor_before == A + 4 &&
+                   rr.stale_script_cursor_after == A + 2 &&
+                   rr.stale_script_utxo_cursor_before == A + 2 &&
+                   !rr.refused_coin_tear &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "proof_validate") == A + 2 &&
+                   cursor_value(db, "tip_finalize") == A + 2 &&
+                   cursor_value(db, "utxo_apply") == A + 2 &&
+                   count_range(db, "proof_validate_log", A + 2, A + 4) == 0 &&
+                   count_range(db, "script_validate_log", A + 2, A + 4) == 2);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        /* Dispatcher-order pin: a lower stale-script transient owns the shared
+         * stale_script_* result fields even when a higher script-side
+         * validate/script hash_split is also present. The hash-split probe may
+         * remain observable through its own fields, but it must not overwrite
+         * the lower repair height that the replay ladder will address first. */
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup stale-script + higher hash-split fixture",
+                   setup_fixture(&fx, "stale_script_before_split"));
+        sqlite3 *db = progress_store_db();
+
+        struct uint256 stale = fx.hashes[3];
+        stale.data[0] ^= 0x5a;
+        RFRL_CHECK("stale-script+split: seed lower stale script and higher split",
+                   put_script_status(db, A + 2, 0, "internal_error",
+                                     &fx.hashes[2]) &&
+                   put_hash_log(db, "script_validate_log", "block_hash",
+                                A + 3, 1, &stale));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        RFRL_CHECK("stale-script+split: dry-run succeeds",
+                   stage_reducer_frontier_reconcile_light_needed(
+                       db, &fx.ms, &dry));
+        RFRL_CHECK("stale-script+split: lower stale-script hole keeps ownership",
+                   dry.repaired &&
+                   dry.stale_script_repair_height == A + 2 &&
+                   dry.stale_script_cursor_before == A + 4 &&
+                   dry.stale_script_cursor_after == A + 4 &&
+                   (dry.lowest_script_validate_hash_split < 0 ||
+                    dry.stale_script_repair_height <
+                        dry.lowest_script_validate_hash_split) &&
+                   !dry.stale_script_repaired &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "proof_validate") == A + 4);
+
+        teardown_fixture(&fx);
+    }
+
+    {
         /* A coin-backfill refusal is a named, actionable self-heal failure,
          * not a quiet no-op. The fixture block is intentionally unreadable
          * (nFile == -1), so the prevout_unresolved hole refuses through the
@@ -1108,6 +1503,35 @@ int test_reducer_frontier_reconcile_light(void)
         sqlite3_finalize(st);
         RFRL_CHECK("noncanon: hashless downstream rows purged transitively",
                    dep_left == 0);
+
+        bool progress_probed = false;
+        pthread_t progress_probe;
+        bool progress_probe_started =
+            pthread_create(&progress_probe, NULL, progress_lock_probe,
+                           &progress_probed) == 0;
+        RFRL_CHECK("noncanon: progress lock probe starts",
+                   progress_probe_started);
+        if (progress_probe_started) {
+            pthread_join(progress_probe, NULL);
+            RFRL_CHECK("noncanon: progress lock released",
+                       progress_probed);
+        }
+
+        struct active_chain_lock_probe_arg chain_probe_arg = {
+            .chain = &fx.ms.chain_active,
+            .probed = false,
+        };
+        pthread_t chain_probe;
+        bool chain_probe_started =
+            pthread_create(&chain_probe, NULL, active_chain_lock_probe,
+                           &chain_probe_arg) == 0;
+        RFRL_CHECK("noncanon: active-chain lock probe starts",
+                   chain_probe_started);
+        if (chain_probe_started) {
+            pthread_join(chain_probe, NULL);
+            RFRL_CHECK("noncanon: active-chain lock released",
+                       chain_probe_arg.probed);
+        }
 
         teardown_fixture(&fx);
     }

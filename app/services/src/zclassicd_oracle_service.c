@@ -59,12 +59,22 @@ static struct {
     _Atomic supervisor_child_id supervisor_id;
 
     /* Stats */
+    _Atomic int64_t attempts_total;
     _Atomic int64_t probes_total;
     _Atomic int64_t probes_agree;
     _Atomic int64_t probes_disagree;
     _Atomic int64_t rpc_errors;
     _Atomic int64_t last_probe_unix_us;
     _Atomic int     last_probed_height;
+    _Atomic int64_t last_attempt_unix_us;
+    _Atomic int     last_attempt_height;
+    _Atomic int64_t last_error_unix_us;
+    _Atomic int     last_error_height;
+    _Atomic int     last_error_code;
+    _Atomic int     rpc_transport_reachable;
+    _Atomic int     oracle_usable;
+    _Atomic int     reachable;
+    char            last_error[128];
 } g_oracle = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .supervisor_id = SUPERVISOR_INVALID_ID,
@@ -75,6 +85,65 @@ static struct liveness_contract g_oracle_contract;
 static int64_t zclassicd_oracle_progress_marker(void)
 {
     return atomic_load(&g_oracle.probes_total);
+}
+
+static int64_t zclassicd_oracle_now_us(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+
+static int zclassicd_oracle_error_code(const char *err)
+{
+    if (!err)
+        return 0;
+    int code = 0;
+    if (sscanf(err, "rpc error %d", &code) == 1)
+        return code;
+    return 0;
+}
+
+static void zclassicd_oracle_record_attempt(int height)
+{
+    int64_t now = zclassicd_oracle_now_us();
+    atomic_fetch_add(&g_oracle.attempts_total, 1);
+    atomic_store(&g_oracle.last_attempt_height, height);
+    atomic_store(&g_oracle.last_attempt_unix_us, now);
+    atomic_store(&g_oracle.last_probed_height, height);
+    atomic_store(&g_oracle.last_probe_unix_us, now);
+}
+
+static void zclassicd_oracle_set_dependency_error(const char *err,
+                                                  int height,
+                                                  bool transport_reachable)
+{
+    int64_t now = zclassicd_oracle_now_us();
+    atomic_store(&g_oracle.rpc_transport_reachable,
+                 transport_reachable ? 1 : 0);
+    atomic_store(&g_oracle.oracle_usable, 0);
+    atomic_store(&g_oracle.reachable, 0);
+    atomic_store(&g_oracle.last_error_height, height);
+    atomic_store(&g_oracle.last_error_unix_us, now);
+    atomic_store(&g_oracle.last_error_code,
+                 zclassicd_oracle_error_code(err));
+    pthread_mutex_lock(&g_oracle.lock);
+    snprintf(g_oracle.last_error, sizeof(g_oracle.last_error), "%s",
+             err && err[0] ? err : "rpc-unreachable");
+    pthread_mutex_unlock(&g_oracle.lock);
+}
+
+static void zclassicd_oracle_mark_dependency_reachable(void)
+{
+    atomic_store(&g_oracle.rpc_transport_reachable, 1);
+    atomic_store(&g_oracle.oracle_usable, 1);
+    atomic_store(&g_oracle.reachable, 1);
+    atomic_store(&g_oracle.last_error_height, 0);
+    atomic_store(&g_oracle.last_error_unix_us, 0);
+    atomic_store(&g_oracle.last_error_code, 0);
+    pthread_mutex_lock(&g_oracle.lock);
+    g_oracle.last_error[0] = '\0';
+    pthread_mutex_unlock(&g_oracle.lock);
 }
 
 /* Parse a JSON-RPC `.result` string and require exactly 64 hex chars
@@ -136,6 +205,7 @@ struct zcl_result zclassicd_oracle_probe(int height,
                  "negative height %d", height);
         return ZCL_ERR(-2, "zclassicd_oracle_probe: negative height %d", height);
     }
+    zclassicd_oracle_record_attempt(height);
 
     /* Snapshot config */
     char host[64], user[64], pass[128];
@@ -159,11 +229,7 @@ struct zcl_result zclassicd_oracle_probe(int height,
                          out->error_msg, sizeof(out->error_msg))) {
         out->error = true;
         atomic_fetch_add(&g_oracle.rpc_errors, 1);
-        atomic_store(&g_oracle.last_probed_height, height);
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        atomic_store(&g_oracle.last_probe_unix_us,
-                     (int64_t)tv.tv_sec * 1000000 + tv.tv_usec);
+        zclassicd_oracle_set_dependency_error(out->error_msg, height, false);
         return ZCL_OK;
     }
 
@@ -172,9 +238,11 @@ struct zcl_result zclassicd_oracle_probe(int height,
         free(resp);
         out->error = true;
         atomic_fetch_add(&g_oracle.rpc_errors, 1);
+        zclassicd_oracle_set_dependency_error(out->error_msg, height, true);
         return ZCL_OK;
     }
     free(resp);
+    zclassicd_oracle_mark_dependency_reachable();
 
     /* Our-side lookup */
     out->our_have_block = our_hash_at_height(height, out->our_hash);
@@ -183,11 +251,6 @@ struct zcl_result zclassicd_oracle_probe(int height,
 
     /* Stats */
     atomic_fetch_add(&g_oracle.probes_total, 1);
-    atomic_store(&g_oracle.last_probed_height, height);
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    atomic_store(&g_oracle.last_probe_unix_us,
-                 (int64_t)tv.tv_sec * 1000000 + tv.tv_usec);
     if (out->our_have_block) {
         if (out->match) {
             atomic_fetch_add(&g_oracle.probes_agree, 1);
@@ -370,12 +433,28 @@ void zclassicd_oracle_stop(void)
 void zclassicd_oracle_stats_snapshot(struct zclassicd_oracle_stats *out)
 {
     if (!out) return;
+    out->attempts_total     = atomic_load(&g_oracle.attempts_total);
     out->probes_total       = atomic_load(&g_oracle.probes_total);
     out->probes_agree       = atomic_load(&g_oracle.probes_agree);
     out->probes_disagree    = atomic_load(&g_oracle.probes_disagree);
     out->rpc_errors         = atomic_load(&g_oracle.rpc_errors);
     out->last_probe_unix_us = atomic_load(&g_oracle.last_probe_unix_us);
     out->last_probed_height = atomic_load(&g_oracle.last_probed_height);
+    out->last_attempt_unix_us =
+        atomic_load(&g_oracle.last_attempt_unix_us);
+    out->last_attempt_height =
+        atomic_load(&g_oracle.last_attempt_height);
+    out->last_error_unix_us = atomic_load(&g_oracle.last_error_unix_us);
+    out->last_error_height  = atomic_load(&g_oracle.last_error_height);
+    out->last_error_code    = atomic_load(&g_oracle.last_error_code);
+    out->rpc_transport_reachable =
+        atomic_load(&g_oracle.rpc_transport_reachable) != 0;
+    out->oracle_usable      = atomic_load(&g_oracle.oracle_usable) != 0;
+    out->reachable          = out->oracle_usable;
+    pthread_mutex_lock(&g_oracle.lock);
+    snprintf(out->last_error, sizeof(out->last_error), "%s",
+             g_oracle.last_error);
+    pthread_mutex_unlock(&g_oracle.lock);
 }
 
 void zclassicd_oracle_reset_for_test(void)
@@ -397,12 +476,22 @@ void zclassicd_oracle_reset_for_test(void)
     g_oracle.rpc_password[0] = '\0';
     g_oracle.cadence_secs = 0;
     g_oracle.heights_per_tick = 0;
+    atomic_store(&g_oracle.attempts_total, 0);
     atomic_store(&g_oracle.probes_total, 0);
     atomic_store(&g_oracle.probes_agree, 0);
     atomic_store(&g_oracle.probes_disagree, 0);
     atomic_store(&g_oracle.rpc_errors, 0);
     atomic_store(&g_oracle.last_probe_unix_us, 0);
     atomic_store(&g_oracle.last_probed_height, 0);
+    atomic_store(&g_oracle.last_attempt_unix_us, 0);
+    atomic_store(&g_oracle.last_attempt_height, 0);
+    atomic_store(&g_oracle.last_error_unix_us, 0);
+    atomic_store(&g_oracle.last_error_height, 0);
+    atomic_store(&g_oracle.last_error_code, 0);
+    atomic_store(&g_oracle.rpc_transport_reachable, 0);
+    atomic_store(&g_oracle.oracle_usable, 0);
+    atomic_store(&g_oracle.reachable, 0);
+    g_oracle.last_error[0] = '\0';
     pthread_mutex_unlock(&g_oracle.lock);
 }
 
@@ -437,10 +526,22 @@ bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "have_password",   have_pass);
     json_push_kv_int (out, "cadence_secs",    cad);
     json_push_kv_int (out, "heights_per_tick",hpt);
+    json_push_kv_int (out, "attempts_total",  s.attempts_total);
     json_push_kv_int (out, "probes_total",    s.probes_total);
     json_push_kv_int (out, "probes_agree",    s.probes_agree);
     json_push_kv_int (out, "probes_disagree", s.probes_disagree);
     json_push_kv_int (out, "rpc_errors",      s.rpc_errors);
+    json_push_kv_bool(out, "rpc_transport_reachable",
+                      s.rpc_transport_reachable);
+    json_push_kv_bool(out, "oracle_usable",   s.oracle_usable);
+    json_push_kv_bool(out, "reachable",       s.reachable);
+    json_push_kv_str (out, "last_error",      s.last_error);
+    json_push_kv_int (out, "last_error_code", s.last_error_code);
+    json_push_kv_int (out, "last_error_unix_us", s.last_error_unix_us);
+    json_push_kv_int (out, "last_error_height", s.last_error_height);
+    json_push_kv_int (out, "last_attempt_unix_us",
+                      s.last_attempt_unix_us);
+    json_push_kv_int (out, "last_attempt_height", s.last_attempt_height);
     json_push_kv_int (out, "last_probe_unix_us", s.last_probe_unix_us);
     json_push_kv_int (out, "last_probed_height", s.last_probed_height);
     return true;

@@ -32,6 +32,7 @@
 #include "rpc/server.h"
 #include "json/json.h"
 #include "util/clientversion.h"
+#include "validation/main_state.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -609,14 +610,34 @@ int test_syncdiag_rpc(void)
             json_is_null(json_get(svc, "candidate_lag_observed"));
         ok = ok && json_get(svc, "candidate_lag") != NULL &&
             json_get_int(json_get(svc, "candidate_lag")) == 0;
+        ok = ok && json_get(svc, "mirror_monitor_running") != NULL &&
+            json_get_bool(json_get(svc, "mirror_monitor_running"));
+        ok = ok && json_get(svc, "zclassicd_rpc_transport_reachable") != NULL &&
+            json_get_bool(json_get(svc, "zclassicd_rpc_transport_reachable"));
+        ok = ok && json_get(svc, "legacy_oracle_usable") != NULL &&
+            json_get_bool(json_get(svc, "legacy_oracle_usable"));
+        ok = ok && json_get(svc, "zclassicd_rpc_error_code") != NULL &&
+            json_get_int(json_get(svc, "zclassicd_rpc_error_code")) == 0;
+        ok = ok && json_get(svc, "zclassicd_rpc_error_message") != NULL &&
+            strcmp(json_get_str(json_get(svc,
+                                         "zclassicd_rpc_error_message")),
+                   "") == 0;
+        ok = ok && json_get(svc, "candidate_blocker") != NULL &&
+            strcmp(json_get_str(json_get(svc, "candidate_blocker")),
+                   "body-hash-mismatch") == 0;
+        ok = ok && json_get(svc, "candidate_blocker_scope") != NULL &&
+            strcmp(json_get_str(json_get(svc, "candidate_blocker_scope")),
+                   "advisory_source") == 0;
         ok = ok && json_get(svc, "activation_blocker") != NULL &&
             strcmp(json_get_str(json_get(svc, "activation_blocker")),
                    "body-hash-mismatch") == 0;
         ok = ok && json_get(svc, "last_blocker_code") != NULL &&
             strcmp(json_get_str(json_get(svc, "last_blocker_code")),
                    "body-hash-mismatch") == 0;
-        ok = ok && json_get(svc, "legacy_advisory_gated_by_native_retries") != NULL;
-        ok = ok && json_get(svc, "mirror_repair_gated_by_local_retries") != NULL;
+        ok = ok && json_get(svc,
+                             "legacy_advisory_gated_by_native_retries") != NULL;
+        ok = ok && json_get(svc,
+                             "mirror_repair_gated_by_local_retries") != NULL;
         ok = ok && json_get(svc, "local_retries_exhausted") != NULL;
         ok = ok && json_get(svc, "overrides_total") != NULL;
         ok = ok && json_get(svc, "unsafe_overrides_total") != NULL &&
@@ -712,11 +733,48 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(&result, "mirror_lag")) == 0;
         ok = ok && json_get(&result, "mirror_lag_observed") != NULL &&
             json_is_null(json_get(&result, "mirror_lag_observed"));
+        ok = ok && json_get(&result, "mirror_monitor_running") != NULL &&
+            json_get_bool(json_get(&result, "mirror_monitor_running"));
+        ok = ok && json_get(&result,
+                            "zclassicd_rpc_transport_reachable") != NULL &&
+            !json_get_bool(json_get(&result,
+                                    "zclassicd_rpc_transport_reachable"));
+        ok = ok && json_get(&result, "legacy_oracle_usable") != NULL &&
+            !json_get_bool(json_get(&result, "legacy_oracle_usable"));
+        ok = ok && json_get(&result, "zclassicd_rpc_error_code") != NULL &&
+            json_get_int(json_get(&result, "zclassicd_rpc_error_code")) == 0;
+        ok = ok && json_get(&result,
+                            "zclassicd_rpc_error_message") != NULL &&
+            strcmp(json_get_str(json_get(
+                       &result, "zclassicd_rpc_error_message")),
+                   "connect failed") == 0;
+        ok = ok && json_get(&result, "mirror_rpc_errors") != NULL &&
+            json_get_int(json_get(&result, "mirror_rpc_errors")) == 0;
+        ok = ok && json_get(&result, "mirror_active_error_code") != NULL &&
+            strcmp(json_get_str(json_get(&result,
+                                         "mirror_active_error_code")),
+                   "body-hash-mismatch") == 0;
+        ok = ok && json_get(&result, "mirror_active_error_detail") != NULL &&
+            strcmp(json_get_str(json_get(&result,
+                                         "mirror_active_error_detail")),
+                   "connect failed") == 0;
+        ok = ok && json_get(&result, "candidate_blocker") != NULL &&
+            strcmp(json_get_str(json_get(&result, "candidate_blocker")),
+                   "body-hash-mismatch") == 0;
+        ok = ok && json_get(&result, "candidate_blocker_scope") != NULL &&
+            strcmp(json_get_str(json_get(
+                       &result, "candidate_blocker_scope")),
+                   "active_or_safety") == 0;
+        ok = ok && json_get(&result, "legacy_advisory_blocker") != NULL &&
+            strcmp(json_get_str(json_get(
+                       &result, "legacy_advisory_blocker")),
+                   "body-hash-mismatch") == 0;
         ok = ok && json_get(&result, "mirror_blockers_total") != NULL &&
             json_get_int(json_get(&result, "mirror_blockers_total")) == 1;
         ok = ok && json_get(&result, "mirror_stalls_total") != NULL &&
             json_get_int(json_get(&result, "mirror_stalls_total")) == 0;
-        ok = ok && json_get(&result, "mirror_unsafe_overrides_total") != NULL &&
+        ok = ok && json_get(&result,
+                            "mirror_unsafe_overrides_total") != NULL &&
             json_get_int(json_get(&result,
                                   "mirror_unsafe_overrides_total")) == 1;
         ok = ok && json_get(&result, "mirror_last_override_safe") != NULL &&
@@ -833,6 +891,145 @@ int test_syncdiag_rpc(void)
         block_source_policy_reset_for_test();
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
+    }
+
+    printf("healthcheck: scopes zclassicd warmup as advisory when P2P "
+           "is active (RED)... ");
+    {
+        struct connman cm;
+        struct node_signals sigs;
+        struct main_state ms;
+        struct block_index tip;
+        struct block_index best_header;
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+        struct legacy_mirror_sync_stats stats;
+
+        chain_params_select(CHAIN_MAIN);
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&ms, 0, sizeof(ms));
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(&stats, 0, sizeof(stats));
+
+        bool ok = connman_init(&cm, chain_params_get(), &sigs);
+        main_state_init(&ms);
+        tip.nHeight = 3117074;
+        best_header.nHeight = 3117074;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &best_header;
+        ok = ok && syncdiag_add_peer(&cm, 21, false,
+                                     PEER_HANDSHAKE_COMPLETE) != NULL;
+        ok = ok && syncdiag_add_peer(&cm, 22, false,
+                                     PEER_HANDSHAKE_COMPLETE) != NULL;
+        ok = ok && syncdiag_add_peer(&cm, 23, false,
+                                     PEER_HANDSHAKE_COMPLETE) != NULL;
+
+        block_source_policy_reset_for_test();
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        block_source_policy_init(&cm, &ms, NULL);
+
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = false;
+        stats.legacy_height = 0;
+        stats.local_height = 3117074;
+        stats.best_header_height = 3117074;
+        stats.target_height = 3117074;
+        stats.rpc_errors = 940;
+        stats.last_attempt = 123456;
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "rpc-unreachable");
+        snprintf(stats.last_error, sizeof(stats.last_error),
+                 "%s",
+                 "rpc error -28: Activating best chain... height 0 (1%)");
+        legacy_mirror_sync_test_set_stats(&stats, &ms);
+
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "healthcheck", &params, &result);
+
+        const struct json_value *checks = json_get(&result, "checks");
+        const struct json_value *ca =
+            checks ? json_get(checks, "chain_advance") : NULL;
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && ca && ca->type == JSON_OBJ;
+        ok = ok && json_get(ca, "selected_source") != NULL &&
+            strcmp(json_get_str(json_get(ca, "selected_source")),
+                   "p2p") == 0;
+        ok = ok && json_get(ca, "selected_source_trust") != NULL &&
+            strcmp(json_get_str(json_get(ca, "selected_source_trust")),
+                   "native_peer_validated") == 0;
+        ok = ok && json_get(&result, "active_source") != NULL &&
+            strcmp(json_get_str(json_get(&result, "active_source")),
+                   "p2p") == 0;
+        ok = ok && json_get(&result, "active_source_trust") != NULL &&
+            strcmp(json_get_str(json_get(&result, "active_source_trust")),
+                   "native_peer_validated") == 0;
+        ok = ok && json_get(&result, "active_blocker") != NULL &&
+            strcmp(json_get_str(json_get(&result, "active_blocker")),
+                   "") == 0;
+        ok = ok && json_get(&result, "candidate_source") != NULL &&
+            strcmp(json_get_str(json_get(&result, "candidate_source")),
+                   "legacy_advisory") == 0;
+        ok = ok && json_get(&result, "candidate_blocker") != NULL &&
+            strcmp(json_get_str(json_get(&result, "candidate_blocker")),
+                   "") == 0;
+        ok = ok && json_get(&result, "candidate_blocker_scope") != NULL &&
+            strcmp(json_get_str(json_get(
+                       &result, "candidate_blocker_scope")),
+                   "advisory_only") == 0;
+        ok = ok && json_get(&result, "legacy_advisory_blocker") != NULL &&
+            strcmp(json_get_str(json_get(
+                       &result, "legacy_advisory_blocker")),
+                   "rpc-unreachable") == 0;
+        ok = ok && json_get(&result, "mirror_monitor_running") != NULL &&
+            json_get_bool(json_get(&result, "mirror_monitor_running"));
+        ok = ok && json_get(&result,
+                            "zclassicd_rpc_transport_reachable") != NULL &&
+            json_get_bool(json_get(&result,
+                                   "zclassicd_rpc_transport_reachable"));
+        ok = ok && json_get(&result, "legacy_oracle_usable") != NULL &&
+            !json_get_bool(json_get(&result, "legacy_oracle_usable"));
+        ok = ok && json_get(&result, "zclassicd_rpc_error_code") != NULL &&
+            json_get_int(json_get(&result,
+                                  "zclassicd_rpc_error_code")) == -28;
+        ok = ok && json_get(&result,
+                            "zclassicd_rpc_error_message") != NULL &&
+            strstr(json_get_str(json_get(
+                       &result, "zclassicd_rpc_error_message")),
+                   "Activating best chain") != NULL;
+        ok = ok && json_get(&result, "mirror_rpc_errors") != NULL &&
+            json_get_int(json_get(&result, "mirror_rpc_errors")) == 940;
+        ok = ok && json_get(&result, "mirror_last_attempt") != NULL &&
+            json_get_int(json_get(&result, "mirror_last_attempt")) == 123456;
+        ok = ok && json_get(&result, "mirror_active_error_code") != NULL &&
+            strcmp(json_get_str(json_get(&result,
+                                         "mirror_active_error_code")),
+                   "rpc-unreachable") == 0;
+        ok = ok && json_get(&result, "mirror_active_error_detail") != NULL &&
+            strstr(json_get_str(json_get(
+                       &result, "mirror_active_error_detail")),
+                   "Activating best chain") != NULL;
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+        json_free(&params);
+        json_free(&result);
+        rpc_net_set_connman(NULL);
+        block_source_policy_reset_for_test();
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        main_state_free(&ms);
+        connman_free(&cm);
     }
 
     printf("getsyncdetail: exposes mirror override safety context "

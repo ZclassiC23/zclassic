@@ -59,6 +59,8 @@ struct legacy_mirror_sync_stats {
     bool    enabled;
     bool    running;
     bool    reachable;
+    bool    zclassicd_rpc_transport_reachable;
+    bool    legacy_oracle_usable;
     bool    in_flight;
     int     legacy_height;
     int     legacy_headers;
@@ -110,6 +112,8 @@ struct legacy_mirror_sync_stats {
     char    last_blocker_id[64];
     char    csr_failure_reason[160];
     char    last_error[160];
+    int     zclassicd_rpc_error_code;
+    char    zclassicd_rpc_error_message[160];
     /* Lag-SLO breach state — fail loudly and fast. Tracked atomically;
      * snapshot is point-in-time and consistent within one tick. */
     int     lag_sla_breach_blocks;   /* configured threshold */
@@ -135,6 +139,11 @@ void legacy_mirror_sync_push_observed_lag_json(
     struct json_value *out,
     const char *key,
     const struct legacy_mirror_sync_stats *stats);
+const char *legacy_mirror_sync_blocker_code(
+    const struct legacy_mirror_sync_stats *stats);
+bool legacy_mirror_sync_blocker_should_surface(
+    const struct legacy_mirror_sync_stats *stats,
+    bool non_legacy_source_selected);
 bool legacy_mirror_sync_dump_state_json(struct json_value *out,
                                         const char *key);
 

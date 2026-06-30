@@ -43,6 +43,51 @@ enum rf_hash_split_side {
 enum rf_hash_split_side stage_repair_classify_hash_split(
     struct main_state *ms, struct sqlite3 *db, int height, bool *out_err);
 
+bool stage_reducer_frontier_log_hole_below_unlocked(
+    struct sqlite3 *db,
+    const char *sql,
+    const char *what,
+    int cursor,
+    int *out_height);
+
+bool stage_reducer_frontier_try_stale_script_replay(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
+
+bool stage_reducer_frontier_try_validate_script_hash_split_replay(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
+
+bool stage_reducer_frontier_try_stale_proof_replay(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
+
+/* Shared one-shot progress_meta marker helpers for reducer-frontier repairs.
+ * Key shape:
+ *   reducer_frontier.<repair_name>_repair.<height>.<block_hash_hex>
+ * Caller holds progress_store_tx_lock() for marker reads and
+ * progress-store transaction ownership for *_record_in_tx. */
+bool stage_reducer_frontier_repair_marker_key(
+    char key[192],
+    const char *repair_name,
+    int height,
+    const struct uint256 *block_hash);
+bool stage_reducer_frontier_repair_marker_seen(
+    struct sqlite3 *db,
+    const char *key,
+    const char *label,
+    bool *seen);
+bool stage_reducer_frontier_repair_marker_record_in_tx(
+    struct sqlite3 *db,
+    const char *key,
+    const char *label);
+
 bool stage_reducer_frontier_try_replay_repairs(
     struct sqlite3 *db,
     struct main_state *ms,
@@ -55,6 +100,18 @@ bool stage_reducer_frontier_force_stage_cursor_in_tx(
     const char *stage_name,
     const char *label,
     int target);
+
+bool stage_reducer_frontier_find_lowest_validate_headers_hash_split_unlocked(
+    struct sqlite3 *db,
+    int start_height,
+    int end_height,
+    int *out_height);
+
+bool stage_reducer_frontier_reconcile_script_proof_refill_cursors(
+    struct sqlite3 *db,
+    bool apply,
+    int scan_floor,
+    struct stage_reducer_frontier_reconcile_result *out);
 
 bool stage_reducer_frontier_reconcile_refill_cursors(
     struct sqlite3 *db,
@@ -71,8 +128,9 @@ bool stage_reducer_frontier_reconcile_validate_hash_split_cursor(
  * back to the lowest rowless (unapplied) hole at or above the coins-applied
  * floor. PRECONDITION: a coin-tear refusal must be pending
  * (out->refused_coin_tear set by the frontier snapshot) — the call site
- * MUST gate on it; this repair exists for the coin-tear pin only, and the
- * callee WARNs (unthrottled, contract violation) on a no-tear invocation.
+ * MUST gate on it; this repair exists for the coin-tear pin only. The callee
+ * keeps a no-tear invocation as a silent no-op so the healthy poll path stays
+ * quiet even if an extra caller probes it directly.
  * Sets *handled=true (and clears refused_coin_tear in `out`) only when a
  * clamp was performed; on zero progress sets *handled=false so the caller
  * falls through to the next repair. Diagnostics are logged by the callee.

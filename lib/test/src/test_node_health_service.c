@@ -18,6 +18,60 @@
 #include "validation/mirror_consensus.h"
 #include "util/safe_alloc.h"
 
+static bool health_test_init_main_tip(struct main_state *ms,
+                                      struct block_index *tip,
+                                      struct uint256 *tip_hash,
+                                      int height,
+                                      uint8_t marker,
+                                      int64_t age_seconds)
+{
+    if (!ms || !tip || !tip_hash)
+        return false;
+    memset(ms, 0, sizeof(*ms));
+    memset(tip, 0, sizeof(*tip));
+    memset(tip_hash, 0, sizeof(*tip_hash));
+    main_state_init(ms);
+    block_index_init(tip);
+    tip_hash->data[0] = marker;
+    tip->phashBlock = tip_hash;
+    tip->nHeight = height;
+    tip->nTime = (uint32_t)(platform_time_wall_time_t() - age_seconds);
+    tip->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+    arith_uint256_set_u64(&tip->nChainWork, (uint64_t)height + 1);
+    if (!active_chain_move_window_tip(&ms->chain_active, tip))
+        return false;
+    ms->pindex_best_header = tip;
+    return true;
+}
+
+static bool health_test_init_connman_peer(struct connman *cm,
+                                          struct net_address *addr,
+                                          struct p2p_node **node_out,
+                                          const char *name,
+                                          int height)
+{
+    if (!cm || !addr || !node_out)
+        return false;
+    memset(cm, 0, sizeof(*cm));
+    memset(addr, 0, sizeof(*addr));
+    net_manager_init(&cm->manager);
+    cm->manager.nodes = zcl_calloc(1, sizeof(*cm->manager.nodes),
+                                   "test_nodes");
+    if (!cm->manager.nodes)
+        return false;
+    *node_out = p2p_node_create(&cm->manager, ZCL_INVALID_SOCKET, addr,
+                                name, false);
+    if (!*node_out)
+        return false;
+    (*node_out)->starting_height = height;
+    (*node_out)->state = PEER_HANDSHAKE_COMPLETE;
+    (*node_out)->services = NODE_NETWORK;
+    cm->manager.nodes[0] = *node_out;
+    cm->manager.num_nodes = 1;
+    rpc_net_set_connman(cm);
+    return true;
+}
+
 int test_node_health_service(void)
 {
     int failures = 0;
@@ -43,6 +97,10 @@ int test_node_health_service(void)
         ok = ok && !health.import_active;
         ok = ok && health.import_progress_age_seconds == 0;
         ok = ok && strcmp(health.degraded_reason, "no_peers") == 0;
+        ok = ok && !health.serving;
+        ok = ok && strcmp(health.blocking_reason, "no_peers") == 0;
+        ok = ok && !health.warning;
+        ok = ok && health.warning_count == 0;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -65,7 +123,51 @@ int test_node_health_service(void)
         ok = ok && health.peer_count == 0;
         ok = ok && !health.onion_service_ready;
         ok = ok && strcmp(health.degraded_reason, "no_peers") == 0;
+        ok = ok && !health.serving;
+        ok = ok && strcmp(health.blocking_reason, "no_peers") == 0;
 
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: at-tip peers without active tip stay unhealthy... ");
+    {
+        struct node_health_snapshot health;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        bool ok = true;
+
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "missing-tip-peer", 10);
+        if (ok) {
+            (void)node;
+            node_health_test_set_log_head_override(10);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, NULL);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && !health.healthy;
+            ok = ok && health.tip_height == -1;
+            ok = ok && health.header_height == -1;
+            ok = ok && health.peer_best_height == 10;
+            ok = ok && strcmp(health.degraded_reason,
+                              "active_tip_unknown") == 0;
+            ok = ok && !health.serving;
+            ok = ok && strcmp(health.blocking_reason,
+                              "active_tip_unknown") == 0;
+        }
+
+        node_health_test_set_log_head_override(-2);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -109,6 +211,8 @@ int test_node_health_service(void)
         ok = ok && (node != NULL);
         if (ok) {
             node->starting_height = 125;
+            node->state = PEER_HANDSHAKE_COMPLETE;
+            node->services = NODE_NETWORK;
             cm.manager.nodes[0] = node;
             cm.manager.num_nodes = 1;
             rpc_net_set_connman(&cm);
@@ -124,6 +228,9 @@ int test_node_health_service(void)
             ok = ok && health.tip_height == 100;
             ok = ok && health.header_height == 125;
             ok = ok && strcmp(health.degraded_reason, "headers_ahead_25") == 0;
+            ok = ok && !health.serving;
+            ok = ok && strcmp(health.blocking_reason,
+                              "headers_ahead_25") == 0;
         }
 
         main_state_free(&ms);
@@ -171,6 +278,8 @@ int test_node_health_service(void)
         }
         if (ok) {
             node->starting_height = tip.nHeight;
+            node->state = PEER_HANDSHAKE_COMPLETE;
+            node->services = NODE_NETWORK;
             cm.manager.nodes[0] = node;
             cm.manager.num_nodes = 1;
             rpc_net_set_connman(&cm);
@@ -191,6 +300,187 @@ int test_node_health_service(void)
             ok = ok && health.log_head_gap == 2;
             ok = ok && strcmp(health.degraded_reason,
                               "log_head_gap_2") == 0;
+            ok = ok && !health.serving;
+            ok = ok && strcmp(health.blocking_reason,
+                              "log_head_gap_2") == 0;
+        }
+
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: unknown reducer log-head blocks green health... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        bool ok = true;
+        memset(&cm, 0, sizeof(cm));
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 111,
+                                             111, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "unknown-log-peer",
+                                                 tip.nHeight);
+        if (ok) {
+            (void)node;
+            node_health_test_set_log_head_override(-1);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && !health.healthy;
+            ok = ok && health.log_head == -1;
+            ok = ok && health.log_head_gap == -1;
+            ok = ok && strcmp(health.degraded_reason,
+                              "log_head_unknown") == 0;
+            ok = ok && !health.serving;
+            ok = ok && strcmp(health.blocking_reason,
+                              "log_head_unknown") == 0;
+        }
+
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: source-policy gap demotes stale at-tip FSM... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct cac_decision decision;
+        bool ok = true;
+        memset(&cm, 0, sizeof(cm));
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 120,
+                                             120, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "source-gap-peer",
+                                                 tip.nHeight);
+        memset(&decision, 0, sizeof(decision));
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = tip.nHeight;
+        decision.target_height = tip.nHeight + 5;
+        decision.sources[CAC_SOURCE_P2P].source = CAC_SOURCE_P2P;
+        decision.sources[CAC_SOURCE_P2P].available = true;
+        decision.sources[CAC_SOURCE_P2P].healthy = true;
+        decision.sources[CAC_SOURCE_P2P].selectable = true;
+        decision.sources[CAC_SOURCE_P2P].height = tip.nHeight + 5;
+        if (ok) {
+            (void)node;
+            node_health_test_set_log_head_override(tip.nHeight);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = !health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && !health.healthy;
+            ok = ok && strcmp(health.degraded_reason,
+                              "chain_advance_gap_5") == 0;
+            ok = ok && !health.serving;
+            ok = ok && strcmp(health.blocking_reason,
+                              "chain_advance_gap_5") == 0;
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: at-tip stale block timestamp stays healthy... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip = {0};
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        memset(&tip, 0, sizeof(tip));
+        main_state_init(&ms);
+        net_manager_init(&cm.manager);
+        block_index_init(&tip);
+
+        h_tip.data[0] = 203;
+        tip.phashBlock = &h_tip;
+        tip.nHeight = 203;
+        tip.nTime = (uint32_t)(platform_time_wall_time_t() - 700);
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        arith_uint256_set_u64(&tip.nChainWork, 204);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &tip;
+
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),
+                                      "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        if (ok) {
+            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                                   "stale-at-tip-peer", false);
+            ok = ok && (node != NULL);
+        }
+        if (ok) {
+            node->starting_height = tip.nHeight;
+            node->state = PEER_HANDSHAKE_COMPLETE;
+            node->services = NODE_NETWORK;
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            node_health_test_set_log_head_override(tip.nHeight);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && health.tip_stale;
+            ok = ok && health.tip_stale_seconds >= 600;
+            ok = ok && health.tip_height == tip.nHeight;
+            ok = ok && health.peer_best_height == tip.nHeight;
+            ok = ok && health.log_head_gap == 0;
+            ok = ok && health.healthy;
+            ok = ok && health.serving;
+            ok = ok && health.degraded_reason[0] == '\0';
+            ok = ok && health.blocking_reason[0] == '\0';
+            ok = ok && health.warning;
+            ok = ok && health.warning_count >= 1;
+            ok = ok && strstr(health.warning_reasons, "tip_stale") != NULL;
         }
 
         node_health_test_set_log_head_override(-2);
@@ -235,26 +525,26 @@ int test_node_health_service(void)
     {
         struct node_health_snapshot health;
         struct error_ring *er = error_ring_global();
+        struct main_state ms;
         struct connman cm;
         struct net_address addr;
         struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
         bool ok = true;
 
+        memset(&ms, 0, sizeof(ms));
         memset(&cm, 0, sizeof(cm));
         memset(&addr, 0, sizeof(addr));
         error_ring_init(er);
-        net_manager_init(&cm.manager);
-        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
-        ok = ok && (cm.manager.nodes != NULL);
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 130,
+                                             130, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "old-error-peer",
+                                                 tip.nHeight);
         if (ok) {
-            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
-                                   "old-error-peer", false);
-            ok = ok && (node != NULL);
-        }
-        if (ok) {
-            cm.manager.nodes[0] = node;
-            cm.manager.num_nodes = 1;
-            rpc_net_set_connman(&cm);
+            (void)node;
+            node_health_test_set_log_head_override(tip.nHeight);
             sync_set_state(SYNC_FINDING_PEERS, "test");
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
             sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
@@ -264,7 +554,7 @@ int test_node_health_service(void)
                                 21, er);
             er->entries[0].timestamp_us =
                 ((int64_t)platform_time_wall_time_t() - 600) * 1000000;
-            node_health_collect(&health, NULL, NULL);
+            node_health_collect(&health, NULL, &ms);
 
             ok = health.synced;
             ok = ok && health.has_peers;
@@ -277,8 +567,12 @@ int test_node_health_service(void)
             ok = ok && strcmp(health.last_error,
                               "old recoverable error") == 0;
             ok = ok && health.degraded_reason[0] == '\0';
+            ok = ok && health.serving;
+            ok = ok && !health.warning;
         }
 
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
         error_ring_init(er);
@@ -290,26 +584,26 @@ int test_node_health_service(void)
     {
         struct node_health_snapshot health;
         struct error_ring *er = error_ring_global();
+        struct main_state ms;
         struct connman cm;
         struct net_address addr;
         struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
         bool ok = true;
 
+        memset(&ms, 0, sizeof(ms));
         memset(&cm, 0, sizeof(cm));
         memset(&addr, 0, sizeof(addr));
         error_ring_init(er);
-        net_manager_init(&cm.manager);
-        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
-        ok = ok && (cm.manager.nodes != NULL);
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 140,
+                                             140, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "recent-error-peer",
+                                                 tip.nHeight);
         if (ok) {
-            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
-                                   "recent-error-peer", false);
-            ok = ok && (node != NULL);
-        }
-        if (ok) {
-            cm.manager.nodes[0] = node;
-            cm.manager.num_nodes = 1;
-            rpc_net_set_connman(&cm);
+            (void)node;
+            node_health_test_set_log_head_override(tip.nHeight);
             sync_set_state(SYNC_FINDING_PEERS, "test");
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
             sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
@@ -317,7 +611,7 @@ int test_node_health_service(void)
             sync_set_state(SYNC_AT_TIP, "test");
             error_ring_observer(EV_BLOCK_REJECTED, 0, "fresh reject",
                                 12, er);
-            node_health_collect(&health, NULL, NULL);
+            node_health_collect(&health, NULL, &ms);
 
             ok = health.synced;
             ok = ok && health.has_peers;
@@ -330,8 +624,14 @@ int test_node_health_service(void)
                               event_type_name(EV_BLOCK_REJECTED)) == 0;
             ok = ok && strcmp(health.last_error, "fresh reject") == 0;
             ok = ok && health.degraded_reason[0] == '\0';
+            ok = ok && health.serving;
+            ok = ok && health.warning;
+            ok = ok && health.warning_count >= 1;
+            ok = ok && strstr(health.warning_reasons, "recent_error") != NULL;
         }
 
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
         error_ring_init(er);
@@ -342,43 +642,47 @@ int test_node_health_service(void)
     printf("node_health_service: unsafe mirror override fails health loud... ");
     {
         struct node_health_snapshot health;
+        struct main_state ms;
         struct connman cm;
         struct net_address addr;
         struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
         bool ok = true;
 
         memset(&health, 0, sizeof(health));
+        memset(&ms, 0, sizeof(ms));
         memset(&cm, 0, sizeof(cm));
         memset(&addr, 0, sizeof(addr));
         mirror_consensus_reset_for_test();
-        net_manager_init(&cm.manager);
-        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),
-                                      "test_nodes");
-        ok = ok && (cm.manager.nodes != NULL);
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 150,
+                                             150, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "unsafe-mirror-peer",
+                                                 tip.nHeight);
         if (ok) {
-            node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
-                                   "unsafe-mirror-peer", false);
-            ok = ok && (node != NULL);
-        }
-        if (ok) {
-            cm.manager.nodes[0] = node;
-            cm.manager.num_nodes = 1;
-            rpc_net_set_connman(&cm);
+            (void)node;
+            node_health_test_set_log_head_override(tip.nHeight);
             sync_set_state(SYNC_FINDING_PEERS, "test");
             sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
             sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
             sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
             sync_set_state(SYNC_AT_TIP, "test");
             mirror_consensus_record_override(42, "test_unsafe_override");
-            node_health_collect(&health, NULL, NULL);
+            node_health_collect(&health, NULL, &ms);
 
             ok = health.synced;
             ok = ok && health.has_peers;
             ok = ok && !health.healthy;
+            ok = ok && !health.serving;
             ok = ok && strcmp(health.degraded_reason,
+                              "mirror_unsafe_overrides_1") == 0;
+            ok = ok && strcmp(health.blocking_reason,
                               "mirror_unsafe_overrides_1") == 0;
         }
 
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
         mirror_consensus_reset_for_test();
@@ -492,6 +796,8 @@ int test_node_health_service(void)
         }
         if (ok) {
             node->starting_height = tip.nHeight;
+            node->state = PEER_HANDSHAKE_COMPLETE;
+            node->services = NODE_NETWORK;
             cm.manager.nodes[0] = node;
             cm.manager.num_nodes = 1;
             rpc_net_set_connman(&cm);
@@ -500,6 +806,7 @@ int test_node_health_service(void)
             sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
             sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
             sync_set_state(SYNC_AT_TIP, "test");
+            node_health_test_set_log_head_override(tip.nHeight);
             node_health_collect(&health, NULL, NULL);
 
             ok = health.synced;
@@ -518,6 +825,7 @@ int test_node_health_service(void)
         }
 
         sync_monitor_set_context(NULL, NULL, NULL);
+        node_health_test_set_log_head_override(-2);
         csr_free(csr_instance());
         app_runtime_set_current(NULL);
         rpc_net_set_connman(NULL);
@@ -555,6 +863,8 @@ int test_node_health_service(void)
         }
         if (ok) {
             node->starting_height = 10;
+            node->state = PEER_HANDSHAKE_COMPLETE;
+            node->services = NODE_NETWORK;
             cm.manager.nodes[0] = node;
             cm.manager.num_nodes = 1;
             rpc_net_set_connman(&cm);

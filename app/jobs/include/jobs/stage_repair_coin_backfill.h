@@ -1,13 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * stage_repair_coin_backfill — guarded backfill for prevout_unresolved
- * frontier holes: a coin created BELOW the inverse-delta horizon that is
- * absent from coins_kv/created_outputs (lost in a pre-delta-window era).
- * Re-derives the coin from the raw creating block, hash-verified on the
- * active chain, and inserts it ONLY after a chain-bound no-spend proof
- * over every applied active-chain block in (creator, frontier). Anything
- * unprovable refuses loudly. Design + guard ladder:
- * docs/work/coin-backfill-repair.md */
+ * stage_repair_coin_backfill — guarded active-chain backfill for
+ * prevout_unresolved frontier holes: a coin that is absent from coins_kv and
+ * not available through created_outputs at the current replay boundary.
+ * Re-derives the coin from the raw creating block, hash-verified on the active
+ * chain, and inserts it ONLY after a chain-bound no-spend proof over every
+ * applied active-chain block in (creator, frontier). The inverse-delta horizon
+ * is observability, not an eligibility boundary: recent-window holes still
+ * require active-chain proof and unprovable cases refuse loudly. Design + guard
+ * ladder: docs/work/coin-backfill-repair.md */
 
 #ifndef ZCL_JOBS_STAGE_REPAIR_COIN_BACKFILL_H
 #define ZCL_JOBS_STAGE_REPAIR_COIN_BACKFILL_H

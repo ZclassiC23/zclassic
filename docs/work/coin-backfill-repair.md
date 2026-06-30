@@ -7,10 +7,19 @@
 > prevent at **write time** via the SHA3 import gate (shipped — the bless-time
 > torn-import gate now lives in `block_index_loader_torn_gate.c` + its test
 > `test_seed_torn_import_gate.c`). It is slated for **leaf-first deletion**
-> once that gate is live. The exhaustive guard-ladder / scan-protocol / test-plan
-> detail (the original §2–§5) has been archived; what remains is a summary plus
-> the **consensus-safety argument**, which is load-bearing for as long as the code
-> is still compiled. **Do not delete the safety reasoning while the code ships.**
+> after the sovereign `-refold-from-anchor` cutover makes copied-seed coin tears
+> unreachable. The current delete/keep split is in
+> [`architecture-deletion-plan.md`](./architecture-deletion-plan.md): delete the
+> coin-backfill TUs, their public/private headers, the boot torn gate, and the
+> `coin_backfill` diagnostics together; remove or rename the
+> `script_validate.pending_prevout` producer; keep/re-home the reducer-frontier
+> refill core, and treat tip-finalize row backfill as prune/re-home rather than
+> blanket delete. `make lint` now includes `check-no-new-coin-backfill-caller`,
+> so the public repair entry point cannot gain a second production caller before
+> the subtraction. The exhaustive guard-ladder / scan-protocol / test-plan detail
+> (the original §2–§5) has been archived; what remains is a summary plus the
+> **consensus-safety argument**, which is load-bearing for as long as the code is
+> still compiled. **Do not delete the safety reasoning while the code ships.**
 
 **Scope:** (A) guarded repair for `prevout_unresolved` frontier holes (any old
 missing coin); (B) peer-retention + body-download robustness so the node keeps
@@ -42,10 +51,18 @@ replay re-runs on the next tick and performs the already-proven cursor rewind.
 
 The repair keys on the **lowest reducer hole** when its status is
 `prevout_unresolved`, enumerates **all** unresolved prevouts of the failing
-block in one pass, and restricts to coins created **below the delta horizon**.
-Coins missing *inside* the delta window indicate a live apply bug → refused to
-the operator. **Refusals are whole-set** (no partial inserts). Every outpoint is
-one-shot, so any future lost old coin heals through the same gate.
+block in one pass. The delta horizon is retained as observability for old-hole
+geometry, but it is not a consensus refusal boundary: coins created inside the
+recent delta window are repairable when the creating block is active-chain
+hash-verified and the terminal-bound no-spend scan proves the coin was unspent
+at the frontier.
+
+`node.db` txindex is only a locator hint. If it misses a creator, the job scans a
+bounded recent active-chain window (32K blocks) before accepting
+`txindex_miss` as terminal; legacy unversioned `txindex_miss` markers are
+deleted and re-proven. Newly proven terminal misses are written as
+`txindex_miss:v2`. **Refusals are whole-set** (no partial inserts). Every
+outpoint is one-shot, so any future lost coin heals through the same gate.
 
 ## Consensus-safety argument (load-bearing)
 
@@ -61,8 +78,8 @@ interleaving can stitch branches into the proof.
 
 The repair is structurally incapable of minting:
 - **a spent coin** — the scan finds the spend → refuse-permanent;
-- **an off-chain coin** — the creating tx must hash-match inside the active-chain
-  block at its indexed height;
+- **an off-chain coin** — the creating tx must hash-match inside an active-chain
+  block, either via the txindex locator or the bounded active-chain fallback;
 - **a cross-branch coin** — the chain binding above.
 
 **Owner-gated:** `ZCL_REDUCER_COIN_BACKFILL_ACK=1` is required (it mints state →

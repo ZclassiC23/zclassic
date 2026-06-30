@@ -167,6 +167,22 @@ int test_coins_kv_sovereign_gate(void)
     SOV_CHECK("clear_self_folded idempotent (absent key)",
               coins_kv_clear_self_folded(db));
 
+    /* A reseed reset is a stronger clear edge: it drops coins/frontier plus both
+     * provenance keys so a future borrowed seed cannot inherit a stale
+     * self-folded claim. */
+    SOV_CHECK("mark_self_folded before reset", coins_kv_mark_self_folded(db));
+    SOV_CHECK("marker present before reset", coins_kv_contains_refold_marker(db));
+    SOV_CHECK("reset_for_reseed clears store", coins_kv_reset_for_reseed(db));
+    SOV_CHECK("reset cleared marker", !coins_kv_contains_refold_marker(db));
+    SOV_CHECK("reset removed coins", coins_kv_count(db) == 0);
+    {
+        char r[64] = {0};
+        SOV_CHECK("reset -> NOT self-derived (applied absent)",
+                  !coins_kv_tip_is_self_derived(db, 50, r, sizeof(r)));
+        SOV_CHECK("reset reason applied_height_absent",
+                  strcmp(r, "applied_height_absent") == 0);
+    }
+
     progress_store_close();
     test_cleanup_tmpdir(dir);
     return failures;

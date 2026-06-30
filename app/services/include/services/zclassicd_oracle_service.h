@@ -76,12 +76,22 @@ struct zcl_result zclassicd_oracle_probe(int height,
 bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key);
 
 struct zclassicd_oracle_stats {
+    int64_t attempts_total;
     int64_t probes_total;
     int64_t probes_agree;
     int64_t probes_disagree;
     int64_t rpc_errors;
     int64_t last_probe_unix_us;
     int     last_probed_height;
+    int64_t last_attempt_unix_us;
+    int     last_attempt_height;
+    int64_t last_error_unix_us;
+    int     last_error_height;
+    int     last_error_code;    /* JSON-RPC code when known; 0 otherwise */
+    bool    rpc_transport_reachable;
+    bool    oracle_usable;
+    bool    reachable;          /* compatibility alias for oracle_usable */
+    char    last_error[128];    /* last RPC/parse failure, empty when usable */
 };
 
 void zclassicd_oracle_stats_snapshot(struct zclassicd_oracle_stats *out);

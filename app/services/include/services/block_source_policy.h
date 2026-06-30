@@ -37,9 +37,9 @@ struct cac_source_status {
     bool blocked;
     /* Typed classification of `blocked` for diagnostics, audit, and
      * future policy decisions. Blocked sources are not selected here;
-     * PERMANENT blockers (e.g. mirror hash-disagreement,
-     * body-hash-mismatch) remain distinct from recoverable blockers in
-     * status output and decision events. */
+     * PERMANENT blockers remain distinct from recoverable blockers in
+     * status output and decision events. Mirror hash-disagreement stays
+     * transient until the divergence locator proves a confirmed split. */
     enum blocker_class blocked_class;
     bool authorized;
     bool selectable;
@@ -165,6 +165,7 @@ bool block_source_policy_local_header_refill_needed(
 void block_source_policy_note_projection_deferred(int height,
                                                   const char *reason);
 void block_source_policy_get_status(struct cac_decision *out);
+bool block_source_policy_selected_non_legacy_source(void);
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 bool block_source_policy_dump_state_json(struct json_value *out,
                                          const char *key);

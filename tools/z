@@ -37,7 +37,38 @@ CLI="$(dirname "$0")/../build/bin/zclassic-cli"
 [ -x "$CLI" ] || CLI="./build/bin/zclassic-cli"
 [ -x "$CLI" ] || { echo "zclassic-cli not found" >&2; exit 1; }
 
-rpc() { "$CLI" "$@" 2>/dev/null; }
+systemd_exec_arg() {
+    local key="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null \
+        | tr ' ' '\n' \
+        | sed -n "s/^-${key}=//p" \
+        | head -1
+}
+
+DEFAULT_DATADIR="$HOME/.zclassic-c23"
+DATADIR="${ZCL_DATADIR:-$DEFAULT_DATADIR}"
+if [ -z "${ZCL_DATADIR:-}" ] && [ ! -f "$DATADIR/.cookie" ]; then
+    SERVICE_DATADIR="$(systemd_exec_arg datadir || true)"
+    if [ -n "$SERVICE_DATADIR" ] && [ -f "$SERVICE_DATADIR/.cookie" ]; then
+        DATADIR="$SERVICE_DATADIR"
+    fi
+fi
+
+RPCPORT="${ZCL_RPCPORT:-18232}"
+if [ -z "${ZCL_RPCPORT:-}" ]; then
+    SERVICE_RPCPORT="$(systemd_exec_arg rpcport || true)"
+    if [ -n "$SERVICE_RPCPORT" ]; then
+        RPCPORT="$SERVICE_RPCPORT"
+    fi
+fi
+
+CLI_OPTS=("-datadir=$DATADIR" "-rpcport=$RPCPORT")
+if [ -n "${ZCL_RPCCONNECT:-}" ]; then
+    CLI_OPTS+=("-rpcconnect=$ZCL_RPCCONNECT")
+fi
+
+rpc() { "$CLI" "${CLI_OPTS[@]}" "$@" 2>/dev/null; }
 
 json_field() {
     printf '%s\n' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p; s/.*\"$2\"[[:space:]]*:[[:space:]]*\([-0-9][0-9]*\).*/\1/p; s/.*\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1
@@ -80,19 +111,37 @@ json_put_null() {
 }
 
 normalize_mirror_status_json() {
-    local json="$1" lag blocker reachable lag_known
+    local json="$1" lag blocker reachable lag_known lag_valid
+    local candidate_lag_known candidate_lag_valid
+    local legacy_height_known target_height_known
     reachable="$(json_field "$json" reachable)"
     lag="$(json_field "$json" candidate_lag)"
     [ -n "$lag" ] || lag="$(json_field "$json" lag)"
     [ -n "$lag" ] || lag=0
     lag_known="$(json_field "$json" lag_known)"
-    [ -n "$lag_known" ] || lag_known="$(json_field "$json" lag_valid)"
+    lag_valid="$(json_field "$json" lag_valid)"
+    candidate_lag_known="$(json_field "$json" candidate_lag_known)"
+    candidate_lag_valid="$(json_field "$json" candidate_lag_valid)"
+    legacy_height_known="$(json_field "$json" legacy_advisory_height_known)"
+    target_height_known="$(json_field "$json" target_height_known)"
+    [ -n "$lag_known" ] || lag_known="$candidate_lag_known"
+    [ -n "$lag_valid" ] || lag_valid="$candidate_lag_valid"
     if [ "$reachable" != "true" ]; then
         lag=0
         lag_known=false
+        lag_valid=false
+        candidate_lag_known=false
+        candidate_lag_valid=false
+        legacy_height_known=false
+        target_height_known=false
     elif [ -z "$lag_known" ]; then
         lag_known=true
     fi
+    [ -n "$lag_valid" ] || lag_valid="$lag_known"
+    [ -n "$candidate_lag_known" ] || candidate_lag_known="$lag_known"
+    [ -n "$candidate_lag_valid" ] || candidate_lag_valid="$lag_valid"
+    [ -n "$legacy_height_known" ] || legacy_height_known="$lag_known"
+    [ -n "$target_height_known" ] || target_height_known="$lag_known"
     blocker="$(json_field "$json" candidate_blocker)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" last_blocker_code)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" activation_blocker)"
@@ -105,11 +154,11 @@ normalize_mirror_status_json() {
     json="$(json_put_string "$json" candidate_source legacy_advisory)"
     json="$(json_put_string "$json" candidate_trust bounded_advisory_fallback)"
     json="$(json_put_bool "$json" lag_known "$lag_known")"
-    json="$(json_put_bool "$json" lag_valid "$lag_known")"
-    json="$(json_put_bool "$json" candidate_lag_known "$lag_known")"
-    json="$(json_put_bool "$json" candidate_lag_valid "$lag_known")"
-    json="$(json_put_bool "$json" legacy_advisory_height_known "$lag_known")"
-    json="$(json_put_bool "$json" target_height_known "$lag_known")"
+    json="$(json_put_bool "$json" lag_valid "$lag_valid")"
+    json="$(json_put_bool "$json" candidate_lag_known "$candidate_lag_known")"
+    json="$(json_put_bool "$json" candidate_lag_valid "$candidate_lag_valid")"
+    json="$(json_put_bool "$json" legacy_advisory_height_known "$legacy_height_known")"
+    json="$(json_put_bool "$json" target_height_known "$target_height_known")"
     json="$(json_put_number "$json" candidate_lag "$lag")"
     json="$(json_put_number "$json" lag "$lag")"
     if [ "$lag_known" = "true" ]; then
@@ -159,7 +208,8 @@ rpc_result() {
 }
 
 mirror_fallback_json() {
-    local c23_h c23_hash zd_resp zd_h zd_hash lag reachable observed_lag blocker
+    local c23_h c23_hash zd_resp zd_h zd_hash lag reachable observed_lag
+    local blocker lag_known lag_valid
     c23_h="$(rpc_result getblockcount)"
     c23_hash=""
     if [ -n "$c23_h" ]; then
@@ -177,17 +227,21 @@ mirror_fallback_json() {
     if [ -n "$c23_h" ] && [ -n "$zd_h" ]; then
         lag=$((zd_h - c23_h))
         observed_lag="$lag"
+        lag_known=true
+        lag_valid=true
     else
         lag=0
         observed_lag=null
+        lag_known=false
+        lag_valid=false
     fi
     blocker=""
     [ "$reachable" = "true" ] || blocker="rpc-unreachable"
     printf '{"zclassic23_height":%s,"zclassic23_hash":"%s","zclassicd_height":%s,"zclassicd_hash":"%s","legacy_advisory_height_known":%s,"target_height_known":%s,"lag_known":%s,"lag_valid":%s,"lag":%s,"lag_observed":%s,"reachable":%s,"mirror_running":false,"last_catchup":0,"last_error":"fallback: getmirrorstatus unavailable","headers_added":0,"blocks_applied":0,"target_height":0,"authority_rewind_target":0,"last_advanced_height":0,"last_progress_blocks":0,"local_recovery_active":false,"legacy_advisory_gated_by_native_retries":false,"mirror_repair_gated_by_local_retries":false,"local_retries_exhausted":false,"local_missing_height":0,"local_retry_count":0,"local_distinct_peer_count":0,"local_peer_rotation_count":0,"stuck_height":0,"stuck_status_flags":0,"stuck_reason":"","stalls_total":0,"last_blocker_code":"%s","consensus_authority":"local_consensus_validation","candidate_source":"legacy_advisory","candidate_trust":"bounded_advisory_fallback","candidate_lag_known":%s,"candidate_lag_valid":%s,"candidate_lag":%s,"candidate_lag_observed":%s,"candidate_blocker":"%s","active_error_code":"%s","active_error_detail":"fallback: getmirrorstatus unavailable","override_active":false,"overrides_total":0,"unsafe_overrides_total":0,"blockers_total":0,"last_override_height":0,"last_override_safe":false,"last_override_scope":"","last_override_reason":"","activation_blocker":"%s","csr_sqlite_rc":0,"csr_failure_reason":""}\n' \
         "${c23_h:-0}" "$c23_hash" "${zd_h:-0}" "$zd_hash" \
-        "$reachable" "$reachable" "$reachable" "$reachable" \
+        "$reachable" "$reachable" "$lag_known" "$lag_valid" \
         "$lag" "$observed_lag" "$reachable" "$blocker" \
-        "$reachable" "$reachable" "$lag" "$observed_lag" \
+        "$lag_known" "$lag_valid" "$lag" "$observed_lag" \
         "$blocker" "$blocker" "$blocker"
 }
 

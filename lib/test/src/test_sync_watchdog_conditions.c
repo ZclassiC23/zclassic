@@ -9,6 +9,7 @@
 #include "framework/condition.h"
 #include "json/json.h"
 #include "net/download.h"
+#include "net/protocol.h"
 #include "platform/clock.h"
 #include "services/sync_monitor.h"
 
@@ -136,6 +137,7 @@ int test_sync_watchdog_conditions(void)
         peer.id = 1;
         peer.starting_height = 2600;
         peer.state = PEER_ACTIVE;
+        peer.services = NODE_NETWORK;
         peer.last_getheaders_time = 999;
         peer.getheaders_stale_count = 3;
         struct p2p_node *peers[1] = { &peer };
@@ -285,6 +287,7 @@ int test_sync_watchdog_conditions(void)
         p1.id = 1; p1.starting_height = 20; p1.state = PEER_ACTIVE;
         p2.id = 2; p2.starting_height = 20; p2.state = PEER_ACTIVE;
         p3.id = 3; p3.starting_height = 20; p3.state = PEER_ACTIVE;
+        p1.services = p2.services = p3.services = NODE_NETWORK;
         p1.last_getheaders_time = p2.last_getheaders_time =
             p3.last_getheaders_time = 3999;
         struct p2p_node *peers[3] = { &p1, &p2, &p3 };
@@ -324,6 +327,7 @@ int test_sync_watchdog_conditions(void)
         inbound.inbound = true;
         inbound.starting_height = 20;
         inbound.state = PEER_ACTIVE;
+        inbound.services = NODE_NETWORK;
         inbound.last_getheaders_time = 4499;
         struct p2p_node *peers[1] = { &inbound };
         cm.manager.nodes = peers;

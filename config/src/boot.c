@@ -3712,6 +3712,27 @@ sapling_tree_boot_check_done:
          * from-anchor signal so the L0 floor holds at the anchor and the
          * self-repair is suspended until utxo_apply reaches the resume target
          * (the active tip we are about to fold up to). */
+        const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+        int32_t resume_target =
+            (int32_t)active_chain_height(&g_state.chain_active);
+        if (cp) {
+            int32_t first_missing = -1;
+            if (!boot_refold_body_span_contiguous(
+                    &g_state, cp->height, resume_target, &first_missing,
+                    /*raise_blocker=*/true)) {
+                fprintf(stderr,
+                        "WARNING: refold-from-anchor: fold span (%d..%d] "
+                        "has a missing block body at h=%d — refusing the "
+                        "explicit cutover before resetting coins_kv. Fill the "
+                        "body span and retry.\n",
+                        cp->height, resume_target, first_missing);
+                event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                            "refold_from_anchor body_gap anchor=%d "
+                            "resume_target=%d first_missing=%d",
+                            cp->height, resume_target, first_missing);
+                return false;
+            }
+        }
         boot_refold_from_anchor_reset(&g_node_db);
         /* The from-anchor reset cleared node_state["sapling_tree"] to NULL.
          * Carry the fail-closed guard from the snapshot-loader path: re-derive
@@ -3759,7 +3780,6 @@ sapling_tree_boot_check_done:
                     set_sapling_tree_for_flush(&g_state.sapling_tree);
             }
         }
-        int32_t resume_target = (int32_t)active_chain_height(&g_state.chain_active);
         (void)refold_progress_mark_started_from_anchor(progress_store_db(),
                                                        resume_target);
     }

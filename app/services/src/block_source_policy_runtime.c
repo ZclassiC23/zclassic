@@ -26,6 +26,7 @@
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "validation/mirror_consensus.h"
 #include "util/sync.h"
 
 #include <stdio.h>
@@ -68,30 +69,13 @@ void bsp_lock_init_once(void)
 }
 
 /* Classify legacy_mirror_sync_service blocker strings into the typed enum
- * reported by source scoring, status, and decision events.
- *
- * The string codes come from the legacy mirror blocker setter in
- * legacy_mirror_sync_service.c. They're stable identifiers, not free
- * text — this table is the canonical mapping. Any unknown code is
- * conservatively TRANSIENT (recoverable by default) so an un-mapped new
- * code doesn't accidentally look like a hard consensus gate. Reverse
- * risk — accidentally classifying a real consensus divergence as
- * TRANSIENT — is bounded: hash-disagreement and body-hash-mismatch are
- * the only PERMANENT entries and they are the existing codes that signal
- * consensus divergence today; any future consensus-divergence code MUST
- * be added here.
- *
- * Update sites: when the legacy mirror blocker setter gains a new code,
- * add it here. */
+ * reported by source scoring, status, and decision events. Consensus blocker
+ * names share mirror_consensus_classify_blocker_reason(); source policy only
+ * adds runtime resource/dependency codes that mirror_consensus does not own. */
 enum blocker_class bsp_classify_mirror_blocker_class(const char *code)
 {
     if (!code || code[0] == '\0')
         return BLOCKER_TRANSIENT;
-
-    /* Consensus divergence — the mirror disagrees with us on a hash. */
-    if (strcmp(code, "hash-disagreement") == 0 ||
-        strcmp(code, "body-hash-mismatch") == 0)
-        return BLOCKER_PERMANENT;
 
     /* Resource contention — DB writer busy or similar. RESOURCE class
      * signals "operator action may be needed". */
@@ -102,9 +86,7 @@ enum blocker_class bsp_classify_mirror_blocker_class(const char *code)
     if (strcmp(code, "activation-failed") == 0)
         return BLOCKER_DEPENDENCY;
 
-    /* Default: network/timeout/no-progress class — transient by
-     * construction. */
-    return BLOCKER_TRANSIENT;
+    return mirror_consensus_classify_blocker_reason(code);
 }
 
 void bsp_enrich_projection_deferral(struct cac_decision *d)
@@ -339,7 +321,6 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     mir->healthy = msnap.enabled && msnap.lag_known && msnap.lag >= 0 &&
                    (msnap.state[0] == '\0' ||
                     strcmp(msnap.state, "blocked") != 0);
-    mir->authorized = true;
     mir->height = msnap.legacy_advisory_height_known
                       ? msnap.legacy_height : -1;
     mir->failures = msnap.rpc_errors;
@@ -363,6 +344,7 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     } else {
         mir->blocked_class = BLOCKER_TRANSIENT;
     }
+    mir->authorized = mir->available && mir->healthy && !mir->blocked;
     if (msnap.lag_known) {
         snprintf(mir->reason, sizeof(mir->reason),
                  "state=%s lag=%d local_retries_exhausted=%s",

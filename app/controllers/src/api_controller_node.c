@@ -60,6 +60,59 @@ static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
     return snapsync_global_initialized() ? snapsync_global() : NULL;
 }
 
+static bool api_json_quote_or_null(char *out, size_t out_sz, const char *src)
+{
+    static const char hex[] = "0123456789abcdef";
+    if (!out || out_sz == 0)
+        return false;
+    if (!src)
+        return (size_t)snprintf(out, out_sz, "null") < out_sz;
+
+    size_t w = 0;
+    if (w + 1 >= out_sz)
+        return false;
+    out[w++] = '"';
+    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
+        unsigned char c = *p;
+        const char *esc = NULL;
+        switch (c) {
+        case '"':  esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\b': esc = "\\b";  break;
+        case '\f': esc = "\\f";  break;
+        case '\n': esc = "\\n";  break;
+        case '\r': esc = "\\r";  break;
+        case '\t': esc = "\\t";  break;
+        default: break;
+        }
+        if (esc) {
+            size_t n = strlen(esc);
+            if (w + n >= out_sz)
+                return false;
+            memcpy(out + w, esc, n);
+            w += n;
+        } else if (c < 0x20) {
+            if (w + 6 >= out_sz)
+                return false;
+            out[w++] = '\\';
+            out[w++] = 'u';
+            out[w++] = '0';
+            out[w++] = '0';
+            out[w++] = hex[(c >> 4) & 0x0f];
+            out[w++] = hex[c & 0x0f];
+        } else {
+            if (w + 1 >= out_sz)
+                return false;
+            out[w++] = (char)c;
+        }
+    }
+    if (w + 1 >= out_sz)
+        return false;
+    out[w++] = '"';
+    out[w] = '\0';
+    return true;
+}
+
 /* Event log — lock-free atomic reads, safe from any handler thread */
 size_t api_serve_events(const char *path, uint8_t *response,
                         size_t response_max)
@@ -167,10 +220,49 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
         g_api_ctx.node_db : app_runtime_node_db(),
         g_api_ctx.main_state);
 
-    char body[4096];
-    snprintf(body, sizeof(body),
+    char onion_json[1024];
+    char last_error_json[8192];
+    char last_error_type_json[512];
+    char wd_name_json[512];
+    char wd_trigger_json[1024];
+    char wd_reason_json[1024];
+    char degraded_json[1024];
+    char blocking_json[1024];
+    char warnings_json[1024];
+    if (!api_json_quote_or_null(onion_json, sizeof(onion_json),
+                                health.onion_address[0]
+                                    ? health.onion_address : NULL) ||
+        !api_json_quote_or_null(last_error_json, sizeof(last_error_json),
+                                health.last_error[0]
+                                    ? health.last_error : NULL) ||
+        !api_json_quote_or_null(last_error_type_json,
+                                sizeof(last_error_type_json),
+                                health.last_error_type[0]
+                                    ? health.last_error_type : NULL) ||
+        !api_json_quote_or_null(wd_name_json, sizeof(wd_name_json),
+                                health.wd_last_recovery_name) ||
+        !api_json_quote_or_null(wd_trigger_json, sizeof(wd_trigger_json),
+                                health.wd_last_recovery_trigger) ||
+        !api_json_quote_or_null(wd_reason_json, sizeof(wd_reason_json),
+                                health.wd_last_recovery_reason) ||
+        !api_json_quote_or_null(degraded_json, sizeof(degraded_json),
+                                health.degraded_reason[0]
+                                    ? health.degraded_reason : NULL) ||
+        !api_json_quote_or_null(blocking_json, sizeof(blocking_json),
+                                health.blocking_reason[0]
+                                    ? health.blocking_reason : NULL) ||
+        !api_json_quote_or_null(warnings_json, sizeof(warnings_json),
+                                health.warning_reasons[0]
+                                    ? health.warning_reasons : NULL))
+        return api_json_error(response, response_max, JSON_500_HEADERS,
+                              "Health string too large");
+
+    char body[16384];
+    int body_len = snprintf(body, sizeof(body),
         "{"
         "\"healthy\":%s,"
+        "\"serving\":%s,"
+        "\"warning_count\":%zu,"
         "\"sync_state\":\"%s\","
         "\"chain\":{"
           "\"tip_height\":%d,"
@@ -194,7 +286,7 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
           "\"tor_enabled\":%s,"
           "\"tor_ready\":%s,"
           "\"onion_service_ready\":%s,"
-          "\"onion_address\":%s%s%s"
+          "\"onion_address\":%s"
         "},"
         "\"download\":{"
           "\"requested\":%llu,"
@@ -207,8 +299,8 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
         "\"boot\":{\"uptime_seconds\":%lld},"
         "\"errors\":{"
           "\"total\":%d,"
-          "\"last\":%s%s%s,"
-          "\"last_type\":%s%s%s,"
+          "\"last\":%s,"
+          "\"last_type\":%s,"
           "\"last_age_seconds\":%lld,"
           "\"last_recent\":%s"
         "},"
@@ -217,18 +309,25 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
           "\"recoveries\":%d,"
           "\"blocks_per_sec\":%.1f,"
           "\"escalation_level\":%d,"
-          "\"last_recovery\":\"%s\","
+          "\"last_recovery\":%s,"
           "\"last_recovery_ago_secs\":%lld,"
           "\"last_recovery_target_height\":%d,"
           "\"last_recovery_manifest_height\":%d,"
-          "\"last_recovery_trigger\":\"%s\","
-          "\"last_recovery_reason\":\"%s\""
+          "\"last_recovery_trigger\":%s,"
+          "\"last_recovery_reason\":%s"
         "},"
         "\"status\":{"
-          "\"degraded_reason\":%s%s%s"
+          "\"serving\":%s,"
+          "\"blocking_reason\":%s,"
+          "\"warning\":%s,"
+          "\"warning_count\":%zu,"
+          "\"warning_reasons\":%s,"
+          "\"degraded_reason\":%s"
         "}"
         "}",
         health.healthy ? "true" : "false",
+        health.serving ? "true" : "false",
+        health.warning_count,
         sync_state_name(health.sync_state),
         health.tip_height,
         health.header_height,
@@ -245,9 +344,7 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
         health.tor_enabled ? "true" : "false",
         health.tor_ready ? "true" : "false",
         health.onion_service_ready ? "true" : "false",
-        health.onion_address[0] ? "\"" : "null",
-        health.onion_address,
-        health.onion_address[0] ? "\"" : "",
+        onion_json,
         (unsigned long long)health.blocks_requested,
         (unsigned long long)health.blocks_received,
         (unsigned long long)health.blocks_timed_out,
@@ -256,29 +353,31 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
         health.queue_backed_up ? "true" : "false",
         (long long)health.uptime_seconds,
         health.error_total,
-        health.last_error[0] ? "\"" : "null",
-        health.last_error,
-        health.last_error[0] ? "\"" : "",
-        health.last_error_type[0] ? "\"" : "null",
-        health.last_error_type,
-        health.last_error_type[0] ? "\"" : "",
+        last_error_json,
+        last_error_type_json,
         (long long)health.last_error_age_seconds,
         health.last_error_recent ? "true" : "false",
         health.wd_checks_run,
         health.wd_recoveries,
         health.wd_blocks_per_sec,
         health.wd_escalation_level,
-        health.wd_last_recovery_name,
+        wd_name_json,
         health.wd_last_recovery_time > 0
             ? (long long)((int64_t)platform_time_wall_time_t() - health.wd_last_recovery_time)
             : 0LL,
         health.wd_last_recovery_target_height,
         health.wd_last_recovery_manifest_height,
-        health.wd_last_recovery_trigger,
-        health.wd_last_recovery_reason,
-        health.degraded_reason[0] ? "\"" : "null",
-        health.degraded_reason,
-        health.degraded_reason[0] ? "\"" : "");
+        wd_trigger_json,
+        wd_reason_json,
+        health.serving ? "true" : "false",
+        blocking_json,
+        health.warning ? "true" : "false",
+        health.warning_count,
+        warnings_json,
+        degraded_json);
+    if (body_len < 0 || body_len >= (int)sizeof(body))
+        return api_json_error(response, response_max, JSON_500_HEADERS,
+                              "Health response too large");
 
     return (size_t)snprintf((char *)response, response_max,
         "HTTP/1.1 %s\r\n"

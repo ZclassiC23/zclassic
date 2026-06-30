@@ -948,6 +948,20 @@ static int run_gate_script_with_env(const char *script_rel,
 /* A new repair-rung-named file (basename contains "reconcile") planted under
  * app/services/src so the gate's `find app -name '*.c'` scan sees it. */
 #define RRUNG_FIXTURE_DST "app/services/src/_repair_rung_fixture_tmp_reconcile.c"
+#define BORROWED_SEED_SCRIPT_REL "tools/lint/check_no_new_borrowed_seed.sh"
+/* A production-scope caller planted under app/services/src so the borrowed-seed
+ * ratchet's app/config/lib/tools scan sees it. */
+#define BORROWED_SEED_FIXTURE_DST \
+    "app/services/src/_borrowed_seed_fixture_tmp.c"
+#define COIN_BACKFILL_CALLER_SCRIPT_REL \
+    "tools/lint/check_no_new_coin_backfill_caller.sh"
+/* Production-scope callers planted under app/services/src and domain/ so the
+ * coin-backfill entry-point ratchet proves both app-layer and non-app compiled
+ * production roots are scanned. */
+#define COIN_BACKFILL_CALLER_FIXTURE_DST \
+    "app/services/src/_coin_backfill_caller_fixture_tmp.c"
+#define COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST \
+    "domain/consensus/src/_coin_backfill_caller_fixture_tmp.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -1038,6 +1052,123 @@ static int t_no_new_repair_rung(void)
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* Sovereign-cure ratchet — coins_kv_seed_from_node_db is the borrowed UTXO
+ * seed path. New production callers must fail the gate, and removing the caller
+ * must restore green so the baseline remains shrink-only. */
+static int t_no_new_borrowed_seed_caller(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    unlink_rel(BORROWED_SEED_FIXTURE_DST);
+    int baseline_rc = run_gate_script(BORROWED_SEED_SCRIPT_REL, NULL);
+    int planted = (repo_path(path, sizeof(path),
+                             BORROWED_SEED_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                              "void borrowed_seed_fixture(void) {\n"
+                              "    coins_kv_seed_from_node_db(0, 0);\n"
+                              "}\n") == 0) ? 0 : -1;
+    int trip_rc =
+        planted == 0 ? run_gate_script(BORROWED_SEED_SCRIPT_REL, NULL) : -1;
+    unlink_rel(BORROWED_SEED_FIXTURE_DST);
+    int recover_rc = run_gate_script(BORROWED_SEED_SCRIPT_REL, NULL);
+    TEST("[lint-gate] sovereign-cure no-new-borrowed-seed: clean, trips on new caller, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Sovereign-cure ratchet — stage_repair_coin_backfill_try is the public
+ * borrowed-seed-era coin-backfill repair entry. New production callers widen
+ * the repair fabric; the only allowed caller is the reducer-frontier dispatcher,
+ * and it must remain a single call site. */
+static int t_no_new_coin_backfill_caller(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    char allowed_path[PATH_MAX];
+    char *allowed_orig = NULL;
+    unlink_rel(COIN_BACKFILL_CALLER_FIXTURE_DST);
+    unlink_rel(COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST);
+    int baseline_rc = run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL);
+    int planted = (repo_path(path, sizeof(path),
+                             COIN_BACKFILL_CALLER_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                              "void coin_backfill_caller_fixture(void) {\n"
+                              "    stage_repair_coin_backfill_try(0, 0, 0, 0, 0);\n"
+                              "}\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0
+                      ? run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL)
+                      : -1;
+    unlink_rel(COIN_BACKFILL_CALLER_FIXTURE_DST);
+    int recover_after_new_rc =
+        run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL);
+    int planted_domain =
+        (repo_path(path, sizeof(path),
+                   COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST) == 0 &&
+         write_file(path,
+                    "void coin_backfill_domain_fixture(void) {\n"
+                    "    stage_repair_coin_backfill_try(0, 0, 0, 0, 0);\n"
+                    "}\n") == 0) ? 0 : -1;
+    int trip_domain_rc =
+        planted_domain == 0
+            ? run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL)
+            : -1;
+    unlink_rel(COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST);
+    int recover_after_domain_rc =
+        run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL);
+
+    int read_allowed =
+        repo_path(allowed_path, sizeof(allowed_path),
+                  "app/jobs/src/stage_repair_reducer_frontier_coin.c") == 0
+            ? read_entire_file(allowed_path, &allowed_orig)
+            : -1;
+    int append_dup = -1;
+    int trip_dup_rc = -1;
+    int restore_allowed = -1;
+    int recover_after_dup_rc = -1;
+    if (read_allowed == 0) {
+        FILE *fp = fopen(allowed_path, "ab");
+        if (fp) {
+            append_dup =
+                fputs("\nvoid coin_backfill_duplicate_fixture(void) {\n"
+                      "    stage_repair_coin_backfill_try(0, 0, 0, 0, 0);\n"
+                      "}\n", fp) >= 0 ? 0 : -1;
+            fclose(fp);
+        }
+        trip_dup_rc = append_dup == 0
+                          ? run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL,
+                                            NULL)
+                          : -1;
+        restore_allowed = write_file(allowed_path, allowed_orig);
+        recover_after_dup_rc =
+            restore_allowed == 0
+                ? run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL)
+                : -1;
+    }
+
+    TEST("[lint-gate] sovereign-cure no-new-coin-backfill-caller: clean, trips on new callers and duplicate dispatcher call, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_after_new_rc == 0);
+        ASSERT(planted_domain == 0);
+        ASSERT(trip_domain_rc != 0);
+        ASSERT(recover_after_domain_rc == 0);
+        ASSERT(read_allowed == 0);
+        ASSERT(append_dup == 0);
+        ASSERT(trip_dup_rc != 0);
+        ASSERT(restore_allowed == 0);
+        ASSERT(recover_after_dup_rc == 0);
+        PASS();
+    } _test_next:;
+    free(allowed_orig);
     return failures;
 }
 
@@ -1741,10 +1872,43 @@ static int t_tools_z_mirror_fallback_contract(void)
         ASSERT(strstr(buf,
                       "LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}")
                != NULL);
+        ASSERT(strstr(buf, "systemd_exec_arg()") != NULL);
+        ASSERT(strstr(buf, "systemctl --user show zclassic23 -p ExecStart --value")
+               != NULL);
+        ASSERT(strstr(buf, "DATADIR=\"${ZCL_DATADIR:-$DEFAULT_DATADIR}\"")
+               != NULL);
+        ASSERT(strstr(buf, "SERVICE_DATADIR=\"$(systemd_exec_arg datadir || true)\"")
+               != NULL);
+        ASSERT(strstr(buf, "RPCPORT=\"${ZCL_RPCPORT:-18232}\"") != NULL);
+        ASSERT(strstr(buf, "SERVICE_RPCPORT=\"$(systemd_exec_arg rpcport || true)\"")
+               != NULL);
+        ASSERT(strstr(buf, "CLI_OPTS=(\"-datadir=$DATADIR\" \"-rpcport=$RPCPORT\")")
+               != NULL);
+        ASSERT(strstr(buf, "\"$CLI\" \"${CLI_OPTS[@]}\"") != NULL);
         ASSERT(strstr(buf, "lag_display=unknown") != NULL);
         ASSERT(strstr(buf, "candidate_lag_display=unknown") != NULL);
         ASSERT(strstr(buf, "\"$lag_display\"") != NULL);
         ASSERT(strstr(buf, "\"$candidate_lag_display\"") != NULL);
+        ASSERT(strstr(buf, "lag_valid=\"$(json_field \"$json\" lag_valid)\"")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "candidate_lag_valid=\"$(json_field \"$json\" candidate_lag_valid)\"")
+               != NULL);
+        ASSERT(strstr(buf, "lag_valid=false") != NULL);
+        ASSERT(strstr(buf, "lag_valid=true") != NULL);
+        ASSERT(strstr(buf, "json_put_bool \"$json\" lag_valid \"$lag_valid\"")
+               != NULL);
+        ASSERT(strstr(buf,
+                      "json_put_bool \"$json\" candidate_lag_valid \"$candidate_lag_valid\"")
+               != NULL);
+        ASSERT(strstr(buf, "json_put_bool \"$json\" lag_valid \"$lag_known\"")
+               == NULL);
+        ASSERT(strstr(buf,
+                      "json_put_bool \"$json\" candidate_lag_valid \"$lag_known\"")
+               == NULL);
+        ASSERT(strstr(buf,
+                      "\"$reachable\" \"$reachable\" \"$lag_known\" \"$lag_valid\"")
+               != NULL);
         ASSERT(strstr(buf,
                       "active_error_detail=\"$(json_field \"$JSON\" active_error_detail)\"")
                != NULL);
@@ -2818,6 +2982,39 @@ static int t_boot_genesis_init_preserves_restored_authority_contract(void)
     return failures;
 }
 
+static int t_refold_from_anchor_explicit_span_gate_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("explicit refold-from-anchor gates body span before reset") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *do_from_anchor = strstr(buf, "if (do_from_anchor)");
+        ASSERT(do_from_anchor != NULL);
+        char *resume =
+            strstr(do_from_anchor, "active_chain_height(&g_state.chain_active)");
+        char *span = strstr(do_from_anchor, "boot_refold_body_span_contiguous");
+        char *reset =
+            strstr(do_from_anchor, "boot_refold_from_anchor_reset(&g_node_db)");
+        char *mark =
+            strstr(do_from_anchor, "refold_progress_mark_started_from_anchor");
+        ASSERT(resume != NULL);
+        ASSERT(span != NULL);
+        ASSERT(reset != NULL);
+        ASSERT(mark != NULL);
+        ASSERT(do_from_anchor < resume);
+        ASSERT(resume < span);
+        ASSERT(span < reset);
+        ASSERT(reset < mark);
+        ASSERT(strstr(buf, "refold_from_anchor body_gap") != NULL);
+        ASSERT(strstr(buf, "first_missing") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_sha3_window_tool_check_contract(void)
 {
     int failures = 0;
@@ -3386,12 +3583,15 @@ int test_make_lint_gates(void)
     failures += t_deleted_engine_names_absent_from_production_sources();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
+    failures += t_refold_from_anchor_explicit_span_gate_contract();
     failures += t_sha3_window_tool_check_contract();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
     failures += t_trusted_peer_stall_guard_contract();
     failures += t_e1_file_size_ceiling();
     failures += t_no_new_repair_rung();
+    failures += t_no_new_borrowed_seed_caller();
+    failures += t_no_new_coin_backfill_caller();
     failures += t_e9_operator_needed_sink();
     failures += t_systemd_memory_budget();
     failures += t_e10_framework_shape_ratchet();

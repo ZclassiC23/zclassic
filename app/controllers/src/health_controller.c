@@ -62,11 +62,35 @@ static void push_mirror_sync_fields(struct json_value *result)
         return;
     struct legacy_mirror_sync_stats ms;
     legacy_mirror_sync_stats_snapshot(&ms);
+    struct cac_decision d;
+    block_source_policy_get_status(&d);
+    bool non_legacy_source_selected =
+        d.result == CAC_DECISION_USE_SOURCE &&
+        d.selected_source != CAC_SOURCE_NONE &&
+        d.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR;
+    const char *legacy_blocker = legacy_mirror_sync_blocker_code(&ms);
+    bool surface_legacy_blocker =
+        legacy_mirror_sync_blocker_should_surface(
+            &ms, non_legacy_source_selected);
     json_push_kv_bool(result, "mirror_enabled", ms.enabled);
     json_push_kv_bool(result, "mirror_reachable", ms.reachable);
+    json_push_kv_bool(result, "mirror_monitor_running", ms.running);
+    json_push_kv_bool(result, "zclassicd_rpc_transport_reachable",
+                      ms.zclassicd_rpc_transport_reachable);
+    json_push_kv_bool(result, "legacy_oracle_usable",
+                      ms.legacy_oracle_usable);
+    json_push_kv_int(result, "zclassicd_rpc_error_code",
+                     ms.zclassicd_rpc_error_code);
+    json_push_kv_str(result, "zclassicd_rpc_error_message",
+                     ms.zclassicd_rpc_error_message);
     json_push_kv_str(result, "legacy_mirror_state", ms.state);
     json_push_kv_str(result, "consensus_authority",
                      "local_consensus_validation");
+    json_push_kv_str(result, "active_source",
+                     cac_source_name(d.selected_source));
+    json_push_kv_str(result, "active_source_trust",
+                     cac_source_trust_name(d.selected_source));
+    json_push_kv_str(result, "active_blocker", d.blocker);
     json_push_kv_str(result, "candidate_source", "legacy_advisory");
     json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
     json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
@@ -75,15 +99,25 @@ static void push_mirror_sync_fields(struct json_value *result)
                      legacy_mirror_sync_reported_lag(&ms));
     legacy_mirror_sync_push_observed_lag_json(result,
                                               "candidate_lag_observed", &ms);
-    /* See rpc_healthcheck (event_controller.c): the optional legacy/zclassicd
-     * mirror must not surface blocker SIGNALS when it is disabled (no
-     * zclassicd configured), or a healthy fresh node looks blocked. */
+    /* See rpc_healthcheck (event_controller.c): keep legacy/zclassicd mirror
+     * dependency failures visible as advisory source state, but do not promote
+     * transient mirror RPC failure into the top-level candidate blocker when
+     * chain advance is already using a non-legacy source. */
     json_push_kv_str(result, "candidate_blocker",
-                     ms.enabled
-                         ? (ms.activation_blocker_reason[0]
-                                ? ms.activation_blocker_reason
-                                : ms.last_blocker_id)
-                         : "");
+                     surface_legacy_blocker ? legacy_blocker : "");
+    json_push_kv_str(result, "candidate_blocker_scope",
+                     surface_legacy_blocker ? "active_or_safety"
+                                            : (legacy_blocker[0]
+                                                   ? "advisory_only"
+                                                   : ""));
+    json_push_kv_str(result, "legacy_advisory_blocker",
+                     ms.enabled ? legacy_blocker : "");
+    json_push_kv_int(result, "mirror_rpc_errors", ms.rpc_errors);
+    json_push_kv_int(result, "mirror_last_attempt", ms.last_attempt);
+    json_push_kv_str(result, "mirror_active_error_code",
+                     legacy_blocker);
+    json_push_kv_str(result, "mirror_active_error_detail",
+                     legacy_blocker[0] ? ms.last_error : "");
     json_push_kv_int(result, "legacy_height", ms.legacy_height);
     json_push_kv_bool(result, "legacy_advisory_height_known",
                       ms.legacy_advisory_height_known);
@@ -346,6 +380,15 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_str(&svc, "state", ms.enabled ? ms.state : "disabled");
         json_push_kv_bool(&svc, "mirror_enabled", ms.enabled);
         json_push_kv_bool(&svc, "mirror_reachable", ms.reachable);
+        json_push_kv_bool(&svc, "mirror_monitor_running", ms.running);
+        json_push_kv_bool(&svc, "zclassicd_rpc_transport_reachable",
+                          ms.zclassicd_rpc_transport_reachable);
+        json_push_kv_bool(&svc, "legacy_oracle_usable",
+                          ms.legacy_oracle_usable);
+        json_push_kv_int(&svc, "zclassicd_rpc_error_code",
+                         ms.zclassicd_rpc_error_code);
+        json_push_kv_str(&svc, "zclassicd_rpc_error_message",
+                         ms.zclassicd_rpc_error_message);
         json_push_kv_str(&svc, "consensus_authority",
                          ms.consensus_authority);
         json_push_kv_str(&svc, "candidate_source", "legacy_advisory");
@@ -359,9 +402,11 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
             &svc, "candidate_lag_observed", &ms);
         json_push_kv_str(&svc, "candidate_blocker",
                          ms.enabled
-                             ? (ms.activation_blocker_reason[0]
-                                    ? ms.activation_blocker_reason
-                                    : ms.last_blocker_id)
+                             ? legacy_mirror_sync_blocker_code(&ms)
+                             : "");
+        json_push_kv_str(&svc, "candidate_blocker_scope",
+                         ms.enabled && legacy_mirror_sync_blocker_code(&ms)[0]
+                             ? "advisory_source"
                              : "");
         json_push_kv_int(&svc, "legacy_height", ms.legacy_height);
         json_push_kv_int(&svc, "local_height", ms.local_height);
@@ -394,6 +439,13 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
                          ms.enabled ? ms.activation_blocker_reason : "");
         json_push_kv_str(&svc, "last_blocker_code",
                          ms.enabled ? ms.last_blocker_id : "");
+        json_push_kv_str(&svc, "active_error_code",
+                         ms.enabled ? legacy_mirror_sync_blocker_code(&ms) : "");
+        json_push_kv_str(&svc, "active_error_detail",
+                         ms.enabled && legacy_mirror_sync_blocker_code(&ms)[0]
+                             ? ms.last_error
+                             : "");
+        json_push_kv_int(&svc, "rpc_errors", ms.rpc_errors);
         json_push_kv_int(&svc, "overrides_total", ms.overrides_total);
         json_push_kv_int(&svc, "unsafe_overrides_total",
                          ms.unsafe_overrides_total);

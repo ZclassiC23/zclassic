@@ -226,6 +226,9 @@ static int test_dump_shape_is_stable(void)
         static const char *const required_keys[] = {
             "mirror_enabled", "state", "mirror_running", "running",
             "reachable", "mirror_reachable", "in_flight",
+            "mirror_monitor_running", "zclassicd_rpc_transport_reachable",
+            "legacy_oracle_usable", "zclassicd_rpc_error_code",
+            "zclassicd_rpc_error_message",
             "zclassic23_height", "zclassic23_hash",
             "zclassicd_height", "zclassicd_hash",
             "legacy_height", "legacy_headers", "local_height",

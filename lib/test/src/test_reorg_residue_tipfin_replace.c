@@ -408,7 +408,9 @@ static bool snapshot(sqlite3 *db, int *hstar, int *served_floor,
  * R+1, upper cursors high, utxo_apply cursor = R+1.  `admit_gap` controls the
  * RED-before control: when false, header_admit is NOT seeded at R+1 (FIX-A
  * gate-2 fails, residue stays). */
-static bool seed_wedge(sqlite3 *db, int R, int top_cursor, bool admit_at_gap)
+static bool seed_wedge_with_tip_status(sqlite3 *db, int R, int top_cursor,
+                                       bool admit_at_gap,
+                                       const char *tip_status)
 {
     struct uint256 h[8];
     for (int i = 0; i <= 7; i++)
@@ -423,9 +425,9 @@ static bool seed_wedge(sqlite3 *db, int R, int top_cursor, bool admit_at_gap)
     }
     /* R: the five value-checked logs are ok=1 (R is below the reorg point —
      * already covered by coins), but tip_finalize is the STALE ok=0
-     * reorg_detected residue with reorg_depth=2. */
+     * residue candidate with reorg_depth=2. */
     ok = ok && put_upstream_ok(db, R, &h[R - A]) &&
-         put_tip(db, R, "reorg_detected", 0, 2, &h[R - A + 1]);
+         put_tip(db, R, tip_status, 0, 2, &h[R - A + 1]);
     /* R+1, R+2: the column gap — validate..tip_finalize ALL absent (nothing
      * seeded). header_admit DOES carry them (real parent-linked blocks). */
     /* header_admit for every real height A+1 .. R+2. */
@@ -444,6 +446,12 @@ static bool seed_wedge(sqlite3 *db, int R, int top_cursor, bool admit_at_gap)
          seed_cursor(db, "tip_finalize", top_cursor) &&
          seed_coins_applied(db, R + 1);
     return ok;
+}
+
+static bool seed_wedge(sqlite3 *db, int R, int top_cursor, bool admit_at_gap)
+{
+    return seed_wedge_with_tip_status(db, R, top_cursor, admit_at_gap,
+                                      "reorg_detected");
 }
 
 int test_reorg_residue_tipfin_replace(void);
@@ -620,6 +628,52 @@ int test_reorg_residue_tipfin_replace(void)
                  !rr2.refused_coin_tear &&
                  rr2.reorg_residue_tipfin_replaced == 0 &&
                  cursor_value(db, "utxo_apply") == R + 1);
+        main_state_free(&ms);
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── NEGATIVE GUARD — ok=0 tip_finalize rows that represent a real
+     * upstream/precondition failure are NOT reorg residue. They must stay
+     * ok=0 even when the header-admit binder exists, or the repair would
+     * rewrite a real blocker into ok=1 finalize_backfill. ── */
+    static const char *const non_residue_statuses[] = {
+        "upstream_failed",
+        "precondition_failed",
+    };
+    for (size_t i = 0;
+         i < sizeof(non_residue_statuses) / sizeof(non_residue_statuses[0]);
+         i++) {
+        const char *status = non_residue_statuses[i];
+        char dir[256];
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "nonresidue-%s", status);
+        test_make_tmpdir(dir, sizeof(dir),
+                         "reorg_residue_tipfin_replace", suffix);
+        RR_CHECK("NONRESIDUE open", progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        RR_CHECK("NONRESIDUE schema", seed_schema(db));
+        RR_CHECK("NONRESIDUE seed guarded status",
+                 seed_wedge_with_tip_status(db, R, top_cursor,
+                                            /*admit_at_gap=*/true, status));
+
+        long long rows_before = tip_row_count(db);
+        struct main_state ms;
+        main_state_init(&ms);
+        struct stage_reducer_frontier_reconcile_result rr;
+        RR_CHECK("NONRESIDUE reconcile leaves guarded status unreplaced",
+                 stage_reducer_frontier_reconcile_light(db, &ms, &rr) &&
+                 rr.reorg_residue_tipfin_found == 0 &&
+                 rr.reorg_residue_tipfin_replaced == 0 &&
+                 rr.lowest_reorg_residue_tipfin == -1);
+
+        struct tip_view row;
+        RR_CHECK("NONRESIDUE row remains ok=0 with original status",
+                 tip_at(db, R, &row) && row.found && row.ok == 0 &&
+                 strcmp(row.status, status) == 0);
+        RR_CHECK("NONRESIDUE no tip_finalize row deleted or replaced",
+                 tip_row_count(db) == rows_before);
         main_state_free(&ms);
 
         progress_store_close();

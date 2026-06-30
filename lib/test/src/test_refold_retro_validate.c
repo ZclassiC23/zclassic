@@ -136,6 +136,22 @@ static bool rv_set_cursor(sqlite3 *db, const char *name, int64_t cursor)
     return ok;
 }
 
+static bool rv_set_applied_height(sqlite3 *db, int32_t next)
+{
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) ==
+              SQLITE_OK;
+    if (ok && !coins_kv_set_applied_height_in_tx(db, next))
+        ok = false;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err)
+        sqlite3_free(err);
+    return ok;
+}
+
 /* Force all 8 stage cursors to the upstream "next height" frame value `next`
  * (tip_finalize's served-tip cursor is normalized to next-1 = served tip). */
 static bool rv_set_all_cursors(sqlite3 *db, int64_t next)
@@ -336,6 +352,7 @@ int test_refold_retro_validate(void)
         /* apply block h: add one coin, then fill the stage logs + cursors. */
         bool step_ok = rv_add_coin(pdb, h, h)
                     && rv_put_consistent(pdb, h)
+                    && rv_set_applied_height(pdb, h + 1)
                     && rv_set_all_cursors(pdb, h + 1);
         if (!step_ok) { climbed_monotone = false; break; }
 
@@ -367,6 +384,14 @@ int test_refold_retro_validate(void)
     bool refold_climbs = climbed_monotone &&
                          hstar_start == RV_ANCHOR_M && hstar_end == RV_TIP_N;
     RV_CHECK("refold climbed M->N with no halt", refold_climbs);
+    RV_CHECK("refold: self-folded provenance marker set",
+             coins_kv_contains_refold_marker(pdb));
+    {
+        char reason[96] = {0};
+        RV_CHECK("refold: G-SOV parts 2+3 hold at climbed tip",
+                 coins_kv_tip_is_self_derived(pdb, hstar_end, reason,
+                                               sizeof(reason)));
+    }
     RV_CHECK("captured boundary root at K", captured_K);
 
     /* publish the served provable tip the cutover serve points read, then confirm

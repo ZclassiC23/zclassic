@@ -13,12 +13,14 @@
 #include "core/uint256.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ── Non-canonical row purge ──────────────────────────────────────
@@ -35,8 +37,15 @@
  * already heals. Genuine consensus rejects are SAFE: their stored hash
  * IS the canonical block at that height, so they never match the
  * predicate. Heights above the active tip carry no canonical hash and
- * are left alone. Caller holds the progress-store tx lock. */
+ * are left alone. This function owns the full progress-store tx lock while it
+ * compares/deletes rows, and briefly takes active_chain.write_lock to copy a
+ * stable canonical-hash snapshot for the scan window. */
 #define RF_NONCANON_MAX_PER_PASS 8192
+
+struct rf_canonical_hash {
+    bool present;
+    struct uint256 hash;
+};
 
 /* True iff `h` carries an ok=1/ok=1 validate-vs-script hash_split: both
  * validate_headers_log and script_validate_log hold a 32-byte hash at h, both
@@ -61,8 +70,16 @@ static bool rf_height_is_vs_hash_split(sqlite3 *db, int h, bool *out_split)
         return false;
     }
     sqlite3_bind_int64(st, 1, h);
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
         *out_split = true;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "purge_noncanonical: vs_split step h=%d rc=%d: %s",
+                 h, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
     sqlite3_finalize(st);
     return true;
 }
@@ -76,13 +93,38 @@ bool stage_reducer_frontier_purge_noncanonical(
     if (!db || !ms || !out)
         LOG_FAIL("stage_repair", "purge_noncanonical: invalid args");
 
+    struct rf_canonical_hash *canon =
+        zcl_calloc(RF_NONCANON_MAX_PER_PASS, sizeof(*canon),
+                   "rf_noncanon_snapshot");
+    if (!canon)
+        LOG_FAIL("stage_repair",
+                 "purge_noncanonical: snapshot alloc failed cap=%d",
+                 RF_NONCANON_MAX_PER_PASS);
+
+    bool ok = true;
+    progress_store_tx_lock();
+
     int tip_h = active_chain_height(&ms->chain_active);
     int lo = out->hstar + 1;
     int hi = out->sweep_top < tip_h ? out->sweep_top : tip_h;
+    if (lo < 0 || hi < lo)
+        goto done_locked;
     if (hi - lo + 1 > RF_NONCANON_MAX_PER_PASS)
         hi = lo + RF_NONCANON_MAX_PER_PASS - 1;
-    if (lo < 0 || hi < lo)
-        return true;
+
+    /* Keep active-chain writes out of the SQL decision window: copy exactly the
+     * canonical hashes this pass will judge under the writer lock, then do all
+     * DB reads/deletes against that immutable local snapshot. */
+    zcl_mutex_lock(&ms->chain_active.write_lock);
+    for (int h = lo; h <= hi; h++) {
+        struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        if (!bi || !bi->phashBlock)
+            continue;
+        size_t i = (size_t)(h - lo);
+        canon[i].present = true;
+        canon[i].hash = *bi->phashBlock;
+    }
+    zcl_mutex_unlock(&ms->chain_active.write_lock);
 
     static const struct {
         const char *table;
@@ -97,8 +139,8 @@ bool stage_reducer_frontier_purge_noncanonical(
     };
 
     for (int h = lo; h <= hi; h++) {
-        struct block_index *bi = active_chain_at(&ms->chain_active, h);
-        if (!bi || !bi->phashBlock)
+        const struct rf_canonical_hash *ch = &canon[h - lo];
+        if (!ch->present)
             continue;
 
         /* A validate-vs-script ok=1/ok=1 hash_split BELOW the coins frontier is
@@ -114,8 +156,10 @@ bool stage_reducer_frontier_purge_noncanonical(
                               h < out->coins_applied_height;
         if (below_frontier) {
             bool vs_split = false;
-            if (!rf_height_is_vs_hash_split(db, h, &vs_split))
-                return false; // raw-return-ok:vs_split-db-error-logged-in-callee
+            if (!rf_height_is_vs_hash_split(db, h, &vs_split)) {
+                ok = false;
+                goto done_locked;
+            }
             if (vs_split) {
                 out->noncanonical_found++;
                 if (out->lowest_noncanonical < 0 ||
@@ -137,14 +181,23 @@ bool stage_reducer_frontier_purge_noncanonical(
             if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
                 LOG_WARN("stage_repair", "purge_noncanonical: prepare %s: %s",
                          hash_logs[t].table, sqlite3_errmsg(db));
-                return false;
+                ok = false;
+                goto done_locked;
             }
             sqlite3_bind_int64(st, 1, h);
             bool mismatch = false;
-            if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+            int step_rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+            if (step_rc == SQLITE_ROW) {
                 const void *blob = sqlite3_column_blob(st, 0);
                 mismatch = blob &&
-                    memcmp(blob, bi->phashBlock->data, 32) != 0;
+                    memcmp(blob, ch->hash.data, 32) != 0;
+            } else if (step_rc != SQLITE_DONE) {
+                LOG_WARN("stage_repair",
+                         "purge_noncanonical: scan %s h=%d rc=%d: %s",
+                         hash_logs[t].table, h, step_rc, sqlite3_errmsg(db));
+                sqlite3_finalize(st);
+                ok = false;
+                goto done_locked;
             }
             sqlite3_finalize(st);
             if (!mismatch)
@@ -161,7 +214,8 @@ bool stage_reducer_frontier_purge_noncanonical(
             if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
                 LOG_WARN("stage_repair", "purge_noncanonical: del prepare %s: %s",
                          hash_logs[t].table, sqlite3_errmsg(db));
-                return false;
+                ok = false;
+                goto done_locked;
             }
             sqlite3_bind_int64(st, 1, h);
             int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
@@ -169,7 +223,8 @@ bool stage_reducer_frontier_purge_noncanonical(
             if (rc != SQLITE_DONE) {
                 LOG_WARN("stage_repair", "purge_noncanonical: delete %s h=%d rc=%d",
                          hash_logs[t].table, h, rc);
-                return false;
+                ok = false;
+                goto done_locked;
             }
             out->noncanonical_purged++;
         }
@@ -184,9 +239,17 @@ bool stage_reducer_frontier_purge_noncanonical(
                 if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
                     continue; /* table may not exist yet; holes self-heal */
                 sqlite3_bind_int64(st, 1, h);
-                if (sqlite3_step(st) == SQLITE_DONE &&  // raw-sql-ok:progress-kv-kernel-store
-                    sqlite3_changes(db) > 0)
+                int dep_rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+                if (dep_rc == SQLITE_DONE && sqlite3_changes(db) > 0) {
                     out->noncanonical_purged++;
+                } else if (dep_rc != SQLITE_DONE) {
+                    LOG_WARN("stage_repair",
+                             "purge_noncanonical: delete %s h=%d rc=%d: %s",
+                             dep_logs[t], h, dep_rc, sqlite3_errmsg(db));
+                    sqlite3_finalize(st);
+                    ok = false;
+                    goto done_locked;
+                }
                 sqlite3_finalize(st);
             }
         }
@@ -199,7 +262,11 @@ bool stage_reducer_frontier_purge_noncanonical(
                  "%s)", out->noncanonical_found, out->noncanonical_purged,
                  out->lowest_noncanonical, lo, hi,
                  apply ? "" : "; dry-run");
-    return true;
+
+done_locked:
+    progress_store_tx_unlock();
+    free(canon);
+    return ok;
 }
 
 /* ── stale reorg-residue tip_finalize verdict replacement ────────────
@@ -282,6 +349,13 @@ static bool rf_header_admit_hash_at(sqlite3 *db, int height,
     return rc_ok;
 }
 
+static bool rf_tipfin_status_is_reorg_residue(const char *status)
+{
+    return status &&
+           (strcmp(status, "reorg_detected") == 0 ||
+            strcmp(status, "utxo_count_diverged") == 0);
+}
+
 /* RF_REORG_RESIDUE_MAX_PER_PASS bounds the scan window like the noncanonical
  * purge above; a contiguous reorg-residue run heals one window per tick. */
 #define RF_REORG_RESIDUE_MAX_PER_PASS 8192
@@ -328,9 +402,12 @@ bool stage_reducer_frontier_purge_stale_reorg_tipfin(
             rc_ok = false;
             break;
         }
-        /* Gate 1: the row must be PRESENT with ok=0 (a stale skip verdict).
-         * Absent (tipfin-backfill domain) and ok=1 (healthy) are skipped. */
+        /* Gate 1: the row must be PRESENT with ok=0 and one of the stale
+         * residue statuses. Other ok=0 statuses are live consensus / upstream
+         * blockers and must never be rewritten into ok=1 finalize_backfill. */
         if (state != RF_TIPFIN_FAIL)
+            continue;
+        if (!rf_tipfin_status_is_reorg_residue(status))
             continue;
 
         /* Gate 2: re-evidenced upstream — header_admit_log present at h with

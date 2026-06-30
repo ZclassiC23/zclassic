@@ -3,16 +3,17 @@
  * stage_repair_reducer_frontier_refill — refill forward-only reducer stages
  * after a hole is discovered below their cursor.
  *
- * FIX-2 (script/proof missing-row refill) lives here too: one shared
- * scan+clamp core with TWO invocations —
- *   FIX-2a stage_reducer_frontier_try_unapplied_hole_clamp(): pre-refusal,
- *          bounds [max(hstar+1, coins_applied), min(cursor-1, sweep_top)],
- *          so only provably-UNAPPLIED heights are eligible. On clamp it
- *          clears refused_coin_tear (the pre-refusal hash-split precedent
- *          in stage_repair_reducer_frontier.c).
+ * FIX-2 (script/proof missing-row refill) keeps the shared scan+clamp core
+ * here, with TWO invocations —
+ *   FIX-2a stage_reducer_frontier_try_unapplied_hole_clamp(): pre-refusal
+ *          wrapper in stage_repair_reducer_frontier_pre_refusal.c, bounds
+ *          [max(hstar+1, coins_applied), min(cursor-1, sweep_top)], so only
+ *          provably-UNAPPLIED heights are eligible. On clamp it clears
+ *          refused_coin_tear (the pre-refusal hash-split precedent in
+ *          stage_repair_reducer_frontier.c).
  *   FIX-2b stage_reducer_frontier_reconcile_refill_cursors(): post-refusal,
- *          bounds [hstar+1, min(cursor-1, sweep_top)] with the same coins
- *          floor on the clamp target.
+ *          retained here, bounds [hstar+1, min(cursor-1, sweep_top)] with the
+ *          same coins floor on the clamp target.
  *
  * Coins floor (hard): a clamp target h must satisfy
  * h >= coins_applied_height. Coins are applied THROUGH coins_applied - 1
@@ -37,6 +38,13 @@
 
 #include <sqlite3.h>
 #include <stddef.h>
+
+#define RF_REFILL_REQUIRE(call, context) do {                         \
+    if (!(call))                                                       \
+        LOG_FAIL("stage_repair",                                      \
+                 "[stage_repair] reducer_frontier refill failed "     \
+                 "during %s", (context));                             \
+} while (0)
 
 /* Shared scan runner: `sql` selects the single lowest hole height and binds
  * exactly two integer bounds (start, end). *out_height = -1 when no hole. */
@@ -97,7 +105,7 @@ static bool find_lowest_validate_headers_refill_hole_unlocked(
         start_height, end_height, out_height);
 }
 
-static bool find_lowest_validate_headers_hash_split_unlocked(
+bool stage_reducer_frontier_find_lowest_validate_headers_hash_split_unlocked(
     sqlite3 *db,
     int start_height,
     int end_height,
@@ -249,7 +257,9 @@ static bool reconcile_validate_headers_refill_holes(
     struct stage_reducer_frontier_reconcile_result *out)
 {
     if (!db || !out)
-        return false;
+        LOG_FAIL("stage_repair",
+                 "[stage_repair] validate_headers refill: invalid args "
+                 "(db=%d out=%d)", db != NULL, out != NULL);
     if (out->validate_headers_cursor_before <= out->hstar + 1)
         return true;
 
@@ -258,12 +268,24 @@ static bool reconcile_validate_headers_refill_holes(
         end_height = out->sweep_top;
     if (!find_lowest_validate_headers_refill_hole_unlocked(
             db, out->hstar + 1, end_height,
-            &out->lowest_validate_headers_refill_hole))
+            &out->lowest_validate_headers_refill_hole)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] validate_headers refill scan failed "
+                 "window=[%d,%d] cursor=%d hstar=%d",
+                 out->hstar + 1, end_height,
+                 out->validate_headers_cursor_before, out->hstar);
         return false;
-    if (!find_lowest_validate_headers_hash_split_unlocked(
+    }
+    if (!stage_reducer_frontier_find_lowest_validate_headers_hash_split_unlocked(
             db, out->hstar + 1, end_height,
-            &out->lowest_validate_headers_hash_split))
+            &out->lowest_validate_headers_hash_split)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] validate_headers hash-split scan failed "
+                 "window=[%d,%d] cursor=%d hstar=%d",
+                 out->hstar + 1, end_height,
+                 out->validate_headers_cursor_before, out->hstar);
         return false;
+    }
 
     /* VALIDATE-SIDE-ONLY clamp: the cursor rewind below re-derives the
      * canonical HEADER, which cures a stale validate_headers verdict but is a
@@ -293,16 +315,26 @@ static bool reconcile_body_fetch_refill_holes(
     struct stage_reducer_frontier_reconcile_result *out)
 {
     if (!db || !out)
-        return false;
+        LOG_FAIL("stage_repair",
+                 "[stage_repair] body_fetch refill: invalid args "
+                 "(db=%d out=%d)", db != NULL, out != NULL);
     if (out->body_fetch_cursor_before <= out->hstar + 1)
         return true;
 
     int end_height = out->body_fetch_cursor_before - 1;
     if (out->sweep_top < end_height)
         end_height = out->sweep_top;
-    return find_lowest_body_fetch_refill_hole_unlocked(
-        db, out->hstar + 1, end_height,
-        &out->lowest_body_fetch_refill_hole);
+    if (!find_lowest_body_fetch_refill_hole_unlocked(
+            db, out->hstar + 1, end_height,
+            &out->lowest_body_fetch_refill_hole)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] body_fetch refill scan failed "
+                 "window=[%d,%d] cursor=%d hstar=%d",
+                 out->hstar + 1, end_height,
+                 out->body_fetch_cursor_before, out->hstar);
+        return false;
+    }
+    return true;
 }
 
 static bool reconcile_body_persist_refill_holes(
@@ -310,16 +342,26 @@ static bool reconcile_body_persist_refill_holes(
     struct stage_reducer_frontier_reconcile_result *out)
 {
     if (!db || !out)
-        return false;
+        LOG_FAIL("stage_repair",
+                 "[stage_repair] body_persist refill: invalid args "
+                 "(db=%d out=%d)", db != NULL, out != NULL);
     if (out->body_persist_cursor_before <= out->hstar + 1)
         return true;
 
     int end_height = out->body_persist_cursor_before - 1;
     if (out->sweep_top < end_height)
         end_height = out->sweep_top;
-    return find_lowest_body_persist_refill_hole_unlocked(
-        db, out->hstar + 1, end_height,
-        &out->lowest_body_persist_refill_hole);
+    if (!find_lowest_body_persist_refill_hole_unlocked(
+            db, out->hstar + 1, end_height,
+            &out->lowest_body_persist_refill_hole)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] body_persist refill scan failed "
+                 "window=[%d,%d] cursor=%d hstar=%d",
+                 out->hstar + 1, end_height,
+                 out->body_persist_cursor_before, out->hstar);
+        return false;
+    }
+    return true;
 }
 
 bool stage_reducer_frontier_force_stage_cursor_in_tx(
@@ -360,44 +402,6 @@ bool stage_reducer_frontier_force_stage_cursor_in_tx(
     return true;
 }
 
-bool stage_reducer_frontier_reconcile_validate_hash_split_cursor(
-    sqlite3 *db,
-    bool apply,
-    struct stage_reducer_frontier_reconcile_result *out)
-{
-    if (!db || !out)
-        return false;
-    if (out->validate_headers_cursor_before <= out->hstar + 1)
-        return true;
-
-    int end_height = out->validate_headers_cursor_before - 1;
-    if (out->sweep_top < end_height)
-        end_height = out->sweep_top;
-    if (!find_lowest_validate_headers_hash_split_unlocked(
-            db, out->hstar + 1, end_height,
-            &out->lowest_validate_headers_hash_split))
-        return false;
-    if (out->lowest_validate_headers_hash_split < 0)
-        return true;
-
-    if (out->validate_headers_cursor_before <=
-        out->lowest_validate_headers_hash_split) {
-        out->validate_headers_cursor_after =
-            out->validate_headers_cursor_before;
-        return true;
-    }
-
-    out->clamped_validate_headers = true;
-    out->validate_headers_cursor_after =
-        out->lowest_validate_headers_hash_split;
-    if (!apply)
-        return true;
-
-    return stage_reducer_frontier_force_stage_cursor_in_tx(
-        db, "validate_headers", "validate_headers-hash-split",
-        out->lowest_validate_headers_hash_split);
-}
-
 static int lower_refill_target(int target, int candidate)
 {
     if (candidate >= 0 && (target < 0 || candidate < target))
@@ -430,8 +434,15 @@ static bool reconcile_validate_headers_cursor(
     if (!apply)
         return true;
 
-    return stage_reducer_frontier_force_stage_cursor_in_tx(
-        db, "validate_headers", "validate_headers", target);
+    if (!stage_reducer_frontier_force_stage_cursor_in_tx(
+            db, "validate_headers", "validate_headers", target)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] validate_headers cursor clamp failed "
+                 "target=%d before=%d",
+                 target, out->validate_headers_cursor_before);
+        return false;
+    }
+    return true;
 }
 
 static bool reconcile_body_fetch_cursor(
@@ -458,8 +469,15 @@ static bool reconcile_body_fetch_cursor(
     if (!apply)
         return true;
 
-    return stage_reducer_frontier_force_stage_cursor_in_tx(
-        db, "body_fetch", "body_fetch", target);
+    if (!stage_reducer_frontier_force_stage_cursor_in_tx(
+            db, "body_fetch", "body_fetch", target)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] body_fetch cursor clamp failed "
+                 "target=%d before=%d",
+                 target, out->body_fetch_cursor_before);
+        return false;
+    }
+    return true;
 }
 
 static bool reconcile_body_persist_cursor(
@@ -479,8 +497,13 @@ static bool reconcile_body_persist_cursor(
         if (candidate < 0)
             continue;
         bool present = false;
-        if (!body_persist_log_present_unlocked(db, candidate, &present))
+        if (!body_persist_log_present_unlocked(db, candidate, &present)) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] body_persist upstream presence probe "
+                     "failed h=%d",
+                     candidate);
             return false;
+        }
         if (!present)
             target = lower_refill_target(target, candidate);
     }
@@ -499,8 +522,15 @@ static bool reconcile_body_persist_cursor(
     if (!apply)
         return true;
 
-    return stage_reducer_frontier_force_stage_cursor_in_tx(
-        db, "body_persist", "body_persist", target);
+    if (!stage_reducer_frontier_force_stage_cursor_in_tx(
+            db, "body_persist", "body_persist", target)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] body_persist cursor clamp failed "
+                 "target=%d before=%d",
+                 target, out->body_persist_cursor_before);
+        return false;
+    }
+    return true;
 }
 
 /* Snapshot the script_validate / proof_validate cursors into the result
@@ -514,6 +544,8 @@ static bool read_script_proof_cursors(
     int script_cursor = -1;
     if (!stage_repair_cursor_at_unlocked(db, "script_validate",
                                          &script_cursor)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] script_validate cursor snapshot failed");
         progress_store_tx_unlock();
         return false;
     }
@@ -521,6 +553,8 @@ static bool read_script_proof_cursors(
     int proof_cursor = -1;
     if (!stage_repair_cursor_at_unlocked(db, "proof_validate",
                                          &proof_cursor)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] proof_validate cursor snapshot failed");
         progress_store_tx_unlock();
         return false;
     }
@@ -599,8 +633,13 @@ static bool reconcile_proof_validate_cursor(
     int script_hole = out->lowest_script_validate_refill_hole;
     if (script_hole >= 0) {
         bool present = false;
-        if (!proof_validate_log_present_unlocked(db, script_hole, &present))
+        if (!proof_validate_log_present_unlocked(db, script_hole, &present)) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] proof_validate presence probe failed "
+                     "at script hole h=%d",
+                     script_hole);
             return false;
+        }
         if (!present)
             target = lower_refill_target(target, script_hole);
     }
@@ -617,8 +656,15 @@ static bool reconcile_proof_validate_cursor(
     if (!apply)
         return true;
 
-    return stage_reducer_frontier_force_stage_cursor_in_tx(
-        db, "proof_validate", "proof_validate-refill", target);
+    if (!stage_reducer_frontier_force_stage_cursor_in_tx(
+            db, "proof_validate", "proof_validate-refill", target)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] proof_validate cursor clamp failed "
+                 "target=%d before=%d",
+                 target, out->proof_validate_cursor_before);
+        return false;
+    }
+    return true;
 }
 
 /* FIX-2 shared core (ONE implementation, TWO call sites): scan for rowless
@@ -627,16 +673,26 @@ static bool reconcile_proof_validate_cursor(
  * Touches ONLY the script_validate / proof_validate cursors; both log
  * stores are INSERT OR REPLACE, so the forward re-walk rewrites fresh
  * verdicts and no log row is ever deleted. */
-static bool reconcile_script_proof_refill_cursors(
+bool stage_reducer_frontier_reconcile_script_proof_refill_cursors(
     sqlite3 *db,
     bool apply,
     int scan_floor,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    if (!db || !out)
+    if (!db || !out) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] script/proof refill: invalid args "
+                 "(db=%d out=%d)",
+                 db != NULL, out != NULL);
         return false;
-    if (!read_script_proof_cursors(db, out))
+    }
+    if (!read_script_proof_cursors(db, out)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] script/proof refill cursor snapshot failed "
+                 "scan_floor=%d",
+                 scan_floor);
         return false;
+    }
 
     out->lowest_script_validate_refill_hole = -1;
     out->lowest_proof_validate_refill_hole = -1;
@@ -647,8 +703,14 @@ static bool reconcile_script_proof_refill_cursors(
             end_height = out->sweep_top;
         if (!find_lowest_script_validate_refill_hole_unlocked(
                 db, scan_floor, end_height,
-                &out->lowest_script_validate_refill_hole))
+                &out->lowest_script_validate_refill_hole)) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] script_validate refill scan failed "
+                     "window=[%d,%d] cursor=%d",
+                     scan_floor, end_height,
+                     out->script_validate_cursor_before);
             return false;
+        }
     }
 
     if (out->proof_validate_cursor_before > scan_floor) {
@@ -657,78 +719,31 @@ static bool reconcile_script_proof_refill_cursors(
             end_height = out->sweep_top;
         if (!find_lowest_proof_validate_refill_hole_unlocked(
                 db, scan_floor, end_height,
-                &out->lowest_proof_validate_refill_hole))
+                &out->lowest_proof_validate_refill_hole)) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] proof_validate refill scan failed "
+                     "window=[%d,%d] cursor=%d",
+                     scan_floor, end_height,
+                     out->proof_validate_cursor_before);
             return false;
+        }
     }
 
-    if (!reconcile_script_validate_cursor(db, apply, out))
-        return false;
-    return reconcile_proof_validate_cursor(db, apply, out);
-}
-
-/* FIX-2a — pre-refusal invocation. Runs while refused_coin_tear is pending,
- * after the replay repairs and BEFORE the coin-tear refusal (call site in
- * stage_repair_reducer_frontier.c). Bounds start at
- * max(hstar+1, coins_applied) so by construction only provably-unapplied
- * heights are eligible. On clamp it clears refused_coin_tear and claims the
- * tick (the exact shape of the pre-refusal hash-split repair), which lets
- * the script stage's next tick rewrite the missing row within seconds. */
-bool stage_reducer_frontier_try_unapplied_hole_clamp(
-    sqlite3 *db,
-    bool apply,
-    struct stage_reducer_frontier_reconcile_result *out,
-    bool *handled)
-{
-    if (handled)
-        *handled = false;
-    if (!db || !out || !handled) {
+    if (!reconcile_script_validate_cursor(db, apply, out)) {
         LOG_WARN("stage_repair",
-                 "[stage_repair] unapplied-hole clamp: NULL argument "
-                 "(db=%d out=%d handled=%d)",
-                 db != NULL, out != NULL, handled != NULL);
-        return false;
-    }
-    /* No coin-tear refusal pending: the post-refusal FIX-2b invocation in
-     * reconcile_refill_cursors owns this tick (and the tip_finalize floor
-     * reconcile must still run after it). Silent no-op — this is the
-     * healthy per-tick path, not a refusal. */
-    if (!out->refused_coin_tear)
-        return true;
-    if (!out->coins_applied_found || out->coins_applied_height < 0) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] unapplied-hole clamp refused: coins "
-                 "frontier unknown (coins_applied_found=%d height=%d)",
-                 out->coins_applied_found, out->coins_applied_height);
-        return true;
-    }
-
-    int scan_floor = out->hstar + 1;
-    if (out->coins_applied_height > scan_floor)
-        scan_floor = out->coins_applied_height;
-
-    if (!reconcile_script_proof_refill_cursors(db, apply, scan_floor, out))
-        return false;
-
-    if (!out->clamped_script_validate && !out->clamped_proof_validate)
-        return true; /* no unapplied hole in bounds; the refusal proceeds */
-
-    out->pre_refusal_unapplied_clamp = true;
-    out->refused_coin_tear = false;
-    out->repaired = true;
-    *handled = true;
-    if (apply) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier clamped unapplied "
-                 "script/proof refill hole before coin-tear refusal "
-                 "hstar=%d coins_applied=%d script_validate=%d->%d "
-                 "proof_validate=%d->%d script_hole=%d proof_hole=%d",
-                 out->hstar, out->coins_applied_height,
-                 out->script_validate_cursor_before,
-                 out->script_validate_cursor_after,
-                 out->proof_validate_cursor_before,
-                 out->proof_validate_cursor_after,
+                 "[stage_repair] script_validate refill cursor reconcile "
+                 "failed hole=%d cursor=%d apply=%d",
                  out->lowest_script_validate_refill_hole,
-                 out->lowest_proof_validate_refill_hole);
+                 out->script_validate_cursor_before, apply);
+        return false;
+    }
+    if (!reconcile_proof_validate_cursor(db, apply, out)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] proof_validate refill cursor reconcile "
+                 "failed hole=%d cursor=%d apply=%d",
+                 out->lowest_proof_validate_refill_hole,
+                 out->proof_validate_cursor_before, apply);
+        return false;
     }
     return true;
 }
@@ -739,29 +754,24 @@ bool stage_reducer_frontier_reconcile_refill_cursors(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    if (!reconcile_validate_headers_refill_holes(db, ms, out))
-        return false;
-
-    if (!reconcile_body_fetch_refill_holes(db, out))
-        return false;
-
-    if (!reconcile_body_persist_refill_holes(db, out))
-        return false;
-
-    if (!reconcile_validate_headers_cursor(db, apply, out))
-        return false;
-
-    if (!reconcile_body_fetch_cursor(db, apply, out))
-        return false;
-
-    if (!reconcile_body_persist_cursor(db, apply, out))
-        return false;
+    RF_REFILL_REQUIRE(reconcile_validate_headers_refill_holes(db, ms, out),
+                      "validate_headers reconcile");
+    RF_REFILL_REQUIRE(reconcile_body_fetch_refill_holes(db, out),
+                      "body_fetch scan");
+    RF_REFILL_REQUIRE(reconcile_body_persist_refill_holes(db, out),
+                      "body_persist scan");
+    RF_REFILL_REQUIRE(reconcile_validate_headers_cursor(db, apply, out),
+                      "validate_headers cursor clamp");
+    RF_REFILL_REQUIRE(reconcile_body_fetch_cursor(db, apply, out),
+                      "body_fetch cursor clamp");
+    RF_REFILL_REQUIRE(reconcile_body_persist_cursor(db, apply, out),
+                      "body_persist cursor clamp");
 
     /* FIX-2b — post-refusal invocation of the script/proof refill core:
      * bounds [hstar+1, min(cursor-1, sweep_top)], same coins floor. */
-    if (!reconcile_script_proof_refill_cursors(db, apply, out->hstar + 1,
-                                               out))
-        return false;
+    RF_REFILL_REQUIRE(stage_reducer_frontier_reconcile_script_proof_refill_cursors(
+                          db, apply, out->hstar + 1, out),
+                      "script/proof cursor refill");
 
     return true;
 }

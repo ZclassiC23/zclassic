@@ -712,6 +712,23 @@ int test_validate_script_hash_split_repair(void)
             VSH_CHECK("D2b: revert A+4 to canonical", vsh_put_vh(pd, A + 4));
         }
 
+        /* D2c — both verdict hashes disagree with the active header. That is
+         * not a validate-only clamp: the dual replay owns it because script is
+         * not canonical. */
+        {
+            bool cerr = true;
+            VSH_CHECK("D2c: seed both-stale hash shape @ A+4",
+                      vsh_put_vh_corrupt(pd, A + 4) &&
+                      vsh_put_sv(pd, A + 4, true));
+            enum rf_hash_split_side side =
+                stage_repair_classify_hash_split(&ms, pd, A + 4, &cerr);
+            VSH_CHECK("D2c: classify both-stale hashes SCRIPT-side",
+                      side == RF_SPLIT_SCRIPT_SIDE && !cerr);
+            VSH_CHECK("D2c: revert A+4 to canonical",
+                      vsh_put_vh(pd, A + 4) &&
+                      vsh_put_sv(pd, A + 4, false));
+        }
+
         /* D3 + E(dry) — drive the production orchestrator dry-run. It must
          * ROUTE the split to the dual replay (stale_script_repair_height ==
          * A+3, repaired probe set, classified SCRIPT-side off the validate

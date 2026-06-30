@@ -51,6 +51,39 @@ static bool lms_blocker_cleared_by_catchup(const char *code,
            strcmp(code, "activation-no-progress") == 0 && lag <= 0;
 }
 
+static int lms_rpc_error_code(const char *err)
+{
+    int code = 0;
+    if (err && sscanf(err, "rpc error %d", &code) == 1)
+        return code;
+    return 0;
+}
+
+static bool lms_error_implies_transport_reachable(const char *err)
+{
+    if (!err || !err[0])
+        return false;
+    return strncmp(err, "rpc error", 9) == 0 ||
+           strncmp(err, "missing ", 8) == 0 ||
+           strcmp(err, "json parse failed") == 0 ||
+           strcmp(err, "no http body separator") == 0;
+}
+
+static void lms_rpc_error_message(const char *err, char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0)
+        return;
+    out[0] = '\0';
+    if (!err || !err[0])
+        return;
+    const char *p = strchr(err, ':');
+    if (p && p[1] == ' ')
+        p += 2;
+    else
+        p = err;
+    snprintf(out, out_sz, "%s", p);
+}
+
 int legacy_mirror_sync_reported_lag(
     const struct legacy_mirror_sync_stats *s)
 {
@@ -73,6 +106,35 @@ void legacy_mirror_sync_push_observed_lag_json(
     json_set_null(&nullv);
     json_push_kv(out, key, &nullv);
     json_free(&nullv);
+}
+
+const char *legacy_mirror_sync_blocker_code(
+    const struct legacy_mirror_sync_stats *s)
+{
+    if (!s)
+        return "";
+    return s->activation_blocker_reason[0] ? s->activation_blocker_reason
+                                           : s->last_blocker_id;
+}
+
+bool legacy_mirror_sync_blocker_should_surface(
+    const struct legacy_mirror_sync_stats *s,
+    bool non_legacy_source_selected)
+{
+    if (!s || !s->enabled)
+        return false;
+    const char *code = legacy_mirror_sync_blocker_code(s);
+    if (!code[0])
+        return false;
+    if (s->unsafe_overrides_total > 0)
+        return true;
+    if (strcmp(code, "rpc-unreachable") == 0 ||
+        strcmp(code, "activation-no-progress") == 0)
+        return !non_legacy_source_selected;
+    if (s->activation_blocker_class == BLOCKER_PERMANENT ||
+        s->last_blocker_class == BLOCKER_PERMANENT)
+        return true;
+    return !non_legacy_source_selected;
 }
 
 struct zcl_result legacy_mirror_sync_request_catchup_result(const char *reason)
@@ -268,6 +330,13 @@ void legacy_mirror_sync_stats_snapshot(
         pthread_mutex_unlock(&g_lms.lock);
     }
     out->lag = out->lag_known ? out->legacy_height - out->local_height : 0;
+    out->zclassicd_rpc_transport_reachable =
+        out->reachable || lms_error_implies_transport_reachable(out->last_error);
+    out->legacy_oracle_usable =
+        out->enabled && out->reachable && out->legacy_advisory_height_known;
+    out->zclassicd_rpc_error_code = lms_rpc_error_code(out->last_error);
+    lms_rpc_error_message(out->last_error, out->zclassicd_rpc_error_message,
+                          sizeof(out->zclassicd_rpc_error_message));
     out->target_height = atomic_load(&g_lms.target_height);
     out->authority_rewind_target =
         atomic_load(&g_lms.authority_rewind_target);
@@ -377,10 +446,19 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     legacy_mirror_sync_stats_snapshot(&s);
     json_push_kv_bool(out, "mirror_enabled", s.enabled);
     json_push_kv_str(out, "state", s.state);
+    json_push_kv_bool(out, "mirror_monitor_running", s.running);
     json_push_kv_bool(out, "mirror_running", s.running);
     json_push_kv_bool(out, "running", s.running);
     json_push_kv_bool(out, "reachable", s.reachable);
     json_push_kv_bool(out, "mirror_reachable", s.reachable);
+    json_push_kv_bool(out, "zclassicd_rpc_transport_reachable",
+                      s.zclassicd_rpc_transport_reachable);
+    json_push_kv_bool(out, "legacy_oracle_usable",
+                      s.legacy_oracle_usable);
+    json_push_kv_int(out, "zclassicd_rpc_error_code",
+                     s.zclassicd_rpc_error_code);
+    json_push_kv_str(out, "zclassicd_rpc_error_message",
+                     s.zclassicd_rpc_error_message);
     json_push_kv_bool(out, "in_flight", s.in_flight);
     json_push_kv_int(out, "zclassic23_height", s.local_height);
     json_push_kv_str(out, "zclassic23_hash", s.zclassic23_hash);
@@ -406,8 +484,7 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     legacy_mirror_sync_push_observed_lag_json(out,
                                               "candidate_lag_observed", &s);
     json_push_kv_str(out, "candidate_blocker",
-                     s.activation_blocker_reason[0] ? s.activation_blocker_reason
-                                             : s.last_blocker_id);
+                     legacy_mirror_sync_blocker_code(&s));
     json_push_kv_int(out, "target_height", s.target_height);
     json_push_kv_int(out, "authority_rewind_target",
                      s.authority_rewind_target);

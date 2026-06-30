@@ -116,6 +116,82 @@ bool coin_backfill_meta_present(struct sqlite3 *db, const char *key,
     return true;
 }
 
+bool coin_backfill_refusal_marker_decode(const uint8_t *blob, size_t len,
+                                         bool *out_active,
+                                         bool *out_legacy_spent,
+                                         bool *out_legacy_txindex_miss)
+{
+    if (!out_active || !out_legacy_spent || !out_legacy_txindex_miss)
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] refusal marker decode NULL output");
+    *out_active = false;
+    *out_legacy_spent = false;
+    *out_legacy_txindex_miss = false;
+    if (!blob || len == 0)
+        return true;
+
+    if (len == 5 && memcmp(blob, "spent", 5) == 0) {
+        *out_legacy_spent = true;
+        return true;
+    }
+    if (len == 12 && memcmp(blob, "txindex_miss", 12) == 0) {
+        *out_legacy_txindex_miss = true;
+        return true;
+    }
+
+    struct marker {
+        const char *value;
+        size_t len;
+    };
+    static const struct marker active[] = {
+        { COIN_BACKFILL_SPENT_MARKER_V2,
+          sizeof(COIN_BACKFILL_SPENT_MARKER_V2) - 1 },
+        { COIN_BACKFILL_TXINDEX_MISS_MARKER_V2,
+          sizeof(COIN_BACKFILL_TXINDEX_MISS_MARKER_V2) - 1 },
+        { COIN_BACKFILL_UNPROVABLE_MARKER,
+          sizeof(COIN_BACKFILL_UNPROVABLE_MARKER) - 1 },
+        { COIN_BACKFILL_ROUND_CAP_MARKER,
+          sizeof(COIN_BACKFILL_ROUND_CAP_MARKER) - 1 },
+        { COIN_BACKFILL_RELOST_MARKER,
+          sizeof(COIN_BACKFILL_RELOST_MARKER) - 1 },
+    };
+    for (size_t i = 0; i < sizeof(active) / sizeof(active[0]); i++) {
+        if (len == active[i].len &&
+            memcmp(blob, active[i].value, active[i].len) == 0) {
+            *out_active = true;
+            return true;
+        }
+    }
+
+    LOG_WARN("coin_backfill",
+             "[coin_backfill] ignoring unknown refusal marker len=%zu", len);
+    return true;
+}
+
+bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
+                                       bool *out_active,
+                                       bool *out_legacy_spent,
+                                       bool *out_legacy_txindex_miss)
+{
+    uint8_t blob[32];
+    size_t len = 0;
+    bool found = false;
+    if (!out_active || !out_legacy_spent || !out_legacy_txindex_miss)
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] refusal marker read NULL output");
+    *out_active = false;
+    *out_legacy_spent = false;
+    *out_legacy_txindex_miss = false;
+    if (!progress_meta_get(db, key, blob, sizeof(blob), &len, &found))
+        LOG_FAIL("coin_backfill",
+                 "[coin_backfill] refusal marker read failed key=%s", key);
+    if (!found)
+        return true;
+    return coin_backfill_refusal_marker_decode(blob, len, out_active,
+                                               out_legacy_spent,
+                                               out_legacy_txindex_miss);
+}
+
 /* STEP-2A pending-prevout HOLD signal — an IN-MEMORY trigger, NOT persisted to
  * progress.kv. It is published by script_validate's sv_hold_unresolved on a
  * JOB_IDLE HOLD (reducer drive thread). A JOB_IDLE step's progress.kv writes are

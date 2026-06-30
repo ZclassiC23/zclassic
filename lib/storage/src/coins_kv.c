@@ -839,8 +839,10 @@ bool coins_kv_reset_for_reseed(sqlite3 *db)
     /* The single legal standalone txn for a reindex epilogue: the replayed
      * `utxos` mirror is the authority and coins_kv is rebuilt from it in the
      * same single-writer boot. Truncate the coins set, then clear the
-     * migration stamp + applied frontier so coins_kv_seed_from_node_db does a
-     * FRESH copy (it short-circuits when the stamp is already set). */
+     * migration stamp, self-folded provenance bit, and applied frontier so
+     * coins_kv_seed_from_node_db does a FRESH copy (it short-circuits when the
+     * stamp is already set) and a borrowed reseed can never inherit a stale
+     * sovereignty claim. */
     char *err = NULL;
     bool ok = true;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
@@ -848,6 +850,8 @@ bool coins_kv_reset_for_reseed(sqlite3 *db)
     if (ok && sqlite3_exec(db, "DELETE FROM coins", NULL, NULL, &err) != SQLITE_OK)
         ok = false;
     if (ok && !progress_meta_delete_in_tx(db, COINS_KV_MIGRATION_COMPLETE_KEY))
+        ok = false;
+    if (ok && !progress_meta_delete_in_tx(db, COINS_KV_SELF_FOLDED_KEY))
         ok = false;
     if (ok && !progress_meta_delete_in_tx(db, COINS_APPLIED_HEIGHT_KEY))
         ok = false;

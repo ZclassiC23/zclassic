@@ -491,26 +491,6 @@ void stage_reducer_frontier_reset_detect_memo_for_testing(void)
 }
 #endif
 
-/* Cache only a result the Condition treats as fully quiet: no repair, no
- * refusal, and none of the repair-evidence side channels that
- * repair_evidence_pending() (the Condition's gate-loudness probe) reads. */
-static bool rf_result_clean(
-    const struct stage_reducer_frontier_reconcile_result *r)
-{
-    return !r->repaired &&
-           !r->refused_coin_tear &&
-           !r->refused_coin_unknown &&
-           !r->value_overflow_repair_attempted &&
-           !r->value_overflow_repair_owner_refused &&
-           !r->stale_script_repair_attempted &&
-           !r->coin_backfill_attempted &&
-           !r->coin_backfill_owner_refused &&
-           r->tipfin_backfill_count == 0 &&
-           r->tipfin_backfill_refused_reason == 0 &&
-           r->noncanonical_found == 0 &&
-           r->reorg_residue_tipfin_found == 0;
-}
-
 static bool reducer_frontier_reconcile_light_impl(
     sqlite3 *db,
     struct main_state *ms,
@@ -641,9 +621,8 @@ static bool reducer_frontier_reconcile_light_impl(
      * coin-tear refusal so a healed frontier passes it arithmetically;
      * diagnostics live inside the callees. The tear gate lives HERE, not
      * just in the callees: the reconcile-light Condition polls _needed()
-     * every 5s on any stalled node (tear or not), and the FIX-2a callee
-     * treats a no-tear invocation as a contract violation worth an
-     * unthrottled WARN — gating keeps the healthy/no-tear path silent. */
+     * every 5s on any stalled node (tear or not), so the owner gate keeps
+     * the healthy/no-tear path out of the pre-refusal adapter entirely. */
     if (local.refused_coin_tear) {
         bool handled_pre_refusal = false;
         if (!stage_reducer_frontier_try_unapplied_hole_clamp(
@@ -790,7 +769,8 @@ static bool reducer_frontier_reconcile_light_impl(
 
     /* Only this terminal exit caches: every early return above is an
      * actionable/abnormal state the next tick must re-derive fresh. */
-    if (!apply && memo_eligible && rf_result_clean(&local)) {
+    if (!apply && memo_eligible &&
+        stage_reducer_frontier_result_is_memo_clean(&local)) {
         g_detect_memo.valid = true;
         g_detect_memo.swept_unix = platform_time_wall_unix();
         g_detect_memo.total_changes = changes_at_entry;

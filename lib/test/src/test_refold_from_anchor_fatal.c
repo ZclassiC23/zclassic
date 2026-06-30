@@ -372,6 +372,14 @@ int test_refold_from_anchor_fatal(void)
                   pk && coins_kv_is_proven_authority(pk, &applied));
         RFA_CHECK("pos: applied frontier == anchor+1 (advanced only on proven set)",
                   applied == cp.height + 1);
+        RFA_CHECK("pos: self-folded provenance marker set",
+                  coins_kv_contains_refold_marker(pk));
+        {
+            char reason[96] = {0};
+            RFA_CHECK("pos: tip is self-derived after minted snapshot reset",
+                      coins_kv_tip_is_self_derived(pk, cp.height, reason,
+                                                    sizeof(reason)));
+        }
 
         checkpoints_reset_sha3_override_for_test();
         node_db_close(&ndb);

@@ -224,6 +224,48 @@ struct stage_reducer_frontier_reconcile_result {
     int lowest_reorg_residue_tipfin;
 };
 
+/* Result classifiers used by the Condition and memo cache. Keep this seam
+ * named: the coin-frontier group is the borrowed-seed recovery scaffold that
+ * should shrink after the sovereign refold cure, while the row-residue group is
+ * retained liveness repair. */
+static inline bool stage_reducer_frontier_result_has_coin_repair_evidence(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return rr &&
+           (rr->value_overflow_repair_attempted ||
+            rr->value_overflow_repair_owner_refused ||
+            rr->stale_script_repair_attempted ||
+            rr->coin_backfill_attempted ||
+            rr->coin_backfill_owner_refused ||
+            rr->tipfin_backfill_count > 0 ||
+            rr->tipfin_backfill_refused_reason != 0);
+}
+
+static inline bool stage_reducer_frontier_result_has_row_residue_evidence(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return rr &&
+           (rr->noncanonical_found > 0 ||
+            rr->reorg_residue_tipfin_found > 0);
+}
+
+static inline bool stage_reducer_frontier_result_has_gate_loudness_evidence(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return stage_reducer_frontier_result_has_coin_repair_evidence(rr) ||
+           stage_reducer_frontier_result_has_row_residue_evidence(rr);
+}
+
+static inline bool stage_reducer_frontier_result_is_memo_clean(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return rr &&
+           !rr->repaired &&
+           !rr->refused_coin_tear &&
+           !rr->refused_coin_unknown &&
+           !stage_reducer_frontier_result_has_gate_loudness_evidence(rr);
+}
+
 /* Reconcile a reducer cursor/coins desync that wedges the chain.
  *
  * After an unclean restart (kill-9 + WAL) the durable tip_finalize cursor can

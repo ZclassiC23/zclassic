@@ -32,11 +32,12 @@ struct sqlite3;
  *                        not loaded, owner-ack gate, in-flight scan, window-
  *                        over-budget). NEVER persisted.
  *   TERMINAL           — the coin's creator provably cannot exist in the chain
- *                        we hold (corrupt txindex height, off active chain,
- *                        txid mismatch, vout/value/script out of range,
- *                        immature coinbase, metadata tear, round cap, proven
- *                        double-spend). Persist unconditionally. (scan_gap is
- *                        RETRYABLE — a missing body that resumes once fetched.)
+ *                        we hold (full active-chain proof after a corrupt
+ *                        txindex hint, vout/value/script out of range, immature
+ *                        coinbase, metadata tear, round cap, proven
+ *                        double-spend). Persist unconditionally. Body-read gaps,
+ *                        bounded creator-scan exhaustion, and scan_gap are
+ *                        RETRYABLE — missing bodies resume once fetched.
  *   TERMINAL_IF_TXINDEX_COMPLETE — txindex_miss: terminal IFF the txindex is
  *                        COMPLETE (node.db tx_index_complete >= 3); otherwise
  *                        the creating tx may simply not be indexed yet (IBD). */
@@ -45,6 +46,25 @@ enum coin_backfill_terminal_class {
     COIN_BACKFILL_TC_TERMINAL,
     COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE,
 };
+
+#define COIN_BACKFILL_SPENT_MARKER_V2        "spent:v2"
+#define COIN_BACKFILL_TXINDEX_MISS_MARKER_V2 "txindex_miss:v2"
+#define COIN_BACKFILL_UNPROVABLE_MARKER      "unprovable"
+#define COIN_BACKFILL_ROUND_CAP_MARKER       "round_cap"
+#define COIN_BACKFILL_RELOST_MARKER          "relost"
+
+/* Decode/read the durable refusal marker consumed by both runtime repair and
+ * the boot torn gate. Legacy unversioned markers are reported separately so the
+ * runtime can re-prove/delete them; unknown payloads are ignored instead of
+ * becoming a permanent boot gate. */
+bool coin_backfill_refusal_marker_decode(const uint8_t *blob, size_t len,
+                                         bool *out_active,
+                                         bool *out_legacy_spent,
+                                         bool *out_legacy_txindex_miss);
+bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
+                                       bool *out_active,
+                                       bool *out_legacy_spent,
+                                       bool *out_legacy_txindex_miss);
 
 /* Persist coin_backfill's durable refusal of a TERMINAL (h, hole_hash) so the
  * boot-time torn-import gate (block_index_loader_torn_gate.c condition (3)) can
@@ -55,8 +75,9 @@ enum coin_backfill_terminal_class {
  * recursive-lock span, WARN-on-fail-refuse-anyway). RETRYABLE never persists;
  * TERMINAL_IF_TXINDEX_COMPLETE persists only when tx_index_complete >= 3 (so an
  * in-progress IBD txindex_miss is never marked terminal); TERMINAL persists
- * unconditionally. `value_class` is a short forensic token ("txindex_miss" /
- * "unprovable" / "round_cap"); the gate only needs key presence.
+ * unconditionally. `value_class` is a short forensic token ("txindex_miss:v2" /
+ * "unprovable" / "round_cap"); the gate only needs key presence, but legacy
+ * unversioned txindex_miss markers are re-proven by the runtime reader.
  * Call only OUTSIDE the enumerate/scan locked sections (it takes its own
  * lock). NOT consensus state — a diagnostic progress.kv meta marker. */
 void coin_backfill_persist_terminal_refusal(
@@ -135,11 +156,13 @@ bool find_lowest_prevout_unresolved_hole_unlocked(
     char status_out[32], struct uint256 *hash_out, bool *hash_found);
 
 /* Delta horizon: lowest L with BOTH a utxo_apply_log row AND a
- * utxo_apply_delta row at every height in [L..cursor-1]. Coins created at or
- * above this horizon are inside the reconstructible window — a miss there is
- * a live apply bug, refused to the operator (G7). Walks downward from
- * cursor-1; a capped (unbounded) walk reports -1 and the caller refuses
- * rather than guessing a permissive floor. Caller holds the progress lock. */
+ * utxo_apply_delta row at every height in [L..cursor-1]. This is retained as
+ * old-hole geometry/observability only; it is not a creator-refusal boundary.
+ * A creator inside the recent delta window is repairable when the creating
+ * block is active-chain hash-verified and the terminal-bound no-spend scan
+ * proves the coin was unspent at the frontier. Walks downward from cursor-1;
+ * a capped walk reports -1 and the caller refuses rather than guessing a
+ * permissive floor. Caller holds the progress lock. */
 bool utxo_apply_log_contiguous_floor(struct sqlite3 *db, int cursor,
                                      int *out_floor);
 

@@ -79,10 +79,30 @@ static _Atomic int g_tear_bypass_warn_total = 0;
       "last_reconcile_lowest_validate_headers_refill_hole", false)       \
     X(LOWEST_VALIDATE_HEADERS_HASH_SPLIT,                                 \
       "last_reconcile_lowest_validate_headers_hash_split", false)        \
+    X(LOWEST_SCRIPT_VALIDATE_HASH_SPLIT,                                  \
+      "last_reconcile_lowest_script_validate_hash_split", false)         \
     X(LOWEST_BODY_FETCH_REFILL_HOLE,                                      \
       "last_reconcile_lowest_body_fetch_refill_hole", false)             \
     X(LOWEST_BODY_PERSIST_REFILL_HOLE,                                    \
       "last_reconcile_lowest_body_persist_refill_hole", false)           \
+    X(LOWEST_SCRIPT_VALIDATE_REFILL_HOLE,                                 \
+      "last_reconcile_lowest_script_validate_refill_hole", false)        \
+    X(LOWEST_PROOF_VALIDATE_REFILL_HOLE,                                  \
+      "last_reconcile_lowest_proof_validate_refill_hole", false)         \
+    X(CLAMPED_SCRIPT_VALIDATE,                                            \
+      "last_reconcile_clamped_script_validate", true)                    \
+    X(CLAMPED_PROOF_VALIDATE,                                             \
+      "last_reconcile_clamped_proof_validate", true)                     \
+    X(SCRIPT_VALIDATE_CURSOR_BEFORE,                                      \
+      "last_reconcile_script_validate_cursor_before", false)             \
+    X(SCRIPT_VALIDATE_CURSOR_AFTER,                                       \
+      "last_reconcile_script_validate_cursor_after", false)              \
+    X(PROOF_VALIDATE_CURSOR_BEFORE,                                       \
+      "last_reconcile_proof_validate_cursor_before", false)              \
+    X(PROOF_VALIDATE_CURSOR_AFTER,                                        \
+      "last_reconcile_proof_validate_cursor_after", false)               \
+    X(PRE_REFUSAL_UNAPPLIED_CLAMP,                                        \
+      "last_reconcile_pre_refusal_unapplied_clamp", true)                \
     X(SCRIPTS_SET, "last_reconcile_scripts_set", false)                  \
     X(HAVE_DATA_SET, "last_reconcile_have_data_set", false)              \
     X(HAVE_DATA_CLEARED, "last_reconcile_have_data_cleared", false)      \
@@ -265,10 +285,30 @@ static void rfrl_snapshot_reconcile_result(
                     rr->lowest_validate_headers_refill_hole);
     RFRL_RR_SET_INT(LOWEST_VALIDATE_HEADERS_HASH_SPLIT,
                     rr->lowest_validate_headers_hash_split);
+    RFRL_RR_SET_INT(LOWEST_SCRIPT_VALIDATE_HASH_SPLIT,
+                    rr->lowest_script_validate_hash_split);
     RFRL_RR_SET_INT(LOWEST_BODY_FETCH_REFILL_HOLE,
                     rr->lowest_body_fetch_refill_hole);
     RFRL_RR_SET_INT(LOWEST_BODY_PERSIST_REFILL_HOLE,
                     rr->lowest_body_persist_refill_hole);
+    RFRL_RR_SET_INT(LOWEST_SCRIPT_VALIDATE_REFILL_HOLE,
+                    rr->lowest_script_validate_refill_hole);
+    RFRL_RR_SET_INT(LOWEST_PROOF_VALIDATE_REFILL_HOLE,
+                    rr->lowest_proof_validate_refill_hole);
+    RFRL_RR_SET_BOOL(CLAMPED_SCRIPT_VALIDATE,
+                     rr->clamped_script_validate);
+    RFRL_RR_SET_BOOL(CLAMPED_PROOF_VALIDATE,
+                     rr->clamped_proof_validate);
+    RFRL_RR_SET_INT(SCRIPT_VALIDATE_CURSOR_BEFORE,
+                    rr->script_validate_cursor_before);
+    RFRL_RR_SET_INT(SCRIPT_VALIDATE_CURSOR_AFTER,
+                    rr->script_validate_cursor_after);
+    RFRL_RR_SET_INT(PROOF_VALIDATE_CURSOR_BEFORE,
+                    rr->proof_validate_cursor_before);
+    RFRL_RR_SET_INT(PROOF_VALIDATE_CURSOR_AFTER,
+                    rr->proof_validate_cursor_after);
+    RFRL_RR_SET_BOOL(PRE_REFUSAL_UNAPPLIED_CLAMP,
+                     rr->pre_refusal_unapplied_clamp);
     RFRL_RR_SET_INT(SCRIPTS_SET, rr->scripts_set);
     RFRL_RR_SET_INT(HAVE_DATA_SET, rr->have_data_set);
     RFRL_RR_SET_INT(HAVE_DATA_CLEARED, rr->have_data_cleared);
@@ -520,8 +560,9 @@ static void snapshot_coin_backfill_scan(sqlite3 *db)
 
 /* ── tipfin backfill progress record (diagnostic snapshot only) ─────────
  * The TIPFIN no-spend backfill persists a progress_meta record keyed
- * tipfin_backfill.progress whose value begins [progress i32 LE], bumped
- * after every repaired batch (that package owns the writes/deletes). This
+ * tipfin_backfill.progress whose value is
+ * [last_backfilled_height i32 LE][total u32 LE], bumped after every repaired
+ * batch (that package owns the writes/deletes). This
  * Condition only SNAPSHOTS the record for diagnostics + the loud-suppress
  * decision (repair_evidence_pending). It is NOT a witness clear-edge: a
  * row-only backfill that has not yet moved H* is bounded progress, not a
@@ -551,11 +592,19 @@ static bool read_tipfin_backfill_progress(sqlite3 *db, bool *present,
 
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        *present = true;
         const uint8_t *v = sqlite3_column_blob(st, 0);
-        if (v && sqlite3_column_bytes(st, 0) >= 4)
+        int n = sqlite3_column_bytes(st, 0);
+        if (v && n == 8) {
+            *present = true;
             *progress = (int)((uint32_t)v[0] | (uint32_t)v[1] << 8 |
                               (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24);
+        } else {
+            LOG_WARN("condition",
+                     "[condition:reducer_frontier_reconcile_light] "
+                     "tipfin_backfill progress malformed len=%d "
+                     "(expected 8); treating as absent",
+                     n);
+        }
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("condition",
                  "[condition:reducer_frontier_reconcile_light] tipfin_backfill "
@@ -631,15 +680,7 @@ static bool repair_evidence_pending(
     sqlite3 *db,
     const struct stage_reducer_frontier_reconcile_result *rr)
 {
-    if (rr->value_overflow_repair_owner_refused ||
-        rr->value_overflow_repair_attempted ||
-        rr->coin_backfill_owner_refused ||
-        rr->coin_backfill_attempted ||
-        rr->stale_script_repair_attempted ||
-        rr->tipfin_backfill_count > 0 ||
-        rr->tipfin_backfill_refused_reason ||
-        rr->reorg_residue_tipfin_found > 0 ||
-        rr->noncanonical_found > 0)
+    if (stage_reducer_frontier_result_has_gate_loudness_evidence(rr))
         return true;
 
     bool present = false;
@@ -762,8 +803,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
         return false;
     }
     if (!rr.refused_coin_tear && !rr.repaired &&
-        rr.noncanonical_found == 0 &&
-        rr.reorg_residue_tipfin_found == 0) {
+        !stage_reducer_frontier_result_has_row_residue_evidence(&rr)) {
         /* Nothing actionable: both transition memos re-arm.
          * noncanonical_found counts relabel/reorg-residue rows the
          * dry-run judged stale — the apply purge is the remedy.
@@ -917,17 +957,26 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
              "[condition:reducer_frontier_reconcile_light] hstar=%d "
              "coins_applied=%d sweep_top=%d validate_headers=%d->%d "
              "body_fetch=%d->%d body_persist=%d->%d "
+             "script_validate=%d->%d proof_validate=%d->%d "
              "tip_finalize=%d->%d scripts_set=%d have_data_set=%d "
              "have_data_cleared=%d validate_hash_split=%d "
-             "failed_mask_cleared=%d",
+             "script_hash_split=%d script_refill_hole=%d "
+             "proof_refill_hole=%d failed_mask_cleared=%d",
              rr.hstar, rr.coins_applied_height, rr.sweep_top,
              rr.validate_headers_cursor_before,
              rr.validate_headers_cursor_after,
              rr.body_fetch_cursor_before, rr.body_fetch_cursor_after,
              rr.body_persist_cursor_before, rr.body_persist_cursor_after,
+             rr.script_validate_cursor_before,
+             rr.script_validate_cursor_after,
+             rr.proof_validate_cursor_before,
+             rr.proof_validate_cursor_after,
              rr.tip_finalize_cursor_before, rr.tip_finalize_cursor_after,
              rr.scripts_set, rr.have_data_set, rr.have_data_cleared,
              rr.lowest_validate_headers_hash_split,
+             rr.lowest_script_validate_hash_split,
+             rr.lowest_script_validate_refill_hole,
+             rr.lowest_proof_validate_refill_hole,
              rr.failed_mask_cleared);
     return COND_REMEDY_OK;
 }

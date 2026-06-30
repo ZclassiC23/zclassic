@@ -708,6 +708,8 @@ static struct p2p_node *test_cac_add_peer(struct connman *cm,
     if (!node)
         return NULL;
     node->state = state;
+    if (state >= PEER_HANDSHAKE_COMPLETE)
+        node->services = NODE_NETWORK;
     node->starting_height = 130;
     cm->manager.nodes[cm->manager.num_nodes++] = node;
     return node;
@@ -1134,6 +1136,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
         p1.id = 1;
         p1.starting_height = 130;
         p1.state = PEER_ACTIVE;
+        p1.services = NODE_NETWORK;
         peers[0] = &p1;
         cm.manager.nodes = peers;
         cm.manager.num_nodes = 1;
@@ -1197,10 +1200,13 @@ static int test_cac_dump_populates_live_mirror_source(void)
         const struct json_value *progress_total;
         const struct json_value *blocked;
         const struct json_value *blocker;
+        const struct json_value *blocked_class;
         const struct json_value *healthy;
         const struct json_value *available;
+        const struct json_value *authorized;
         const struct json_value *height;
         const struct json_value *reason;
+        const struct json_value *selection_blocker;
 
         memset(&ms, 0, sizeof(ms));
         memset(&tip, 0, sizeof(tip));
@@ -1274,13 +1280,40 @@ static int test_cac_dump_populates_live_mirror_source(void)
         ASSERT(mirror != NULL);
         blocked = json_get(mirror, "blocked");
         blocker = json_get(mirror, "blocker");
+        blocked_class = json_get(mirror, "blocked_class");
         healthy = json_get(mirror, "healthy");
         ASSERT(blocked != NULL);
         ASSERT(blocker != NULL);
+        ASSERT(blocked_class != NULL);
         ASSERT(healthy != NULL);
         ASSERT(json_get_bool(blocked));
         ASSERT(!json_get_bool(healthy));
         ASSERT_STR_EQ(json_get_str(blocker), "body-hash-mismatch");
+        ASSERT_STR_EQ(json_get_str(blocked_class), "permanent");
+        json_free(&root);
+
+        mirror_consensus_reset_for_test();
+        mirror_consensus_set_enabled(true);
+        mirror_consensus_record_blocker("hash-disagreement");
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "hash-disagreement");
+        legacy_mirror_sync_test_set_stats(&stats, &ms);
+
+        json_init(&root);
+        ASSERT(block_source_policy_dump_state_json(&root, NULL));
+        sources = json_get(&root, "sources");
+        ASSERT(sources != NULL);
+        mirror = json_at(sources, 3);
+        ASSERT(mirror != NULL);
+        blocked = json_get(mirror, "blocked");
+        blocker = json_get(mirror, "blocker");
+        blocked_class = json_get(mirror, "blocked_class");
+        ASSERT(blocked != NULL);
+        ASSERT(blocker != NULL);
+        ASSERT(blocked_class != NULL);
+        ASSERT(json_get_bool(blocked));
+        ASSERT_STR_EQ(json_get_str(blocker), "hash-disagreement");
+        ASSERT_STR_EQ(json_get_str(blocked_class), "transient");
         json_free(&root);
 
         mirror_consensus_reset_for_test();
@@ -1302,6 +1335,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
         ASSERT(mirror != NULL);
         available = json_get(mirror, "available");
         healthy = json_get(mirror, "healthy");
+        authorized = json_get(mirror, "authorized");
         height = json_get(mirror, "height");
         lag = json_get(mirror, "lag");
         lag_known = json_get(mirror, "lag_known");
@@ -1312,8 +1346,10 @@ static int test_cac_dump_populates_live_mirror_source(void)
         candidate_lag_observed =
             json_get(mirror, "candidate_lag_observed");
         reason = json_get(mirror, "reason");
+        selection_blocker = json_get(mirror, "selection_blocker");
         ASSERT(available != NULL);
         ASSERT(healthy != NULL);
+        ASSERT(authorized != NULL);
         ASSERT(height != NULL);
         ASSERT(lag != NULL);
         ASSERT(lag_known != NULL);
@@ -1323,8 +1359,10 @@ static int test_cac_dump_populates_live_mirror_source(void)
         ASSERT(candidate_lag_valid != NULL);
         ASSERT(candidate_lag_observed != NULL);
         ASSERT(reason != NULL);
+        ASSERT(selection_blocker != NULL);
         ASSERT(!json_get_bool(available));
         ASSERT(!json_get_bool(healthy));
+        ASSERT(!json_get_bool(authorized));
         ASSERT(json_get_int(height) == -1);
         ASSERT(json_get_int(lag) == -1);
         ASSERT(!json_get_bool(lag_known));
@@ -1333,6 +1371,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
         ASSERT(!json_get_bool(candidate_lag_known));
         ASSERT(!json_get_bool(candidate_lag_valid));
         ASSERT(json_is_null(candidate_lag_observed));
+        ASSERT_STR_EQ(json_get_str(selection_blocker), "unavailable");
         ASSERT(strstr(json_get_str(reason), "lag=unknown") != NULL);
         json_free(&root);
 

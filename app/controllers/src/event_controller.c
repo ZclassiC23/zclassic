@@ -2,6 +2,10 @@
  *
  * Event log and sync state machine RPCs.
  * Canonical source for: eventlog, syncstate */
+// blocker-ok:rpc_healthcheck_reporter
+/* This controller serializes blocker strings created by typed blocker owners
+ * such as chain-advance policy and legacy mirror state; it does not create a
+ * new blocker source. */
 
 #include "controllers/event_controller.h"
 #include "controllers/strong_params.h"
@@ -202,7 +206,8 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         "healthcheck\n"
         "\nReturn node health status — single pass/fail for monitoring.\n"
         "\nResult:\n"
-        "  { \"healthy\": true/false, \"build_commit\": \"...\",\n"
+        "  { \"healthy\": true/false, \"serving\": true/false,\n"
+        "    \"build_commit\": \"...\",\n"
         "    \"sync_state\": \"...\", \"checks\": { ... } }\n");
 
     json_set_object(result);
@@ -234,6 +239,16 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                      health.last_error_age_seconds);
     json_push_kv_bool(&checks, "last_error_recent",
                       health.last_error_recent);
+    json_push_kv_bool(&checks, "serving", health.serving);
+    if (health.blocking_reason[0])
+        json_push_kv_str(&checks, "blocking_reason",
+                         health.blocking_reason);
+    json_push_kv_bool(&checks, "warning", health.warning);
+    json_push_kv_int(&checks, "warning_count",
+                     (int64_t)health.warning_count);
+    if (health.warning_reasons[0])
+        json_push_kv_str(&checks, "warning_reasons",
+                         health.warning_reasons);
     if (health.last_error_type[0])
         json_push_kv_str(&checks, "last_error_type",
                          health.last_error_type);
@@ -247,6 +262,10 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     if (health.operator_needed && health.operator_needed_detail[0])
         json_push_kv_str(&checks, "operator_needed_detail",
                          health.operator_needed_detail);
+    const char *active_source = "none";
+    const char *active_source_trust = "none";
+    char active_blocker[128] = "";
+    bool non_legacy_source_selected = false;
     {
         struct json_value conditions = {0};
         json_set_object(&conditions);
@@ -272,6 +291,13 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         struct json_value ca = {0};
 
         block_source_policy_get_status(&d);
+        active_source = cac_source_name(d.selected_source);
+        active_source_trust = cac_source_trust_name(d.selected_source);
+        snprintf(active_blocker, sizeof(active_blocker), "%s", d.blocker);
+        non_legacy_source_selected =
+            d.result == CAC_DECISION_USE_SOURCE &&
+            d.selected_source != CAC_SOURCE_NONE &&
+            d.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR;
         json_set_object(&ca);
         json_push_kv_str(&ca, "authority", "local_consensus_validation");
         json_push_kv_str(&ca, "decision",
@@ -366,8 +392,15 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     {
         struct legacy_mirror_sync_stats ms;
         legacy_mirror_sync_stats_snapshot(&ms);
+        const char *legacy_blocker = legacy_mirror_sync_blocker_code(&ms);
+        bool surface_legacy_blocker =
+            legacy_mirror_sync_blocker_should_surface(
+                &ms, non_legacy_source_selected);
         json_push_kv_str(result, "consensus_authority",
                          "local_consensus_validation");
+        json_push_kv_str(result, "active_source", active_source);
+        json_push_kv_str(result, "active_source_trust", active_source_trust);
+        json_push_kv_str(result, "active_blocker", active_blocker);
         json_push_kv_str(result, "candidate_source", "legacy_advisory");
         json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
         json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
@@ -382,19 +415,35 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                          legacy_mirror_sync_reported_lag(&ms));
         legacy_mirror_sync_push_observed_lag_json(
             result, "mirror_lag_observed", &ms);
-        /* The legacy/zclassicd mirror is an OPTIONAL advisory oracle. On a
-         * fresh node with no zclassicd configured (ms.enabled == false) it
-         * never probes a real peer, so its blocker fields must NOT read as
-         * live node blockers — otherwise a perfectly healthy fresh node
-         * shows candidate_blocker="rpc-unreachable" / mirror_blockers_total>0.
-         * Suppress the blocker SIGNALS when the mirror is disabled; keep the
-         * keys present (empty/0) for backward-compatible tooling. */
+        json_push_kv_bool(result, "mirror_monitor_running", ms.running);
+        json_push_kv_bool(result, "mirror_reachable", ms.reachable);
+        json_push_kv_bool(result, "zclassicd_rpc_transport_reachable",
+                          ms.zclassicd_rpc_transport_reachable);
+        json_push_kv_bool(result, "legacy_oracle_usable",
+                          ms.legacy_oracle_usable);
+        json_push_kv_int(result, "zclassicd_rpc_error_code",
+                         ms.zclassicd_rpc_error_code);
+        json_push_kv_str(result, "zclassicd_rpc_error_message",
+                         ms.zclassicd_rpc_error_message);
+        json_push_kv_int(result, "mirror_rpc_errors", ms.rpc_errors);
+        json_push_kv_int(result, "mirror_last_attempt", ms.last_attempt);
+        json_push_kv_str(result, "mirror_active_error_code",
+                         legacy_blocker);
+        json_push_kv_str(result, "mirror_active_error_detail",
+                         legacy_blocker[0] ? ms.last_error : "");
+        /* The legacy/zclassicd mirror is an OPTIONAL advisory oracle. Keep its
+         * blocker visible under mirror/legacy keys, but do not promote a
+         * transient advisory dependency failure into the top-level candidate
+         * blocker when chain advance has already selected a native source. */
         json_push_kv_str(result, "candidate_blocker",
-                         ms.enabled
-                             ? (ms.activation_blocker_reason[0]
-                                    ? ms.activation_blocker_reason
-                                    : ms.last_blocker_id)
-                             : "");
+                         surface_legacy_blocker ? legacy_blocker : "");
+        json_push_kv_str(result, "candidate_blocker_scope",
+                         surface_legacy_blocker ? "active_or_safety"
+                                                : (legacy_blocker[0]
+                                                       ? "advisory_only"
+                                                       : ""));
+        json_push_kv_str(result, "legacy_advisory_blocker",
+                         ms.enabled ? legacy_blocker : "");
         json_push_kv_str(result, "mirror_activation_blocker",
                          ms.enabled ? ms.activation_blocker_reason : "");
         json_push_kv_str(result, "mirror_last_blocker_code",
@@ -420,6 +469,9 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                      health.tip_advance_age_seconds);
 
     json_push_kv_bool(result, "healthy", health.healthy);
+    json_push_kv_bool(result, "serving", health.serving);
+    json_push_kv_int(result, "warning_count",
+                     (int64_t)health.warning_count);
     json_push_kv(result, "checks", &checks);
     json_free(&checks);
 

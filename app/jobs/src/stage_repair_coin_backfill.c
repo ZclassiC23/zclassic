@@ -40,6 +40,7 @@
 /* Chunked scan budget per remedy tick (design §3: ~8k blocks / 1.5 s). */
 #define COIN_BACKFILL_SCAN_CHUNK_BLOCKS  8192
 #define COIN_BACKFILL_SCAN_CHUNK_WALL_MS 1500
+#define COIN_BACKFILL_CREATOR_SCAN_MAX_BLOCKS 32768
 
 __attribute__((format(printf, 4, 5)))
 static bool refuse(struct coin_backfill_result *r,
@@ -143,11 +144,134 @@ static bool enumerate_unresolved_prevouts(sqlite3 *db, const struct block *blk,
     return true;
 }
 
+static bool creator_fill_from_tx(struct coin_backfill_outpoint *op,
+                                 const struct transaction *tx, int creator_h,
+                                 int hole_height, char reason[64],
+                                 enum coin_backfill_terminal_class *out_tc)
+{
+    if (op->vout >= tx->num_vout) {
+        *out_tc = COIN_BACKFILL_TC_TERMINAL;
+        snprintf(reason, 64, "vout_out_of_range %u h=%d", op->vout,
+                 creator_h);
+        return false;
+    }
+    int64_t value = tx->vout[op->vout].value;
+    size_t slen = tx->vout[op->vout].script_pub_key.size;
+    if (value < 0 || value > MAX_MONEY) {
+        *out_tc = COIN_BACKFILL_TC_TERMINAL;
+        snprintf(reason, 64, "value_out_of_range h=%d", creator_h);
+        return false;
+    }
+    if (slen > MAX_SCRIPT_SIZE) {
+        *out_tc = COIN_BACKFILL_TC_TERMINAL;
+        snprintf(reason, 64, "script_too_long h=%d", creator_h);
+        return false;
+    }
+    bool cb = transaction_is_coinbase(tx);
+    if (cb && hole_height - creator_h < COINBASE_MATURITY) {
+        /* genuinely-invalid spend: leave the hole, refuse — terminal */
+        *out_tc = COIN_BACKFILL_TC_TERMINAL;
+        snprintf(reason, 64, "coinbase_immature depth=%d",
+                 hole_height - creator_h);
+        return false;
+    }
+    op->creator_height = creator_h;
+    op->value = value;
+    op->script_len = slen;
+    if (slen)
+        memcpy(op->script, tx->vout[op->vout].script_pub_key.data, slen);
+    op->is_coinbase = cb;
+    return true;
+}
+
+static bool creator_find_in_active_window(const struct coin_backfill_io *io,
+                                          int hole_height, int frontier,
+                                          int delta_horizon,
+                                          struct coin_backfill_outpoint *op,
+                                          bool *out_found, char reason[64],
+                                          enum coin_backfill_terminal_class *out_tc)
+{
+    (void)delta_horizon; /* Observability only; not a creator-proof boundary. */
+    *out_found = false;
+    int top = frontier - 1;
+    if (top >= hole_height)
+        top = hole_height - 1;
+    int floor = hole_height - COIN_BACKFILL_CREATOR_SCAN_MAX_BLOCKS;
+    if (floor < 0)
+        floor = 0;
+    if (top < floor) {
+        *out_tc = COIN_BACKFILL_TC_RETRYABLE;
+        snprintf(reason, 64, "creator_scan_horizon_exhausted floor=%d cap=%d",
+                 floor, COIN_BACKFILL_CREATOR_SCAN_MAX_BLOCKS);
+        return false;
+    }
+
+    int first_gap = -1;
+    for (int h = top; h >= floor; h--) {
+        struct block blk;
+        struct uint256 hash;
+        block_init(&blk);
+        bool read_ok = io->read_block(io->user, h, &blk, &hash);
+        if (!read_ok) {
+            block_free(&blk);
+            if (first_gap < 0)
+                first_gap = h;
+            continue;
+        }
+
+        for (size_t i = 0; i < blk.num_vtx; i++) {
+            const struct transaction *tx = &blk.vtx[i];
+            if (memcmp(tx->hash.data, op->txid, 32) != 0)
+                continue;
+            *out_found = true;
+            bool ok = creator_fill_from_tx(op, tx, h, hole_height, reason,
+                                           out_tc);
+            block_free(&blk);
+            return ok;
+        }
+        block_free(&blk);
+    }
+
+    if (first_gap >= 0) {
+        *out_tc = COIN_BACKFILL_TC_RETRYABLE;
+        snprintf(reason, 64, "creator_scan_gap h=%d", first_gap);
+        return false;
+    }
+    if (floor > 0) {
+        *out_tc = COIN_BACKFILL_TC_RETRYABLE;
+        snprintf(reason, 64, "creator_scan_horizon_exhausted floor=%d cap=%d",
+                 floor, COIN_BACKFILL_CREATOR_SCAN_MAX_BLOCKS);
+        return false;
+    }
+    return true;
+}
+
+static bool creator_resolve_via_active_fallback(
+    const struct coin_backfill_io *io, int hole_height, int frontier,
+    int delta_horizon, struct coin_backfill_outpoint *op,
+    const char *terminal_reason,
+    enum coin_backfill_terminal_class terminal_tc,
+    char reason[64], enum coin_backfill_terminal_class *out_tc)
+{
+    bool found = false;
+    if (!creator_find_in_active_window(io, hole_height, frontier,
+                                       delta_horizon, op, &found, reason,
+                                       out_tc))
+        return false;
+    if (found)
+        return true;
+    *out_tc = terminal_tc;
+    snprintf(reason, 64, "%s", terminal_reason);
+    return false;
+}
+
 /* G7 + G8 — per-u creator resolution. The txindex row is only a HINT: the
  * authority is the hash-verified active-chain block at row.block_height
  * containing a tx whose RECOMPUTED double-SHA256 equals the wanted txid
- * (recon found corrupt txindex heights; garbage fails here and refuses).
- * Whole-set refusal via reason[0] != 0. */
+ * (recon found corrupt txindex heights; garbage fails here and refuses). If
+ * the projection misses, scan the bounded recent active-chain window before
+ * accepting txindex_miss as terminal; stale node.db rows are not chain
+ * evidence. Whole-set refusal via reason[0] != 0. */
 static void resolve_creator(const struct coin_backfill_io *io,
                             int hole_height, int frontier, int delta_horizon,
                             struct coin_backfill_outpoint *set, int n,
@@ -179,36 +303,51 @@ static void resolve_creator(const struct coin_backfill_io *io,
         char hex[65];
         coin_backfill_txid_hex(set[k].txid, hex);
         if (!db_tx_find(io->ndb, set[k].txid, &row)) {
-            /* TERMINAL only when txindex is COMPLETE (the creating tx is
-             * provably absent from the chain we hold); transient while the
-             * index is still building during IBD. The caller's persist helper
-             * applies the tx_index_complete>=3 guard. */
-            *out_tc = COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE;
-            snprintf(reason, 64, "txindex_miss tx=%.16s", hex);
+            char terminal_reason[64];
+            snprintf(terminal_reason, sizeof(terminal_reason),
+                     "txindex_miss tx=%.16s", hex);
+            if (creator_resolve_via_active_fallback(
+                    io, hole_height, frontier, delta_horizon, &set[k],
+                    terminal_reason,
+                    COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE,
+                    reason, out_tc)) {
+                if (*out_floor < 0 || set[k].creator_height < *out_floor)
+                    *out_floor = set[k].creator_height;
+                continue;
+            }
             break;
         }
         int ch = row.block_height;
         if (ch <= 0 || ch >= frontier || ch > hole_height) {
-            /* corrupt/garbage txindex height: the creating block cannot exist
-             * at a valid height — terminal regardless of txindex state */
-            *out_tc = COIN_BACKFILL_TC_TERMINAL;
-            snprintf(reason, 64, "creator_height_invalid h=%d", ch);
-            break;
-        }
-        if (ch >= delta_horizon) {
-            /* inside the reconstructible delta window = live apply-bug
-             * domain — masking it with a mint would be a guess. The forward
-             * stages may still fill it: RETRYABLE, do not persist. */
-            snprintf(reason, 64, "creator_in_delta_window h=%d", ch);
+            char terminal_reason[64];
+            snprintf(terminal_reason, sizeof(terminal_reason),
+                     "creator_height_invalid h=%d", ch);
+            if (creator_resolve_via_active_fallback(
+                    io, hole_height, frontier, delta_horizon, &set[k],
+                    terminal_reason, COIN_BACKFILL_TC_TERMINAL,
+                    reason, out_tc)) {
+                if (*out_floor < 0 || set[k].creator_height < *out_floor)
+                    *out_floor = set[k].creator_height;
+                continue;
+            }
             break;
         }
         if (ch != loaded_h) {
             block_free(&cblk);
             block_init(&cblk);
             if (!io->read_block(io->user, ch, &cblk, &chash)) {
-                /* txindex points off the active chain we hold — terminal */
-                *out_tc = COIN_BACKFILL_TC_TERMINAL;
-                snprintf(reason, 64, "creator_not_on_active_chain h=%d", ch);
+                char terminal_reason[64];
+                snprintf(terminal_reason, sizeof(terminal_reason),
+                         "creator_block_unreadable h=%d", ch);
+                if (creator_resolve_via_active_fallback(
+                        io, hole_height, frontier, delta_horizon, &set[k],
+                        terminal_reason, COIN_BACKFILL_TC_RETRYABLE,
+                        reason, out_tc)) {
+                    if (*out_floor < 0 || set[k].creator_height < *out_floor)
+                        *out_floor = set[k].creator_height;
+                    loaded_h = -1;
+                    continue;
+                }
                 break;
             }
             loaded_h = ch;
@@ -218,43 +357,23 @@ static void resolve_creator(const struct coin_backfill_io *io,
             if (memcmp(cblk.vtx[i].hash.data, set[k].txid, 32) == 0)
                 tx = &cblk.vtx[i];
         if (!tx) {
-            *out_tc = COIN_BACKFILL_TC_TERMINAL;
-            snprintf(reason, 64, "creator_txid_mismatch h=%d", ch);
+            char terminal_reason[64];
+            snprintf(terminal_reason, sizeof(terminal_reason),
+                     "creator_txid_mismatch h=%d", ch);
+            if (creator_resolve_via_active_fallback(
+                    io, hole_height, frontier, delta_horizon, &set[k],
+                    terminal_reason, COIN_BACKFILL_TC_TERMINAL,
+                    reason, out_tc)) {
+                if (*out_floor < 0 || set[k].creator_height < *out_floor)
+                    *out_floor = set[k].creator_height;
+                loaded_h = -1;
+                continue;
+            }
             break;
         }
-        if (set[k].vout >= tx->num_vout) {
-            *out_tc = COIN_BACKFILL_TC_TERMINAL;
-            snprintf(reason, 64, "vout_out_of_range %u h=%d", set[k].vout,
-                     ch);
+        if (!creator_fill_from_tx(&set[k], tx, ch, hole_height, reason,
+                                  out_tc))
             break;
-        }
-        int64_t value = tx->vout[set[k].vout].value;
-        size_t slen = tx->vout[set[k].vout].script_pub_key.size;
-        if (value < 0 || value > MAX_MONEY) {
-            *out_tc = COIN_BACKFILL_TC_TERMINAL;
-            snprintf(reason, 64, "value_out_of_range h=%d", ch);
-            break;
-        }
-        if (slen > MAX_SCRIPT_SIZE) {
-            *out_tc = COIN_BACKFILL_TC_TERMINAL;
-            snprintf(reason, 64, "script_too_long h=%d", ch);
-            break;
-        }
-        bool cb = transaction_is_coinbase(tx);
-        if (cb && hole_height - ch < COINBASE_MATURITY) {
-            /* genuinely-invalid spend: leave the hole, refuse — terminal */
-            *out_tc = COIN_BACKFILL_TC_TERMINAL;
-            snprintf(reason, 64, "coinbase_immature depth=%d",
-                     hole_height - ch);
-            break;
-        }
-        set[k].creator_height = ch;
-        set[k].value = value;
-        set[k].script_len = slen;
-        if (slen)
-            memcpy(set[k].script, tx->vout[set[k].vout].script_pub_key.data,
-                   slen);
-        set[k].is_coinbase = cb;
         if (*out_floor < 0 || ch < *out_floor)
             *out_floor = ch;
     }
@@ -541,6 +660,8 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     char ereason[64];
     char marker_hit[96];
     bool refused_marker = false;
+    bool legacy_spent_marker = false;
+    bool legacy_txindex_miss_marker = false;
     ereason[0] = '\0';
     marker_hit[0] = '\0';
 
@@ -562,7 +683,10 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
             }
         }
         if (ok)
-            ok = coin_backfill_meta_present(db, refused_key, &refused_marker);
+            ok = coin_backfill_refusal_marker_read(db, refused_key,
+                                                   &refused_marker,
+                                                   &legacy_spent_marker,
+                                                   &legacy_txindex_miss_marker);
         if (ok)
             ok = coin_backfill_rounds_read(db, rounds_key, &rounds);
     }
@@ -572,13 +696,35 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
         LOG_FAIL("coin_backfill",
                  "[coin_backfill] enumeration/marker read failed h=%d",
                  hole_h);
+    if (legacy_spent_marker) {
+        if (!progress_meta_delete(db, refused_key))
+            LOG_WARN("coin_backfill",
+                     "[coin_backfill] legacy spent marker delete failed key=%s "
+                     "(continuing with v2 re-proof)", refused_key);
+        else
+            LOG_WARN("coin_backfill",
+                     "[coin_backfill] ignored legacy spent marker h=%d; "
+                     "re-proving with terminal-bound scan", hole_h);
+    }
+    if (legacy_txindex_miss_marker) {
+        if (!progress_meta_delete(db, refused_key))
+            LOG_WARN("coin_backfill",
+                     "[coin_backfill] legacy txindex_miss marker delete "
+                     "failed key=%s (continuing with v2 re-proof)",
+                     refused_key);
+        else
+            LOG_WARN("coin_backfill",
+                     "[coin_backfill] ignored legacy txindex_miss marker h=%d; "
+                     "re-proving against active-chain block data", hole_h);
+    }
 
     r->unresolved_count = n;
     if (ereason[0]) {
         /* coin_present_unusable (metadata height tear) / too_many_unresolved
          * are deterministic properties of the hole block — terminal. */
         coin_backfill_persist_terminal_refusal(db, io, refused_key,
-                                 COIN_BACKFILL_TC_TERMINAL, "unprovable");
+                                 COIN_BACKFILL_TC_TERMINAL,
+                                 COIN_BACKFILL_UNPROVABLE_MARKER);
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash, "%s",
                       ereason);
     }
@@ -591,7 +737,8 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
          * terminal persists — otherwise refuse() raises only the in-memory
          * blocker, which is gone after a reboot and the boot gate stays silent. */
         coin_backfill_persist_terminal_refusal(db, io, refused_key,
-                                 COIN_BACKFILL_TC_TERMINAL, "relost");
+                                 COIN_BACKFILL_TC_TERMINAL,
+                                 COIN_BACKFILL_RELOST_MARKER);
         return refuse(r, COIN_BACKFILL_MARKER_SEEN, &hole_hash, "%s",
                       marker_hit);
     }
@@ -601,7 +748,8 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     if (rounds >= COIN_BACKFILL_MAX_ROUNDS) {
         /* repair exhausted its retry budget for this hole — terminal. */
         coin_backfill_persist_terminal_refusal(db, io, refused_key,
-                                 COIN_BACKFILL_TC_TERMINAL, "round_cap");
+                                 COIN_BACKFILL_TC_TERMINAL,
+                                 COIN_BACKFILL_ROUND_CAP_MARKER);
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash,
                       "round_cap rounds=%d", (int)rounds);
     }
@@ -613,10 +761,10 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
                       "owner_ack_missing");
 
     /* G7 + G8 — the delta-horizon walk (up to 262144 lock-held steps) runs
-     * only once the owner gate has passed: its result is consumed nowhere
-     * before G7, and on the live default (ack unset) G6 refuses every ~5 s
-     * tick. Ladder order G6→G7 is preserved; the insert tx re-validates the
-     * frontier and hole row anyway. */
+     * only once the owner gate has passed. The horizon remains observability
+     * for old-hole geometry, not a refusal boundary: a creator inside the
+     * recent delta window is still safe to re-derive if the active-chain
+     * creator proof and terminal-bound no-spend scan both pass. */
     int horizon = -1;
     progress_store_tx_lock();
     ok = utxo_apply_log_contiguous_floor(db, utxo_cursor, &horizon);
@@ -636,11 +784,12 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
     if (creason[0]) {
         /* txindex_miss persists ONLY when txindex is complete (guarded inside
          * the helper); the corrupt creator_* classes persist unconditionally;
-         * node_db_unavailable / creator_in_delta_window stay RETRYABLE. */
+         * node_db_unavailable stays RETRYABLE. */
         coin_backfill_persist_terminal_refusal(db, io, refused_key, creator_tc,
                                  creator_tc ==
                                      COIN_BACKFILL_TC_TERMINAL_IF_TXINDEX_COMPLETE
-                                     ? "txindex_miss" : "unprovable");
+                                     ? COIN_BACKFILL_TXINDEX_MISS_MARKER_V2
+                                     : COIN_BACKFILL_UNPROVABLE_MARKER);
         return refuse(r, COIN_BACKFILL_REFUSED_UNPROVABLE, &hole_hash, "%s",
                       creason);
     }
@@ -708,7 +857,8 @@ static bool backfill_run(sqlite3 *db, struct main_state *ms,
         /* refusal marker: a PROVEN spend means the failing block double-
          * spends or local history is torn — never rescan, never guess */
         progress_store_tx_lock();
-        if (!progress_meta_set(db, refused_key, "spent", 5))
+        if (!progress_meta_set(db, refused_key, COIN_BACKFILL_SPENT_MARKER_V2,
+                               strlen(COIN_BACKFILL_SPENT_MARKER_V2)))
             LOG_WARN("coin_backfill",
                      "[coin_backfill] refusal marker write failed key=%s "
                      "(refusing anyway)", refused_key);

@@ -2043,7 +2043,11 @@ int connman_max_peer_height(struct connman *cm)
     zcl_mutex_lock(&cm->manager.cs_nodes);
     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
         const struct p2p_node *node = cm->manager.nodes[i];
-        if (node && node->starting_height > max_height)
+        if (!node || node->disconnect ||
+            node->state < PEER_HANDSHAKE_COMPLETE ||
+            (node->services & NODE_NETWORK) == 0)
+            continue;
+        if (node->starting_height > max_height)
             max_height = node->starting_height;
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
@@ -2108,11 +2112,13 @@ void connman_get_outbound_health(struct connman *cm,
             continue;
 
         bool handshaked = n->state >= PEER_HANDSHAKE_COMPLETE;
+        bool block_serving = handshaked &&
+            (n->services & NODE_NETWORK) != 0;
         if (n->inbound) {
             out->inbound_total++;
-            if (handshaked)
+            if (block_serving)
                 out->inbound_healthy++;
-            else
+            else if (!handshaked)
                 out->inbound_handshake_incomplete++;
             continue;
         }
@@ -2120,9 +2126,9 @@ void connman_get_outbound_health(struct connman *cm,
         out->outbound_total++;
         if (n->state == PEER_CONNECTING)
             out->connecting++;
-        if (n->state < PEER_HANDSHAKE_COMPLETE)
+        if (!handshaked)
             out->handshake_incomplete++;
-        else
+        else if (block_serving)
             out->healthy++;
 
         if (net_addr_is_ipv4(&n->addr.svc.addr)) {
@@ -2143,7 +2149,7 @@ void connman_get_outbound_health(struct connman *cm,
                 if (group_counts[gi] > out->ipv4_max_group_size)
                     out->ipv4_max_group_size = group_counts[gi];
             }
-            if (handshaked) {
+            if (block_serving) {
                 size_t hgi = 0;
                 for (; hgi < healthy_num_groups; hgi++) {
                     if (healthy_groups[hgi] == group)

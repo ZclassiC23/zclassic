@@ -111,10 +111,25 @@ static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_log_head_override = -2;
+static bool g_test_chain_advance_decision_override_enabled;
+static struct cac_decision g_test_chain_advance_decision_override;
 
 void node_health_test_set_log_head_override(int log_head)
 {
     atomic_store(&g_test_log_head_override, log_head);
+}
+
+void node_health_test_set_chain_advance_decision_override(
+    const struct cac_decision *decision)
+{
+    if (decision) {
+        g_test_chain_advance_decision_override = *decision;
+        g_test_chain_advance_decision_override_enabled = true;
+        return;
+    }
+    memset(&g_test_chain_advance_decision_override, 0,
+           sizeof(g_test_chain_advance_decision_override));
+    g_test_chain_advance_decision_override_enabled = false;
 }
 #endif
 
@@ -139,11 +154,112 @@ bool node_health_chain_advance_synced(const struct cac_decision *decision)
            !source->blocked && source->selection_reason[0] == '\0';
 }
 
+static bool node_health_chain_advance_blocks_at_tip(
+    const struct cac_decision *decision)
+{
+    if (!decision)
+        return false;
+    if (node_health_chain_advance_synced(decision))
+        return false;
+    if (decision->blocker[0] != '\0')
+        return true;
+    if (decision->result == CAC_DECISION_BLOCKED)
+        return true;
+    if (decision->local_height >= 0 && decision->target_height >= 0 &&
+        decision->local_height + 1 < decision->target_height)
+        return true;
+    return false;
+}
+
+static void node_health_chain_advance_reason(
+    const struct cac_decision *decision,
+    char *out,
+    size_t out_len)
+{
+    if (!out || out_len == 0)
+        return;
+    out[0] = '\0';
+    if (!decision) {
+        snprintf(out, out_len, "chain_advance_unknown");
+        return;
+    }
+    if (decision->blocker[0] != '\0') {
+        snprintf(out, out_len, "chain_advance_%s", decision->blocker);
+        return;
+    }
+    if (decision->local_height >= 0 && decision->target_height >= 0 &&
+        decision->local_height + 1 < decision->target_height) {
+        snprintf(out, out_len, "chain_advance_gap_%d",
+                 decision->target_height - decision->local_height);
+        return;
+    }
+    if (decision->reason[0] != '\0') {
+        snprintf(out, out_len, "chain_advance_%s", decision->reason);
+        return;
+    }
+    snprintf(out, out_len, "chain_advance_%s",
+             cac_decision_result_name(decision->result));
+}
+
+static void health_add_warning(struct node_health_snapshot *snapshot,
+                               const char *reason)
+{
+    if (!snapshot || !reason || !reason[0])
+        return;
+    if (strstr(snapshot->warning_reasons, reason))
+        return;
+
+    size_t used = strlen(snapshot->warning_reasons);
+    size_t cap = sizeof(snapshot->warning_reasons);
+    if (used + 1 < cap) {
+        int n = snprintf(snapshot->warning_reasons + used, cap - used,
+                         "%s%s", used ? "," : "", reason);
+        if (n > 0)
+            snapshot->warning_count++;
+    } else {
+        snapshot->warning_count++;
+    }
+}
+
+static void health_finalize_serving_status(struct node_health_snapshot *snapshot)
+{
+    if (!snapshot)
+        return;
+
+    snapshot->serving = snapshot->healthy;
+    if (!snapshot->healthy) {
+        snprintf(snapshot->blocking_reason, sizeof(snapshot->blocking_reason),
+                 "%s", snapshot->degraded_reason[0]
+                          ? snapshot->degraded_reason
+                          : "unhealthy");
+    }
+
+    if (snapshot->tip_stale)
+        health_add_warning(snapshot, "tip_stale");
+    if (snapshot->last_error_recent)
+        health_add_warning(snapshot, "recent_error");
+    if (strcmp(snapshot->mirror_lag_breach_severity, "warn") == 0)
+        health_add_warning(snapshot, "mirror_lag_warn");
+    else if (strcmp(snapshot->mirror_lag_breach_severity, "critical") == 0)
+        health_add_warning(snapshot, "mirror_lag_critical");
+    if (!snapshot->validation_pack_ok)
+        health_add_warning(snapshot,
+                           snapshot->validation_pack_detail[0]
+                               ? snapshot->validation_pack_detail
+                               : "validation_pack");
+
+    if (snapshot->healthy && snapshot->degraded_reason[0])
+        health_add_warning(snapshot, snapshot->degraded_reason);
+
+    snapshot->warning = snapshot->warning_count > 0;
+}
+
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms)
 {
     struct node_health_snapshot empty = {0};
+    char chain_advance_degraded_reason[128] = {0};
     if (!snapshot) return;
     *snapshot = empty;
 
@@ -272,7 +388,10 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
             const struct p2p_node *node = cm->manager.nodes[i];
-            if (!node) continue;
+            if (!node || node->disconnect ||
+                node->state < PEER_HANDSHAKE_COMPLETE ||
+                (node->services & NODE_NETWORK) == 0)
+                continue;
             if (node->starting_height > snapshot->peer_best_height)
                 snapshot->peer_best_height = node->starting_height;
             if (node->last_block_time > newest_peer_block_time)
@@ -310,9 +429,23 @@ void node_health_collect(struct node_health_snapshot *snapshot,
 
     {
         struct cac_decision decision;
-        block_source_policy_get_status(&decision);
+#ifdef ZCL_TESTING
+        if (g_test_chain_advance_decision_override_enabled) {
+            decision = g_test_chain_advance_decision_override;
+        } else
+#endif
+        {
+            block_source_policy_get_status(&decision);
+        }
         if (node_health_chain_advance_synced(&decision))
             snapshot->synced = true;
+        else if (snapshot->sync_state == SYNC_AT_TIP &&
+                 node_health_chain_advance_blocks_at_tip(&decision)) {
+            snapshot->synced = false;
+            node_health_chain_advance_reason(
+                &decision, chain_advance_degraded_reason,
+                sizeof(chain_advance_degraded_reason));
+        }
     }
 
     dl_get_stats(msg_get_download_mgr(),
@@ -398,6 +531,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "import_stalled_%llds",
                  (long long)snapshot->import_progress_age_seconds);
+    } else if (chain_advance_degraded_reason[0]) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "%s", chain_advance_degraded_reason);
     } else if (!snapshot->synced) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "sync_state_%s", sync_state_name(snapshot->sync_state));
@@ -410,9 +546,6 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (snapshot->log_head_gap > 1) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "log_head_gap_%d", snapshot->log_head_gap);
-    } else if (snapshot->tip_stale) {
-        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
-                 "tip_stale");
     } else if (snapshot->queue_backed_up) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "download_queue_backed_up");
@@ -431,13 +564,29 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (snapshot->memory_rss_mb > 4096) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "high_memory_usage");
+    } else if (snapshot->tip_height < 0) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "active_tip_unknown");
+    } else if (snapshot->header_height < 0) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "best_header_unknown");
+    } else if (snapshot->peer_best_height < 0) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "peer_height_unknown");
+    } else if (snapshot->log_head < 0) {
+        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
+                 "log_head_unknown");
     }
 
     snapshot->healthy = snapshot->synced &&
                         snapshot->has_peers &&
+                        snapshot->tip_height >= 0 &&
+                        snapshot->header_height >= 0 &&
+                        snapshot->peer_best_height >= 0 &&
                         snapshot->header_height <= snapshot->tip_height + 1 &&
-                        !snapshot->tip_stale &&
+                        snapshot->tip_lag >= 0 &&
                         snapshot->tip_lag <= 1 &&
+                        snapshot->log_head >= 0 &&
                         snapshot->log_head_gap <= 1;
 
     /* Surface tip-advance age + flip healthy when the watchdog deadman
@@ -585,4 +734,6 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                      "validation_pack:%s",
                      detail[0] ? detail : "hold_active");
     }
+
+    health_finalize_serving_status(snapshot);
 }

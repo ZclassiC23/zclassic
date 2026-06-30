@@ -11,12 +11,12 @@ procedure to execute the *last* step when the mint finishes. Verified read-only 
   zclassicd's `IsUnspendable()` (`script.h:132-136`) exactly. A genesis→anchor fold now reaches
   `count==1,354,771` + the compiled SHA3 root, so `-mint-anchor`'s hard-assert
   (`boot_mint_anchor.c:155-180`) passes instead of FATAL-ing.
-- **Cutover mechanism: fully wired in HEAD, NO code work.** `-refold-from-anchor` →
+- **Cutover mechanism: wired but still copy-prove gated.** `-refold-from-anchor` →
   `boot_refold_from_anchor_reset` (`boot_refold_staged.c:306-469`): SHA3-binds the snapshot to the
   compiled checkpoint via `uss_open(verify_full_sha3=true)` *before any coin lands*, hard-asserts
   `coins_kv_commitment==cp->sha3_hash` AND `count==1,354,771` (`:360-386`, `_exit` on mismatch),
   resets the 8 stage cursors to anchor=3,056,758 + `coins_applied_height=anchor+1` (`:399-443`),
-  then re-folds anchor+1..tip over on-disk bodies.
+  confirms the explicit fold body span is present, then re-folds anchor+1..tip over on-disk bodies.
 - **The missing piece: a durable, checkpoint-verified anchor snapshot at h=3,056,758.** It does NOT
   exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED — its header decodes to
   height=3,151,901, count=1,344,817; the node rejects it on the count check. Do not use it.)
@@ -65,8 +65,9 @@ NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without
      `zcl_state subsystem=block_index`. The decisive positive proof is
      `test_reducer_forward_progress_gate.c` PART-1 (`ok && found && hstar==N && applied==N+1`).
    - **Cross-check** the resulting block hash vs zclassicd (rpc 8232) at the anchor AND at tip.
-   - Confirm body contiguity (3,056,758..tip) first — `boot_refold_body_span_contiguous`
-     (`boot_refold_staged.c:928`) is NOT called on the explicit-flag path, only the auto-arm path.
+   - Confirm body contiguity (3,056,758..tip) first. The explicit boot path now calls
+     `boot_refold_body_span_contiguous` before reset/stamp, but this manual check keeps the
+     copy-prove failure mode obvious before a restart.
 4. **Flip the live node** only after the copy passes: swap the systemd drop-in from
    `-load-snapshot-at-own-height=…utxo-seed-3156809.snapshot` to `-refold-from-anchor`, restart, and
    re-confirm the H\* CLIMB gate live. Keep the old drop-in as the rollback.

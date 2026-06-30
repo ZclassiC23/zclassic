@@ -58,6 +58,10 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
  * each fixture's refusal-paging assertions run isolated. Paired with
  * blocker_reset_for_testing per the hook's contract. */
 void coin_backfill_reset_latches_for_testing(void);
+bool coin_backfill_refusal_marker_decode(const uint8_t *blob, size_t len,
+                                         bool *out_active,
+                                         bool *out_legacy_spent,
+                                         bool *out_legacy_txindex_miss);
 
 /* STEP-2A pending-prevout HOLD signal writer (src-private util) — lets this
  * test prove coin_backfill fires from the NON-TERMINAL pending signal alone,
@@ -806,6 +810,15 @@ static bool cb_is_refusal(int status)
            status == COIN_BACKFILL_MARKER_SEEN;
 }
 
+static bool cb_refused_key(struct cbf *fx, char out[192])
+{
+    char hhex[65];
+    uint256_get_hex(&fx->chain.hashes[CB_HOLE], hhex);
+    int n = snprintf(out, 192, "coin_backfill.refused.%d.%s", CB_HOLE,
+                     hhex);
+    return n > 0 && n < 192;
+}
+
 static enum coin_backfill_scan_verdict cb_scan(
     struct cbf *fx, const struct uint256 *hole_hash,
     const struct coin_backfill_outpoint *set, size_t n,
@@ -1062,6 +1075,17 @@ static int cb_case_spent(void)
         !cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
     CBT("spent: refusal marker written",
         cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 1);
+    {
+        char key[192];
+        uint8_t blob[16] = {0};
+        size_t blen = 0;
+        bool present = false;
+        CBT("spent: refused key built", cb_refused_key(fx, key));
+        CBT("spent: marker value is terminal-linkage v2",
+            progress_meta_get(fx->db, key, blob, sizeof(blob), &blen,
+                              &present) &&
+            present && blen == 8 && memcmp(blob, "spent:v2", 8) == 0);
+    }
 
     struct cb_blocker_view bv;
     cb_find_blocker(&bv);
@@ -1090,6 +1114,130 @@ static int cb_case_spent(void)
     return failures;
 }
 
+static int cb_case_refusal_marker_decoder_contract(void)
+{
+    int failures = 0;
+    bool active = true;
+    bool legacy_spent = true;
+    bool legacy_txindex = true;
+
+    CBT("marker_decode: spent:v2 is active",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"spent:v2", 8,
+                                            &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        active && !legacy_spent && !legacy_txindex);
+    CBT("marker_decode: txindex_miss:v2 is active",
+        coin_backfill_refusal_marker_decode(
+            (const uint8_t *)"txindex_miss:v2", 15, &active, &legacy_spent,
+            &legacy_txindex) &&
+        active && !legacy_spent && !legacy_txindex);
+    CBT("marker_decode: unprovable is active",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"unprovable", 10,
+                                            &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        active && !legacy_spent && !legacy_txindex);
+    CBT("marker_decode: round_cap is active",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"round_cap", 9,
+                                            &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        active && !legacy_spent && !legacy_txindex);
+    CBT("marker_decode: relost is active",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"relost", 6,
+                                            &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        active && !legacy_spent && !legacy_txindex);
+
+    CBT("marker_decode: legacy spent is reproof-only",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"spent", 5,
+                                            &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        !active && legacy_spent && !legacy_txindex);
+    CBT("marker_decode: legacy txindex_miss is reproof-only",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"txindex_miss",
+                                            12, &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        !active && !legacy_spent && legacy_txindex);
+    CBT("marker_decode: unknown marker is ignored",
+        coin_backfill_refusal_marker_decode((const uint8_t *)"spent:v9", 8,
+                                            &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        !active && !legacy_spent && !legacy_txindex);
+    CBT("marker_decode: empty marker is ignored",
+        coin_backfill_refusal_marker_decode(NULL, 0, &active, &legacy_spent,
+                                            &legacy_txindex) &&
+        !active && !legacy_spent && !legacy_txindex);
+
+    return failures;
+}
+
+/* Upgrade guard: historical unversioned "spent" markers were written before
+ * the scan proved terminal hash(H)==hole_hash. They must not permanently block
+ * a repaired binary; delete and re-prove them with the v2 scan. */
+static int cb_case_legacy_spent_marker_reproved(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("legacy_spent_marker: setup",
+        cb_setup(fx, "legacy_spent_marker", 22, CBV_TA0, CB_TA0_VALUE,
+                 false, true));
+
+    char key[192];
+    CBT("legacy_spent_marker: refused key built", cb_refused_key(fx, key));
+    CBT("legacy_spent_marker: seed old unsafe marker",
+        progress_meta_set(fx->db, key, "spent", 5));
+
+    int64_t coins_before = coins_kv_count(fx->db);
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("legacy_spent_marker: old marker does not block v2 re-proof",
+        st == COIN_BACKFILL_REPAIRED && res.inserted_count == 1);
+    CBT("legacy_spent_marker: coin inserted and marker deleted",
+        coins_kv_count(fx->db) == coins_before + 1 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* Upgrade guard: historical txindex_miss markers trusted node.db projection
+ * state as terminal. If active-chain block data can now locate the creator,
+ * the marker must be ignored, deleted, and re-proven. */
+static int cb_case_legacy_txindex_miss_marker_reproved(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("legacy_txidx_marker: setup",
+        cb_setup(fx, "legacy_txidx_marker", 23, CBV_TA0, CB_TA0_VALUE,
+                 false, true));
+
+    char key[192];
+    CBT("legacy_txidx_marker: refused key built", cb_refused_key(fx, key));
+    CBT("legacy_txidx_marker: seed old unsafe marker",
+        progress_meta_set(fx->db, key, "txindex_miss", 12));
+
+    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
+    CBT("legacy_txidx_marker: delete stale projection tx row",
+        ta && db_tx_delete(&fx->ndb, ta->hash.data));
+
+    int64_t coins_before = coins_kv_count(fx->db);
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("legacy_txidx_marker: old marker does not block active-chain proof",
+        st == COIN_BACKFILL_REPAIRED && res.inserted_count == 1);
+    CBT("legacy_txidx_marker: coin inserted and marker deleted",
+        coins_kv_count(fx->db) == coins_before + 1 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
 /* Case 3: ADVERSARIAL — the txindex row points at a block that does not
  * contain the txid (recomputed tx hashes never match). */
 static int cb_case_offchain_creator(void)
@@ -1112,8 +1260,9 @@ static int cb_case_offchain_creator(void)
     return failures;
 }
 
-/* Case 4: ADVERSARIAL — one member created INSIDE the delta window refuses
- * the WHOLE set, even though the other member would pass every guard. */
+/* Case 4: one member created INSIDE the delta window is still repairable after
+ * creator proof + terminal-bound no-spend proof. The delta horizon is
+ * observability, not a consensus refusal boundary. */
 static int cb_case_delta_window(void)
 {
     int failures = 0;
@@ -1125,12 +1274,13 @@ static int cb_case_delta_window(void)
     int64_t coins_before = coins_kv_count(fx->db);
     struct coin_backfill_result res;
     int st = cb_try_until(fx, &res);
-    CBT("delta_window: whole set refused",
-        cb_is_refusal(st) && res.inserted_count == 0);
-    CBT("delta_window: NEITHER coin written (no partial insert)",
-        coins_kv_count(fx->db) == coins_before &&
-        !cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
-        !cb_coin_present(fx->db, fx, CB_DELTA_CREATOR, 1, 0));
+    CBT("delta_window: repairs whole set after proof",
+        st == COIN_BACKFILL_REPAIRED && res.inserted_count == 2 &&
+        res.delta_horizon == CB_HORIZON);
+    CBT("delta_window: both coins written (no partial insert)",
+        coins_kv_count(fx->db) == coins_before + 2 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0) &&
+        cb_coin_present(fx->db, fx, CB_DELTA_CREATOR, 1, 0));
 
     cb_teardown(fx);
     free(fx);
@@ -1176,37 +1326,52 @@ static int cb_case_scan_gap(void)
     return failures;
 }
 
-/* Case 5b: TERMINAL txindex_miss PERSISTS the durable refusal marker, and a
- * RETRYABLE txindex_miss does NOT. This is the writer half of the boot-time
- * torn-import gate's durability signal (block_index_loader_torn_gate.c
- * condition (3)): the live tear refuses via resolve_creator txindex_miss, and
- * the gate fires on a SUBSEQUENT boot ONLY if a prior boot durably persisted
- * 'coin_backfill.refused.<h>.<hash>'. A txindex_miss is terminal ONLY when the
- * txindex is COMPLETE (node.db tx_index_complete >= 3); during an in-progress
- * IBD build the creating tx may simply not be indexed yet (transient) and MUST
- * NOT be persisted. We delete the lost coin's creator (T_A) txindex row to
- * force the miss, then toggle the completeness marker. */
+/* Case 5b: node.db txindex is a hint. If a real creator row is missing from
+ * node.db but the hash-bound active-chain body still contains the tx, repair
+ * proceeds. A true txindex_miss still persists the durable refusal marker only
+ * when txindex is COMPLETE (node.db tx_index_complete >= 3). */
 static int cb_case_txindex_miss_persistence(void)
 {
     int failures = 0;
     struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
     if (!fx) return 1;
-    CBT("txidx_miss: setup", cb_setup(fx, "txidx_miss", 31, CBV_TA0,
+    CBT("txidx_hint: setup", cb_setup(fx, "txidx_hint", 31, CBV_TA0,
                                       CB_TA0_VALUE, false, true));
 
-    /* Drop the creator (T_A) txindex row so resolve_creator hits txindex_miss
-     * for the lost coin (T_A,0). */
+    /* Drop the creator (T_A) txindex row. Active-chain fallback should still
+     * locate T_A in block CB_CREATOR and repair; stale node.db projection is
+     * not terminal chain evidence. */
     const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
-    CBT("txidx_miss: delete creator txindex row",
-        ta && db_tx_delete(&fx->ndb, ta->hash.data));
-
     int64_t coins_before = coins_kv_count(fx->db);
+    CBT("txidx_hint: delete creator txindex row + mark complete",
+        ta && db_tx_delete(&fx->ndb, ta->hash.data) &&
+        node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("txidx_hint: active-chain fallback repairs",
+        st == COIN_BACKFILL_REPAIRED && res.inserted_count == 1 &&
+        coins_kv_count(fx->db) == coins_before + 1);
+    CBT("txidx_hint: no durable refusal marker",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    cb_teardown(fx);
+    free(fx);
+
+    fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return failures + 1;
+    CBT("txidx_miss: setup", cb_setup(fx, "txidx_miss", 31, CBV_BOGUS,
+                                      CB_TA0_VALUE, false, true));
+
+    struct uint256 bogus;
+    cb_bogus_txid(&bogus);
+    CBT("txidx_miss: delete bogus txindex row",
+        db_tx_delete(&fx->ndb, bogus.data));
+    coins_before = coins_kv_count(fx->db);
 
     /* (a) RETRYABLE: txindex completeness NOT marked (default node.db has no
      * tx_index_complete row). The miss is transient (index still building) →
      * REFUSED_UNPROVABLE but NO durable marker persisted. */
-    struct coin_backfill_result res;
-    int st = cb_try_until(fx, &res);
+    st = cb_try_until(fx, &res);
     CBT("txidx_miss: refused on txindex_miss",
         st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
         strstr(res.refuse_reason, "txindex_miss") != NULL &&
@@ -1229,7 +1394,7 @@ static int cb_case_txindex_miss_persistence(void)
      * boot gate reads via coin_backfill_meta_present. Verify presence. */
     char refused_key[192];
     bool present = false;
-    uint8_t blob[8];
+    uint8_t blob[32];
     size_t blen = 0;
     char hex[65];
     uint256_get_hex(&fx->chain.hashes[CB_HOLE], hex);
@@ -1238,8 +1403,80 @@ static int cb_case_txindex_miss_persistence(void)
     CBT("txidx_miss: marker keyed on (hole_h, hole_hash)",
         progress_meta_get(fx->db, refused_key, blob, sizeof(blob), &blen,
                           &present) && present);
+    CBT("txidx_miss: marker value is active-chain-vetted v2",
+        present && blen == 15 && memcmp(blob, "txindex_miss:v2", 15) == 0);
     CBT("txidx_miss: still zero coin writes",
         coins_kv_count(fx->db) == coins_before);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* Case 5c: stale/corrupt txindex rows are hints, not proof. If the row points
+ * at the wrong active block, fall back to active-chain scanning and repair when
+ * the real creator is present. */
+static int cb_case_txindex_stale_row_fallback(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("txidx_stale_row: setup", cb_setup(fx, "txidx_stale_row", 34,
+                                           CBV_TA0, CB_TA0_VALUE, false,
+                                           true));
+
+    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
+    int64_t coins_before = coins_kv_count(fx->db);
+    CBT("txidx_stale_row: point creator row at wrong block",
+        ta && cb_save_tx_row(&fx->ndb, &ta->hash,
+                             &fx->chain.hashes[CB_CREATOR_B], CB_CREATOR_B,
+                             0, false) &&
+        node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
+
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("txidx_stale_row: active-chain fallback repairs",
+        st == COIN_BACKFILL_REPAIRED && res.inserted_count == 1 &&
+        coins_kv_count(fx->db) == coins_before + 1 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
+    CBT("txidx_stale_row: no durable refusal marker",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    cb_teardown(fx);
+    free(fx);
+    return failures;
+}
+
+/* Case 5d: an indexed creator whose body is currently unreadable is retryable.
+ * Missing block data must not become a durable boot-gate refusal marker. */
+static int cb_case_creator_body_unreadable_retryable(void)
+{
+    int failures = 0;
+    struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return 1;
+    CBT("creator_gap: setup", cb_setup(fx, "creator_gap", 35, CBV_TA0,
+                                       CB_TA0_VALUE, false, true));
+
+    CBT("creator_gap: mark txindex complete",
+        node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
+    fx->chain.missing[CB_CREATOR] = true;
+    int64_t coins_before = coins_kv_count(fx->db);
+
+    struct coin_backfill_result res;
+    int st = cb_try_until(fx, &res);
+    CBT("creator_gap: unreadable creator refused retryably",
+        st == COIN_BACKFILL_REFUSED_UNPROVABLE &&
+        strstr(res.refuse_reason, "creator_scan_gap") != NULL &&
+        res.inserted_count == 0 &&
+        coins_kv_count(fx->db) == coins_before);
+    CBT("creator_gap: no durable marker while body is missing",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    fx->chain.missing[CB_CREATOR] = false;
+    st = cb_try_until(fx, &res);
+    CBT("creator_gap: repairs after creator body appears",
+        st == COIN_BACKFILL_REPAIRED && res.inserted_count == 1 &&
+        cb_coin_present(fx->db, fx, CB_CREATOR, 1, 0));
 
     cb_teardown(fx);
     free(fx);
@@ -1301,7 +1538,7 @@ static int cb_case_gate_fires_on_real_marker(void)
     int failures = 0;
     struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
     if (!fx) return 1;
-    CBT("gate_e2e: setup", cb_setup(fx, "gate_e2e", 33, CBV_TA0,
+    CBT("gate_e2e: setup", cb_setup(fx, "gate_e2e", 33, CBV_BOGUS,
                                     CB_TA0_VALUE, false, true));
 
     /* CONTROL: the gate must NOT fire before any marker exists — even though
@@ -1323,11 +1560,12 @@ static int cb_case_gate_fires_on_real_marker(void)
         !block_index_loader_torn_import_gate_fires(&fx->ms, fx->db, CB_HOLE,
                                                    CB_HOLE - 1));
 
-    /* Drive the REAL writer to a TERMINAL txindex_miss: drop the creator
-     * txindex row + mark the index complete. */
-    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
-    CBT("gate_e2e: delete creator txindex row + mark txindex complete",
-        ta && db_tx_delete(&fx->ndb, ta->hash.data) &&
+    /* Drive the REAL writer to a TERMINAL txindex_miss: the bogus prevout has
+     * no creator in active-chain block data and no txindex row. */
+    struct uint256 bogus;
+    cb_bogus_txid(&bogus);
+    CBT("gate_e2e: delete bogus txindex row + mark txindex complete",
+        db_tx_delete(&fx->ndb, bogus.data) &&
         node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
 
     struct coin_backfill_result res;
@@ -2022,6 +2260,41 @@ static int cb_case_terminal_linkage(void)
     free(set);
     cb_teardown(fx);
     free(fx);
+
+    /* False-positive guard: a reorg can present a fork block at the first
+     * divergent height with the same parent as the old branch. If that fork
+     * block spends the candidate, the scan must still walk to H and notice that
+     * hash(H) no longer equals the hole row's hash. Returning SPENT before that
+     * terminal proof would persist a durable refusal for an off-branch spend. */
+    fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
+    if (!fx) return failures + 1;
+    CBT("terminal_spent: setup", cb_setup(fx, "terminal_spent", 22, CBV_TA0,
+                                          CB_TA0_VALUE, false, true));
+
+    struct coin_backfill_outpoint *set2 =
+        zcl_malloc(sizeof(*set2), "cb_test_set");
+    CBT("terminal_spent: set alloc", set2 != NULL);
+    if (!set2) { cb_teardown(fx); free(fx); return failures + 1; }
+    cb_fill_outpoint(set2, fx, CB_CREATOR, 1, 0, false);
+
+    struct uint256 old_hole_hash2 = fx->chain.hashes[CB_HOLE];
+    fx->chain.midspend = true;
+    CBT("terminal_spent: reorg from mid with a fork-branch spend",
+        cb_chain_reorg_from(&fx->chain, CB_MID));
+    next = -1;
+    spent = -1;
+    memset(spender, 0, sizeof(spender));
+    enum coin_backfill_scan_verdict v2 =
+        cb_scan(fx, &old_hole_hash2, set2, 1, CB_CREATOR, CB_TOP,
+                CB_FRONTIER, 64, &next, &spent, spender);
+    CBT("terminal_spent: off-branch spend -> CHAIN_REBOUND, never SPENT",
+        v2 == COIN_SCAN_CHAIN_REBOUND && spent == -1);
+    CBT("terminal_spent: no durable refusal marker from scan",
+        cb_meta_count_like(fx->db, "coin_backfill.refused.%") == 0);
+
+    free(set2);
+    cb_teardown(fx);
+    free(fx);
     return failures;
 }
 
@@ -2169,7 +2442,7 @@ static int cb_case_gate_not_masked_by_lower_internal_error(void)
     int failures = 0;
     struct cbf *fx = zcl_malloc(sizeof(*fx), "cb_test_fx");
     if (!fx) return 1;
-    CBT("gate_mask: setup", cb_setup(fx, "gate_mask", 42, CBV_TA0,
+    CBT("gate_mask: setup", cb_setup(fx, "gate_mask", 42, CBV_BOGUS,
                                      CB_TA0_VALUE, false, true));
 
     struct uint256 tip_hash;
@@ -2192,9 +2465,10 @@ static int cb_case_gate_not_masked_by_lower_internal_error(void)
                           &fx->chain.hashes[CB_HOLE - 1]));
 
     /* Drive the REAL writer to a TERMINAL txindex_miss at CB_HOLE. */
-    const struct transaction *ta = cb_tx_at(&fx->chain, CB_CREATOR);
-    CBT("gate_mask: delete creator txindex row + mark txindex complete",
-        ta && db_tx_delete(&fx->ndb, ta->hash.data) &&
+    struct uint256 bogus;
+    cb_bogus_txid(&bogus);
+    CBT("gate_mask: delete bogus txindex row + mark txindex complete",
+        db_tx_delete(&fx->ndb, bogus.data) &&
         node_db_state_set_int(&fx->ndb, "tx_index_complete", 3));
 
     struct coin_backfill_result res;
@@ -2244,10 +2518,15 @@ int test_stage_repair_coin_backfill(void)
     failures += cb_case_happy();
     failures += cb_case_pending_signal_arms();
     failures += cb_case_spent();
+    failures += cb_case_refusal_marker_decoder_contract();
+    failures += cb_case_legacy_spent_marker_reproved();
+    failures += cb_case_legacy_txindex_miss_marker_reproved();
     failures += cb_case_offchain_creator();
     failures += cb_case_delta_window();
     failures += cb_case_scan_gap();
     failures += cb_case_txindex_miss_persistence();
+    failures += cb_case_txindex_stale_row_fallback();
+    failures += cb_case_creator_body_unreadable_retryable();
     failures += cb_case_node_db_unavailable_no_persist();
     failures += cb_case_gate_fires_on_real_marker();
     failures += cb_case_present_unusable();

@@ -18,11 +18,29 @@ struct cac_decision;
 struct node_health_snapshot {
     enum sync_state sync_state;
     bool healthy;
+    /* Explicit serving split for operator surfaces:
+     * - healthy is the existing restart/heartbeat gate.
+     * - serving says whether the node should be treated as green for
+     *   serving validated chain state.
+     * - warning_* carries yellow observations that should be visible but
+     *   must not be mistaken for a red blocker.
+     * - blocking_reason is populated only when serving/healthy is false.
+     *
+     * degraded_reason remains for backward-compatible consumers and may
+     * contain either a blocking reason or the highest-priority warning. */
+    bool serving;
+    bool warning;
+    size_t warning_count;
     bool synced;
     bool has_peers;
     bool tor_enabled;
     bool tor_ready;
     bool onion_service_ready;
+    /* True when the active tip's block timestamp is older than the
+     * block-time staleness threshold. This is an observation used to
+     * trigger extra peer/header probes; by itself it does not make an
+     * otherwise synced at-tip node unhealthy because a quiet chain can
+     * legitimately have no recent block. */
     bool tip_stale;
     bool queue_backed_up;
     size_t peer_count;
@@ -49,6 +67,8 @@ struct node_health_snapshot {
     char last_error[EVENT_PAYLOAD_SIZE + 1];
     char last_error_type[64];
     char degraded_reason[128];
+    char blocking_reason[128];
+    char warning_reasons[256];
     char onion_address[128];
     char db_last_op[64];
     bool db_open;
@@ -141,6 +161,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
 bool node_health_chain_advance_synced(const struct cac_decision *decision);
 #ifdef ZCL_TESTING
 void node_health_test_set_log_head_override(int log_head);
+void node_health_test_set_chain_advance_decision_override(
+    const struct cac_decision *decision);
 #endif
 
 #endif

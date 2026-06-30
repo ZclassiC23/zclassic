@@ -26,7 +26,9 @@ enum coin_backfill_scan_verdict {
  * Persisted record key: coin_backfill.scan.<H>.<holehash> in progress_meta;
  * payload [next_height i32 LE][frontier_at_start i32 LE]
  *         [last_scanned_hash 32B][set_digest 32B]
- * (+ [top_hash 32B] and a CLEAN flag once complete). Every chunk — start,
+ * (+ either [top_hash 32B][CLEAN flag] once complete, or
+ *    [spent_height i32 LE][spender_txid 32B][PENDING_SPENT flag] while a spend
+ *    has been seen but terminal linkage is not proven yet). Every chunk — start,
  * resume, and mid-chunk alike — requires blk.hashPrevBlock to match the
  * persisted lineage hash before processing, seeded at floor-1; the terminal
  * walk through [frontier..H] must end at the hole row's block hash. */
@@ -56,13 +58,18 @@ enum coin_backfill_scan_verdict coin_backfill_scan_step(
  *   [ 4.. 7] frontier_at_start  — coins_applied_height when the scan began
  *   [ 8..39] last_scanned_hash  — running prev-link lineage = hash(next-1)
  *   [40..71] set_digest         — SHA3-256 of the sorted (txid,vout) set
- * and, only once the terminal linkage through H has been proven:
+ * and, only once the terminal linkage through H has been proven clean:
  *   [72..103] top_hash          — active-chain hash at frontier_at_start-1
  *   [104]     clean flag (0x01)
+ * or, after seeing a candidate spend but before terminal linkage is proven:
+ *   [72.. 75] spent_height      — height of the first candidate spend
+ *   [76..107] spender_txid      — txid of that spending tx
+ *   [108]     pending flag (0x02)
  * Any other length / flag value is malformed and treated as absent
  * (scan restarts from floor). */
 #define COIN_BACKFILL_SCAN_REC_BASE_LEN  72
 #define COIN_BACKFILL_SCAN_REC_CLEAN_LEN 105
+#define COIN_BACKFILL_SCAN_REC_PENDING_LEN 109
 
 struct coin_backfill_scan_record {
     int32_t next_height;
@@ -71,6 +78,9 @@ struct coin_backfill_scan_record {
     uint8_t set_digest[32];
     bool    clean;        /* terminal linkage through H proven */
     uint8_t top_hash[32]; /* valid iff clean */
+    bool    pending_spent;     /* spend seen, terminal linkage still pending */
+    int32_t spent_height;      /* valid iff pending_spent */
+    uint8_t spender_txid[32];  /* valid iff pending_spent */
 };
 
 /* Builds "coin_backfill.scan.<H>.<holehash>". False (logged) on overflow. */
