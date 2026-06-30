@@ -10,6 +10,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/stage_helpers.h"
 #include "proof_validate_log_store.h"
+#include "proof_validate_stage_internal.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -18,7 +19,6 @@
 #include "core/uint256.h"
 #include "event/event.h"
 #include "jobs/mint_skip_crypto.h"
-#include "json/json.h"
 #include "primitives/block.h"
 #include "sapling/bn254.h"
 #include "sapling/params_init.h"
@@ -48,7 +48,8 @@
 
 /* struct script_validate_row + the proof_validate_log schema/read/write
  * helpers live in proof_validate_log_store.c (pure sqlite kernel helpers
- * below the AR layer). */
+ * below the AR layer). The zcl_state JSON dump lives in
+ * proof_validate_stage_dump.c. */
 
 struct validate_summary {
     int ok;
@@ -657,6 +658,26 @@ uint64_t proof_validate_stage_cursor(void)
     return g_stage ? stage_cursor(g_stage) : 0;
 }
 
+stage_t *proof_validate_stage_handle(void)
+{
+    return g_stage;
+}
+
+int64_t proof_validate_stage_last_step_unix(void)
+{
+    return atomic_load(&g_last_step_unix);
+}
+
+int64_t proof_validate_stage_last_blocked_unix(void)
+{
+    return atomic_load(&g_last_blocked_unix);
+}
+
+int64_t proof_validate_stage_last_advance_height(void)
+{
+    return atomic_load(&g_last_advance_height);
+}
+
 uint64_t proof_validate_stage_verified_total(void)
 {
     return atomic_load(&g_verified_total);
@@ -725,98 +746,4 @@ uint64_t proof_validate_stage_binding_sig_verified_total(void)
 uint64_t proof_validate_stage_binding_sig_failed_total(void)
 {
     return atomic_load(&g_binding_sig_failed_total);
-}
-
-/* Surface the lowest ok=0 row (status/proof_type/txid) into `out`, mirroring
- * the validate_headers_report failure-summary query convention. No-op if the
- * db is unavailable or there is no failing row. Takes its own tx lock since
- * dump_state runs outside any stage txn. */
-static void dump_first_failure(struct json_value *out, sqlite3 *db)
-{
-    if (!db) return;
-    progress_store_tx_lock();
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT height, COALESCE(status,''), "
-        "       COALESCE(first_failure_proof_type,''), first_failure_txid "
-        "  FROM proof_validate_log WHERE ok=0 "
-        " ORDER BY height ASC LIMIT 1",
-        -1, &st, NULL) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
-        json_push_kv_int(out, "first_failure_height",
-                         sqlite3_column_int64(st, 0));
-        const unsigned char *status = sqlite3_column_text(st, 1);
-        const unsigned char *ptype = sqlite3_column_text(st, 2);
-        json_push_kv_str(out, "first_failure_status",
-                         status ? (const char *)status : "");
-        json_push_kv_str(out, "first_failure_proof_type",
-                         ptype ? (const char *)ptype : "");
-        const void *blob = sqlite3_column_blob(st, 3);
-        char hex[65] = {0};
-        if (blob && sqlite3_column_bytes(st, 3) == 32) {
-            struct uint256 t;
-            memcpy(t.data, blob, 32);
-            uint256_get_hex(&t, hex);
-        }
-        json_push_kv_str(out, "first_failure_txid", hex);
-    }
-    sqlite3_finalize(st);
-    progress_store_tx_unlock();
-}
-
-bool proof_validate_dump_state_json(struct json_value *out, const char *key)
-{
-    (void)key;
-    if (!out) return false;
-    json_set_object(out);
-
-    sqlite3 *db = progress_store_db();
-    int64_t now = platform_time_wall_unix();
-    int64_t last = atomic_load(&g_last_step_unix);
-
-    json_push_kv_bool(out, "initialised", g_stage != NULL);
-    json_push_kv_str (out, "stage_name", STAGE_NAME);
-    json_push_kv_int (out, "cursor",
-                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
-    json_push_kv_int (out, "verified_total",
-                      (int64_t)atomic_load(&g_verified_total));
-    json_push_kv_int (out, "proof_invalid_total",
-                      (int64_t)atomic_load(&g_proof_invalid_total));
-    json_push_kv_int (out, "internal_error_total",
-                      (int64_t)atomic_load(&g_internal_error_total));
-    json_push_kv_int (out, "upstream_failed_total",
-                      (int64_t)atomic_load(&g_upstream_failed_total));
-    json_push_kv_int (out, "sapling_spends_verified_total",
-                      (int64_t)atomic_load(&g_sapling_spends_verified_total));
-    json_push_kv_int (out, "sapling_spends_failed_total",
-                      (int64_t)atomic_load(&g_sapling_spends_failed_total));
-    json_push_kv_int (out, "sapling_outputs_verified_total",
-                      (int64_t)atomic_load(&g_sapling_outputs_verified_total));
-    json_push_kv_int (out, "sapling_outputs_failed_total",
-                      (int64_t)atomic_load(&g_sapling_outputs_failed_total));
-    json_push_kv_int (out, "sprout_groth16_verified_total",
-                      (int64_t)atomic_load(&g_sprout_groth16_verified_total));
-    json_push_kv_int (out, "sprout_groth16_failed_total",
-                      (int64_t)atomic_load(&g_sprout_groth16_failed_total));
-    json_push_kv_int (out, "sprout_phgr13_verified_total",
-                      (int64_t)atomic_load(&g_sprout_phgr13_verified_total));
-    json_push_kv_int (out, "sprout_phgr13_failed_total",
-                      (int64_t)atomic_load(&g_sprout_phgr13_failed_total));
-    json_push_kv_int (out, "binding_sig_verified_total",
-                      (int64_t)atomic_load(&g_binding_sig_verified_total));
-    json_push_kv_int (out, "binding_sig_failed_total",
-                      (int64_t)atomic_load(&g_binding_sig_failed_total));
-    json_push_kv_int (out, "last_advance_height",
-                      atomic_load(&g_last_advance_height));
-    json_push_kv_int (out, "last_step_unix", last);
-    json_push_kv_int (out, "last_step_age_seconds",
-                      last > 0 ? now - last : -1);
-    json_push_kv_int (out, "last_blocked_unix",
-                      atomic_load(&g_last_blocked_unix));
-    json_push_kv_int (out, "log_rows",
-                      db ? stage_log_row_count(db, STAGE_NAME,
-                                               "proof_validate_log") : 0);
-    dump_first_failure(out, db);
-    stage_dump_counters(out, g_stage);
-    return true;
 }

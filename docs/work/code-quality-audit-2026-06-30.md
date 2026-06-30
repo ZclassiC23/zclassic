@@ -86,6 +86,8 @@ mega-refactor. This page is the running backlog for those passes.
 - [x] Continue oversized-file review with a behavior-preserving diagnostics
   block-index/header-band extraction and diagnostics controller regression
   test.
+- [x] Continue oversized-file review with a behavior-preserving
+  proof-validation dumpstate extraction and stage regression test.
 - [ ] Continue oversized-file review with only behavior-preserving extractions.
 - [ ] Continue sovereign `-refold-from-anchor` cure work so borrowed-seed repair
   ladders can be removed.
@@ -1092,6 +1094,20 @@ mega-refactor. This page is the running backlog for those passes.
    - Tests: ran `make t ONLY=mcp_controllers` and `git diff --check`; final
      gate `make lint`.
 
+34. **Oversized proof-validation dumpstate extraction**
+   - Files: `app/jobs/src/proof_validate_stage.c`,
+     `app/jobs/src/proof_validate_stage_dump.c`,
+     `app/jobs/src/proof_validate_stage_internal.h`
+   - Problem: `proof_validate_stage.c` was just above the 800-line advisory
+     ceiling even though the zcl_state dump/query tail was a read-only concern
+     separate from proof verification and cursor advancement.
+   - Fix: moved the proof-validation dump JSON and first-failure query into a
+     focused sibling job translation unit, added a small sibling-private stage
+     state accessor seam, and left proof validation/cursor behavior unchanged.
+     `proof_validate_stage.c` is now 749 lines.
+   - Tests: ran `make t ONLY=proof_validate_stage`; final gates
+     `git diff --check` and `make lint`.
+
 ## High-priority review backlog
 
 1. **Repair fabric shrink plan**
@@ -1173,6 +1189,10 @@ mega-refactor. This page is the running backlog for those passes.
      block-index and header-band dump JSON now live in
      `diagnostics_block_index.c`, reducing `diagnostics_registry.c` to 798
      lines while preserving the dumpstate registry contract.
+   - Eighth behavior-preserving extraction landed for the reducer jobs:
+     proof-validation dumpstate now lives in `proof_validate_stage_dump.c`,
+     reducing `proof_validate_stage.c` to 749 lines while preserving the
+     proof-validation stage and dumpstate contracts.
 
 5. **Long-lived dirty deployment discipline**
    - Fixed this pass: the live binary now reports `build_commit=29329bffe`, and
