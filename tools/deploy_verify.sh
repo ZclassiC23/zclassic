@@ -136,6 +136,23 @@ json_top_key_is_string() {
         python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) == sys.argv[2] else 1)' "$2" "$3" 2>/dev/null
 }
 
+extract_health_height() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    printf '%s\n' "$1" | python3 -c '
+import json
+import sys
+d = json.load(sys.stdin)
+checks = d.get("checks") or {}
+checks_ca = checks.get("chain_advance") or {}
+top_ca = d.get("chain_advance") or {}
+for value in (checks_ca.get("local_height"), top_ca.get("local_height"), checks.get("log_head")):
+    if isinstance(value, int) and value > 0:
+        print(value)
+        sys.exit(0)
+sys.exit(1)
+' 2>/dev/null
+}
+
 json_key_is_int() {
     printf '%s\n' "$1" |
         grep -q "\"$2\"[[:space:]]*:[[:space:]]*$3\\([^0-9]\\|$\\)"
@@ -275,6 +292,16 @@ verify_contract() {
         { last_err="healthcheck is not healthy: $health"; return 1; }
     printf '%s\n' "$health" | grep -q '"degraded_reason"[[:space:]]*:[[:space:]]*"chain_evidence_gap"' &&
         { last_err="healthcheck reports generic evidence gap: $health"; return 1; }
+    health_height=$(extract_health_height "$health" || true)
+    if [ -n "$health_height" ]; then
+        height="$health_height"
+    fi
+    case "$height" in
+        ''|0)
+            last_err="healthcheck is healthy but no positive verified height was available: $health"
+            return 1
+            ;;
+    esac
 
     # Staleness guard: the binary actually answering RPC must be the one we just
     # built. A restart that silently kept the OLD binary (stale unit, a rebuild

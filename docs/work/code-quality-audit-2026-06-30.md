@@ -305,7 +305,7 @@ mega-refactor. This page is the running backlog for those passes.
   `checks.chain_advance.best_header_height=3164991`,
   `checks.chain_advance.projection_height=3164991`, and no chain-evidence
   health reason.
-- Final post-deploy live sample after deploy-verifier hardening commit
+- Post-deploy live sample after deploy-verifier hardening commit
   `5b4888096`: `make deploy` rebuilt the binary with
   `ZCL_BUILD_COMMIT="5b4888096"`, installed it to the effective service
   executable `/home/rhett/.local/bin/zclassic23-live`, restarted the service,
@@ -827,7 +827,9 @@ mega-refactor. This page is the running backlog for those passes.
      `ZCL_RPCPORT`, and `ZCL_RPCCONNECT`; otherwise it reads the service
      `-datadir` / `-rpcport` immediately and passes those to `zclassic-cli` /
      `zcl-rpc`. It now validates top-level `healthcheck` contract fields with
-     JSON parsing instead of loose grep, and wraps each RPC probe with a bounded
+     JSON parsing instead of loose grep, refreshes the success height from the
+     verified health evidence so an early `getblockcount=0` cannot produce a
+     green zero-height success line, and wraps each RPC probe with a bounded
      timeout (`ZCL_DEPLOY_RPC_TIMEOUT`, default 20s). Custom wrapper tools are
      still called without added datadir/port options, but they are also bounded
      by the same timeout wrapper.
@@ -836,10 +838,11 @@ mega-refactor. This page is the running backlog for those passes.
      ./tools/deploy_verify.sh`, which passed against the live full-history
      service. Follow-up tests added a fake RPC fixture proving nested
      `"healthy":true` no longer hides top-level `healthy=false`, a fake slow RPC
-     fixture proving per-call timeout reporting, direct live verifier runs for
-     `b615dee88`, `f0cd0be9a`, and `5b4888096`, `git diff --check`,
-     `make check-doc-accuracy`, and final `make deploy` at `5b4888096`
-     (`Deployed + RPC live at block 3165011`).
+     fixture proving per-call timeout reporting, a fake zero-`getblockcount`
+     fixture proving the success line reports the verified health height,
+     direct live verifier runs for `b615dee88`, `f0cd0be9a`, and `5b4888096`,
+     `git diff --check`, `make check-doc-accuracy`, and final `make deploy` at
+     `5b4888096` (`Deployed + RPC live at block 3165011`).
 
 ## High-priority review backlog
 
