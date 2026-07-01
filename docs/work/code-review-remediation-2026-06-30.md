@@ -130,12 +130,24 @@ empty; `test_make_lint_gates`; focused `block_index_loader`,
 `utxo_import_pipeline`, `sync_service`/`snapshot_sync_service`, and `boot_`
 groups; `make lint`; full `make test` passed 0/483 groups failed,
 14 self-skipped (107.2 s wall); and `make -j$(nproc) build/bin/zclassic23`.
-The `sqlite3_exec()` import-path policy remains the separate owner decision
-documented below. Historical live read-only check after those gates: zclassic23
-was serving at raw tip 3166010 with 4 peers, H* / served frontier at 3166009 due a
+Historical live read-only check after those gates: zclassic23 was serving at
+raw tip 3166010 with 4 peers, H* / served frontier at 3166009 due a
 `tip_finalize_log` `missing-success-row` at 3166010, `/api/hodl` fresh to the
 served frontier, `/api/factoids` refusing while explorer index is ahead of H*,
 and legacy `zclassicd` oracle still blocked on RPC `-28`.
+
+Update 2026-07-01: cc-arwrite-exec's high-value slice is implemented and
+proof-gated in this branch. Direct node.db DML through
+`sqlite3_exec(ndb->db|ndb.db, "INSERT/DELETE/UPDATE/REPLACE ...")` is now banned
+by `check_raw_sqlite.sh`; callers must use the prepared
+`ar_exec_write_sql()` / `AR_STEP_WRITE` path or a reviewed helper. The remaining
+transaction-control, PRAGMA, ATTACH/DETACH, schema DDL, projection-store, and
+progress.kv exec calls are intentionally outside this narrow DML gate. Converted
+production writes: importchainstate wallet/address rebuilds, boot wallet UTXO
+rebuild, snapshot import `main.utxos` clear/copy, and block-index cache clear.
+Verification: planted `raw_sqlite_exec_node_db_fixture.c` trips the gate,
+`tools/scripts/check_raw_sqlite.sh` clean, `make t ONLY=make_lint_gates`, and
+`make -j32 build-only`.
 
 Update 2026-07-01: cc-ccoins is implemented and proof-gated in this branch.
 The three CCoins decoders remain intentionally separate, but
@@ -375,7 +387,7 @@ timing-adjacent tests, `make lint`, full `make test`, and
 | **cc-arwrite-a** | P3 | **DONE 2026-07-01.** Renamed `AR_STEP_ROW_READONLY`→`AR_STEP_WRITE` on 4 confirmed write stmts (macro-identical, intent only). | `sync_controller_blocks.c`; `utxo_recovery_backfill.c`; `utxo_import_pipeline.c`; `block_index_loader.c` |
 | **cc-arwrite-b** | P2 | **DONE 2026-07-01.** The 23 `config/` + `src/` step sites now use `AR_STEP_WRITE` for writes and `AR_STEP_ROW_READONLY` for SELECTs. | `config/src/boot.c`; `boot_address_backfill.c`; `boot_index.c`; `boot_services.c`; `src/main.c` |
 | **cc-arwrite-c** | P2 | **DONE 2026-07-01.** Added `config/ src/` to `check_raw_sqlite.sh` grep roots after conversions. | `tools/scripts/check_raw_sqlite.sh` |
-| **cc-arwrite-exec** | — | **OWNER DECISION** (see below): the `sqlite3_exec` import-path writes are *not* caught by the step-only lint; widening to cover them is a separate, larger piece. | `src/main.c:1141,1428-1453`; `boot_services.c:535` |
+| **cc-arwrite-exec** | P2 | **DONE 2026-07-01 (narrow DML gate).** node.db `INSERT`/`DELETE`/`UPDATE`/`REPLACE` via direct `sqlite3_exec` is banned by `check_raw_sqlite.sh`; converted import/bootstrap/cache rebuild writes use `ar_exec_write_sql()` / `AR_STEP_WRITE`. Transaction/schema/projection/progress-store execs remain intentionally out of scope. | `src/main.c`; `boot_services.c`; `boot_snapshot_import.c`; `block_index_loader.c`; `check_raw_sqlite.sh` |
 
 ### Lane G — DRY / parity tests  *(P2/P3, consensus-adjacent → copy-prove)*
 | id | sev | fix | files | gate |
@@ -395,15 +407,13 @@ parallel runner silently skips. All deterministic (no datadir / network / `~/.zc
 
 ---
 
-## Owner decision (1)
+## Owner decision (0)
 
-- **cc-arwrite-exec** — the AR-bypass the review flagged on `sqlite3_exec` import
-  writes (`src/main.c`, `boot_services.c`, the exec-heavy `boot_refold_staged.c` /
-  `boot_snapshot_import.c`) is **not** caught by the step-only lint, and
-  `AR_ADHOC_SAVE` doesn't apply (no model record — `AR_EXEC` is the only fit).
-  Decide: leave exec uncovered (current intentional design) **or** widen the lint
-  to scan `sqlite3_exec` writes (separate, larger task). Everything else in this
-  doc is autonomous.
+- The prior `cc-arwrite-exec` owner decision is resolved for the high-value
+  review slice: node.db DML exec is covered by lint and converted. A future
+  broader policy for transaction-control/schema/projection `sqlite3_exec` calls
+  should be opened only if a concrete bug class appears; do not reopen the
+  review-remediation queue for that by default.
 
 ## Off this queue (do not start)
 

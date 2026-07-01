@@ -30,9 +30,29 @@
 #ifndef ZCL_UTIL_AR_STEP_READONLY_H
 #define ZCL_UTIL_AR_STEP_READONLY_H
 
+#include <stddef.h>
 #include <sqlite3.h>
 
 #define AR_STEP_ROW_READONLY(stmt) (sqlite3_step((stmt)))
 #define AR_STEP_WRITE(stmt)        (sqlite3_step((stmt)))
+
+static inline int ar_exec_write_sql(sqlite3 *db, const char *sql)
+{
+    if (!db || !sql)
+        return SQLITE_MISUSE;
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
+        return rc;
+    if (!stmt)
+        return SQLITE_MISUSE;
+
+    rc = AR_STEP_WRITE(stmt);
+    int finalize_rc = sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        return rc;
+    return finalize_rc;
+}
 
 #endif /* ZCL_UTIL_AR_STEP_READONLY_H */

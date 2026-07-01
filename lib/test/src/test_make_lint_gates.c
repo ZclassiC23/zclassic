@@ -41,6 +41,8 @@
 
 #define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
 #define FIXTURE_DST_REL "app/_lint_gate_fixture_tmp.c"
+#define NODE_DB_EXEC_FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_exec_node_db_fixture.c"
+#define NODE_DB_EXEC_FIXTURE_DST_REL "app/_node_db_exec_lint_fixture_tmp.c"
 #define COINS_FIXTURE_SRC_REL "lib/test/fixtures/coins_lookup_guard_fixture.c"
 #define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
 #define OBS_FIXTURE_SRC_REL "lib/test/fixtures/observability_unpaired_stderr_fixture.c"
@@ -49,7 +51,10 @@
 #define OBS_OK_FIXTURE_DST_REL "app/_observability_ok_lint_fixture_tmp.c"
 #define RAW_MALLOC_FIXTURE_DST_REL "app/_raw_malloc_lint_fixture_tmp.c"
 #define RAW_MALLOC_OK_FIXTURE_DST_REL "app/_raw_malloc_ok_lint_fixture_tmp.c"
+#define RAW_SQLITE_SCRIPT_REL "tools/scripts/check_raw_sqlite.sh"
 #define RAW_MALLOC_SCRIPT_REL "tools/scripts/check_raw_malloc.sh"
+
+static int run_gate_script(const char *script_rel, const char *mode);
 
 static const char *repo_root(void)
 {
@@ -150,32 +155,6 @@ static bool has_ch_suffix(const char *path)
     return len >= 2 &&
            (strcmp(path + len - 2, ".c") == 0 ||
             strcmp(path + len - 2, ".h") == 0);
-}
-
-static bool raw_sqlite_line_allowed(const char *line)
-{
-    return strstr(line, "// raw-sql-ok") ||
-           strstr(line, "AR_STEP_ROW") ||
-           strstr(line, "AR_STEP_DONE") ||
-           strstr(line, "AR_STEP_ROW_READONLY") ||
-           strstr(line, "safe_alloc");
-}
-
-static int check_raw_sqlite_file(const char *path)
-{
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return -1;
-
-    char line[4096];
-    while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "sqlite3_step(") && !raw_sqlite_line_allowed(line)) {
-            fclose(fp);
-            return 1;
-        }
-    }
-
-    fclose(fp);
-    return 0;
 }
 
 static int read_entire_file(const char *path, char **out_buf)
@@ -460,15 +439,7 @@ static int check_deleted_engine_names_file(const char *path)
 
 static int run_check_raw_sqlite(void)
 {
-    char app_dir[PATH_MAX];
-    char tools_dir[PATH_MAX];
-    if (repo_path(app_dir, sizeof(app_dir), "app") != 0 ||
-        repo_path(tools_dir, sizeof(tools_dir), "tools") != 0)
-        return -1;
-
-    int rc = walk_c_files(app_dir, check_raw_sqlite_file);
-    if (rc != 0) return rc;
-    return walk_c_files(tools_dir, check_raw_sqlite_file);
+    return run_gate_script(RAW_SQLITE_SCRIPT_REL, NULL);
 }
 
 static int run_check_coins_lookup_nullcheck(void)
@@ -580,6 +551,34 @@ static int t_fixture_trips_gate(void)
     int rc = run_check_raw_sqlite();
     (void)unlink(fixture_dst);
     TEST("[lint-gate] planted fixture trips the gate (exit != 0)") {
+        ASSERT(rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_node_db_exec_fixture_trips_gate(void)
+{
+    int failures = 0;
+    char fixture_src[PATH_MAX];
+    char fixture_dst[PATH_MAX];
+    if (repo_path(fixture_src, sizeof(fixture_src),
+                  NODE_DB_EXEC_FIXTURE_SRC_REL) != 0 ||
+        repo_path(fixture_dst, sizeof(fixture_dst),
+                  NODE_DB_EXEC_FIXTURE_DST_REL) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not resolve node_db exec fixture paths\n");
+        return 1;
+    }
+    (void)unlink(fixture_dst);
+    if (copy_file(fixture_src, fixture_dst) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not plant node_db exec fixture -- aborting\n");
+        return 1;
+    }
+    int rc = run_check_raw_sqlite();
+    (void)unlink(fixture_dst);
+    TEST("[lint-gate] raw node.db sqlite3_exec DML fixture trips the gate") {
         ASSERT(rc != 0);
         PASS();
     } _test_next:;
@@ -1774,6 +1773,7 @@ static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
         FIXTURE_DST_REL,
+        NODE_DB_EXEC_FIXTURE_DST_REL,
         COINS_FIXTURE_DST_REL,
         OBS_FIXTURE_DST_REL,
         OBS_OK_FIXTURE_DST_REL,
@@ -3679,6 +3679,7 @@ int test_make_lint_gates(void)
     int failures = 0;
     failures += t_baseline_passes();
     failures += t_fixture_trips_gate();
+    failures += t_node_db_exec_fixture_trips_gate();
     failures += t_gate_recovers_after_removal();
     failures += t_coins_guard_baseline_passes();
     failures += t_coins_guard_fixture_trips_gate();

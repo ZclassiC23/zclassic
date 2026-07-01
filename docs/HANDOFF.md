@@ -39,7 +39,7 @@ simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP 
 milestone status API       [##########] native `zclassic23 milestone`, REST v1, MCP `zcl_milestone` green
 REST resource routing      [#########-] `/api/v1` route table wired; dynamic/member routes still controller-owned
 API version contract       [##########] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
-lint-gate hardening        [#########-] coin lookup guard fails loud on empty/no-lookup scan surfaces
+lint-gate hardening        [##########] coin lookup hollow scans + raw node.db DML exec are proof-gated
 startup health evidence    [##########] health falls back to durable tip_finalize cursor during boot
 HODL website freshness     [##########] current view refreshes to served tip
 factoids website freshness [##########] capped to served tip; unsafe sections suppressed on projection holes
@@ -62,6 +62,11 @@ requires at least one `coins_view_cache_get_coins()` call site, and uses
 `gate_grep` for grep error handling. `test_make_lint_gates` now inject-verifies
 both an empty controller scan and a non-empty/no-lookup scan exit 2 before the
 real tree passes. The audit note is in `docs/work/lint-gate-hollowness-audit.md`.
+The raw-SQL gate also now rejects direct node.db DML through
+`sqlite3_exec(ndb->db|ndb.db, "INSERT/DELETE/UPDATE/REPLACE ...")`; import and
+boot bulk writes that fit this class use `ar_exec_write_sql()` /
+`AR_STEP_WRITE`, and `test_make_lint_gates` plants
+`raw_sqlite_exec_node_db_fixture.c` to prove the class fails loud.
 
 **Versioned agent API landed.** The owner/agent first call is now the same shape
 across the binary, REST, and MCP: `zclassic23 agent`, `GET /api/v1/agent`, and

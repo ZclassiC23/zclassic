@@ -526,27 +526,22 @@ bool app_init_services(struct app_context *ctx,
                 printf("wallet_utxos: keeping %d existing UTXOs (synced from zclassicd)\n",
                     existing);
             } else {
-                char *err = NULL;
                 int rc = sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
                 if (rc != SQLITE_OK) {
                     fprintf(stderr, "wallet_utxos: BEGIN failed: %s\n",
                             sqlite3_errmsg(ndb->db));
                 } else {
-                    rc = sqlite3_exec(ndb->db,
+                    rc = ar_exec_write_sql(ndb->db,
                     "INSERT OR IGNORE INTO wallet_utxos "
                     "(txid, vout, value, address_hash, script, height, is_coinbase) "
                     "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
                     "u.height, u.is_coinbase "
                     "FROM utxos u INNER JOIN wallet_keys wk "
-                    "ON u.address_hash = wk.pubkey_hash",
-                    NULL, NULL, &err);
-                }
-                if (err) {
-                    printf("wallet_utxos INSERT: %s\n", err);
-                    sqlite3_free(err);
-                    err = NULL;
+                    "ON u.address_hash = wk.pubkey_hash");
                 }
                 if (rc != SQLITE_OK) {
+                    fprintf(stderr, "wallet_utxos INSERT failed: %s\n",
+                            sqlite3_errmsg(ndb->db));
                     if (sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) {
                         fprintf(stderr, "wallet_utxos: ROLLBACK failed: %s\n",
                                 sqlite3_errmsg(ndb->db));

@@ -88,6 +88,12 @@ debt does not block a working sovereign node and must not jump the queue.
       linger-service install proof (`make ci-install-linger`) exercising the real
       `make install` + `systemctl --user start`. Audit of record: the 8-criterion
       gap scoreboard (workflow `mvp8-gap-audit-and-close`, 2026-06-17).
+      Best next coverage multiplier: a high-throughput deterministic simulation
+      harness inside `build/bin/test_zcl` / `test_parallel` (not an operator
+      binary) that drives reducer stages, fake peers, fake clocks, temp
+      datadirs, and invariant checks by seed, then prints the 64-bit replay seed
+      for every failure. Use it to turn current slice tests into broad scenario
+      sweeps while keeping full-binary/live-network proofs owner-gated.
 - [x] **Consensus-parity-diff service (C8)** — exists at
       `app/services/src/utxo_parity_service.c` (wired at boot via
       `config/src/boot_utxo_parity.c`), default-ON when a zclassicd oracle

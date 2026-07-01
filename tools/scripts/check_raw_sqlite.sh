@@ -2,7 +2,8 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
 # check_raw_sqlite.sh - ensure code outside vendored/test paths does not use
-# raw sqlite3_step() outside the AR_* wrappers (activerecord.h).
+# raw sqlite3_step() outside the AR_* wrappers (activerecord.h), and does not
+# issue raw node.db DML through sqlite3_exec().
 #
 # Scans app/, tools/, lib/, config/, and src/ for `sqlite3_step(` outside:
 #   - vendor/
@@ -11,6 +12,12 @@
 #     (which textually contain `sqlite3_step` inside their #define bodies)
 #   - lines annotated with `// raw-sql-ok:<tag>` (no space after the colon;
 #     tag matches [A-Za-z][A-Za-z0-9_-]+)
+#
+# It also scans for direct sqlite3_exec(ndb->db|ndb.db, "INSERT/DELETE/UPDATE/
+# REPLACE ...") because those are node.db write statements that can be prepared
+# and stepped through ar_exec_write_sql()/AR_STEP_WRITE. Transaction control,
+# PRAGMAs, ATTACH/DETACH, schema DDL, projection stores, progress.kv, and central
+# checked helpers remain out of this narrow DML gate.
 #
 # Two distinct hatches, NOT the same thing:
 #
@@ -91,12 +98,95 @@ while IFS= read -r hit; do
     violations="${violations}${hit}"$'\n'
 done <<< "$raw_hits"
 
+exec_scan=$(python3 - <<'PY'
+import os
+import re
+import sys
+
+roots = ("app", "tools", "lib", "config", "src")
+skip_parts = {"vendor", "build", "test"}
+verbs = ("INSERT", "DELETE", "UPDATE", "REPLACE")
+call_re = re.compile(
+    r"sqlite3_exec\s*\(\s*(?:&\s*)?ndb(?:->|\.)db\s*,(?P<tail>.{0,900})",
+    re.DOTALL,
+)
+str_re = re.compile(r'"((?:\\.|[^"\\])*)"')
+
+def iter_files():
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in skip_parts and not d.startswith(".")
+            ]
+            parts = set(dirpath.split(os.sep))
+            if parts & skip_parts:
+                continue
+            for name in filenames:
+                if name.endswith((".c", ".h")):
+                    yield os.path.join(dirpath, name)
+
+def first_sql_literal(tail):
+    m = str_re.search(tail)
+    if not m:
+        return None
+    # Adjacent C string literals are enough for leading verb classification;
+    # no escape decoding is needed for INSERT/DELETE/UPDATE/REPLACE.
+    return m.group(1).lstrip()
+
+violations = []
+for path in iter_files():
+    if path == "app/models/include/models/activerecord.h":
+        continue
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    except OSError as exc:
+        print(f"check_raw_sqlite: FATAL — cannot read {path}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    for m in call_re.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.start())
+        if line_end < 0:
+            line_end = len(text)
+        if re.search(r"//\s*raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+",
+                     text[line_start:line_end]):
+            continue
+        sql = first_sql_literal(m.group("tail"))
+        if not sql:
+            continue
+        upper = re.sub(r"\s+", " ", sql).upper()
+        if any(upper.startswith(v + " ") for v in verbs):
+            line_no = text.count("\n", 0, m.start()) + 1
+            verb = upper.split(" ", 1)[0]
+            violations.append(
+                f"{path}:{line_no}: raw node.db sqlite3_exec {verb}; "
+                "use ar_exec_write_sql()/AR_STEP_WRITE or a reviewed helper"
+            )
+
+if violations:
+    print("\n".join(violations))
+    sys.exit(1)
+PY
+)
+exec_scan_rc=$?
+if [[ $exec_scan_rc -ge 2 ]]; then
+    exit "$exec_scan_rc"
+fi
+
+if [[ -n "${exec_scan//[[:space:]]/}" ]]; then
+    violations="${violations}${exec_scan}"$'\n'
+fi
+
 if [[ -n "${violations//[[:space:]]/}" ]]; then
     echo "$violations"
-    echo "FAIL: raw sqlite3_step in production code"
+    echo "FAIL: raw SQLite write primitive in production code"
     echo "  Use AR_STEP_ROW / AR_STEP_DONE / AR_STEP_ROW_READONLY (see"
     echo "  app/models/include/models/activerecord.h), wrap in AR_BEGIN_SAVE /"
-    echo "  AR_EXEC_BOOL, or — for unavoidable cases like schema bootstrap —"
+    echo "  AR_EXEC_BOOL, ar_exec_write_sql(), or — for unavoidable cases like schema bootstrap —"
     echo "  add a // raw-sql-ok:<tag> comment on the line (no space after the"
     echo "  colon). progress.kv kernel-store sites use the canonical tag"
     echo "  // raw-sql-ok:progress-kv-kernel-store (see DEFENSIVE_CODING.md §1)."

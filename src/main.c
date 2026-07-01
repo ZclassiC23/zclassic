@@ -1524,30 +1524,40 @@ int main(int argc, char **argv)
         /* Rebuild wallet_utxos from ground truth */
         printf("Rebuilding wallet_utxos...\n");
         sqlite3_exec(ndb.db, "BEGIN", NULL, NULL, NULL);
-        sqlite3_exec(ndb.db, "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-        sqlite3_exec(ndb.db,
+        if (ar_exec_write_sql(ndb.db, "DELETE FROM wallet_utxos") != SQLITE_OK ||
+            ar_exec_write_sql(ndb.db,
             "INSERT INTO wallet_utxos "
             "(txid, vout, value, address_hash, script, height, is_coinbase) "
             "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
             "u.height, u.is_coinbase "
             "FROM utxos u INNER JOIN wallet_keys wk "
-            "ON u.address_hash = wk.pubkey_hash",
-            NULL, NULL, NULL);
+            "ON u.address_hash = wk.pubkey_hash") != SQLITE_OK) {
+            fprintf(stderr, "wallet_utxos rebuild failed: %s\n",
+                    sqlite3_errmsg(ndb.db));
+            sqlite3_exec(ndb.db, "ROLLBACK", NULL, NULL, NULL);
+            node_db_close(&ndb);
+            return 1;
+        }
         sqlite3_exec(ndb.db, "COMMIT", NULL, NULL, NULL);
 
         /* Rebuild addresses */
         printf("Rebuilding addresses...\n");
         sqlite3_exec(ndb.db, "BEGIN", NULL, NULL, NULL);
-        sqlite3_exec(ndb.db, "DELETE FROM addresses", NULL, NULL, NULL);
-        sqlite3_exec(ndb.db,
+        if (ar_exec_write_sql(ndb.db, "DELETE FROM addresses") != SQLITE_OK ||
+            ar_exec_write_sql(ndb.db,
             "INSERT OR REPLACE INTO addresses "
             "(address_hash, script_type, balance, utxo_count, "
             "first_seen_height, last_seen_height) "
             "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
             "MIN(height), MAX(height) "
             "FROM utxos WHERE address_hash IS NOT NULL "
-            "GROUP BY address_hash",
-            NULL, NULL, NULL);
+            "GROUP BY address_hash") != SQLITE_OK) {
+            fprintf(stderr, "addresses rebuild failed: %s\n",
+                    sqlite3_errmsg(ndb.db));
+            sqlite3_exec(ndb.db, "ROLLBACK", NULL, NULL, NULL);
+            node_db_close(&ndb);
+            return 1;
+        }
         sqlite3_exec(ndb.db, "COMMIT", NULL, NULL, NULL);
 
         /* Verify results */

@@ -473,8 +473,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
     bool tx_open = false;
-    int exec_rc = sqlite3_exec(ndb->db, "DELETE FROM block_index_cache",
-                               NULL, NULL, NULL);
+    int exec_rc = ar_exec_write_sql(ndb->db, "DELETE FROM block_index_cache");
     if (exec_rc != SQLITE_OK) {
         fprintf(stderr, "boot-index: failed to clear block_index_cache: %s\n",
                 sqlite3_errmsg(ndb->db));

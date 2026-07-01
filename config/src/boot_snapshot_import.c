@@ -10,6 +10,7 @@
 #include "chain/checkpoints.h"
 #include "coins/utxo_commitment.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
 
@@ -224,19 +225,17 @@ bool boot_import_snapshot_db(struct node_db *ndb,
      * process mid-write. */
     struct progress_pump pump = {0};
     progress_pump_start(&pump);
-    if (ok && sqlite3_exec(ndb->db, "DELETE FROM main.utxos",
-                           NULL, NULL, &err) != SQLITE_OK) {
+    if (ok && ar_exec_write_sql(ndb->db, "DELETE FROM main.utxos")
+                  != SQLITE_OK) {
         fprintf(stderr, "[boot_snapshot_import] clear utxos: %s\n",  // obs-ok:bulk-import-failure
-                err ? err : "n/a");
-        if (err) { sqlite3_free(err); err = NULL; }
+                sqlite3_errmsg(ndb->db));
         ok = false;
     }
-    if (ok && sqlite3_exec(ndb->db,
-            "INSERT INTO main.utxos SELECT * FROM snapsrc.utxos",
-            NULL, NULL, &err) != SQLITE_OK) {
+    if (ok && ar_exec_write_sql(ndb->db,
+            "INSERT INTO main.utxos SELECT * FROM snapsrc.utxos")
+                  != SQLITE_OK) {
         fprintf(stderr, "[boot_snapshot_import] copy utxos: %s\n",  // obs-ok:bulk-import-failure
-                err ? err : "n/a");
-        if (err) { sqlite3_free(err); err = NULL; }
+                sqlite3_errmsg(ndb->db));
         ok = false;
     }
     /* WRITE-TIME VERIFICATION (mirrors utxo_recovery_restore.c Part B1):

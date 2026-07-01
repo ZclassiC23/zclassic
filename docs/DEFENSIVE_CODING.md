@@ -46,9 +46,12 @@ linted across `app/`, `tools/`, `lib/`, `config/`, and `src/`; production step
 calls must use `AR_STEP_ROW`, `AR_STEP_DONE`, `AR_STEP_ROW_READONLY`, or
 `AR_STEP_WRITE` unless they carry a reviewed `// raw-sql-ok:<tag>`. Structured
 domain-model saves still use the AR lifecycle entry points above so validation
-and before/after hooks fire. The legacy/import `sqlite3_exec()` policy is a
-separate larger decision and is not part of this step-call gate. `make lint`
-runs `check_raw_sqlite.sh` (one of the gates in the canonical block below).
+and before/after hooks fire. Direct `sqlite3_exec(ndb->db|ndb.db, "...")` DML
+(`INSERT`/`DELETE`/`UPDATE`/`REPLACE`) is also linted and must route through
+`ar_exec_write_sql()` / `AR_STEP_WRITE` or a reviewed helper; transaction
+control, PRAGMAs, ATTACH/DETACH, schema DDL, projection stores, and progress.kv
+remain outside that narrow DML gate. `make lint` runs `check_raw_sqlite.sh`
+(one of the gates in the canonical block below).
 
 ### The one principled exception: the `progress.kv` kernel store
 
