@@ -13,10 +13,14 @@ Use `zclassic23 refold` (same contract as REST `/api/v1/refold` and MCP
 `zcl_refold_status`) for the sovereign anchor readiness check before any
 `-refold-from-anchor` copy proof. Use `zclassic23 healthcheck`,
 `/api/v1/node/status`, `zcl_status`, `zcl_state subsystem=reducer_frontier`,
-and `zcl_state subsystem=refold` only for drill-down. Latest runtime code deploy: `b6ab458f0`
-(`tools: harden refold copy proof`). `make deploy` installed it to the main
-linger lane at block 3166361, and the pinned soak binary was manually refreshed
-from the same build and restarted at `2026-07-01 10:41:37 UTC`.
+and `zcl_state subsystem=refold` only for drill-down. Latest pushed code:
+`2e8a1639b` (`api: expose refold anchor readiness`). `make deploy` installed
+and restarted this build in the main linger lane on 2026-07-01, but the deploy
+health verifier did **not** go green within 600s: the node was running the new
+build and answering RPC, but H\* stayed at 3166383 with a 10-block peer-tip gap
+and `operator_needed` from `block_failed_mask_at_tip` targeting 3166384. Treat
+the build as installed, not health-verified. The pinned soak binary remains
+`b6ab458f0` until explicitly refreshed.
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
@@ -31,30 +35,33 @@ service datadir/rpcport from systemd when the default cookie is absent, so no
 `-datadir` flag is needed for the normal owner command. `make deploy` now
 refreshes the owner-command symlink at `$HOME/.local/bin/zclassic23` and any
 existing `$HOME/bin/zclassic23` PATH shadow so those commands cannot point at a
-stale pre-API binary. At the latest
-handoff check the native node reported
-`sync_state=at_tip`,
-`healthy=true`, `serving=true`, 3 peers, Tor/onion ready, and the compact agent
-endpoint was serving at the local tip with the expected one-block
-indexed/header race (`gap=1`). The public `/api/status` surface is aligned with
-the health contract for the normal H* race: a one-block served-frontier gap
-reports `status=healthy`, `operator_needed=false`, and
+stale pre-API binary. At the latest handoff check the native node reported
+build `2e8a1639b`, `sync_state=blocks_download`, `healthy=false`,
+`serving=false`, 4 peers, Tor/onion ready, H\*=3166383, peer target 3166393, and
+`operator_needed=true`. The compact agent endpoint is live but reports
+`status=blocked`, `primary_blocker=not_serving`, and `gap=10`. The active named
+conditions were `block_failed_mask_at_tip` (critical, target 3166384, attempts
+5, operator-needed emitted), `header_stall_at_height` (critical),
+`local_header_refill_needed` (warn), `peer_floor_violated` (warn), and
+`tip_wedged_resnapshot` (critical, remedy failed). The public `/api/status`
+surface is aligned with the health contract for the normal H* race: a one-block
+served-frontier gap reports `status=healthy`, `operator_needed=false`, and
 `primary_blocker=none`; gaps greater than one remain named as catching-up or
 degraded.
 
 ```
 systems
-native node service        [##########] healthy/serving at local tip; verify build with `zclassic23 healthcheck`
+native node service        [####------] build 2e8a1639b installed; health blocked at H*=3166383 -> target 3166393
 native API discovery       [##########] `zclassic23 api`, REST `/api`/`/api/v1`, shared `zcl.rest_index.v1`
-simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
-milestone status API       [##########] native `zclassic23 milestone`, REST v1, MCP `zcl_milestone` green
-refold readiness API       [##########] native `zclassic23 refold`, REST v1, MCP `zcl_refold_status` green
+simple agent API           [########--] native `zclassic23 agent` live; currently reports blocked/not_serving
+milestone status API       [##########] native `zclassic23 milestone`, REST v1, MCP `zcl_milestone` live
+refold readiness API       [##########] native `zclassic23 refold`, REST v1, MCP `zcl_refold_status` live on main
 REST resource routing      [#########-] `/api/v1` route table wired; dynamic/member routes still controller-owned
 API version contract       [##########] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
 lint-gate hardening        [##########] coin lookup hollow scans + raw node.db DML exec are proof-gated
 startup health evidence    [##########] health falls back to durable tip_finalize cursor during boot
-HODL website freshness     [##########] current view refreshes to served tip
-factoids website freshness [##########] capped to served tip; unsafe sections suppressed on projection holes
+HODL website freshness     [#######---] view caps to served tip; live site freshness blocked while node is not serving
+factoids website freshness [#######---] capped to served tip; live site freshness blocked while node is not serving
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
 formal soak evidence       [#---------] rebaselined on current binary; blocked at H*=3056758
 ```
@@ -70,14 +77,18 @@ was wedged at H\*=3056758. The pinned soak binary is now refreshed from build
 `~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` was
 restored to `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended
 budget). Do not mark C6 complete until a fresh uninterrupted window is judged
-`MET`. Current runtime check after the copy-harness hardening deploy: the main
-service is at `getblockcount=3166363`, `headers=3166364`,
-`verificationprogress=1`, 4 active peers, and `NRestarts=0`; `dumpstate refold`
-reports `anchor_snapshot_candidate_stat_present=false` for
-`/home/rhett/.zclassic-c23-fullhist/utxo-anchor.snapshot`. The soak service
-serves H\*=`3056758` with `headers=3166362`; its `dumpstate refold` reports
-`anchor_snapshot_candidate_stat_present=false` for
-`/home/rhett/.zclassic-c23-soak/utxo-anchor.snapshot`. Soak is therefore
+`MET`. Current runtime check after the refold-readiness API deploy attempt: the
+main service is running build `2e8a1639b` but is **not** serving
+(`sync_state=blocks_download`, H\*=3166383, target=3166393, gap=10,
+`block_failed_mask_at_tip` targeting 3166384). `zclassic23 refold` on main
+returns `zcl.refold_status.v1` and reports
+`primary_blocker=missing_verified_anchor_snapshot` for
+`/home/rhett/.zclassic-c23-fullhist/utxo-anchor.snapshot`. The soak service is
+still running pinned build `b6ab458f0` (not the new refold API build), serves
+H\*=`3056758` with `headers=3166400`, and is not green
+(`degraded_reason=operator_needed:check=window.consistency...`,
+`log_head=3145595`, `tip_lag=20773`). `refold` is not registered on the pinned
+soak binary until that service is explicitly refreshed. Soak is therefore
 **not** green; the hard missing artifact remains the verified anchor snapshot.
 
 **Soak copy proof result.** Do **not** enable
@@ -122,6 +133,12 @@ no `coins_kv` mutation, no boot reset, no shell helper. While the current anchor
 artifact is absent the expected blocker is
 `primary_blocker=missing_verified_anchor_snapshot`; after a verified snapshot is
 staged, the next action is the full `-refold-from-anchor` copy proof above.
+Commit `2e8a1639b` was pushed to `main`; focused tests, `make lint`,
+`make test`, and `make sim-fast` passed before deploy. `make deploy` then
+installed the build but failed the post-restart health gate because live chain
+progress did not return to green. Next developer: do not debug this by live
+surgery. First reproduce the `block_failed_mask_at_tip` / missing 3166384 class
+on a copied fullhist datadir, prove the fix fires on the copy, then deploy.
 
 **Reducer-frontier refusal hardening landed.** A follow-up on 2026-07-01 pins
 the live soak failure class where `coin_backfill_status_label=owner_refused`
