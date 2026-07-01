@@ -445,6 +445,20 @@ int test_mint_skip_crypto(void)
               wallet_flush && wallet_free_call && wallet_flush < wallet_free_call);
     MSC_CHECK("offline shutdown closes wallet sqlite before wallet_free",
               wallet_close && wallet_free_call && wallet_close < wallet_free_call);
+
+    char *mint_src = read_source_file("config/src/boot_mint_anchor.c");
+    const char *mint_progress_10k = mint_src
+        ? strstr(mint_src, "kProgressEvery = 10000")
+        : NULL;
+    const char *mint_progress_cond = mint_src
+        ? strstr(mint_src, "now % kProgressEvery")
+        : NULL;
+    const char *mint_progress_50k = mint_src
+        ? strstr(mint_src, "now % 50000")
+        : NULL;
+    MSC_CHECK("mint-anchor progress cadence is 10k blocks",
+              mint_progress_10k && mint_progress_cond && !mint_progress_50k);
+    free(mint_src);
     free(boot_src);
     free(main_src);
 

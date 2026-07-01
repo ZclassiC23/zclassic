@@ -87,6 +87,7 @@ bool boot_mint_anchor_run(const char *datadir)
     int32_t last_through = mint_applied_through(pdb);
     int stall_kicks = 0;
     const int kStallLimit = 64;   /* consecutive no-progress kicks → bodies gap */
+    const int kProgressEvery = 10000;
     fprintf(stderr,
             "[mint-anchor] driving the genesis..%d fold; "
             "starting at applied-through=%d\n", anchor, last_through);
@@ -102,7 +103,7 @@ bool boot_mint_anchor_run(const char *datadir)
         if (now > last_through) {
             last_through = now;
             stall_kicks = 0;
-            if (now % 50000 == 0 || now >= anchor - 16)
+            if (now % kProgressEvery == 0 || now >= anchor - 16)
                 fprintf(stderr, "[mint-anchor] applied-through=%d / %d\n",
                         now, anchor);
         } else if (++stall_kicks >= kStallLimit) {

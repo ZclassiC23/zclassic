@@ -77,13 +77,14 @@ unblocks SOVEREIGNTY (deleting the borrowed loader), not liveness. Proof:
 non-NULL with `count==1,354,771 height==3,056,758`.
 
 ### CP-2 — [I-OWN, blocks-sovereignty, gated on nothing] Make the fold observable
-The mint log is ~88% `db: current schema version` spam with NO per-block
-fold-progress line, so its ETA/termination is unmeasurable ("sample-twice-delta>0"
-is unsatisfiable). Add a per-N-block (e.g. every 10k applied heights) fold-progress
-log line emitting a monotonically increasing applied-height in the utxo_apply
-stage. File: `app/jobs/src/utxo_apply_delta.c` (apply loop) or the staged driver
-calling it. Proof: a fold emits an increasing applied-height every N blocks; do
-this WITHOUT touching the running mint (the next run / a fixture gets the new line).
+**PARTIAL 2026-07-01.** The utxo_apply stage already emits a 10k-block
+`[utxo_apply] fold progress: applied_height=...` heartbeat, and the
+`-mint-anchor` driver now uses the same 10k cadence for its
+`applied-through=... / anchor` operator line. This was landed without touching
+the running mint; the active PID keeps its old binary, while the next run /
+fixture gets the new line. Remaining proof before closing CP-2: run a fixture
+or next mint until two increasing 10k heartbeats are observed and record the
+sample-twice delta as evidence.
 
 ### CP-3 — [I-OWN, blocks-sovereignty] Land the H\* CLIMB proof + wire the 3 orphans
 A COMPLETE worktree fixture already mints a verified mini-anchor, runs the
