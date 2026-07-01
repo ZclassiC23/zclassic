@@ -5,19 +5,21 @@
 `curl -sk https://127.0.0.1:8443/api/status`, and `./tools/z mirror --json`.
 
 **Live node.** The user linger service is running the locally deployed binary
-(`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The post-commit
-deploy verifier completed at h=3166083; use `./tools/z status` for the exact
-running `build_commit`. At the latest handoff check the native node reported `sync_state=at_tip`,
+(`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
+post-commit deploy verifier completed at h=3166104 on build `e0885b027`; use
+`./tools/z status` for the exact running `build_commit`. At the latest handoff
+check the native node reported `sync_state=at_tip`,
 `consensus_authority=local_consensus_validation`, `healthy=true`,
 `serving=true`, 4 peers, and Tor/onion ready. The public `/api/status` surface is
-intentionally stricter and can briefly report `operator_needed=true` when the
-served frontier is one block behind indexed/header state; do not treat that as a
-wedge unless the named blocker persists and `./tools/z status` agrees.
+now aligned with the health contract for the normal H* race: a one-block
+served-frontier gap reports `status=healthy`, `operator_needed=false`, and
+`primary_blocker=none`; gaps greater than one remain named as catching-up or
+degraded.
 
 ```
 systems
 native node service        [##########] healthy/serving at local tip
-REST/MCP public API        [#########-] H*-honest; named one-block gaps surface
+REST/MCP public API        [##########] H*-honest; one-block H* race is green
 HODL website freshness     [#########-] current view refreshes to served tip
 factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
@@ -56,6 +58,13 @@ without stamping the chain-evidence pending tip, leaving health red
 (`active_tip_hash_mismatch`) until the next normal block finalized. The startup
 path now calls `chain_evidence_note_finalized_tip(existing_tip)`, so the first
 health collection drains evidence to the recovered served tip immediately.
+
+**Public status false-alarm cleanup.** Build `e0885b027` fixed the compact REST
+status contract after the startup-evidence deploy: `/api/status` no longer pages
+operator action for the normal one-block gap between `served_height` and
+`indexed_height`/`header_height`. Regression coverage lives in `test_api`
+(`public status treats one-block served gap as healthy` and
+`public status still degrades material served gap`).
 
 **Mirror status.** The zclassicd-authoritative mirror is advisory-only right now:
 `mirror_running=true`, transport reachable, but `zclassicd` RPC returns `-28`

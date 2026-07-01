@@ -184,6 +184,16 @@ height/served/indexed/header/peer-best 3166043 with `gap=0`, `index_gap=0`,
 `skipped_rows=0`; `/api/factoids` returns 200 JSON at
 `chain_height=served_height=indexed_height=3166043` and `index_capped=false`.
 
+Update 2026-07-01: compact public status false-alarm hardening is implemented
+and deployed. `/api/status` now treats the normal one-block H* race as green:
+when `served_height` is one block behind indexed/header state and native health
+is serving, it returns `status=healthy`, `operator_needed=false`, and
+`primary_blocker=none`. Material served-frontier gaps (`gap > 1`) still report
+`catching_up` or `download_queue_idle` with a named next endpoint. Verification:
+`build/bin/test_parallel --only=api`, `make lint`, `make deploy`, and live
+post-deploy `/api/status` at served height 3166103 / indexed+header 3166104
+with `gap=1`, `status=healthy`, `operator_needed=false`.
+
 Update 2026-07-01: qw11 is implemented and proof-gated in this branch.
 `wallet_sapling_notes` now has a validated `source` field (`local` by default,
 `view` for zclassicd mirror placeholders). `wv_sync_wallet_from_zclassicd()`
