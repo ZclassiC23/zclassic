@@ -17,6 +17,7 @@
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
 #include "event/event.h"
+#include "services/chain_evidence_authority_service.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
@@ -30,7 +31,6 @@
 #include <string.h>
 
 #define STAGE_NAME "tip_finalize"
-
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -65,7 +65,6 @@ static void tf_refresh_provable_tip(sqlite3 *db)
     }
     reducer_frontier_provable_tip_set(hs);
 }
-
 
 /* Cross-TU seam for tip_finalize_anchor.c (tip_finalize_anchor_internal.h):
  * the anchor/seed TU reads the live stage handle at call time and publishes
@@ -656,6 +655,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
         }
         tip_finalize_stage_publish_resolved_or_fresh_tip(
             db, existing_tip, "init_existing_tip_reanchor");
+        chain_evidence_note_finalized_tip(existing_tip);
         pthread_mutex_unlock(&g_lock);
         return true;
     }
@@ -695,6 +695,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
     }
     tip_finalize_stage_publish_resolved_or_fresh_tip(
         db, existing_tip, "init_existing_tip");
+    chain_evidence_note_finalized_tip(existing_tip);
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO("tip_finalize", "[tip_finalize] stage initialised (authoritative)");

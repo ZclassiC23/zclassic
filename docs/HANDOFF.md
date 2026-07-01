@@ -50,6 +50,13 @@ full `make test` (`0/485 groups failed, 14 skipped`), production binary build,
 and `make deploy`. Live DB inspection confirmed `wallet_sapling_notes.source`,
 schema migration `021`, and `idx_snote_view_address`.
 
+**Final deploy note.** A post-commit restart exposed a startup-only evidence
+lag: `tip_finalize_stage_init()` could publish an existing durable served tip
+without stamping the chain-evidence pending tip, leaving health red
+(`active_tip_hash_mismatch`) until the next normal block finalized. The startup
+path now calls `chain_evidence_note_finalized_tip(existing_tip)`, so the first
+health collection drains evidence to the recovered served tip immediately.
+
 **Mirror status.** The zclassicd-authoritative mirror is advisory-only right now:
 `mirror_running=true`, transport reachable, but `zclassicd` RPC returns `-28`
 (`Activating best chain... height 0 (1%)`). Native authority remains
