@@ -113,8 +113,16 @@ void mcp_router_reset(void);
  * is full or a route with the same name already exists. */
 bool mcp_router_register(const struct mcp_tool_route *route);
 
+/* Register a route that must exist in production. Duplicate registration of
+ * the same static route is idempotent; any malformed route, duplicate name
+ * with a different route, or capacity exhaustion aborts loudly. Controller
+ * registration loops use this so a future operator/MCP tool cannot silently
+ * disappear. */
+void mcp_router_register_required(const struct mcp_tool_route *route);
+
 const struct mcp_tool_route *mcp_router_find(const char *name);
 size_t mcp_router_count(void);
+size_t mcp_router_capacity(void);
 const struct mcp_tool_route *mcp_router_at(size_t idx);
 
 /* ── Tool metadata (set inline in the route initializer) ─────── */

@@ -196,5 +196,5 @@ static const struct mcp_tool_route k_routes[] = {
 void mcp_register_net(void)
 {
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
-        mcp_router_register(&k_routes[i]);
+        mcp_router_register_required(&k_routes[i]);
 }

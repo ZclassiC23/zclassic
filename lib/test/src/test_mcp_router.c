@@ -14,6 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "util/safe_alloc.h"
 
 /* ── Stub handlers ──────────────────────────────────────────── */
@@ -131,6 +134,17 @@ static bool contains(const char *buf, const char *needle)
     return strstr(buf, needle) != NULL;
 }
 
+static bool child_aborted_loud(int status)
+{
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT)
+        return true;
+#ifdef COVERAGE_BUILD
+    if (WIFEXITED(status) && WEXITSTATUS(status) == (128 + SIGABRT))
+        return true;
+#endif
+    return false;
+}
+
 /* ── Tests ──────────────────────────────────────────────────── */
 
 static int test_router_register_and_count(void)
@@ -155,6 +169,72 @@ static int test_router_duplicate_rejected(void)
         ASSERT(mcp_router_count() == 8);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int test_router_required_duplicate_idempotent(void)
+{
+    int failures = 0;
+    TEST("required registration is idempotent for the same static route") {
+        mcp_router_reset();
+        mcp_router_register_required(&r_echo);
+        ASSERT(mcp_router_count() == 1);
+        mcp_router_register_required(&r_echo);
+        ASSERT(mcp_router_count() == 1);
+        setup_routes();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_router_capacity_and_required_overflow(void)
+{
+    int failures = 0;
+    struct mcp_tool_route *routes = NULL;
+    char (*names)[32] = NULL;
+
+    TEST("router exposes capacity and required overflow aborts loud") {
+        mcp_router_reset();
+        size_t cap = mcp_router_capacity();
+        ASSERT(cap >= 128);
+
+        routes = zcl_calloc(cap, sizeof(*routes),
+                            "mcp_router.capacity.routes");
+        names = zcl_calloc(cap, sizeof(*names),
+                           "mcp_router.capacity.names");
+        ASSERT(routes != NULL);
+        ASSERT(names != NULL);
+
+        for (size_t i = 0; i < cap; i++) {
+            snprintf(names[i], sizeof(names[i]), "t.fill.%zu", i);
+            routes[i] = (struct mcp_tool_route){
+                names[i], "test", "capacity fill", NULL, 0, h_echo, 0, NULL
+            };
+            ASSERT(mcp_router_register(&routes[i]));
+        }
+        ASSERT(mcp_router_count() == cap);
+
+        static const struct mcp_tool_route overflow = {
+            "t.overflow", "test", "overflow", NULL, 0, h_echo, 0, NULL
+        };
+        ASSERT(!mcp_router_register(&overflow));
+
+        pid_t pid = fork();
+        ASSERT(pid >= 0);
+        if (pid == 0) {
+            mcp_router_register_required(&overflow);
+            _exit(0);
+        }
+
+        int status = 0;
+        ASSERT(waitpid(pid, &status, 0) == pid);
+        ASSERT(child_aborted_loud(status));
+
+        PASS();
+    } _test_next:
+    free(names);
+    free(routes);
+    setup_routes();
     return failures;
 }
 
@@ -564,6 +644,8 @@ int test_mcp_router(void)
 
     failures += test_router_register_and_count();
     failures += test_router_duplicate_rejected();
+    failures += test_router_required_duplicate_idempotent();
+    failures += test_router_capacity_and_required_overflow();
     failures += test_router_unknown_tool();
     failures += test_router_missing_required();
     failures += test_router_null_args();

@@ -18,7 +18,7 @@
 
 #include "util/safe_alloc.h"
 
-#define MCP_ROUTER_MAX_ROUTES 128
+#define MCP_ROUTER_MAX_ROUTES 256
 
 static const struct mcp_tool_route *g_routes[MCP_ROUTER_MAX_ROUTES];
 static size_t g_num_routes = 0;
@@ -110,6 +110,41 @@ bool mcp_router_register(const struct mcp_tool_route *route)
     return true;
 }
 
+void mcp_router_register_required(const struct mcp_tool_route *route)
+{
+    const char *name = (route && route->name) ? route->name : "(null)";
+    const char *domain = (route && route->domain) ? route->domain : "(null)";
+
+    if (!route || !route->name || !route->handler) {
+        fprintf(stderr,
+                "[mcp_router] FATAL: malformed required route "
+                "name=%s domain=%s count=%zu capacity=%zu\n",
+                name, domain, g_num_routes, (size_t)MCP_ROUTER_MAX_ROUTES);
+        abort();
+    }
+
+    const struct mcp_tool_route *existing = mcp_router_find(route->name);
+    if (existing) {
+        if (existing == route)
+            return;
+        fprintf(stderr,
+                "[mcp_router] FATAL: duplicate required route name=%s "
+                "existing_domain=%s new_domain=%s count=%zu capacity=%zu\n",
+                route->name,
+                existing->domain ? existing->domain : "(null)",
+                domain, g_num_routes, (size_t)MCP_ROUTER_MAX_ROUTES);
+        abort();
+    }
+
+    if (!mcp_router_register(route)) {
+        fprintf(stderr,
+                "[mcp_router] FATAL: required route registration failed "
+                "name=%s domain=%s count=%zu capacity=%zu\n",
+                name, domain, g_num_routes, (size_t)MCP_ROUTER_MAX_ROUTES);
+        abort();
+    }
+}
+
 const struct mcp_tool_route *mcp_router_find(const char *name)
 {
     if (!name) return NULL;
@@ -123,6 +158,11 @@ const struct mcp_tool_route *mcp_router_find(const char *name)
 size_t mcp_router_count(void)
 {
     return g_num_routes;
+}
+
+size_t mcp_router_capacity(void)
+{
+    return MCP_ROUTER_MAX_ROUTES;
 }
 
 const struct mcp_tool_route *mcp_router_at(size_t idx)

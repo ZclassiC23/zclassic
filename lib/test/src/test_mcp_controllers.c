@@ -85,6 +85,7 @@
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20
 #define EXPECTED_APP        16
+#define EXPECTED_HEADROOM   32
 
 /* ── Helpers ────────────────────────────────────────────────── */
 
@@ -173,6 +174,11 @@ static int test_register_total_count(void)
         size_t n = mcp_router_count();
         if (n != EXPECTED_TOTAL) {
             printf("FAIL (got %zu, expected %d)\n", n, EXPECTED_TOTAL);
+            failures++; goto _test_next;
+        }
+        if (mcp_router_capacity() < EXPECTED_TOTAL + EXPECTED_HEADROOM) {
+            printf("FAIL (capacity=%zu, expected at least %d total + %d headroom)\n",
+                   mcp_router_capacity(), EXPECTED_TOTAL, EXPECTED_HEADROOM);
             failures++; goto _test_next;
         }
         PASS();

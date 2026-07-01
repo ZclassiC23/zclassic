@@ -594,5 +594,5 @@ void mcp_register_diagnostics(void)
     p_state[0].description = g_state_subsystem_desc;
 
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
-        mcp_router_register(&k_routes[i]);
+        mcp_router_register_required(&k_routes[i]);
 }
