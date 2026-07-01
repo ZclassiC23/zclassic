@@ -2050,6 +2050,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
         ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
+        ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
+        ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
+        ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);

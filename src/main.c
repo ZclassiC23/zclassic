@@ -494,6 +494,62 @@ static int bench_mode_main(int argc, char **argv)
 static char cli_cookie[256];
 static int cli_port = 18232;
 
+static bool cli_cookie_exists(const char *datadir)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.cookie", datadir);
+    return access(path, R_OK) == 0;
+}
+
+static bool cli_service_exec_arg(const char *key, char *out, size_t out_size)
+{
+    if (!key || !*key || !out || out_size == 0)
+        return false;
+    out[0] = '\0';
+
+    FILE *f = popen(
+        "systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null",
+        "r");
+    if (!f)
+        return false;
+
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    int close_rc = pclose(f);
+    (void)close_rc;
+    if (n == 0)
+        return false;
+    buf[n] = '\0';
+
+    char needle[64];
+    int written = snprintf(needle, sizeof(needle), "-%s=", key);
+    if (written <= 0 || (size_t)written >= sizeof(needle))
+        return false;
+
+    const char *p = strstr(buf, needle);
+    if (!p)
+        return false;
+    p += strlen(needle);
+
+    char quote = '\0';
+    if (*p == '"' || *p == '\'')
+        quote = *p++;
+
+    size_t len = 0;
+    while (p[len] &&
+           ((quote && p[len] != quote) ||
+            (!quote && p[len] != ' ' && p[len] != '\t' &&
+             p[len] != '\n' && p[len] != ';'))) {
+        len++;
+    }
+    if (len == 0 || len >= out_size)
+        return false;
+
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return true;
+}
+
 static bool cli_read_cookie(const char *datadir)
 {
     char path[512];
@@ -623,14 +679,36 @@ static int cli_main(int argc, char **argv)
     else      snprintf(datadir, sizeof(datadir), ".zclassic-c23");
 
     int arg_start = 1;
+    bool datadir_set = false;
+    bool rpcport_set = false;
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) {
             snprintf(datadir, sizeof(datadir), "%s", argv[i] + 9);
+            datadir_set = true;
             arg_start = i + 1;
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             cli_port = atoi(argv[i] + 9);
+            rpcport_set = true;
             arg_start = i + 1;
         } else break;
+    }
+
+    if (!datadir_set && !cli_cookie_exists(datadir)) {
+        char service_datadir[512];
+        if (cli_service_exec_arg("datadir", service_datadir,
+                                 sizeof(service_datadir)) &&
+            cli_cookie_exists(service_datadir)) {
+            snprintf(datadir, sizeof(datadir), "%s", service_datadir);
+        }
+    }
+    if (!rpcport_set) {
+        char service_rpcport[32];
+        if (cli_service_exec_arg("rpcport", service_rpcport,
+                                 sizeof(service_rpcport))) {
+            int port = atoi(service_rpcport);
+            if (port > 0 && port < 65536)
+                cli_port = port;
+        }
     }
 
     if (!cli_read_cookie(datadir)) {
