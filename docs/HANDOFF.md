@@ -28,10 +28,27 @@ through `app_shutdown_offline`. A foreground smoke with the fixed binary reached
 frontend/P2P/runtime services` and `[mint-anchor] driving the genesis..3056758
 fold; starting at applied-through=-1`, with no P2P/RPC/frontend markers.
 
+**2026-07-01 14:05 UTC producer update.** The fix is committed as
+`16c841ca8` (`fix offline anchor mint boundary`) and `build/bin/zclassic23`
+was rebuilt clean with `ZCL_BUILD_COMMIT="16c841ca8"`. The isolated mint
+datadir was recreated fresh from
+`$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and the producer is
+running as `zclassic23-anchor-mint.service`, PID `3160516`, with output target
+`$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. At 14:03:45 UTC the
+journal reached the expected fixed path:
+`[boot] -mint-anchor: offline reducer stages initialized; skipping
+frontend/P2P/runtime services` and `[mint-anchor] driving the genesis..3056758
+fold; starting at applied-through=-1`. A negative journal scan since
+14:00:18 UTC found no `p2p_services_start`, peer-connection, RPC/frontend,
+API-cache, condition-engine, or `ZClassic C23 node initialized` lines. At
+14:05 UTC the process was active, memory was about 6.4 GB, the fold had emitted
+`applied_height=0`, and no snapshot artifact existed yet.
+
 The earlier smoke used the already-interrupted
 `$HOME/.zclassic-c23-anchor-mint` workspace and then safely reported a missing
 body span at `applied-through=2999`; do not reuse that mutated datadir for the
-real producer. Recreate it from the stopped source copy first:
+real producer. If this active producer must be restarted before publishing the
+snapshot, recreate it from the stopped source copy first:
 
 ```bash
 rm -rf $HOME/.zclassic-c23-anchor-mint

@@ -7,7 +7,9 @@ review exposed that `-mint-anchor-fast` could still start normal runtime
 services before the one-shot driver. The current fix makes `-mint-anchor` an
 offline reducer driver: `app_init` returns before `app_init_services`, the eight
 stages are initialized without supervisor children, and shutdown uses
-`app_shutdown_offline`. Re-verify every file:line before acting; specifics rot.
+`app_shutdown_offline`. The fixed producer is now running from commit
+`16c841ca8` as `zclassic23-anchor-mint.service` (PID `3160516`). Re-verify
+every file:line before acting; specifics rot.
 
 ## Where we are (the only remaining gate is the durable artifact, not code)
 
@@ -25,9 +27,11 @@ stages are initialized without supervisor children, and shutdown uses
 - **The missing piece: a durable, checkpoint-verified anchor snapshot at h=3,056,758.** It does NOT
   exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED - its header decodes to
   height=3,151,901, count=1,344,817; the node rejects it on the count check. Do not use it.)
-- **The producer:** no durable artifact exists yet. Recreate a fresh isolated
-  mint datadir from the stopped full-history copy
-  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` before launching:
+- **The producer:** running, but no durable artifact exists yet. The active
+  isolated mint datadir was recreated from the stopped full-history copy
+  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and launched from
+  a clean `build/bin/zclassic23` built at `16c841ca8`. If it must be restarted
+  before publishing the snapshot, recreate the datadir again:
   ```bash
   rm -rf $HOME/.zclassic-c23-anchor-mint
   cp -a $HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384/. \
@@ -46,14 +50,17 @@ stages are initialized without supervisor children, and shutdown uses
     -nolegacyimport -mint-anchor -mint-anchor-fast -nobgvalidation
   ```
   On completion it writes the verified snapshot to
-  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. Expected journal
-  markers are `-refold-staged: staged reducer reset to genesis OK`,
-  `-mint-anchor-fast: OFFLINE FAST-MINT`, `[boot] -mint-anchor: offline reducer
-  stages initialized; skipping frontend/P2P/runtime services`, and
-  `[mint-anchor] driving the genesis..3056758 fold; starting at
-  applied-through=-1`. There must be no `p2p_services_start`,
-  peer-connection, RPC/frontend, or `ZClassic C23 node initialized` lines on
-  this path.
+  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. At 2026-07-01
+  14:03:45 UTC the active run reached `-refold-staged: staged reducer reset to
+  genesis OK`, `-mint-anchor-fast: OFFLINE FAST-MINT`,
+  `[boot] -mint-anchor: offline reducer stages initialized; skipping
+  frontend/P2P/runtime services`, and `[mint-anchor] driving the
+  genesis..3056758 fold; starting at applied-through=-1`. A negative journal
+  scan since the 14:00:18 UTC launch found no `p2p_services_start`,
+  peer-connection, RPC/frontend, API-cache, condition-engine, or
+  `ZClassic C23 node initialized` lines. At 14:05 UTC it was active at PID
+  `3160516`, memory was about 6.4 GB, the fold had emitted
+  `applied_height=0`, and no snapshot artifact existed yet.
 
 ## The one open risk (owner call): the mint is non-resumable
 
