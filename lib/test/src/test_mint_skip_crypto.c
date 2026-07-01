@@ -324,6 +324,35 @@ done:
     return drained;
 }
 
+static char *read_source_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long len = ftell(f);
+    if (len < 0) {
+        fclose(f);
+        return NULL;
+    }
+    rewind(f);
+    char *buf = zcl_malloc((size_t)len + 1, "msc_source");
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    if (got != (size_t)len) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
 int test_mint_skip_crypto(void);
 int test_mint_skip_crypto(void)
 {
@@ -371,6 +400,53 @@ int test_mint_skip_crypto(void)
      * coins survive per block → 2*N coins. A non-trivial, non-empty fold makes
      * the commitment-equality above load-bearing (not a vacuous empty==empty). */
     MSC_CHECK("folded a non-trivial UTXO set", count_full == (int64_t)(2 * N));
+
+    char *boot_src = read_source_file("config/src/boot.c");
+    char *main_src = read_source_file("src/main.c");
+    const char *offline_marker = boot_src
+        ? strstr(boot_src, "-mint-anchor: offline reducer stages initialized")
+        : NULL;
+    const char *services_start = boot_src
+        ? strstr(boot_src, "app_init_services(ctx, params, &g_svc)")
+        : NULL;
+    MSC_CHECK("mint-anchor app_init exits before app_init_services",
+              offline_marker && services_start && offline_marker < services_start);
+
+    const char *mint_branch = main_src
+        ? strstr(main_src, "if (ctx.mint_anchor) {")
+        : NULL;
+    const char *offline_shutdown = mint_branch
+        ? strstr(mint_branch, "app_shutdown_offline();")
+        : NULL;
+    const char *mint_return = mint_branch
+        ? strstr(mint_branch, "return minted ? 0 : 1;")
+        : NULL;
+    const char *full_shutdown = mint_branch
+        ? strstr(mint_branch, "app_shutdown();")
+        : NULL;
+    MSC_CHECK("mint-anchor uses offline shutdown",
+              offline_shutdown && mint_return && offline_shutdown < mint_return);
+    MSC_CHECK("mint-anchor does not call full app_shutdown",
+              mint_return && (!full_shutdown || full_shutdown > mint_return));
+
+    const char *offline_shutdown_fn = boot_src
+        ? strstr(boot_src, "void app_shutdown_offline(void)")
+        : NULL;
+    const char *wallet_flush = offline_shutdown_fn
+        ? strstr(offline_shutdown_fn, "wallet_sqlite_flush_r(&g_wallet_sqlite")
+        : NULL;
+    const char *wallet_close = offline_shutdown_fn
+        ? strstr(offline_shutdown_fn, "wallet_sqlite_close(&g_wallet_sqlite)")
+        : NULL;
+    const char *wallet_free_call = offline_shutdown_fn
+        ? strstr(offline_shutdown_fn, "wallet_free(&g_wallet)")
+        : NULL;
+    MSC_CHECK("offline shutdown flushes wallet sqlite before wallet_free",
+              wallet_flush && wallet_free_call && wallet_flush < wallet_free_call);
+    MSC_CHECK("offline shutdown closes wallet sqlite before wallet_free",
+              wallet_close && wallet_free_call && wallet_close < wallet_free_call);
+    free(boot_src);
+    free(main_src);
 
     synth_chain_free(&sc);
 

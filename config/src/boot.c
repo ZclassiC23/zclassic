@@ -27,6 +27,7 @@
 #include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
+#include "supervisors/staged_sync_supervisor.h"
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"  /* refold_progress_mark_started_from_anchor (B2) */
@@ -3507,6 +3508,27 @@ sapling_tree_boot_check_done:
 
     boot_step_backfill_shielded_if_needed(ctx, tip);
 
+    /* -mint-anchor is a one-shot offline reducer driver. app_init has already
+     * opened storage, restored chain/index state, applied the genesis reset and
+     * anchor cap, and initialized the activation controller. Stop here: the
+     * fast-mint variant arms a crypto pass-through for script/proof stages, so
+     * starting P2P/RPC/runtime services before the driver runs violates the
+     * offline-only boundary. Initialize the eight stages without supervisor
+     * children and let main.c call boot_mint_anchor_run(). */
+    if (ctx->mint_anchor) {
+        if (!staged_sync_supervisor_init_stages_offline(&g_state)) {
+            fprintf(stderr,
+                    "FATAL: -mint-anchor: offline reducer stage init failed\n");
+            return false;
+        }
+        printf("[boot] -mint-anchor: offline reducer stages initialized; "
+               "skipping frontend/P2P/runtime services\n");
+        printf("[boot] %-30s %lldms\n", "total",
+               (long long)(boot_clock_ms() - t_boot_start));
+        boot_stage_advance_to(BOOT_STAGE_READY);
+        return true;
+    }
+
     /* Skip services if no_services flag is set (speedrun / benchmarking) */
     if (ctx->no_services) {
         printf("Boot complete (no_services mode). "
@@ -3570,6 +3592,47 @@ void app_shutdown(void)
     boot_datadir_lock_release();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }
+
+void app_shutdown_offline(void)
+{
+    boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_REQUESTED);
+    signal(SIGALRM, shutdown_alarm_abort);
+    thread_registry_request_shutdown();
+    event_async_stop();
+    boot_stop_platform_services();
+    boot_stop_db_service_kernel();
+    staged_sync_supervisor_shutdown_stages();
+    coins_view_cache_free(&g_coins_tip);
+    coins_view_sqlite_close(&g_coins_sqlite);
+    if (g_wallet_sqlite.open) {
+        struct zcl_result r = wallet_sqlite_flush_r(&g_wallet_sqlite, &g_wallet);
+        if (!r.ok) {
+            fprintf(stderr,
+                    "[shutdown] offline wallet flush failed: code=%d "
+                    "message=%s source=%s:%d\n",
+                    r.code,
+                    r.message[0] ? r.message : "wallet_sqlite_flush_r failed",
+                    r.source_file ? r.source_file : "?", r.source_line);
+        }
+        wallet_sqlite_close(&g_wallet_sqlite);
+    }
+    wallet_free(&g_wallet);
+    main_state_free(&g_state);
+    sapling_free_params();
+    progress_store_close();
+    boot_stop_projection_storage();
+    if (g_node_db.open) {
+        (void)node_db_wal_checkpoint(&g_node_db);
+        node_db_close(&g_node_db);
+    }
+    ecc_verify_destroy();
+    ecc_stop();
+    boot_postmortem_stop();
+    boot_shutdown_marker_write_clean(g_datadir);
+    boot_datadir_lock_release();
+    boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
+}
+
 bool app_is_running(void) { return atomic_load(&g_running); }
 
 /* app_add_node, app_start_metrics, app_stop_metrics: boot_services.c */

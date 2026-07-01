@@ -20,11 +20,24 @@
 #ifndef ZCL_STAGED_SYNC_SUPERVISOR_H
 #define ZCL_STAGED_SYNC_SUPERVISOR_H
 
+#include <stdbool.h>
+
 struct main_state;
 
 /* Register all staged-sync supervisor children, in pipeline order.
  * Idempotent per-stage. `ms` is the live chainstate each stage binds to. */
 void staged_sync_supervisor_register(struct main_state *ms);
+
+/* Initialize the eight reducer stages without registering supervisor children.
+ * This is for one-shot offline drivers such as -mint-anchor that need the same
+ * stage tables and cursors but must not start runtime services, P2P, RPC, or
+ * liveness callbacks. Returns false if any stage init fails. */
+bool staged_sync_supervisor_init_stages_offline(struct main_state *ms);
+
+/* Tear down stages initialized by staged_sync_supervisor_init_stages_offline().
+ * Call only on the offline path, or after any supervisor users are already
+ * stopped. */
+void staged_sync_supervisor_shutdown_stages(void);
 
 #ifdef ZCL_TESTING
 /* Test-only reset for this module's file-static child IDs. Call after

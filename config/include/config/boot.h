@@ -200,6 +200,7 @@ bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile);
 
 bool app_init(struct app_context *ctx);
 void app_shutdown(void);
+void app_shutdown_offline(void);
 
 /* -refold-staged (impl in config/src/boot_refold_staged.c): boot_refold_staged_init
  * caches the durable refold_in_progress signal before the reducer starts (thin

@@ -2096,10 +2096,12 @@ int main(int argc, char **argv)
      * to the anchor, write + HARD-ASSERT the snapshot artifact, then exit. The
      * driver _exit()s FATAL on a checkpoint mismatch; a clean return means a
      * verified mint (true) or an incomplete fold (false → exit non-zero so the
-     * operator knows the bodies were missing). Never starts P2P/RPC. */
+     * operator knows the bodies were missing). app_init returns before
+     * app_init_services on this path, so frontend/P2P/runtime services never
+     * start while -mint-anchor-fast can be armed. */
     if (ctx.mint_anchor) {
         bool minted = boot_mint_anchor_run(ctx.datadir);
-        app_shutdown();
+        app_shutdown_offline();
         return minted ? 0 : 1;
     }
 

@@ -267,7 +267,7 @@ static void staged_stage_register(struct staged_stage_desc *d,
     /* Bind the stage to the live chainstate. If progress_store didn't
      * open at boot, init returns false — log and register a disabled
      * diagnostic child so the missing core stage is visible. */
-    if (!d->init(ms)) {
+    if (!d->init_ok && !d->init(ms)) {
         LOG_WARN("supervisor", "%s", d->init_fail_msg);
         staged_stage_register_init_failed(d);
         return;
@@ -290,6 +290,47 @@ static void staged_stage_register(struct staged_stage_desc *d,
     }
 }
 
+bool staged_sync_supervisor_init_stages_offline(struct main_state *ms)
+{
+    if (!ms) return false;
+    bool ok = true;
+    for (size_t i = 0; i < STAGED_STAGE_COUNT; i++) {
+        struct staged_stage_desc *d = &g_stages[i];
+        if (d->init_ok) {
+            d->ms = ms;
+            continue;
+        }
+        if (!d->init(ms)) {
+            LOG_WARN("supervisor", "%s", d->init_fail_msg);
+            ok = false;
+            continue;
+        }
+        d->ms = ms;
+        d->init_ok = true;
+    }
+    return ok;
+}
+
+void staged_sync_supervisor_shutdown_stages(void)
+{
+    if (g_stages[7].init_ok) tip_finalize_stage_shutdown();
+    if (g_stages[6].init_ok) utxo_apply_stage_shutdown();
+    if (g_stages[5].init_ok) proof_validate_stage_shutdown();
+    if (g_stages[4].init_ok) script_validate_stage_shutdown();
+    if (g_stages[3].init_ok) body_persist_stage_shutdown();
+    if (g_stages[2].init_ok) body_fetch_stage_shutdown();
+    if (g_stages[1].init_ok) validate_headers_stage_shutdown();
+    if (g_stages[0].init_ok) header_admit_stage_shutdown();
+
+    for (size_t i = 0; i < STAGED_STAGE_COUNT; i++) {
+        g_stages[i].id = SUPERVISOR_INVALID_ID;
+        g_stages[i].ms = NULL;
+        g_stages[i].init_ok = false;
+        memset(&g_stages[i].contract, 0, sizeof(g_stages[i].contract));
+    }
+    atomic_store(&g_progress_sync_ibd, -1);
+}
+
 void staged_sync_supervisor_register(struct main_state *ms)
 {
     if (!ms) return;
@@ -303,21 +344,6 @@ void staged_sync_supervisor_register(struct main_state *ms)
 #ifdef ZCL_TESTING
 void staged_sync_supervisor_test_reset_runtime(void)
 {
-    if (g_stages[0].init_ok) header_admit_stage_shutdown();
-    if (g_stages[1].init_ok) validate_headers_stage_shutdown();
-    if (g_stages[2].init_ok) body_fetch_stage_shutdown();
-    if (g_stages[3].init_ok) body_persist_stage_shutdown();
-    if (g_stages[4].init_ok) script_validate_stage_shutdown();
-    if (g_stages[5].init_ok) proof_validate_stage_shutdown();
-    if (g_stages[6].init_ok) utxo_apply_stage_shutdown();
-    if (g_stages[7].init_ok) tip_finalize_stage_shutdown();
-
-    for (size_t i = 0; i < STAGED_STAGE_COUNT; i++) {
-        g_stages[i].id = SUPERVISOR_INVALID_ID;
-        g_stages[i].ms = NULL;
-        g_stages[i].init_ok = false;
-        memset(&g_stages[i].contract, 0, sizeof(g_stages[i].contract));
-    }
-    atomic_store(&g_progress_sync_ibd, -1);
+    staged_sync_supervisor_shutdown_stages();
 }
 #endif

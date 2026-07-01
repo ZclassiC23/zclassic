@@ -14,9 +14,10 @@
  *       (FATAL + _exit on mismatch — a mismatch means our fold disagrees with
  *       zclassicd's checkpoint, the h=478544 class: page, never proceed).
  *
- * FULL crypto validation stays ON — the fold runs the REAL
- * script_validate/proof_validate/utxo_apply/tip_finalize stages. That is the
- * whole point of the mint: the node produces its OWN verified anchor set. */
+ * The validation policy is selected before this driver starts: normal
+ * -mint-anchor keeps crypto validation on; -mint-anchor-fast passes the
+ * script/proof stages through while preserving the state fold and final
+ * SHA3/count hard-assert. */
 
 #include "config/boot.h"
 
@@ -82,13 +83,12 @@ bool boot_mint_anchor_run(const char *datadir)
      * so the pipeline converges there and the kick returns 0 advances. We loop
      * until the utxo_apply frontier reaches the anchor; we also break on a
      * no-progress plateau so a bodies-missing datadir cannot spin forever (the
-     * caller then reports the mint as incomplete, not a false anchor). Full
-     * crypto validation stays ON — the budget only changed, never the stages. */
+     * caller then reports the mint as incomplete, not a false anchor). */
     int32_t last_through = mint_applied_through(pdb);
     int stall_kicks = 0;
     const int kStallLimit = 64;   /* consecutive no-progress kicks → bodies gap */
     fprintf(stderr,
-            "[mint-anchor] driving the genesis..%d fold (full validation); "
+            "[mint-anchor] driving the genesis..%d fold; "
             "starting at applied-through=%d\n", anchor, last_through);
 
     for (;;) {

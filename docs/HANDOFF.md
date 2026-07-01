@@ -17,13 +17,32 @@ oracle side: `./tools/z mirror --json` reported `zclassic23_height=3166483`,
 `activation_blocker=rpc-unreachable`, and `last_error="rpc error -28:
 Activating best chain... height 0 (1%)"`.
 
-The missing sovereign artifact is now being produced from a stopped copy, not
-from a live datadir. A fresh isolated mint workspace was copied from
-`$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` to
-`$HOME/.zclassic-c23-anchor-mint` after confirming the source PID marker
-`2307660` was stale and the destination had no `.lock`, `.cookie`, or
-`zclassic23.pid`. The producer is running as the transient user service
-`zclassic23-anchor-mint.service`:
+**2026-07-01 13:46 UTC correction.** The first transient anchor-mint producer
+was stopped before publishing an artifact because the review found a real
+offline-boundary bug: `-mint-anchor-fast` had armed the crypto pass-through but
+normal frontend/P2P/RPC/runtime services still started before the one-shot fold
+driver. The fix now makes `ctx->mint_anchor` return from `app_init` before
+`app_init_services`, initialize only the eight reducer stages offline, and exit
+through `app_shutdown_offline`. A foreground smoke with the fixed binary reached
+`[boot] -mint-anchor: offline reducer stages initialized; skipping
+frontend/P2P/runtime services` and `[mint-anchor] driving the genesis..3056758
+fold; starting at applied-through=-1`, with no P2P/RPC/frontend markers.
+
+The earlier smoke used the already-interrupted
+`$HOME/.zclassic-c23-anchor-mint` workspace and then safely reported a missing
+body span at `applied-through=2999`; do not reuse that mutated datadir for the
+real producer. Recreate it from the stopped source copy first:
+
+```bash
+rm -rf $HOME/.zclassic-c23-anchor-mint
+cp -a $HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384/. \
+  $HOME/.zclassic-c23-anchor-mint/
+rm -f $HOME/.zclassic-c23-anchor-mint/zclassic23.pid \
+  $HOME/.zclassic-c23-anchor-mint/.lock \
+  $HOME/.zclassic-c23-anchor-mint/.cookie
+```
+
+Then start the producer from the fixed binary:
 
 ```bash
 systemd-run --user --unit=zclassic23-anchor-mint \
@@ -34,13 +53,13 @@ systemd-run --user --unit=zclassic23-anchor-mint \
   -nolegacyimport -mint-anchor -mint-anchor-fast -nobgvalidation
 ```
 
-At 13:28 UTC the service was active with PID `2922854`, memory about 4.8 GB,
-and no snapshot file written yet. The journal reached the expected mint path:
-`-refold-staged: staged reducer reset to genesis OK`,
-`-mint-anchor-fast: OFFLINE FAST-MINT`, and `-mint-anchor: reset to genesis;
-fold CAPPED at the SHA3 checkpoint anchor h=3056758`. At 13:28:53 UTC it
-entered the fold driver: `[mint-anchor] driving the genesis..3056758 fold ...
-starting at applied-through=-1`. Inspect with:
+Expected journal markers: `-refold-staged: staged reducer reset to genesis OK`,
+`-mint-anchor-fast: OFFLINE FAST-MINT`, `[boot] -mint-anchor: offline reducer
+stages initialized; skipping frontend/P2P/runtime services`, and
+`[mint-anchor] driving the genesis..3056758 fold; starting at
+applied-through=-1`. There must be no `p2p_services_start`, peer-connection,
+RPC/frontend, or `ZClassic C23 node initialized` lines on this path. Inspect
+with:
 
 ```bash
 systemctl --user status zclassic23-anchor-mint --no-pager -l

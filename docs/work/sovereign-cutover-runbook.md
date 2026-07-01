@@ -2,9 +2,12 @@
 
 **Status 2026-07-01.** The sovereign cure is ~95% in place. This is the exact,
 copy-prove-gated procedure to execute the last step when the mint finishes.
-The current producer is a transient systemd user service named
-`zclassic23-anchor-mint.service`, launched from source commit `81a6cc816`.
-Re-verify every file:line before acting; specifics rot.
+The previous transient producer was stopped before publishing an artifact after
+review exposed that `-mint-anchor-fast` could still start normal runtime
+services before the one-shot driver. The current fix makes `-mint-anchor` an
+offline reducer driver: `app_init` returns before `app_init_services`, the eight
+stages are initialized without supervisor children, and shutdown uses
+`app_shutdown_offline`. Re-verify every file:line before acting; specifics rot.
 
 ## Where we are (the only remaining gate is the durable artifact, not code)
 
@@ -22,9 +25,18 @@ Re-verify every file:line before acting; specifics rot.
 - **The missing piece: a durable, checkpoint-verified anchor snapshot at h=3,056,758.** It does NOT
   exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED - its header decodes to
   height=3,151,901, count=1,344,817; the node rejects it on the count check. Do not use it.)
-- **The producer:** a fresh offline mint is running from the stopped full-history copy
-  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384`, copied to the isolated
-  working datadir `$HOME/.zclassic-c23-anchor-mint`. It was launched as:
+- **The producer:** no durable artifact exists yet. Recreate a fresh isolated
+  mint datadir from the stopped full-history copy
+  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` before launching:
+  ```bash
+  rm -rf $HOME/.zclassic-c23-anchor-mint
+  cp -a $HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384/. \
+    $HOME/.zclassic-c23-anchor-mint/
+  rm -f $HOME/.zclassic-c23-anchor-mint/zclassic23.pid \
+    $HOME/.zclassic-c23-anchor-mint/.lock \
+    $HOME/.zclassic-c23-anchor-mint/.cookie
+  ```
+  Then launch the fixed offline producer as:
   ```bash
   systemd-run --user --unit=zclassic23-anchor-mint \
     --property=WorkingDirectory=/home/rhett/github/zclassic23 \
@@ -34,11 +46,14 @@ Re-verify every file:line before acting; specifics rot.
     -nolegacyimport -mint-anchor -mint-anchor-fast -nobgvalidation
   ```
   On completion it writes the verified snapshot to
-  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. As of 2026-07-01
-  13:28 UTC it was active as PID `2922854`, had entered the expected
-  `-refold-staged`, `-mint-anchor-fast`, and `-mint-anchor` paths. At
-  13:28:53 UTC it entered the fold driver with applied-through `-1`; no
-  snapshot file was published yet.
+  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. Expected journal
+  markers are `-refold-staged: staged reducer reset to genesis OK`,
+  `-mint-anchor-fast: OFFLINE FAST-MINT`, `[boot] -mint-anchor: offline reducer
+  stages initialized; skipping frontend/P2P/runtime services`, and
+  `[mint-anchor] driving the genesis..3056758 fold; starting at
+  applied-through=-1`. There must be no `p2p_services_start`,
+  peer-connection, RPC/frontend, or `ZClassic C23 node initialized` lines on
+  this path.
 
 ## The one open risk (owner call): the mint is non-resumable
 
