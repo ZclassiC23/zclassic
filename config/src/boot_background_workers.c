@@ -291,6 +291,9 @@ static void *projection_backfill_service_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
     int last_start_height = -1;
+    int last_hole_rewind_height = -1;
+    int hole_rewind_attempts = 0;
+    bool hole_rewind_gave_up_reported = false;
     int64_t loop_iterations = 0;
 
     if (!svc)
@@ -308,6 +311,7 @@ static void *projection_backfill_service_thread(void *arg)
             active_chain_height(&svc->state->chain_active) : -1;
         int projection_tip = -1;
         int projection_block_tip = -1;
+        int first_missing_height = -1;
 
         boot_reap_catchup_service(svc);
 
@@ -351,6 +355,59 @@ static void *projection_backfill_service_thread(void *arg)
                                 projection_tip, projection_block_tip);
                     projection_tip = projection_block_tip;
                 }
+            }
+            int repair_cap = projection_tip < chain_tip ? projection_tip : chain_tip;
+            if (repair_cap >= 0 &&
+                db_block_first_missing_connected_height(ndb, repair_cap,
+                                                        &first_missing_height) &&
+                first_missing_height >= 0 &&
+                first_missing_height <= repair_cap) {
+                if (first_missing_height != last_hole_rewind_height) {
+                    last_hole_rewind_height = first_missing_height;
+                    hole_rewind_attempts = 0;
+                    hole_rewind_gave_up_reported = false;
+                }
+                if (hole_rewind_attempts < 3) {
+                    int rewind_height = first_missing_height - 1;
+                    bool rewound = false;
+                    hole_rewind_attempts++;
+                    if (rewind_height < 0) {
+                        rewound = node_db_sync_reset_tip(ndb);
+                    } else {
+                        struct block_index *rewind_tip =
+                            active_chain_at(&svc->state->chain_active,
+                                            rewind_height);
+                        rewound = rewind_tip && rewind_tip->phashBlock &&
+                                  node_db_sync_set_tip(ndb,
+                                                       rewind_tip->phashBlock->data,
+                                                       rewind_height);
+                    }
+                    if (rewound) {
+                        event_emitf(EV_RECOVERY_ACTION, 0,
+                                    "projection-hole-rewind missing=%d "
+                                    "from=%d to=%d attempt=%d",
+                                    first_missing_height, projection_tip,
+                                    rewind_height, hole_rewind_attempts);
+                        projection_tip = rewind_height;
+                    } else {
+                        event_emitf(EV_RECOVERY_ACTION, 0,
+                                    "projection-hole-rewind-unavailable "
+                                    "missing=%d to=%d attempt=%d",
+                                    first_missing_height, rewind_height,
+                                    hole_rewind_attempts);
+                    }
+                } else if (!hole_rewind_gave_up_reported) {
+                    event_emitf(EV_RECOVERY_ACTION, 0,
+                                "projection-hole-repair-gave-up missing=%d "
+                                "attempts=%d cap=%d",
+                                first_missing_height, hole_rewind_attempts,
+                                repair_cap);
+                    hole_rewind_gave_up_reported = true;
+                }
+            } else if (first_missing_height < 0) {
+                last_hole_rewind_height = -1;
+                hole_rewind_attempts = 0;
+                hole_rewind_gave_up_reported = false;
             }
             if (projection_tip < chain_tip) {
                 if (last_start_height != chain_tip) {

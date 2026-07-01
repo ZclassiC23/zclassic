@@ -62,6 +62,19 @@ snapshot rows or `snapshot_staging_%` state. Verification:
 `make lint-fast`; full `make test` passed 0/480 groups failed, 14 self-skipped
 (101.2 s wall).
 
+Update 2026-07-01: live explorer projection sparse-hole remediation is
+implemented, proof-gated, and deployed. Diagnostics now report
+`missing_heights` and `first_missing_height` while preserving real
+transactions/outputs/integrity counts. The projection backfill watcher rewinds
+`sync_projection_tip_height` to the first missing connected block minus one and
+reuses the existing catchup service, with bounded retry logging. Live proof:
+initial `explorer_index_state` had `missing_heights=23`,
+`first_missing_height=3155856`; after deploy the watcher rewound to `3155855`,
+catchup rebuilt from there, and final `chain_evidence` reported
+`state=complete`, `missing_heights=0`, `first_missing_height=-1`,
+`height=3166809`, `blocks=3166810`. Public `/api/v1/factoids` and
+`/api/v1/hodl` answered; HODL was `fresh=true`.
+
 Update 2026-07-01: qw5 is implemented and proof-gated in this branch.
 `utxo_import_raw_entry.value_len` is now `uint32_t`, the LevelDB reader no
 longer clips CCoins values at 65535 bytes, and values above the explicit

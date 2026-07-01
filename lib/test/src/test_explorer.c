@@ -673,7 +673,7 @@ int test_explorer(void)
     {
         sqlite3 *db = NULL;
         sqlite3_open(":memory:", &db);
-        sqlite3_exec(db, "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER, status INTEGER)", NULL, NULL, NULL);
         sqlite3_exec(db, "CREATE TABLE transactions(block_height INTEGER)", NULL, NULL, NULL);
         sqlite3_exec(db, "CREATE TABLE tx_outputs(block_height INTEGER)", NULL, NULL, NULL);
         sqlite3_exec(db, "CREATE TABLE view_integrity(height INTEGER, sha3_hash BLOB)", NULL, NULL, NULL);
@@ -698,7 +698,7 @@ int test_explorer(void)
     {
         sqlite3 *db = NULL;
         sqlite3_open(":memory:", &db);
-        sqlite3_exec(db, "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER, status INTEGER)", NULL, NULL, NULL);
         sqlite3_exec(db, "CREATE TABLE transactions(block_height INTEGER)", NULL, NULL, NULL);
         sqlite3_exec(db, "CREATE TABLE tx_outputs(block_height INTEGER)", NULL, NULL, NULL);
         sqlite3_exec(db, "CREATE TABLE view_integrity(height INTEGER, sha3_hash BLOB)", NULL, NULL, NULL);
@@ -723,6 +723,72 @@ int test_explorer(void)
         explorer_validate_block_history(db, 11, &v);
         bool ok = (!v.usable &&
                    strstr(v.reason, "tx_outputs") != NULL);
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: history validation tolerates bounded sparse holes... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db, "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER, status INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE transactions(block_height INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE tx_outputs(block_height INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE view_integrity(height INTEGER, sha3_hash BLOB)", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,hash,time,status) VALUES"
+            "(0,x'0206260143838b5ff52dc2eb7b4b8099d4e4c99dc3ef19794289a2cd4c100700',1478403829,3)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "WITH RECURSIVE seq(h) AS (SELECT 17 UNION ALL SELECT h+1 FROM seq WHERE h < 48) "
+            "INSERT INTO blocks(height,hash,time,status) "
+            "SELECT h, zeroblob(32), 1478403829 + h * 150, 3 FROM seq",
+            NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO transactions(block_height) VALUES(1)", NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO tx_outputs(block_height) VALUES(1)", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "WITH RECURSIVE seq(h) AS (SELECT 0 UNION ALL SELECT h+1 FROM seq WHERE h < 48) "
+            "INSERT INTO view_integrity(height,sha3_hash) SELECT h, zeroblob(32) FROM seq",
+            NULL, NULL, NULL);
+        struct explorer_history_validation v;
+        explorer_validate_block_history(db, 48, &v);
+        bool ok = (v.usable && v.missing_heights == 16 &&
+                   v.first_missing_height == 1 &&
+                   strcmp(v.reason, "ok") == 0);
+        sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: history validation still rejects large sparse holes... ");
+    {
+        sqlite3 *db = NULL;
+        sqlite3_open(":memory:", &db);
+        sqlite3_exec(db, "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER, status INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE transactions(block_height INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE tx_outputs(block_height INTEGER)", NULL, NULL, NULL);
+        sqlite3_exec(db, "CREATE TABLE view_integrity(height INTEGER, sha3_hash BLOB)", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT INTO blocks(height,hash,time,status) VALUES"
+            "(0,x'0206260143838b5ff52dc2eb7b4b8099d4e4c99dc3ef19794289a2cd4c100700',1478403829,3)",
+            NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "WITH RECURSIVE seq(h) AS (SELECT 18 UNION ALL SELECT h+1 FROM seq WHERE h < 50) "
+            "INSERT INTO blocks(height,hash,time,status) "
+            "SELECT h, zeroblob(32), 1478403829 + h * 150, 3 FROM seq",
+            NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO transactions(block_height) VALUES(1)", NULL, NULL, NULL);
+        sqlite3_exec(db, "INSERT INTO tx_outputs(block_height) VALUES(1)", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "WITH RECURSIVE seq(h) AS (SELECT 0 UNION ALL SELECT h+1 FROM seq WHERE h < 50) "
+            "INSERT INTO view_integrity(height,sha3_hash) SELECT h, zeroblob(32) FROM seq",
+            NULL, NULL, NULL);
+        struct explorer_history_validation v;
+        explorer_validate_block_history(db, 50, &v);
+        bool ok = (!v.usable && v.missing_heights == 17 &&
+                   v.first_missing_height == 1 &&
+                   strstr(v.reason, "missing heights") != NULL);
         sqlite3_close(db);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

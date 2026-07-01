@@ -171,6 +171,8 @@ static void push_explorer_index_state_json(struct json_value *out,
     json_push_kv_str(&obj, "reason", v.reason);
     json_push_kv_int(&obj, "height", v.max_height);
     json_push_kv_int(&obj, "blocks", v.block_rows);
+    json_push_kv_int(&obj, "missing_heights", v.missing_heights);
+    json_push_kv_int(&obj, "first_missing_height", v.first_missing_height);
     json_push_kv_int(&obj, "transactions", v.tx_rows);
     json_push_kv_int(&obj, "tx_outputs", v.tx_output_rows);
     json_push_kv_int(&obj, "integrity_receipts", v.integrity_rows);

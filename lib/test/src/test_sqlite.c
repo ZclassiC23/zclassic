@@ -794,6 +794,50 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* DB block projection first missing connected height */
+    {
+        printf("SQLite block first missing connected height... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        uint8_t sol[] = {0x01, 0x02, 0x03};
+
+        for (int h = 0; ok && h <= 5; h++) {
+            if (h == 3)
+                continue;
+            struct db_block blk;
+            memset(&blk, 0, sizeof(blk));
+            memset(blk.hash, 0x10 + h, 32);
+            blk.hash[0] = (uint8_t)(0x10 + h);
+            blk.height = h;
+            if (h > 0)
+                memset(blk.prev_hash, 0x20 + h, 32);
+            memset(blk.merkle_root, 0x30 + h, 32);
+            blk.version = 4;
+            blk.time = 1700000000 + (uint32_t)h;
+            blk.bits = 0x1d00ffff;
+            memset(blk.nonce, 0x40 + h, 32);
+            blk.solution = sol;
+            blk.solution_len = sizeof(sol);
+            memset(blk.chain_work, 0x50 + h, 32);
+            blk.status = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            blk.file_num = 1;
+            blk.data_pos = h * 100;
+            blk.undo_pos = 0;
+            blk.num_tx = 1;
+            ok = db_block_save(&ndb, &blk);
+        }
+
+        int missing = -2;
+        ok = ok && db_block_first_missing_connected_height(&ndb, 5, &missing);
+        ok = ok && missing == 3;
+        ok = ok && db_block_first_missing_connected_height(&ndb, 2, &missing);
+        ok = ok && missing == -1;
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* Block projection waits through transient writer locks. */
     {
         printf("SQLite block save retries transient writer lock... ");

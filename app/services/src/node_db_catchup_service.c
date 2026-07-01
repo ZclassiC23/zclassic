@@ -467,6 +467,8 @@ int node_db_catchup_service_run(struct node_db *ndb,
      * Consumers already handle missing lean rows (height_not_found). */
     int lean_holes = 0;
     int first_hole_h = -1;
+    int missing_index_holes = 0;
+    int missing_data_holes = 0;
     int skip_file = -1;
 
     /* Integrity-receipt chain carry. Seed from the receipt at start-1
@@ -487,8 +489,22 @@ int node_db_catchup_service_run(struct node_db *ndb,
         if ((h % 100) == 0)
             boot_progress_tick("node_db_sync_catchup");
         const struct block_index *pindex = active_chain_at(chain, h);
-        if (!pindex) continue;
-        if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
+        if (!pindex) {
+            if (++lean_holes == 1) first_hole_h = h;
+            missing_index_holes++;
+            if (missing_index_holes <= 3)
+                LOG_INFO("catchup", "catchup: missing active-chain index at "
+                         "height %d — recording lean hole", h);
+            continue;
+        }
+        if (!(pindex->nStatus & BLOCK_HAVE_DATA)) {
+            if (++lean_holes == 1) first_hole_h = h;
+            missing_data_holes++;
+            if (missing_data_holes <= 3)
+                LOG_INFO("catchup", "catchup: block data missing at height "
+                         "%d — recording lean hole", h);
+            continue;
+        }
         if (pindex->nFile == skip_file) {
             if (++lean_holes == 1) first_hole_h = h;
             continue;

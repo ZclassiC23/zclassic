@@ -608,6 +608,36 @@ int db_block_max_height_any_status(struct node_db *ndb)
     return h;
 }
 
+bool db_block_first_missing_connected_height(struct node_db *ndb,
+                                             int max_height,
+                                             int *height_out)
+{
+    if (height_out)
+        *height_out = -1;
+    if (!ndb || !ndb->open || !height_out)
+        LOG_FAIL("block", "first_missing_connected_height: invalid args");
+    if (max_height < 0)
+        return true;
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_BOOL(ndb, s,
+        "WITH first_missing(h) AS ("
+        "SELECT 0 WHERE NOT EXISTS ("
+        "SELECT 1 FROM blocks WHERE height=0 AND status>=3)"
+        " UNION ALL "
+        "SELECT b.height+1 FROM blocks b "
+        "LEFT JOIN blocks n ON n.height=b.height+1 AND n.status>=3 "
+        "WHERE b.status>=3 AND b.height>=0 AND b.height < ? "
+        "AND n.height IS NULL)"
+        "SELECT MIN(h) FROM first_missing WHERE h <= ?");
+    AR_BIND_INT(s, 1, max_height);
+    AR_BIND_INT(s, 2, max_height);
+    if (AR_STEP_ROW(s) && sqlite3_column_type(s, 0) != SQLITE_NULL)
+        *height_out = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return true;
+}
+
 int db_block_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;

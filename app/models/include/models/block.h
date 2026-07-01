@@ -80,6 +80,12 @@ int db_block_max_height(struct node_db *ndb);
  * status. Returns -1 when the db is closed or the table is empty, so callers
  * can treat "< 1" as "no chain". */
 int db_block_max_height_any_status(struct node_db *ndb);
+/* Find the first missing connected block height in the blocks projection up to
+ * max_height. A connected row is status>=3, matching db_block_max_height().
+ * Returns true for a successful read; *height_out is -1 when no hole exists. */
+bool db_block_first_missing_connected_height(struct node_db *ndb,
+                                             int max_height,
+                                             int *height_out);
 int db_block_count(struct node_db *ndb);
 bool db_block_update_sapling_tree_data(struct node_db *ndb,
                                        const uint8_t hash[32],

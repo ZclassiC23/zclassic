@@ -1,5 +1,32 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 20:28 UTC update.** Code-review remediation continued with the
+live explorer projection-hole fix. The node had healthy consensus state, but
+`zcl_state subsystem=chain_evidence` showed `explorer_index_state.state=degraded`
+with `missing_heights=23` and `first_missing_height=3155856`; normal tip catchup
+would not revisit those sparse internal holes because the projection cursor was
+already at tip. The fix adds first-missing-height diagnostics, preserves real
+transaction/output/integrity row counts in degraded responses, and teaches the
+projection backfill watcher to rewind the SQLite projection cursor to
+`first_missing_height - 1` and restart the existing catchup path. It also logs
+lean active-chain holes instead of silently skipping them.
+
+Proof before live: `make build-only -j$(nproc)`, linked `test_zcl` and
+`zclassic23`, `ZCL_TEST_ONLY=sqlite build/bin/test_zcl`,
+`ZCL_TEST_ONLY=explorer build/bin/test_zcl`, `make lint`, and full
+`build/bin/test_zcl` all passed (`ALL TESTS PASSED (0 failures)`). Initial
+`make deploy` installed `build_commit=4add5a064-dirty` and verified RPC live at
+block `3166807`. After boot settled, `op.projection_backfill` rewound
+`sync_projection_tip_height` to `3155855`; live catchup rebuilt from `3155856`
+and the projection gap collapsed from `24` during repair to `0`. Final live
+checks: `/api/v1/agent` healthy/serving/operator_needed=false with Tor/onion
+ready; `zcl_state subsystem=chain_evidence` reported matching active/header/
+persisted/coins hashes at `3166809`, `csr_sqlite_max_height=3166809`, and
+`explorer_index_state={"state":"complete","reason":"ok","height":3166809,
+"blocks":3166810,"missing_heights":0,"first_missing_height":-1}`. Public
+`/api/v1/factoids` answered with chain/index data and `/api/v1/hodl` answered
+`fresh=true` at served height `3166808` / indexed height `3166809`.
+
 **2026-07-01 19:20 UTC update.** The current code-review remediation is pushed
 and deployed as `6cdd44202` (`start reducer liveness before frontend`). This
 follows `50be2e643` (`harden mcp route registration`) and keeps the API surface

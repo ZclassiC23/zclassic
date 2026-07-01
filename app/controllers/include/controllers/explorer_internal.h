@@ -32,6 +32,8 @@ struct explorer_history_validation {
     int64_t chain_height;
     int64_t block_rows;
     int64_t max_height;
+    int64_t missing_heights;
+    int64_t first_missing_height;
     int64_t duplicate_heights;
     int64_t tx_rows;
     int64_t tx_output_rows;
@@ -411,6 +413,7 @@ static inline void explorer_validate_block_history(
         return; \
     } while (0)
 
+    out->first_missing_height = -1;
     if (!db)
         EXPLORER_HISTORY_BAD("sqlite database unavailable");
 
@@ -419,7 +422,23 @@ static inline void explorer_validate_block_history(
     out->block_rows = sql_query_i64(db, "SELECT count(*) FROM blocks");
     if (out->max_height <= 0 || out->block_rows <= 0)
         EXPLORER_HISTORY_BAD("blocks projection is empty");
-    if (out->max_height + 1 - out->block_rows > EXPLORER_HISTORY_MAX_BLOCK_GAP)
+    int64_t raw_missing = out->max_height + 1 - out->block_rows;
+    out->missing_heights = raw_missing > 0 ? raw_missing : 0;
+    out->first_missing_height = sql_query_i64(db,
+        "WITH first_missing(h) AS ("
+        "SELECT 0 WHERE NOT EXISTS ("
+        "SELECT 1 FROM blocks WHERE height=0 AND status>=3)"
+        " UNION ALL "
+        "SELECT b.height+1 FROM blocks b "
+        "LEFT JOIN blocks n ON n.height=b.height+1 AND n.status>=3 "
+        "WHERE b.status>=3 AND b.height>=0 "
+        "AND b.height < (SELECT COALESCE(MAX(height),-1) "
+        "FROM blocks WHERE status>=3) AND n.height IS NULL)"
+        "SELECT COALESCE(MIN(h),-1) FROM first_missing");
+    out->tx_rows = sql_query_i64(db, "SELECT count(*) FROM transactions");
+    out->tx_output_rows = sql_query_i64(db, "SELECT count(*) FROM tx_outputs");
+    out->integrity_rows = sql_query_i64(db, "SELECT count(*) FROM view_integrity");
+    if (out->missing_heights > EXPLORER_HISTORY_MAX_BLOCK_GAP)
         EXPLORER_HISTORY_BAD("blocks projection has missing heights");
     if (chain_height > 0 && out->max_height + 1 < chain_height)
         EXPLORER_HISTORY_BAD("blocks projection lags active chain");
@@ -440,9 +459,6 @@ static inline void explorer_validate_block_history(
     if (strcmp(genesis_hash, ZCL_EXPLORER_GENESIS_HASH_INTERNAL_HEX) != 0)
         EXPLORER_HISTORY_BAD("genesis hash byte order/value mismatch");
 
-    out->tx_rows = sql_query_i64(db, "SELECT count(*) FROM transactions");
-    out->tx_output_rows = sql_query_i64(db, "SELECT count(*) FROM tx_outputs");
-    out->integrity_rows = sql_query_i64(db, "SELECT count(*) FROM view_integrity");
     if (out->max_height > 10 && out->tx_rows <= 0)
         EXPLORER_HISTORY_BAD("transactions projection is empty");
     if (out->max_height > 10 && out->tx_output_rows <= 0)
