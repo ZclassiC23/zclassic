@@ -36,8 +36,9 @@ Re-verify every file:line before acting; specifics rot.
   On completion it writes the verified snapshot to
   `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. As of 2026-07-01
   13:28 UTC it was active as PID `2922854`, had entered the expected
-  `-refold-staged`, `-mint-anchor-fast`, and `-mint-anchor` paths, and had no
-  snapshot file published yet.
+  `-refold-staged`, `-mint-anchor-fast`, and `-mint-anchor` paths. At
+  13:28:53 UTC it entered the fold driver with applied-through `-1`; no
+  snapshot file was published yet.
 
 ## The one open risk (owner call): the mint is non-resumable
 

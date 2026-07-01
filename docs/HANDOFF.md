@@ -38,7 +38,9 @@ At 13:28 UTC the service was active with PID `2922854`, memory about 4.8 GB,
 and no snapshot file written yet. The journal reached the expected mint path:
 `-refold-staged: staged reducer reset to genesis OK`,
 `-mint-anchor-fast: OFFLINE FAST-MINT`, and `-mint-anchor: reset to genesis;
-fold CAPPED at the SHA3 checkpoint anchor h=3056758`. Inspect with:
+fold CAPPED at the SHA3 checkpoint anchor h=3056758`. At 13:28:53 UTC it
+entered the fold driver: `[mint-anchor] driving the genesis..3056758 fold ...
+starting at applied-through=-1`. Inspect with:
 
 ```bash
 systemctl --user status zclassic23-anchor-mint --no-pager -l
