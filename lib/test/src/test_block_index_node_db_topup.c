@@ -72,6 +72,7 @@ static void ndt_hash_for(int h, struct uint256 *out)
  * node.db `blocks` table, prev_hash = hash(h-1). */
 static bool ndt_write_block(struct node_db *ndb, int h)
 {
+    static uint8_t dummy_solution[1] = {0};
     struct db_block b;
     memset(&b, 0, sizeof(b));
     struct uint256 hh, ph;
@@ -85,8 +86,8 @@ static bool ndt_write_block(struct node_db *ndb, int h)
     b.time = 1700000000u + (uint32_t)h;
     b.bits = 0x2000ffffu;
     memset(b.nonce, 0x22, 32);
-    b.solution = NULL;
-    b.solution_len = 0;
+    b.solution = dummy_solution;
+    b.solution_len = sizeof(dummy_solution);
     memset(b.chain_work, 0, 32);
     b.status = 3;                 /* connected — db_block_find_by_height filter */
     b.file_num = 1;
@@ -121,7 +122,7 @@ static struct block_index *ndt_insert_entry(struct main_state *ms, int h)
 /* Set the coins applied frontier so coins_best == coins_applied_height - 1. */
 static bool ndt_set_coins_best(sqlite3 *db, int coins_best)
 {
-    if (!coins_kv_ensure_schema(db))
+    if (!coins_kv_ensure_schema(db) || !progress_meta_table_ensure(db))
         return false;
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {

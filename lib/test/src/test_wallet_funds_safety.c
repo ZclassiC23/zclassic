@@ -25,6 +25,7 @@
 #include "util/safe_alloc.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -294,20 +295,23 @@ int test_wallet_funds_safety(void)
 
     /* ── P3/qw11: zclassicd view notes are marked inert and non-clobbering ─ */
     {
-        struct wallet w;
-        wallet_init(&w);
+        struct wallet *w = zcl_calloc(1, sizeof(*w),
+                                      "wallet_funds_safety.wallet");
+        bool ok = (w != NULL);
+        if (w)
+            wallet_init(w);
         uint8_t seed[32]; memset(seed, 0xA7, sizeof(seed));
-        bool ok = sapling_keystore_set_seed(&w.sapling_keys, seed);
+        ok = ok && sapling_keystore_set_seed(&w->sapling_keys, seed);
         uint8_t d0[ZC_DIVERSIFIER_SIZE], pkd0[32];
         uint8_t d1[ZC_DIVERSIFIER_SIZE], pkd1[32];
-        ok = ok && sapling_keystore_new_address(&w.sapling_keys, d0, pkd0);
-        ok = ok && sapling_keystore_new_address(&w.sapling_keys, d1, pkd1);
+        ok = ok && sapling_keystore_new_address(&w->sapling_keys, d0, pkd0);
+        ok = ok && sapling_keystore_new_address(&w->sapling_keys, d1, pkd1);
         WFS_CHECK("derived two real sapling keys for view-note inertness", ok);
 
         const struct sapling_key_entry *key0 =
-            ok ? &w.sapling_keys.keys[0] : NULL;
+            ok ? &w->sapling_keys.keys[0] : NULL;
         const struct sapling_key_entry *key1 =
-            ok ? &w.sapling_keys.keys[1] : NULL;
+            ok ? &w->sapling_keys.keys[1] : NULL;
         const struct chain_params *cp = chain_params_get();
         char addr0[128] = "";
         char addr1[128] = "";
@@ -374,7 +378,7 @@ int test_wallet_funds_safety(void)
 
         struct wallet_rpc_context ctx;
         memset(&ctx, 0, sizeof(ctx));
-        ctx.wallet = &w;
+        ctx.wallet = w;
         ctx.node_db = &ndb;
         struct json_value result;
         json_init(&result);
@@ -392,7 +396,10 @@ int test_wallet_funds_safety(void)
                   strcmp(json_get_str(&result),
                          "view-only balance synced from zclassicd") == 0);
         json_free(&result);
-        wallet_free(&w);
+        if (w) {
+            wallet_free(w);
+            free(w);
+        }
     }
 
     node_db_close(&ndb);

@@ -1775,11 +1775,14 @@ coverage: coverage-clean test_zcl_cov
 	@find $(COV_BUILD_DIR) -name '*.gcda' -delete 2>/dev/null || true
 	@echo "== Running test_zcl_cov =="
 	@# Match the `test` target — some json/recursion tests need
-	@# unlimited stack.  If the binary still crashes we continue
-	@# anyway so the partial coverage data is still flushed for any
-	@# test that ran to completion before the crash (cov_flush.c
-	@# installs a SIGSEGV handler that calls __gcov_dump).
-	@ulimit -s unlimited && $(COV_TEST_BIN) || true
+	@# unlimited stack.  If the binary fails or crashes we still render
+	@# partial coverage data first, then propagate the failure below.
+	@set +e; ulimit -s unlimited && $(COV_TEST_BIN); rc=$$?; \
+		echo $$rc > $(COV_BUILD_DIR)/test_zcl_cov.exit; \
+		if [ "$$rc" != "0" ]; then \
+			echo "coverage: test_zcl_cov exited $$rc; rendering partial report before failing"; \
+		fi; \
+		exit 0
 	@if command -v lcov >/dev/null 2>&1; then \
 		echo "== Rendering coverage via lcov =="; \
 		lcov --capture --directory $(COV_BUILD_DIR) --output-file $(COV_INFO) \
@@ -1831,6 +1834,11 @@ coverage: coverage-clean test_zcl_cov
 	else \
 		echo "WARN: install lcov, gcovr, or gcc's gcov to render the report."; \
 		echo "Raw .gcda files are left in place for manual inspection."; \
+	fi
+	@rc=$$(cat $(COV_BUILD_DIR)/test_zcl_cov.exit 2>/dev/null || echo 0); \
+	if [ "$$rc" != "0" ]; then \
+		echo "coverage: FAIL — test_zcl_cov exited $$rc"; \
+		exit "$$rc"; \
 	fi
 
 coverage-clean:

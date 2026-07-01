@@ -20,6 +20,7 @@
 #include "controllers/blockchain_controller.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "storage/progress_store.h"
 #include "validation/main_state.h"
 
 #include <stdbool.h>
@@ -80,6 +81,9 @@ int test_waitforheight_provable(void)
 {
     printf("\n=== waitforheight provable param ===\n");
     int failures = 0;
+
+    test_reset_shared_globals();
+    progress_store_close();
 
     struct main_state ms;
     main_state_init(&ms);
@@ -158,6 +162,7 @@ int test_waitforheight_provable(void)
     reducer_frontier_provable_tip_set(REDUCER_FRONTIER_TRUSTED_ANCHOR);
     rpc_blockchain_set_state(NULL, NULL, NULL);
     main_state_free(&ms);
+    test_reset_shared_globals();
 
     if (failures == 0)
         printf("waitforheight_provable: all cases passed\n");

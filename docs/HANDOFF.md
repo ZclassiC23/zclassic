@@ -1,5 +1,27 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 16:15 UTC update.** The CP-6 review slice reached origin as
+`cc61eafa7` after the full tracked pre-push `make ci` gate passed. A follow-up
+coverage hardening patch is local: the node.db forward-extent top-up fixture now
+matches the current `blocks.solution BLOB NOT NULL` model/schema contract and
+creates `progress_meta` before writing `coins_applied_height`; `test.c` exposes
+`ZCL_TEST_ONLY=block_index_node_db_topup`; and `make coverage` still renders
+partial coverage after a coverage-binary crash/failure, but now propagates that
+nonzero exit code after rendering instead of false-greening. Focused proofs:
+`git diff --check`, `make test_zcl`, `ZCL_TEST_ONLY=block_index_node_db_topup
+build/bin/test_zcl`, `make test_zcl_cov`, and after deleting stale `.gcda`
+files `ZCL_TEST_ONLY=block_index_node_db_topup build/bin/test_zcl_cov` all pass.
+Live refresh: main is healthy/serving at `height=3166611`,
+`target_height=3166612`, `gap=1`, 4 peers, Tor/onion ready; soak remains red
+(`serving=false`, `height=3056758`, `target_height=3166611`, `gap=109853`,
+`sync_state=blocks_download`); mirror remains legacy-oracle blocked with
+`zclassic23_height=3166612`, `zclassicd_height=0`, `reachable=false`,
+`consensus_authority=local_consensus_validation`, `overrides_total=0`, and
+`activation_blocker=rpc-unreachable` / RPC `-28` activating best chain. The
+anchor producer was not touched and remains active as PID `3160516`, memory
+about 6.8 GB, cursors mostly at 51,000 with `tip_finalize=50,000` and
+`coins_applied_height=51,000`.
+
 **2026-07-01 15:17 UTC update.** CP-6 review hardening is no longer just a
 hook install check: the local review slice now also calibrates the reducer MVP
 gates to the current "publish each block on arrival" reducer contract. The

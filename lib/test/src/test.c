@@ -66,6 +66,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "block_index_node_db_topup") == 0) {
+        printf("[test] ZCL_TEST_ONLY=block_index_node_db_topup — running node.db top-up only\n");
+        failures += test_block_index_node_db_topup();
+        printf("\n=== block_index_node_db_topup subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "connman_addnode") == 0) {
         printf("[test] ZCL_TEST_ONLY=connman_addnode — running addnode fallback only\n");
         failures += test_connman_addnode_fallback();
@@ -206,6 +213,21 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=sqlite — running SQLite model subset\n");
         failures += test_sqlite();
         printf("\n=== sqlite subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "wallet_funds_safety") == 0) {
+        printf("[test] ZCL_TEST_ONLY=wallet_funds_safety — running wallet funds-safety only\n");
+        { extern int test_wallet_funds_safety(void);
+          failures += test_wallet_funds_safety(); }
+        printf("\n=== wallet_funds_safety subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "waitforheight_provable") == 0) {
+        printf("[test] ZCL_TEST_ONLY=waitforheight_provable — running waitforheight provable only\n");
+        failures += test_waitforheight_provable();
+        printf("\n=== waitforheight_provable subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -446,6 +468,13 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=mcp_e2e — running MCP e2e only\n");
         failures += test_mcp_e2e();
         printf("\n=== mcp_e2e subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "mcp_fuzz") == 0) {
+        printf("[test] ZCL_TEST_ONLY=mcp_fuzz — running MCP fuzz only\n");
+        failures += test_mcp_fuzz();
+        printf("\n=== mcp_fuzz subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
