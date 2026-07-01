@@ -58,6 +58,12 @@ substitution — its nonzero exit does not abort the parent shell.
   authority discovery must be non-empty AND contain the known authority
   `chain_activation_service.c` (a setter/enum rename now fails loud, not silent);
   fixed the stale comment that named the defunct `chain_activation_controller.c`.
+- **`check_coins_lookup_nullcheck.sh` (controller chainstate guard).** Fail-loud
+  preflight now requires controller source files and at least one
+  `coins_view_cache_get_coins()` call site, and grep scans go through
+  `gate_grep`. Empty-controller and non-empty/no-lookup surfaces now exit 2
+  instead of reporting "clean"; `test_make_lint_gates` inject-verifies both
+  cases.
 
 ### TODO — hollow under a GREEN build (genuine; fix carefully, inject-verify each)
 These go hollow via a refactor that *keeps the build compiling*, so CI would be
@@ -89,8 +95,7 @@ green while the gate is blind. Highest priority.
 Lower priority (the precondition can't coexist with a green build), but the
 conservative "scanned 0 files → exit 2" preflight is cheap and defensive:
 - `check_one_result_type.sh`, `framework_shape_check.sh`,
-  `check_file_size_ceiling.sh`, `check_no_new_repair_rung.sh`,
-  `check_coins_lookup_nullcheck.sh` (also has a symbol-rename green-build vector).
+  `check_file_size_ceiling.sh`, `check_no_new_repair_rung.sh`.
 
 ## Recommendation
 

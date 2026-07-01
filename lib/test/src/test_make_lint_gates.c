@@ -1631,6 +1631,52 @@ static int t_gate21_supervisor_worker_lockin(void)
     return failures;
 }
 
+static int t_coins_guard_gate_fails_loud_on_no_lookup_surface(void)
+{
+    int failures = 0;
+    char test_tmp[PATH_MAX];
+    char scan_dir[PATH_MAX];
+    char fixture[PATH_MAX];
+
+    if (repo_path(test_tmp, sizeof(test_tmp), "test-tmp") != 0 ||
+        repo_path(scan_dir, sizeof(scan_dir),
+                  "test-tmp/_coins_lookup_nohit_scan_dir") != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not resolve coins no-hit fixture dir\n");
+        return 1;
+    }
+    (void)mkdir(test_tmp, 0700);
+    (void)mkdir(scan_dir, 0700);
+    if (snprintf(fixture, sizeof(fixture), "%s/nohit.c", scan_dir) >=
+        (int)sizeof(fixture)) {
+        fprintf(stderr, "[lint-gate] coins no-hit fixture path too long\n");
+        return 1;
+    }
+
+    (void)unlink(fixture);
+    int planted = write_file(fixture,
+        "int coins_lookup_nohit_fixture(void){ return 23; }\n");
+    int trip_rc = planted == 0
+        ? run_gate_script_with_env(
+              "tools/scripts/check_coins_lookup_nullcheck.sh",
+              "ZCL_COINS_LOOKUP_SCAN_DIR",
+              scan_dir)
+        : -1;
+    (void)unlink(fixture);
+    (void)rmdir(scan_dir);
+
+    int green_rc = run_gate_script(
+        "tools/scripts/check_coins_lookup_nullcheck.sh", NULL);
+
+    TEST("[lint-gate] coins lookup guard fails loud when lookup surface disappears") {
+        ASSERT(planted == 0);
+        ASSERT(trip_rc == 2);
+        ASSERT(green_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── META-GATE: fail-silent gates are now fail-LOUD on an empty scan ──────────
  *
  * A hollow gate reports "clean" exit 0 while a real violation is present: its
@@ -1705,6 +1751,8 @@ static int t_lint_gates_fail_loud_on_empty_scan(void)
         "tools/scripts/check_stage_advances_or_blocks.sh", "ZCL_JOBS_DIR", empty_dir);
     failures += meta_gate_empty_scan_trips(
         "tools/scripts/check_supervisor_registration.sh", "ZCL_SERVICES_DIR", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/scripts/check_coins_lookup_nullcheck.sh", "ZCL_COINS_LOOKUP_SCAN_DIR", empty_dir);
     failures += meta_gate_empty_scan_trips(
         "tools/scripts/check_no_secret_printf.sh", "ZCL_SECRET_PRINTF_SCAN_DIRS", empty_dir);
     failures += meta_gate_empty_scan_trips(
@@ -3617,6 +3665,7 @@ int test_make_lint_gates(void)
     failures += t_coins_guard_baseline_passes();
     failures += t_coins_guard_fixture_trips_gate();
     failures += t_coins_guard_gate_recovers();
+    failures += t_coins_guard_gate_fails_loud_on_no_lookup_surface();
     failures += t_observability_fixture_trips_gate();
     failures += t_observability_positive_controls_pass();
     failures += t_raw_malloc_fixture_trips_gate();

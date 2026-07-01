@@ -4,27 +4,35 @@
 # check_coins_lookup_nullcheck.sh — ensure controller-level coins lookups
 # are gated by the P24.14 chainstate safety guard.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tools/lint/gate_lib.sh
+. tools/lint/gate_lib.sh
 
-hits=$(grep -rl --include='*.c' 'coins_view_cache_get_coins\s*(' \
-    app/controllers/src 2>/dev/null || true)
-
-if [[ -z "$hits" ]]; then
-    echo "check_coins_lookup_nullcheck: clean — no controller coin lookups found"
-    exit 0
-fi
+# Overridable for the lint-gate self-test. Production scans the controller
+# source tree where RPC/REST handlers can reach chainstate.
+CONTROLLERS_DIR="${ZCL_COINS_LOOKUP_SCAN_DIR:-app/controllers/src}"
+mapfile -t scan_files < <(find "$CONTROLLERS_DIR" -type f -name '*.c' 2>/dev/null | sort)
+gate_require_scanned "${#scan_files[@]}" 1 check_coins_lookup_nullcheck \
+    "no controller *.c files under '$CONTROLLERS_DIR'"
 
 missing=""
-while IFS= read -r file; do
-    [[ -z "$file" ]] && continue
-    if ! grep -q 'rpc_require_chainstate_lookup_ready\s*(' "$file"; then
+hit_files=0
+for file in "${scan_files[@]}"; do
+    has_lookup=0
+    while IFS= read -r _match; do
+        has_lookup=1
+    done < <(gate_grep -nE 'coins_view_cache_get_coins[[:space:]]*\(' "$file")
+
+    [ "$has_lookup" = "1" ] || continue
+    hit_files=$((hit_files + 1))
+    if ! gate_grep -qE 'rpc_require_chainstate_lookup_ready[[:space:]]*\(' "$file"; then
         missing+="$file"$'\n'
     fi
-done <<< "$hits"
+done
 
 missing="${missing%$'\n'}"
 
@@ -35,5 +43,8 @@ if [[ -n "$missing" ]]; then
     exit 1
 fi
 
-echo "check_coins_lookup_nullcheck: clean — all controller coin lookups guarded"
+gate_require_scanned "$hit_files" 1 check_coins_lookup_nullcheck \
+    "no coins_view_cache_get_coins() call sites found; update this gate deliberately if the lookup API moved"
+
+echo "check_coins_lookup_nullcheck: clean — all controller coin lookups guarded ($hit_files files)"
 exit 0
