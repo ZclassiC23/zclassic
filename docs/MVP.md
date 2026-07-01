@@ -84,6 +84,10 @@ claims (real `systemctl --user start`, real Tor, real Groth16 params, real soak)
 are proven by the local linger-service operator proofs instead.
 
 **THE plan to drive MRS to 8/8 is [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md).**
+The node also exposes its own live milestone summary via `zclassic23 milestone`,
+REST `GET /api/v1/milestone`, and MCP `zcl_milestone`; that command renders
+ASCII `systems`, `goals`, and `subgoals` bars from live node health plus this
+MVP table, while counting only ✅ criteria toward strict MRS.
 
 **MVP achieved when:** MRS = 8/8.
 

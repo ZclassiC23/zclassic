@@ -15,11 +15,13 @@
 #include "net/net.h"
 #include "services/block_source_policy.h"
 #include "services/node_health_service.h"
+#include "storage/progress_store.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <inttypes.h>
+#include <sqlite3.h>
 #include <unistd.h>
 
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
@@ -67,6 +69,60 @@ static bool api_test_build_chain(struct main_state *ms,
     }
     ms->pindex_best_header = out[count - 1];
     return active_chain_move_window_tip(&ms->chain_active, out[count - 1]);
+}
+
+static bool api_test_seed_durable_tip(const char *dir, int height)
+{
+    if (!dir || height < 0)
+        return false;
+
+    progress_store_close();
+    if (!progress_store_open(dir))
+        return false;
+
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+
+    if (sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        "work_delta_high INTEGER NOT NULL, work_delta_low INTEGER NOT NULL,"
+        "utxo_size_after INTEGER NOT NULL, reorg_depth INTEGER NOT NULL,"
+        "finalized_at INTEGER NOT NULL, tip_hash BLOB)",
+        NULL, NULL, NULL) != SQLITE_OK)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+        "VALUES('tip_finalize',?,0)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+
+    uint8_t hash[32] = {0};
+    hash[0] = (uint8_t)(height & 0xff);
+    hash[1] = (uint8_t)((height >> 8) & 0xff);
+    hash[2] = 0xA9;
+
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO tip_finalize_log "
+        "(height,status,ok,work_delta_high,work_delta_low,utxo_size_after,"
+        "reorg_depth,finalized_at,tip_hash) "
+        "VALUES(?,'anchor',1,0,0,0,0,0,?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash, sizeof(hash), SQLITE_TRANSIENT);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
 }
 
 static bool api_test_init_connman_peer(struct connman *cm,
@@ -330,6 +386,49 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "first_tool")),
                           "zcl_agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "milestone_tool")),
+                          "zcl_milestone") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "api_command")),
+                          "zclassic23 api") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "first_command")),
+                          "zclassic23 agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "milestone_command")),
+                          "zclassic23 milestone") == 0;
+        ok = ok && json_get(json_get(&root, "cli"),
+                            "compat_command") == NULL;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: milestone endpoint returns node-computed ASCII bars... ");
+    {
+        size_t n = api_handle_request("GET", "/api/v1/milestone", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        const struct json_value *ascii = json_get(&root, "ascii");
+        const struct json_value *bars = json_get(&root, "bars");
+        const struct json_value *criteria = json_get(&root, "criteria");
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.milestone_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "milestone")),
+                          "v1 MVP") == 0;
+        ok = ok && json_get_int(json_get(&root,
+                          "mvp_readiness_score")) == 4;
+        ok = ok && json_get_int(json_get(&root, "target_score")) == 8;
+        ok = ok && ascii && strstr(json_get_str(json_get(ascii, "goals")),
+                                   "goals [#####-----] 4/8") != NULL;
+        ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
+                          "subgoals"), "bar")), "[########--]") == 0;
+        ok = ok && criteria && json_size(criteria) == 8;
         json_free(&root);
 
         if (ok) printf("OK\n");
@@ -367,6 +466,7 @@ int test_api(void)
     printf("api: resource route table exposes controller-style names... ");
     {
         bool saw_agent = false;
+        bool saw_milestone = false;
         bool saw_blocks = false;
         bool saw_factoids = false;
         size_t count = api_resource_route_count();
@@ -378,6 +478,9 @@ int test_api(void)
             if (strcmp(resource, "agent") == 0 &&
                 strcmp(action, "show") == 0)
                 saw_agent = true;
+            if (strcmp(resource, "milestone") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_milestone = true;
             if (strcmp(resource, "blocks") == 0 &&
                 strcmp(action, "index") == 0)
                 saw_blocks = true;
@@ -385,7 +488,8 @@ int test_api(void)
                 strcmp(action, "show") == 0)
                 saw_factoids = true;
         }
-        bool ok = count >= 16 && saw_agent && saw_blocks && saw_factoids;
+        bool ok = count >= 17 && saw_agent && saw_milestone &&
+                  saw_blocks && saw_factoids;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -662,6 +766,81 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: public status uses durable tip before H* publication... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index *blocks[4] = {0};
+        struct cac_decision decision;
+        char dbdir[256];
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_durable_status_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+
+        bool ok = api_test_build_chain(&ms, blocks, 4);
+        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, 3);
+        ok = ok && api_test_seed_durable_tip(dbdir, 2);
+
+        memset(&decision, 0, sizeof(decision));
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = 2;
+        decision.target_height = 3;
+        decision.projection_height = 2;
+        struct cac_source_status *p2p =
+            &decision.sources[CAC_SOURCE_P2P];
+        p2p->source = CAC_SOURCE_P2P;
+        p2p->available = true;
+        p2p->healthy = true;
+        p2p->selectable = true;
+        p2p->height = 3;
+
+        if (ok) {
+            (void)node;
+            reducer_frontier_provable_tip_reset();
+            node_health_test_set_log_head_override(-2);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_IDLE, "api status durable reset");
+            sync_set_state(SYNC_FINDING_PEERS, "api status durable");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "api status durable");
+            api_set_state(&ms, NULL, NULL, NULL, dbdir);
+
+            size_t n = api_handle_request("GET", "/api/status", NULL, 0,
+                                          resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                              "healthy") == 0;
+            ok = ok && json_get_int(json_get(&root, "height")) == 2;
+            ok = ok && json_get_int(json_get(&root, "target_height")) == 3;
+            ok = ok && json_get_int(json_get(&root, "gap")) == 1;
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "primary_blocker")),
+                              "none") == 0;
+            json_free(&root);
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        progress_store_close();
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: hodl caps to served frontier and refreshes when H* advances... ");
     {
         char dbdir[256];
@@ -678,7 +857,8 @@ int test_api(void)
         ok = ok && api_test_save_model_block(&ndb, 7, 0x71);
         ok = ok && api_test_save_model_block(&ndb, 8, 0x72);
         ok = ok && api_test_save_model_utxo(&ndb, 6, 0x61, 5000000000LL);
-        reducer_frontier_provable_tip_set(7);
+        ok = ok && api_test_seed_durable_tip(dbdir, 7);
+        reducer_frontier_provable_tip_reset();
         api_set_state(NULL, NULL, NULL, &ndb, dbdir);
 
         size_t n = api_handle_request("GET", "/api/hodl", NULL, 0,
@@ -712,6 +892,7 @@ int test_api(void)
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         api_stop_cache();
         reducer_frontier_provable_tip_reset();
+        progress_store_close();
         node_db_close(&ndb);
 
         char cmd[384];
@@ -738,7 +919,8 @@ int test_api(void)
         ok = ok && api_test_save_model_block(&ndb, 7, 0x81);
         ok = ok && api_test_save_model_block(&ndb, 8, 0x82);
         ok = ok && api_test_save_model_utxo(&ndb, 6, 0x83, 2500000000LL);
-        reducer_frontier_provable_tip_set(7);
+        ok = ok && api_test_seed_durable_tip(dbdir, 7);
+        reducer_frontier_provable_tip_reset();
         api_set_state(NULL, NULL, NULL, &ndb, dbdir);
 
         size_t n = api_handle_request("GET", "/api/factoids", NULL, 0,
@@ -773,6 +955,7 @@ int test_api(void)
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         api_stop_cache();
         reducer_frontier_provable_tip_reset();
+        progress_store_close();
         node_db_close(&ndb);
 
         char cmd[384];

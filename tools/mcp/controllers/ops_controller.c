@@ -39,6 +39,7 @@ DEFINE_PT(h_zcl_getrawmempool,  "getrawmempool",  "mcp.ops")
 DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo",  "mcp.ops")
 DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
 DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
+DEFINE_PT(h_zcl_milestone,      "milestone",      "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -1265,6 +1266,10 @@ static const struct mcp_tool_route k_routes[] = {
       "and recommended next tools, with raw diagnostics attached under "
       "`raw` for drill-down.",
       NULL, 0, h_zcl_operator_summary, 0, NULL },
+    { "zcl_milestone", "ops",
+      "Node-computed ASCII and JSON progress toward the next version "
+      "milestone, including systems/goals/subgoals bars and MVP criteria.",
+      NULL, 0, h_zcl_milestone, 0, NULL },
     { "zcl_health", "ops",
       "Health check: pass/fail, chain height, peers, sync, onion.",
       NULL, 0, h_zcl_health, 0, NULL },

@@ -4,7 +4,9 @@
  * One binary, three operator modes:
  *   zclassic23 [node options]         — run as full node / linger service
  *   zclassic23 -mcp                   — MCP stdio server for agents
+ *   zclassic23 api                    — API discovery from running node
  *   zclassic23 agent                  — compact status from running node
+ *   zclassic23 milestone              — ASCII milestone status from node
  *   zclassic23 <method> [params...]   — RPC client to running node */
 
 #include "config/boot.h"
@@ -820,7 +822,9 @@ static void print_usage(const char *prog)
 {
     printf("Usage:\n");
     printf("  %s [node options]          Run full node\n", prog);
+    printf("  %s api                     API discovery from running node\n", prog);
     printf("  %s agent                   Compact status from running node\n", prog);
+    printf("  %s milestone               ASCII milestone status from running node\n", prog);
     printf("  %s --agent                 Same compact status\n", prog);
     printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);

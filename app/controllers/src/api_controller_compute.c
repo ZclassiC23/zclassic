@@ -64,10 +64,7 @@ static int64_t api_hodl_cap_to_served_tip(int64_t index_tip)
 {
     if (index_tip < 0)
         return index_tip;
-    if (!reducer_frontier_provable_tip_is_published())
-        return 0;
-
-    int32_t served_tip = reducer_frontier_provable_tip_cached();
+    int64_t served_tip = api_served_tip_height();
     if (served_tip >= 0 && index_tip > served_tip)
         return served_tip;
     return index_tip;

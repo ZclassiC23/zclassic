@@ -893,6 +893,114 @@ int test_syncdiag_rpc(void)
         mirror_consensus_reset_for_test();
     }
 
+    printf("api: native RPC returns versioned discovery document... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "api", &params, &result);
+        const struct json_value *resources = json_get(&result, "resources");
+        const struct json_value *mcp = json_get(&result, "mcp");
+        const struct json_value *cli = json_get(&result, "cli");
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.rest_index.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "api_version")),
+                          "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "base_path")),
+                          "/api/v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "compat_base_path")),
+                          "/api") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "first_call")),
+                          "/api/v1/agent") == 0;
+        ok = ok && resources && resources->type == JSON_ARR &&
+            json_size(resources) >= 4;
+        ok = ok && mcp && mcp->type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(mcp, "first_tool")),
+                   "zcl_agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
+                          "zcl_milestone") == 0;
+        ok = ok && cli && cli->type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(cli, "api_command")),
+                   "zclassic23 api") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "first_command")),
+                          "zclassic23 agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "milestone_command")),
+                          "zclassic23 milestone") == 0;
+
+        struct json_value alias;
+        json_init(&alias);
+        bool alias_executed = rpc_table_execute(&tbl, "apiindex",
+                                                &params, &alias);
+        ok = ok && alias_executed && alias.type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(&alias, "schema")),
+                   "zcl.rest_index.v1") == 0;
+
+        json_free(&alias);
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC returns milestone ASCII bars... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "milestone",
+                                          &params, &result);
+        const struct json_value *ascii = json_get(&result, "ascii");
+        const struct json_value *bars = json_get(&result, "bars");
+        const struct json_value *criteria = json_get(&result, "criteria");
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.milestone_status.v1") == 0;
+        ok = ok && json_get_int(json_get(&result,
+                          "mvp_readiness_score")) == 4;
+        ok = ok && ascii && strstr(json_get_str(json_get(ascii, "goals")),
+                                   "goals [#####-----] 4/8") != NULL;
+        ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
+                          "subgoals"), "bar")), "[########--]") == 0;
+        ok = ok && criteria && json_size(criteria) == 8;
+
+        struct json_value alias;
+        json_init(&alias);
+        bool alias_executed = rpc_table_execute(&tbl, "mvpstatus",
+                                                &params, &alias);
+        ok = ok && alias_executed && alias.type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(&alias, "schema")),
+                   "zcl.milestone_status.v1") == 0;
+
+        json_free(&alias);
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("healthcheck: scopes zclassicd warmup as advisory when P2P "
            "is active (RED)... ");
     {

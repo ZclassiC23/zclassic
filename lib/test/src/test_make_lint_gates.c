@@ -2089,27 +2089,45 @@ static int t_native_agent_api_contract(void)
     int failures = 0;
     char *main_buf = NULL;
     char *event_buf = NULL;
-    TEST("zclassic23 binary exposes native agent summary command") {
+    char *api_buf = NULL;
+    TEST("zclassic23 binary exposes native API and agent commands") {
         char main_path[PATH_MAX];
         char event_path[PATH_MAX];
+        char api_path[PATH_MAX];
         ASSERT(repo_path(main_path, sizeof(main_path), "src/main.c") == 0);
         ASSERT(repo_path(event_path, sizeof(event_path),
                          "app/controllers/src/event_controller.c") == 0);
+        ASSERT(repo_path(api_path, sizeof(api_path),
+                         "app/controllers/src/api_controller_status.c") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
+        ASSERT(read_entire_file(api_path, &api_buf) == 0);
+        ASSERT(strstr(main_buf, "%s api") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
+        ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"api\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"apiindex\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"milestone\"") != NULL);
         ASSERT(strstr(event_buf, "api_version\", \"v1\"") != NULL);
+        ASSERT(strstr(api_buf, "\\\"api_command\\\":\\\"zclassic23 api\\\"")
+               != NULL);
+        ASSERT(strstr(api_buf,
+                      "\\\"milestone_command\\\":\\\"zclassic23 milestone\\\"")
+               != NULL);
+        ASSERT(strstr(api_buf, "\\\"compat_command\\\":\\\"./tools/z\\\"")
+               == NULL);
         PASS();
     } _test_next:;
     free(main_buf);
     free(event_buf);
+    free(api_buf);
     return failures;
 }
 

@@ -9,6 +9,7 @@
 
 #include "controllers/event_controller.h"
 #include "controllers/strong_params.h"
+#include "api_controller_internal.h"
 #include "config/boot.h"
 #include "framework/condition.h"
 #include "services/node_health_service.h"
@@ -24,6 +25,7 @@
 #include "json/json.h"
 #include "rpc/server.h"
 #include "config/runtime.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/clientversion.h"
@@ -481,10 +483,10 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
 
 static int agent_served_height(void)
 {
-    if (!reducer_frontier_provable_tip_is_published())
+    int64_t served = api_served_tip_height();
+    if (served < 0 || served > INT_MAX)
         return 0;
-    int served = reducer_frontier_provable_tip_cached();
-    return served >= 0 ? served : 0;
+    return (int)served;
 }
 
 static bool rpc_agent_summary(const struct json_value *params, bool help,
@@ -606,6 +608,47 @@ static bool rpc_agent_summary(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_api_index(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "api\n"
+        "\nReturn the versioned zclassic23 API discovery document. This is the\n"
+        "same JSON body served by GET /api and GET /api/v1, without HTTP\n"
+        "headers, so native clients can start with `zclassic23 api` instead\n"
+        "of a shell helper or curl.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.rest_index.v1\", \"base_path\":\"/api/v1\", "
+        "\"first_call\":\"/api/v1/agent\" }\n");
+
+    const char *body = api_rest_index_body_json();
+    if (!json_read(result, body, strlen(body))) {
+        json_set_object(result);
+        json_push_kv_str(result, "schema", "zcl.rest_error.v1");
+        json_push_kv_str(result, "error", "api_index_parse_failed");
+        return false;
+    }
+    return true;
+}
+
+static bool rpc_milestone_status(const struct json_value *params, bool help,
+                                 struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "milestone\n"
+        "\nReturn node-computed ASCII and JSON progress toward the next "
+        "version milestone.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.milestone_status.v1\", "
+        "\"milestone\":\"v1 MVP\", \"mvp_readiness_score\":4, "
+        "\"ascii\":{\"goals\":\"goals [#####-----] 4/8 ...\"} }\n");
+
+    api_milestone_status_json(result);
+    return true;
+}
+
 static bool rpc_validationstatus(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -672,9 +715,13 @@ void register_event_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "control", "eventlog",          rpc_eventlog,          true },
+        { "control", "api",               rpc_api_index,         true },
+        { "control", "apiindex",          rpc_api_index,         true },
         { "control", "agent",             rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },
         { "control", "operatorsummary",   rpc_agent_summary,     true },
+        { "control", "milestone",         rpc_milestone_status,  true },
+        { "control", "mvpstatus",         rpc_milestone_status,  true },
         { "control", "getreorghistory",   rpc_getreorghistory,   true },
         { "control", "syncstate",         rpc_syncstate,         true },
         { "control", "healthcheck",       rpc_healthcheck,       true },

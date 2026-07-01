@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     103  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     104  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -55,8 +55,9 @@
                                  * +2 Phase 6b postmortem capsule tools
                                  * +1 offline replay verifier: zcl_replay_verify
                                  * +3 wait tools: zcl_waitforheight,
-                                 *   zcl_waitforhalt, zcl_waitforblocker */
-#define EXPECTED_OPS        39  /* + zcl_rebuild_recent (bounded recovery);
+                                 *   zcl_waitforhalt, zcl_waitforblocker
+                                 * +1 native milestone status: zcl_milestone */
+#define EXPECTED_OPS        40  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -375,7 +376,8 @@ static int test_specific_flagship_tools_registered(void)
         /* Canon set — documented in CLAUDE.md.  If any goes missing,
          * the compat contract is broken. */
         const char *k[] = {
-            "zcl_agent", "zcl_status", "zcl_operator_summary", "zcl_kpi", "zcl_health",
+            "zcl_agent", "zcl_status", "zcl_operator_summary",
+            "zcl_milestone", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
             "zcl_peers", "zcl_networkinfo", "zcl_onion_status",
             "zcl_balance", "zcl_send", "zcl_getnewaddress",
@@ -785,6 +787,15 @@ static char *mock_operator_healthy_rpc(const char *method,
                       "\"checks\":{\"operator_needed\":false,"
                       "\"condition_engine\":{\"active_count\":0,"
                       "\"unresolved_count\":0}}}");
+    if (strcmp(method, "milestone") == 0)
+        return strdup("{\"schema\":\"zcl.milestone_status.v1\","
+                      "\"api_version\":\"v1\","
+                      "\"milestone\":\"v1 MVP\","
+                      "\"mvp_readiness_score\":4,"
+                      "\"target_score\":8,"
+                      "\"ascii\":{\"goals\":\"goals [#####-----] 4/8 strict MVP MRS\"},"
+                      "\"bars\":{\"subgoals\":{\"bar\":\"[########--]\"}},"
+                      "\"criteria\":[1,2,3,4,5,6,7,8]}");
     return strdup("null");
 }
 
@@ -909,6 +920,39 @@ static int test_zcl_agent_alias_shape(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
                       "none");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_milestone_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_milestone proxies node-computed bars") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_healthy_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_milestone", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.milestone_status.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "milestone")),
+                      "v1 MVP");
+        ASSERT(json_get_int(json_get(&root, "mvp_readiness_score")) == 4);
+        ASSERT(strstr(json_get_str(json_get(json_get(&root, "ascii"),
+                                            "goals")),
+                      "goals [#####-----] 4/8") != NULL);
 
         json_free(&root);
         json_free(&args);
@@ -2158,6 +2202,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_operator_summary_degraded_shape();
     failures += test_zcl_operator_summary_healthy_shape();
     failures += test_zcl_agent_alias_shape();
+    failures += test_zcl_milestone_shape();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();

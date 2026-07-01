@@ -49,7 +49,10 @@ the same database transaction, so a crash resumes cleanly at the stored cursor.
 
 `log_head` from the four-line summary is the `tip_finalize` cursor — the maximum
 finalized height. External readers (`getblockcount`, the height we advertise to
-peers) report the height that `tip_finalize` has published.
+peers) report the height that `tip_finalize` has published. During process
+startup, the public REST/native status surfaces may read the durable
+`tip_finalize` cursor before the in-memory H* cache has been published, so the
+website does not briefly fall back to height 0 while the node is already at tip.
 
 A **reorg** is just a disconnect: `utxo_apply` saved the inverse of each coin
 change, so the node replays those backward to the fork point, then re-applies the
@@ -66,7 +69,9 @@ answer.
 
 | Call | Shows |
 |------|-------|
-| `zcl_agent` | The simple first check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent`, `GET /api/v1/agent`, and `./tools/z`; `GET /api` or `GET /api/v1` explains versioned REST resources/CRUD, and `zcl_operator_summary` is the longer compatible alias. Start here. |
+| `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, and first native/MCP/REST calls. Start here when choosing an interface. |
+| `zcl_agent` | The simple first MCP check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `zcl_operator_summary` is the longer compatible alias. Start here when checking live state. |
+| `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone` and MCP `zcl_milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
 | `zcl_status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Use after the summary names a drill-down. |
 | `zcl_syncdiag` | Sync state, header-sync counters, watchdog (= condition-engine health), chain/header heights, peer max height, download stats. **It does NOT list the eight stage cursors** — use `reducer_frontier` for those. |
 | `zcl_state subsystem=reducer_frontier` | The eight stage cursors, `H*` (deepest provably-consistent height — the tip `getblockcount` serves), and the success-checked log frontiers (the contiguous ok=1 prefix per log) |
@@ -131,10 +136,12 @@ sovereign is its coin-set starting point. (Verify whether the cure has shipped v
    architecture; this page is its plain-language summary. **`docs/AGENT_TRAPS.md`**
    lists things that look broken but are not (don't re-chase them);
    **`docs/CODEBASE_MAP.md`** is where-things-live + how-to-do-each-thing.
-3. Look at the live node before trusting any doc: start with
-   `zclassic23 agent`, `zcl_agent`, or `./tools/z`, then drill down with `zcl_status`
-   and `zcl_state subsystem=reducer_frontier` only if needed. A doc can be
-   stale; the node cannot.
+3. Look at the live node before trusting any doc: start with `zclassic23 api`
+   for interface discovery, then `zclassic23 agent` or `zcl_agent` for compact
+   live state, and `zclassic23 milestone` or `zcl_milestone` for v1 progress
+   bars. Drill down with `zcl_status` and
+   `zcl_state subsystem=reducer_frontier` only if needed. A doc can be stale;
+   the node cannot.
 4. To understand one stage, open its file — `app/jobs/src/<stage>_stage.c`. Each is
    one `step_*` function that does exactly the advance-or-name-a-blocker contract
    described in section 2.

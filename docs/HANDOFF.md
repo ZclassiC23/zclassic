@@ -1,37 +1,48 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
 **Restart command:** type **`continue zclassic23 development`**. First checks:
-`git status --short --branch`, then the simple agent API:
-`zclassic23 agent` (or `./tools/z`, MCP `zcl_agent`, or REST
-`GET /api/v1/agent`). `GET /api` or `GET /api/v1` is the REST discovery
-document for the versioned CRUD shape. Use
-`./tools/z status`, `/api/v1/node/status`,
-`zcl_status`, and `./tools/z mirror --json` only for drill-down.
+`git status --short --branch`, then the native API discovery command:
+`zclassic23 api`. It returns the same `zcl.rest_index.v1` body as
+`GET /api` and `GET /api/v1`, including the v1 resource/CRUD shape. For compact
+live state use `zclassic23 agent` (same contract as MCP `zcl_agent` and REST
+`GET /api/v1/agent`). For version-milestone progress use
+`zclassic23 milestone` (same contract as REST `/api/v1/milestone` and MCP
+`zcl_milestone`): it emits node-computed ASCII `systems`, `goals`, and
+`subgoals` bars while keeping strict MRS separate from partial proof progress.
+Use `zclassic23 healthcheck`, `/api/v1/node/status`, `zcl_status`, and
+`zcl_state subsystem=reducer_frontier` only for drill-down.
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
-code deploy verifier completed at h=3166200 on build `8973e9cb9`; bare
-`zclassic23 agent` discovers the running user service datadir/rpcport from
+API simplification deploy is native-only: `zclassic23 api` is the discovery
+entry point, `zclassic23 agent` is the compact status entry point,
+`zclassic23 milestone` is the v1 progress/status entry point, and
+`zclassic23 healthcheck` is the drill-down entry point. No helper binary or
+shell wrapper is part of the operator path. Bare `zclassic23 agent` and
+`zclassic23 milestone` discover the running user service datadir/rpcport from
 systemd when the default cookie is absent, so no `-datadir` flag is needed for
 the normal owner command. At the latest handoff check the native node reported
-`sync_state=at_tip`, `healthy=true`, `serving=true`, 4 peers, Tor/onion ready,
-and the compact agent endpoint was serving h=3166201 with the expected
-one-block indexed/header race (`gap=1`). The public
-`/api/status` surface is aligned with the health contract for the normal H*
-race: a one-block served-frontier gap reports `status=healthy`,
-`operator_needed=false`, and `primary_blocker=none`; gaps greater than one
-remain named as catching-up or degraded.
+`sync_state=at_tip`,
+`healthy=true`, `serving=true`, 4 peers, Tor/onion ready, and the compact agent
+endpoint was serving at the local tip with the expected one-block
+indexed/header race (`gap=1`). The public `/api/status` surface is aligned with
+the health contract for the normal H* race: a one-block served-frontier gap
+reports `status=healthy`, `operator_needed=false`, and
+`primary_blocker=none`; gaps greater than one remain named as catching-up or
+degraded.
 
 ```
 systems
-native node service        [##########] healthy/serving at local tip; build 8973e9cb9
+native node service        [##########] healthy/serving at local tip; verify build with `zclassic23 healthcheck`
+native API discovery       [##########] `zclassic23 api`, REST `/api`/`/api/v1`, shared `zcl.rest_index.v1`
 simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
+milestone status API       [##########] native `zclassic23 milestone`, REST v1, MCP `zcl_milestone` green
 REST resource routing      [#########-] `/api/v1` route table wired; dynamic/member routes still controller-owned
 API version contract       [##########] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
 lint-gate hardening        [#########-] coin lookup guard fails loud on empty/no-lookup scan surfaces
 startup health evidence    [##########] health falls back to durable tip_finalize cursor during boot
 HODL website freshness     [##########] current view refreshes to served tip
-factoids website freshness [#########-] capped to served tip; unsafe sections suppressed on projection holes
+factoids website freshness [##########] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
 formal soak evidence       [##--------] live accruing; 168h judge not green
 ```
@@ -66,6 +77,34 @@ Resource routing now has an explicit v1 route table for exact noun resources
 (`node`, `blocks`, `transactions`, `peers`, `hodl`, `factoids`, `files`,
 private `wallet`); the older dynamic/member routes remain in their controllers
 until they are worth folding behind resource actions.
+
+**Native API discovery landed.** `zclassic23 api` and its RPC alias `apiindex`
+now return the same `zcl.rest_index.v1` JSON body as REST `GET /api` and
+`GET /api/v1`, without HTTP headers and without routing the operator through an
+extra binary or shell wrapper. The shared body lives in
+`api_rest_index_body_json()`, so native CLI, REST, and tests cannot drift. The
+discovery document now points at native commands only:
+`zclassic23 api`, `zclassic23 agent`, and `zclassic23 healthcheck`.
+
+**Node-owned milestone bars landed.** `zclassic23 milestone` and its RPC alias
+`mvpstatus` return `zcl.milestone_status.v1`: machine-readable v1 MVP progress
+plus pre-rendered ASCII bars under `ascii.systems`, `ascii.goals`, and
+`ascii.subgoals`. REST serves the same contract at `/api/v1/milestone`, and MCP
+proxies it as `zcl_milestone`. The node computes `systems` from live runtime
+health, keeps strict MVP readiness at MRS `4/8`, and reports partial/proxy proof
+work separately as subgoal units, so slices never masquerade as completed MVP
+criteria.
+
+**Public served-tip fallback landed.** Public status, HODL, and factoids now use
+the same internal `api_served_tip_height()` contract. It prefers the published
+in-memory H* frontier and falls back to the durable
+`stage_cursor('tip_finalize')` + `tip_finalize_log` anchor while the process is
+still warming up. That removes the startup-only window where health already knew
+the durable served tip but `/api/status`, `/api/v1/hodl`, or
+`/api/v1/factoids` could briefly report height 0 or unavailable. Regression
+coverage lives in `test_api`: public status uses the durable tip before H*
+publication, and HODL/factoids cap to the durable served tip before H* is
+published.
 
 **Startup health fallback landed.** A deploy of the versioned REST API exposed a
 startup-only false red health state: the node was at tip, but the in-memory
@@ -108,14 +147,14 @@ wallet/data/API paths, `git diff --check`, `make check-test-registration`,
 full `make test` (`0/485 groups failed, 15 skipped` after the v1 API work),
 production binary builds, and `make deploy`. The native-entrypoint fix re-ran
 `make -j32 build-only`, `make t ONLY=make_lint_gates`, `make lint`,
-`make deploy`, and live checks for `zclassic23 agent`, `./tools/z`,
+`make deploy`, and live checks for `zclassic23 api`, `zclassic23 agent`,
 `GET /api/v1/agent`, `GET /api/v1`, and `zclassic23 healthcheck`. The lint-gate
 hardening pass re-ran `bash -n`, `git diff --check`,
 `make check-coins-lookup-nullcheck`, `make t ONLY=make_lint_gates`,
 `make check-doc-accuracy`, `make lint`, `make -j32 build-only`, full
 `make test` (`0/485 groups failed, 14 skipped`), `make deploy`, and live checks
 for `zclassic23 agent`, `GET /api/v1/agent`, `zclassic23 healthcheck`,
-`./tools/z mirror --json`, and `make soak-evidence-report`. The follow-up API
+`zcl_status`, and `make soak-evidence-report`. The follow-up API
 version and startup-health hardening re-ran `git diff --check`,
 `make t ONLY=api`, `make t ONLY=node_health_service`,
 `make -j32 build-only`, `make lint`, full `make test`
@@ -125,6 +164,19 @@ version and startup-health hardening re-ran `git diff --check`,
 `make soak-evidence-report`. Live DB inspection from the wallet cleanup
 confirmed `wallet_sapling_notes.source`, schema migration `021`, and
 `idx_snote_view_address`.
+
+The native API simplification pass re-ran `git diff --check`,
+`make t ONLY=syncdiag_rpc`, `make t ONLY=api`,
+`make t ONLY=make_lint_gates`, `make -j32 build-only`, `make lint`, and full
+`make test` (`0/485 groups failed, 14 skipped`). The durable public served-tip
+follow-up re-ran `git diff --check`, `make t ONLY=api`,
+`make -j32 build-only`, `make lint`, and full `make test`
+(`0/485 groups failed, 14 skipped`). The node-owned milestone follow-up re-ran
+`git diff --check`, `make -j32 build-only`, `make t ONLY=api`,
+`make t ONLY=syncdiag_rpc`, `make t ONLY=mcp_controllers`, and
+`make t ONLY=make_lint_gates`, `make check-doc-accuracy`, `make lint`, and full
+`make test` (`0/485 groups failed, 15 skipped`). It intentionally did not add
+or depend on a new helper binary or shell script.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip

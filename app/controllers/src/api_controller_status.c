@@ -8,9 +8,12 @@
 #include "controllers/api_controller.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
+#include "json/json.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/tip_finalize_stage.h"
 #include "net/download.h"
 #include "services/node_health_service.h"
+#include "storage/progress_store.h"
 #include "sync/sync_state.h"
 
 #include <stdbool.h>
@@ -18,21 +21,277 @@
 #include <stdio.h>
 #include <string.h>
 
-static int api_status_served_height(void)
-{
-    if (!reducer_frontier_provable_tip_is_published())
-        return 0;
+struct milestone_criterion {
+    int id;
+    const char *key;
+    const char *title;
+    const char *status;
+    bool strict_pass;
+    int units;
+    const char *next;
+};
 
-    int served = reducer_frontier_provable_tip_cached();
-    return served >= 0 ? served : 0;
+static const struct milestone_criterion k_mvp_criteria[] = {
+    { 1, "single_binary_install",
+      "Single-binary install on clean Ubuntu/Debian",
+      "pass", true, 2, "keep ci-install-linger green" },
+    { 2, "tor_onion_bootstrap",
+      "Tor onion bootstrap in <60s",
+      "pass", true, 2, "keep mvp-onion-local green" },
+    { 3, "cold_start_sync",
+      "Cold-start sync to tip in <10 min",
+      "partial", false, 1, "seed coins frontier on snapshot cold path" },
+    { 4, "shielded_receive",
+      "Receive shielded payment end-to-end",
+      "pass", true, 2, "keep shielded payment proof green" },
+    { 5, "store_flow",
+      "List and sell file via store",
+      "partial", false, 1, "prove live buyer over onion/file transfer" },
+    { 6, "seven_day_soak",
+      "7-day soak with zero operator intervention",
+      "partial", false, 1, "complete clean 168h soak window" },
+    { 7, "kill9_recovery",
+      "Recover from kill -9 in <2 min",
+      "pass", true, 2, "keep crash bootstrap and peer-tip proofs green" },
+    { 8, "consensus_parity",
+      "Consensus parity with zclassicd",
+      "partial", false, 1, "prove exact parity over the soak window" },
+};
+
+static void api_ascii_bar(char out[13], int done, int total)
+{
+    int filled = 0;
+    if (total > 0)
+        filled = (done * 10 + total / 2) / total;
+    if (filled < 0)
+        filled = 0;
+    if (filled > 10)
+        filled = 10;
+
+    out[0] = '[';
+    for (int i = 0; i < 10; i++)
+        out[i + 1] = i < filled ? '#' : '-';
+    out[11] = ']';
+    out[12] = '\0';
 }
 
-/* Route: /api
- * Self-describing REST entry point. Keep this compact and stable: it is the
- * shape humans and agents should read before choosing a drill-down endpoint. */
-size_t api_serve_api_index(uint8_t *response, size_t response_max)
+static void api_push_progress_bar(struct json_value *bars,
+                                  struct json_value *ascii,
+                                  const char *name,
+                                  int done,
+                                  int total,
+                                  const char *summary)
 {
-    const char *body =
+    char bar[13];
+    char line[192];
+    int percent = total > 0 ? (done * 100) / total : 0;
+    api_ascii_bar(bar, done, total);
+    snprintf(line, sizeof(line), "%s %s %d/%d %s",
+             name, bar, done, total, summary ? summary : "");
+
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "bar", bar);
+    json_push_kv_str(&obj, "line", line);
+    json_push_kv_int(&obj, "done", done);
+    json_push_kv_int(&obj, "total", total);
+    json_push_kv_int(&obj, "percent", percent);
+    json_push_kv_str(&obj, "summary", summary ? summary : "");
+    json_push_kv(bars, name, &obj);
+    json_push_kv_str(ascii, name, line);
+    json_free(&obj);
+}
+
+int64_t api_served_tip_height(void)
+{
+    if (reducer_frontier_provable_tip_is_published()) {
+        int served = reducer_frontier_provable_tip_cached();
+        if (served >= 0)
+            return served;
+    }
+
+    sqlite3 *db = progress_store_db();
+    int durable_height = 0;
+    uint8_t durable_hash[32];
+    if (db && tip_finalize_stage_resolve_durable_tip(
+            db, &durable_height, durable_hash) && durable_height >= 0)
+        return durable_height;
+
+    return 0;
+}
+
+void api_milestone_status_json(struct json_value *result)
+{
+    struct node_health_snapshot health = {0};
+    node_health_collect(&health, g_api_ctx.node_db ?
+        g_api_ctx.node_db : app_runtime_node_db(),
+        g_api_ctx.main_state);
+
+    int served_height = (int)api_served_tip_height();
+    int indexed_height = health.tip_height;
+    int target = indexed_height > served_height ? indexed_height
+                                                : served_height;
+    if (health.header_height > target)
+        target = health.header_height;
+    if (health.peer_best_height > target)
+        target = health.peer_best_height;
+    int gap = target > served_height ? target - served_height : 0;
+
+    int systems_done = 0;
+    int systems_total = 6;
+    bool onion_ok = health.tor_enabled && health.tor_ready &&
+                    health.onion_service_ready;
+    if (health.serving)
+        systems_done++;
+    if (health.healthy)
+        systems_done++;
+    if (served_height > 0)
+        systems_done++;
+    if (gap <= 1)
+        systems_done++;
+    if (health.has_peers)
+        systems_done++;
+    if (onion_ok)
+        systems_done++;
+
+    int strict_pass = 0;
+    int partial_units = 0;
+    int max_units = 0;
+    size_t criteria_count = sizeof(k_mvp_criteria) / sizeof(k_mvp_criteria[0]);
+    for (size_t i = 0; i < criteria_count; i++) {
+        if (k_mvp_criteria[i].strict_pass)
+            strict_pass++;
+        partial_units += k_mvp_criteria[i].units;
+        max_units += 2;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", ZCL_MILESTONE_STATUS_SCHEMA);
+    json_push_kv_str(result, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(result, "milestone", "v1 MVP");
+    json_push_kv_str(result, "source", "zclassic23");
+    json_push_kv_str(result, "rule",
+                     "MVP is achieved only when MRS reaches 8/8");
+    json_push_kv_bool(result, "complete",
+                      strict_pass == (int)criteria_count);
+    json_push_kv_int(result, "mvp_readiness_score", strict_pass);
+    json_push_kv_int(result, "target_score", (int64_t)criteria_count);
+    json_push_kv_int(result, "partial_progress_units", partial_units);
+    json_push_kv_int(result, "partial_progress_units_total", max_units);
+
+    struct json_value live;
+    json_init(&live);
+    json_set_object(&live);
+    json_push_kv_bool(&live, "healthy", health.healthy);
+    json_push_kv_bool(&live, "serving", health.serving);
+    json_push_kv_int(&live, "served_height", served_height);
+    json_push_kv_int(&live, "indexed_height", indexed_height);
+    json_push_kv_int(&live, "header_height", health.header_height);
+    json_push_kv_int(&live, "peer_best_height", health.peer_best_height);
+    json_push_kv_int(&live, "target_height", target);
+    json_push_kv_int(&live, "gap", gap);
+    json_push_kv_int(&live, "peers", (int64_t)health.peer_count);
+    json_push_kv_bool(&live, "tor_enabled", health.tor_enabled);
+    json_push_kv_bool(&live, "onion_ready", onion_ok);
+    json_push_kv_str(&live, "sync_state",
+                     sync_state_name(health.sync_state));
+    json_push_kv(result, "live", &live);
+    json_free(&live);
+
+    struct json_value bars;
+    struct json_value ascii;
+    json_init(&bars);
+    json_init(&ascii);
+    json_set_object(&bars);
+    json_set_object(&ascii);
+    api_push_progress_bar(&bars, &ascii, "systems", systems_done,
+                          systems_total, "live node runtime checks");
+    api_push_progress_bar(&bars, &ascii, "goals", strict_pass,
+                          (int)criteria_count, "strict MVP MRS");
+    api_push_progress_bar(&bars, &ascii, "subgoals", partial_units,
+                          max_units, "full plus partial proof units");
+    json_push_kv(result, "bars", &bars);
+    json_push_kv(result, "ascii", &ascii);
+    json_free(&bars);
+    json_free(&ascii);
+
+    struct json_value criteria;
+    json_init(&criteria);
+    json_set_array(&criteria);
+    for (size_t i = 0; i < criteria_count; i++) {
+        const struct milestone_criterion *c = &k_mvp_criteria[i];
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_int(&item, "id", c->id);
+        json_push_kv_str(&item, "key", c->key);
+        json_push_kv_str(&item, "title", c->title);
+        json_push_kv_str(&item, "status", c->status);
+        json_push_kv_bool(&item, "strict_pass", c->strict_pass);
+        json_push_kv_int(&item, "progress_units", c->units);
+        json_push_kv_int(&item, "progress_units_total", 2);
+        json_push_kv_str(&item, "next", c->next);
+        json_push_back(&criteria, &item);
+        json_free(&item);
+    }
+    json_push_kv(result, "criteria", &criteria);
+    json_free(&criteria);
+
+    struct json_value next;
+    json_init(&next);
+    json_set_array(&next);
+    for (size_t i = 0; i < criteria_count; i++) {
+        if (k_mvp_criteria[i].strict_pass)
+            continue;
+        struct json_value s;
+        json_init(&s);
+        json_set_str(&s, k_mvp_criteria[i].next);
+        json_push_back(&next, &s);
+        json_free(&s);
+    }
+    json_push_kv(result, "next", &next);
+    json_free(&next);
+}
+
+size_t api_serve_milestone(uint8_t *response, size_t response_max)
+{
+    if (!response || response_max == 0)
+        return 0;
+
+    struct json_value body;
+    json_init(&body);
+    api_milestone_status_json(&body);
+
+    size_t body_len = json_write(&body, NULL, 0);
+    int header_len = snprintf((char *)response, response_max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %zu\r\n\r\n",
+        body_len);
+    if (header_len < 0 || (size_t)header_len >= response_max) {
+        json_free(&body);
+        return 0;
+    }
+
+    size_t hlen = (size_t)header_len;
+    if (body_len > response_max - hlen) {
+        json_free(&body);
+        return api_json_error(response, response_max, JSON_500_HEADERS,
+                              "Milestone response too large");
+    }
+
+    json_write(&body, (char *)response + hlen, response_max - hlen);
+    json_free(&body);
+    return hlen + body_len;
+}
+
+const char *api_rest_index_body_json(void)
+{
+    return
         "{"
         "\"schema\":\"" ZCL_REST_INDEX_SCHEMA "\","
         "\"name\":\"zclassic23 REST API\","
@@ -45,6 +304,7 @@ size_t api_serve_api_index(uint8_t *response, size_t response_max)
         "\"summary\":\"Use noun resources. GET reads collections/items; mutating operator actions stay private unless an endpoint explicitly documents POST.\","
         "\"aliases\":{"
           "\"agent\":\"/api/v1/agent\","
+          "\"milestone\":\"/api/v1/milestone\","
           "\"node\":\"/api/v1/node\","
           "\"node_summary\":\"/api/v1/node/summary\","
           "\"status\":\"/api/v1/status\""
@@ -58,6 +318,7 @@ size_t api_serve_api_index(uint8_t *response, size_t response_max)
         "},"
         "\"resources\":["
           "{\"name\":\"node\",\"collection\":\"/api/v1/node\",\"summary\":\"/api/v1/node/summary\",\"status\":\"/api/v1/node/status\"},"
+          "{\"name\":\"milestone\",\"collection\":\"/api/v1/milestone\"},"
           "{\"name\":\"blocks\",\"collection\":\"/api/v1/blocks\",\"item\":\"/api/v1/block/{height_or_hash}\"},"
           "{\"name\":\"transactions\",\"item\":\"/api/v1/tx/{txid}\"},"
           "{\"name\":\"peers\",\"collection\":\"/api/v1/peers\"},"
@@ -74,14 +335,24 @@ size_t api_serve_api_index(uint8_t *response, size_t response_max)
         "},"
         "\"mcp\":{"
           "\"first_tool\":\"zcl_agent\","
+          "\"milestone_tool\":\"zcl_milestone\","
           "\"drilldown_tool\":\"zcl_status\""
         "},"
         "\"cli\":{"
+          "\"api_command\":\"zclassic23 api\","
           "\"first_command\":\"zclassic23 agent\","
-          "\"compat_command\":\"./tools/z\","
+          "\"milestone_command\":\"zclassic23 milestone\","
           "\"drilldown_command\":\"zclassic23 healthcheck\""
         "}"
         "}";
+}
+
+/* Route: /api
+ * Self-describing REST entry point. Keep this compact and stable: it is the
+ * shape humans and agents should read before choosing a drill-down endpoint. */
+size_t api_serve_api_index(uint8_t *response, size_t response_max)
+{
+    const char *body = api_rest_index_body_json();
     size_t body_len = strlen(body);
 
     return (size_t)snprintf((char *)response, response_max,
@@ -140,7 +411,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
 
     int indexed_height = health.tip_height;
-    int height = api_status_served_height();
+    int height = (int)api_served_tip_height();
     int target = indexed_height > height ? indexed_height : height;
     if (health.header_height > target)
         target = health.header_height;

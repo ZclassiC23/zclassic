@@ -134,12 +134,19 @@ actually fires.
 controller `k_routes[]` arrays.
 
 ### Start here
+- `zclassic23 api` — native API discovery from the running node. It returns the
+  same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
+  `api_version`, `base_path`, resource routes, CRUD conventions, and the
+  recommended native/MCP/REST first calls. Use this instead of wrapper scripts.
 - `zcl_agent` — shortest MCP-friendly first check: compact status with stable
   top-level `status`, heights, gap, peer counts, primary blocker, and
   recommended next tool. Same simple contract as native `zclassic23 agent`,
-  REST `GET /api/v1/agent`, and CLI shim `./tools/z`; `GET /api` or
-  `GET /api/v1` documents the versioned REST CRUD shape.
+  and REST `GET /api/v1/agent`.
   `zcl_operator_summary` is the longer compatible alias.
+- `zclassic23 milestone` / `zcl_milestone` — node-computed progress to the
+  next version milestone. Returns `zcl.milestone_status.v1` with ASCII
+  `systems`, `goals`, and `subgoals` bars plus the underlying MVP criteria.
+  REST serves the same contract at `GET /api/v1/milestone`.
 - `zcl_status` — full diagnostic tree: height, peers, sync, onion, health,
   reducer frontier, tip-finalize, condition engine, and chain source scoring.
 - `zcl_kpi` — aggregated KPIs (height, peer_count, sync, validation, mempool,
@@ -161,12 +168,24 @@ controller `k_routes[]` arrays.
 
 ### REST API versioning
 `/api/v1` is the canonical REST base and `/api` is the compatibility base.
+`zclassic23 api` is the native no-HTTP discovery command and must return the
+same `zcl.rest_index.v1` body as both REST index paths.
 Keep version/schema constants in
 `app/controllers/src/api_controller_internal.h`, exact resource routes in
 `app/controllers/src/api_controller_routes.c`, and contract tests in
 `lib/test/src/test_api.c`. Unsupported version prefixes such as
 `/api/v2/agent` must return `zcl.rest_error.v1` with
 `error="unsupported_api_version"` and `supported_versions`.
+
+Public status/freshness endpoints must get their served height through
+`api_served_tip_height()`, not by reading one endpoint-specific cursor. That
+helper prefers the published in-memory H* frontier and falls back to the durable
+`tip_finalize` cursor during process startup, keeping `/api/status`,
+`/api/v1/hodl`, and `/api/v1/factoids` on the same visible-tip contract.
+Milestone/version progress lives beside public status in
+`api_milestone_status_json()` and is exposed through native RPC
+`milestone`/`mvpstatus`, REST `/api/v1/milestone`, and MCP `zcl_milestone`.
+Keep strict MRS scoring separate from partial/proxy subgoal progress.
 
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).
