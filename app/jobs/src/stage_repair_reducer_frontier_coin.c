@@ -121,7 +121,9 @@ bool stage_reducer_frontier_try_replay_repairs(
     /* Frontier coin backfill (jobs/stage_repair_coin_backfill.h) runs BEFORE
      * the stale-script replay: a prevout_unresolved hole needs its missing
      * coin(s) backfilled before the replay dry-run can resolve. SCANNING /
-     * REPAIRED claim the tick; NOT_APPLICABLE and refusals fall through. */
+     * REPAIRED claim the tick as progress. Refusals claim the tick as a named
+     * blocker without setting `repaired`; falling through lets unrelated cursor
+     * clamps masquerade as success while the coin hole remains unresolved. */
     struct coin_backfill_result cb = {0};
     struct coin_backfill_io io = {
         .read_block = repair_read_block_thunk,
@@ -149,6 +151,10 @@ bool stage_reducer_frontier_try_replay_repairs(
                  cb.hole_height, cb.unresolved_count, cb.inserted_count,
                  cb.scan_next_height, cb.scan_top_height);
         out->repaired = true;
+        *handled = true;
+        return true;
+    }
+    if (cb.status != COIN_BACKFILL_NOT_APPLICABLE) {
         *handled = true;
         return true;
     }

@@ -226,7 +226,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
         return false;
     }
     if (!rr.refused_coin_tear && !rr.repaired &&
-        !stage_reducer_frontier_result_has_row_residue_evidence(&rr)) {
+        !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr)) {
         /* Nothing actionable: both transition memos re-arm.
          * noncanonical_found counts relabel/reorg-residue rows the
          * dry-run judged stale — the apply purge is the remedy.

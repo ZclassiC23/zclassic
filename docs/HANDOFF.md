@@ -51,12 +51,13 @@ formal soak evidence       [#---------] rebaselined on current binary; blocked a
 ```
 
 **Soak evidence / rebaseline.** C6 is **not green**. `make
-soak-evidence-report` on 2026-07-01 still reports `VERDICT=NOT_MET
-reason=operator_intervention_detected_x2` over the trailing 168h evidence
-window and `ok_samples=0/169`. The soak service was deliberately rebaselined
-2026-07-01 because it was running stale pinned build `ecd14609c-dirty`, was
-OOM-killed under a local 12G cap, and was wedged at H\*=3056758. The pinned soak
-binary is now the current build `ba3f65356`, and the live local systemd drop-in
+soak-evidence-report` on 2026-07-01 reported `VERDICT=INSUFFICIENT
+reason=window_short_602714s_lt_604800s_slack900s` with
+`ok_samples=0/170`, `operator_interventions=3`, and `ambiguous_restarts=1`.
+The soak service was deliberately rebaselined 2026-07-01 because it was running
+stale pinned build `ecd14609c-dirty`, was OOM-killed under a local 12G cap, and
+was wedged at H\*=3056758. The pinned soak binary is now build `ba3f65356`, and
+the live local systemd drop-in
 `~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` was
 restored to `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended
 budget). Fresh live health after the rebaseline: `sync_state=blocks_download`,
@@ -80,6 +81,20 @@ anchor (`validate_headers` near 2100, `utxo_apply` near 1, `tip_finalize` near
 0) while H\* stayed at 3056758. Treat this as an unsafe/no-go proof for live
 owner ack; next work should either prove a stable stopped-datadir copy or move
 to the sovereign `-refold-from-anchor` cure instead of live coin-backfill.
+
+**Reducer-frontier refusal hardening landed.** A follow-up on 2026-07-01 pins
+the live soak failure class where `coin_backfill_status_label=owner_refused`
+could fall through the L1 reconcile pass and let unrelated cursor clamps report
+`last_reconcile_repaired=true` while the missing-coin blocker remained
+unresolved. Coin-backfill refusal statuses now claim the repair tick as a named
+blocker without setting `repaired`; the condition detector treats typed
+repair/backfill evidence as actionable even when no cursor was clamped, so the
+refusal still escalates instead of going quiet. Regression coverage lives in
+`test_reducer_frontier_reconcile_light`: the new terminal-refusal fixture
+asserts no body/tip/script/utxo cursor mutation and the condition fixture
+asserts `last_reconcile_repaired=false` while returning `COND_REMEDY_FAILED`.
+This is a safety/diagnostic hardening only; it does **not** prove live owner ack
+and does **not** make the current soak node green.
 
 **Simulator coverage fast gate landed.** The deterministic chaos harness now has
 a native seed override (`zclassic23-chaos --seed=0x...`) and `make sim-fast`.
@@ -216,6 +231,14 @@ follow-up re-ran `git diff --check`, `make t ONLY=api`,
 `make t ONLY=make_lint_gates`, `make check-doc-accuracy`, `make lint`, and full
 `make test` (`0/485 groups failed, 15 skipped`). It intentionally did not add
 or depend on a new helper binary or shell script.
+
+The reducer-frontier refusal hardening pass re-ran
+`make t ONLY=reducer_frontier_reconcile_light`,
+`make t ONLY=stage_repair_coin_backfill`,
+`make t ONLY=stage_repair_script_refill`, `make lint`,
+`make -j32 build-only`, full `make test` (`0/485 groups failed, 14 skipped`),
+and `make sim-fast` (`64` seeded replays). Deploy this commit before expecting
+live diagnostics to show the new non-fallthrough behavior.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip

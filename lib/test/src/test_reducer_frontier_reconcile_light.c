@@ -13,6 +13,7 @@
 #include "mining/miner.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "jobs/stage_repair_coin_backfill.h"
 #include "json/json.h"
 #include "net/net.h"
 #include "primitives/block.h"
@@ -1352,6 +1353,37 @@ int test_reducer_frontier_reconcile_light(void)
     }
 
     {
+        /* A coin-backfill refusal must be terminal for the current L1 pass:
+         * the missing coin owns the prevout_unresolved hole. Falling through
+         * to ordinary cursor repair lets a harmless body/tip clamp report
+         * `repaired` even though the blocker is still unresolved, which is the
+         * live soak shape this test pins. */
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup coin-backfill terminal refusal fixture",
+                   setup_fixture(&fx, "coin_backfill_terminal"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("coin-backfill terminal: seed prevout hole below cursor",
+                   put_script_status(db, A + 2, 0, "prevout_unresolved",
+                                     &fx.hashes[2]));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("coin-backfill terminal: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("coin-backfill terminal: refusal does not fall through",
+                   rr.coin_backfill_attempted &&
+                   rr.coin_backfill_status != COIN_BACKFILL_NOT_APPLICABLE &&
+                   !rr.repaired &&
+                   !rr.clamped_body_fetch &&
+                   !rr.clamped_tip_finalize &&
+                   cursor_value(db, "body_fetch") == A + 4 &&
+                   cursor_value(db, "tip_finalize") == A + 4 &&
+                   cursor_value(db, "script_validate") == A + 4 &&
+                   cursor_value(db, "utxo_apply") == A + 4);
+
+        teardown_fixture(&fx);
+    }
+
+    {
         /* A coin-backfill refusal is a named, actionable self-heal failure,
          * not a quiet no-op. The fixture block is intentionally unreadable
          * (nFile == -1), so the prevout_unresolved hole refuses through the
@@ -1408,6 +1440,8 @@ int test_reducer_frontier_reconcile_light(void)
                      detail, "last_reconcile_phase")), "remedy") == 0;
         ok = ok && json_get_bool(json_get(
                      detail, "last_reconcile_coin_backfill_attempted"));
+        ok = ok && !json_get_bool(json_get(
+                     detail, "last_reconcile_repaired"));
         ok = ok && json_get_int(json_get(
                      detail, "last_reconcile_coin_backfill_hole_height"))
                      == A + 2;
