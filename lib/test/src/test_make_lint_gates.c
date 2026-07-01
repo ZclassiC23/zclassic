@@ -2241,6 +2241,42 @@ static int t_boot_chain_advance_diagnostics_contract(void)
     return failures;
 }
 
+static int t_boot_core_liveness_precedes_frontend_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("boot starts reducer liveness before optional frontend services") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        char *helper = strstr(buf, "static void boot_register_core_liveness_and_reducer(");
+        char *helper_end = helper
+            ? strstr(helper, "bool app_init_services(struct app_context *ctx,")
+            : NULL;
+        char *helper_stage = helper
+            ? strstr(helper, "staged_sync_supervisor_register(svc->state);")
+            : NULL;
+        char *call = strstr(buf, "boot_register_core_liveness_and_reducer(svc, params);");
+        char *frontend = strstr(buf, "boot_register_frontend_services(svc)");
+        char *runtime = strstr(buf, "boot_register_runtime_services(svc)");
+        ASSERT(helper != NULL);
+        ASSERT(helper_end != NULL);
+        ASSERT(helper_stage != NULL);
+        ASSERT(call != NULL);
+        ASSERT(frontend != NULL);
+        ASSERT(runtime != NULL);
+        ASSERT(helper_stage < helper_end);
+        ASSERT(helper_stage < frontend);
+        ASSERT(helper_stage < runtime);
+        ASSERT(call < frontend);
+        ASSERT(call < runtime);
+        ASSERT(count_occurrences(buf, "staged_sync_supervisor_register(svc->state);") == 1);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_addrman_persistence_contract(void)
 {
     int failures = 0;
@@ -3762,6 +3798,7 @@ int test_make_lint_gates(void)
     failures += t_native_agent_api_contract();
     failures += t_soak_assert_requires_known_mirror_lag();
     failures += t_boot_chain_advance_diagnostics_contract();
+    failures += t_boot_core_liveness_precedes_frontend_contract();
     failures += t_boot_addrman_persistence_contract();
     failures += t_lib_runtime_gauges_are_callback_injected();
     failures += t_boot_shutdown_persistence_order_contract();

@@ -407,6 +407,132 @@ bool boot_reap_catchup_service(struct boot_svc_ctx *svc)
     return true;
 }
 
+static void boot_register_core_liveness_and_reducer(
+    struct boot_svc_ctx *svc, const struct chain_params *params)
+{
+    if (!svc)
+        return;
+
+    /* Start the supervisor thread before any core liveness contracts register.
+     * Keep this before optional frontend/Tor startup: RPC can come up before
+     * Tor finishes, but reducer stages must never wait behind onion/bootstrap
+     * work. */
+    if (!supervisor_start()) {
+        fprintf(stderr,  // obs-ok:supervisor-start-fallback-warn
+            "WARNING: supervisor_start failed; lib/health sweeper alone\n");
+    }
+    supervisor_domains_init();
+
+    /* Initialize the typed blocker primitive. Must come before any subsystem
+     * calls blocker_set / mirror_consensus_record_blocker. Idempotent. */
+    blocker_module_init();
+
+    /* Outbound peer-floor liveness contract.
+     *
+     * Failure mode being addressed: the node can sit with 0 outbound
+     * peers + a stuck inbound indefinitely. thread_open_connections keeps
+     * running but addrman is exhausted, so `connman_pick_next_outbound_target`
+     * returns false on every tick — silently, with no log, no event.
+     *
+     * Contract semantics:
+     *   on_tick (every 15 s): snapshot outbound_healthy via
+     *     `connman_outbound_healthy_count`; write to progress_marker.
+     *     If the count is below the floor (2), do NOT call
+     *     supervisor_tick — let the progress-quiet timer advance.
+     *   on_stall (after 60 s under floor):
+     *     - emit EV_PEER_FLOOR_BREACH for operator visibility
+     *     - call connman_kick_seed_discovery to widen addrman
+     *
+     * The existing thread_open_connections still runs its 1-second
+     * adaptive loop; the supervisor only kicks the seed re-walk so the
+     * thread has fresh targets to try. */
+    net_supervisor_register(svc->connman);
+    chain_supervisor_register(svc->state);
+    /* Tip-stuck watchdog. Single-purpose: watches active_chain_height
+     * advance, emits a named stall event, and lets the operator-needed /
+     * condition loop handle recovery. */
+    chain_tip_watchdog_register(svc->state);
+    /* Top-level always-terminating remedy escalator (sticky-node-plan #1, the
+     * keystone of S2). Consumes the watchdog's deterministic-stall signal +
+     * condition_engine_get_unresolved_count() and drives an ordered rung ladder
+     * that NEVER latches a permanent operator-needed state on a recoverable
+     * class. Register AFTER the watchdog (whose deterministic branch now hands
+     * the wedge to the escalator instead of dead-ending) and BEFORE
+     * self_heal_register (the self-heal tick drives the ladder). */
+    sticky_escalator_set_datadir(svc->datadir);
+    sticky_escalator_register(svc->state);
+    condition_registry_register_all();
+    invariant_sentinel_register(); /* fail-loud validation pack sweeps */
+    /* Close the alert loop: install the event->sink routing (incl. the
+     * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
+     * halt that exhausts remedies reaches a human/MCP and the health
+     * surface instead of dead-ending. */
+    alerts_init();
+    self_heal_register(svc->state);
+    staged_sync_supervisor_register(svc->state);
+
+    /* Recover the durable finalized frontier a reboot dropped.
+     * staged_sync_supervisor_register (above) ran tip_finalize_stage_init,
+     * registering the chain-height authority seeded from the coins-restore
+     * tip. Adopt the durable frontier forward-only HERE —
+     * after the authority is live (active_chain_height reads the real coins tip)
+     * but BEFORE runtime services / reducer ingest start — so there is no race.
+     * Both calls are no-ops unless their precondition holds; neither rewinds,
+     * forks, or deletes log rows. See block_index_loader.h for each contract. */
+    int seeded = block_index_loader_seed_tip_from_finalized(
+        svc->state, params, progress_store_db());
+    (void)seeded;  /* logs its own success line; benign no-op otherwise */
+    /* B2 1c — torn-import AUTO-ARM is now the DEFAULT self-heal. On EVERY
+     * boot we consult the PURE detect predicate
+     * (block_index_loader_torn_import_detect, no side-effects); if it finds a
+     * durable tear (a prevout_unresolved hole ABOVE the compiled anchor
+     * h=3056758 plus a coin_backfill.refused.<h>.<hash> marker), arm_if_torn
+     * re-seeds coins_kv from the SHA3-verified anchor snapshot (uss_open
+     * verify_full_sha3=true bound to cp->sha3_hash) and HARD-ASSERTS the
+     * re-seeded set == checkpoint (commitment + count==1354771; FATAL on
+     * mismatch). It then folds forward from the proven anchor. If it arms (or
+     * a from-anchor refold is already in progress — explicit flag at boot.c,
+     * or a mid-fold restart), SKIP the cold-import seed.
+     *
+     * NO FLAG REQUIRED: a normal boot of a TORN datadir now self-heals. On a
+     * HEALTHY (untorn) datadir the detect predicate returns false, arm_if_torn
+     * does NOT reset, and the cold-import seed runs UNCHANGED — additive,
+     * safe; a synced node never re-folds. The reset path itself is the
+     * load-bearing safety net: it can only ever stamp the SHA3-verified anchor
+     * set (or FATAL), never an unproven one.
+     *
+     * The explicit -refold-from-anchor flag and the -load-verify-boot route
+     * (which armed the from-anchor signal in app_init when the verified
+     * snapshot probe passed) are still honored — both surface here as
+     * refold_from_anchor_active() == TRUE, which arm_if_torn short-circuits to
+     * true without re-resetting. */
+    /* -load-snapshot-at-own-height=PATH: the loader at boot.c already
+     * RE-SEEDED coins_kv from a self-SHA3-verified snapshot at the snapshot's
+     * OWN height, forced the 8 stage cursors to that height, and seeded the
+     * tip_finalize trusted base there (raise-only). It is the authoritative
+     * seed for THIS boot. Both fallback seed paths below would CLOBBER it:
+     *   - boot_refold_from_anchor_arm_if_torn: the loader's coins-dependent
+     *     cursors at seed_h (with on-disk bodies above) look like a "torn"
+     *     prevout hole to the detector; with a reachable anchor snapshot it
+     *     would re-seed coins_kv from the COMPILED checkpoint (3,056,758),
+     *     dropping the trusted base back to the checkpoint and pinning H*.
+     *   - block_index_loader_seed_stages_from_cold_import: the loader already
+     *     cleared the cold-import provenance keys (so this returns 0 today),
+     *     but suppress it explicitly so a future provenance write cannot
+     *     re-stamp the cursors forward off the loader's seed_h.
+     * So when the loader flag is set for this boot, skip BOTH — the loader
+     * owns the seed and the staged pipeline folds forward from seed_h. */
+    bool loader_owns_seed = boot_loader_owns_seed(svc->app_ctx);
+    bool armed_from_anchor =
+        loader_owns_seed ||                      /* loader at boot.c re-seeded + armed the stages */
+        refold_from_anchor_active() ||           /* already armed: flag / load-verify / mid-fold */
+        boot_refold_from_anchor_arm_if_torn(     /* DEFAULT: detect-gated torn-import self-heal */
+            svc->state, boot_node_db(svc), progress_store_db());
+    if (!armed_from_anchor)
+        (void)block_index_loader_seed_stages_from_cold_import(
+            svc->state, boot_node_db(svc), progress_store_db());
+}
+
 /* ── Runtime service startup (called from app_init) ────────── */
 
 bool app_init_services(struct app_context *ctx,
@@ -1153,6 +1279,8 @@ bool app_init_services(struct app_context *ctx,
            (long long)(svc_clock_ms() - t_svc));
     t_svc = svc_clock_ms();
 
+    boot_register_core_liveness_and_reducer(svc, params);
+
     boot_configure_frontend_rpc(svc);
 
     /* frontend kernel start includes onion_tor bootstrap (Tor) — the
@@ -1240,129 +1368,6 @@ bool app_init_services(struct app_context *ctx,
     }
 
     atomic_store(svc->running, true);
-
-    /* Start the supervisor thread BEFORE runtime services register their
-     * liveness contracts. Idempotent — subsequent calls return true
-     * without re-spawning. The supervisor runs its own monotonic-clock
-     * loop independent of the lib/health sweeper, so a wedged sweeper
-     * cannot silence stall detection. */
-    if (!supervisor_start()) {
-        fprintf(stderr,  // obs-ok:supervisor-start-fallback-warn
-            "WARNING: supervisor_start failed; lib/health sweeper alone\n");
-    }
-    supervisor_domains_init();
-
-    /* Initialize the typed blocker primitive. Must come before any
-     * subsystem calls blocker_set / mirror_consensus_record_blocker.
-     * Idempotent. */
-    blocker_module_init();
-
-    /* Outbound peer-floor liveness contract.
-     *
-     * Failure mode being addressed: the node can sit with 0 outbound
-     * peers + a stuck inbound indefinitely. thread_open_connections keeps
-     * running but addrman is exhausted, so `connman_pick_next_outbound_target`
-     * returns false on every tick — silently, with no log, no event.
-     *
-     * Contract semantics:
-     *   on_tick (every 15 s): snapshot outbound_healthy via
-     *     `connman_outbound_healthy_count`; write to progress_marker.
-     *     If the count is below the floor (2), do NOT call
-     *     supervisor_tick — let the progress-quiet timer advance.
-     *   on_stall (after 60 s under floor):
-     *     - emit EV_PEER_FLOOR_BREACH for operator visibility
-     *     - call connman_kick_seed_discovery to widen addrman
-     *
-     * The existing thread_open_connections still runs its 1-second
-     * adaptive loop; the supervisor only kicks the seed re-walk so the
-     * thread has fresh targets to try. */
-    net_supervisor_register(svc->connman);
-    chain_supervisor_register(svc->state);
-    /* Tip-stuck watchdog. Single-purpose: watches active_chain_height
-     * advance, emits a named stall event, and lets the operator-needed /
-     * condition loop handle recovery. */
-    chain_tip_watchdog_register(svc->state);
-    /* Top-level always-terminating remedy escalator (sticky-node-plan #1, the
-     * keystone of S2). Consumes the watchdog's deterministic-stall signal +
-     * condition_engine_get_unresolved_count() and drives an ordered rung ladder
-     * that NEVER latches a permanent operator-needed state on a recoverable
-     * class. Register AFTER the watchdog (whose deterministic branch now hands
-     * the wedge to the escalator instead of dead-ending) and BEFORE
-     * self_heal_register (the self-heal tick drives the ladder). */
-    sticky_escalator_set_datadir(svc->datadir);
-    sticky_escalator_register(svc->state);
-    condition_registry_register_all();
-    invariant_sentinel_register(); /* fail-loud validation pack sweeps */
-    /* Close the alert loop: install the event→sink routing (incl. the
-     * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
-     * halt that exhausts remedies reaches a human/MCP and the health
-     * surface instead of dead-ending. */
-    alerts_init();
-    self_heal_register(svc->state);
-    staged_sync_supervisor_register(svc->state);
-
-    /* Recover the durable finalized frontier a reboot dropped.
-     * staged_sync_supervisor_register (above) ran tip_finalize_stage_init,
-     * registering the chain-height authority seeded from the coins-restore
-     * tip. Adopt the durable frontier forward-only HERE —
-     * after the authority is live (active_chain_height reads the real coins tip)
-     * but BEFORE runtime services / reducer ingest start — so there is no race.
-     * Both calls are no-ops unless their precondition holds; neither rewinds,
-     * forks, or deletes log rows. See block_index_loader.h for each contract. */
-    {
-        int seeded = block_index_loader_seed_tip_from_finalized(
-            svc->state, params, progress_store_db());
-        (void)seeded;  /* logs its own success line; benign no-op otherwise */
-        /* B2 1c — torn-import AUTO-ARM is now the DEFAULT self-heal. On EVERY
-         * boot we consult the PURE detect predicate
-         * (block_index_loader_torn_import_detect, no side-effects); if it finds a
-         * durable tear (a prevout_unresolved hole ABOVE the compiled anchor
-         * h=3056758 plus a coin_backfill.refused.<h>.<hash> marker), arm_if_torn
-         * re-seeds coins_kv from the SHA3-verified anchor snapshot (uss_open
-         * verify_full_sha3=true bound to cp->sha3_hash) and HARD-ASSERTS the
-         * re-seeded set == checkpoint (commitment + count==1354771; FATAL on
-         * mismatch). It then folds forward from the proven anchor. If it arms (or
-         * a from-anchor refold is already in progress — explicit flag at boot.c,
-         * or a mid-fold restart), SKIP the cold-import seed.
-         *
-         * NO FLAG REQUIRED: a normal boot of a TORN datadir now self-heals. On a
-         * HEALTHY (untorn) datadir the detect predicate returns false, arm_if_torn
-         * does NOT reset, and the cold-import seed runs UNCHANGED — additive,
-         * safe; a synced node never re-folds. The reset path itself is the
-         * load-bearing safety net: it can only ever stamp the SHA3-verified anchor
-         * set (or FATAL), never an unproven one.
-         *
-         * The explicit -refold-from-anchor flag and the -load-verify-boot route
-         * (which armed the from-anchor signal in app_init when the verified
-         * snapshot probe passed) are still honored — both surface here as
-         * refold_from_anchor_active() == TRUE, which arm_if_torn short-circuits to
-         * true without re-resetting. */
-        /* -load-snapshot-at-own-height=PATH: the loader at boot.c already
-         * RE-SEEDED coins_kv from a self-SHA3-verified snapshot at the snapshot's
-         * OWN height, forced the 8 stage cursors to that height, and seeded the
-         * tip_finalize trusted base there (raise-only). It is the authoritative
-         * seed for THIS boot. Both fallback seed paths below would CLOBBER it:
-         *   - boot_refold_from_anchor_arm_if_torn: the loader's coins-dependent
-         *     cursors at seed_h (with on-disk bodies above) look like a "torn"
-         *     prevout hole to the detector; with a reachable anchor snapshot it
-         *     would re-seed coins_kv from the COMPILED checkpoint (3,056,758),
-         *     dropping the trusted base back to the checkpoint and pinning H*.
-         *   - block_index_loader_seed_stages_from_cold_import: the loader already
-         *     cleared the cold-import provenance keys (so this returns 0 today),
-         *     but suppress it explicitly so a future provenance write cannot
-         *     re-stamp the cursors forward off the loader's seed_h.
-         * So when the loader flag is set for this boot, skip BOTH — the loader
-         * owns the seed and the staged pipeline folds forward from seed_h. */
-        bool loader_owns_seed = boot_loader_owns_seed(svc->app_ctx);
-        bool armed_from_anchor =
-            loader_owns_seed ||                      /* loader at boot.c re-seeded + armed the stages */
-            refold_from_anchor_active() ||           /* already armed: flag / load-verify / mid-fold */
-            boot_refold_from_anchor_arm_if_torn(     /* DEFAULT: detect-gated torn-import self-heal */
-                svc->state, boot_node_db(svc), progress_store_db());
-        if (!armed_from_anchor)
-            (void)block_index_loader_seed_stages_from_cold_import(
-                svc->state, boot_node_db(svc), progress_store_db());
-    }
 
     /* De-fatal: all runtime specs (bg_validation, gap_fill, legacy_mirror,
      * oracle, rolling_anchor, ...) are ZCL_SERVICE_OPTIONAL, and the
