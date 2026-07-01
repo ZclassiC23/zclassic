@@ -52,7 +52,9 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     const char *status = "healthy";
     const char *primary = "none";
     const char *next_endpoint = "/api/status";
-    const char *summary = "node healthy at current tip";
+    bool material_gap = gap > 1;
+
+    const char *summary = "node healthy at served frontier";
     bool operator_needed = false;
 
     if (!health.serving) {
@@ -67,12 +69,12 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         next_endpoint = "/api/peers";
         summary = "node has no connected peers";
         operator_needed = true;
-    } else if (gap > 0 && (dl_inflight > 0 || dl_queued > 0)) {
+    } else if (material_gap && (dl_inflight > 0 || dl_queued > 0)) {
         status = "catching_up";
         primary = "chain_gap";
         next_endpoint = "/api/downloadstats";
         summary = "node is downloading blocks toward the best known tip";
-    } else if (gap > 0) {
+    } else if (material_gap) {
         status = "degraded";
         primary = "download_queue_idle";
         next_endpoint = "/api/downloadstats";

@@ -6,10 +6,16 @@
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/name_controller.h"
+#include "controllers/network_controller.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "models/file_service.h"
 #include "models/znam.h"
+#include "net/connman.h"
+#include "net/net.h"
+#include "services/block_source_policy.h"
+#include "services/node_health_service.h"
+#include "sync/sync_state.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include <string.h>
@@ -58,6 +64,33 @@ static bool api_test_build_chain(struct main_state *ms,
     }
     ms->pindex_best_header = out[count - 1];
     return active_chain_move_window_tip(&ms->chain_active, out[count - 1]);
+}
+
+static bool api_test_init_connman_peer(struct connman *cm,
+                                       struct net_address *addr,
+                                       struct p2p_node **node_out,
+                                       int height)
+{
+    if (!cm || !addr || !node_out)
+        return false;
+    memset(cm, 0, sizeof(*cm));
+    memset(addr, 0, sizeof(*addr));
+    net_manager_init(&cm->manager);
+    cm->manager.nodes = zcl_calloc(1, sizeof(*cm->manager.nodes),
+                                   "api_test_nodes");
+    if (!cm->manager.nodes)
+        return false;
+    *node_out = p2p_node_create(&cm->manager, ZCL_INVALID_SOCKET, addr,
+                                "api-status-peer", false);
+    if (!*node_out)
+        return false;
+    (*node_out)->starting_height = height;
+    (*node_out)->state = PEER_HANDSHAKE_COMPLETE;
+    (*node_out)->services = NODE_NETWORK;
+    cm->manager.nodes[0] = *node_out;
+    cm->manager.num_nodes = 1;
+    rpc_net_set_connman(cm);
+    return true;
 }
 
 static const char *api_test_body(uint8_t *resp, size_t n, size_t cap)
@@ -353,6 +386,142 @@ int test_api(void)
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: public status treats one-block served gap as healthy... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index *blocks[4] = {0};
+        struct cac_decision decision;
+        bool ok = api_test_build_chain(&ms, blocks, 4);
+        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, 3);
+
+        memset(&decision, 0, sizeof(decision));
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = 2;
+        decision.target_height = 3;
+        decision.projection_height = 2;
+        struct cac_source_status *p2p =
+            &decision.sources[CAC_SOURCE_P2P];
+        p2p->source = CAC_SOURCE_P2P;
+        p2p->available = true;
+        p2p->healthy = true;
+        p2p->selectable = true;
+        p2p->height = 3;
+
+        if (ok) {
+            (void)node;
+            reducer_frontier_provable_tip_set(2);
+            node_health_test_set_log_head_override(3);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_IDLE, "api status reset");
+            sync_set_state(SYNC_FINDING_PEERS, "api status");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "api status");
+            api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+            size_t n = api_handle_request("GET", "/api/status", NULL, 0,
+                                          resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                              "healthy") == 0;
+            ok = ok && json_get_bool(json_get(&root, "healthy"));
+            ok = ok && json_get_bool(json_get(&root, "serving"));
+            ok = ok && !json_get_bool(json_get(&root, "operator_needed"));
+            ok = ok && json_get_int(json_get(&root, "height")) == 2;
+            ok = ok && json_get_int(json_get(&root, "target_height")) == 3;
+            ok = ok && json_get_int(json_get(&root, "gap")) == 1;
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "primary_blocker")),
+                              "none") == 0;
+            json_free(&root);
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: public status still degrades material served gap... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index *blocks[4] = {0};
+        struct cac_decision decision;
+        bool ok = api_test_build_chain(&ms, blocks, 4);
+        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, 3);
+
+        memset(&decision, 0, sizeof(decision));
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = 3;
+        decision.target_height = 3;
+        decision.projection_height = 3;
+        struct cac_source_status *p2p =
+            &decision.sources[CAC_SOURCE_P2P];
+        p2p->source = CAC_SOURCE_P2P;
+        p2p->available = true;
+        p2p->healthy = true;
+        p2p->selectable = true;
+        p2p->height = 3;
+
+        if (ok) {
+            (void)node;
+            reducer_frontier_provable_tip_set(1);
+            node_health_test_set_log_head_override(3);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_IDLE, "api status reset");
+            sync_set_state(SYNC_FINDING_PEERS, "api status");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "api status");
+            api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+            size_t n = api_handle_request("GET", "/api/status", NULL, 0,
+                                          resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                              "degraded") == 0;
+            ok = ok && json_get_bool(json_get(&root, "operator_needed"));
+            ok = ok && json_get_int(json_get(&root, "height")) == 1;
+            ok = ok && json_get_int(json_get(&root, "target_height")) == 3;
+            ok = ok && json_get_int(json_get(&root, "gap")) == 2;
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "primary_blocker")),
+                              "download_queue_idle") == 0;
+            json_free(&root);
+        }
+
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
         test_reset_shared_globals();
 
         if (ok) printf("OK\n");
