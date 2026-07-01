@@ -1,18 +1,22 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
-**2026-07-01 12:00 UTC code-review update.** The earlier live
-`block_failed_mask_at_tip` / missing-3166384 blocker is no longer the active
-live state: the main service advanced past H\*=3166383, and `zclassic-cli
-dumpstate tip_finalize` reported `cursor=3166413` with
-`sync_monitor.last_recovery=BODY_FRONTIER_MISSING` from the existing
-`condition:tip_fork_stale best-header body fallback`. A copied fullhist repro
-at `~/.zclassic-c23-COPY-20260701-113424-stall-3166384` still failed the
-strict `CLIMB_PAST=3166383` gate in the isolated/dead-sink peer setup, so treat
-that copy as proof of the stuck boundary shape, not as proof of networked
-recovery.
+**2026-07-01 12:20 UTC update.** The code-review remediation lane remains
+closed; the active work has moved back to MVP/soak/sovereign-cure. The earlier
+live `block_failed_mask_at_tip` / missing-3166384 blocker is no longer the
+active main-service state. Commit `a02a1bac6` is deployed to the main linger
+service and to the pinned soak binary; the docs-only handoff commit on top is
+`bcf1230b1`. Current main check: `zclassic23 agent` reports `status=healthy`,
+`serving=true`, `operator_needed=false`, `height=3166414`,
+`sync_state=at_tip`, `gap=1`, and 3 peers. The pinned soak lane was deliberately
+refreshed from stale build `b6ab458f0` to build `a02a1bac6` at
+`2026-07-01 12:15:43 UTC`; that restart is a conscious C6 rebaseline, not soak
+credit. Post-restart soak RPC is now up and observable, but not green:
+`agent` reports `status=blocked`, `serving=false`, `height=3056758`,
+`indexed_height=3145595`, `header_height=3166415`, `gap=109657`, 4 peers, and
+`sync_state=blocks_download`.
 
-The follow-up review patch fixes two liveness/API clarity edges in the
-condition layer:
+The latest review patch fixes two liveness/API clarity edges in the condition
+layer:
 
 - `block_failed_mask_at_tip` no longer treats any `HAVE_DATA` block at
   `active_tip + 1` as a no-advance successor; it must be the active tip's
@@ -27,9 +31,11 @@ Proof for that patch: `git diff --check`, `make -j$(nproc) build-only`,
 ONLY=utxo_activation_paused`, `make t ONLY=tip_fork_stale`, full `make test`
 (`485` groups, `0` failed, `14` self-skipped), full `make -j$(nproc)`, and
 `make sim-fast` all passed. Commit `a02a1bac6` was pushed to `main` and
-deployed to the main user linger service with `ZCL_BUILD_COMMIT="a02a1bac6"`;
-post-deploy `zclassic23 agent` reported `status=healthy`, `serving=true`,
-`height=3166414`, `sync_state=at_tip`, `gap=0`, and `operator_needed=false`.
+deployed to the main user linger service with `ZCL_BUILD_COMMIT="a02a1bac6"`.
+The proof-validate Act-1 symmetry TODO in `self-verified-tip-plan.md` is also
+already implemented and proof-gated: `make t ONLY=reducer_frontier_reconcile_light`
+passes the readable stale-proof production route where a proof-only
+`internal_error` rewinds proof state without clobbering script state.
 
 **Restart command:** type **`continue zclassic23 development`**. First checks:
 `git status --short --branch`, then the native API discovery command:
@@ -44,14 +50,9 @@ Use `zclassic23 refold` (same contract as REST `/api/v1/refold` and MCP
 `zcl_refold_status`) for the sovereign anchor readiness check before any
 `-refold-from-anchor` copy proof. Use `zclassic23 healthcheck`,
 `/api/v1/node/status`, `zcl_status`, `zcl_state subsystem=reducer_frontier`,
-and `zcl_state subsystem=refold` only for drill-down. Latest pushed code:
-`2e8a1639b` (`api: expose refold anchor readiness`). `make deploy` installed
-and restarted this build in the main linger lane on 2026-07-01, but the deploy
-health verifier did **not** go green within 600s: the node was running the new
-build and answering RPC, but H\* stayed at 3166383 with a 10-block peer-tip gap
-and `operator_needed` from `block_failed_mask_at_tip` targeting 3166384. Treat
-the build as installed, not health-verified. The pinned soak binary remains
-`b6ab458f0` until explicitly refreshed.
+and `zcl_state subsystem=refold` only for drill-down. Current runtime code build
+deployed to main + soak is `a02a1bac6` (`fix fork body recovery conditions`);
+use `git log --oneline -3` for the exact docs/handoff commit on top.
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
@@ -67,60 +68,53 @@ service datadir/rpcport from systemd when the default cookie is absent, so no
 refreshes the owner-command symlink at `$HOME/.local/bin/zclassic23` and any
 existing `$HOME/bin/zclassic23` PATH shadow so those commands cannot point at a
 stale pre-API binary. At the latest handoff check the native node reported
-build `2e8a1639b`, `sync_state=blocks_download`, `healthy=false`,
-`serving=false`, 4 peers, Tor/onion ready, H\*=3166383, peer target 3166393, and
-`operator_needed=true`. The compact agent endpoint is live but reports
-`status=blocked`, `primary_blocker=not_serving`, and `gap=10`. The active named
-conditions were `block_failed_mask_at_tip` (critical, target 3166384, attempts
-5, operator-needed emitted), `header_stall_at_height` (critical),
-`local_header_refill_needed` (warn), `peer_floor_violated` (warn), and
-`tip_wedged_resnapshot` (critical, remedy failed). The public `/api/status`
-surface is aligned with the health contract for the normal H* race: a one-block
-served-frontier gap reports `status=healthy`, `operator_needed=false`, and
-`primary_blocker=none`; gaps greater than one remain named as catching-up or
-degraded.
+`status=healthy`, `serving=true`, `operator_needed=false`, Tor/onion ready,
+served height `3166414`, header/indexed height `3166415`, `gap=1`, and 3 peers.
+The public `/api/status` surface is aligned with the health contract for the
+normal H* race: a one-block served-frontier gap reports `status=healthy`,
+`operator_needed=false`, and `primary_blocker=none`; gaps greater than one
+remain named as catching-up or degraded.
 
 ```
 systems
-native node service        [####------] build 2e8a1639b installed; health blocked at H*=3166383 -> target 3166393
+native node service        [##########] build a02a1bac6 healthy/serving on main; normal one-block H* race observed
 native API discovery       [##########] `zclassic23 api`, REST `/api`/`/api/v1`, shared `zcl.rest_index.v1`
-simple agent API           [########--] native `zclassic23 agent` live; currently reports blocked/not_serving
+simple agent API           [##########] native `zclassic23 agent` live; reports healthy/serving on main
 milestone status API       [##########] native `zclassic23 milestone`, REST v1, MCP `zcl_milestone` live
 refold readiness API       [##########] native `zclassic23 refold`, REST v1, MCP `zcl_refold_status` live on main
 REST resource routing      [#########-] `/api/v1` route table wired; dynamic/member routes still controller-owned
 API version contract       [##########] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
 lint-gate hardening        [##########] coin lookup hollow scans + raw node.db DML exec are proof-gated
 startup health evidence    [##########] health falls back to durable tip_finalize cursor during boot
-HODL website freshness     [#######---] view caps to served tip; live site freshness blocked while node is not serving
-factoids website freshness [#######---] capped to served tip; live site freshness blocked while node is not serving
+HODL website freshness     [########--] view caps to served tip; verify after each deploy
+factoids website freshness [########--] capped to served tip; verify after each deploy
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
-formal soak evidence       [#---------] rebaselined on current binary; blocked at H*=3056758
+formal soak evidence       [#---------] rebaselined on a02a1bac6 at 2026-07-01 12:15 UTC; wait for fresh 168h window
 ```
 
 **Soak evidence / rebaseline.** C6 is **not green**. `make
-soak-evidence-report` on 2026-07-01 reported `VERDICT=INSUFFICIENT
-reason=window_short_602714s_lt_604800s_slack900s` with
-`ok_samples=0/170`, `operator_interventions=3`, and `ambiguous_restarts=1`.
-The soak service was deliberately rebaselined 2026-07-01 because it was running
-stale pinned build `ecd14609c-dirty`, was OOM-killed under a local 12G cap, and
-was wedged at H\*=3056758. The pinned soak binary is now refreshed from build
-`b6ab458f0`, and the live local systemd drop-in
-`~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` was
-restored to `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended
-budget). Do not mark C6 complete until a fresh uninterrupted window is judged
-`MET`. Current runtime check after the refold-readiness API deploy attempt: the
-main service is running build `2e8a1639b` but is **not** serving
-(`sync_state=blocks_download`, H\*=3166383, target=3166393, gap=10,
-`block_failed_mask_at_tip` targeting 3166384). `zclassic23 refold` on main
-returns `zcl.refold_status.v1` and reports
-`primary_blocker=missing_verified_anchor_snapshot` for
-`/home/rhett/.zclassic-c23-fullhist/utxo-anchor.snapshot`. The soak service is
-still running pinned build `b6ab458f0` (not the new refold API build), serves
-H\*=`3056758` with `headers=3166400`, and is not green
-(`degraded_reason=operator_needed:check=window.consistency...`,
-`log_head=3145595`, `tip_lag=20773`). `refold` is not registered on the pinned
-soak binary until that service is explicitly refreshed. Soak is therefore
-**not** green; the hard missing artifact remains the verified anchor snapshot.
+soak-evidence-report` on 2026-07-01 after the rebaseline reported
+`VERDICT=NOT_MET reason=operator_intervention_detected_x5`; the historical
+window includes deliberate restarts and therefore cannot count for C6. The soak
+service was deliberately rebaselined again at `2026-07-01 12:15:43 UTC` because
+it was still pinned to stale build `b6ab458f0`; the pinned binary now reports
+runtime build `a02a1bac6`. The live local systemd drop-in
+`~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` remains
+at `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended budget).
+Do not mark C6 complete until a fresh uninterrupted window is judged `MET`.
+Post-restart RPC/health evidence: soak `agent` reports `status=blocked`,
+`serving=false`, `height=3056758`, `indexed_height=3145595`,
+`header_height=3166415`, `gap=109657`, 4 peers, and
+`sync_state=blocks_download`. `healthcheck` shows peer health is usable but
+`reducer_frontier_reconcile_light` is active with
+`last_reconcile_coin_backfill_status_label="owner_refused"` at hole height
+`3145595`; `reducer_frontier` shows H\*=3056758 and first blocker
+`validate_headers_log` `missing-success-row` at 3056759. A fresh
+`tools/scripts/soak_evidence.sh collect` sample was appended and is correctly
+red (`ok:false`) because zclassicd oracle was returning RPC `-28`, so the
+sample cannot prove gap=0. Next work is not another soak restart; it is a
+copy-proven sovereign/refold or coin-backfill cure, then a fresh uninterrupted
+168h judge window.
 
 **Soak copy proof result.** Do **not** enable
 `ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. A full copy proof

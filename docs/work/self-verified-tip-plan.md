@@ -95,24 +95,29 @@ a borrowed copy.**
   and a post-RPC FATAL both "booted"). Gate on H\* climbing past the wedge
   (`test_reducer_forward_progress_gate` PART-1 pattern), not RPC reachability.
 
-## ACT 1 — Stop trusting bad index cards · **MOSTLY SHIPPED**
+## ACT 1 — Stop trusting bad index cards · **SHIPPED**
 
 - **Detective beat:** a witness once said "I can't tell" under bad lighting; he
   wrote "unreliable" and never re-interviewed him. Fix: re-interview.
-- **Already landed (script path):** a transient `internal_error` is retriable,
-  not terminal (`app/jobs/src/stage_repair_reducer_frontier_coin.c:657-671`);
-  heal deletes both `script_validate_log` and `proof_validate_log` in the same
-  transaction (`:459-462`) + `utxo_apply_delete_rows_above` (`:464`). Earlier
-  "heal never clears upstream logs" framing is **stale — false at HEAD**.
-- **Only remaining TODO:** the retriable path is gated on the *script* dry-run
-  (`:647,657`). A **proof_validate** internal_error at the same height is still
-  permanent `ok=0` — **make it symmetric** (the Law 7 fix: the healer must not
-  treat "couldn't tell" as "invalid" on either stage).
+- **Landed (script path):** a transient `internal_error` is retriable, not
+  terminal; the heal deletes both `script_validate_log` and
+  `proof_validate_log` in the same transaction, rewinds downstream cursors, and
+  leaves genuine script-invalid verdicts terminal. Earlier "heal never clears
+  upstream logs" framing is **stale — false at HEAD**.
+- **Landed (proof path):** `proof_validate_log.status='internal_error'` is now
+  symmetric with script validation. The replay ladder detects a proof-only
+  transient where `script_validate` already passed, deletes the stale
+  `proof_validate_log` rows, rewinds proof/tip state, records the one-shot
+  marker, and leaves `proof_invalid` / script-owned failures terminal. Focused
+  proof: `make t ONLY=reducer_frontier_reconcile_light` covers the readable
+  stale-proof production route, and `test_stage_repair` covers the direct
+  proof-internal-error rewind hook.
 - **Gate:** H\* climbs past 3157647 on the Act-0 copy.
 - **False-green & stronger gate:** a re-read stale verdict looks like a
-  re-derived one. Unit test: inject `internal_error` at H, heal, assert the log
-  row is NULL or re-inserted with `timestamp > boot_start` (re-derived, not
-  re-read — the *witness* of Law 7). Add the proof_validate variant.
+  re-derived one. Current tests assert the stale row is removed/rewound; future
+  Act-0 copy proof should still gate on H\* climb past the wedge with fresh
+  proof rows re-derived by the forward stage, not merely on the repair function
+  returning success.
 
 ## ACT 2 — Make re-reading cheap (the measured speed root) · **NOT-STARTED**
 
