@@ -5,14 +5,14 @@
 `curl -sk https://127.0.0.1:8443/api/status`, and `./tools/z mirror --json`.
 
 **Live node.** The user linger service is running the locally deployed binary
-(`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). At the latest
-handoff check the native node reported `sync_state=at_tip`,
+(`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The post-commit
+deploy verifier completed at h=3166083; use `./tools/z status` for the exact
+running `build_commit`. At the latest handoff check the native node reported `sync_state=at_tip`,
 `consensus_authority=local_consensus_validation`, `healthy=true`,
-`serving=true`, 4 peers, Tor/onion ready, and local chain evidence current at
-h=3166077. The public `/api/status` surface is intentionally stricter and can
-briefly report `operator_needed=true` when the served frontier is one block
-behind indexed/header state; do not treat that as a wedge unless the named
-blocker persists and `./tools/z status` agrees.
+`serving=true`, 4 peers, and Tor/onion ready. The public `/api/status` surface is
+intentionally stricter and can briefly report `operator_needed=true` when the
+served frontier is one block behind indexed/header state; do not treat that as a
+wedge unless the named blocker persists and `./tools/z status` agrees.
 
 ```
 systems
