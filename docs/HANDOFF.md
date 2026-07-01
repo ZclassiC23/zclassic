@@ -1,5 +1,30 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 19:20 UTC update.** The current code-review remediation is pushed
+and deployed as `6cdd44202` (`start reducer liveness before frontend`). This
+follows `50be2e643` (`harden mcp route registration`) and keeps the API surface
+inside the single `zclassic23` binary: MCP route registration is now capacity
+checked/fail-fast, and core liveness/reducer registration now happens before
+optional frontend/RPC/Tor service startup. Proofs for the latest slice:
+`make t ONLY=make_lint_gates`, the full tracked pre-push `make ci` gate, and
+`make deploy` all passed; deploy verification reported RPC live at
+`height=3166762` with `build_commit=6cdd44202`. Main live refresh after deploy:
+`/api/v1/agent` reported `status=healthy`, `serving=true`,
+`operator_needed=false`, `height=3166762`, `served_height=3166762`,
+`indexed_height=3166762`, `header_height=3166762`, `peer_best_height=3166762`,
+`target_height=3166762`, `gap=0`, `index_gap=0`, `sync_state=at_tip`, and 3
+peers. `zcl_state subsystem=reducer_frontier` reported `hstar=3166762`,
+`served_floor=3166762`, `served_gap=0`, all eight stage cursors at/through
+`3166763` except `tip_finalize=3166762`, and no H* blocker. `zcl_state
+subsystem=chain_evidence` reported matching active/header/persisted/coins tip
+hashes at `3166762`; the explorer projection is still degraded because the
+blocks projection has missing heights (`height=3166761`, `blocks=3166740`).
+The pinned soak binary was refreshed to the same build and
+`zclassic23-soak.service` was restarted, but it had not opened RPC yet at the
+handoff check; logs show it booting through the long `pprev-repair` scan. The
+168h soak evidence remains red, not reset-green:
+`VERDICT=NOT_MET reason=operator_intervention_detected_x7`, `ok_samples=0/172`.
+
 **2026-07-01 16:15 UTC update.** The CP-6 review slice reached origin as
 `cc61eafa7` after the full tracked pre-push `make ci` gate passed. A follow-up
 coverage hardening patch is local: the node.db forward-extent top-up fixture now
