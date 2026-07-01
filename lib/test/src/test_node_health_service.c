@@ -14,9 +14,12 @@
 #include "services/chain_evidence_persistence_service.h"
 #include "services/chain_state_service.h"
 #include "services/sync_monitor.h"
+#include "storage/progress_store.h"
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"
 #include "util/safe_alloc.h"
+
+#include <sys/stat.h>
 
 static bool health_test_init_main_tip(struct main_state *ms,
                                       struct block_index *tip,
@@ -352,6 +355,64 @@ int test_node_health_service(void)
         }
 
         node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: durable tip_finalize cursor backs startup health... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        char dir[256];
+        bool ok = true;
+        memset(&ms, 0, sizeof(ms));
+        memset(&cm, 0, sizeof(cm));
+        memset(&tip, 0, sizeof(tip));
+        memset(&h_tip, 0, sizeof(h_tip));
+        test_fmt_tmpdir(dir, sizeof(dir), "node_health", "durable_log_head");
+        (void)mkdir("./test-tmp", 0755);
+        (void)mkdir(dir, 0755);
+        progress_store_close();
+        ok = ok && progress_store_open(dir);
+        ok = ok && sqlite3_exec(progress_store_db(),
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('tip_finalize',111,0)",
+            NULL, NULL, NULL) == SQLITE_OK;
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 111,
+                                             112, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "durable-log-peer",
+                                                 tip.nHeight);
+        if (ok) {
+            (void)node;
+            node_health_test_set_log_head_override(-2);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && health.healthy;
+            ok = ok && health.serving;
+            ok = ok && health.log_head == 111;
+            ok = ok && health.log_head_gap == 0;
+            ok = ok && health.degraded_reason[0] == '\0';
+            ok = ok && health.blocking_reason[0] == '\0';
+        }
+
+        node_health_test_set_log_head_override(-2);
+        progress_store_close();
         main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);

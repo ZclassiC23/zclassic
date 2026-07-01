@@ -14,6 +14,7 @@
 
 #include "platform/time_compat.h"
 #include "services/node_health_service.h"
+#include "jobs/stage_helpers.h"
 #include "jobs/tip_finalize_stage.h"
 #include "services/block_source_policy.h"
 #include "services/chain_evidence_authority_service.h"
@@ -37,6 +38,7 @@
 #include "ports/node_health_store_port.h"
 #include <stdio.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
@@ -108,6 +110,24 @@ static int64_t get_rss_kb(void)
 }
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
+
+static int health_tip_finalize_log_head(void)
+{
+    uint64_t live = tip_finalize_stage_cursor();
+    if (live > 0 && live <= INT_MAX)
+        return (int)live;
+
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return -1; // raw-return-ok:progress-store-not-open
+
+    uint64_t persisted = 0;
+    if (!stage_cursor_read_or_zero(db, "tip_finalize", "health", &persisted))
+        return -1; // raw-return-ok:stage-helper-logged
+    if (persisted == 0 || persisted > INT_MAX)
+        return -1; // raw-return-ok:no-durable-tip
+    return (int)persisted;
+}
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_log_head_override = -2;
@@ -419,8 +439,7 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         } else
 #endif
         {
-            uint64_t lh = tip_finalize_stage_cursor();
-            snapshot->log_head = (lh > 0) ? (int)lh : -1;
+            snapshot->log_head = health_tip_finalize_log_head();
         }
         if (snapshot->peer_best_height >= 0 && snapshot->log_head >= 0)
             snapshot->log_head_gap =
