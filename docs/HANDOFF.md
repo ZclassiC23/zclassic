@@ -1,14 +1,16 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
-**2026-07-01 12:20 UTC update.** The code-review remediation lane remains
-closed; the active work has moved back to MVP/soak/sovereign-cure. The earlier
-live `block_failed_mask_at_tip` / missing-3166384 blocker is no longer the
-active main-service state. Commit `a02a1bac6` is deployed to the main linger
-service and to the pinned soak binary; the docs-only handoff commit on top is
-`bcf1230b1`. Current main check: `zclassic23 agent` reports `status=healthy`,
-`serving=true`, `operator_needed=false`, `height=3166414`,
-`sync_state=at_tip`, `gap=1`, and 3 peers. The pinned soak lane was deliberately
-refreshed from stale build `b6ab458f0` to build `a02a1bac6` at
+**2026-07-01 12:55 UTC update.** The code-review lane reopened briefly for one
+safe-fail hardening found by the soak copy proof; it is not a soak cure. The
+earlier live `block_failed_mask_at_tip` / missing-3166384 blocker is no longer
+the active main-service state. Commit `a02a1bac6` remains deployed to the main
+linger service and to the pinned soak binary; the latest source follow-up
+hardens `tip_finalize` but is not deployed because the copy proof still does
+not climb. Current main check: `zclassic23 agent` reports `status=healthy`,
+`serving=true`,
+`operator_needed=false`, `height=3166414`, `sync_state=at_tip`, `gap=1`, and 3
+peers. The pinned soak lane was deliberately refreshed from stale build
+`b6ab458f0` to build `a02a1bac6` at
 `2026-07-01 12:15:43 UTC`; that restart is a conscious C6 rebaseline, not soak
 credit. Post-restart soak RPC is now up and observable, but not green:
 `agent` reports `status=blocked`, `serving=false`, `height=3056758`,
@@ -36,6 +38,16 @@ The proof-validate Act-1 symmetry TODO in `self-verified-tip-plan.md` is also
 already implemented and proof-gated: `make t ONLY=reducer_frontier_reconcile_light`
 passes the readable stale-proof production route where a proof-only
 `internal_error` rewinds proof state without clobbering script state.
+
+The 12:55 UTC follow-up adds a `tip_finalize` clamp guard: the one-height
+`coins_applied` next-frame lag is still allowed, but a deeper coins cap now
+refuses with `tip_finalize clamp refused` instead of rewinding the stage cursor
+below the trusted H\* floor. Focused proof: `make t
+ONLY=reducer_frontier_reconcile_light` passes the new `deep-coin-lag` fixture;
+`make lint` passes (remaining file-size advisory is pre-existing
+`config/src/boot_refold_staged.c`); full `make test` passes (`0/485` groups
+failed, `14` self-skipped). Full soak copy proof still fails to climb, which is
+the correct remaining blocker, not a green deploy signal.
 
 **Restart command:** type **`continue zclassic23 development`**. First checks:
 `git status --short --branch`, then the native API discovery command:
@@ -117,18 +129,24 @@ copy-proven sovereign/refold or coin-backfill cure, then a fresh uninterrupted
 168h judge window.
 
 **Soak copy proof result.** Do **not** enable
-`ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. A full copy proof
-was attempted at
-`~/.zclassic-c23-COPY-20260701-090829-soak-coin-backfill-ack` with the current
-binary and owner ack set. The first harness run was environmental-only
-(`crypto_params_missing` in the isolated HOME); after symlinking the host
-Sapling params into the copy's isolated HOME, the copy booted, recovered H\* to
-3056758, and then **did not climb** through a 120-poll watch. The copy log
-showed `reducer_frontier_reconcile_light` clamping major cursors below the
+`ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. The older full
+copy proof at
+`~/.zclassic-c23-COPY-20260701-090829-soak-coin-backfill-ack` showed an unsafe
+L1 path: `reducer_frontier_reconcile_light` clamped major cursors below the
 anchor (`validate_headers` near 2100, `utxo_apply` near 1, `tip_finalize` near
-0) while H\* stayed at 3056758. Treat this as an unsafe/no-go proof for live
-owner ack; next work should either prove a stable stopped-datadir copy or move
-to the sovereign `-refold-from-anchor` cure instead of live coin-backfill.
+0) while H\* stayed at 3056758. The 12:55 UTC follow-up fixes that unsafe
+subpath. Re-run proof:
+`make repro-on-copy SLUG=soak-window-consistency-tipguard
+REPRO_SRC=$HOME/.zclassic-c23-soak REPRO_FULL=1 CLIMB_PAST=3056758
+REPRO_DEADLINE=240 ARGS='-nobgvalidation -paramsdir=/home/rhett/.zcash-params
+-showmetrics=0'` created
+`~/.zclassic-c23-COPY-20260701-124112-soak-window-consistency-tipguard` and
+failed safely: `first_tip=0`, `max_tip=3056758`, `climbed=0`. The copy log now
+shows `tip_finalize clamp refused: coins_applied=1 applied_through=0 is below
+hstar=3056758 min_allowed=3056757 cursor=3160268`, then
+`state_window_inconsistent` fires. Treat this as a no-go for live owner ack and
+as evidence that the remaining work is the state-window/refold cure, not another
+L1 cursor clamp.
 
 **Copy-proof climb/refold preflight landed.** `tools/repro_on_copy.sh` accepts
 `--expect-climb-past=H`, and `make repro-on-copy` exposes it as

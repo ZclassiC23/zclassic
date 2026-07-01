@@ -920,6 +920,30 @@ int test_reducer_frontier_reconcile_light(void)
 
     {
         struct rfrl_fixture fx;
+        RFRL_CHECK("setup deep-coin-lag fixture",
+                   setup_fixture(&fx, "deep_coin_lag"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("seed hstar above a deeply lagging coins frontier",
+                   put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                   put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                   seed_coins_applied(db, A + 1));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("deep-coin-lag apply succeeds",
+                   stage_reducer_frontier_reconcile_light(
+                       db, &fx.ms, &rr));
+        RFRL_CHECK("deep-coin-lag refuses anchor-breaking tip clamp",
+                   rr.hstar == A + 3 &&
+                   rr.coins_applied_height == A + 1 &&
+                   !rr.clamped_tip_finalize &&
+                   rr.tip_finalize_cursor_after == A + 4 &&
+                   cursor_value(db, "tip_finalize") == A + 4);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
         RFRL_CHECK("setup unknown-coin fixture",
                    setup_fixture(&fx, "unknown"));
         sqlite3 *db = progress_store_db();

@@ -407,37 +407,35 @@ static bool reconcile_tip_finalize_cursor(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    /* OWN-frame: tip_finalize's cursor IS the served tip height.
-     * The anchored walk proves served = hstar when the tip_finalize_log row
-     * at hstar is an anchor/absent, and served = hstar+1 when it is a
-     * 'finalized' transition row (the row at H proves the H -> H+1 move).
-     * Rather than discriminate the row type here, accept BOTH as healthy —
-     * the band [hstar, hstar+1] — and repair only cursors outside it, which
-     * no convention can legitimately produce. coins_applied is NEXT-frame
-     * (== utxo_apply's cursor, utxo_apply_stage.c), so the served tip's
-     * coins-applied ceiling is coins_applied - 1.
-     *
-     * The old unconditional force to hstar+1 was the +1-convention ghost:
-     * on a fresh cold-import (seed anchor row at H, cursor honestly at H)
-     * it bumped the cursor to H+1, claiming a served tip one above the
-     * anchor. reducer_anchor_candidate_ok then demanded a tip_finalize_log
-     * ok=1 row at H+1 that cannot exist, REJECTED the seed anchor, the
-     * trusted anchor collapsed to the compiled checkpoint, and the I4.3
-     * sweep latched the chain-linkage HOLD over the legitimately log-less
-     * import region — tip pinned at the seed forever. */
+    /* OWN-frame: tip_finalize's cursor is the served tip. Accept [hstar,
+     * hstar+1], with a one-height lower cap for coins_applied's next-height
+     * convention. A deeper coins cap is an anchor/window inconsistency, not a
+     * cursor convention mismatch; refuse it instead of pushing a stage cursor
+     * below the trusted floor. */
+    int cur = out->tip_finalize_cursor_before;
     int lo = out->hstar;
     int hi = out->hstar + 1;
     if (out->coins_applied_found && out->coins_applied_height >= 0) {
         int applied_through = out->coins_applied_height - 1;
         if (applied_through < 0)
             applied_through = 0;
+        int min_allowed = out->hstar > 0 ? out->hstar - 1 : 0;
+        if (applied_through < min_allowed) {
+            out->tip_finalize_cursor_after = cur;
+            LOG_WARN("stage_repair",
+                     "[stage_repair] tip_finalize clamp refused: "
+                     "coins_applied=%d applied_through=%d is below "
+                     "hstar=%d min_allowed=%d cursor=%d",
+                     out->coins_applied_height, applied_through,
+                     out->hstar, min_allowed, cur);
+            return true;
+        }
         if (hi > applied_through)
             hi = applied_through;
         if (lo > hi)
             lo = hi;
     }
 
-    int cur = out->tip_finalize_cursor_before;
     int target = cur < lo ? lo : (cur > hi ? hi : cur);
     if (cur == target) {
         out->tip_finalize_cursor_after = cur;
