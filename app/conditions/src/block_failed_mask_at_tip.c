@@ -242,10 +242,15 @@ static struct block_index *find_failed_next(struct main_state *ms, int target)
 static struct block_index *find_have_data_next(struct main_state *ms, int target)
 {
     if (!ms) return NULL;
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (!tip || !tip->phashBlock)
+        return NULL;
+
     size_t iter = 0;
     struct block_index *p = NULL;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
         if (p && p->nHeight == target &&
+            p->pprev == tip &&
             (p->nStatus & BLOCK_HAVE_DATA) &&
             !(p->nStatus & BLOCK_FAILED_MASK))
             return p;

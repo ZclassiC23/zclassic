@@ -1,5 +1,33 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 12:00 UTC code-review update.** The earlier live
+`block_failed_mask_at_tip` / missing-3166384 blocker is no longer the active
+live state: the main service advanced past H\*=3166383, and `zclassic-cli
+dumpstate tip_finalize` reported `cursor=3166413` with
+`sync_monitor.last_recovery=BODY_FRONTIER_MISSING` from the existing
+`condition:tip_fork_stale best-header body fallback`. A copied fullhist repro
+at `~/.zclassic-c23-COPY-20260701-113424-stall-3166384` still failed the
+strict `CLIMB_PAST=3166383` gate in the isolated/dead-sink peer setup, so treat
+that copy as proof of the stuck boundary shape, not as proof of networked
+recovery.
+
+The follow-up review patch fixes two liveness/API clarity edges in the
+condition layer:
+
+- `block_failed_mask_at_tip` no longer treats any `HAVE_DATA` block at
+  `active_tip + 1` as a no-advance successor; it must be the active tip's
+  direct child.
+- `local_header_refill_needed` now queues the same-height best-header ancestor
+  body when the best header is ahead on a fork, preserves
+  `SYNC_BLOCKS_DOWNLOAD` after a successful body queue, and uses the same
+  `block_has_any_failure()` gate as the queue helper.
+
+Proof for that patch: `git diff --check`, `make -j$(nproc) build-only`,
+`make lint`, `make t ONLY=sync_watchdog_conditions`, `make t
+ONLY=utxo_activation_paused`, `make t ONLY=tip_fork_stale`, full `make test`
+(`485` groups, `0` failed, `14` self-skipped), full `make -j$(nproc)`, and
+`make sim-fast` all passed.
+
 **Restart command:** type **`continue zclassic23 development`**. First checks:
 `git status --short --branch`, then the native API discovery command:
 `zclassic23 api`. It returns the same `zcl.rest_index.v1` body as

@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "conditions/local_header_refill_needed.h"
+#include "core/uint256.h"
 #include "util/log_macros.h"
 #include "framework/condition.h"
 
@@ -21,6 +22,31 @@ static _Atomic int g_peer_max_at_detect = -1;
 #ifdef ZCL_TESTING
 static _Atomic int g_test_remedy_calls;
 #endif
+
+static int best_header_same_height_body_target(struct main_state *ms)
+{
+    int target = -1;
+    if (!ms) {
+        LOG_WARN("condition",
+                 "[condition:local_header_refill_needed] best-header body "
+                 "target unavailable: missing main_state");
+        return target;
+    }
+
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    struct block_index *best = ms->pindex_best_header;
+    if (tip && tip->phashBlock && best && best->nHeight > tip->nHeight) {
+        struct block_index *best_at_tip =
+            block_index_get_ancestor(best, tip->nHeight);
+        if (best_at_tip && best_at_tip->phashBlock &&
+            !uint256_eq(best_at_tip->phashBlock, tip->phashBlock) &&
+            !block_has_any_failure(best_at_tip))
+            target = tip->nHeight;
+    }
+    zcl_mutex_unlock(&ms->cs_main);
+    return target;
+}
 
 static bool detect_local_header_refill_needed(void)
 {
@@ -70,14 +96,36 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
         &decision);
     LOG_WARN("condition", "[condition:local_header_refill_needed] missing=%d peer_max=%d " "eligible=%d decision=%s reason=%s", next_h, atomic_load(&g_peer_max_at_detect), peers, proceed ? "proceed" : "wait", decision.reason);
     if (proceed) {
-        if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                            "condition local_header_refill_needed")) {
-            sync_set_state(SYNC_IDLE, "condition local refill via idle");
-            sync_set_state(SYNC_HEADERS_DOWNLOAD,
-                           "condition local_header_refill_needed");
+        bool queued_body = false;
+        struct main_state *ms = sync_monitor_main_state();
+        int body_h = best_header_same_height_body_target(ms);
+        if (body_h >= 0) {
+            struct zcl_result qr = sync_monitor_queue_best_header_body(
+                body_h,
+                "condition:local_header_refill_needed same-height fork body");
+            if (!qr.ok) {
+                LOG_WARN("condition",
+                         "[condition:local_header_refill_needed] best-header "
+                         "body queue failed h=%d code=%d msg=%s",
+                         body_h, qr.code, qr.message);
+            } else {
+                LOG_WARN("condition",
+                         "[condition:local_header_refill_needed] queued "
+                         "best-header same-height body h=%d",
+                         body_h);
+                queued_body = true;
+            }
         }
-        sync_monitor_kick_local_sync(
-            "condition:local_header_refill_needed");
+        if (!queued_body) {
+            if (!sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                "condition local_header_refill_needed")) {
+                sync_set_state(SYNC_IDLE, "condition local refill via idle");
+                sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                               "condition local_header_refill_needed");
+            }
+            sync_monitor_kick_local_sync(
+                "condition:local_header_refill_needed");
+        }
     }
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);

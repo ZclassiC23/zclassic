@@ -420,6 +420,65 @@ int test_utxo_activation_paused(void)
     {
         reset_conditions();
         struct fake_clock clock;
+        fake_clock_install(&clock, 1400);
+        bool ok = true;
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 active_h;
+        struct uint256 fork_parent_h;
+        struct uint256 fork_child_h;
+        memset(&active_h, 0, sizeof(active_h));
+        active_h.data[0] = 0xA0;
+        memset(&fork_parent_h, 0, sizeof(fork_parent_h));
+        fork_parent_h.data[0] = 0xF0;
+        memset(&fork_child_h, 0, sizeof(fork_child_h));
+        fork_child_h.data[0] = 0xF1;
+
+        struct block_index *tip = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &active_h);
+        struct block_index *fork_parent = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &fork_parent_h);
+        struct block_index *fork_child = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &fork_child_h);
+        if (tip) {
+            tip->nHeight = 0;
+            tip->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            tip->nTx = 1;
+            tip->nChainTx = 1;
+        }
+        if (fork_parent) {
+            fork_parent->nHeight = 0;
+            fork_parent->nStatus = BLOCK_VALID_TREE;
+        }
+        if (fork_child) {
+            fork_child->nHeight = 1;
+            fork_child->pprev = fork_parent;
+            fork_child->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+            fork_child->nTx = 1;
+        }
+
+        ok = ok && tip && fork_parent && fork_child &&
+             active_chain_move_window_tip(&ms.chain_active, tip);
+        condition_engine_set_main_state(&ms);
+        register_block_failed_mask_at_tip();
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 1701);
+        condition_engine_tick();
+
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && block_failed_mask_at_tip_test_target_height() == -1;
+
+        UAP_CHECK("block condition ignores fork HAVE_DATA child", ok);
+        condition_engine_set_main_state(NULL);
+        main_state_free(&ms);
+        clock_reset_default();
+    }
+
+    {
+        reset_conditions();
+        struct fake_clock clock;
         fake_clock_install(&clock, 6500);
         bool ok = true;
         struct main_state ms;

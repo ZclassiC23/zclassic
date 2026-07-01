@@ -12,8 +12,10 @@
 #include "net/protocol.h"
 #include "platform/clock.h"
 #include "services/sync_monitor.h"
+#include "validation/chainstate.h"
 
 #include <stdatomic.h>
+#include <string.h>
 
 #define SYNC_WATCHDOG_CHECK(name, expr) do { \
     printf("sync_watchdog_conditions: %s... ", (name)); \
@@ -77,6 +79,29 @@ static void cleanup_sync_watchdog(void)
     condition_engine_reset_for_testing();
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
+}
+
+static struct block_index *insert_watchdog_block(struct main_state *ms,
+                                                 struct uint256 *hash,
+                                                 uint8_t salt,
+                                                 int height,
+                                                 struct block_index *prev,
+                                                 unsigned status)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = salt;
+    hash->data[1] = (uint8_t)(height & 0xff);
+    hash->data[2] = (uint8_t)((height >> 8) & 0xff);
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = height;
+    bi->pprev = prev;
+    bi->nStatus = status;
+    bi->nTx = (status & BLOCK_HAVE_DATA) ? 1 : 0;
+    bi->nChainTx = prev ? prev->nChainTx + bi->nTx : bi->nTx;
+    return bi;
 }
 
 int test_sync_watchdog_conditions(void)
@@ -339,6 +364,68 @@ int test_sync_watchdog_conditions(void)
         sync_monitor_get_local_recovery_stats(&lr);
         ok = ok && lr.active && lr.missing_height == 11;
         SYNC_WATCHDOG_CHECK("local header refill rotates peers", ok);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        struct fake_clock clock;
+        fake_clock_install(&clock, 4300);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        bool ok = true;
+        register_local_header_refill_needed();
+
+        struct uint256 active_h, fork_h, best_h;
+        struct block_index *tip = insert_watchdog_block(
+            &ms, &active_h, 0xA0, 10, NULL,
+            BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *fork_tip = insert_watchdog_block(
+            &ms, &fork_h, 0xF0, 10, NULL, BLOCK_VALID_TREE);
+        struct block_index *best = insert_watchdog_block(
+            &ms, &best_h, 0xF1, 11, fork_tip, BLOCK_VALID_TREE);
+        ms.pindex_best_header = best;
+        ok = ok && tip && fork_tip && best &&
+             active_chain_move_window_tip(&ms.chain_active, tip);
+
+        struct p2p_node p1 = {0}, p2 = {0}, p3 = {0};
+        p1.id = 1; p1.starting_height = 20; p1.state = PEER_ACTIVE;
+        p2.id = 2; p2.starting_height = 20; p2.state = PEER_ACTIVE;
+        p3.id = 3; p3.starting_height = 20; p3.state = PEER_ACTIVE;
+        p1.services = p2.services = p3.services = NODE_NETWORK;
+        struct p2p_node *peers[3] = { &p1, &p2, &p3 };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 3;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+
+        bool queued = local_header_refill_needed_test_remedy_calls() == 1 &&
+            sync_get_state() == SYNC_BLOCKS_DOWNLOAD &&
+            dm.queue_len == 1 &&
+            dm.queue_heights && dm.queue_heights[0] == 10 &&
+            dm.queue && uint256_eq(&dm.queue[0], fork_tip->phashBlock);
+        struct watchdog_stats wd;
+        sync_monitor_get_stats(&wd);
+        bool recorded = wd.last_recovery == WATCHDOG_BODY_FRONTIER_MISSING &&
+            wd.last_recovery_peer_height == 10;
+        ok = ok && queued && recorded;
+        SYNC_WATCHDOG_CHECK("local header refill queues fork body hash",
+                            queued);
+        SYNC_WATCHDOG_CHECK("local header refill records fork body recovery",
+                            recorded);
+        SYNC_WATCHDOG_CHECK("local header refill queues same-height fork body",
+                            ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
+        main_state_free(&ms);
         cleanup_sync_watchdog();
     }
 
