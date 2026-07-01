@@ -10,11 +10,13 @@ document for the versioned CRUD shape. Use
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
-code deploy verifier completed at h=3166108 on build `8f82a9a3c`; use
-`./tools/z status` for the exact running `build_commit`. At the latest handoff
-check the native node reported `sync_state=at_tip`,
-`consensus_authority=local_consensus_validation`, `healthy=true`,
-`serving=true`, 4 peers, `log_head=3166109`, and Tor/onion ready. The public
+code deploy verifier completed at h=3166149 on build `6786bcbae`; bare
+`zclassic23 agent` now discovers the running user service datadir/rpcport from
+systemd when the default cookie is absent, so no `-datadir` flag is needed for
+the normal owner command. At the latest handoff check the native node reported
+`sync_state=at_tip`, `consensus_authority=local_consensus_validation`,
+`healthy=true`, `serving=true`, 3 peers, `log_head=3166149`, and Tor/onion
+ready. The public
 `/api/status` surface is aligned with the health contract for the normal H*
 race: a one-block served-frontier gap reports `status=healthy`,
 `operator_needed=false`, and `primary_blocker=none`; gaps greater than one
@@ -22,8 +24,9 @@ remain named as catching-up or degraded.
 
 ```
 systems
-native node service        [##########] healthy/serving at local tip
-REST/MCP public API        [##########] H*-honest; one-block H* race is green
+native node service        [##########] healthy/serving at local tip; build 6786bcbae
+simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
+REST resource routing      [########--] `/api/v1` route table wired; dynamic/member routes still controller-owned
 HODL website freshness     [##########] current view refreshes to served tip
 factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
@@ -34,8 +37,18 @@ formal soak evidence       [##--------] live accruing; 168h judge NOT_MET
 window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01
 reported `VERDICT=NOT_MET reason=operator_intervention_detected_x2` over the
 current 168h evidence window (`window_samples=169`,
-`last_sample_age_sec=1370`). Do not mark C6/MVP soak complete until a fresh
+`last_sample_age_sec=646`). Do not mark C6/MVP soak complete until a fresh
 uninterrupted window is judged `MET`.
+
+**Versioned agent API landed.** The owner/agent first call is now the same shape
+across the binary, REST, and MCP: `zclassic23 agent`, `GET /api/v1/agent`, and
+`zcl_agent` all return compact `zcl.public_status.v1` JSON with
+`api_version="v1"`. REST discovery is `GET /api` or `GET /api/v1`
+(`zcl.rest_index.v1`) and names `/api/v1` as canonical while keeping `/api`
+compat aliases. Resource routing now has an explicit v1 route table for exact
+noun resources (`node`, `blocks`, `transactions`, `peers`, `hodl`, `factoids`,
+`files`, private `wallet`); the older dynamic/member routes remain in their
+controllers until they are worth folding behind resource actions.
 
 **API/data hardening landed.** The REST/factoid/HODL work now serves honest JSON
 instead of transient 503s for normal projection races: `/api/hodl` refreshes
@@ -60,8 +73,12 @@ yet have `source`.
 **Verification completed before this handoff.** Focused gates covered the new
 wallet/data/API paths, `git diff --check`, `make check-test-registration`,
 `make check-doc-accuracy`, `tools/scripts/check_raw_sqlite.sh`, `make lint`,
-full `make test` (`0/485 groups failed, 14 skipped`), production binary build,
-and `make deploy`. Live DB inspection confirmed `wallet_sapling_notes.source`,
+full `make test` (`0/485 groups failed, 15 skipped` after the v1 API work),
+production binary builds, and `make deploy`. The final focused native-entrypoint
+fix re-ran `make -j32 build-only`, `make t ONLY=make_lint_gates`, `make lint`,
+`make deploy`, and live checks for `zclassic23 agent`, `./tools/z`,
+`GET /api/v1/agent`, `GET /api/v1`, and `zclassic23 healthcheck`. Live DB
+inspection from the wallet cleanup confirmed `wallet_sapling_notes.source`,
 schema migration `021`, and `idx_snote_view_address`.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
@@ -72,9 +89,9 @@ path now calls `chain_evidence_note_finalized_tip(existing_tip)`, so the first
 health collection drains evidence to the recovered served tip immediately.
 
 **Public status false-alarm cleanup.** Commit `e0885b027` fixed the compact REST
-status contract after the startup-evidence deploy, and the running build
-`8f82a9a3c` includes it: `/api/status` no longer pages operator action for the
-normal one-block gap between `served_height` and
+status contract after the startup-evidence deploy, and the current running
+build `6786bcbae` still includes it: `/api/status` no longer pages operator
+action for the normal one-block gap between `served_height` and
 `indexed_height`/`header_height`. Regression coverage lives in `test_api`
 (`public status treats one-block served gap as healthy` and
 `public status still degrades material served gap`).
