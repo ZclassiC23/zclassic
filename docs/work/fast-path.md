@@ -39,7 +39,13 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
    a copy, never on the live node. For recovery work, make it a real H* climb
    gate too: `make repro-on-copy SLUG=<x> CLIMB_PAST=<height> ARGS='...'`
    FAILS if the copy only boots/holds flat and never serves a provable tip
-   strictly above `<height>`. The live datadir is never written.
+   strictly above `<height>`. `-refold-from-anchor` proofs must use
+   `REPRO_FULL=1` because the fold reads block bodies, and the harness now
+   refuses that flag unless an anchor snapshot candidate is reachable at
+   `$ZCL_MINT_ANCHOR_OUT` or `<src>/utxo-anchor.snapshot`. A refold proof also
+   has to prove the boot loaded the SHA3-verified MINTED snapshot and has to
+   observe H* at/below the gate before crossing it; starting above the gate is
+   not a climb proof. The live datadir is never written.
 
 5. **VERIFY + commit.** `make t ONLY=<group>` (inner loop) → `make build-only`
    / `make syntax-check` (does it compile) → `make lint` (full gates) → commit.

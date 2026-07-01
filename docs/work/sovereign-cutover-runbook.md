@@ -55,15 +55,25 @@ NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without
    ```
 3. **Copy-prove on a COPY of the live datadir** (never the live PID first):
    ```bash
-   cp -a ~/.zclassic-c23 /scratch/c23-cutover-prove          # ensure utxo-anchor.snapshot copied too
-   build/bin/zclassic23 -datadir=/scratch/c23-cutover-prove -refold-from-anchor \
-     -nobgvalidation -nolegacyimport -port=8123 -rpcport=18432 -connect=<a_peer>
+   make repro-on-copy SLUG=soak-refold \
+     REPRO_SRC=$HOME/.zclassic-c23-soak \
+     REPRO_FULL=1 \
+     REPRO_CONNECT=<a_peer> \
+     CLIMB_PAST=3056758 \
+     ARGS='-refold-from-anchor -nobgvalidation -paramsdir=$$HOME/.zcash-params'
    ```
    - **GATE (H\* CLIMB):** `reducer_frontier_compute_hstar` / `getblockcount` (= H*) must climb
      STRICTLY past 3,056,758 toward the active tip (~3,157,0xx), with
      `coins_kv_get_applied_height == hstar+1` at every step (no rowless span). Confirm
      `zcl_state subsystem=block_index`. The decisive positive proof is
      `test_reducer_forward_progress_gate.c` PART-1 (`ok && found && hstar==N && applied==N+1`).
+   - The harness refuses `-refold-from-anchor` unless this is a full copy, the
+     climb gate is set, and an anchor snapshot candidate is reachable at
+     `$ZCL_MINT_ANCHOR_OUT` or `<src>/utxo-anchor.snapshot`. The boot path still
+     does the actual SHA3/count verification before trusting the file, and the
+     harness fails unless the copy log proves that verified MINTED snapshot was
+     loaded. It also requires observing H\* at/below the gate before crossing it;
+     a first observed tip already above the gate is not accepted.
    - **Cross-check** the resulting block hash vs zclassicd (rpc 8232) at the anchor AND at tip.
    - Confirm body contiguity (3,056,758..tip) first. The explicit boot path now calls
      `boot_refold_body_span_contiguous` before reset/stamp, but this manual check keeps the

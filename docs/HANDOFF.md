@@ -92,14 +92,23 @@ anchor (`validate_headers` near 2100, `utxo_apply` near 1, `tip_finalize` near
 owner ack; next work should either prove a stable stopped-datadir copy or move
 to the sovereign `-refold-from-anchor` cure instead of live coin-backfill.
 
-**Copy-proof climb gate landed.** `tools/repro_on_copy.sh` now accepts
+**Copy-proof climb/refold preflight landed.** `tools/repro_on_copy.sh` accepts
 `--expect-climb-past=H`, and `make repro-on-copy` exposes it as
 `CLIMB_PAST=H`. This upgrades the existing copy harness from only "no public tip
 regression" to the runbook bar: if RPC answers but H\* never climbs strictly
 past the named blocker/anchor before the deadline, the run exits FAIL instead
-of PASS. The repro manifest records `climb_past`, so failed copies are
-auditable after the process exits. Use this for refold/cure work, for example:
-`make repro-on-copy SLUG=refold CLIMB_PAST=3056758 ARGS='-refold-from-anchor'`.
+of PASS. `-refold-from-anchor` proofs now also fail before copying unless they
+use a full datadir copy (`REPRO_FULL=1` / `--full`) and an anchor snapshot
+candidate exists at `$ZCL_MINT_ANCHOR_OUT` or `<src>/utxo-anchor.snapshot`.
+Once the copy boots, the harness still refuses a refold PASS unless the node log
+proves the SHA3-verified MINTED snapshot was loaded, and unless H\* is observed
+at/below `CLIMB_PAST` before crossing it. A first observed tip already above the
+gate is no longer accepted as a climb proof.
+The repro manifest records `climb_past`, `refold`, and
+`anchor_snapshot_candidate`, so failed copies are auditable after the process
+exits. Use this for soak refold/cure work only after staging the anchor
+snapshot, for example:
+`make repro-on-copy SLUG=soak-refold REPRO_SRC=$HOME/.zclassic-c23-soak REPRO_FULL=1 CLIMB_PAST=3056758 ARGS='-refold-from-anchor -nobgvalidation -paramsdir=$$HOME/.zcash-params'`.
 
 **Reducer-frontier refusal hardening landed.** A follow-up on 2026-07-01 pins
 the live soak failure class where `coin_backfill_status_label=owner_refused`
@@ -268,14 +277,14 @@ build `3347f42ab`, `healthy=false`, `serving=false`, `sync=blocks_download`,
 owner-refused coin-backfill blocker.
 
 The copy-proof climb-gate pass re-ran `sh -n tools/repro_on_copy.sh`,
-`make -n repro-on-copy SLUG=refold CLIMB_PAST=3056758
-ARGS='-refold-from-anchor'`, a no-run fixture proving
-`REPRO_MANIFEST.txt` records `climb_past:  42`, `git diff --check`,
-`make check-doc-accuracy`, `make lint-fast`, full `make lint`, full
-`make test` (`0/485 groups failed, 14 skipped`), and `make sim-fast`
-(`64` seeded replays). It did not require a binary redeploy: the live node is
-still running deployed build `3347f42ab`, and this pass changes the developer
-copy-proof harness plus handoff/docs only.
+`make -n repro-on-copy SLUG=soak-refold REPRO_SRC=$HOME/.zclassic-c23-soak
+REPRO_FULL=1 CLIMB_PAST=3056758 ARGS='-refold-from-anchor -nobgvalidation
+-paramsdir=$$HOME/.zcash-params'`, missing-anchor + light-copy guard checks,
+a fake-node harness proving (a) missing verified snapshot-load log fails,
+(b) first-observed-above-gate fails, and (c) an observed 42→43 climb with the
+verified-load log passes, `git diff --check`, `make -j32 build-only`,
+`make check-doc-accuracy`, full `make lint`, full `make test` (`0/485 groups
+failed, 14 skipped`), and `make sim-fast` (`64` seeded replays).
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip

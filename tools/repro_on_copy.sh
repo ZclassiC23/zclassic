@@ -45,6 +45,13 @@
 #                     above H before the deadline
 #   --no-run          snapshot + manifest only; do not launch the node
 #   --                everything after is passed verbatim to build/bin/zclassic23
+#
+# Refold-specific rule:
+#   If pass-through args include -refold-from-anchor, this harness requires
+#   --full, --expect-climb-past=H, and a reachable anchor snapshot candidate
+#   at $ZCL_MINT_ANCHOR_OUT or <src>/utxo-anchor.snapshot. The node still owns
+#   the SHA3/count verification at boot; this preflight only catches missing
+#   artifacts and invalid light-copy proofs cheaply.
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -98,6 +105,28 @@ case "$EXPECT_CLIMB_PAST" in
         fi
         ;;
 esac
+
+REFOLD_REQUESTED=0
+case " $PASS " in
+    *" -refold-from-anchor "*) REFOLD_REQUESTED=1 ;;
+esac
+ANCHOR_CANDIDATE=""
+if [ "$REFOLD_REQUESTED" = "1" ]; then
+    if [ "$LIGHT" = "1" ]; then
+        echo "repro_on_copy: -refold-from-anchor requires --full because the fold reads block bodies" >&2
+        exit 2
+    fi
+    if [ -z "$EXPECT_CLIMB_PAST" ]; then
+        echo "repro_on_copy: -refold-from-anchor requires --expect-climb-past=H so a flat boot cannot pass" >&2
+        exit 2
+    fi
+    ANCHOR_CANDIDATE="${ZCL_MINT_ANCHOR_OUT:-$SRC/utxo-anchor.snapshot}"
+    if [ ! -s "$ANCHOR_CANDIDATE" ]; then
+        echo "repro_on_copy: -refold-from-anchor requires an anchor snapshot candidate at $ANCHOR_CANDIDATE" >&2
+        echo "repro_on_copy: mint/stage one first with zclassic23 -mint-anchor or ZCL_ANCHOR_SNAPSHOT_SRC=<file> make seed-anchor-snapshot" >&2
+        exit 2
+    fi
+fi
 
 refuse_live_port() {
     p="$1"
@@ -186,6 +215,8 @@ rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null || true
     echo "https_port:  $HTTPSPORT"
     echo "connect:     $CONNECT"
     echo "climb_past:  ${EXPECT_CLIMB_PAST:-none}"
+    echo "refold:      $([ "$REFOLD_REQUESTED" = 1 ] && echo yes || echo no)"
+    echo "anchor_snapshot_candidate: ${ANCHOR_CANDIDATE:-none}"
 } > "$DEST/REPRO_MANIFEST.txt"
 echo "[repro] manifest: $DEST/REPRO_MANIFEST.txt"
 
@@ -238,6 +269,7 @@ first_tip=-1
 regressed=0
 seen_rpc=0
 climbed_past=0
+seen_at_or_below_climb=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! kill -0 "$NODE_PID" 2>/dev/null; then
         echo "[repro] node exited early (see $DEST/repro_node.log)"; break
@@ -249,10 +281,17 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
             [ "$first_tip" -lt 0 ] && first_tip="$t" && echo "[repro] first tip: $t"
             if [ "$t" -gt "$max_tip" ]; then max_tip="$t"; fi
             if [ -n "$EXPECT_CLIMB_PAST" ] &&
+               [ "$t" -le "$EXPECT_CLIMB_PAST" ] 2>/dev/null; then
+                seen_at_or_below_climb=1
+            fi
+            if [ -n "$EXPECT_CLIMB_PAST" ] &&
                [ "$t" -gt "$EXPECT_CLIMB_PAST" ] 2>/dev/null; then
-                climbed_past=1
-                echo "[repro] H* CLIMBED to $t (> $EXPECT_CLIMB_PAST)"
-                break
+                if [ "$REFOLD_REQUESTED" != "1" ] ||
+                   [ "$seen_at_or_below_climb" = "1" ]; then
+                    climbed_past=1
+                    echo "[repro] H* CLIMBED to $t (> $EXPECT_CLIMB_PAST)"
+                    break
+                fi
             fi
             # Regression = tip dropped meaningfully below the high-water mark.
             if [ "$max_tip" -ge 0 ] && [ "$t" -lt "$((max_tip - 5))" ]; then
@@ -270,8 +309,12 @@ post_tip="$(tip)"; post_tip="${post_tip:--1}"
 # silently degrades into read-error spam and the proof is environmentally
 # invalid, not evidence about the binary. Detect and refuse the verdict.
 body_read_fails=0
+refold_snapshot_loaded=0
 if [ -f "$DEST/repro_node.log" ]; then
     body_read_fails="$(grep -c 'cannot open .*/blocks/blk' "$DEST/repro_node.log" 2>/dev/null || echo 0)"
+    if grep -q '\[boot\] -refold-from-anchor: loaded .* coins from the MINTED snapshot' "$DEST/repro_node.log" 2>/dev/null; then
+        refold_snapshot_loaded=1
+    fi
 fi
 echo "========================================================================"
 echo "  repro-on-copy [$SLUG]"
@@ -279,6 +322,9 @@ echo "  copy:      $DEST"
 echo "  first_tip: $first_tip   max_tip: $max_tip   post_tip: $post_tip"
 if [ -n "$EXPECT_CLIMB_PAST" ]; then
     echo "  climb_past: $EXPECT_CLIMB_PAST   climbed: $climbed_past"
+fi
+if [ "$REFOLD_REQUESTED" = "1" ]; then
+    echo "  refold_snapshot_loaded: $refold_snapshot_loaded"
 fi
 if [ "$LIGHT" = "1" ] && [ "$body_read_fails" -gt 0 ]; then
     echo "  VERDICT:   INVALID — $body_read_fails block-body read failures on a"
@@ -292,9 +338,19 @@ elif [ "$seen_rpc" = "0" ]; then
 elif [ "$regressed" = "1" ]; then
     echo "  VERDICT:   FAIL — public tip REGRESSED on the copy (reset reproduced)"
     RC=1
+elif [ "$REFOLD_REQUESTED" = "1" ] && [ "$refold_snapshot_loaded" != "1" ]; then
+    echo "  VERDICT:   FAIL — -refold-from-anchor did not prove that the"
+    echo "             SHA3-verified MINTED anchor snapshot was loaded."
+    echo "             Inspect $DEST/repro_node.log before trusting this run."
+    RC=1
 elif [ -n "$EXPECT_CLIMB_PAST" ] && [ "$climbed_past" != "1" ]; then
     echo "  VERDICT:   FAIL — H* did not climb strictly past $EXPECT_CLIMB_PAST"
     echo "             within ${DEADLINE}s (first=$first_tip max=$max_tip)."
+    if [ "$REFOLD_REQUESTED" = "1" ] &&
+       [ "$seen_at_or_below_climb" != "1" ]; then
+        echo "             Refold proofs require observing H* at/below the gate first;"
+        echo "             starting above it is not accepted as a climb proof."
+    fi
     RC=1
 else
     echo "  VERDICT:   PASS — tip held/advanced (no regression) over ${DEADLINE}s"

@@ -291,14 +291,26 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   against it on an isolated port — validate consensus/recovery fixes BEFORE
 #   they can touch the live chain; FAILS LOUD on a tip regression. Set
 #   CLIMB_PAST=<height> to also require H* to climb strictly past that height.
+#   Optional wrapper vars: REPRO_SRC=<dir>, REPRO_FULL=1, REPRO_CONNECT=<peer>,
+#   REPRO_DEADLINE=<secs>, REPRO_PORT=<rpcport>, REPRO_P2P_PORT=<p2pport>.
 #     make repro-on-copy SLUG=import-reset ARGS='-nobgvalidation'
-#     make repro-on-copy SLUG=refold CLIMB_PAST=3056758 ARGS='-refold-from-anchor'
+#     make repro-on-copy SLUG=soak-refold REPRO_SRC=$HOME/.zclassic-c23-soak \
+#       REPRO_FULL=1 CLIMB_PAST=3056758 \
+#       ARGS='-refold-from-anchor -nobgvalidation -paramsdir=$$HOME/.zcash-params'
 .PHONY: diagnose-gap repro-on-copy
 diagnose-gap:
 	@tools/diagnose_gap.sh $(SLUG)
 
 repro-on-copy:
-	@tools/repro_on_copy.sh $(SLUG) $(if $(CLIMB_PAST),--expect-climb-past=$(CLIMB_PAST),) $(if $(ARGS),-- $(ARGS),)
+	@tools/repro_on_copy.sh "$(SLUG)" \
+	    $(if $(REPRO_SRC),"--src=$(REPRO_SRC)",) \
+	    $(if $(REPRO_FULL),"--full",) \
+	    $(if $(REPRO_CONNECT),"--connect=$(REPRO_CONNECT)",) \
+	    $(if $(REPRO_DEADLINE),"--deadline=$(REPRO_DEADLINE)",) \
+	    $(if $(REPRO_PORT),"--port=$(REPRO_PORT)",) \
+	    $(if $(REPRO_P2P_PORT),"--p2p-port=$(REPRO_P2P_PORT)",) \
+	    $(if $(CLIMB_PAST),"--expect-climb-past=$(CLIMB_PAST)",) \
+	    $(if $(ARGS),-- $(ARGS),)
 
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))

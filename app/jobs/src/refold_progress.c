@@ -8,10 +8,16 @@
 #include "jobs/reducer_frontier.h"   /* REDUCER_FRONTIER_TRUSTED_ANCHOR */
 #include "storage/progress_store.h"
 #include "json/json.h"
+#include "util/util.h"
 #include "util/log_macros.h"
 
 #include <stdatomic.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* Cached answer for the hot path. Refreshed at boot + on every mark/clear.
  * Conservative default: false (== normal boot, floor stays at the anchor). */
@@ -268,6 +274,41 @@ bool refold_progress_bump_target(sqlite3 *db, int32_t live_tip)
     return true;
 }
 
+static void refold_snapshot_candidate_dump_json(struct json_value *out)
+{
+    char path[1100] = {0};
+    const char *source = "datadir";
+    const char *env_out = getenv("ZCL_MINT_ANCHOR_OUT");
+    bool path_ok = false;
+
+    if (env_out && env_out[0]) {
+        int n = snprintf(path, sizeof(path), "%s", env_out);
+        path_ok = n > 0 && (size_t)n < sizeof(path);
+        source = "ZCL_MINT_ANCHOR_OUT";
+    } else {
+        char datadir[1024] = {0};
+        GetDataDir(true, datadir, sizeof(datadir));
+        int n = snprintf(path, sizeof(path), "%s/utxo-anchor.snapshot",
+                         datadir);
+        path_ok = n > 0 && (size_t)n < sizeof(path);
+    }
+
+    struct stat st;
+    bool present = path_ok && stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+                   st.st_size > 0;
+
+    json_push_kv_str(out, "anchor_snapshot_candidate_source", source);
+    json_push_kv_str(out, "anchor_snapshot_candidate_path",
+                     path_ok ? path : "");
+    json_push_kv_bool(out, "anchor_snapshot_candidate_stat_present", present);
+    json_push_kv_int(out, "anchor_snapshot_candidate_stat_size",
+                     present ? (int64_t)st.st_size : 0);
+    json_push_kv_bool(out, "anchor_snapshot_verified", false);
+    json_push_kv_str(out, "anchor_snapshot_verification",
+                     "not checked by zcl_state; boot verifies full SHA3/count "
+                     "before use");
+}
+
 /* ── zcl_state introspection ────────────────────────────────────────────────
  *
  * See CLAUDE.md "Adding state introspection". Read-only: this dumper observes
@@ -293,6 +334,7 @@ bool refold_progress_dump_state_json(struct json_value *out, const char *key)
      * before the H* floor and below-anchor self-repair return to normal. */
     json_push_kv_int(out, "trusted_anchor",
                      (int64_t)REDUCER_FRONTIER_TRUSTED_ANCHOR);
+    refold_snapshot_candidate_dump_json(out);
 
     /* Durable view: peek the persisted keys so a restart mid-fold is visible
      * even before the cache is refreshed. Best-effort — when the progress

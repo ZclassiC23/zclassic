@@ -21,13 +21,16 @@
 
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
+#include "json/json.h"
 #include "storage/progress_store.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* src-private mirrors of the test-only hooks (the witness pattern — not in the
  * public headers). */
@@ -307,11 +310,52 @@ static int case_durable_roundtrip(void)
     return failures;
 }
 
+static int case_dump_reports_anchor_snapshot_candidate(void)
+{
+    int failures = 0;
+    const char *path = "/tmp/zclassic23-refold-missing-anchor.snapshot";
+    unlink(path);
+    setenv("ZCL_MINT_ANCHOR_OUT", path, 1);
+
+    struct json_value dump = {0};
+    RP_CHECK("dump refold state ok",
+             refold_progress_dump_state_json(&dump, NULL));
+
+    const struct json_value *src =
+        json_get(&dump, "anchor_snapshot_candidate_source");
+    const struct json_value *p =
+        json_get(&dump, "anchor_snapshot_candidate_path");
+    const struct json_value *present =
+        json_get(&dump, "anchor_snapshot_candidate_stat_present");
+    const struct json_value *verified =
+        json_get(&dump, "anchor_snapshot_verified");
+    const struct json_value *verification =
+        json_get(&dump, "anchor_snapshot_verification");
+
+    RP_CHECK("dump anchor source env",
+             src && strcmp(json_get_str(src), "ZCL_MINT_ANCHOR_OUT") == 0);
+    RP_CHECK("dump anchor path",
+             p && strcmp(json_get_str(p), path) == 0);
+    RP_CHECK("dump anchor missing",
+             present && !json_get_bool(present));
+    RP_CHECK("dump anchor not verified",
+             verified && !json_get_bool(verified));
+    RP_CHECK("dump anchor verification note",
+             verification &&
+             strstr(json_get_str(verification), "not checked") != NULL &&
+             strstr(json_get_str(verification), "SHA3/count") != NULL);
+
+    json_free(&dump);
+    unsetenv("ZCL_MINT_ANCHOR_OUT");
+    return failures;
+}
+
 int test_refold_progress_floor(void)
 {
     int failures = 0;
     failures += case_floor_scoping();
     failures += case_durable_roundtrip();
+    failures += case_dump_reports_anchor_snapshot_candidate();
     if (failures == 0)
         printf("test_refold_progress_floor: ALL PASSED\n");
     else
