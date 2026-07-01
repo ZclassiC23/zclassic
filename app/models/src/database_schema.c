@@ -167,6 +167,7 @@ static const char *SCHEMA[] = {
     "nullifier BLOB NOT NULL UNIQUE,"
     "block_height INTEGER,spent_txid BLOB,"
     "address TEXT,"
+    "source TEXT NOT NULL DEFAULT 'local',"
     "PRIMARY KEY (txid,output_index))",
 
     "CREATE INDEX IF NOT EXISTS idx_snote_unspent"

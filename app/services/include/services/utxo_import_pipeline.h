@@ -6,16 +6,18 @@
 #include "util/result.h"
 
 #include <stdint.h>
+#include <stddef.h>
 
 struct node_db;
 typedef struct sqlite3_stmt sqlite3_stmt;
 
 #define UTXO_IMPORT_NUM_DECODERS_MAX 32
+#define UTXO_IMPORT_VALUE_MAX_BYTES (4u * 1024u * 1024u)
 
 struct utxo_import_raw_entry {
     uint8_t  txid[32];
     uint8_t *value;
-    uint16_t value_len;
+    uint32_t value_len;
 };
 
 struct utxo_import_row {
@@ -33,6 +35,8 @@ struct utxo_import_row {
 };
 
 int utxo_import_num_decoders(void);
+struct zcl_result utxo_import_value_len_checked(size_t value_len,
+                                                uint32_t *out_len);
 int utxo_import_decode_entry(const struct utxo_import_raw_entry *raw,
                              struct utxo_import_row *out,
                              int max_rows);

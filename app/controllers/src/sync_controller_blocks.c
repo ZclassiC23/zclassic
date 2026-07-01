@@ -326,7 +326,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                 fail_reason = "nullifier_bind";
                 goto fail;
             }
-            if (AR_STEP_ROW_READONLY(ns) != SQLITE_DONE) {
+            if (AR_STEP_WRITE(ns) != SQLITE_DONE) {
                 fail_reason = "nullifier_insert";
                 goto fail;
             }

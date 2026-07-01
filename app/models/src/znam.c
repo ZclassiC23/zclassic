@@ -156,13 +156,11 @@ static void row_to_znam(sqlite3_stmt *s, struct znam_entry *out)
     if (val) snprintf(out->target_value, sizeof(out->target_value),
                       "%s", val);
 
-    const void *blob = sqlite3_column_blob(s, 4);
-    if (blob) memcpy(out->reg_txid, blob, 32);
+    AR_READ_BLOB(s, 4, out->reg_txid, 32);
 
     out->reg_height = (int32_t)sqlite3_column_int(s, 5);
 
-    blob = sqlite3_column_blob(s, 6);
-    if (blob) memcpy(out->last_update_txid, blob, 32);
+    AR_READ_BLOB(s, 6, out->last_update_txid, 32);
 }
 
 bool db_znam_find(struct node_db *ndb, const char *name,

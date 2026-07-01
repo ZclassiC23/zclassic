@@ -217,6 +217,15 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
                                      const char *datadir)
 {
+    return explorer_factoids_build_json_for_served_tip(buf, buf_max, datadir,
+                                                       -1);
+}
+
+size_t explorer_factoids_build_json_for_served_tip(uint8_t *buf,
+                                                   size_t buf_max,
+                                                   const char *datadir,
+                                                   int64_t served_height)
+{
     if (!buf || buf_max < 512 || !datadir) return 0;
 
     sqlite3 *db = NULL;
@@ -226,10 +235,18 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
 
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
-    int64_t chain_height = chain_stats.height;
+    int64_t indexed_height = chain_stats.height;
     int64_t utxo_tip = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
-    if (utxo_tip > chain_height)
-        chain_height = utxo_tip;
+    if (utxo_tip > indexed_height)
+        indexed_height = utxo_tip;
+    int64_t chain_height = indexed_height;
+    bool index_capped = false;
+    if (served_height >= 0 && indexed_height > served_height) {
+        chain_height = served_height;
+        index_capped = true;
+    } else if (served_height < 0) {
+        served_height = chain_height;
+    }
 
     size_t off = 0;
     char *r = (char *)buf;
@@ -255,12 +272,16 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
             "\"unsafe_sections_suppressed\":true,"
             "\"reason\":\"%s\","
             "\"chain_height\":%" PRId64 ","
+            "\"served_height\":%" PRId64 ","
+            "\"indexed_height\":%" PRId64 ","
+            "\"index_capped\":%s,"
             "\"supply\":{\"total_sat\":%" PRId64 ",\"total_zcl\":%.8f},"
             "\"utxo\":{\"count\":%" PRId64 ",\"value_sat\":%" PRId64 ",\"value_zcl\":%.8f},"
             "\"index\":{\"blocks\":%" PRId64 ",\"transactions\":%" PRId64 "},"
             "\"consensus\":{\"genesis_hash\":\"%s\","
             "\"genesis_time\":%" PRId64 ",\"mainnet_port\":8033,\"buttercup_height\":707000}}",
             history.reason, chain_height,
+            served_height, indexed_height, index_capped ? "true" : "false",
             supply, (double)supply / (double)ZATOSHI_PER_ZCL,
             utxo_count, utxo_value, (double)utxo_value / (double)ZATOSHI_PER_ZCL,
             block_rows, tx_rows, ZCL_EXPLORER_GENESIS_HASH_DISPLAY_HEX,
@@ -272,7 +293,13 @@ size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
     struct explorer_token_stats token_stats = {0};
     explorer_query_token_stats(db, &token_stats);
 
-    APPEND(off, r, max, "{\"chain_height\":%" PRId64, chain_height);
+    APPEND(off, r, max,
+        "{\"chain_height\":%" PRId64
+        ",\"served_height\":%" PRId64
+        ",\"indexed_height\":%" PRId64
+        ",\"index_capped\":%s",
+        chain_height, served_height, indexed_height,
+        index_capped ? "true" : "false");
 
     /* Genesis — height 0 may not be in SQLite, use constants as fallback */
     {

@@ -24,6 +24,7 @@
 #include "controllers/wallet_helpers.h"
 #include "json/json.h"
 #include "event/event.h"
+#include "platform/time_compat.h"
 #include "rpc/legacy_rpc_client.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -34,7 +35,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/time.h>
 #include <time.h>
 
 /* ── Constants ─────────────────────────────────────────────────── */
@@ -89,9 +89,7 @@ static int64_t zclassicd_oracle_progress_marker(void)
 
 static int64_t zclassicd_oracle_now_us(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    return platform_time_realtime_us();
 }
 
 static int zclassicd_oracle_error_code(const char *err)

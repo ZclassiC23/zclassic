@@ -5,6 +5,7 @@
  * SaplingNote:
  *   validates :txid, :ivk, :nullifier, :cm, :pk_d, :diversifier, :rcm, presence
  *   validates :value, money_range: [0, MAX_MONEY]
+ *   validates :source, inclusion: [local, view]
  *   belongs_to :sapling_key */
 
 #include "platform/time_compat.h"
@@ -25,6 +26,20 @@
 
 DEFINE_MODEL_CALLBACKS(sapling_note)
 
+static bool sapling_note_source_valid(const char *source)
+{
+    return source &&
+           (strcmp(source, DB_SAPLING_NOTE_SOURCE_LOCAL) == 0 ||
+            strcmp(source, DB_SAPLING_NOTE_SOURCE_VIEW) == 0);
+}
+
+static void sapling_note_default_source(struct db_sapling_note *n)
+{
+    if (n && n->source[0] == '\0')
+        snprintf(n->source, sizeof(n->source), "%s",
+                 DB_SAPLING_NOTE_SOURCE_LOCAL);
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_sapling_note_validate(const struct db_sapling_note *n,
@@ -41,6 +56,9 @@ bool db_sapling_note_validate(const struct db_sapling_note *n,
     validates_presence_of(errors, n, rcm);
     validates_max(errors, n, memo_len, 512);
     validates_non_negative(errors, n, block_height);
+    validates_string_present(errors, n->source, "source");
+    validates_custom(errors, sapling_note_source_valid(n->source), "source",
+                     "must be local or view");
     if (n->is_spent) {
         static const uint8_t z[32] = {0};
         if (memcmp(n->spent_txid, z, 32) == 0)
@@ -77,6 +95,10 @@ void db_sapling_note_read_row(sqlite3_stmt *s, int col,
     AR_READ_BLOB(s, col, out->nullifier, 32);              col++;
     if (sqlite3_column_type(s, col) != SQLITE_NULL)
         out->block_height = (int)AR_COL_INT(s, col);
+    col++;
+    if (col < sqlite3_column_count(s))
+        AR_READ_STR(s, col, out->source, sizeof(out->source));
+    sapling_note_default_source(out);
 
     /* Derive bech32 z-address from diversifier+pk_d for in-memory use. */
     const struct chain_params *cp = chain_params_get();
@@ -102,11 +124,12 @@ void wallet_tx_read_spent_txid(sqlite3_stmt *s, int col,
 bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
 {
     if (!ndb->open) return false;
+    struct db_sapling_note *mut = (struct db_sapling_note *)n;
+    sapling_note_default_source(mut);
     struct ar_callbacks *cbs = db_sapling_note_callbacks();
     AR_BEGIN_SAVE(cbs, "sapling_note", n, db_sapling_note_validate);
 
     /* Derive bech32 z-address if not already set */
-    struct db_sapling_note *mut = (struct db_sapling_note *)n;
     if (!mut->address[0]) {
         const struct chain_params *cp = chain_params_get();
         if (cp)
@@ -119,8 +142,8 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     AR_PREPARE_BOOL(ndb, s,
         "INSERT OR REPLACE INTO wallet_sapling_notes"
         "(txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,cm,"
-        "nullifier,block_height,spent_txid,address)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        "nullifier,block_height,spent_txid,address,source)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     AR_BIND_BLOB(s, 1, n->txid, 32);
     AR_BIND_INT(s, 2, (int)n->output_index);
     AR_BIND_INT(s, 3, n->value);
@@ -146,6 +169,7 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
         AR_BIND_TEXT(s, 13, n->address);
     else
         AR_BIND_NULL(s, 13);
+    AR_BIND_TEXT(s, 14, n->source);
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
     if (ok && !wallet_projection_emit_note_decrypted(
@@ -280,7 +304,7 @@ int db_sapling_note_list_unspent(struct node_db *ndb,
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
-        "cm,nullifier,block_height"
+        "cm,nullifier,block_height,source"
         " FROM wallet_sapling_notes WHERE spent_txid IS NULL"
         " ORDER BY value DESC",
         out, max,
@@ -293,6 +317,19 @@ int db_sapling_note_count_unspent(struct node_db *ndb)
     if (!ndb || !ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb,
         "SELECT COUNT(*) FROM wallet_sapling_notes WHERE spent_txid IS NULL");
+}
+
+int db_sapling_note_count_unspent_view_for_address(struct node_db *ndb,
+                                                   const char *address)
+{
+    if (!ndb || !ndb->open || !address || address[0] == '\0')
+        return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_COUNT_BOUND(ndb, s,
+        "SELECT COUNT(*) FROM wallet_sapling_notes"
+        " WHERE spent_txid IS NULL AND source=? AND address=?",
+        AR_BIND_TEXT(s, 1, DB_SAPLING_NOTE_SOURCE_VIEW);
+        AR_BIND_TEXT(s, 2, address));
 }
 
 int db_sapling_note_list_unspent_alloc(struct node_db *ndb,
@@ -328,7 +365,7 @@ int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
-        "cm,nullifier,block_height"
+        "cm,nullifier,block_height,source"
         " FROM wallet_sapling_notes WHERE spent_txid IS NULL AND ivk=?"
         " ORDER BY value DESC",
         out, max,
@@ -343,12 +380,12 @@ int db_sapling_note_list_all(struct node_db *ndb,
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
-        "cm,nullifier,block_height,spent_txid"
+        "cm,nullifier,block_height,source,spent_txid"
         " FROM wallet_sapling_notes ORDER BY block_height DESC",
         out, max,
         (void)0,
         db_sapling_note_read_row(s, 0, &out[count]);
-        wallet_tx_read_spent_txid(s, 11, &out[count]));
+        wallet_tx_read_spent_txid(s, 12, &out[count]));
 }
 
 /* Read one coinanalysis row. The z-address is derived only when both
@@ -462,6 +499,43 @@ bool db_sapling_note_replace_all(struct node_db *ndb,
     ok = ok && db_sapling_note_delete_all(ndb);
     for (i = 0; ok && i < count; i++)
         ok = db_sapling_note_save(ndb, &rows[i]);
+    if (!ok) {
+        node_db_rollback(ndb);
+        return false;
+    }
+    return node_db_commit(ndb);
+}
+
+static bool db_sapling_note_delete_view_rows(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_BOOL(ndb, s,
+        "DELETE FROM wallet_sapling_notes WHERE source=?",
+        AR_BIND_TEXT(s, 1, DB_SAPLING_NOTE_SOURCE_VIEW));
+}
+
+bool db_sapling_note_replace_view_rows(struct node_db *ndb,
+                                       const struct db_sapling_note *rows,
+                                       size_t count)
+{
+    size_t i = 0;
+    bool ok = true;
+
+    if (!ndb || !ndb->open)
+        return false;
+    if (count > 0 && !rows)
+        return false;
+
+    ok = node_db_begin(ndb);
+    ok = ok && db_sapling_note_delete_view_rows(ndb);
+    for (i = 0; ok && i < count; i++) {
+        struct db_sapling_note row = rows[i];
+        snprintf(row.source, sizeof(row.source), "%s",
+                 DB_SAPLING_NOTE_SOURCE_VIEW);
+        ok = db_sapling_note_save(ndb, &row);
+    }
     if (!ok) {
         node_db_rollback(ndb);
         return false;

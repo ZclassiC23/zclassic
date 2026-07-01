@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate #19: no direct clock_gettime/time(NULL)/getrandom outside lib/platform.
+# Gate #19: no direct clock_gettime/gettimeofday/time(NULL)/getrandom outside lib/platform.
 # Mode: WARN | FAIL (controlled by ZCL_LINT_MODE; default FAIL for Phase 1)
 set -euo pipefail
 
@@ -16,7 +16,7 @@ done
 
 matches=$(
     grep -rn --include='*.c' --include='*.h' \
-        -E '\bclock_gettime\s*\(|\btime\s*\(\s*NULL\s*\)|\bgetrandom\s*\(' \
+        -E '\bclock_gettime\s*\(|\bgettimeofday\s*\(|\btime\s*\(\s*NULL\s*\)|\bgetrandom\s*\(' \
         "${roots[@]}" 2>/dev/null \
     | grep -v '^lib/platform/' \
     | grep -v '^tools/lint/check_no_raw_clock_outside_platform.sh:' \

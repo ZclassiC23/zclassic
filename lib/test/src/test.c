@@ -793,6 +793,9 @@ int main(void)
     failures += test_bloom();
     failures += test_coins();
     failures += test_chainstate_legacy_reader();
+    failures += test_utxo_import_pipeline();
+    failures += test_ccoins_decoder_kat();
+    failures += test_blob_read_bounds();
     { extern int test_ldb_snapshot(void);
       failures += test_ldb_snapshot(); }
     { extern int test_utxo_snapshot_loader(void);
@@ -802,6 +805,7 @@ int main(void)
       failures += test_load_verify_boot(); }
     { extern int test_boot_snapshot_failure_memory(void);
       failures += test_boot_snapshot_failure_memory(); }
+    failures += test_boot_snapshot_drop_bodiless();
     failures += test_boot_datadir_lock();
     failures += test_boot_shutdown_marker();
     failures += test_boot_stale_locks();
@@ -1018,6 +1022,7 @@ int main(void)
     failures += test_cookie_rotation();
     failures += test_reorg_safety();
     failures += test_invalidateblock();
+    failures += test_most_work_selector();
     failures += test_reorg_parity();
     failures += test_reorg_projection_parity();
     failures += test_stage_reorg_unwind_parity();

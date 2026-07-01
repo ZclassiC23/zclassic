@@ -43,6 +43,7 @@
 #include "services/db_maintenance.h"
 #include "controllers/wallet_scan.h"
 #include "util/blocker.h"
+#include "util/ar_step_readonly.h"
 #include "util/signal_handler.h"
 #include "util/thread_registry.h"
 #include "util/sync.h"
@@ -399,13 +400,12 @@ static void boot_step_backfill_shielded_if_needed(struct app_context *ctx,
      * column. Skipped in no_services mode (speedrun / benchmarking). */
     if (!(g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services))
         return;
-
     int64_t shielded_count = 0;
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(g_node_db.db,
             "SELECT COUNT(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
             -1, &s, NULL) == SQLITE_OK) {
-        if (sqlite3_step(s) == SQLITE_ROW)
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
             shielded_count = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
     }
@@ -1062,7 +1062,7 @@ bool app_init(struct app_context *ctx)
         if (sqlite3_prepare_v2(g_node_db.db,
                 "SELECT count(*) FROM wallet_keys",
                 -1, &wk_count, NULL) == SQLITE_OK && wk_count) {
-            if (sqlite3_step(wk_count) == SQLITE_ROW)
+            if (AR_STEP_ROW_READONLY(wk_count) == SQLITE_ROW)
                 pre_open_key_rows = sqlite3_column_int64(wk_count, 0);
             sqlite3_finalize(wk_count);
         } else {
@@ -2530,7 +2530,7 @@ bool app_init(struct app_context *ctx)
         int rc = sqlite3_prepare_v2(g_node_db.db, repair_sql, -1, &sel, NULL);
         if (rc == SQLITE_OK && sel) {
             int repaired = 0, checked = 0;
-            while (sqlite3_step(sel) == SQLITE_ROW) {
+            while (AR_STEP_ROW_READONLY(sel) == SQLITE_ROW) {
                 const void *hash_blob = sqlite3_column_blob(sel, 0);
                 int hash_len = sqlite3_column_bytes(sel, 0);
                 int file_num = sqlite3_column_int(sel, 1);
@@ -2738,7 +2738,7 @@ bool app_init(struct app_context *ctx)
                                 "ORDER BY height DESC LIMIT 1",
                                 -1, &qs, NULL);
                             if (qs) {
-                                if (sqlite3_step(qs) == SQLITE_ROW)
+                                if (AR_STEP_ROW_READONLY(qs) == SQLITE_ROW)
                                     target_h = sqlite3_column_int(qs, 0);
                                 sqlite3_finalize(qs);
                             }
@@ -2810,7 +2810,7 @@ bool app_init(struct app_context *ctx)
                             if (sqlite3_prepare_v2(g_node_db.db,
                                 "SELECT MAX(height) FROM utxos",
                                 -1, &hst, NULL) == SQLITE_OK && hst) {
-                                if (sqlite3_step(hst) == SQLITE_ROW)
+                                if (AR_STEP_ROW_READONLY(hst) == SQLITE_ROW)
                                     utxo_max_h = sqlite3_column_int(hst, 0);
                                 sqlite3_finalize(hst);
                             }

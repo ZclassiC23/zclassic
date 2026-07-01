@@ -14,8 +14,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <sys/time.h>
 
+#include "platform/time_compat.h"
 #include "models/database.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_view_controller.h"
@@ -140,8 +140,7 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         }
     }
 
-    struct timeval t0, t1;
-    gettimeofday(&t0, NULL);
+    int64_t t0 = platform_time_monotonic_us();
 
     size_t len = 0;
     if (strncmp(path, "/wallet", 7) == 0 ||
@@ -163,9 +162,8 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
                                             post_body_len,
                                             g_response, sizeof(g_response));
 
-    gettimeofday(&t1, NULL);
-    long ms = (t1.tv_sec - t0.tv_sec) * 1000 +
-              (t1.tv_usec - t0.tv_usec) / 1000;
+    int64_t t1 = platform_time_monotonic_us();
+    long ms = (long)((t1 - t0) / 1000LL);
     if (g_status_label) {
         char status[128];
         snprintf(status, sizeof(status), "%s  %ldms  %zu bytes", path, ms, len);

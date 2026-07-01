@@ -33,6 +33,19 @@ bool z_sendmany_shielded(
         int num_notes = db_sapling_note_list_unspent_for_ivk(
             ctx->node_db, from_z_key->ivk, notes, 256);
         if (num_notes <= 0) {
+            char from_addr[128] = "";
+            if (sapling_encode_payment_address(
+                    from_z_key->diversifier, from_z_key->pk_d,
+                    cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+                    from_addr, sizeof(from_addr)) &&
+                db_sapling_note_count_unspent_view_for_address(
+                    ctx->node_db, from_addr) > 0) {
+                json_set_str(result,
+                             "view-only balance synced from zclassicd");
+                LOG_FAIL("wallet_shielded",
+                         "z_sendmany: view-only zclassicd balance for %s",
+                         from_addr);
+            }
             json_set_str(result, "No unspent shielded notes for this address");
             LOG_FAIL("wallet_shielded", "z_sendmany: no unspent notes for from z-address");
         }

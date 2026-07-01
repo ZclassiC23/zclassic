@@ -63,6 +63,16 @@ struct wv_funded_addr { char addr[128]; double amount; };
 int wv_get_all_funded_taddrs(struct wv_funded_addr *addrs, int max_addrs);
 void wv_get_funded_zaddr(char *out, size_t max, double *out_balance);
 void wv_sync_wallet_from_zclassicd(void);
+#ifdef ZCL_TESTING
+void wv_sapling_placeholder_fields_for_test(const uint8_t txid_bin[32],
+                                            int outindex,
+                                            uint8_t rcm[32],
+                                            uint8_t ivk[32],
+                                            uint8_t div_full[32],
+                                            uint8_t pkd[32],
+                                            uint8_t cm[32],
+                                            uint8_t nf[32]);
+#endif
 int wv_shield_check_status(void);
 struct db_contact;
 int wv_recent_contacts(struct db_contact *out, size_t max);

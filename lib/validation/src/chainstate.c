@@ -728,11 +728,18 @@ bool active_chain_selection_candidate_beats_best(
     return block_has_any_failure(incumbent);
 }
 
-struct block_index *active_chain_most_work_candidate(struct active_chain *c,
-                                                      struct block_map *m)
+struct block_index *select_most_work_eligible(
+        struct active_chain *c,
+        struct block_map *m,
+        struct most_work_selection_stats *stats)
 {
     if (!c || !m)
         return NULL;
+    if (stats) {
+        memset(stats, 0, sizeof(*stats));
+        stats->refused_below_tip_height = -1;
+        stats->refused_below_tip_tip_height = -1;
+    }
 
     struct block_index *tip = active_chain_tip(c);
     struct block_index *best = tip;
@@ -742,15 +749,18 @@ struct block_index *active_chain_most_work_candidate(struct active_chain *c,
     while (block_map_next(m, &iter, NULL, &pindex)) {
         if (!pindex)
             continue;
-        /* Mirror find_most_work_chain (process_block_core.c) eligibility:
-         * skip failed blocks, require at least header-tree validation, and
-         * require data availability (nChainTx>0 OR BLOCK_HAVE_DATA). */
-        if (block_has_any_failure(pindex))
+        if (block_has_any_failure(pindex)) {
+            if (stats) stats->skipped_failed++;
             continue;
-        if (!block_index_is_valid(pindex, BLOCK_VALID_TREE))
+        }
+        if (!block_index_is_valid(pindex, BLOCK_VALID_TREE)) {
+            if (stats) stats->skipped_invalid++;
             continue;
-        if (pindex->nChainTx == 0 && !(pindex->nStatus & BLOCK_HAVE_DATA))
+        }
+        if (pindex->nChainTx == 0 && !(pindex->nStatus & BLOCK_HAVE_DATA)) {
+            if (stats) stats->skipped_no_chaintx++;
             continue;
+        }
 
         if (active_chain_selection_candidate_beats_best(c, pindex, best)) {
             /* Ancestry must be failure-free up to the current best/tip. */
@@ -766,8 +776,11 @@ struct block_index *active_chain_most_work_candidate(struct active_chain *c,
                     break; /* pprev unlinked (post-import) — stop, accept */
                 check = check->pprev;
             }
-            if (chain_ok)
+            if (chain_ok) {
                 best = pindex;
+            } else if (stats) {
+                stats->skipped_bad_ancestry++;
+            }
         }
     }
 
@@ -775,10 +788,22 @@ struct block_index *active_chain_most_work_candidate(struct active_chain *c,
      * canonical (matches find_most_work_chain's stale-fork guard). The
      * window only ever grows forward; a lower-height higher-work fork is
      * never selected here. */
-    if (tip && best && best != tip && best->nHeight < tip->nHeight)
+    if (tip && best && best != tip && best->nHeight < tip->nHeight) {
+        if (stats) {
+            stats->refused_below_tip = true;
+            stats->refused_below_tip_height = best->nHeight;
+            stats->refused_below_tip_tip_height = tip->nHeight;
+        }
         return tip;
+    }
 
     return best;
+}
+
+struct block_index *active_chain_most_work_candidate(struct active_chain *c,
+                                                      struct block_map *m)
+{
+    return select_most_work_eligible(c, m, NULL);
 }
 
 int active_chain_height(const struct active_chain *c)

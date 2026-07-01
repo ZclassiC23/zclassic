@@ -29,6 +29,7 @@
 #include "services/chain_tip_watchdog.h"  /* #8: self-respawn when off-systemd */
 #include "util/clientversion.h"
 #include "util/sd_notify.h"               /* #8: detect NOTIFY_SOCKET */
+#include "util/ar_step_readonly.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1113,7 +1114,7 @@ int main(int argc, char **argv)
         int tip = 0;
         { sqlite3_stmt *s = NULL;
           sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks", -1, &s, NULL);
-          if (s && sqlite3_step(s) == SQLITE_ROW) tip = sqlite3_column_int(s, 0);
+          if (s && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) tip = sqlite3_column_int(s, 0);
           if (s) sqlite3_finalize(s);
         }
         printf("Current tip: %d\n", tip);
@@ -1211,7 +1212,7 @@ int main(int argc, char **argv)
                         -1, &chk, NULL);
                     sqlite3_bind_blob(chk, 1, txid_bin, 32, SQLITE_STATIC);
                     sqlite3_bind_int(chk, 2, vout);
-                    bool exists = (sqlite3_step(chk) == SQLITE_ROW);
+                    bool exists = (AR_STEP_ROW_READONLY(chk) == SQLITE_ROW);
                     sqlite3_finalize(chk);
 
                     if (!exists) {
@@ -1303,7 +1304,7 @@ int main(int argc, char **argv)
                                         sqlite3_bind_int(ins, 5, stype);
                                         sqlite3_bind_blob(ins, 6, addr_hash, 20, SQLITE_STATIC);
                                         sqlite3_bind_int(ins, 7, txht);
-                                        sqlite3_step(ins);
+                                        AR_STEP_WRITE(ins);
                                         fixed++;
                                         }
                                     }
@@ -1341,7 +1342,7 @@ int main(int argc, char **argv)
                 "SELECT hash FROM blocks WHERE height = "
                 "(SELECT MAX(height) FROM blocks)",
                 -1, &tip_s, NULL);
-            if (tip_s && sqlite3_step(tip_s) == SQLITE_ROW) {
+            if (tip_s && AR_STEP_ROW_READONLY(tip_s) == SQLITE_ROW) {
                 const void *tip_hash = sqlite3_column_blob(tip_s, 0);
                 int tip_len = sqlite3_column_bytes(tip_s, 0);
                 if (tip_hash && tip_len >= 32) {
@@ -1353,7 +1354,7 @@ int main(int argc, char **argv)
                     if (up) {
                         sqlite3_bind_blob(up, 1, tip_hash, tip_len,
                                           SQLITE_STATIC);
-                        sqlite3_step(up);
+                        AR_STEP_WRITE(up);
                         sqlite3_finalize(up);
                         printf("Reset coins_best_block to tip\n");
                     }
@@ -1458,7 +1459,7 @@ int main(int argc, char **argv)
         sqlite3_prepare_v2(ndb.db,
             "SELECT count(*), COALESCE(SUM(value),0) FROM utxos",
             -1, &s, NULL);
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
             utxo_count = sqlite3_column_int64(s, 0);
             utxo_sum = sqlite3_column_int64(s, 1);
         }
@@ -1469,7 +1470,7 @@ int main(int argc, char **argv)
         sqlite3_prepare_v2(ndb.db,
             "SELECT count(*), COALESCE(SUM(value),0) FROM wallet_utxos "
             "WHERE spent_txid IS NULL", -1, &s, NULL);
-        if (sqlite3_step(s) == SQLITE_ROW) {
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
             wallet_cnt = sqlite3_column_int64(s, 0);
             wallet_bal = sqlite3_column_int64(s, 1);
         }
@@ -1480,7 +1481,7 @@ int main(int argc, char **argv)
         sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM addresses WHERE balance > 0",
             -1, &s, NULL);
-        if (sqlite3_step(s) == SQLITE_ROW)
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
             addr_count = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
 
@@ -1640,7 +1641,7 @@ int main(int argc, char **argv)
         int32_t height = 0;
         sqlite3_stmt *hs = NULL;
         sqlite3_prepare_v2(ndb.db, "SELECT MAX(height) FROM utxos", -1, &hs, NULL);
-        if (hs && sqlite3_step(hs) == SQLITE_ROW)
+        if (hs && AR_STEP_ROW_READONLY(hs) == SQLITE_ROW)
             height = sqlite3_column_int(hs, 0);
         if (hs) sqlite3_finalize(hs);
 
@@ -1652,7 +1653,7 @@ int main(int argc, char **argv)
             "ORDER BY (status & 8) DESC LIMIT 1", -1, &bs, NULL);
         if (bs) {
             sqlite3_bind_int(bs, 1, height);
-            if (sqlite3_step(bs) == SQLITE_ROW &&
+            if (AR_STEP_ROW_READONLY(bs) == SQLITE_ROW &&
                 sqlite3_column_bytes(bs, 0) == 32)
                 memcpy(block_hash, sqlite3_column_blob(bs, 0), 32);
             sqlite3_finalize(bs);
@@ -1663,7 +1664,7 @@ int main(int argc, char **argv)
         sqlite3_stmt *ts = NULL;
         sqlite3_prepare_v2(ndb.db,
             "SELECT COALESCE(SUM(value),0) FROM utxos", -1, &ts, NULL);
-        if (ts && sqlite3_step(ts) == SQLITE_ROW)
+        if (ts && AR_STEP_ROW_READONLY(ts) == SQLITE_ROW)
             total_supply = sqlite3_column_int64(ts, 0);
         if (ts) sqlite3_finalize(ts);
 

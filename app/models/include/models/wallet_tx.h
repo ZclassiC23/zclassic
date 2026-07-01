@@ -180,6 +180,9 @@ bool db_wallet_utxo_replace_all(struct node_db *ndb,
 bool db_wallet_tx_delete_all(struct node_db *ndb);
 
 /* Sapling notes */
+#define DB_SAPLING_NOTE_SOURCE_LOCAL "local"
+#define DB_SAPLING_NOTE_SOURCE_VIEW  "view"
+
 struct db_sapling_note {
     uint8_t txid[32];
     uint32_t output_index;
@@ -199,6 +202,7 @@ struct db_sapling_note {
     size_t witness_data_len;
     int witness_height;
     char address[128]; /* bech32 z-address derived from diversifier+pk_d */
+    char source[16];   /* local catchup/decrypt note, or view-only placeholder */
 };
 
 bool db_sapling_note_validate(const struct db_sapling_note *n,
@@ -297,6 +301,11 @@ bool db_sapling_note_delete_all(struct node_db *ndb);
 bool db_sapling_note_replace_all(struct node_db *ndb,
                                  const struct db_sapling_note *rows,
                                  size_t count);
+bool db_sapling_note_replace_view_rows(struct node_db *ndb,
+                                       const struct db_sapling_note *rows,
+                                       size_t count);
+int db_sapling_note_count_unspent_view_for_address(struct node_db *ndb,
+                                                   const char *address);
 
 /* Free malloc'd fields (witness_data) after loading a sapling note. */
 void db_sapling_note_free(struct db_sapling_note *n);

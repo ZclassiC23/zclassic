@@ -190,6 +190,34 @@ static int test_install_alt_stack(void)
     return failures;
 }
 
+/* SIGPIPE is ordinary I/O backpressure, not a node-fatal crash class. The
+ * process-level handler install must ignore it so one missed MSG_NOSIGNAL
+ * cannot terminate the node without a postmortem. */
+static int test_install_ignores_sigpipe(void)
+{
+    int failures = 0;
+
+    TEST("signal_handler: install ignores SIGPIPE") {
+        fflush(stdout);
+        fflush(stderr);
+        pid_t pid = fork();
+        ASSERT(pid >= 0);
+        if (pid == 0) {
+            if (signal_handler_install() != 0) _exit(43);
+            if (raise(SIGPIPE) != 0) _exit(44);
+            _exit(0);
+        }
+        int status = 0;
+        pid_t done = waitpid(pid, &status, 0);
+        ASSERT(done == pid);
+        ASSERT(WIFEXITED(status));
+        ASSERT_EQ(WEXITSTATUS(status), 0);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_util_signal_handler(void)
 {
     printf("\n=== util/signal_handler tests ===\n");
@@ -203,6 +231,7 @@ int test_util_signal_handler(void)
     int failures = 0;
     failures += test_reraise_and_durable_mirror();
     failures += test_install_alt_stack();
+    failures += test_install_ignores_sigpipe();
 
     if (failures == 0)
         printf("=== util/signal_handler tests: ALL PASS ===\n\n");

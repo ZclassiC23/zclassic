@@ -41,9 +41,13 @@ Storage primitives that legitimately need raw SQL
 (`lib/storage/src/coins_view_sqlite.c`) opt out with `#define ZCL_AR_RAW_SQL`.
 
 **Status: shipped.** The ratchet allowlist
-`tools/scripts/raw_sqlite_allowlist.txt` is empty. All production writes across
-`app/models/src/`, `app/controllers/src/`, `app/services/src/`, and
-`lib/wallet/src/wallet_sqlite.c` route through the AR lifecycle. `make lint`
+`tools/scripts/raw_sqlite_allowlist.txt` is empty. Raw `sqlite3_step()` is
+linted across `app/`, `tools/`, `lib/`, `config/`, and `src/`; production step
+calls must use `AR_STEP_ROW`, `AR_STEP_DONE`, `AR_STEP_ROW_READONLY`, or
+`AR_STEP_WRITE` unless they carry a reviewed `// raw-sql-ok:<tag>`. Structured
+domain-model saves still use the AR lifecycle entry points above so validation
+and before/after hooks fire. The legacy/import `sqlite3_exec()` policy is a
+separate larger decision and is not part of this step-call gate. `make lint`
 runs `check_raw_sqlite.sh` (one of the gates in the canonical block below).
 
 ### The one principled exception: the `progress.kv` kernel store
@@ -215,6 +219,7 @@ assert green).
 
 | Gate | Mode | Intent / marker |
 |------|------|-----------------|
+| `check-blob-read-bounds` | HARD | Fixed-size SQLite blob reads in app models use `AR_READ_BLOB` or prove `sqlite3_column_bytes` before `memcpy`. |
 | `check-malloc`, `check-raw-malloc` | HARD | Raw malloc/calloc/realloc outside `zcl_*` wrappers (§3). Override `// raw-alloc-ok:<tag>`. |
 | `check-raw-sqlite` | HARD | Raw `sqlite3_step` outside `AR_STEP_*` (§1). Override `// raw-sql-ok:<tag>`. |
 | `check-silent-errors` (+ `-services`/`-controllers`/`-jobs`/`-conditions`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
@@ -349,6 +354,7 @@ against the Makefile `lint:` target. Keep it sorted; edit it whenever you
 add/remove a gate.
 
 <!-- LINT-GATES-BEGIN -->
+- `check-blob-read-bounds`
 - `check-before-save-hooks`
 - `check-coins-lookup-nullcheck`
 - `check-consensus-parity`

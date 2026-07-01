@@ -3,6 +3,7 @@
  * BLAKE2b, Hash256, Hash160. */
 
 #include "test/test_helpers.h"
+#include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 
 int test_crypto(void)
@@ -247,8 +248,7 @@ int test_crypto(void)
             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
         };
 
-        struct timeval t1, t2;
-        gettimeofday(&t1, NULL);
+        int64_t t1 = platform_time_monotonic_us();
         int iters = 1000000;
         struct sha256_ctx bench;
         for (int i = 0; i < iters; i++) {
@@ -256,9 +256,8 @@ int test_crypto(void)
             sha256_write(&bench, block, 64);
             sha256_finalize(&bench, (unsigned char *)state);
         }
-        gettimeofday(&t2, NULL);
-        double elapsed = (double)(t2.tv_sec - t1.tv_sec) +
-                          (double)(t2.tv_usec - t1.tv_usec) / 1e6;
+        int64_t t2 = platform_time_monotonic_us();
+        double elapsed = (double)(t2 - t1) / 1e6;
         double mbs = (double)iters * 64.0 / elapsed / 1e6;
         printf("OK (%.0f MB/s, %d hashes in %.3fs)\n", mbs, iters, elapsed);
     }

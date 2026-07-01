@@ -8,6 +8,7 @@
 #define ZCL_INIT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 enum zcl_runtime_profile {
@@ -248,6 +249,11 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
                                             const char *datadir,
                                             struct main_state *ms);
+
+#ifdef ZCL_TESTING
+size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
+    struct main_state *ms, const char *datadir, int seed_h);
+#endif
 
 /* Testable production transaction used by both SHA3-verified snapshot seed
  * paths. The caller owns trust: `snapshot` must already be opened by uss_open()

@@ -230,6 +230,30 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 21) {
+        /* v21: distinguish durable wallet notes from zclassicd view-only
+         * placeholders. Existing notes default to local, and only the
+         * wallet-view mirror path opts into source='view'. */
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE wallet_sapling_notes "
+            "ADD COLUMN source TEXT NOT NULL DEFAULT 'local'",
+            "v21: add wallet_sapling_notes.source",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v21 migration failed adding wallet_sapling_notes.source");
+        if (db_exec_checked(ndb->db,
+            "CREATE INDEX IF NOT EXISTS idx_snote_view_address "
+            "ON wallet_sapling_notes(address) "
+            "WHERE spent_txid IS NULL AND source='view'",
+            "v21: idx_snote_view_address") != SQLITE_OK)
+            LOG_ERR("db", "v21 migration failed creating idx_snote_view_address");
+        if (!node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('021')"))
+            LOG_ERR("db", "v21 migration failed stamping schema_migrations");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 21);
+        current_ver = 21;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

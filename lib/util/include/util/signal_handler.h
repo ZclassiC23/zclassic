@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * signal_handler — capture fatal signals (SIGABRT/SIGSEGV/SIGBUS/SIGFPE)
- * with an async-signal-safe backtrace.
+ * with an async-signal-safe backtrace, and ignore SIGPIPE process-wide.
  *
  * Without this, a SIGABRT exits the process with status=134 and nothing
  * in node.log explains where the abort came from — every crash becomes
@@ -36,8 +36,10 @@ typedef void (*signal_handler_crash_hook_fn)(int sig,
                                              void *ctx);
 
 /* Install handlers for SIGABRT, SIGSEGV, SIGBUS, SIGFPE on an alternate
- * signal stack (so a stack-overflow SIGSEGV can still produce a backtrace).
- * Idempotent. Returns 0 on success, -1 on sigaltstack/sigaction failure. */
+ * signal stack (so a stack-overflow SIGSEGV can still produce a backtrace),
+ * and ignore SIGPIPE so socket/pipe races return EPIPE instead of terminating
+ * the node. Idempotent. Returns 0 on success, -1 on sigaction/sigaltstack
+ * failure. */
 int signal_handler_install(void);
 
 /* Open a durable, append-only crash log at `path` (best-effort, idempotent).

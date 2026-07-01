@@ -18,6 +18,7 @@
 #include "config/runtime.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "keys/key_io.h"
 #include "models/block.h"
 #include "models/database.h"
@@ -38,6 +39,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "platform/time_compat.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -57,6 +59,97 @@
 #include <unistd.h>
 
 /* Cached endpoints: blocks, stats, supply, hodl, deep_stats. Called only from background refresh thread. */
+
+static int64_t api_hodl_cap_to_served_tip(int64_t index_tip)
+{
+    if (index_tip < 0)
+        return index_tip;
+    if (!reducer_frontier_provable_tip_is_published())
+        return 0;
+
+    int32_t served_tip = reducer_frontier_provable_tip_cached();
+    if (served_tip >= 0 && index_tip > served_tip)
+        return served_tip;
+    return index_tip;
+}
+
+static int64_t api_hodl_tip_from_db(sqlite3 *db, int64_t *block_tip_out,
+                                    int64_t *utxo_tip_out)
+{
+    int64_t block_tip;
+    int64_t utxo_tip;
+
+    if (!db) {
+        if (block_tip_out)
+            *block_tip_out = -1;
+        if (utxo_tip_out)
+            *utxo_tip_out = -1;
+        LOG_RETURN(-1, "api", "api_hodl_tip_from_db: NULL db");
+    }
+
+    block_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
+    utxo_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    if (block_tip_out)
+        *block_tip_out = block_tip;
+    if (utxo_tip_out)
+        *utxo_tip_out = utxo_tip;
+    return block_tip > utxo_tip ? block_tip : utxo_tip;
+}
+
+int64_t api_hodl_index_tip_height(void)
+{
+    char db_path[1024];
+    sqlite3 *db = NULL;
+    int64_t tip;
+
+    if (!g_api_ctx.datadir)
+        LOG_RETURN(-1, "api", "api_hodl_index_tip_height: no datadir");
+
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_api_ctx.datadir);
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        LOG_RETURN(-1, "api", "api_hodl_index_tip_height: open %s failed",
+                   db_path);
+    }
+    tip = api_hodl_tip_from_db(db, NULL, NULL);
+    sqlite3_close(db);
+    return tip;
+}
+
+int64_t api_hodl_current_tip_height(void)
+{
+    int64_t index_tip = api_hodl_index_tip_height();
+    return api_hodl_cap_to_served_tip(index_tip);
+}
+
+bool api_hodl_index_ahead_of_served(int64_t *index_tip_out,
+                                    int64_t *served_tip_out)
+{
+    char db_path[1024];
+    sqlite3 *db = NULL;
+    int64_t index_tip;
+    int64_t served_tip;
+
+    if (!g_api_ctx.datadir)
+        LOG_RETURN(false, "api", "api_hodl_index_ahead_of_served: no datadir");
+
+    snprintf(db_path, sizeof(db_path), "%s/node.db", g_api_ctx.datadir);
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        LOG_RETURN(false, "api", "api_hodl_index_ahead_of_served: open %s failed",
+                   db_path);
+    }
+    index_tip = api_hodl_tip_from_db(db, NULL, NULL);
+    sqlite3_close(db);
+    served_tip = api_hodl_cap_to_served_tip(index_tip);
+    if (index_tip_out)
+        *index_tip_out = index_tip;
+    if (served_tip_out)
+        *served_tip_out = served_tip;
+    return index_tip >= 0 && served_tip >= 0 && index_tip > served_tip;
+}
 
 size_t compute_blocks(uint8_t *r, size_t max)
 {
@@ -188,10 +281,10 @@ size_t compute_hodl(uint8_t *r, size_t max)
         return api_json_error(r, max, JSON_500_HEADERS, "Database unavailable");
     }
 
-    int64_t tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
-    int64_t block_tip = sql_query_i64(db, "SELECT MAX(height) FROM blocks");
-    if (block_tip > tip)
-        tip = block_tip;
+    int64_t block_tip = 0;
+    int64_t utxo_tip = 0;
+    int64_t index_tip = api_hodl_tip_from_db(db, &block_tip, &utxo_tip);
+    int64_t tip = api_hodl_cap_to_served_tip(index_tip);
 
     struct hodl_wave_snapshot hodl;
     if (!hodl_wave_scan_current_utxos(db, tip, &hodl)) {
@@ -205,17 +298,26 @@ size_t compute_hodl(uint8_t *r, size_t max)
     size_t off = 0;
     off += (size_t)snprintf((char *)r + off, max - off,
         "%s{"
-        "\"source\":\"%s\""
+        "\"schema\":\"zcl.hodl_wave.v1\""
+        ",\"generated_at\":%" PRId64
+        ",\"fresh\":true"
+        ",\"source\":\"%s\""
         ",\"metric\":\"%s\""
         ",\"status\":\"%s\""
         ",\"height\":%" PRId64
+        ",\"served_tip_height\":%" PRId64
+        ",\"indexed_tip_height\":%" PRId64
+        ",\"block_tip_height\":%" PRId64
+        ",\"utxo_tip_height\":%" PRId64
         ",\"total_utxos\":%" PRId64
         ",\"total_value\":%.8f"
         ",\"older_than_1y\":{\"value\":%.8f,\"percent\":%.6f}"
         ",\"skipped_rows\":%" PRId64
         ",\"buckets\":[",
-        JSON_HEADERS, hodl.source, hodl.metric, hodl.status,
-        hodl.tip_height, hodl.total_count,
+        JSON_HEADERS,
+        (int64_t)platform_time_wall_time_t(),
+        hodl.source, hodl.metric, hodl.status,
+        hodl.tip_height, tip, index_tip, block_tip, utxo_tip, hodl.total_count,
         (double)hodl.total_value / (double)ZATOSHI_PER_ZCL,
         (double)hodl.older_than_1y_value / (double)ZATOSHI_PER_ZCL,
         over_1y_pct, hodl.skipped_rows);

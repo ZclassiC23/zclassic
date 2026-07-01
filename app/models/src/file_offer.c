@@ -80,8 +80,7 @@ bool db_file_offer_save(struct node_db *ndb,
 static void row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
 {
     memset(out, 0, sizeof(*out));
-    const void *blob = sqlite3_column_blob(s, 0);
-    if (blob) memcpy(out->root_hash, blob, 32);
+    AR_READ_BLOB(s, 0, out->root_hash, 32);
 
     const char *name = (const char *)sqlite3_column_text(s, 1);
     if (name) snprintf(out->filename, sizeof(out->filename), "%s", name);
@@ -90,11 +89,9 @@ static void row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
     out->num_chunks = (uint32_t)sqlite3_column_int(s, 3);
     out->price_per_mb = sqlite3_column_int64(s, 4);
 
-    blob = sqlite3_column_blob(s, 5);
-    if (blob) memcpy(out->z_addr, blob, 43);
+    AR_READ_BLOB(s, 5, out->z_addr, 43);
 
-    blob = sqlite3_column_blob(s, 6);
-    if (blob) memcpy(out->peer_ip, blob, 16);
+    AR_READ_BLOB(s, 6, out->peer_ip, 16);
 
     out->peer_port = (uint16_t)sqlite3_column_int(s, 7);
     out->last_seen = sqlite3_column_int64(s, 8);

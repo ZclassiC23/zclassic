@@ -9,6 +9,7 @@
 #include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
 #include "storage/coins_kv.h"           /* boundary utxo_root read */
 #include "storage/progress_store.h"     /* progress_store_db() handle */
+#include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include <string.h>
@@ -17,7 +18,6 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <time.h>
 
 bool mmb_leaf_store_validate(struct mmb_leaf_store *store,
@@ -170,9 +170,7 @@ uint64_t mmb_leaf_store_rebuild(struct mmb_leaf_store *store,
     store->num_leaves = 0;
 
     uint64_t count = 0;
-    int64_t t0 = 0;
-    { struct timeval tv; gettimeofday(&tv, NULL);
-      t0 = (int64_t)tv.tv_sec; }
+    int64_t t0 = platform_time_monotonic_us();
 
     sqlite3 *pdb = progress_store_db();
     for (int h = 0; h <= height; h++) {
@@ -212,9 +210,7 @@ uint64_t mmb_leaf_store_rebuild(struct mmb_leaf_store *store,
                    (unsigned long long)count, height + 1);
     }
 
-    int64_t elapsed = 0;
-    { struct timeval tv; gettimeofday(&tv, NULL);
-      elapsed = (int64_t)tv.tv_sec - t0; }
+    int64_t elapsed = (platform_time_monotonic_us() - t0) / 1000000LL;
 
     printf("[mmb_leaf_store] Built %llu leaf hashes in %llds (%s)\n",
            (unsigned long long)count, (long long)elapsed, store->path);

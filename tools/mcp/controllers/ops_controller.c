@@ -184,6 +184,105 @@ static int status_count_json_objects(const char *s)
     return n;
 }
 
+static bool status_parse_json(struct json_value *out, const char *raw)
+{
+    json_init(out);
+    return raw && json_read(out, raw, strlen(raw));
+}
+
+static long long status_json_int(const struct json_value *obj,
+                                 const char *key,
+                                 long long dflt)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v ? json_get_int(v) : dflt;
+}
+
+static const char *status_json_str(const struct json_value *obj,
+                                   const char *key,
+                                   const char *dflt)
+{
+    const struct json_value *v = json_get(obj, key);
+    const char *s = json_get_str(v);
+    return s && s[0] ? s : dflt;
+}
+
+static bool status_json_bool(const struct json_value *obj,
+                             const char *key,
+                             bool dflt)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v ? json_get_bool(v) : dflt;
+}
+
+static long long status_max_ll(long long a, long long b)
+{
+    return a > b ? a : b;
+}
+
+static void status_push_string_array(struct json_value *obj,
+                                     const char *key,
+                                     const char *a,
+                                     const char *b)
+{
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    if (a && a[0]) {
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, a);
+        json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    if (b && b[0] && (!a || strcmp(a, b) != 0)) {
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, b);
+        json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    json_push_kv(obj, key, &arr);
+    json_free(&arr);
+}
+
+static void status_peer_summary(const struct json_value *peers,
+                                int *total_out,
+                                int *inbound_out,
+                                int *outbound_out,
+                                int *ready_out,
+                                long long *max_height_out)
+{
+    int total = 0, inbound = 0, outbound = 0, ready = 0;
+    long long max_h = 0;
+
+    if (peers && peers->type == JSON_ARR) {
+        total = (int)json_size(peers);
+        for (size_t i = 0; i < json_size(peers); i++) {
+            const struct json_value *p = json_at(peers, i);
+            if (!p || p->type != JSON_OBJ)
+                continue;
+            if (json_get_bool(json_get(p, "inbound")))
+                inbound++;
+            else
+                outbound++;
+            const char *state = json_get_str(json_get(p, "state"));
+            if (strcmp(state, "handshake_complete") == 0 ||
+                strcmp(state, "active") == 0)
+                ready++;
+            long long h = status_json_int(p, "startingheight", 0);
+            if (h > max_h)
+                max_h = h;
+        }
+    }
+
+    if (total_out) *total_out = total;
+    if (inbound_out) *inbound_out = inbound;
+    if (outbound_out) *outbound_out = outbound;
+    if (ready_out) *ready_out = ready;
+    if (max_height_out) *max_height_out = max_h;
+}
+
 static int blocker_status_priority(int cls)
 {
     switch ((enum blocker_class)cls) {
@@ -385,6 +484,296 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
                  "malloc failed for status response");
         LOG_ERR("mcp.ops", "malloc failed for status body");
         return -1;  // raw-return-ok:logged-oom
+    }
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_operator_summary(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    (void)req;
+
+    char *chain  = mcp_node_rpc("getblockchaininfo", NULL);
+    char *peers  = mcp_node_rpc("getpeerinfo", NULL);
+    char *diag   = mcp_node_rpc("getsyncdiag", NULL);
+    char *dl     = mcp_node_rpc("downloadstats", NULL);
+    char *mirror = mcp_node_rpc("getmirrorstatus", NULL);
+    char *health = mcp_node_rpc("healthcheck", NULL);
+
+    struct json_value chain_j, peers_j, diag_j, dl_j, mirror_j, health_j;
+    bool chain_ok  = status_parse_json(&chain_j, chain) &&
+                     chain_j.type == JSON_OBJ;
+    bool peers_ok  = status_parse_json(&peers_j, peers) &&
+                     peers_j.type == JSON_ARR;
+    bool diag_ok   = status_parse_json(&diag_j, diag) &&
+                     diag_j.type == JSON_OBJ;
+    bool dl_ok     = status_parse_json(&dl_j, dl) &&
+                     dl_j.type == JSON_OBJ;
+    bool mirror_ok = status_parse_json(&mirror_j, mirror) &&
+                     mirror_j.type == JSON_OBJ;
+    bool health_ok = status_parse_json(&health_j, health) &&
+                     health_j.type == JSON_OBJ;
+
+    int peer_total = 0, peer_inbound = 0, peer_outbound = 0, peer_ready = 0;
+    long long peer_max_height = 0;
+    if (peers_ok) {
+        status_peer_summary(&peers_j, &peer_total, &peer_inbound,
+                            &peer_outbound, &peer_ready, &peer_max_height);
+    } else {
+        peer_total = status_count_json_objects(peers);
+    }
+
+    const struct json_value *health_chain =
+        health_ok ? json_get(&health_j, "chain_advance") : NULL;
+    const struct json_value *health_evidence =
+        health_ok ? json_get(&health_j, "chain_evidence") : NULL;
+    const struct json_value *checks =
+        health_ok ? json_get(&health_j, "checks") : NULL;
+    const struct json_value *condition_engine =
+        checks ? json_get(checks, "condition_engine") : NULL;
+    if ((!condition_engine || condition_engine->type != JSON_OBJ) && health_ok)
+        condition_engine = json_get(&health_j, "condition_engine");
+    const struct json_value *watchdog =
+        diag_ok ? json_get(&diag_j, "watchdog") : NULL;
+
+    long long chain_rpc_height =
+        chain_ok ? status_json_int(&chain_j, "blocks", -1) : -1;
+    long long diag_chain_height =
+        diag_ok ? status_json_int(&diag_j, "chain_height", -1) : -1;
+    long long health_local_height =
+        health_chain ? status_json_int(health_chain, "local_height", -1) : -1;
+    long long evidence_tip =
+        health_evidence ? status_json_int(health_evidence, "active_tip", -1)
+                        : -1;
+
+    long long indexed_height = status_max_ll(diag_chain_height,
+                                             health_local_height);
+    indexed_height = status_max_ll(indexed_height, evidence_tip);
+    if (indexed_height < 0)
+        indexed_height = 0;
+
+    long long height = chain_rpc_height >= 0 ? chain_rpc_height
+                                             : indexed_height;
+
+    long long header_height =
+        chain_ok ? status_json_int(&chain_j, "best_header_height", 0) : 0;
+    header_height = status_max_ll(
+        header_height,
+        diag_ok ? status_json_int(&diag_j, "best_header_height", 0) : 0);
+
+    long long target_height = status_max_ll(header_height, peer_max_height);
+    target_height = status_max_ll(
+        target_height,
+        health_chain ? status_json_int(health_chain, "target_height", 0) : 0);
+    target_height = status_max_ll(
+        target_height,
+        mirror_ok ? status_json_int(&mirror_j, "target_height", 0) : 0);
+    long long gap = target_height > indexed_height
+        ? target_height - indexed_height : 0;
+    long long served_gap = target_height > height ? target_height - height : 0;
+
+    const char *sync_state =
+        diag_ok ? status_json_str(&diag_j, "sync_state", "") : "";
+    if (!sync_state[0] && health_ok)
+        sync_state = status_json_str(&health_j, "sync_state", "");
+    if (!sync_state[0] && dl_ok)
+        sync_state = status_json_str(&dl_j, "sync_state", "");
+    if (!sync_state[0])
+        sync_state = "unknown";
+
+    bool healthy = health_ok &&
+                   status_json_bool(&health_j, "healthy", false);
+    bool serving = health_ok &&
+                   status_json_bool(&health_j, "serving", false);
+    bool operator_needed =
+        checks && status_json_bool(checks, "operator_needed", false);
+    long long active_conditions =
+        condition_engine ? status_json_int(condition_engine, "active_count", 0)
+                         : 0;
+    if (active_conditions == 0 && watchdog)
+        active_conditions = status_json_int(watchdog, "active_conditions", 0);
+    long long unresolved_conditions =
+        condition_engine ? status_json_int(condition_engine,
+                                           "unresolved_count", 0)
+                         : 0;
+
+    long long in_flight = dl_ok ? status_json_int(&dl_j, "in_flight", 0) : 0;
+    long long queued = dl_ok ? status_json_int(&dl_j, "queued", 0) : 0;
+
+    const char *mirror_blocker = "";
+    const char *mirror_detail = "";
+    bool mirror_enabled = false, mirror_running = false, mirror_reachable = false;
+    if (mirror_ok) {
+        mirror_enabled = status_json_bool(&mirror_j, "mirror_enabled", false);
+        mirror_running = status_json_bool(&mirror_j, "mirror_running", false);
+        mirror_reachable = status_json_bool(&mirror_j, "reachable", false) ||
+                           status_json_bool(&mirror_j, "mirror_reachable",
+                                            false);
+        mirror_blocker = status_json_str(&mirror_j, "active_error_code", "");
+        if (!mirror_blocker[0])
+            mirror_blocker = status_json_str(&mirror_j, "activation_blocker",
+                                             "");
+        mirror_detail = status_json_str(&mirror_j, "active_error_detail", "");
+        if (!mirror_detail[0])
+            mirror_detail = status_json_str(&mirror_j, "last_error", "");
+    } else if (health_ok) {
+        mirror_enabled = status_json_bool(&health_j,
+                                          "mirror_monitor_running", false);
+        mirror_running = mirror_enabled;
+        mirror_reachable = status_json_bool(&health_j,
+                                            "mirror_reachable", false);
+        mirror_blocker = status_json_str(&health_j,
+                                         "mirror_active_error_code", "");
+        mirror_detail = status_json_str(&health_j,
+                                        "mirror_active_error_detail", "");
+    }
+
+    const char *status = "unknown";
+    const char *primary_blocker = "unknown";
+    const char *next_action = "zcl_status";
+    const char *next_tool = "zcl_status";
+    const char *next_tool2 = "";
+    if (!chain_ok && !health_ok) {
+        status = "rpc_unavailable";
+        primary_blocker = "rpc_unavailable";
+        next_action = "check MCP RPC cookie and node RPC reachability";
+        next_tool = "zcl_health";
+    } else if (operator_needed) {
+        status = "operator_needed";
+        primary_blocker = "operator_needed";
+        next_action = "inspect active conditions and operator-needed detail";
+        next_tool = "zcl_conditions";
+        next_tool2 = "zcl_node_log";
+    } else if (health_ok && !serving) {
+        status = "blocked";
+        primary_blocker = "not_serving";
+        next_action = "inspect health and typed blockers";
+        next_tool = "zcl_health";
+        next_tool2 = "zcl_blockers";
+    } else if (gap > 0 && peer_total <= 0) {
+        status = "blocked";
+        primary_blocker = "no_peers";
+        next_action = "connect or inspect peers";
+        next_tool = "zcl_peers";
+    } else if (gap > 0) {
+        status = (in_flight + queued) > 0 ? "catching_up" : "degraded";
+        primary_blocker = (in_flight + queued) > 0
+            ? "chain_gap"
+            : "download_queue_idle";
+        next_action = (in_flight + queued) > 0
+            ? "wait for gap-fill and recheck"
+            : "inspect sync diagnostics and recent download/gap-fill logs";
+        next_tool = "zcl_syncdiag";
+        next_tool2 = "zcl_node_log";
+    } else if (active_conditions > 0 || unresolved_conditions > 0) {
+        status = "degraded";
+        primary_blocker = "condition_active";
+        next_action = "inspect active self-heal conditions";
+        next_tool = "zcl_conditions";
+    } else if (health_ok && !healthy) {
+        status = "degraded";
+        primary_blocker = "healthcheck_unhealthy";
+        next_action = "inspect health checks";
+        next_tool = "zcl_health";
+    } else {
+        status = "healthy";
+        primary_blocker = "none";
+        next_action = "none";
+        next_tool = "";
+    }
+
+    char summary[512];
+    snprintf(summary, sizeof(summary),
+             "%s: height=%lld indexed=%lld target=%lld gap=%lld "
+             "served_gap=%lld sync=%s peers=%d "
+             "ready_peers=%d primary=%s",
+             status, height, indexed_height, target_height, gap, served_gap,
+             sync_state, peer_total, peer_ready, primary_blocker);
+
+    struct json_value root, peer_obj, mirror_obj, download_obj, raw;
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema", "zcl.operator_summary.v1");
+    json_push_kv_str(&root, "status", status);
+    json_push_kv_bool(&root, "healthy", strcmp(status, "healthy") == 0);
+    json_push_kv_bool(&root, "serving", serving);
+    json_push_kv_str(&root, "summary", summary);
+    json_push_kv_int(&root, "height", height);
+    json_push_kv_int(&root, "served_height", height);
+    json_push_kv_int(&root, "indexed_height", indexed_height);
+    json_push_kv_int(&root, "chain_rpc_height", chain_rpc_height);
+    json_push_kv_int(&root, "header_height", header_height);
+    json_push_kv_int(&root, "target_height", target_height);
+    json_push_kv_int(&root, "gap", gap);
+    json_push_kv_int(&root, "served_gap", served_gap);
+    json_push_kv_str(&root, "sync_state", sync_state);
+    json_push_kv_str(&root, "primary_blocker", primary_blocker);
+    json_push_kv_str(&root, "next_action", next_action);
+    json_push_kv_str(&root, "next_tool", next_tool);
+    status_push_string_array(&root, "recommended_tools", next_tool,
+                             next_tool2);
+    json_push_kv_bool(&root, "operator_needed", operator_needed);
+    json_push_kv_int(&root, "active_conditions", active_conditions);
+    json_push_kv_int(&root, "unresolved_conditions", unresolved_conditions);
+
+    json_init(&peer_obj);
+    json_set_object(&peer_obj);
+    json_push_kv_int(&peer_obj, "total", peer_total);
+    json_push_kv_int(&peer_obj, "inbound", peer_inbound);
+    json_push_kv_int(&peer_obj, "outbound", peer_outbound);
+    json_push_kv_int(&peer_obj, "ready", peer_ready);
+    json_push_kv_int(&peer_obj, "max_height", peer_max_height);
+    json_push_kv(&root, "peers", &peer_obj);
+    json_free(&peer_obj);
+
+    json_init(&download_obj);
+    json_set_object(&download_obj);
+    json_push_kv_int(&download_obj, "in_flight", in_flight);
+    json_push_kv_int(&download_obj, "queued", queued);
+    if (dl_ok)
+        json_push_kv_str(&download_obj, "sync_state",
+                         status_json_str(&dl_j, "sync_state", ""));
+    json_push_kv(&root, "download", &download_obj);
+    json_free(&download_obj);
+
+    json_init(&mirror_obj);
+    json_set_object(&mirror_obj);
+    json_push_kv_bool(&mirror_obj, "enabled", mirror_enabled);
+    json_push_kv_bool(&mirror_obj, "running", mirror_running);
+    json_push_kv_bool(&mirror_obj, "reachable", mirror_reachable);
+    json_push_kv_str(&mirror_obj, "blocker", mirror_blocker);
+    json_push_kv_str(&mirror_obj, "detail", mirror_detail);
+    json_push_kv(&root, "mirror", &mirror_obj);
+    json_free(&mirror_obj);
+
+    status_push_blocker_summary(&root);
+
+    json_init(&raw);
+    json_set_object(&raw);
+    status_push_rpc_json(&raw, "chain", chain, "getblockchaininfo");
+    status_push_rpc_json(&raw, "syncdiag", diag, "getsyncdiag");
+    status_push_rpc_json(&raw, "downloadstats", dl, "downloadstats");
+    status_push_rpc_json(&raw, "mirror", mirror, "getmirrorstatus");
+    status_push_rpc_json(&raw, "health", health, "healthcheck");
+    json_push_kv(&root, "raw", &raw);
+    json_free(&raw);
+
+    char *out = json_value_to_body(&root, "operator_summary_body");
+    json_free(&root);
+    json_free(&chain_j);
+    json_free(&peers_j);
+    json_free(&diag_j);
+    json_free(&dl_j);
+    json_free(&mirror_j);
+    json_free(&health_j);
+    free(chain); free(peers); free(diag); free(dl); free(mirror); free(health);
+    if (!out) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for operator summary response");
+        LOG_ERR("mcp.ops", "malloc failed for operator summary body");
+        return -1; // raw-return-ok:logged-oom
     }
     res->body = out;
     return 0;
@@ -864,6 +1253,12 @@ static const struct mcp_tool_route k_routes[] = {
       "bg-validation progress, health checks, and chain advance source "
       "scoring. The single command to check if everything is working.",
       NULL, 0, h_zcl_status, 0, NULL },
+    { "zcl_operator_summary", "ops",
+      "MCP-friendly operator summary: stable top-level status, height, "
+      "target height, gap, peer counts, primary blocker, next action, "
+      "and recommended next tools, with raw diagnostics attached under "
+      "`raw` for drill-down.",
+      NULL, 0, h_zcl_operator_summary, 0, NULL },
     { "zcl_health", "ops",
       "Health check: pass/fail, chain height, peers, sync, onion.",
       NULL, 0, h_zcl_health, 0, NULL },

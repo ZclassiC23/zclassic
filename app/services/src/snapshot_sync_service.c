@@ -44,7 +44,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/time.h>
 #include <pthread.h>
 
 /* Global singleton */
@@ -100,10 +99,10 @@ int64_t snapsync_now_us_internal(void)
 {
     /* MONOTONIC, not wall-clock: every caller uses this purely as a delta
      * (elapsed = now - start, stall = now - last_progress, blacklist expiry).
-     * gettimeofday() jumps on an NTP/suspend/VM step — a forward step would
-     * spuriously fire snapsync_check_stall mid-transfer, abort the in-flight
-     * snapshot, and blacklist the healthy serving peer; a backward step would
-     * make blacklist entries never expire. The monotonic clock cannot jump. */
+     * A wall-clock jump on an NTP/suspend/VM step would spuriously fire
+     * snapsync_check_stall mid-transfer, abort the in-flight snapshot, and
+     * blacklist the healthy serving peer; a backward step would make blacklist
+     * entries never expire. The monotonic clock cannot jump. */
     return platform_time_monotonic_us();
 }
 

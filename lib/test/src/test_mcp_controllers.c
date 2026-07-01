@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     101  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     102  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -56,7 +56,7 @@
                                  * +1 offline replay verifier: zcl_replay_verify
                                  * +3 wait tools: zcl_waitforheight,
                                  *   zcl_waitforhalt, zcl_waitforblocker */
-#define EXPECTED_OPS        37  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        38  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -70,7 +70,8 @@
                                  * syncdiag, replay_dump, replay_exec,
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
-                                 * + zcl_postmortem_list/replay (Phase 6b) */
+                                 * + zcl_postmortem_list/replay (Phase 6b)
+                                 * + zcl_operator_summary (simple MCP status) */
 #define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
@@ -373,7 +374,7 @@ static int test_specific_flagship_tools_registered(void)
         /* Canon set — documented in CLAUDE.md.  If any goes missing,
          * the compat contract is broken. */
         const char *k[] = {
-            "zcl_status", "zcl_kpi", "zcl_health",
+            "zcl_status", "zcl_operator_summary", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
             "zcl_peers", "zcl_networkinfo", "zcl_onion_status",
             "zcl_balance", "zcl_send", "zcl_getnewaddress",
@@ -725,6 +726,165 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"score_failure_penalty\":0,"
                       "\"healthy_peers\":3}]}}");
     return strdup("null");
+}
+
+static char *mock_operator_degraded_rpc(const char *method,
+                                        const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"blocks\":100,\"best_header_height\":110}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,\"state\":\"handshake_complete\","
+                      "\"startingheight\":112},"
+                      "{\"inbound\":true,\"state\":\"version_sent\","
+                      "\"startingheight\":111}]");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"blocks_download\","
+                      "\"chain_height\":100,\"best_header_height\":110,"
+                      "\"watchdog\":{\"active_conditions\":1}}");
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{\"in_flight\":0,\"queued\":0,"
+                      "\"sync_state\":\"at_tip\"}");
+    if (strcmp(method, "getmirrorstatus") == 0)
+        return strdup("{\"mirror_enabled\":true,\"mirror_running\":true,"
+                      "\"reachable\":false,"
+                      "\"active_error_code\":\"rpc-unreachable\","
+                      "\"active_error_detail\":\"zclassicd warming\"}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":false,\"serving\":true,"
+                      "\"checks\":{\"operator_needed\":false,"
+                      "\"condition_engine\":{\"active_count\":1,"
+                      "\"unresolved_count\":0}}}");
+    return strdup("null");
+}
+
+static char *mock_operator_healthy_rpc(const char *method,
+                                       const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"blocks\":112,\"best_header_height\":112}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,\"state\":\"handshake_complete\","
+                      "\"startingheight\":112}]");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"at_tip\",\"chain_height\":112,"
+                      "\"best_header_height\":112,"
+                      "\"watchdog\":{\"active_conditions\":0}}");
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{\"in_flight\":0,\"queued\":0,"
+                      "\"sync_state\":\"at_tip\"}");
+    if (strcmp(method, "getmirrorstatus") == 0)
+        return strdup("{\"mirror_enabled\":true,\"mirror_running\":true,"
+                      "\"reachable\":false,"
+                      "\"active_error_code\":\"rpc-unreachable\"}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":true,\"serving\":true,"
+                      "\"checks\":{\"operator_needed\":false,"
+                      "\"condition_engine\":{\"active_count\":0,"
+                      "\"unresolved_count\":0}}}");
+    return strdup("null");
+}
+
+static int test_zcl_operator_summary_degraded_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_operator_summary names degraded next action") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_degraded_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.operator_summary.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT(json_get_int(json_get(&root, "height")) == 100);
+        ASSERT(json_get_int(json_get(&root, "target_height")) == 112);
+        ASSERT(json_get_int(json_get(&root, "gap")) == 12);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "sync_state")),
+                      "blocks_download");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "download_queue_idle");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
+                      "zcl_syncdiag");
+
+        const struct json_value *tools =
+            json_get(&root, "recommended_tools");
+        ASSERT(tools != NULL);
+        ASSERT(json_size(tools) == 2);
+        ASSERT_STR_EQ(json_get_str(json_at(tools, 0)), "zcl_syncdiag");
+        ASSERT_STR_EQ(json_get_str(json_at(tools, 1)), "zcl_node_log");
+
+        const struct json_value *peers = json_get(&root, "peers");
+        ASSERT(peers != NULL);
+        ASSERT(json_get_int(json_get(peers, "total")) == 2);
+        ASSERT(json_get_int(json_get(peers, "ready")) == 1);
+        ASSERT(json_get_int(json_get(peers, "max_height")) == 112);
+
+        const struct json_value *mirror = json_get(&root, "mirror");
+        ASSERT(mirror != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(mirror, "blocker")),
+                      "rpc-unreachable");
+
+        const struct json_value *raw = json_get(&root, "raw");
+        ASSERT(raw != NULL);
+        ASSERT(json_get(raw, "chain") != NULL);
+        ASSERT(json_get(raw, "syncdiag") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_operator_summary_healthy_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_operator_summary keeps advisory mirror separate") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_healthy_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
+        ASSERT(json_get_bool(json_get(&root, "healthy")));
+        ASSERT(json_get_int(json_get(&root, "gap")) == 0);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "none");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")), "none");
+        ASSERT(json_size(json_get(&root, "recommended_tools")) == 0);
+
+        const struct json_value *mirror = json_get(&root, "mirror");
+        ASSERT(mirror != NULL);
+        ASSERT(json_get_bool(json_get(mirror, "enabled")));
+        ASSERT(!json_get_bool(json_get(mirror, "reachable")));
+        ASSERT_STR_EQ(json_get_str(json_get(mirror, "blocker")),
+                      "rpc-unreachable");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
 }
 
 static int test_zcl_getblockcount_uses_node_hstar_rpc(void)
@@ -1963,6 +2123,8 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_no_params();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();
+    failures += test_zcl_operator_summary_degraded_shape();
+    failures += test_zcl_operator_summary_healthy_shape();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();

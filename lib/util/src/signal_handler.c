@@ -146,6 +146,16 @@ static void fatal_handler(int sig, siginfo_t *info, void *ucontext)
 
 int signal_handler_install(void)
 {
+    /* SIGPIPE is not a useful process-fatal signal for the node: socket and
+     * pipe writers already treat EPIPE/ECONNRESET as ordinary I/O failure, but
+     * one missed MSG_NOSIGNAL must not kill the whole process without a
+     * postmortem. Ignore it process-wide before worker threads spawn. */
+    struct sigaction pipe_ign;
+    memset(&pipe_ign, 0, sizeof(pipe_ign));
+    pipe_ign.sa_handler = SIG_IGN;
+    sigemptyset(&pipe_ign.sa_mask);
+    if (sigaction(SIGPIPE, &pipe_ign, NULL) != 0) return -1;
+
     /* Alternate signal stack so a stack-overflow SIGSEGV (which exhausts the
      * thread stack) can still run the handler instead of silently dying. */
     static char alt_stack[64 * 1024];

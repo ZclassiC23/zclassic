@@ -18,7 +18,10 @@
 
 #include "models/database.h"
 #include "models/wallet_tx.h"
+#include "controllers/wallet_shielded_internal.h"
+#include "controllers/wallet_view_internal.h"
 #include "controllers/sync_controller.h"
+#include "json/json.h"
 #include "util/safe_alloc.h"
 
 #include <stdio.h>
@@ -85,6 +88,29 @@ static bool wfs_save_note(struct node_db *ndb, uint8_t txid_seed,
     memset(memo, 0xF6, 512);
     return node_db_sync_sapling_note(ndb, txid, 0, value, rcm, memo, 512,
                                      ivk, div, pk_d, cm, nf, block_height);
+}
+
+static bool wfs_make_view_note(const char *address, uint8_t seed,
+                               struct db_sapling_note *out)
+{
+    uint8_t div_full[32];
+
+    if (!address || !address[0] || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    memset(out->txid, seed, 32);
+    out->output_index = seed;
+    out->value = 5000 + seed;
+    out->block_height = 200;
+    snprintf(out->address, sizeof(out->address), "%s", address);
+    snprintf(out->source, sizeof(out->source), "%s",
+             DB_SAPLING_NOTE_SOURCE_VIEW);
+    wv_sapling_placeholder_fields_for_test(out->txid, (int)out->output_index,
+                                           out->rcm, out->ivk, div_full,
+                                           out->pk_d, out->cm,
+                                           out->nullifier);
+    memcpy(out->diversifier, div_full, sizeof(out->diversifier));
+    return true;
 }
 
 int test_wallet_funds_safety(void);
@@ -264,6 +290,109 @@ int test_wallet_funds_safety(void)
          * the user's own note. */
         WFS_CHECK("note is NOT re-selected after broadcast (0 notes)",
                   n_after == 0);
+    }
+
+    /* ── P3/qw11: zclassicd view notes are marked inert and non-clobbering ─ */
+    {
+        struct wallet w;
+        wallet_init(&w);
+        uint8_t seed[32]; memset(seed, 0xA7, sizeof(seed));
+        bool ok = sapling_keystore_set_seed(&w.sapling_keys, seed);
+        uint8_t d0[ZC_DIVERSIFIER_SIZE], pkd0[32];
+        uint8_t d1[ZC_DIVERSIFIER_SIZE], pkd1[32];
+        ok = ok && sapling_keystore_new_address(&w.sapling_keys, d0, pkd0);
+        ok = ok && sapling_keystore_new_address(&w.sapling_keys, d1, pkd1);
+        WFS_CHECK("derived two real sapling keys for view-note inertness", ok);
+
+        const struct sapling_key_entry *key0 =
+            ok ? &w.sapling_keys.keys[0] : NULL;
+        const struct sapling_key_entry *key1 =
+            ok ? &w.sapling_keys.keys[1] : NULL;
+        const struct chain_params *cp = chain_params_get();
+        char addr0[128] = "";
+        char addr1[128] = "";
+        ok = ok && cp &&
+             sapling_encode_payment_address(key0->diversifier, key0->pk_d,
+                 cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+                 addr0, sizeof(addr0)) &&
+             sapling_encode_payment_address(key1->diversifier, key1->pk_d,
+                 cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+                 addr1, sizeof(addr1));
+        WFS_CHECK("encoded real sapling addresses for view-note inertness", ok);
+
+        struct db_sapling_note view_notes[2];
+        ok = ok && wfs_make_view_note(addr0, 0x71, &view_notes[0]);
+        ok = ok && wfs_make_view_note(addr1, 0x72, &view_notes[1]);
+        WFS_CHECK("built two zclassicd view-only placeholder notes", ok);
+        WFS_CHECK("placeholder ivk differs from real keystore ivk",
+                  ok && memcmp(view_notes[0].ivk, key0->ivk, 32) != 0 &&
+                  memcmp(view_notes[1].ivk, key1->ivk, 32) != 0);
+
+        ok = ok && wfs_save_note(&ndb, 0x70, key0->ivk, 1234, 200, 0xE1);
+        WFS_CHECK("seeded one durable local catchup note", ok);
+        int64_t before_local = ok
+            ? db_sapling_note_balance_for_ivk(&ndb, key0->ivk)
+            : 0;
+
+        ok = ok && db_sapling_note_replace_view_rows(&ndb, view_notes, 2);
+        WFS_CHECK("view-only replace writes placeholders through model API", ok);
+        WFS_CHECK("view-only replace preserves local catchup note",
+                  ok && before_local == 1234 &&
+                  db_sapling_note_balance_for_ivk(&ndb, key0->ivk) == 1234);
+        WFS_CHECK("view-only rows are discoverable by address marker",
+                  ok &&
+                  db_sapling_note_count_unspent_view_for_address(&ndb, addr0) == 1 &&
+                  db_sapling_note_count_unspent_view_for_address(&ndb, addr1) == 1);
+
+        ok = ok && db_sapling_note_replace_view_rows(&ndb, NULL, 0);
+        WFS_CHECK("empty view refresh clears view rows but preserves local note",
+                  ok &&
+                  db_sapling_note_count_unspent_view_for_address(&ndb, addr0) == 0 &&
+                  db_sapling_note_count_unspent_view_for_address(&ndb, addr1) == 0 &&
+                  db_sapling_note_balance_for_ivk(&ndb, key0->ivk) == 1234);
+        ok = ok && db_sapling_note_replace_view_rows(&ndb, view_notes, 2);
+        WFS_CHECK("view-only replace restores placeholders after empty refresh",
+                  ok &&
+                  db_sapling_note_count_unspent_view_for_address(&ndb, addr0) == 1 &&
+                  db_sapling_note_count_unspent_view_for_address(&ndb, addr1) == 1);
+
+        struct db_sapling_note real_sel[4];
+        struct db_sapling_note view_sel[4];
+        int n_real = ok
+            ? db_sapling_note_list_unspent_for_ivk(&ndb, key0->ivk,
+                                                   real_sel, 4)
+            : -1;
+        int n_view = ok
+            ? db_sapling_note_list_unspent_for_ivk(&ndb, view_notes[0].ivk,
+                                                   view_sel, 4)
+            : -1;
+        WFS_CHECK("real ivk selection sees local note but not view placeholder",
+                  ok && n_real == 1 && real_sel[0].value == 1234 &&
+                  strcmp(real_sel[0].source, DB_SAPLING_NOTE_SOURCE_LOCAL) == 0 &&
+                  n_view == 1 &&
+                  strcmp(view_sel[0].source, DB_SAPLING_NOTE_SOURCE_VIEW) == 0);
+
+        struct wallet_rpc_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.wallet = &w;
+        ctx.node_db = &ndb;
+        struct json_value result;
+        json_init(&result);
+        bool sent = false;
+        if (ok && cp && key1) {
+            sent = z_sendmany_shielded(&ctx, cp, key1, 1,
+                                       NULL, NULL, 0,
+                                       NULL, NULL, NULL, NULL, NULL, 0,
+                                       &result);
+        } else {
+            json_set_str(&result, "setup failed");
+        }
+        WFS_CHECK("view-only spend attempt returns explicit message",
+                  !sent &&
+                  strcmp(json_get_str(&result),
+                         "view-only balance synced from zclassicd") == 0);
+        json_free(&result);
+        wallet_free(&w);
     }
 
     node_db_close(&ndb);

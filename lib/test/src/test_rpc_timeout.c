@@ -8,13 +8,13 @@
  * targeted test at the end. */
 
 #include "test/test_helpers.h"
+#include "platform/time_compat.h"
 #include "rpc/rpc_timeout.h"
 #include "event/event.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -28,9 +28,7 @@ static void fresh_mgr(void)
 
 static int64_t now_us_local(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    return platform_time_monotonic_us();
 }
 
 /* ── Basic lifecycle ────────────────────────────────────────── */

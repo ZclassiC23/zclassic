@@ -66,6 +66,26 @@ static bool json_next_int(const char **pos, const char *key, int *out) {
     return true;
 }
 
+static bool json_rpc_result_is_array(const char *json)
+{
+    const char *p;
+
+    if (!json)
+        return false;
+    p = strstr(json, "\"result\"");
+    if (!p)
+        return false;
+    p += strlen("\"result\"");
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+    if (*p != ':')
+        return false;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+    return *p == '[';
+}
+
 static void wv_sapling_placeholder_fields(const uint8_t txid_bin[32],
                                           int outindex,
                                           uint8_t rcm[32],
@@ -101,6 +121,21 @@ static void wv_sapling_placeholder_fields(const uint8_t txid_bin[32],
     #undef HASH_FIELD
 }
 
+#ifdef ZCL_TESTING
+void wv_sapling_placeholder_fields_for_test(const uint8_t txid_bin[32],
+                                            int outindex,
+                                            uint8_t rcm[32],
+                                            uint8_t ivk[32],
+                                            uint8_t div_full[32],
+                                            uint8_t pkd[32],
+                                            uint8_t cm[32],
+                                            uint8_t nf[32])
+{
+    wv_sapling_placeholder_fields(txid_bin, outindex, rcm, ivk, div_full,
+                                  pkd, cm, nf);
+}
+#endif
+
 /* ── Sync wallet from zclassicd ────────────────────────────── */
 
 void wv_sync_wallet_from_zclassicd(void) {
@@ -131,9 +166,10 @@ void wv_sync_wallet_from_zclassicd(void) {
     int zlu_rc = wv_rpc_call("z_listunspent", "[0]", zlu, sizeof(zlu));
     if (zlu_rc <= 0) { node_db_close(&ndb); return; }
 
-    /* Sanity: response must contain "result" and at least one entry.
-     * If response is an error or empty, don't wipe the DB. */
-    if (!strstr(lu, "\"result\"") || !strstr(lu, "\"txid\"")) {
+    /* Sanity: mirror only array-shaped successful RPC results. Empty arrays
+     * are valid and must clear stale mirror rows; result:null error bodies
+     * must not wipe the DB. */
+    if (!json_rpc_result_is_array(lu) || !json_rpc_result_is_array(zlu)) {
         node_db_close(&ndb); return;
     }
 
@@ -251,6 +287,8 @@ void wv_sync_wallet_from_zclassicd(void) {
                                           div_full, row.pk_d, row.cm,
                                           row.nullifier);
             memcpy(row.diversifier, div_full, sizeof(row.diversifier));
+            snprintf(row.source, sizeof(row.source), "%s",
+                     DB_SAPLING_NOTE_SOURCE_VIEW);
 
             if (note_count == note_cap) {
                 size_t new_cap = note_cap == 0 ? 64 : note_cap * 2;
@@ -265,9 +303,9 @@ void wv_sync_wallet_from_zclassicd(void) {
         }
     }
 
-    if (utxo_count > 0 && !db_wallet_utxo_replace_all(&ndb, utxos, utxo_count))
+    if (!db_wallet_utxo_replace_all(&ndb, utxos, utxo_count))
         goto cleanup;
-    if (note_count > 0 && !db_sapling_note_replace_all(&ndb, notes, note_count))
+    if (!db_sapling_note_replace_view_rows(&ndb, notes, note_count))
         goto cleanup;
 
     /* Update wallet_transactions: fill in block_height for confirmed txs.

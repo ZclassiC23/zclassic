@@ -3,18 +3,16 @@
  * P2P game engine — tic-tac-toe for latency testing. */
 
 #include "net/p2p_game.h"
+#include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
-#include <sys/time.h>
 
 static int64_t now_us(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    return platform_time_realtime_us();
 }
 
 /* ── Tic-tac-toe logic ───────────────────────────────────── */

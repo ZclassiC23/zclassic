@@ -18,4 +18,11 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
 size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
                                      const char *datadir);
 
+/* Render /api/factoids while capping height-derived facts to the currently
+ * served H* frontier. Pass served_height < 0 to publish the full index tip. */
+size_t explorer_factoids_build_json_for_served_tip(uint8_t *buf,
+                                                   size_t buf_max,
+                                                   const char *datadir,
+                                                   int64_t served_height);
+
 #endif

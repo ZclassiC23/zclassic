@@ -150,10 +150,31 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
                                           struct block_map *m,
                                           struct block_index *best_header,
                                           int max_height);
-/* Side-effect-free most-work candidate selector over the block map, mirroring
- * find_most_work_chain's eligibility (failure-free, >= VALID_TREE, has data,
- * clean ancestry, refuses below-tip). Returns the current tip when no heavier
- * eligible candidate exists, or NULL only on NULL args. Used by the reducer's
+struct most_work_selection_stats {
+    int skipped_no_chaintx;
+    int skipped_failed;
+    int skipped_invalid;
+    int skipped_bad_ancestry;
+    bool refused_below_tip;
+    int refused_below_tip_height;
+    int refused_below_tip_tip_height;
+};
+
+/* Side-effect-free most-work candidate selector over the block map. This is the
+ * shared eligibility/tie-break implementation used by
+ * active_chain_most_work_candidate() and find_most_work_chain(): failure-free,
+ * >= VALID_TREE, has data, clean ancestry, failed-incumbent equal-work
+ * adoption, and below-tip refusal. Callers that need diagnostics pass `stats`;
+ * callers with side effects keep them outside this pure selector. Returns the
+ * current tip when no heavier eligible candidate exists, or NULL only on NULL
+ * args. See chainstate.c. */
+struct block_index *select_most_work_eligible(
+        struct active_chain *c,
+        struct block_map *m,
+        struct most_work_selection_stats *stats);
+
+/* Side-effect-free most-work candidate selector over the block map, using
+ * select_most_work_eligible() without stats. Used by the reducer's
  * window-extender; carries none of find_most_work_chain's gap-fill/logging
  * side effects so it is safe to call every stage tick. See chainstate.c. */
 struct block_index *active_chain_most_work_candidate(struct active_chain *c,

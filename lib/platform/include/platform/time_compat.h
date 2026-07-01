@@ -41,6 +41,11 @@ static inline int platform_time_realtime_timespec(struct timespec *ts)
     return 0;
 }
 
+static inline int64_t platform_time_realtime_us(void)
+{
+    return clock_now_wall_ms() * 1000LL;
+}
+
 static inline int64_t platform_time_monotonic_us(void)
 {
     return clock_now_monotonic_ns() / 1000;

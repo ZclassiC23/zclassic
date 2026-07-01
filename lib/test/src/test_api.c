@@ -60,6 +60,55 @@ static bool api_test_build_chain(struct main_state *ms,
     return active_chain_move_window_tip(&ms->chain_active, out[count - 1]);
 }
 
+static const char *api_test_body(uint8_t *resp, size_t n, size_t cap)
+{
+    resp[n < cap ? n : cap - 1] = '\0';
+    const char *body = strstr((char *)resp, "\r\n\r\n");
+    return body ? body + 4 : NULL;
+}
+
+static bool api_test_save_model_block(struct node_db *ndb, int height,
+                                      uint8_t seed)
+{
+    struct db_block b;
+    uint8_t solution[1] = {seed};
+
+    memset(&b, 0, sizeof(b));
+    memset(b.hash, seed, sizeof(b.hash));
+    memset(b.prev_hash, seed + 1, sizeof(b.prev_hash));
+    memset(b.merkle_root, seed + 2, sizeof(b.merkle_root));
+    memset(b.nonce, seed + 3, sizeof(b.nonce));
+    memset(b.chain_work, seed + 4, sizeof(b.chain_work));
+    memset(b.sapling_root, seed + 5, sizeof(b.sapling_root));
+    memset(b.sprout_root, seed + 6, sizeof(b.sprout_root));
+    b.height = height;
+    b.version = 4;
+    b.time = (uint32_t)(1000000 + height * 75);
+    b.bits = 1;
+    b.solution = solution;
+    b.solution_len = sizeof(solution);
+    b.status = 3;
+    b.num_tx = 1;
+    return db_block_save(ndb, &b);
+}
+
+static bool api_test_save_model_utxo(struct node_db *ndb, int height,
+                                     uint8_t seed, int64_t value)
+{
+    struct db_utxo u;
+    uint8_t script[1] = {0x51};
+
+    memset(&u, 0, sizeof(u));
+    memset(u.txid, seed, sizeof(u.txid));
+    u.vout = 0;
+    u.value = value;
+    u.script = script;
+    u.script_len = sizeof(script);
+    u.script_type = SCRIPT_OTHER;
+    u.height = height;
+    return db_utxo_save(ndb, &u);
+}
+
 int test_api(void)
 {
     int failures = 0;
@@ -274,6 +323,158 @@ int test_api(void)
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: public status exposes compact summary shape... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct block_index *blocks[3] = {0};
+        bool ok = api_test_build_chain(&ms, blocks, 3);
+        reducer_frontier_provable_tip_set(2);
+        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+        size_t n = api_handle_request("GET", "/api/status", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && json_get(&root, "status") != NULL;
+        ok = ok && json_get(&root, "height") != NULL;
+        ok = ok && json_get(&root, "recommended_endpoints") != NULL;
+        json_free(&root);
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: hodl caps to served frontier and refreshes when H* advances... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_hodl_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        api_stop_cache();
+        bool ok = node_db_open(&ndb, dbpath);
+        ok = ok && api_test_save_model_block(&ndb, 7, 0x71);
+        ok = ok && api_test_save_model_block(&ndb, 8, 0x72);
+        ok = ok && api_test_save_model_utxo(&ndb, 6, 0x61, 5000000000LL);
+        reducer_frontier_provable_tip_set(7);
+        api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+        size_t n = api_handle_request("GET", "/api/hodl", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.hodl_wave.v1") == 0;
+        ok = ok && json_get_int(json_get(&root, "height")) == 7;
+        ok = ok && json_get_int(json_get(&root, "served_tip_height")) == 7;
+        ok = ok && json_get_int(json_get(&root, "indexed_tip_height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "block_tip_height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "utxo_tip_height")) == 6;
+        ok = ok && json_get_bool(json_get(&root, "fresh"));
+        json_free(&root);
+
+        reducer_frontier_provable_tip_set(8);
+        n = api_handle_request("GET", "/api/hodl", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && json_get_int(json_get(&root, "height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "served_tip_height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "indexed_tip_height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "block_tip_height")) == 8;
+        json_free(&root);
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        api_stop_cache();
+        reducer_frontier_provable_tip_reset();
+        node_db_close(&ndb);
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: factoids caps JSON to served frontier instead of 503... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_factoids_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        api_stop_cache();
+        bool ok = node_db_open(&ndb, dbpath);
+        ok = ok && api_test_save_model_block(&ndb, 7, 0x81);
+        ok = ok && api_test_save_model_block(&ndb, 8, 0x82);
+        ok = ok && api_test_save_model_utxo(&ndb, 6, 0x83, 2500000000LL);
+        reducer_frontier_provable_tip_set(7);
+        api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+        size_t n = api_handle_request("GET", "/api/factoids", NULL, 0,
+                                      resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 &&
+             strstr((char *)resp, "HTTP/1.1 200 OK") != NULL &&
+             strstr((char *)resp, "Explorer index is ahead") == NULL &&
+             body && json_read(&root, body, strlen(body));
+        ok = ok && json_get_int(json_get(&root, "chain_height")) == 7;
+        ok = ok && json_get_int(json_get(&root, "served_height")) == 7;
+        ok = ok && json_get_int(json_get(&root, "indexed_height")) == 8;
+        ok = ok && json_get_bool(json_get(&root, "index_capped"));
+        json_free(&root);
+
+        reducer_frontier_provable_tip_set(8);
+        n = api_handle_request("GET", "/api/factoids", NULL, 0,
+                               resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && json_get_int(json_get(&root, "chain_height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "served_height")) == 8;
+        ok = ok && json_get_int(json_get(&root, "indexed_height")) == 8;
+        ok = ok && !json_get_bool(json_get(&root, "index_capped"));
+        json_free(&root);
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        api_stop_cache();
+        reducer_frontier_provable_tip_reset();
+        node_db_close(&ndb);
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

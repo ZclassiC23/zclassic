@@ -60,6 +60,69 @@ static int db_mig_count(sqlite3 *db, const char *sql)
     return out;
 }
 
+static bool db_mig_exec_raw(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK)
+        fprintf(stderr, "db_mig raw exec failed: %s sql=%s\n",
+                err ? err : "(no errmsg)", sql ? sql : "(null)");
+    sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
+static bool db_mig_column_exists(sqlite3 *db, const char *table,
+                                 const char *column)
+{
+    char sql[160];
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bool found = false;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        if (name && strcmp((const char *)name, column) == 0) {
+            found = true;
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+static bool db_mig_seed_v20_wallet_notes_db(const char *dbpath)
+{
+    sqlite3 *raw = NULL;
+    if (sqlite3_open(dbpath, &raw) != SQLITE_OK)
+        return false;
+
+    bool ok = true;
+    ok = ok && db_mig_exec_raw(raw,
+        "CREATE TABLE node_state (key TEXT PRIMARY KEY,value BLOB)");
+    ok = ok && db_mig_exec_raw(raw,
+        "INSERT INTO node_state(key,value) "
+        "VALUES('schema_version',X'14000000')");
+    ok = ok && db_mig_exec_raw(raw,
+        "CREATE TABLE wallet_sapling_notes ("
+        "txid BLOB NOT NULL,output_index INTEGER NOT NULL,"
+        "value INTEGER NOT NULL,rcm BLOB NOT NULL,memo BLOB,"
+        "ivk BLOB NOT NULL,diversifier BLOB NOT NULL,"
+        "pk_d BLOB NOT NULL,cm BLOB NOT NULL,"
+        "nullifier BLOB NOT NULL UNIQUE,"
+        "block_height INTEGER,spent_txid BLOB,address TEXT,"
+        "witness_data BLOB,witness_height INTEGER DEFAULT 0,"
+        "PRIMARY KEY (txid,output_index))");
+    ok = ok && db_mig_exec_raw(raw,
+        "INSERT INTO wallet_sapling_notes"
+        "(txid,output_index,value,rcm,ivk,diversifier,pk_d,cm,"
+        "nullifier,block_height,address,witness_height) "
+        "VALUES(X'01',0,42,X'02',X'03',X'04',X'05',X'06',"
+        "X'07',100,'zs-v20-note',100)");
+    sqlite3_close(raw);
+    return ok;
+}
+
 static int t_fresh_reaches_latest(void)
 {
     int failures = 0;
@@ -75,6 +138,42 @@ static int t_fresh_reaches_latest(void)
         int v = node_db_schema_version(&ndb);
         ASSERT(v >= 18);
         node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_v20_wallet_notes_upgrade_adds_source(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "v20_wallet_notes");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: v20 wallet notes upgrade adds source after schema create") {
+        ASSERT(db_mig_seed_v20_wallet_notes_db(dbpath));
+
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, dbpath));
+        ASSERT_EQ(node_db_schema_version(&ndb), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&ndb);
+
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_column_exists(raw, "wallet_sapling_notes", "source"));
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='index' AND name='idx_snote_view_address'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='021'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM wallet_sapling_notes "
+            "WHERE address='zs-v20-note' AND source='local'") == 1);
+        sqlite3_close(raw);
         PASS();
     } _test_next:;
     test_cleanup_tmpdir(dir);
@@ -207,6 +306,7 @@ int test_db_migration_idempotent(void)
     int failures = 0;
     mkdir_p("./test-tmp");
     failures += t_fresh_reaches_latest();
+    failures += t_v20_wallet_notes_upgrade_adds_source();
     failures += t_reopen_is_idempotent();
     failures += t_memory_open();
     failures += t_turbo_mode_roundtrip();

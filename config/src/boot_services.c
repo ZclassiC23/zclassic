@@ -3,7 +3,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Runtime service initialization: mempool, P2P, RPC, Tor, HTTPS,
  * mining, wallet sync, shutdown, and utility functions. */
-
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "config/boot_background_workers.h"
@@ -42,6 +41,7 @@
 #include "util/alerts.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
+#include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
@@ -518,7 +518,7 @@ bool app_init_services(struct app_context *ctx,
             if (sqlite3_prepare_v2(ndb->db,
                     "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
                     -1, &chk, NULL) == SQLITE_OK) {
-                if (sqlite3_step(chk) == SQLITE_ROW)
+                if (AR_STEP_ROW_READONLY(chk) == SQLITE_ROW)
                     existing = sqlite3_column_int(chk, 0);
                 sqlite3_finalize(chk);
             }
@@ -565,14 +565,14 @@ bool app_init_services(struct app_context *ctx,
             sqlite3_prepare_v2(ndb->db,
                 "SELECT COALESCE(sum(value),0) FROM wallet_utxos "
                 "WHERE spent_txid IS NULL", -1, &s, NULL);
-            if (sqlite3_step(s) == SQLITE_ROW)
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
                 bal = sqlite3_column_int64(s, 0);
             sqlite3_finalize(s);
             int cnt = 0;
             sqlite3_prepare_v2(ndb->db,
                 "SELECT count(*) FROM wallet_utxos WHERE spent_txid IS NULL",
                 -1, &s, NULL);
-            if (sqlite3_step(s) == SQLITE_ROW)
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
                 cnt = sqlite3_column_int(s, 0);
             sqlite3_finalize(s);
             printf("Wallet: %.8f ZCL (%d UTXOs, %lldms)\n",

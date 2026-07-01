@@ -223,6 +223,7 @@ static struct db_sapling_note valid_sapling_note(void)
     fill_hash(n.rcm, 32, 7);
     n.memo_len = 0;
     n.block_height = 100;
+    snprintf(n.source, sizeof(n.source), "%s", DB_SAPLING_NOTE_SOURCE_LOCAL);
     return n;
 }
 
@@ -540,9 +541,27 @@ static int test_wallet_utxo_validator(void)
 static int test_sapling_note_validator(void)
 {
     int failures = 0;
-    MODEL_CASE("wallet_sapling_notes: positive + negative",
-               "wallet_sapling_notes", valid_sapling_note,
-               memset(r->nullifier, 0, 32));
+    {
+        MODEL_CASE("wallet_sapling_notes: positive + negative",
+                   "wallet_sapling_notes", valid_sapling_note,
+                   memset(r->nullifier, 0, 32));
+    }
+    {
+        printf("db_validators: wallet_sapling_notes rejects invalid source... ");
+        db_validator_reset();
+        db_register_all_validators();
+        char err[256];
+        struct db_sapling_note row = valid_sapling_note();
+        snprintf(row.source, sizeof(row.source), "%s", "unknown");
+        if (!db_run_validators_for("wallet_sapling_notes", &row, err,
+                                   sizeof(err)) &&
+            err[0] != '\0') {
+            printf("OK\n");
+        } else {
+            printf("FAIL\n");
+            failures++;
+        }
+    }
     return failures;
 }
 

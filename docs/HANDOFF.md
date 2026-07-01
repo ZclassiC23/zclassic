@@ -1,4 +1,61 @@
-## CURRENT STATE (2026-06-29, live verified)
+## CURRENT STATE (2026-07-01, live verified)
+
+**Restart command:** type **`continue zclassic23 development`**. First checks:
+`git status --short --branch`, `./tools/z status`,
+`curl -sk https://127.0.0.1:8443/api/status`, and `./tools/z mirror --json`.
+
+**Live node.** The user linger service is running the locally deployed binary
+(`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). At the latest
+handoff check the native node reported `sync_state=at_tip`,
+`consensus_authority=local_consensus_validation`, `healthy=true`,
+`serving=true`, 4 peers, Tor/onion ready, and local chain evidence current at
+h=3166077. The public `/api/status` surface is intentionally stricter and can
+briefly report `operator_needed=true` when the served frontier is one block
+behind indexed/header state; do not treat that as a wedge unless the named
+blocker persists and `./tools/z status` agrees.
+
+```
+systems
+native node service        [##########] healthy/serving at local tip
+REST/MCP public API        [#########-] H*-honest; named one-block gaps surface
+HODL website freshness     [#########-] current view refreshes to served tip
+factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
+legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
+```
+
+**API/data hardening landed.** The REST/factoid/HODL work now serves honest JSON
+instead of transient 503s for normal projection races: `/api/hodl` refreshes
+synchronously from the transparent UTXO set when cache lags the served tip, and
+`/api/factoids` caps to `served_height` while reporting
+`chain_height`/`served_height`/`indexed_height`/`index_capped`. The
+`hodl_history` table is still a background time-series (`MAX(height)=3162240` at
+handoff), but the website appends the latest on-demand HODL point, so the visible
+current stats stay tied to the latest served block. If v1 wants the historical
+table caught up to tip, make that an explicit follow-up gate.
+
+**Wallet-view cleanup landed.** `wallet_sapling_notes` schema v21 adds validated
+`source` (`local` by default, `view` for zclassicd mirror placeholders), a
+partial `idx_snote_view_address`, and a fail-closed migration. Empty successful
+wallet-view RPC result arrays clear stale mirror rows; Sapling refreshes replace
+only `source='view'`; real local notes are preserved; and spend attempts against
+view-only placeholder balance return `view-only balance synced from zclassicd`.
+Important root cause from the deploy: the partial index must live in the v21
+migration, not the baseline v20 create path, because live v20 databases do not
+yet have `source`.
+
+**Verification completed before this handoff.** Focused gates covered the new
+wallet/data/API paths, `git diff --check`, `make check-test-registration`,
+`make check-doc-accuracy`, `tools/scripts/check_raw_sqlite.sh`, `make lint`,
+full `make test` (`0/485 groups failed, 14 skipped`), production binary build,
+and `make deploy`. Live DB inspection confirmed `wallet_sapling_notes.source`,
+schema migration `021`, and `idx_snote_view_address`.
+
+**Mirror status.** The zclassicd-authoritative mirror is advisory-only right now:
+`mirror_running=true`, transport reachable, but `zclassicd` RPC returns `-28`
+(`Activating best chain... height 0 (1%)`). Native authority remains
+`local_consensus_validation`; no unsafe overrides are active.
+
+## PREVIOUS STATE (2026-06-29, live verified)
 
 **Live node is healthy and at tip after two 2026-06-29 wedge cures.** The
 commitment-audit false positive first unwedged H\*=3164075 → 3164482. The deeper

@@ -138,7 +138,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_apply_value_balance) X(utxo_apply_unspendable) \
     X(utxo_apply_coinbase_maturity) \
     X(connect_block_self_write) X(connect_block_sapling_root) \
-    X(connect_block_checkdatasig_sigops) X(invalidateblock) \
+    X(connect_block_checkdatasig_sigops) X(invalidateblock) X(most_work_selector) \
     X(key_scrub) X(block_index_loader) X(chain_state_validator) \
     X(utxo_recovery_service) X(utxo_reimport_flag) \
     X(self_heal_scan_fallback) \
@@ -193,7 +193,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(waitforheight_provable) \
     X(refold_progress_floor) X(refold_premature_clear) \
     X(refold_from_anchor_fatal) X(refold_auto_arm) X(anchor_selfmint) \
-    X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) \
+    X(loader_owns_seed_gate) X(boot_snapshot_failure_memory) X(boot_snapshot_drop_bodiless) \
     X(boot_datadir_lock) X(boot_shutdown_marker) X(boot_stale_locks) \
     X(boot_blocktree_cleanup) X(boot_legacy_blocks) X(boot_flyclient) \
     X(boot_memory_guard) \
@@ -239,7 +239,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bg_validation_store_port) \
     X(zslp_store_port) \
     X(sapling_tree) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
-    X(chainstate_legacy_reader) X(ldb_snapshot) X(utxo_snapshot_loader) \
+    X(chainstate_legacy_reader) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(blob_read_bounds) X(ldb_snapshot) \
+    X(utxo_snapshot_loader) \
     X(load_verify_boot) \
     X(chain_stall_repro) \
     X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \

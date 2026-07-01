@@ -58,7 +58,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 #include <time.h>
 
 /* ── Download manager singleton ─────────────────────────────────── */
@@ -582,9 +581,7 @@ static bool handle_game_msg(struct msg_processor *mp, struct p2p_node *node,
         if (s->size - s->read_pos >= 11) {
             int64_t send_ts = 0;
             memcpy(&send_ts, s->data + s->read_pos + 3, 8);
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-            int64_t now_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+            int64_t now_us = platform_time_realtime_us();
             int64_t latency = now_us - send_ts;
             if (latency > 0 && latency < 60000000)
                 printf("Peer %s: P2P latency = %lld us (%.1f ms)\n",

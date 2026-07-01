@@ -498,7 +498,7 @@ int db_sapling_key_notes(struct node_db *ndb, const uint8_t ivk[32],
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "SELECT txid,output_index,value,rcm,memo,diversifier,pk_d,"
-        "cm,nullifier,block_height"
+        "cm,nullifier,block_height,source"
         " FROM wallet_sapling_notes WHERE ivk=?"
         " AND spent_txid IS NULL ORDER BY value DESC LIMIT ?",
         -1, &s, NULL);
@@ -526,6 +526,10 @@ int db_sapling_key_notes(struct node_db *ndb, const uint8_t ivk[32],
         AR_READ_BLOB(s, 8, out[count].nullifier, 32);
         if (sqlite3_column_type(s, 9) != SQLITE_NULL)
             out[count].block_height = (int)AR_COL_INT(s, 9);
+        AR_READ_STR(s, 10, out[count].source, sizeof(out[count].source));
+        if (!out[count].source[0])
+            snprintf(out[count].source, sizeof(out[count].source), "%s",
+                     DB_SAPLING_NOTE_SOURCE_LOCAL);
         count++;
     }
     AR_FINALIZE(s);

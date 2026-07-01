@@ -2,6 +2,7 @@
  * Tests for lib/util/workpool.{h,c} — thread pool for parallel work. */
 
 #include "test/test_helpers.h"
+#include "platform/time_compat.h"
 #include "util/workpool.h"
 #include <unistd.h>
 
@@ -231,24 +232,20 @@ static int t_wp_parallel_speedup(void)
 
     struct workpool wp1;
     ASSERT(workpool_init(&wp1, 1, 1024, wp_busy_work));
-    struct timeval t1s, t1e;
-    gettimeofday(&t1s, NULL);
+    int64_t t1s = platform_time_monotonic_us();
     ASSERT(workpool_run(&wp1, items, 512));
-    gettimeofday(&t1e, NULL);
-    long t1 = (t1e.tv_sec - t1s.tv_sec) * 1000000 +
-              (t1e.tv_usec - t1s.tv_usec);
+    int64_t t1e = platform_time_monotonic_us();
+    long t1 = (long)(t1e - t1s);
     workpool_destroy(&wp1);
 
     for (int i = 0; i < 512; i++) data[i] = 0;
 
     struct workpool wpm;
     ASSERT(workpool_init(&wpm, 4, 1024, wp_busy_work));
-    struct timeval tms, tme;
-    gettimeofday(&tms, NULL);
+    int64_t tms = platform_time_monotonic_us();
     ASSERT(workpool_run(&wpm, items, 512));
-    gettimeofday(&tme, NULL);
-    long tm = (tme.tv_sec - tms.tv_sec) * 1000000 +
-              (tme.tv_usec - tms.tv_usec);
+    int64_t tme = platform_time_monotonic_us();
+    long tm = (long)(tme - tms);
     workpool_destroy(&wpm);
 
     printf("[1T=%ldus 4T=%ldus ratio=%.1fx] ",

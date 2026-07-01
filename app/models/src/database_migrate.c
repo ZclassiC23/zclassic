@@ -596,7 +596,10 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
      * blob store) are applied by node_db_migrate_features() in
      * database_migrate_features.c — same versioned-block pattern, same
      * schema_migrations + schema_version stamping. */
-    applied += node_db_migrate_features(ndb, &current_ver);
+    int feature_applied = node_db_migrate_features(ndb, &current_ver);
+    if (feature_applied < 0)
+        return -1;
+    applied += feature_applied;
 
     if (applied > 0)
         printf("db: applied %d migration(s), now at version %d\n",

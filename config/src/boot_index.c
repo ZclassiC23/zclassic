@@ -36,6 +36,7 @@
 #include "primitives/block.h"
 #include "storage/boot_auto_reindex.h"
 #include "util/log_macros.h"
+#include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,7 +119,7 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
         return false;
     }
     int64_t total = 0;
-    if (sqlite3_step(cnt) == SQLITE_ROW)
+    if (AR_STEP_ROW_READONLY(cnt) == SQLITE_ROW)
         total = sqlite3_column_int64(cnt, 0);
     sqlite3_finalize(cnt);
 
@@ -549,7 +550,7 @@ void boot_index_verify_coins_tip_consistency(struct main_state *ms,
             if (sqlite3_prepare_v2(ndb->db,
                     "SELECT MAX(height) FROM utxos", -1,
                     &hst, NULL) == SQLITE_OK && hst) {
-                if (sqlite3_step(hst) == SQLITE_ROW)  // obs-ok:boot-utxo-max-scan
+                if (AR_STEP_ROW_READONLY(hst) == SQLITE_ROW)  // obs-ok:boot-utxo-max-scan
                     utxo_max_h = sqlite3_column_int(hst, 0);
                 sqlite3_finalize(hst);
             }

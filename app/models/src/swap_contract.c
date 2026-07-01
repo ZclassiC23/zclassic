@@ -122,12 +122,12 @@ static void row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
     out->state = (enum swap_state)sqlite3_column_int(s, 2);
     out->chain = (enum swap_chain)sqlite3_column_int(s, 3);
 
-    const void *blob = sqlite3_column_blob(s, 4);
-    if (blob) memcpy(out->secret_hash, blob, 32);
+    AR_READ_BLOB(s, 4, out->secret_hash, 32);
 
-    blob = sqlite3_column_blob(s, 5);
-    if (blob) {
-        memcpy(out->secret, blob, 32);
+    int secret_len = sqlite3_column_bytes(s, 5);
+    const void *blob = sqlite3_column_blob(s, 5);
+    if (blob && secret_len >= 32) {
+        AR_READ_BLOB(s, 5, out->secret, 32);
         out->has_secret = true;
     }
 
@@ -141,14 +141,14 @@ static void row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
     if (str) snprintf(out->counter_address, sizeof(out->counter_address),
                       "%s", str);
 
-    blob = sqlite3_column_blob(s, 10);
-    if (blob) memcpy(out->funding_txid, blob, 32);
+    AR_READ_BLOB(s, 10, out->funding_txid, 32);
 
     out->funding_vout = (uint32_t)sqlite3_column_int(s, 11);
 
     blob = sqlite3_column_blob(s, 12);
     int rlen = sqlite3_column_int(s, 13);
-    if (blob && rlen > 0 && rlen <= 256) {
+    int rbytes = sqlite3_column_bytes(s, 12);
+    if (blob && rlen > 0 && rlen <= 256 && rbytes >= rlen) {
         memcpy(out->redeem_script, blob, (size_t)rlen);
         out->redeem_script_len = (size_t)rlen;
     }

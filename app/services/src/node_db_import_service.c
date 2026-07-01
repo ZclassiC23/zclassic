@@ -349,18 +349,31 @@ struct zcl_result node_db_import_service_run(struct node_db *ndb,
 
             size_t val_len;
             const char *val_data = db_iter_value(&it, &val_len);
-            if (val_len > 65535) val_len = 65535;
-            e->value = zcl_malloc(val_len, "import entry value");
+            uint32_t checked_len = 0;
+            struct zcl_result len_ok =
+                utxo_import_value_len_checked(val_len, &checked_len);
+            if (!len_ok.ok) {
+                LOG_WARN("sync",
+                         "UTXO import: rejecting LevelDB CCoins value after "
+                         "%d txids: %s", total_entries, len_ok.message);
+                atomic_store(&ctx->iter_error, true);
+                import_ctx_request_stop(ctx);
+                goto reader_done;
+            }
+
+            e->value = zcl_malloc(checked_len, "import entry value");
             if (e->value) {
-                memcpy(e->value, val_data, val_len);
+                memcpy(e->value, val_data, checked_len);
                 /* db_iter_value() already deobfuscates values using the
                  * obfuscation key (dbwrapper.c:370-372). Do NOT XOR
                  * again here — that would undo the deobfuscation. */
-                e->value_len = (uint16_t)val_len;
+                e->value_len = checked_len;
                 chunk->num_entries++;
                 total_entries++;
             } else {
-                LOG_WARN("sync", "malloc failed for chunk entry value (%zu bytes), skipping entry", val_len);
+                LOG_WARN("sync",
+                         "malloc failed for chunk entry value (%u bytes), "
+                         "skipping entry", checked_len);
                 skipped_entries++;
             }
             db_iter_next(&it);

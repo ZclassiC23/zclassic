@@ -6,7 +6,6 @@
  * Build: make zcl-browser */
 
 #define _POSIX_C_SOURCE 200809L
-#include <sys/time.h>
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
 #include <stdio.h>
@@ -15,6 +14,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/time_compat.h"
 #include "models/database.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/wallet_view_controller.h"
@@ -149,8 +149,7 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
         }
     }
 
-    struct timeval t0, t1;
-    gettimeofday(&t0, NULL);
+    int64_t t0 = platform_time_monotonic_us();
 
     /* Route to MVC controllers by path prefix */
     size_t len = 0;
@@ -175,9 +174,8 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
                                             post_body_len,
                                             g_response, sizeof(g_response));
 
-    gettimeofday(&t1, NULL);
-    long ms = (t1.tv_sec - t0.tv_sec) * 1000 +
-              (t1.tv_usec - t0.tv_usec) / 1000;
+    int64_t t1 = platform_time_monotonic_us();
+    long ms = (long)((t1 - t0) / 1000LL);
 
     if (g_status_label) {
         char status[128];

@@ -1069,6 +1069,53 @@ int test_utxo_recovery_service(void)
             urs_frontier_fixture_teardown(&fx);
     }
 
+    /* ── 12d3. Same clamp with a cyclic/non-descending pprev extent above
+     *          the frontier: boot must not spin; it should fall through to
+     *          validate_headers_log's OWN hash (via=log_hash) ── */
+
+    {
+        const int A = REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        struct urs_frontier_fixture fx;
+        bool up = urs_frontier_fixture_setup(&fx, "urs_clamp_cycle", A, 21);
+        bool seeded = up && urs_seed_frontier_schema()
+                   && urs_seed_validated_headers(A + 1, A + 10);
+
+        struct uint256 cut_hash;
+        struct uint256 loop_hash;
+        urs_hash_for_height(A + 15, &cut_hash);
+        urs_hash_for_height(A + 18, &loop_hash);
+        struct block_index *cut = up
+            ? block_map_find(&fx.ms.map_block_index, &cut_hash) : NULL;
+        struct block_index *loop = up
+            ? block_map_find(&fx.ms.map_block_index, &loop_hash) : NULL;
+        if (cut && loop)
+            cut->pprev = loop;
+
+        struct uint256 cand_hash;
+        urs_hash_for_height(A + 20, &cand_hash);
+        struct block_index *scan_fallback = up
+            ? block_map_find(&fx.ms.map_block_index, &cand_hash) : NULL;
+
+        struct chain_restore_result rr;
+        memset(&rr, 0, sizeof(rr));
+        if (up && seeded && cut && loop && scan_fallback)
+            rr = utxo_recovery_restore_chain_tip(&fx.uctx, scan_fallback);
+
+        struct uint256 want_hash;
+        urs_hash_for_height(A + 10, &want_hash);
+
+        URS_CHECK("urs: invariant A clamp bounds cyclic pprev descent "
+                  "and falls back to the log's own hash",
+                  up && seeded && cut && loop && scan_fallback &&
+                  rr.status.ok && rr.restored &&
+                  rr.restored_height == A + 10 &&
+                  uint256_eq(&rr.restored_hash, &want_hash) &&
+                  active_chain_height(&fx.ms.chain_active) == A + 10);
+
+        if (up)
+            urs_frontier_fixture_teardown(&fx);
+    }
+
     /* ── 12e. Fresh datadir / no frontier evidence: FAIL OPEN (no clamp,
      *         today's behavior preserved bit-for-bit) ── */
 

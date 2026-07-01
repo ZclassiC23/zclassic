@@ -526,7 +526,7 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
             sqlite3_bind_blob(ins, 12, p->nChainWork.pn, 32, SQLITE_STATIC) != SQLITE_OK ||
             sqlite3_bind_int(ins, 13, (int)p->nCachedBranchId) != SQLITE_OK ||
             sqlite3_bind_int(ins, 14, (int)p->nChainTx) != SQLITE_OK ||
-            AR_STEP_ROW_READONLY(ins) != SQLITE_DONE)
+            AR_STEP_WRITE(ins) != SQLITE_DONE)
             goto fail;
         count++;
 

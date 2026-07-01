@@ -92,6 +92,7 @@ static size_t g_api_supply_cache_len = 0;
 
 static char   g_api_hodl_cache[API_HODL_CACHE_SIZE];
 static size_t g_api_hodl_cache_len = 0;
+static int64_t g_api_hodl_cache_height = -1;
 
 #define API_DEEP_STATS_CACHE_SIZE 65536  /* 64KB */
 static char   g_api_deep_stats_cache[API_DEEP_STATS_CACHE_SIZE];
@@ -101,6 +102,7 @@ static _Atomic int g_api_cache_thread_running = 0;
 static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool api_response_cacheable(const uint8_t *buf, size_t len);
+static int64_t api_response_height(const uint8_t *buf, size_t len);
 
 void api_set_state(struct main_state *ms, struct tx_mempool *mp,
                     struct coins_view_cache *coins_tip,
@@ -367,9 +369,11 @@ static void *api_cache_refresh_thread(void *arg)
                 size_t len = compute_hodl(tmp, API_HODL_CACHE_SIZE);
                 if (len > 0 && len < API_HODL_CACHE_SIZE &&
                     api_response_cacheable(tmp, len)) {
+                    int64_t height = api_response_height(tmp, len);
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_hodl_cache, tmp, len);
                     g_api_hodl_cache_len = len;
+                    g_api_hodl_cache_height = height;
                     pthread_mutex_unlock(&g_api_cache_mutex);
                 }
                 free(tmp);
@@ -461,6 +465,13 @@ static bool api_response_cacheable(const uint8_t *buf, size_t len)
     return true;
 }
 
+static int64_t api_response_height(const uint8_t *buf, size_t len)
+{
+    if (!buf || len == 0)
+        LOG_RETURN(-1, "api", "api_response_height: empty response");
+    return zcl_json_int((const char *)buf, "height");
+}
+
 void api_start_cache(void)
 {
     if (!ensure_cache_thread())
@@ -492,6 +503,52 @@ static size_t serve_from_cache(const char *cache, const size_t *cache_len,
     memcpy(r, cache, copy);
     pthread_mutex_unlock(&g_api_cache_mutex);
     return copy;
+}
+
+static size_t serve_hodl_fresh(uint8_t *r, size_t max)
+{
+    int64_t current_height = api_hodl_current_tip_height();
+
+    pthread_mutex_lock(&g_api_cache_mutex);
+    size_t len = g_api_hodl_cache_len;
+    int64_t cache_height = g_api_hodl_cache_height;
+    if (len > 0 && (current_height < 0 || cache_height >= current_height)) {
+        size_t copy = len < max ? len : max;
+        memcpy(r, g_api_hodl_cache, copy);
+        pthread_mutex_unlock(&g_api_cache_mutex);
+        return copy;
+    }
+    pthread_mutex_unlock(&g_api_cache_mutex);
+
+    uint8_t *tmp = zcl_malloc(API_HODL_CACHE_SIZE, "api_hodl_fresh_tmp");
+    if (!tmp)
+        return api_json_error(r, max, JSON_500_HEADERS, "Out of memory");
+
+    len = compute_hodl(tmp, API_HODL_CACHE_SIZE);
+    if (len > 0 && len < API_HODL_CACHE_SIZE &&
+        api_response_cacheable(tmp, len)) {
+        int64_t height = api_response_height(tmp, len);
+        if (current_height >= 0 && height < current_height) {
+            free(tmp);
+            return api_json_error(r, max, JSON_503_HEADERS,
+                                  "HODL data refreshing, please retry");
+        }
+
+        pthread_mutex_lock(&g_api_cache_mutex);
+        memcpy(g_api_hodl_cache, tmp, len);
+        g_api_hodl_cache_len = len;
+        g_api_hodl_cache_height = height;
+        pthread_mutex_unlock(&g_api_cache_mutex);
+
+        size_t copy = len < max ? len : max;
+        memcpy(r, tmp, copy);
+        free(tmp);
+        return copy;
+    }
+
+    free(tmp);
+    return api_json_error(r, max, JSON_503_HEADERS,
+                          "HODL data unavailable, please retry");
 }
 
 /* ── Operator-private route classifier ───────────────────── */
@@ -634,16 +691,16 @@ size_t api_handle_request(const char *method, const char *path,
         return serve_from_cache(g_api_supply_cache, &g_api_supply_cache_len,
                                 response, response_max);
 
-    /* Route: /api/hodl — served from cache */
+    /* Route: /api/hodl — read-only SQLite; refresh synchronously if cache lags tip */
     if (strcmp(clean_path, "/api/hodl") == 0)
-        return serve_from_cache(g_api_hodl_cache, &g_api_hodl_cache_len,
-                                response, response_max);
+        return serve_hodl_fresh(response, response_max);
 
-    /* Route: /api/factoids — built from SQLite (read-only, safe from handler) */
     if (strcmp(clean_path, "/api/factoids") == 0) {
         if (!g_api_ctx.datadir)
             return api_json_error(response, response_max, JSON_500_HEADERS, "No datadir");
-        return explorer_factoids_build_json(response, response_max, g_api_ctx.datadir);
+        int64_t served_tip = api_hodl_current_tip_height();
+        return explorer_factoids_build_json_for_served_tip(
+            response, response_max, g_api_ctx.datadir, served_tip);
     }
 
     /* Event log — lock-free atomic reads, safe from any handler thread */
@@ -662,6 +719,11 @@ size_t api_handle_request(const char *method, const char *path,
     /* Health check — lightweight, machine-readable */
     if (strcmp(clean_path, "/api/health") == 0)
         return api_serve_health(response, response_max);
+
+    /* Simple public status alias for dashboards and MCP-friendly clients */
+    if (strcmp(clean_path, "/api/status") == 0 ||
+        strcmp(clean_path, "/api/node/summary") == 0)
+        return api_serve_node_summary(response, response_max);
 
     /* Route: /api/node/snapshot — snapshot sync service status */
     if (strcmp(clean_path, "/api/node/snapshot") == 0)

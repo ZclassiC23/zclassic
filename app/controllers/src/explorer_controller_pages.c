@@ -21,6 +21,7 @@
 #include "chain/subsidy.h"
 #include "core/uint256.h"
 #include "encoding/utilstrencodings.h"
+#include "jobs/reducer_frontier.h"
 #include "models/database.h"
 #include "models/hodl_wave.h"
 #include "models/tx_index.h"
@@ -65,6 +66,44 @@ static char g_stats_cache[STATS_CACHE_SIZE] = "";
  * serve_stats(), so a request thread never observes a nonzero length before
  * g_stats_cache holds the matching bytes. */
 static _Atomic size_t g_stats_cache_len = 0;
+static _Atomic int64_t g_stats_cache_height = 0;
+
+static int64_t explorer_page_cap_to_served_tip(int64_t index_tip)
+{
+    if (index_tip < 0)
+        return index_tip;
+    if (!reducer_frontier_provable_tip_is_published())
+        return 0;
+
+    int32_t served_tip = reducer_frontier_provable_tip_cached();
+    if (served_tip >= 0 && index_tip > served_tip)
+        return served_tip;
+    return index_tip;
+}
+
+static int64_t explorer_page_index_tip_height(const char *datadir)
+{
+    sqlite3 *db = NULL;
+    int64_t block_tip;
+    int64_t utxo_tip;
+
+    if (!datadir || !explorer_open_readonly_db(datadir, &db))
+        LOG_RETURN(-1, "explorer",
+                   "explorer_page_index_tip_height: open db failed");
+    block_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
+    utxo_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
+    sqlite3_close(db);
+    return block_tip > utxo_tip ? block_tip : utxo_tip;
+}
+
+static int64_t explorer_page_served_tip_height(const char *datadir,
+                                               int64_t *index_tip_out)
+{
+    int64_t index_tip = explorer_page_index_tip_height(datadir);
+    if (index_tip_out)
+        *index_tip_out = index_tip;
+    return explorer_page_cap_to_served_tip(index_tip);
+}
 
 /* ── Disk cache helpers (survive restarts) ────────────────── */
 
@@ -108,6 +147,17 @@ void *stats_compute_thread(void *arg)
 {
     (void)arg;
     struct explorer_context *ctx = explorer_ctx();
+    int64_t start_index_tip = -1;
+    int64_t start_tip =
+        explorer_page_served_tip_height(ctx->datadir, &start_index_tip);
+    if (start_index_tip >= 0 && start_tip >= 0 && start_index_tip > start_tip) {
+        printf("Stats background: deferred until served frontier catches "
+               "index (served=%lld index=%lld)\n",
+               (long long)start_tip, (long long)start_index_tip);
+        fflush(stdout);
+        g_stats_computing = 0;
+        return NULL;
+    }
     /* Load previous cache from disk for instant serving while recomputing */
     if (g_stats_cache_len == 0) {
         size_t disk_len = cache_load("stats", g_stats_cache, STATS_CACHE_SIZE);
@@ -126,11 +176,27 @@ void *stats_compute_thread(void *arg)
     if (!tmp) { g_stats_computing = 0; LOG_NULL("explorer", "stats_compute_thread: malloc(%d) failed", STATS_CACHE_SIZE); }
     size_t len = explorer_stats_build((uint8_t *)tmp, STATS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
-        memcpy(g_stats_cache, tmp, len);
-        /* Release: publish the length only after the bytes are in place, pairing
-         * with the acquire-load in serve_stats(). */
-        atomic_store_explicit(&g_stats_cache_len, len, memory_order_release);
-        cache_save("stats", g_stats_cache, len);
+        int64_t end_index_tip = -1;
+        int64_t end_tip =
+            explorer_page_served_tip_height(ctx->datadir, &end_index_tip);
+        bool stable = start_index_tip >= 0 && end_index_tip >= 0 &&
+                      start_index_tip == end_index_tip &&
+                      end_tip >= 0 && end_index_tip <= end_tip;
+        if (stable) {
+            memcpy(g_stats_cache, tmp, len);
+            /* Release: publish the length only after the bytes are in place, pairing
+             * with the acquire-load in serve_stats(). */
+            atomic_store_explicit(&g_stats_cache_height, end_tip,
+                                  memory_order_release);
+            atomic_store_explicit(&g_stats_cache_len, len, memory_order_release);
+            cache_save("stats", g_stats_cache, len);
+        } else {
+            printf("Stats background: discarded unstable build "
+                   "(start_index=%lld end_index=%lld served=%lld)\n",
+                   (long long)start_index_tip, (long long)end_index_tip,
+                   (long long)end_tip);
+            fflush(stdout);
+        }
     }
     free(tmp);
     g_stats_computing = 0;
@@ -142,20 +208,30 @@ void *stats_compute_thread(void *arg)
 
 size_t serve_stats(uint8_t *r, size_t max)
 {
+    struct explorer_context *ctx = explorer_ctx();
+    int64_t index_tip = -1;
+    int64_t tip = explorer_page_served_tip_height(ctx->datadir, &index_tip);
     /* Return cached version if available. Acquire-load pairs with the release
      * store in stats_compute_thread(): once we read a nonzero length, the
      * matching g_stats_cache bytes are guaranteed visible. */
     size_t cached = atomic_load_explicit(&g_stats_cache_len, memory_order_acquire);
-    if (cached > 0) {
+    int64_t cache_height =
+        atomic_load_explicit(&g_stats_cache_height, memory_order_acquire);
+    if (cached > 0 && (tip <= 0 || cache_height >= tip)) {
         size_t copy = cached < max ? cached : max;
         memcpy(r, g_stats_cache, copy);
         return copy;
     }
+    if (index_tip >= 0 && tip >= 0 && index_tip > tip)
+        return explorer_view_loading_placeholder(r, max,
+            cached > 0 ? "Updating Statistics..." : "Loading Statistics...",
+            "#33ff99", "Computing charts from blockchain data.");
 
     /* Not cached yet — trigger background computation if not running */
     explorer_start_once(&g_stats_computing, stats_compute_thread,
                         "stats_compute");
-    return explorer_view_loading_placeholder(r, max, "Loading Statistics...",
+    return explorer_view_loading_placeholder(r, max,
+        cached > 0 ? "Updating Statistics..." : "Loading Statistics...",
         "#33ff99", "Computing charts from blockchain data.");
 }
 
@@ -166,11 +242,23 @@ static char g_factoids_cache[FACTOIDS_CACHE_SIZE] = "";
 /* Published with release after the bytes are in place and read with acquire in
  * serve_factoids() (same contract as g_stats_cache_len). */
 static _Atomic size_t g_factoids_cache_len = 0;
+static _Atomic int64_t g_factoids_cache_height = 0;
 
 void *factoids_compute_thread(void *arg)
 {
     (void)arg;
     struct explorer_context *ctx = explorer_ctx();
+    int64_t start_index_tip = -1;
+    int64_t start_tip =
+        explorer_page_served_tip_height(ctx->datadir, &start_index_tip);
+    if (start_index_tip >= 0 && start_tip >= 0 && start_index_tip > start_tip) {
+        printf("Factoids background: deferred until served frontier catches "
+               "index (served=%lld index=%lld)\n",
+               (long long)start_tip, (long long)start_index_tip);
+        fflush(stdout);
+        g_factoids_computing = 0;
+        return NULL;
+    }
     /* Load previous cache from disk for instant serving */
     if (g_factoids_cache_len == 0) {
         size_t disk_len = cache_load("factoids", g_factoids_cache, FACTOIDS_CACHE_SIZE);
@@ -194,9 +282,25 @@ void *factoids_compute_thread(void *arg)
     size_t len = explorer_factoids_build((uint8_t *)tmp,
                                           FACTOIDS_CACHE_SIZE, ctx->datadir);
     if (len > 0) {
-        memcpy(g_factoids_cache, tmp, len);
-        atomic_store_explicit(&g_factoids_cache_len, len, memory_order_release);
-        cache_save("factoids", g_factoids_cache, len);
+        int64_t end_index_tip = -1;
+        int64_t end_tip =
+            explorer_page_served_tip_height(ctx->datadir, &end_index_tip);
+        bool stable = start_index_tip >= 0 && end_index_tip >= 0 &&
+                      start_index_tip == end_index_tip &&
+                      end_tip >= 0 && end_index_tip <= end_tip;
+        if (stable) {
+            memcpy(g_factoids_cache, tmp, len);
+            atomic_store_explicit(&g_factoids_cache_height, end_tip,
+                                  memory_order_release);
+            atomic_store_explicit(&g_factoids_cache_len, len, memory_order_release);
+            cache_save("factoids", g_factoids_cache, len);
+        } else {
+            printf("Factoids background: discarded unstable build "
+                   "(start_index=%lld end_index=%lld served=%lld)\n",
+                   (long long)start_index_tip, (long long)end_index_tip,
+                   (long long)end_tip);
+            fflush(stdout);
+        }
     }
     free(tmp);
     g_factoids_computing = 0;
@@ -205,20 +309,30 @@ void *factoids_compute_thread(void *arg)
 
 size_t serve_factoids(uint8_t *r, size_t max)
 {
+    struct explorer_context *ctx = explorer_ctx();
+    int64_t index_tip = -1;
+    int64_t tip = explorer_page_served_tip_height(ctx->datadir, &index_tip);
     /* Return cached version if available. Acquire-load pairs with the release
      * store in factoids_compute_thread(): a nonzero length guarantees the
      * matching g_factoids_cache bytes are visible. */
     size_t cached = atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
-    if (cached > 0) {
+    int64_t cache_height =
+        atomic_load_explicit(&g_factoids_cache_height, memory_order_acquire);
+    if (cached > 0 && (tip <= 0 || cache_height >= tip)) {
         size_t copy = cached < max ? cached : max;
         memcpy(r, g_factoids_cache, copy);
         return copy;
     }
+    if (index_tip >= 0 && tip >= 0 && index_tip > tip)
+        return explorer_view_loading_placeholder(r, max,
+            cached > 0 ? "Updating Factoids..." : "Loading Factoids...",
+            "#33ff99", "Computing historian data from blockchain.");
 
     /* Not cached yet -- trigger background computation */
     explorer_start_once(&g_factoids_computing, factoids_compute_thread,
                         "factoids_compute");
-    return explorer_view_loading_placeholder(r, max, "Loading Factoids...",
+    return explorer_view_loading_placeholder(r, max,
+        cached > 0 ? "Updating Factoids..." : "Loading Factoids...",
         "#33ff99", "Computing historian data from blockchain.");
 }
 

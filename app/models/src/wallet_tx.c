@@ -746,7 +746,7 @@ int db_wallet_tx_notes(struct node_db *ndb, const uint8_t txid[32],
     sqlite3_stmt *s = NULL;
     sqlite3_prepare_v2(ndb->db,
         "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,"
-        "cm,nullifier,block_height,spent_txid"
+        "cm,nullifier,block_height,source,spent_txid"
         " FROM wallet_sapling_notes WHERE txid=? ORDER BY output_index",
         -1, &s, NULL);
     if (!s)
@@ -755,7 +755,7 @@ int db_wallet_tx_notes(struct node_db *ndb, const uint8_t txid[32],
     int count = 0;
     while (AR_STEP_ROW(s) && (size_t)count < max) {
         db_sapling_note_read_row(s, 0, &out[count]);
-        wallet_tx_read_spent_txid(s, 11, &out[count]);
+        wallet_tx_read_spent_txid(s, 12, &out[count]);
         count++;
     }
     AR_FINALIZE(s);

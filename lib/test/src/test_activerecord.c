@@ -303,6 +303,8 @@ int test_activerecord(void)
         memset(n.pk_d, 0x77, 32);
         memset(n.diversifier, 0x88, 11);
         memset(n.rcm, 0x99, 32);
+        snprintf(n.source, sizeof(n.source), "%s",
+                 DB_SAPLING_NOTE_SOURCE_LOCAL);
         n.value = 50000;
         ok = ok && db_sapling_note_validate(&n, &errs);
 
@@ -882,6 +884,8 @@ int test_activerecord(void)
         memset(n.pk_d, 0xAA, 32);
         memset(n.diversifier, 0x11, 11);
         memset(n.rcm, 0x22, 32);
+        snprintf(n.source, sizeof(n.source), "%s",
+                 DB_SAPLING_NOTE_SOURCE_LOCAL);
         n.value = 100000;
         ok = ok && db_sapling_note_validate(&n, &errs);
 

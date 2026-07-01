@@ -23,22 +23,20 @@
 #include "models/db_txn.h"
 
 #include "event/event.h"
+#include "platform/time_compat.h"
 #include "services/disk_monitor.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 #include "util/safe_alloc.h"
 
 /* ── Time helper ────────────────────────────────────────────────
  * Local static to keep this module's dependency footprint tiny. */
 static int64_t db_txn_now_us(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    return platform_time_monotonic_us();
 }
 
 /* ── Event helpers ──────────────────────────────────────────── */

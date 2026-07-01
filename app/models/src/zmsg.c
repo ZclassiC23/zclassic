@@ -80,8 +80,7 @@ bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
 static void row_to_zmsg(sqlite3_stmt *s, struct zmsg_message *out)
 {
     memset(out, 0, sizeof(*out));
-    const void *blob = sqlite3_column_blob(s, 0);
-    if (blob) memcpy(out->msg_id, blob, 32);
+    AR_READ_BLOB(s, 0, out->msg_id, 32);
 
     out->direction = sqlite3_column_int(s, 1);
     out->channel = sqlite3_column_int(s, 2);
@@ -97,8 +96,7 @@ static void row_to_zmsg(sqlite3_stmt *s, struct zmsg_message *out)
 
     out->timestamp = sqlite3_column_int64(s, 6);
 
-    blob = sqlite3_column_blob(s, 7);
-    if (blob) memcpy(out->txid, blob, 32);
+    AR_READ_BLOB(s, 7, out->txid, 32);
 
     out->read = sqlite3_column_int(s, 8) != 0;
 }

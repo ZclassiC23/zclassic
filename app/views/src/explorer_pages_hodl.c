@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "views/explorer_pages_view.h"
 #include "controllers/explorer_internal.h"
+#include "jobs/reducer_frontier.h"
 #include "models/hodl_wave.h"
 #include "services/hodl_history_service.h"
 #include "util/ar_step_readonly.h"
@@ -32,6 +33,20 @@
  * array. Returns the cumulative value at the largest stored height
  * that does not exceed target_h, or 0 when no such row exists. */
 struct hodl_cum_row { int64_t h; int64_t cum_v; };
+
+static int64_t hodl_view_cap_to_served_tip(int64_t index_tip)
+{
+    if (index_tip < 0)
+        return index_tip;
+    if (!reducer_frontier_provable_tip_is_published())
+        return 0;
+
+    int32_t served_tip = reducer_frontier_provable_tip_cached();
+    if (served_tip >= 0 && index_tip > served_tip)
+        return served_tip;
+    return index_tip;
+}
+
 static int64_t hodl_cum_at(const struct hodl_cum_row *cum, int n,
                            int64_t target_h)
 {
@@ -132,20 +147,15 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
         return off;
     }
 
-    /* Canonical tip = blocks.max. utxos is written by connect_tip and
-     * lags blocks (briefly during a connect, indefinitely if the
-     * indexer is mid-rebuild). Using MAX(blocks, utxos) as we did
-     * before could let utxos.height lead blocks.height during catchup,
-     * which makes hodl_wave_age_seconds compute negative ages that the
-     * silent clamp turns into 0 — visually all UTXOs land in <1d. */
-    int64_t tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
+    /* HODL is public chain data, so publish it at the same H* frontier served
+     * by getblockcount/getblockhash. The projection DB can be one reducer
+     * stage ahead during a tip-finalize hole; those rows are skipped until H*
+     * advances instead of being advertised as the live explorer tip. */
+    int64_t block_tip =
+        sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM blocks");
     int64_t utxo_tip = sql_query_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
-    if (utxo_tip > tip) {
-        /* Anomaly: utxos table ahead of blocks. Don't let that drive
-         * the headline — fall back to utxo_tip so age math stays sane,
-         * but flag in skipped_rows on the next scan. */
-        tip = utxo_tip;
-    }
+    int64_t index_tip = block_tip > utxo_tip ? block_tip : utxo_tip;
+    int64_t tip = hodl_view_cap_to_served_tip(index_tip);
 
     struct hodl_wave_snapshot hodl;
     bool ok = hodl_wave_scan_current_utxos(db, tip, &hodl);

@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "util/log_macros.h"
+#include "util/ar_step_readonly.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,7 +108,7 @@ void *backfill_addresses_thread(void *arg)
         return NULL;
     }
 
-    while ((rc = sqlite3_step(cursor)) == SQLITE_ROW) {
+    while ((rc = AR_STEP_ROW_READONLY(cursor)) == SQLITE_ROW) {
         const void *addr_hash = sqlite3_column_blob(cursor, 0);
         int addr_len = sqlite3_column_bytes(cursor, 0);
         if (!addr_hash || addr_len <= 0)
@@ -115,7 +116,7 @@ void *backfill_addresses_thread(void *arg)
 
         sqlite3_reset(upsert);
         sqlite3_bind_blob(upsert, 1, addr_hash, addr_len, SQLITE_STATIC);
-        sqlite3_step(upsert);
+        AR_STEP_WRITE(upsert);
         processed++;
 
         /* Commit every BATCH_SIZE rows to release locks and memory */

@@ -42,10 +42,10 @@
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -113,6 +113,8 @@ static struct wallet_backup_service_state g_wbs = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .supervisor_id = SUPERVISOR_INVALID_ID,
 };
+
+static _Atomic int64_t g_wbs_last_backup_path_us = 0;
 
 static struct liveness_contract g_wbs_contract;
 
@@ -303,18 +305,29 @@ static bool wbs_source_path(struct node_db *db, char *out, size_t cap)
     return true;
 }
 
-/* SHA-style filename: wallet_backup_<unix_ts>_<usec>.sqlite. The
- * usec disambiguates rapid successive runs (tests call
+static int64_t wbs_unique_backup_timestamp_us(void)
+{
+    int64_t now = platform_time_realtime_us();
+    int64_t prev = atomic_load(&g_wbs_last_backup_path_us);
+    for (;;) {
+        int64_t next = now > prev ? now : prev + 1;
+        if (atomic_compare_exchange_weak(&g_wbs_last_backup_path_us,
+                                         &prev, next))
+            return next;
+    }
+}
+
+/* SHA-style filename: wallet_backup_<unix_ts>_<usec>.sqlite. The usec
+ * component is monotonicized to disambiguate rapid successive runs (tests call
  * run_once several times back-to-back). */
 static void wbs_build_backup_path(const char *dir, char *out, size_t cap)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
+    int64_t now_us = wbs_unique_backup_timestamp_us();
     snprintf(out, cap, "%s/%s%lld_%06ld%s",
              dir,
              WALLET_BACKUP_FILENAME_PREFIX,
-             (long long)tv.tv_sec,
-             (long)tv.tv_usec,
+             (long long)(now_us / 1000000LL),
+             (long)(now_us % 1000000LL),
              WALLET_BACKUP_FILENAME_SUFFIX);
 }
 

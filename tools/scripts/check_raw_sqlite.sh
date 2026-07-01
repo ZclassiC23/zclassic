@@ -4,7 +4,7 @@
 # check_raw_sqlite.sh - ensure code outside vendored/test paths does not use
 # raw sqlite3_step() outside the AR_* wrappers (activerecord.h).
 #
-# Scans app/, tools/, and lib/ for `sqlite3_step(` outside:
+# Scans app/, tools/, lib/, config/, and src/ for `sqlite3_step(` outside:
 #   - vendor/
 #   - any test/ directory
 #   - the AR_STEP_ROW / AR_STEP_DONE / AR_STEP_ROW_READONLY macros themselves
@@ -59,10 +59,10 @@ fi
 # `2>/dev/null ... || true`, so the producer silently emptied and the gate
 # passed "clean" exit 0 over zero scanned hits. Capture the first grep's
 # exit explicitly: 0=hits, 1=no-hits (fine), >=2=fatal.
-raw_scan=$(grep -rn 'sqlite3_step[[:space:]]*(' app/ tools/ lib/ --include='*.c')
+raw_scan=$(grep -rn 'sqlite3_step[[:space:]]*(' app/ tools/ lib/ config/ src/ --include='*.c')
 grep_rc=$?
 if [[ $grep_rc -ge 2 ]]; then
-    echo "check_raw_sqlite: FATAL — grep exited $grep_rc scanning app/ tools/ lib/." >&2
+    echo "check_raw_sqlite: FATAL — grep exited $grep_rc scanning app/ tools/ lib/ config/ src/." >&2
     echo "  This is a real error (bad pattern / unreadable tree / non-GNU grep)," >&2
     echo "  not 'no matches'. Refusing to pass hollow." >&2
     exit 2
@@ -76,7 +76,7 @@ raw_hits=$(printf '%s\n' "$raw_scan" \
 # correct-by-design below the AR layer. Bounded, NOT migration debt — we
 # report the count for visibility, but it does not gate or ratchet.
 kernel_store_total=$(grep -rn '// raw-sql-ok:progress-kv-kernel-store' \
-    app/ lib/ --include='*.c' 2>/dev/null \
+    app/ lib/ config/ src/ --include='*.c' 2>/dev/null \
     | grep -v 'vendor/\|/test/' | wc -l | tr -d ' ')
 
 violations=""

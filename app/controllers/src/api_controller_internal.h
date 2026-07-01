@@ -50,7 +50,7 @@ extern struct api_rpc_backend g_api_rpc;
     "Access-Control-Allow-Origin: *\r\n" \
     "Access-Control-Allow-Methods: GET, OPTIONS\r\n" \
     "Access-Control-Allow-Headers: Content-Type\r\n" \
-    "Cache-Control: public, max-age=10\r\n" \
+    "Cache-Control: no-cache\r\n" \
     SECURITY_HEADERS \
     "Connection: close\r\n\r\n"
 
@@ -96,6 +96,10 @@ size_t compute_blocks(uint8_t *r, size_t max);
 size_t compute_stats(uint8_t *r, size_t max);
 size_t compute_supply(uint8_t *r, size_t max);
 size_t compute_hodl(uint8_t *r, size_t max);
+int64_t api_hodl_index_tip_height(void);
+int64_t api_hodl_current_tip_height(void);
+bool api_hodl_index_ahead_of_served(int64_t *index_tip_out,
+                                    int64_t *served_tip_out);
 size_t compute_deep_stats(uint8_t *r, size_t max);
 
 /* ── Lookup handlers (defined in api_controller_lookup.c) ── */
@@ -141,6 +145,7 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max);
 size_t api_serve_health(uint8_t *response, size_t response_max);
 size_t api_serve_node_snapshot(uint8_t *response, size_t response_max);
 size_t api_serve_node_mmb(uint8_t *response, size_t response_max);
+size_t api_serve_node_summary(uint8_t *response, size_t response_max);
 size_t api_serve_node_status(uint8_t *response, size_t response_max);
 size_t api_serve_wallet(uint8_t *response, size_t response_max);
 size_t api_serve_files_manifest(uint8_t *response, size_t response_max);

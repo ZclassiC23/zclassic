@@ -110,7 +110,7 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
         sqlite3_bind_int64(stmt, 13, sapling_val);
         sqlite3_bind_int64(stmt, 14, sprout_val);
 
-        if (AR_STEP_ROW_READONLY(stmt) != SQLITE_DONE) {
+        if (AR_STEP_WRITE(stmt) != SQLITE_DONE) {
             static int errs = 0;
             if (++errs <= 3)
                 LOG_INFO("chain", "backfill h=%d: %s", bi->nHeight,

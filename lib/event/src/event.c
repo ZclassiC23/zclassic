@@ -13,7 +13,6 @@
 #include <signal.h>
 #include <unistd.h>
 #include <execinfo.h>
-#include <sys/time.h>
 #include <time.h>
 
 /* ── Global event log ─────────────────────────────────────
@@ -284,9 +283,7 @@ void event_log_init(void)
 
 static int64_t now_us(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    return platform_time_realtime_us();
 }
 
 void event_emit(enum event_type type, uint32_t peer_id,
@@ -954,9 +951,7 @@ void error_ring_observer(enum event_type type, uint32_t peer_id,
     int pos = atomic_fetch_add(&r->write_pos, 1) % ERROR_RING_SIZE;
     struct error_entry *e = &r->entries[pos];
 
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    e->timestamp_us = (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+    e->timestamp_us = platform_time_realtime_us();
     e->type = type;
     if (payload && payload_len > 0) {
         size_t copy = payload_len < sizeof(e->message) - 1

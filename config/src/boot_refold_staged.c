@@ -275,6 +275,15 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
     return cleared;
 }
 
+#ifdef ZCL_TESTING
+size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
+    struct main_state *ms, const char *datadir, int seed_h)
+{
+    return boot_snapshot_drop_bodiless_have_data_above_seed(ms, datadir,
+                                                           seed_h);
+}
+#endif
+
 /* Read-only probe: is a SHA3-verified anchor snapshot reachable for THIS
  * checkpoint? True iff a file exists at mint_snapshot_path AND uss_open verifies
  * its full body SHA3 against cp->sha3_hash (verify_full_sha3=true binds the

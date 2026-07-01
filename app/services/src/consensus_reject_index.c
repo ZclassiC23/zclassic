@@ -22,12 +22,12 @@
 
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "platform/time_compat.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 
 #include "util/log_macros.h"
 #include "util/result.h"
@@ -54,9 +54,7 @@ static struct cri_state g_cri = {
 
 static int64_t cri_now_us(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
+    return platform_time_realtime_us();
 }
 
 /* Parse exactly 64 hex chars into out[32]. Matches the encoding

@@ -310,11 +310,36 @@ struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
         }
     }
 
-    /* 1) hash-linked descent: pprev only, never by-height. O(candidate -
-     * frontier) pointer hops — boot/recovery only, never the hot tick. */
+    /* 1) hash-linked descent: pprev only, never by-height. Bounded by the
+     * height gap and requiring strictly-descending heights so a corrupt
+     * block-index cycle cannot spin boot before it reaches the log-hash
+     * fallback/refusal below. */
     struct block_index *walk = candidate;
-    while (walk && walk->nHeight > fh)
-        walk = walk->pprev;
+    int64_t max_hops = (int64_t)candidate->nHeight - (int64_t)fh + 1;
+    int64_t hops = 0;
+    while (walk && walk->nHeight > fh) {
+        struct block_index *prev = walk->pprev;
+        if (!prev) {
+            walk = NULL;
+            break;
+        }
+        if (prev->nHeight >= walk->nHeight || ++hops > max_hops) {
+            LOG_WARN("utxo_recovery",
+                     "Invariant A clamp: non-descending/cyclic pprev while "
+                     "walking restore candidate h=%d toward frontier h=%d "
+                     "(at h=%d prev_h=%d hops=%lld max=%lld reason=%s)",
+                     candidate->nHeight, fh, walk->nHeight, prev->nHeight,
+                     (long long)hops, (long long)max_hops, reason);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=restore_tip_pprev_cycle candidate=%d "
+                        "frontier=%d at=%d prev=%d reason=%s",
+                        candidate->nHeight, fh, walk->nHeight,
+                        prev->nHeight, reason);
+            walk = NULL;
+            break;
+        }
+        walk = prev;
+    }
     if (walk && walk->nHeight == fh &&
         utxo_recovery_block_trust_rooted(walk)) {
         if (clamped_out)
@@ -329,8 +354,9 @@ struct block_index *utxo_recovery_clamp_tip_to_header_frontier(
         return walk;
     }
 
-    /* 2) torn extent (pprev dies above fh — the torn-extent case): derive
-     * the frontier tip from validate_headers_log's OWN hash (log-as-truth). */
+    /* 2) torn extent (pprev dies above fh or cycles/non-descends before fh):
+     * derive the frontier tip from validate_headers_log's OWN hash
+     * (log-as-truth). */
     uint8_t lh[32];
     bool found = false;
     if (reducer_frontier_log_hash_at(progress_store_db(),

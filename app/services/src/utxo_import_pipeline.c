@@ -25,6 +25,22 @@ int utxo_import_num_decoders(void)
     return (int)(n - 2);
 }
 
+struct zcl_result utxo_import_value_len_checked(size_t value_len,
+                                                uint32_t *out_len)
+{
+    if (!out_len)
+        return ZCL_ERR(-1, "utxo import value length: NULL out_len");
+    if (value_len > UTXO_IMPORT_VALUE_MAX_BYTES) {
+        LOG_WARN("sync",
+                 "UTXO import: refusing oversized CCoins value (%zu bytes, "
+                 "max=%u)", value_len, UTXO_IMPORT_VALUE_MAX_BYTES);
+        return ZCL_ERR(-2, "utxo import value length %zu exceeds max %u",
+                       value_len, UTXO_IMPORT_VALUE_MAX_BYTES);
+    }
+    *out_len = (uint32_t)value_len;
+    return ZCL_OK;
+}
+
 struct zcl_result utxo_import_writer_bind_checked(sqlite3_stmt *stmt,
                                                   const char *label,
                                                   int rc,
@@ -59,7 +75,7 @@ struct zcl_result utxo_import_writer_step_checked(sqlite3_stmt *stmt,
         return ZCL_ERR(-3, "import writer step: stmt is NULL row=%d",
                        row_no);
     }
-    int step_rc = AR_STEP_ROW_READONLY(stmt);
+    int step_rc = AR_STEP_WRITE(stmt);
     if (step_rc != SQLITE_DONE) {
         const char *err = (ndb && ndb->db) ? sqlite3_errmsg(ndb->db)
                                           : "db unavailable";
@@ -181,12 +197,13 @@ int utxo_import_decode_entry(const struct utxo_import_raw_entry *raw,
             r->has_address = 1;
             r->script_type = 2;
         } else if (nSize >= 2 && nSize <= 5) {
-            uint8_t prefix = (nSize == 2 || nSize == 4) ? 0x02 : 0x03;
-            r->script_len = 35;
-            r->script[0] = 0x21;
-            r->script[1] = prefix;
-            memcpy(r->script + 2, raw_script, 32);
-            r->script[34] = 0xac;
+            struct script decompressed;
+            script_init(&decompressed);
+            if (!script_decompress(&decompressed, (unsigned int)nSize,
+                                   raw_script, raw_script_len))
+                break;
+            r->script_len = (uint16_t)decompressed.size;
+            memcpy(r->script, decompressed.data, decompressed.size);
         } else {
             uint16_t slen = (uint16_t)raw_script_len;
             r->script_len = slen;
