@@ -12,6 +12,7 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
 #include "net/download.h"
+#include "services/anchor_selfmint.h"
 #include "services/node_health_service.h"
 #include "storage/progress_store.h"
 #include "sync/sync_state.h"
@@ -289,6 +290,128 @@ size_t api_serve_milestone(uint8_t *response, size_t response_max)
     return hlen + body_len;
 }
 
+void api_refold_status_json(struct json_value *result)
+{
+    struct anchor_snapshot_status st = {0};
+    bool status_ok = anchor_selfmint_snapshot_status(g_api_ctx.datadir, &st);
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", ZCL_REFOLD_STATUS_SCHEMA);
+    json_push_kv_str(result, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(result, "source", "zclassic23");
+    json_push_kv_str(result, "purpose",
+                     "sovereign refold anchor readiness");
+    json_push_kv_bool(result, "ready_for_refold",
+                      status_ok && st.verified);
+    json_push_kv_str(result, "primary_blocker",
+                     status_ok && st.verified
+                         ? "none"
+                         : "missing_verified_anchor_snapshot");
+    json_push_kv_str(result, "next_action",
+                     status_ok ? st.next_action
+                               : "check anchor snapshot status internals");
+
+    struct json_value checkpoint;
+    json_init(&checkpoint);
+    json_set_object(&checkpoint);
+    json_push_kv_bool(&checkpoint, "present", status_ok &&
+                      st.checkpoint_present);
+    json_push_kv_int(&checkpoint, "height", st.checkpoint_height);
+    json_push_kv_int(&checkpoint, "utxo_count",
+                     (int64_t)st.checkpoint_utxo_count);
+    json_push_kv_int(&checkpoint, "total_supply",
+                     st.checkpoint_total_supply);
+    json_push_kv_str(&checkpoint, "sha3", st.checkpoint_sha3_hex);
+    json_push_kv_str(&checkpoint, "block_hash",
+                     st.checkpoint_block_hash_hex);
+    json_push_kv(result, "checkpoint", &checkpoint);
+    json_free(&checkpoint);
+
+    struct json_value snap;
+    json_init(&snap);
+    json_set_object(&snap);
+    json_push_kv_bool(&snap, "path_resolved", status_ok &&
+                      st.path_resolved);
+    json_push_kv_str(&snap, "source", status_ok ? st.path_source : "");
+    json_push_kv_str(&snap, "path", status_ok ? st.path : "");
+    json_push_kv_bool(&snap, "stat_present", status_ok &&
+                      st.stat_present);
+    json_push_kv_int(&snap, "stat_size",
+                     status_ok ? st.stat_size : 0);
+    json_push_kv_bool(&snap, "header_read", status_ok && st.header_read);
+    json_push_kv_int(&snap, "height", st.snapshot_height);
+    json_push_kv_int(&snap, "count", (int64_t)st.snapshot_count);
+    json_push_kv_int(&snap, "total_supply",
+                     st.snapshot_total_supply);
+    json_push_kv_str(&snap, "sha3", st.snapshot_sha3_hex);
+    json_push_kv_str(&snap, "block_hash", st.snapshot_block_hash_hex);
+    json_push_kv_bool(&snap, "height_match", status_ok &&
+                      st.height_match);
+    json_push_kv_bool(&snap, "count_match", status_ok &&
+                      st.count_match);
+    json_push_kv_bool(&snap, "sha3_match", status_ok && st.sha3_match);
+    json_push_kv_bool(&snap, "block_hash_match", status_ok &&
+                      st.block_hash_match);
+    json_push_kv_bool(&snap, "verified", status_ok && st.verified);
+    json_push_kv_str(&snap, "verification",
+                     status_ok ? st.verification : "status_error");
+    if (!status_ok || st.error[0])
+        json_push_kv_str(&snap, "error", status_ok ? st.error
+                                                    : "status unavailable");
+    json_push_kv(result, "anchor_snapshot", &snap);
+    json_free(&snap);
+
+    struct json_value commands;
+    json_init(&commands);
+    json_set_object(&commands);
+    json_push_kv_str(&commands, "native", "zclassic23 refold");
+    json_push_kv_str(&commands, "rest", "/api/v1/refold");
+    json_push_kv_str(&commands, "mcp", "zcl_refold_status");
+    json_push_kv_str(&commands, "copy_proof",
+                     "make repro-on-copy SLUG=soak-refold "
+                     "REPRO_SRC=$HOME/.zclassic-c23-soak REPRO_FULL=1 "
+                     "CLIMB_PAST=<checkpoint_height> "
+                     "ARGS='-refold-from-anchor -nobgvalidation "
+                     "-paramsdir=$$HOME/.zcash-params'");
+    json_push_kv(result, "commands", &commands);
+    json_free(&commands);
+}
+
+size_t api_serve_refold_status(uint8_t *response, size_t response_max)
+{
+    if (!response || response_max == 0)
+        return 0;
+
+    struct json_value body;
+    json_init(&body);
+    api_refold_status_json(&body);
+
+    size_t body_len = json_write(&body, NULL, 0);
+    int header_len = snprintf((char *)response, response_max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %zu\r\n\r\n",
+        body_len);
+    if (header_len < 0 || (size_t)header_len >= response_max) {
+        json_free(&body);
+        return 0;
+    }
+
+    size_t hlen = (size_t)header_len;
+    if (body_len > response_max - hlen) {
+        json_free(&body);
+        return api_json_error(response, response_max, JSON_500_HEADERS,
+                              "Refold status response too large");
+    }
+
+    json_write(&body, (char *)response + hlen, response_max - hlen);
+    json_free(&body);
+    return hlen + body_len;
+}
+
 const char *api_rest_index_body_json(void)
 {
     return
@@ -305,6 +428,7 @@ const char *api_rest_index_body_json(void)
         "\"aliases\":{"
           "\"agent\":\"/api/v1/agent\","
           "\"milestone\":\"/api/v1/milestone\","
+          "\"refold\":\"/api/v1/refold\","
           "\"node\":\"/api/v1/node\","
           "\"node_summary\":\"/api/v1/node/summary\","
           "\"status\":\"/api/v1/status\""
@@ -319,6 +443,7 @@ const char *api_rest_index_body_json(void)
         "\"resources\":["
           "{\"name\":\"node\",\"collection\":\"/api/v1/node\",\"summary\":\"/api/v1/node/summary\",\"status\":\"/api/v1/node/status\"},"
           "{\"name\":\"milestone\",\"collection\":\"/api/v1/milestone\"},"
+          "{\"name\":\"refold\",\"collection\":\"/api/v1/refold\"},"
           "{\"name\":\"blocks\",\"collection\":\"/api/v1/blocks\",\"item\":\"/api/v1/block/{height_or_hash}\"},"
           "{\"name\":\"transactions\",\"item\":\"/api/v1/tx/{txid}\"},"
           "{\"name\":\"peers\",\"collection\":\"/api/v1/peers\"},"
@@ -336,12 +461,14 @@ const char *api_rest_index_body_json(void)
         "\"mcp\":{"
           "\"first_tool\":\"zcl_agent\","
           "\"milestone_tool\":\"zcl_milestone\","
+          "\"refold_tool\":\"zcl_refold_status\","
           "\"drilldown_tool\":\"zcl_status\""
         "},"
         "\"cli\":{"
           "\"api_command\":\"zclassic23 api\","
           "\"first_command\":\"zclassic23 agent\","
           "\"milestone_command\":\"zclassic23 milestone\","
+          "\"refold_command\":\"zclassic23 refold\","
           "\"drilldown_command\":\"zclassic23 healthcheck\""
         "}"
         "}";

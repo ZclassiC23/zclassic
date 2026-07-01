@@ -649,6 +649,24 @@ static bool rpc_milestone_status(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_refold_status(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "refold\n"
+        "\nReturn read-only sovereign refold anchor readiness. This verifies "
+        "the candidate anchor snapshot path with the same full SHA3/count "
+        "loader predicate the boot path uses before trusting it.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.refold_status.v1\", "
+        "\"ready_for_refold\":false, "
+        "\"primary_blocker\":\"missing_verified_anchor_snapshot\" }\n");
+
+    api_refold_status_json(result);
+    return true;
+}
+
 static bool rpc_validationstatus(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -722,6 +740,8 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "operatorsummary",   rpc_agent_summary,     true },
         { "control", "milestone",         rpc_milestone_status,  true },
         { "control", "mvpstatus",         rpc_milestone_status,  true },
+        { "control", "refold",            rpc_refold_status,     true },
+        { "control", "refoldstatus",      rpc_refold_status,     true },
         { "control", "getreorghistory",   rpc_getreorghistory,   true },
         { "control", "syncstate",         rpc_syncstate,         true },
         { "control", "healthcheck",       rpc_healthcheck,       true },

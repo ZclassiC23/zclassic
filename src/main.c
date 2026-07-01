@@ -7,6 +7,7 @@
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 agent                  — compact status from running node
  *   zclassic23 milestone              — ASCII milestone status from node
+ *   zclassic23 refold                 — refold anchor readiness from node
  *   zclassic23 <method> [params...]   — RPC client to running node */
 
 #include "config/boot.h"
@@ -825,6 +826,7 @@ static void print_usage(const char *prog)
     printf("  %s api                     API discovery from running node\n", prog);
     printf("  %s agent                   Compact status from running node\n", prog);
     printf("  %s milestone               ASCII milestone status from running node\n", prog);
+    printf("  %s refold                  Refold anchor readiness from running node\n", prog);
     printf("  %s --agent                 Same compact status\n", prog);
     printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);

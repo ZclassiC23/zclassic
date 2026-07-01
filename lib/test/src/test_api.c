@@ -389,6 +389,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "milestone_tool")),
                           "zcl_milestone") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "refold_tool")),
+                          "zcl_refold_status") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "api_command")),
                           "zclassic23 api") == 0;
@@ -398,6 +401,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "milestone_command")),
                           "zclassic23 milestone") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "refold_command")),
+                          "zclassic23 refold") == 0;
         ok = ok && json_get(json_get(&root, "cli"),
                             "compat_command") == NULL;
         json_free(&root);
@@ -429,6 +435,33 @@ int test_api(void)
         ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
                           "subgoals"), "bar")), "[########--]") == 0;
         ok = ok && criteria && json_size(criteria) == 8;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: refold endpoint reports anchor readiness... ");
+    {
+        size_t n = api_handle_request("GET", "/api/v1/refold", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        const struct json_value *snap = json_get(&root, "anchor_snapshot");
+        const struct json_value *commands = json_get(&root, "commands");
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.refold_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                          "v1") == 0;
+        ok = ok && !json_get_bool(json_get(&root, "ready_for_refold"));
+        ok = ok && strcmp(json_get_str(json_get(&root, "primary_blocker")),
+                          "missing_verified_anchor_snapshot") == 0;
+        ok = ok && snap && json_get(snap, "path") != NULL;
+        ok = ok && commands &&
+             strcmp(json_get_str(json_get(commands, "native")),
+                    "zclassic23 refold") == 0;
         json_free(&root);
 
         if (ok) printf("OK\n");
@@ -467,6 +500,7 @@ int test_api(void)
     {
         bool saw_agent = false;
         bool saw_milestone = false;
+        bool saw_refold = false;
         bool saw_blocks = false;
         bool saw_factoids = false;
         size_t count = api_resource_route_count();
@@ -481,6 +515,9 @@ int test_api(void)
             if (strcmp(resource, "milestone") == 0 &&
                 strcmp(action, "show") == 0)
                 saw_milestone = true;
+            if (strcmp(resource, "refold") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_refold = true;
             if (strcmp(resource, "blocks") == 0 &&
                 strcmp(action, "index") == 0)
                 saw_blocks = true;
@@ -488,7 +525,7 @@ int test_api(void)
                 strcmp(action, "show") == 0)
                 saw_factoids = true;
         }
-        bool ok = count >= 17 && saw_agent && saw_milestone &&
+        bool ok = count >= 18 && saw_agent && saw_milestone && saw_refold &&
                   saw_blocks && saw_factoids;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

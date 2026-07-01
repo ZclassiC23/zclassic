@@ -2105,6 +2105,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "%s api") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
+        ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
@@ -2115,11 +2116,15 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"milestone\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"refold\"") != NULL);
         ASSERT(strstr(event_buf, "api_version\", \"v1\"") != NULL);
         ASSERT(strstr(api_buf, "\\\"api_command\\\":\\\"zclassic23 api\\\"")
                != NULL);
         ASSERT(strstr(api_buf,
                       "\\\"milestone_command\\\":\\\"zclassic23 milestone\\\"")
+               != NULL);
+        ASSERT(strstr(api_buf,
+                      "\\\"refold_command\\\":\\\"zclassic23 refold\\\"")
                != NULL);
         ASSERT(strstr(api_buf, "\\\"compat_command\\\":\\\"./tools/z\\\"")
                == NULL);

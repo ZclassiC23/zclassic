@@ -17,6 +17,7 @@ static const struct api_resource_route k_api_resource_routes[] = {
     { "GET", "/api/agent",         "agent",     "show",     api_serve_node_summary },
     { "GET", "/api/status",        "agent",     "show",     api_serve_node_summary },
     { "GET", "/api/milestone",     "milestone", "show",     api_serve_milestone },
+    { "GET", "/api/refold",        "refold",    "show",     api_serve_refold_status },
     { "GET", "/api/node",          "node",      "show",     api_serve_node_summary },
     { "GET", "/api/node/summary",  "node",      "summary",  api_serve_node_summary },
     { "GET", "/api/node/status",   "node",      "status",   api_serve_node_status },

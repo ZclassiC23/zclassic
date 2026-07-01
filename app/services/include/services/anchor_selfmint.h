@@ -47,6 +47,40 @@
 
 struct sqlite3;
 
+#define ANCHOR_SELFMINT_PATH_MAX 1100
+
+struct anchor_snapshot_status {
+    bool path_resolved;
+    char path_source[32];
+    char path[ANCHOR_SELFMINT_PATH_MAX];
+
+    bool stat_present;
+    int64_t stat_size;
+
+    bool checkpoint_present;
+    int32_t checkpoint_height;
+    uint64_t checkpoint_utxo_count;
+    int64_t checkpoint_total_supply;
+    char checkpoint_sha3_hex[65];
+    char checkpoint_block_hash_hex[65];
+
+    bool header_read;
+    uint32_t snapshot_height;
+    uint64_t snapshot_count;
+    int64_t snapshot_total_supply;
+    char snapshot_sha3_hex[65];
+    char snapshot_block_hash_hex[65];
+
+    bool height_match;
+    bool count_match;
+    bool sha3_match;
+    bool block_hash_match;
+    bool verified;
+    char verification[96];
+    char error[256];
+    char next_action[256];
+};
+
 /* Self-mint hook. Call from the utxo_apply step_apply txn after the cursor +
  * applied-height are stamped (beside seal_candidate_hook_in_tx). `datadir` is
  * the node's data directory (used to resolve <datadir>/utxo-anchor.snapshot when
@@ -60,5 +94,12 @@ void anchor_selfmint_hook_in_tx(struct sqlite3 *db, const char *datadir,
  * $ZCL_MINT_ANCHOR_OUT, else <datadir>/utxo-anchor.snapshot (datadir NULL/empty
  * -> "."). Returns true and fills buf on success. */
 bool anchor_selfmint_resolve_path(const char *datadir, char *buf, size_t cap);
+
+/* Read-only readiness probe for the sovereign refold anchor. This is the same
+ * predicate used before trusting a snapshot: stat the resolved candidate,
+ * inspect its header, then call uss_open(verify_full_sha3=true,
+ * expected_sha3=checkpoint). No coins_kv mutation. */
+bool anchor_selfmint_snapshot_status(const char *datadir,
+                                     struct anchor_snapshot_status *out);
 
 #endif /* ZCL_SERVICES_ANCHOR_SELFMINT_H */

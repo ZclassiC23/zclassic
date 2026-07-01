@@ -22,8 +22,18 @@
 #include "util/log_macros.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+static void anchor_hex32(const uint8_t in[32], char out[65])
+{
+    if (!out)
+        return;
+    for (int i = 0; i < 32; i++)
+        snprintf(out + 2 * i, 3, "%02x", in ? in[i] : 0);
+}
 
 bool anchor_selfmint_resolve_path(const char *datadir, char *buf, size_t cap)
 {
@@ -37,6 +47,132 @@ bool anchor_selfmint_resolve_path(const char *datadir, char *buf, size_t cap)
     const char *dir = (datadir && datadir[0]) ? datadir : ".";
     int n = snprintf(buf, cap, "%s/utxo-anchor.snapshot", dir);
     return n > 0 && (size_t)n < cap;
+}
+
+bool anchor_selfmint_snapshot_status(const char *datadir,
+                                     struct anchor_snapshot_status *out)
+{
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+
+    const char *env_out = getenv("ZCL_MINT_ANCHOR_OUT");
+    snprintf(out->path_source, sizeof(out->path_source), "%s",
+             (env_out && env_out[0]) ? "ZCL_MINT_ANCHOR_OUT" : "datadir");
+
+    out->path_resolved =
+        anchor_selfmint_resolve_path(datadir, out->path, sizeof(out->path));
+    if (!out->path_resolved) {
+        snprintf(out->verification, sizeof(out->verification),
+                 "path_unresolved");
+        snprintf(out->error, sizeof(out->error),
+                 "could not resolve anchor snapshot path");
+        snprintf(out->next_action, sizeof(out->next_action),
+                 "fix datadir or ZCL_MINT_ANCHOR_OUT path");
+        return true;
+    }
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    out->checkpoint_present = cp != NULL;
+    if (!cp) {
+        snprintf(out->verification, sizeof(out->verification),
+                 "checkpoint_missing");
+        snprintf(out->error, sizeof(out->error),
+                 "compiled SHA3 UTXO checkpoint is unavailable");
+        snprintf(out->next_action, sizeof(out->next_action),
+                 "rebuild with a compiled SHA3 UTXO checkpoint");
+        return true;
+    }
+
+    out->checkpoint_height = cp->height;
+    out->checkpoint_utxo_count = cp->utxo_count;
+    out->checkpoint_total_supply = cp->total_supply;
+    anchor_hex32(cp->sha3_hash, out->checkpoint_sha3_hex);
+    anchor_hex32(cp->block_hash, out->checkpoint_block_hash_hex);
+
+    struct stat st;
+    if (stat(out->path, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size <= 0) {
+        out->stat_present = false;
+        out->stat_size = 0;
+        snprintf(out->verification, sizeof(out->verification),
+                 "missing");
+        snprintf(out->error, sizeof(out->error),
+                 "anchor snapshot candidate is absent");
+        snprintf(out->next_action, sizeof(out->next_action),
+                 "mint or stage %s, then run refold copy proof",
+                 out->path);
+        return true;
+    }
+
+    out->stat_present = true;
+    out->stat_size = (int64_t)st.st_size;
+
+    char err[256] = {0};
+    struct uss_header hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    struct uss_handle *peek = uss_open(out->path, /*verify_full_sha3=*/false,
+                                       NULL, &hdr, err, sizeof(err));
+    if (peek) {
+        out->header_read = true;
+        out->snapshot_height = hdr.height;
+        out->snapshot_count = hdr.count;
+        out->snapshot_total_supply = hdr.total_supply;
+        anchor_hex32(hdr.sha3_hash, out->snapshot_sha3_hex);
+        anchor_hex32(hdr.anchor_block_hash, out->snapshot_block_hash_hex);
+        out->height_match = (int32_t)hdr.height == cp->height;
+        out->count_match = hdr.count == cp->utxo_count;
+        out->sha3_match = memcmp(hdr.sha3_hash, cp->sha3_hash, 32) == 0;
+        out->block_hash_match =
+            memcmp(hdr.anchor_block_hash, cp->block_hash, 32) == 0;
+        uss_close(peek);
+    } else {
+        snprintf(out->verification, sizeof(out->verification),
+                 "header_unreadable");
+        snprintf(out->error, sizeof(out->error), "%s",
+                 err[0] ? err : "uss_open header read failed");
+        snprintf(out->next_action, sizeof(out->next_action),
+                 "replace %s with a minted checkpoint snapshot", out->path);
+        return true;
+    }
+
+    err[0] = '\0';
+    struct uss_header verified_hdr;
+    memset(&verified_hdr, 0, sizeof(verified_hdr));
+    struct uss_handle *h = uss_open(out->path, /*verify_full_sha3=*/true,
+                                    cp->sha3_hash, &verified_hdr, err,
+                                    sizeof(err));
+    if (h) {
+        bool count_ok = verified_hdr.count == cp->utxo_count;
+        uss_close(h);
+        out->verified = count_ok;
+        if (out->verified) {
+            snprintf(out->verification, sizeof(out->verification),
+                     "verified");
+            snprintf(out->next_action, sizeof(out->next_action),
+                     "run repro-on-copy with -refold-from-anchor and "
+                     "CLIMB_PAST=%d", cp->height);
+        } else {
+            snprintf(out->verification, sizeof(out->verification),
+                     "count_mismatch");
+            snprintf(out->error, sizeof(out->error),
+                     "snapshot count does not match checkpoint");
+            snprintf(out->next_action, sizeof(out->next_action),
+                     "replace %s with a snapshot minted at checkpoint height %d",
+                     out->path, cp->height);
+        }
+        return true;
+    }
+
+    out->verified = false;
+    snprintf(out->verification, sizeof(out->verification),
+             "sha3_or_format_mismatch");
+    snprintf(out->error, sizeof(out->error), "%s",
+             err[0] ? err : "full SHA3 verification failed");
+    snprintf(out->next_action, sizeof(out->next_action),
+             "replace %s with a SHA3/count-verified minted snapshot",
+             out->path);
+    return true;
 }
 
 /* True iff a SHA3-verified snapshot bound to `cp` already exists at `path`.

@@ -47,6 +47,7 @@ extern struct api_rpc_backend g_api_rpc;
 #define ZCL_REST_ERROR_SCHEMA "zcl.rest_error.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
+#define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"
 
 /* ── HTTP response headers (kept here so siblings can emit errors) ── */
 
@@ -93,6 +94,7 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
 const char *api_rest_index_body_json(void);
 int64_t api_served_tip_height(void);
 void api_milestone_status_json(struct json_value *result);
+void api_refold_status_json(struct json_value *result);
 size_t api_serve_api_index(uint8_t *response, size_t response_max);
 size_t api_serve_unsupported_version(const char *requested_version,
                                      uint8_t *response,
@@ -194,6 +196,7 @@ size_t api_serve_node_snapshot(uint8_t *response, size_t response_max);
 size_t api_serve_node_mmb(uint8_t *response, size_t response_max);
 size_t api_serve_node_summary(uint8_t *response, size_t response_max);
 size_t api_serve_milestone(uint8_t *response, size_t response_max);
+size_t api_serve_refold_status(uint8_t *response, size_t response_max);
 size_t api_serve_node_status(uint8_t *response, size_t response_max);
 size_t api_serve_wallet(uint8_t *response, size_t response_max);
 size_t api_serve_files_manifest(uint8_t *response, size_t response_max);

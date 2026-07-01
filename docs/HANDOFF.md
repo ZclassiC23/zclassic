@@ -9,9 +9,11 @@ live state use `zclassic23 agent` (same contract as MCP `zcl_agent` and REST
 `zclassic23 milestone` (same contract as REST `/api/v1/milestone` and MCP
 `zcl_milestone`): it emits node-computed ASCII `systems`, `goals`, and
 `subgoals` bars while keeping strict MRS separate from partial proof progress.
-Use `zclassic23 healthcheck`, `/api/v1/node/status`, `zcl_status`,
-`zcl_state subsystem=reducer_frontier`, and `zcl_state subsystem=refold` only
-for drill-down. Latest runtime code deploy: `b6ab458f0`
+Use `zclassic23 refold` (same contract as REST `/api/v1/refold` and MCP
+`zcl_refold_status`) for the sovereign anchor readiness check before any
+`-refold-from-anchor` copy proof. Use `zclassic23 healthcheck`,
+`/api/v1/node/status`, `zcl_status`, `zcl_state subsystem=reducer_frontier`,
+and `zcl_state subsystem=refold` only for drill-down. Latest runtime code deploy: `b6ab458f0`
 (`tools: harden refold copy proof`). `make deploy` installed it to the main
 linger lane at block 3166361, and the pinned soak binary was manually refreshed
 from the same build and restarted at `2026-07-01 10:41:37 UTC`.
@@ -21,13 +23,15 @@ from the same build and restarted at `2026-07-01 10:41:37 UTC`.
 API simplification deploy is native-only: `zclassic23 api` is the discovery
 entry point, `zclassic23 agent` is the compact status entry point,
 `zclassic23 milestone` is the v1 progress/status entry point, and
+`zclassic23 refold` is the anchor-readiness entry point, and
 `zclassic23 healthcheck` is the drill-down entry point. No helper binary or
-shell wrapper is part of the operator path. Bare `zclassic23 agent` and
-`zclassic23 milestone` discover the running user service datadir/rpcport from
-systemd when the default cookie is absent, so no `-datadir` flag is needed for
-the normal owner command. `make deploy` now refreshes the owner-command symlink
-at `$HOME/.local/bin/zclassic23` and any existing `$HOME/bin/zclassic23` PATH
-shadow so those commands cannot point at a stale pre-API binary. At the latest
+shell wrapper is part of the operator path. Bare `zclassic23 agent`,
+`zclassic23 milestone`, and `zclassic23 refold` discover the running user
+service datadir/rpcport from systemd when the default cookie is absent, so no
+`-datadir` flag is needed for the normal owner command. `make deploy` now
+refreshes the owner-command symlink at `$HOME/.local/bin/zclassic23` and any
+existing `$HOME/bin/zclassic23` PATH shadow so those commands cannot point at a
+stale pre-API binary. At the latest
 handoff check the native node reported
 `sync_state=at_tip`,
 `healthy=true`, `serving=true`, 3 peers, Tor/onion ready, and the compact agent
@@ -44,6 +48,7 @@ native node service        [##########] healthy/serving at local tip; verify bui
 native API discovery       [##########] `zclassic23 api`, REST `/api`/`/api/v1`, shared `zcl.rest_index.v1`
 simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
 milestone status API       [##########] native `zclassic23 milestone`, REST v1, MCP `zcl_milestone` green
+refold readiness API       [##########] native `zclassic23 refold`, REST v1, MCP `zcl_refold_status` green
 REST resource routing      [#########-] `/api/v1` route table wired; dynamic/member routes still controller-owned
 API version contract       [##########] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
 lint-gate hardening        [##########] coin lookup hollow scans + raw node.db DML exec are proof-gated
@@ -106,6 +111,17 @@ The repro manifest records `climb_past`, `refold`, and
 exits. Use this for soak refold/cure work only after staging the anchor
 snapshot, for example:
 `make repro-on-copy SLUG=soak-refold REPRO_SRC=$HOME/.zclassic-c23-soak REPRO_FULL=1 CLIMB_PAST=3056758 ARGS='-refold-from-anchor -nobgvalidation -paramsdir=$$HOME/.zcash-params'`.
+
+**Native refold readiness surface landed.** The node now owns the preflight
+answer directly: `zclassic23 refold`, REST `GET /api/v1/refold`, and MCP
+`zcl_refold_status` all return `zcl.refold_status.v1`. The response includes
+the compiled checkpoint, candidate path/source, stat result, snapshot header
+when readable, and the same full-body SHA3 + expected checkpoint SHA3 + count
+predicate that boot uses before trusting the anchor snapshot. It is read-only:
+no `coins_kv` mutation, no boot reset, no shell helper. While the current anchor
+artifact is absent the expected blocker is
+`primary_blocker=missing_verified_anchor_snapshot`; after a verified snapshot is
+staged, the next action is the full `-refold-from-anchor` copy proof above.
 
 **Reducer-frontier refusal hardening landed.** A follow-up on 2026-07-01 pins
 the live soak failure class where `coin_backfill_status_label=owner_refused`

@@ -113,6 +113,14 @@ int test_anchor_selfmint(void)
     /* (1) BELOW the anchor → no mint. */
     anchor_selfmint_hook_in_tx(pdb, dir, TEST_ANCHOR - 1);
     SM_CHECK("(1) below anchor → no snapshot", !sm_file_present(snap_path));
+    {
+        struct anchor_snapshot_status st;
+        bool ok = anchor_selfmint_snapshot_status(dir, &st);
+        SM_CHECK("(1) status reports missing candidate",
+                 ok && !st.verified && st.path_resolved &&
+                 strcmp(st.path, snap_path) == 0 &&
+                 strcmp(st.verification, "missing") == 0);
+    }
 
     /* (2) AT the anchor → a SHA3-verified snapshot is written + reachable. */
     anchor_selfmint_hook_in_tx(pdb, dir, TEST_ANCHOR);
@@ -131,6 +139,17 @@ int test_anchor_selfmint(void)
                      (int32_t)hdr.height == cp->height);
             uss_close(h);
         }
+    }
+    {
+        struct anchor_snapshot_status st;
+        bool ok = anchor_selfmint_snapshot_status(dir, &st);
+        SM_CHECK("(2) status verifies snapshot readiness",
+                 ok && st.verified && st.header_read &&
+                 st.checkpoint_height == TEST_ANCHOR &&
+                 (int32_t)st.snapshot_height == TEST_ANCHOR &&
+                 st.count_match && st.sha3_match &&
+                 strcmp(st.verification, "verified") == 0 &&
+                 strstr(st.next_action, "-refold-from-anchor") != NULL);
     }
 
     /* (3) IDEMPOTENT: a second call at the anchor does NOT rewrite the file. */

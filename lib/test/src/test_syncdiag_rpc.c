@@ -930,6 +930,8 @@ int test_syncdiag_rpc(void)
                    "zcl_agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
                           "zcl_milestone") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
+                          "zcl_refold_status") == 0;
         ok = ok && cli && cli->type == JSON_OBJ &&
             strcmp(json_get_str(json_get(cli, "api_command")),
                    "zclassic23 api") == 0;
@@ -937,6 +939,8 @@ int test_syncdiag_rpc(void)
                           "zclassic23 agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "milestone_command")),
                           "zclassic23 milestone") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "refold_command")),
+                          "zclassic23 refold") == 0;
 
         struct json_value alias;
         json_init(&alias);
@@ -992,6 +996,52 @@ int test_syncdiag_rpc(void)
         ok = ok && alias_executed && alias.type == JSON_OBJ &&
             strcmp(json_get_str(json_get(&alias, "schema")),
                    "zcl.milestone_status.v1") == 0;
+
+        json_free(&alias);
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC returns refold anchor readiness... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "refold",
+                                          &params, &result);
+        const struct json_value *snap = json_get(&result, "anchor_snapshot");
+        const struct json_value *commands = json_get(&result, "commands");
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.refold_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "api_version")),
+                          "v1") == 0;
+        ok = ok && !json_get_bool(json_get(&result, "ready_for_refold"));
+        ok = ok && snap && json_get(snap, "verification") != NULL;
+        ok = ok && commands &&
+            strcmp(json_get_str(json_get(commands, "native")),
+                   "zclassic23 refold") == 0;
+
+        struct json_value alias;
+        json_init(&alias);
+        bool alias_executed = rpc_table_execute(&tbl, "refoldstatus",
+                                                &params, &alias);
+        ok = ok && alias_executed && alias.type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(&alias, "schema")),
+                   "zcl.refold_status.v1") == 0;
 
         json_free(&alias);
         json_free(&params);

@@ -40,6 +40,7 @@ DEFINE_PT(h_zcl_getmininginfo,  "getmininginfo",  "mcp.ops")
 DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
 DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
 DEFINE_PT(h_zcl_milestone,      "milestone",      "mcp.ops")
+DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -1270,6 +1271,11 @@ static const struct mcp_tool_route k_routes[] = {
       "Node-computed ASCII and JSON progress toward the next version "
       "milestone, including systems/goals/subgoals bars and MVP criteria.",
       NULL, 0, h_zcl_milestone, 0, NULL },
+    { "zcl_refold_status", "ops",
+      "Sovereign refold anchor readiness: compiled checkpoint, candidate "
+      "anchor snapshot path, full SHA3/count verification status, and next "
+      "copy-proof action.",
+      NULL, 0, h_zcl_refold_status, 0, NULL },
     { "zcl_health", "ops",
       "Health check: pass/fail, chain height, peers, sync, onion.",
       NULL, 0, h_zcl_health, 0, NULL },
