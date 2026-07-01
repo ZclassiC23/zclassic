@@ -60,6 +60,14 @@ was seven seconds under 168h and should have advanced to the real blocker. The
 same report still has `ok_samples=0/169`, so do not mark C6/MVP soak complete
 until a fresh uninterrupted, reachable window is judged `MET`.
 
+**Simulator coverage fast gate landed.** The deterministic chaos harness now has
+a native seed override (`zclassic23-chaos --seed=0x...`) and `make sim-fast`.
+`sim-fast` runs the `chaos_harness` unit slice, every checked-in chaos scenario,
+and a bounded seed sweep of the seed-sensitive peer-churn scenario
+(`CHAOS_SEEDS=64` by default). Use it as the first high-performance simulation
+gate for reducer/boot/peer/fault-injection changes before escalating to
+full-binary crash or soak gates.
+
 **Lint-gate hardening landed.** The controller chainstate coin-lookup guard now
 fails loud instead of silently passing if its scan surface disappears:
 `tools/scripts/check_coins_lookup_nullcheck.sh` requires controller `.c` files,

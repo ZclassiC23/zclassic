@@ -59,6 +59,25 @@ static int run_temp_scenario(const char *body, struct chaos_ctx *ctx_out)
     return rc;
 }
 
+static int run_temp_scenario_with_seed(const char *body, uint64_t seed,
+                                       struct chaos_ctx *ctx_out)
+{
+    char path[128];
+    if (write_temp_scenario(body, path, sizeof(path)) != 0)
+        return 99;
+
+    struct chaos_ctx ctx;
+    chaos_ctx_init(&ctx);
+    ctx.scenario_path = path;
+    ctx.seed_override = seed;
+    ctx.seed_override_set = true;
+
+    int rc = run_scenario(&ctx);
+    if (ctx_out) *ctx_out = ctx;
+    unlink(path);
+    return rc;
+}
+
 static bool file_contains_text(const char *path, const char *needle)
 {
     FILE *fp = fopen(path, "rb");
@@ -198,6 +217,19 @@ int test_chaos_harness(void)
                 same_killed &&
                 ctx.peers.active_count == 3 &&
                 ctx.peers.killed_count == 2);
+
+    rc = run_temp_scenario_with_seed(
+        "seed not-a-number\n"
+        "peer_count 4\n"
+        "random_kill_peers count=2\n"
+        "expect active_peers == 2\n"
+        "expect killed_peers == 2\n",
+        0xfeed, &ctx);
+    CHAOS_CHECK("seed override supersedes scenario seed",
+                rc == 0 &&
+                ctx.seed_override_set &&
+                ctx.seed == 0xfeed &&
+                ctx.seed_set);
 
     rc = run_temp_scenario(
         "seed 1\n"

@@ -34,6 +34,8 @@ struct chaos_ctx {
     uint64_t seed;
     uint64_t rng_state;
     bool seed_set;
+    uint64_t seed_override;
+    bool seed_override_set;
     char boot_phase[32];
     unsigned peer_count;
     struct sim_peer_set peers;
@@ -187,6 +189,13 @@ static uint64_t chaos_rng_next(struct chaos_ctx *ctx)
     return x * 0x2545f4914f6cdd1dULL;
 }
 
+static void chaos_set_seed(struct chaos_ctx *ctx, uint64_t seed)
+{
+    ctx->seed = seed;
+    ctx->rng_state = seed ^ 0x9e3779b97f4a7c15ULL;
+    ctx->seed_set = true;
+}
+
 static const char *path_basename(const char *path)
 {
     const char *base = path;
@@ -320,12 +329,12 @@ static int handle_seed(struct chaos_ctx *ctx, int argc, char **argv,
                        int line_no)
 {
     if (argc != 2) return fail_line(line_no, "seed requires one value");
+    if (ctx->seed_override_set)
+        return 0;
     uint64_t seed = 0;
     if (!parse_u64_auto(argv[1], &seed))
         return fail_line(line_no, "seed must be an integer or hex value");
-    ctx->seed = seed;
-    ctx->rng_state = seed ^ 0x9e3779b97f4a7c15ULL;
-    ctx->seed_set = true;
+    chaos_set_seed(ctx, seed);
     return 0;
 }
 
@@ -757,6 +766,8 @@ static int run_scenario(struct chaos_ctx *ctx)
 {
     net_partition_clear();
     platform_clock_set_source(&ctx->clock_src);
+    if (ctx->seed_override_set)
+        chaos_set_seed(ctx, ctx->seed_override);
     FILE *fp = fopen(ctx->scenario_path, "rb");
     if (!fp) {
         fprintf(stderr, "chaos: failed to open %s: %s\n",
@@ -825,7 +836,7 @@ static int run_scenario(struct chaos_ctx *ctx)
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s --scenario=PATH [--verbose] [--artifact-dir=PATH]\n",
+            "usage: %s --scenario=PATH [--seed=N] [--verbose] [--artifact-dir=PATH]\n",
             argv0);
 }
 
@@ -837,6 +848,14 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--scenario=", 11) == 0) {
             ctx.scenario_path = argv[i] + 11;
+        } else if (strncmp(argv[i], "--seed=", 7) == 0) {
+            uint64_t seed = 0;
+            if (!parse_u64_auto(argv[i] + 7, &seed)) {
+                fprintf(stderr, "chaos: --seed must be an integer or hex value\n");
+                return 2;
+            }
+            ctx.seed_override = seed;
+            ctx.seed_override_set = true;
         } else if (strncmp(argv[i], "--artifact-dir=", 15) == 0) {
             ctx.artifact_dir = argv[i] + 15;
         } else if (strcmp(argv[i], "--verbose") == 0) {

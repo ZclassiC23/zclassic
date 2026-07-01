@@ -105,11 +105,33 @@ Run every checked-in scenario:
 make chaos
 ```
 
+Run the fast deterministic simulator gate:
+
+```bash
+make sim-fast
+```
+
+`sim-fast` is the default inner-loop harness when a change touches reducers,
+boot liveness, peer selection, fault injection, or scenario semantics. It runs
+the `chaos_harness` unit slice, every checked-in `.scenario`, and a bounded
+seed sweep of the seed-sensitive peer-churn scenario. Override the sweep size
+when needed:
+
+```bash
+make sim-fast CHAOS_SEEDS=256
+```
+
 Run one scenario with command-level progress:
 
 ```bash
 make zclassic23-chaos
 build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/peer_churn.scenario --verbose
+```
+
+Replay a scenario under a specific seed:
+
+```bash
+build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/seeded_peer_churn.scenario --seed=0x2a --verbose
 ```
 
 Failed standalone runs write a summary and a copy of the scenario into
@@ -136,6 +158,9 @@ assertions over broad smoke checks.
 
 `seed HEX`
 : Sets the scenario seed. Hex and decimal values are accepted.
+  The CLI `--seed=HEX` override supersedes the scenario's embedded `seed`
+  line, so a failing seed-sweep run can be replayed without editing the
+  checked-in scenario.
 
 `boot_phase idb_complete|listening|mempool_open`
 : Selects the simulated boot phase reached before injected events run.

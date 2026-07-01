@@ -37,6 +37,8 @@ SOAK_RUNNER_BIN = $(BIN_DIR)/soak_runner
 CRASH_RECOVERY_TEST_BIN = $(BIN_DIR)/crash_recovery_test
 P2_INVARIANT_CHECK_BIN = $(BIN_DIR)/p2_invariant_check
 ZCLASSIC23_CHAOS_BIN = $(BIN_DIR)/zclassic23-chaos
+CHAOS_SEEDS ?= 64
+CHAOS_SWEEP_SCENARIO ?= tools/sim/scenarios/seeded_peer_churn.scenario
 
 # The make-vendor merge introduced the `vendor:` target ahead of `all:`, which
 # made `vendor` the implicit first target (and thus the default goal). A bare
@@ -623,6 +625,25 @@ chaos: zclassic23-chaos
 	    $(ZCLASSIC23_CHAOS_BIN) --scenario="$$s"; \
 	done; \
 	echo "==> All chaos scenarios PASSED"
+
+.PHONY: sim-fast
+sim-fast: test_parallel zclassic23-chaos
+	@set -eu; \
+	echo "==> chaos harness unit slice"; \
+	ulimit -s unlimited && $(TEST_PARALLEL_BIN) --only=chaos_harness; \
+	echo "==> checked-in chaos scenarios"; \
+	$(MAKE) --no-print-directory chaos; \
+	echo "==> bounded chaos seed sweep ($(CHAOS_SEEDS) seeds via $(CHAOS_SWEEP_SCENARIO))"; \
+	i=1; \
+	while [ "$$i" -le "$(CHAOS_SEEDS)" ]; do \
+	    seed=$$(printf '0x%016x' "$$i"); \
+	    out="$$( $(ZCLASSIC23_CHAOS_BIN) --scenario="$(CHAOS_SWEEP_SCENARIO)" --seed="$$seed" 2>&1 )" || { \
+	        printf '%s\n' "$$out"; \
+	        exit 1; \
+	    }; \
+	    i=$$((i + 1)); \
+	done; \
+	echo "==> sim-fast PASSED ($(CHAOS_SEEDS) seeded replays)"
 
 chaos-clean:
 	rm -f $(ZCLASSIC23_CHAOS_BIN)
