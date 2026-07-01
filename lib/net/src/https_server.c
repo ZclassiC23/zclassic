@@ -47,8 +47,9 @@ static pthread_mutex_t g_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_client_queue_cv = PTHREAD_COND_INITIALIZER;
 
 /* Connection limit — prevents OOM under heavy load.
- * Each connection mallocs 512KB for response buffer. */
+ * Each connection mallocs HTTPS_RESPONSE_BUFFER_SIZE for response data. */
 #define MAX_HTTPS_CONNECTIONS 64
+#define HTTPS_RESPONSE_BUFFER_SIZE (1024 * 1024)
 static _Atomic int g_active_connections = 0;
 #define HTTPS_CLIENT_QUEUE_CAP 128
 
@@ -246,16 +247,21 @@ static void handle_https_client(SSL *ssl)
         }
     }
 
+    extern const char *explorer_canonical_shortcut(const char *path);
+
     /* Explorer + API routes — call the explorer handler (which delegates /api/) */
     if (strncmp(path, "/explorer", 9) == 0 ||
-        strncmp(path, "/api", 4) == 0) {
+        strncmp(path, "/api", 4) == 0 ||
+        explorer_canonical_shortcut(path) != NULL) {
         extern size_t explorer_handle_request(const char *, const char *,
             const unsigned char *, size_t, unsigned char *, size_t);
 
-        unsigned char *buf = zcl_malloc(512 * 1024, "https_resp_buf"); /* 512 KB response buffer */
+        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
+                                        "https_resp_buf");
         if (!buf) return;
 
-        size_t n = explorer_handle_request(method, path, NULL, 0, buf, 512 * 1024);
+        size_t n = explorer_handle_request(method, path, NULL, 0, buf,
+                                           HTTPS_RESPONSE_BUFFER_SIZE);
         if (n > 0) {
             /* Write in chunks — SSL_write may not accept large buffers at once */
             size_t written = 0;

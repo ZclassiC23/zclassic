@@ -441,6 +441,59 @@ bool addr_decode(const char *str, struct tx_destination *dest)
 
 /* ── Main Request Handler ─────────────────────────────────── */
 
+struct explorer_shortcut_route {
+    const char *shortcut;
+    const char *canonical;
+};
+
+static const struct explorer_shortcut_route g_explorer_shortcuts[] = {
+    { "/stats", "/explorer/stats" },
+    { "/stats/", "/explorer/stats" },
+    { "/tokens", "/explorer/tokens" },
+    { "/tokens/", "/explorer/tokens" },
+    { "/hodl", "/explorer/hodl" },
+    { "/hodl/", "/explorer/hodl" },
+    { "/events", "/explorer/events" },
+    { "/events/", "/explorer/events" },
+    { "/factoids", "/explorer/factoids" },
+    { "/factoids/", "/explorer/factoids" },
+    { "/names", "/explorer/names" },
+    { "/names/", "/explorer/names" },
+    { "/market", "/explorer/market" },
+    { "/market/", "/explorer/market" },
+    { "/swaps", "/explorer/swaps" },
+    { "/swaps/", "/explorer/swaps" },
+    { "/messages", "/explorer/messages" },
+    { "/messages/", "/explorer/messages" },
+};
+
+const char *explorer_canonical_shortcut(const char *path)
+{
+    if (!path)
+        return NULL;
+    for (size_t i = 0; i < sizeof(g_explorer_shortcuts) /
+                           sizeof(g_explorer_shortcuts[0]); i++) {
+        if (strcmp(path, g_explorer_shortcuts[i].shortcut) == 0)
+            return g_explorer_shortcuts[i].canonical;
+    }
+    return NULL;
+}
+
+static size_t explorer_redirect(uint8_t *response, size_t response_max,
+                                const char *location)
+{
+    if (!response || !location)
+        return 0;
+    int n = snprintf((char *)response, response_max,
+        "HTTP/1.1 302 Found\r\n"
+        "Location: %s\r\n"
+        "Connection: close\r\n\r\n",
+        location);
+    if (n < 0)
+        return 0;
+    return (size_t)n < response_max ? (size_t)n : response_max;
+}
+
 size_t explorer_handle_request(const char *method, const char *path,
                                 const uint8_t *body, size_t body_len,
                                 uint8_t *response, size_t response_max)
@@ -453,6 +506,10 @@ size_t explorer_handle_request(const char *method, const char *path,
         return api_handle_request(method, path, body, body_len,
                                    response, response_max);
     }
+
+    const char *canonical = explorer_canonical_shortcut(path);
+    if (canonical)
+        return explorer_redirect(response, response_max, canonical);
 
     (void)method;
 

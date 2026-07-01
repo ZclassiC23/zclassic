@@ -107,6 +107,13 @@ static size_t explorer_factoids_build_verified_summary(uint8_t *buf,
 
 size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir)
 {
+    return explorer_factoids_build_for_served_tip(buf, buf_max, datadir, -1);
+}
+
+size_t explorer_factoids_build_for_served_tip(uint8_t *buf, size_t buf_max,
+                                              const char *datadir,
+                                              int64_t served_height)
+{
     if (!buf || buf_max < 1024 || !datadir) return 0;
 
     sqlite3 *db = NULL;
@@ -117,9 +124,8 @@ size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir
     struct explorer_chain_stats chain_stats = {0};
     explorer_query_chain_stats(db, &chain_stats);
     int64_t chain_height = chain_stats.height;
-    int64_t utxo_tip = fq_i64(db, "SELECT COALESCE(MAX(height),0) FROM utxos");
-    if (utxo_tip > chain_height)
-        chain_height = utxo_tip;
+    if (served_height >= 0 && chain_height > served_height)
+        chain_height = served_height;
 
     struct explorer_history_validation history;
     explorer_validate_block_history(db, chain_height, &history);

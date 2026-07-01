@@ -820,7 +820,9 @@ size_t onion_service_handle_request(const char *method,
     }
 
     /* Explorer — block explorer */
-    if (strncmp(path, "/explorer", 9) == 0) {
+    extern const char *explorer_canonical_shortcut(const char *path);
+    if (strncmp(path, "/explorer", 9) == 0 ||
+        explorer_canonical_shortcut(path) != NULL) {
         extern size_t explorer_handle_request(const char *, const char *,
             const uint8_t *, size_t, uint8_t *, size_t);
         size_t n = explorer_handle_request(method, path, body, body_len,

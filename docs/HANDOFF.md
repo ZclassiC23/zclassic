@@ -1,5 +1,32 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 22:04 UTC update.** Public explorer click/freshness review
+landed and was deployed manually to the live `zclassic23` service after a
+focused low-memory proof pass. The visible bug was two-part: top-level
+`/factoids` and `/hodl` fell through the HTTPS catch-all to `/explorer`, and
+`/explorer/factoids` could stay on the auto-refresh placeholder because the
+full HTML cache build was discarded whenever the index advanced mid-build.
+The fix adds one canonical explorer shortcut table (`/factoids` →
+`/explorer/factoids`, `/hodl` → `/explorer/hodl`, plus the other top-level
+explorer page shortcuts), wires both HTTPS and onion/native ingress through it,
+raises the HTTPS response buffer to the 1 MiB page-cache size, and teaches the
+factoids HTML builder/cache to publish a completed build for a fixed served H*
+frontier while continuing to refresh in the background. The HTML archaeology
+height now follows the contiguous block-history height rather than a UTXO tip
+that can transiently run one block ahead after restart. Focused proofs:
+`git diff --check`, `make build-only -j2`, `make build/bin/test_zcl -j2`,
+`ZCL_TEST_ONLY=explorer build/bin/test_zcl`, and `ZCL_TEST_ONLY=net
+build/bin/test_zcl` all passed. Live deploy proof after manual install/restart:
+`https://zclnet.net/factoids` returns `302 Location: /explorer/factoids`,
+`https://zclnet.net/hodl` returns `302 Location: /explorer/hodl`,
+`/api/v1/hodl` returned `fresh=true` at served height `3166887`, and
+`/explorer/factoids` served the full `ZClassic Historian Factoids` HTML at
+chain height `3166886` instead of the placeholder. During this work, unrelated
+QEDC debug probes from another Claude session repeatedly consumed >10 GiB and
+had already caused live OOM/restarts earlier; they were terminated/queued while
+zclassic was built and deployed. Swap remained full, but physical memory was
+healthy (~67 GiB available at final live check).
+
 **2026-07-01 20:28 UTC update.** Code-review remediation continued with the
 live explorer projection-hole fix. The node had healthy consensus state, but
 `zcl_state subsystem=chain_evidence` showed `explorer_index_state.state=degraded`

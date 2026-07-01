@@ -279,24 +279,24 @@ void *factoids_compute_thread(void *arg)
         g_factoids_computing = 0;
         LOG_NULL("explorer", "factoids_compute_thread: malloc(%d) failed", FACTOIDS_CACHE_SIZE);
     }
-    size_t len = explorer_factoids_build((uint8_t *)tmp,
-                                          FACTOIDS_CACHE_SIZE, ctx->datadir);
+    size_t len = explorer_factoids_build_for_served_tip(
+        (uint8_t *)tmp, FACTOIDS_CACHE_SIZE, ctx->datadir, start_tip);
     if (len > 0) {
         int64_t end_index_tip = -1;
         int64_t end_tip =
             explorer_page_served_tip_height(ctx->datadir, &end_index_tip);
-        bool stable = start_index_tip >= 0 && end_index_tip >= 0 &&
-                      start_index_tip == end_index_tip &&
-                      end_tip >= 0 && end_index_tip <= end_tip;
-        if (stable) {
+        bool publishable = start_tip > 0 && end_tip >= start_tip;
+        if (publishable) {
             memcpy(g_factoids_cache, tmp, len);
-            atomic_store_explicit(&g_factoids_cache_height, end_tip,
+            atomic_store_explicit(&g_factoids_cache_height, start_tip,
                                   memory_order_release);
             atomic_store_explicit(&g_factoids_cache_len, len, memory_order_release);
             cache_save("factoids", g_factoids_cache, len);
         } else {
-            printf("Factoids background: discarded unstable build "
-                   "(start_index=%lld end_index=%lld served=%lld)\n",
+            printf("Factoids background: discarded unpublished build "
+                   "(served_start=%lld start_index=%lld end_index=%lld "
+                   "served_end=%lld)\n",
+                   (long long)start_tip,
                    (long long)start_index_tip, (long long)end_index_tip,
                    (long long)end_tip);
             fflush(stdout);
@@ -318,7 +318,12 @@ size_t serve_factoids(uint8_t *r, size_t max)
     size_t cached = atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
     int64_t cache_height =
         atomic_load_explicit(&g_factoids_cache_height, memory_order_acquire);
-    if (cached > 0 && (tip <= 0 || cache_height >= tip)) {
+    if (cached > 0 && (tip <= 0 || cache_height > 0)) {
+        if (tip > 0 && cache_height < tip &&
+            !(index_tip >= 0 && index_tip > tip)) {
+            explorer_start_once(&g_factoids_computing, factoids_compute_thread,
+                                "factoids_compute");
+        }
         size_t copy = cached < max ? cached : max;
         memcpy(r, g_factoids_cache, copy);
         return copy;

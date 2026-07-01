@@ -23,4 +23,8 @@ size_t explorer_handle_request(const char *method, const char *path,
                                 const uint8_t *body, size_t body_len,
                                 uint8_t *response, size_t response_max);
 
+/* Return the canonical /explorer/... location for supported top-level
+ * explorer shortcuts such as /factoids and /hodl, or NULL otherwise. */
+const char *explorer_canonical_shortcut(const char *path);
+
 #endif

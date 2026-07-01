@@ -52,6 +52,31 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: top-level /factoids redirects canonical... ");
+    {
+        size_t n = explorer_handle_request("GET", "/factoids", NULL, 0,
+                                            resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        bool ok = (n > 0 &&
+                   strstr((char *)resp, "302 Found") != NULL &&
+                   strstr((char *)resp,
+                          "Location: /explorer/factoids") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: top-level /hodl redirects canonical... ");
+    {
+        size_t n = explorer_handle_request("GET", "/hodl", NULL, 0,
+                                            resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        bool ok = (n > 0 &&
+                   strstr((char *)resp, "302 Found") != NULL &&
+                   strstr((char *)resp, "Location: /explorer/hodl") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: /explorer/style.css returns CSS... ");
     {
         size_t n = explorer_handle_request("GET", "/explorer/style.css", NULL, 0,

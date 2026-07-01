@@ -14,6 +14,13 @@
  * 0 on error. datadir: path to data directory (for node.db). */
 size_t explorer_factoids_build(uint8_t *buf, size_t buf_max, const char *datadir);
 
+/* Render full factoids HTML while capping height-derived facts to the
+ * currently served H* frontier. Pass served_height < 0 to publish the full
+ * index tip. */
+size_t explorer_factoids_build_for_served_tip(uint8_t *buf, size_t buf_max,
+                                              const char *datadir,
+                                              int64_t served_height);
+
 /* Render the /api/factoids JSON response (with HTTP headers). */
 size_t explorer_factoids_build_json(uint8_t *buf, size_t buf_max,
                                      const char *datadir);

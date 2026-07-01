@@ -2616,6 +2616,34 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("onion: GET /factoids redirects to explorer factoids... ");
+    {
+        uint8_t resp[4096];
+        size_t n = onion_service_handle_request("GET", "/factoids", NULL, 0,
+                                                 resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "302 Found") != NULL);
+        ok = ok && (strstr((char *)resp,
+                           "Location: /explorer/factoids") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("onion: GET /hodl redirects to explorer hodl... ");
+    {
+        uint8_t resp[4096];
+        size_t n = onion_service_handle_request("GET", "/hodl", NULL, 0,
+                                                 resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
+        bool ok = (n > 0);
+        ok = ok && (strstr((char *)resp, "302 Found") != NULL);
+        ok = ok && (strstr((char *)resp,
+                           "Location: /explorer/hodl") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("onion: rate limiter allows first request... ");
     {
         uint8_t resp[16384];
