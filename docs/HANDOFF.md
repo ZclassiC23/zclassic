@@ -10,7 +10,9 @@ live state use `zclassic23 agent` (same contract as MCP `zcl_agent` and REST
 `zcl_milestone`): it emits node-computed ASCII `systems`, `goals`, and
 `subgoals` bars while keeping strict MRS separate from partial proof progress.
 Use `zclassic23 healthcheck`, `/api/v1/node/status`, `zcl_status`, and
-`zcl_state subsystem=reducer_frontier` only for drill-down.
+`zcl_state subsystem=reducer_frontier` only for drill-down. Latest runtime
+code deploy: `3347f42ab` (`repair: stop coin-backfill refusal fallthrough`);
+any later handoff-only docs commit does not require a binary redeploy.
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
@@ -26,7 +28,7 @@ at `$HOME/.local/bin/zclassic23` and any existing `$HOME/bin/zclassic23` PATH
 shadow so those commands cannot point at a stale pre-API binary. At the latest
 handoff check the native node reported
 `sync_state=at_tip`,
-`healthy=true`, `serving=true`, 4 peers, Tor/onion ready, and the compact agent
+`healthy=true`, `serving=true`, 3 peers, Tor/onion ready, and the compact agent
 endpoint was serving at the local tip with the expected one-block
 indexed/header race (`gap=1`). The public `/api/status` surface is aligned with
 the health contract for the normal H* race: a one-block served-frontier gap
@@ -56,17 +58,18 @@ reason=window_short_602714s_lt_604800s_slack900s` with
 `ok_samples=0/170`, `operator_interventions=3`, and `ambiguous_restarts=1`.
 The soak service was deliberately rebaselined 2026-07-01 because it was running
 stale pinned build `ecd14609c-dirty`, was OOM-killed under a local 12G cap, and
-was wedged at H\*=3056758. The pinned soak binary is now build `ba3f65356`, and
+was wedged at H\*=3056758. The pinned soak binary is now build `3347f42ab`, and
 the live local systemd drop-in
 `~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` was
 restored to `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended
-budget). Fresh live health after the rebaseline: `sync_state=blocks_download`,
-`healthy=false`, `serving=false`, `log_head=3145595`, `tip_lag=20695`,
-`operator_needed=true`, blocker `window.consistency I4.3 utxo_apply log hole:
-contiguous ok=1 prefix h=3056758 but cursor=3145595`, and
-`reducer_frontier_reconcile_light` reports `coin_backfill_status_label=
-owner_refused` at hole h=3145595. Do not mark C6 complete until a fresh
-uninterrupted window is judged `MET`.
+budget). Fresh live health after the 3347f42ab soak restart:
+`sync_state=blocks_download`, `healthy=false`, `serving=false`,
+`log_head=3145595`, `tip_lag=20727`, 4 peers, `operator_needed=true`, direct
+operator detail `coin_backfill h=3145595 status=owner_refused
+reason=owner_ack_missing`, and `reducer_frontier_reconcile_light` reports
+`coin_backfill_status_label=owner_refused` at hole h=3145595 with
+`last_reconcile_repaired=false` and no body/tip/validate cursor clamps. Do not
+mark C6 complete until a fresh uninterrupted window is judged `MET`.
 
 **Soak copy proof result.** Do **not** enable
 `ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. A full copy proof
@@ -94,7 +97,9 @@ refusal still escalates instead of going quiet. Regression coverage lives in
 asserts no body/tip/script/utxo cursor mutation and the condition fixture
 asserts `last_reconcile_repaired=false` while returning `COND_REMEDY_FAILED`.
 This is a safety/diagnostic hardening only; it does **not** prove live owner ack
-and does **not** make the current soak node green.
+and does **not** make the current soak node green. It was deployed to both the
+main service and the pinned soak service on 2026-07-01; the soak service restart
+time was `2026-07-01 09:52:38 UTC`.
 
 **Simulator coverage fast gate landed.** The deterministic chaos harness now has
 a native seed override (`zclassic23-chaos --seed=0x...`) and `make sim-fast`.
@@ -237,8 +242,14 @@ The reducer-frontier refusal hardening pass re-ran
 `make t ONLY=stage_repair_coin_backfill`,
 `make t ONLY=stage_repair_script_refill`, `make lint`,
 `make -j32 build-only`, full `make test` (`0/485 groups failed, 14 skipped`),
-and `make sim-fast` (`64` seeded replays). Deploy this commit before expecting
-live diagnostics to show the new non-fallthrough behavior.
+and `make sim-fast` (`64` seeded replays). It was committed and pushed as
+`3347f42ab`, then deployed with `make deploy` (`Deployed + RPC live at block
+3166321`, build_commit `3347f42ab`). Post-deploy live checks: `zclassic23
+agent` healthy/serving at served height 3166321, `zclassic23 milestone` systems
+`[##########]`, goals `[#####-----]`, subgoals `[########--]`; soak RPC showed
+build `3347f42ab`, `healthy=false`, `serving=false`, `sync=blocks_download`,
+`operator_needed=true`, and `last_reconcile_repaired=false` for the
+owner-refused coin-backfill blocker.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip
