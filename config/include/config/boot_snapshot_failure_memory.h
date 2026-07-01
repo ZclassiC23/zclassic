@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define BOOT_SNAPSHOT_FAILURE_MARKER_MAX 1200
 
@@ -19,6 +20,7 @@ struct app_context;
  */
 bool boot_snapshot_failure_memory_prepare(struct app_context *ctx,
                                           bool coins_kv_proven_authority,
+                                          int32_t coins_kv_applied_height,
                                           bool *from_autodetect,
                                           char *fail_marker,
                                           size_t fail_marker_cap);

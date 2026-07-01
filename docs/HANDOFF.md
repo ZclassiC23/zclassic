@@ -148,6 +148,24 @@ hstar=3056758 min_allowed=3056757 cursor=3160268`, then
 as evidence that the remaining work is the state-window/refold cure, not another
 L1 cursor clamp.
 
+**2026-07-01 13:11 UTC code-review follow-up.** The starter-pack autodetect
+gate now treats `coins_kv_is_proven_authority()` as a resume skip only when the
+durable `coins_applied_height` is at or above the detected `utxo-seed-<H>`
+snapshot seed (`applied >= H+1`). A low-frontier but stamped authority
+(`coins_applied_height=1`, migration stamp, non-empty coins) no longer blocks
+autodetect from selecting the verified bundle, so the existing
+`-load-snapshot-at-own-height` reset can reseed instead of leaving H\* pinned
+at the compiled anchor. Regression coverage:
+`make t ONLY=boot_snapshot_failure_memory` now includes the low-frontier case,
+and `make t ONLY=load_verify_boot`, `make -j$(nproc) build-only`,
+`git diff --check`, `make lint`, `make check-doc-accuracy`, and full
+`make test` pass (`0/485` groups failed, `14` self-skipped). This still does
+**not** make the current soak node green by itself: both main and soak
+`zclassic23 refold` continue to report
+`primary_blocker=missing_verified_anchor_snapshot`, so the sovereign cutover
+still needs a staged/minted verified anchor and an H\* climb copy proof before
+deploy.
+
 **Copy-proof climb/refold preflight landed.** `tools/repro_on_copy.sh` accepts
 `--expect-climb-past=H`, and `make repro-on-copy` exposes it as
 `CLIMB_PAST=H`. This upgrades the existing copy harness from only "no public tip

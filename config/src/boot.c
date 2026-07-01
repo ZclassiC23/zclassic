@@ -3093,19 +3093,19 @@ sapling_tree_boot_check_done:
 
     if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
     if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db, ctx->mint_anchor_fast); /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor; fast => crypto pass-through */
-    /* Zero-flag starter-pack bootstrap: if the operator dropped a bundle
-     * (block_index.bin + utxo-seed-<H>.snapshot) into a fresh datadir, auto-
-     * select the snapshot so a plain `zclassic23` reaches tip with no flags.
-     * Gated on coins_kv NOT yet being the proven authority, so a synced node is
-     * never re-seeded (after the first seed the loader stamps coins_kv proven,
-     * and subsequent boots short-circuit here). The loader below still SELF-
-     * SHA3-verifies + anchor-binds, so this only auto-selects a file the explicit
-     * flag could have loaded. No-op when no bundle is present. */
+    /* Zero-flag starter-pack bootstrap. Auto-selects a bundled seed only when
+     * the current coins authority is absent or below that seed; the loader still
+     * self-SHA3-verifies + anchor-binds before any trust. */
     bool snap_from_autodetect = false;
     char snapshot_fail_marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX] = {0};
+    int32_t starter_coins_applied = -1;
+    bool starter_coins_proven =
+        coins_kv_is_proven_authority(progress_store_db(),
+                                     &starter_coins_applied);
     (void)boot_snapshot_failure_memory_prepare(
         ctx,
-        coins_kv_is_proven_authority(progress_store_db(), NULL),
+        starter_coins_proven,
+        starter_coins_applied,
         &snap_from_autodetect,
         snapshot_fail_marker,
         sizeof(snapshot_fail_marker));

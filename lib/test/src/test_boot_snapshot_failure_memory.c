@@ -47,7 +47,7 @@ int test_boot_snapshot_failure_memory(void)
         bool from_autodetect = true;
         char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
         bool selected = boot_snapshot_failure_memory_prepare(
-            &ctx, true, &from_autodetect, marker, sizeof(marker));
+            &ctx, true, -1, &from_autodetect, marker, sizeof(marker));
 
         char want_marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
         snprintf(want_marker, sizeof(want_marker), "%s.failed", snap);
@@ -81,7 +81,7 @@ int test_boot_snapshot_failure_memory(void)
         bool from_autodetect = false;
         char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
         bool selected = boot_snapshot_failure_memory_prepare(
-            &ctx, true, &from_autodetect, marker, sizeof(marker));
+            &ctx, true, -1, &from_autodetect, marker, sizeof(marker));
 
         BSFM_CHECK("explicit prior marker skips seed",
                    !selected && !from_autodetect &&
@@ -105,7 +105,7 @@ int test_boot_snapshot_failure_memory(void)
         bool from_autodetect = false;
         char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
         bool selected = boot_snapshot_failure_memory_prepare(
-            &ctx, false, &from_autodetect, marker, sizeof(marker));
+            &ctx, false, -1, &from_autodetect, marker, sizeof(marker));
 
         char want_snap[512];
         snprintf(want_snap, sizeof(want_snap), "%s/utxo-seed-11.snapshot", dir);
@@ -133,13 +133,41 @@ int test_boot_snapshot_failure_memory(void)
         bool from_autodetect = true;
         char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
         bool selected = boot_snapshot_failure_memory_prepare(
-            &ctx, true, &from_autodetect, marker, sizeof(marker));
+            &ctx, true, 13, &from_autodetect, marker, sizeof(marker));
 
         BSFM_CHECK("proven coins authority disables autodetect",
                    !selected && !from_autodetect &&
                    ctx.load_snapshot_at_own_height == NULL &&
                    marker[0] == '\0');
 
+        test_rm_rf_recursive(dir);
+    }
+
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_snapshot_failure", "low");
+        bsfm_touch_in_dir(dir, "block_index.bin");
+        bsfm_touch_in_dir(dir, "utxo-seed-12.snapshot");
+
+        struct app_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.datadir = dir;
+
+        bool from_autodetect = false;
+        char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
+        bool selected = boot_snapshot_failure_memory_prepare(
+            &ctx, true, 1, &from_autodetect, marker, sizeof(marker));
+
+        char want_snap[512];
+        snprintf(want_snap, sizeof(want_snap), "%s/utxo-seed-12.snapshot", dir);
+        BSFM_CHECK("low proven frontier still autodetects seed",
+                   selected && from_autodetect &&
+                   ctx.load_snapshot_at_own_height != NULL &&
+                   strcmp(ctx.load_snapshot_at_own_height, want_snap) == 0 &&
+                   access(marker, F_OK) == 0);
+
+        boot_snapshot_failure_memory_clear(marker);
+        free((void *)ctx.load_snapshot_at_own_height);
         test_rm_rf_recursive(dir);
     }
 
@@ -156,7 +184,7 @@ int test_boot_snapshot_failure_memory(void)
         bool from_autodetect = false;
         char marker[8];
         bool selected = boot_snapshot_failure_memory_prepare(
-            &ctx, true, &from_autodetect, marker, sizeof(marker));
+            &ctx, true, -1, &from_autodetect, marker, sizeof(marker));
 
         BSFM_CHECK("explicit marker path too small skips seed",
                    !selected && !from_autodetect &&
@@ -178,7 +206,7 @@ int test_boot_snapshot_failure_memory(void)
 
         char marker[BOOT_SNAPSHOT_FAILURE_MARKER_MAX];
         bool selected = boot_snapshot_failure_memory_prepare(
-            &ctx, true, NULL, marker, sizeof(marker));
+            &ctx, true, -1, NULL, marker, sizeof(marker));
 
         BSFM_CHECK("NULL autodetect out-param is tolerated",
                    selected &&

@@ -4,6 +4,7 @@
 #include "config/boot.h"
 #include "util/log_macros.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,39 @@ static bool write_empty_marker(const char *path)
     if (!mf)
         return false;
     fclose(mf);
+    return true;
+}
+
+static bool seed_height_from_snapshot_path(const char *snapshot_path,
+                                           int32_t *out)
+{
+    if (out)
+        *out = -1;
+    if (!snapshot_path || !snapshot_path[0])
+        return false;
+
+    const char *base = strrchr(snapshot_path, '/');
+    base = base ? base + 1 : snapshot_path;
+    static const char pfx[] = "utxo-seed-";
+    static const char sfx[] = ".snapshot";
+    const size_t plen = sizeof(pfx) - 1;
+    const size_t slen = sizeof(sfx) - 1;
+    const size_t len = strlen(base);
+    if (len <= plen + slen ||
+        strncmp(base, pfx, plen) != 0 ||
+        strcmp(base + len - slen, sfx) != 0)
+        return false;
+
+    int64_t h = 0;
+    for (size_t i = plen; i < len - slen; i++) {
+        if (base[i] < '0' || base[i] > '9')
+            return false;
+        h = h * 10 + (base[i] - '0');
+        if (h > INT32_MAX)
+            return false;
+    }
+    if (out)
+        *out = (int32_t)h;
     return true;
 }
 
@@ -51,16 +85,33 @@ static void forget_explicit_seed(struct app_context *ctx, char *fail_marker)
 
 static void maybe_autodetect_seed(struct app_context *ctx,
                                   bool coins_kv_proven_authority,
+                                  int32_t coins_kv_applied_height,
                                   bool *from_autodetect,
                                   char *fail_marker,
                                   size_t fail_marker_cap)
 {
-    if (!ctx || ctx->load_snapshot_at_own_height || coins_kv_proven_authority)
+    if (!ctx || ctx->load_snapshot_at_own_height)
         return;
 
     char *auto_snap = boot_autodetect_bundle_snapshot(ctx->datadir);
     if (!auto_snap)
         return;
+
+    if (coins_kv_proven_authority) {
+        int32_t seed_h = -1;
+        bool have_seed = seed_height_from_snapshot_path(auto_snap, &seed_h);
+        if (!have_seed ||
+            (int64_t)coins_kv_applied_height >= (int64_t)seed_h + 1) {
+            free(auto_snap);
+            return;
+        }
+        LOG_WARN("boot",
+                 "[boot] starter-pack bundle %s detected while coins_kv is "
+                 "only proven through h=%d (< seed h=%d) — reloading the "
+                 "verified seed instead of treating the low frontier as "
+                 "healthy",
+                 auto_snap, coins_kv_applied_height - 1, seed_h);
+    }
 
     LOG_INFO("boot",
              "[boot] starter-pack bundle detected in datadir - auto-"
@@ -127,6 +178,7 @@ static void prepare_explicit_seed_marker(struct app_context *ctx,
 
 bool boot_snapshot_failure_memory_prepare(struct app_context *ctx,
                                           bool coins_kv_proven_authority,
+                                          int32_t coins_kv_applied_height,
                                           bool *from_autodetect,
                                           char *fail_marker,
                                           size_t fail_marker_cap)
@@ -140,7 +192,8 @@ bool boot_snapshot_failure_memory_prepare(struct app_context *ctx,
     if (!ctx || !fail_marker || fail_marker_cap == 0)
         return false;
 
-    maybe_autodetect_seed(ctx, coins_kv_proven_authority, autodetect_flag,
+    maybe_autodetect_seed(ctx, coins_kv_proven_authority,
+                          coins_kv_applied_height, autodetect_flag,
                           fail_marker, fail_marker_cap);
     prepare_explicit_seed_marker(ctx,
                                  *autodetect_flag,
