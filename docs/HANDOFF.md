@@ -47,18 +47,39 @@ startup health evidence    [##########] health falls back to durable tip_finaliz
 HODL website freshness     [##########] current view refreshes to served tip
 factoids website freshness [##########] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
-formal soak evidence       [##--------] live accruing; 168h judge not green
+formal soak evidence       [#---------] rebaselined on current binary; blocked at H*=3056758
 ```
 
-**Soak evidence.** The current node is healthy and can accrue a new clean soak
-window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01 now
-reports `VERDICT=NOT_MET reason=operator_intervention_detected_x2` over the
-current trailing evidence window (`window_samples=169`,
-`window_covered_sec=604793`, within the judge's 900s timer slack). The prior
-`window_short_168.0h_lt_168h` reason was a rounded-display artifact: the window
-was seven seconds under 168h and should have advanced to the real blocker. The
-same report still has `ok_samples=0/169`, so do not mark C6/MVP soak complete
-until a fresh uninterrupted, reachable window is judged `MET`.
+**Soak evidence / rebaseline.** C6 is **not green**. `make
+soak-evidence-report` on 2026-07-01 still reports `VERDICT=NOT_MET
+reason=operator_intervention_detected_x2` over the trailing 168h evidence
+window and `ok_samples=0/169`. The soak service was deliberately rebaselined
+2026-07-01 because it was running stale pinned build `ecd14609c-dirty`, was
+OOM-killed under a local 12G cap, and was wedged at H\*=3056758. The pinned soak
+binary is now the current build `ba3f65356`, and the live local systemd drop-in
+`~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` was
+restored to `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended
+budget). Fresh live health after the rebaseline: `sync_state=blocks_download`,
+`healthy=false`, `serving=false`, `log_head=3145595`, `tip_lag=20695`,
+`operator_needed=true`, blocker `window.consistency I4.3 utxo_apply log hole:
+contiguous ok=1 prefix h=3056758 but cursor=3145595`, and
+`reducer_frontier_reconcile_light` reports `coin_backfill_status_label=
+owner_refused` at hole h=3145595. Do not mark C6 complete until a fresh
+uninterrupted window is judged `MET`.
+
+**Soak copy proof result.** Do **not** enable
+`ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. A full copy proof
+was attempted at
+`~/.zclassic-c23-COPY-20260701-090829-soak-coin-backfill-ack` with the current
+binary and owner ack set. The first harness run was environmental-only
+(`crypto_params_missing` in the isolated HOME); after symlinking the host
+Sapling params into the copy's isolated HOME, the copy booted, recovered H\* to
+3056758, and then **did not climb** through a 120-poll watch. The copy log
+showed `reducer_frontier_reconcile_light` clamping major cursors below the
+anchor (`validate_headers` near 2100, `utxo_apply` near 1, `tip_finalize` near
+0) while H\* stayed at 3056758. Treat this as an unsafe/no-go proof for live
+owner ack; next work should either prove a stable stopped-datadir copy or move
+to the sovereign `-refold-from-anchor` cure instead of live coin-backfill.
 
 **Simulator coverage fast gate landed.** The deterministic chaos harness now has
 a native seed override (`zclassic23-chaos --seed=0x...`) and `make sim-fast`.
