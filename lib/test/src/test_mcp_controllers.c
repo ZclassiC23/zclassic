@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     102  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     103  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -56,7 +56,7 @@
                                  * +1 offline replay verifier: zcl_replay_verify
                                  * +3 wait tools: zcl_waitforheight,
                                  *   zcl_waitforhalt, zcl_waitforblocker */
-#define EXPECTED_OPS        38  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        39  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -71,7 +71,8 @@
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
                                  * + zcl_postmortem_list/replay (Phase 6b)
-                                 * + zcl_operator_summary (simple MCP status) */
+                                 * + zcl_operator_summary + zcl_agent
+                                 *   (simple MCP status) */
 #define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
@@ -374,7 +375,7 @@ static int test_specific_flagship_tools_registered(void)
         /* Canon set — documented in CLAUDE.md.  If any goes missing,
          * the compat contract is broken. */
         const char *k[] = {
-            "zcl_status", "zcl_operator_summary", "zcl_kpi", "zcl_health",
+            "zcl_agent", "zcl_status", "zcl_operator_summary", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
             "zcl_peers", "zcl_networkinfo", "zcl_onion_status",
             "zcl_balance", "zcl_send", "zcl_getnewaddress",
@@ -877,6 +878,37 @@ static int test_zcl_operator_summary_healthy_shape(void)
         ASSERT(!json_get_bool(json_get(mirror, "reachable")));
         ASSERT_STR_EQ(json_get_str(json_get(mirror, "blocker")),
                       "rpc-unreachable");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_agent_alias_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_agent aliases the simple operator summary") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_healthy_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_agent", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.operator_summary.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "api_version")), "v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "none");
 
         json_free(&root);
         json_free(&args);
@@ -2125,6 +2157,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();
     failures += test_zcl_operator_summary_degraded_shape();
     failures += test_zcl_operator_summary_healthy_shape();
+    failures += test_zcl_agent_alias_shape();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_reports_dumpstate_error();
     failures += test_zcl_status_includes_dominant_blocker();

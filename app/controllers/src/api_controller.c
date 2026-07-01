@@ -569,8 +569,50 @@ bool api_route_is_operator_private(const char *path)
     if (!path)
         return false;
     return api_path_prefix_boundary(path, "/api/wallet") ||
+           api_path_prefix_boundary(path, "/api/v1/wallet") ||
            api_path_prefix_boundary(path, "/api/messages") ||
+           api_path_prefix_boundary(path, "/api/v1/messages") ||
+           api_path_prefix_boundary(path, "/api/v1/swaps") ||
            api_path_prefix_boundary(path, "/api/swaps");
+}
+
+size_t api_route_blocks(uint8_t *response, size_t response_max)
+{
+    return serve_from_cache(g_api_blocks_cache, &g_api_blocks_cache_len,
+                            response, response_max);
+}
+
+size_t api_route_stats(uint8_t *response, size_t response_max)
+{
+    return serve_from_cache(g_api_stats_cache, &g_api_stats_cache_len,
+                            response, response_max);
+}
+
+size_t api_route_deep_stats(uint8_t *response, size_t response_max)
+{
+    return serve_from_cache(g_api_deep_stats_cache, &g_api_deep_stats_cache_len,
+                            response, response_max);
+}
+
+size_t api_route_supply(uint8_t *response, size_t response_max)
+{
+    return serve_from_cache(g_api_supply_cache, &g_api_supply_cache_len,
+                            response, response_max);
+}
+
+size_t api_route_hodl(uint8_t *response, size_t response_max)
+{
+    return serve_hodl_fresh(response, response_max);
+}
+
+size_t api_route_factoids(uint8_t *response, size_t response_max)
+{
+    if (!g_api_ctx.datadir)
+        return api_json_error(response, response_max, JSON_500_HEADERS,
+                              "No datadir");
+    int64_t served_tip = api_hodl_current_tip_height();
+    return explorer_factoids_build_json_for_served_tip(
+        response, response_max, g_api_ctx.datadir, served_tip);
 }
 
 /* ── Main router ─────────────────────────────────────────── */
@@ -619,31 +661,36 @@ size_t api_handle_request(const char *method, const char *path,
     if (plen > 1 && clean_path[plen - 1] == '/')
         clean_path[plen - 1] = '\0';
 
-    /* Route: /api/blocks — served from cache */
-    if (strcmp(clean_path, "/api/blocks") == 0)
-        return serve_from_cache(g_api_blocks_cache, &g_api_blocks_cache_len,
-                                response, response_max);
+    char route_path_buf[512];
+    const char *route_path =
+        api_canonical_route_path(clean_path, route_path_buf,
+                                 sizeof(route_path_buf));
+
+    const struct api_resource_route *route =
+        api_resource_route_find(method, route_path);
+    if (route)
+        return route->handler(response, response_max);
 
     /* Route: /api/block/:id — served via lookup thread */
-    if (strncmp(clean_path, "/api/block/", 11) == 0 && clean_path[11])
-        return do_lookup(LOOKUP_BLOCK, clean_path + 11, response, response_max);
+    if (strncmp(route_path, "/api/block/", 11) == 0 && route_path[11])
+        return do_lookup(LOOKUP_BLOCK, route_path + 11, response, response_max);
 
     /* Route: /api/tx/:txid — served via lookup thread */
-    if (strncmp(clean_path, "/api/tx/", 8) == 0 && clean_path[8])
-        return do_lookup(LOOKUP_TX, clean_path + 8, response, response_max);
+    if (strncmp(route_path, "/api/tx/", 8) == 0 && route_path[8])
+        return do_lookup(LOOKUP_TX, route_path + 8, response, response_max);
 
     /* Route: /api/address/:addr — served via lookup thread */
-    if (strncmp(clean_path, "/api/address/", 13) == 0 && clean_path[13])
-        return do_lookup(LOOKUP_ADDRESS, clean_path + 13, response, response_max);
+    if (strncmp(route_path, "/api/address/", 13) == 0 && route_path[13])
+        return do_lookup(LOOKUP_ADDRESS, route_path + 13, response, response_max);
 
     /* Route: /api/zslp/tokens — resource collection */
-    if (strcmp(clean_path, "/api/zslp/tokens") == 0 ||
-        strncmp(clean_path, "/api/zslp/tokens?", 17) == 0)
-        return api_serve_zslp_tokens(path, response, response_max);
+    if (strcmp(route_path, "/api/zslp/tokens") == 0 ||
+        strncmp(route_path, "/api/zslp/tokens?", 17) == 0)
+        return api_serve_zslp_tokens(route_path, response, response_max);
 
     /* Route: /api/zslp/tokens/:id/transfers — member subresource */
-    if (strncmp(clean_path, "/api/zslp/tokens/", 17) == 0 && clean_path[17]) {
-        const char *token_id = clean_path + 17;
+    if (strncmp(route_path, "/api/zslp/tokens/", 17) == 0 && route_path[17]) {
+        const char *token_id = route_path + 17;
         const char *suffix = strstr(token_id, "/transfers");
         if (suffix &&
             (strcmp(suffix, "/transfers") == 0 ||
@@ -655,108 +702,44 @@ size_t api_handle_request(const char *method, const char *path,
                                   "Invalid token id");
             memcpy(token_buf, token_id, token_len);
             token_buf[token_len] = '\0';
-            return api_serve_zslp_token_transfers(path, token_buf,
+            return api_serve_zslp_token_transfers(route_path, token_buf,
                                                   response, response_max);
         }
         return api_serve_zslp_token(token_id, response, response_max);
     }
 
     /* Route: /api/onion/announcements — resource collection */
-    if (strcmp(clean_path, "/api/onion/announcements") == 0 ||
-        strncmp(clean_path, "/api/onion/announcements?", 25) == 0)
-        return api_serve_onion_announcements(path, response, response_max);
+    if (strcmp(route_path, "/api/onion/announcements") == 0 ||
+        strncmp(route_path, "/api/onion/announcements?", 25) == 0)
+        return api_serve_onion_announcements(route_path, response, response_max);
 
     /* Route: /api/file-services — resource collection */
-    if (strcmp(clean_path, "/api/file-services") == 0 ||
-        strncmp(clean_path, "/api/file-services?", 19) == 0)
-        return api_serve_file_services(path, response, response_max);
+    if (strcmp(route_path, "/api/file-services") == 0 ||
+        strncmp(route_path, "/api/file-services?", 19) == 0)
+        return api_serve_file_services(route_path, response, response_max);
 
     /* Route: /api/peers — resource collection */
-    if (strcmp(clean_path, "/api/peers") == 0 ||
-        strncmp(clean_path, "/api/peers?", 11) == 0)
-        return api_serve_peers(path, response, response_max);
-
-    /* Route: /api/stats — served from cache */
-    if (strcmp(clean_path, "/api/stats") == 0)
-        return serve_from_cache(g_api_stats_cache, &g_api_stats_cache_len,
-                                response, response_max);
-
-    /* Route: /api/stats/deep — deep stats served from cache */
-    if (strcmp(clean_path, "/api/stats/deep") == 0)
-        return serve_from_cache(g_api_deep_stats_cache, &g_api_deep_stats_cache_len,
-                                response, response_max);
-
-    /* Route: /api/supply — served from cache */
-    if (strcmp(clean_path, "/api/supply") == 0)
-        return serve_from_cache(g_api_supply_cache, &g_api_supply_cache_len,
-                                response, response_max);
-
-    /* Route: /api/hodl — read-only SQLite; refresh synchronously if cache lags tip */
-    if (strcmp(clean_path, "/api/hodl") == 0)
-        return serve_hodl_fresh(response, response_max);
-
-    if (strcmp(clean_path, "/api/factoids") == 0) {
-        if (!g_api_ctx.datadir)
-            return api_json_error(response, response_max, JSON_500_HEADERS, "No datadir");
-        int64_t served_tip = api_hodl_current_tip_height();
-        return explorer_factoids_build_json_for_served_tip(
-            response, response_max, g_api_ctx.datadir, served_tip);
-    }
+    if (strcmp(route_path, "/api/peers") == 0 ||
+        strncmp(route_path, "/api/peers?", 11) == 0)
+        return api_serve_peers(route_path, response, response_max);
 
     /* Event log — lock-free atomic reads, safe from any handler thread */
-    if (strncmp(clean_path, "/api/events", 11) == 0 &&
-        (clean_path[11] == '\0' || clean_path[11] == '?'))
-        return api_serve_events(path, response, response_max);
-
-    /* Sync state — minimal monitoring endpoint */
-    if (strcmp(clean_path, "/api/syncstate") == 0)
-        return api_serve_syncstate(response, response_max);
-
-    /* Download stats — IBD progress monitoring */
-    if (strcmp(clean_path, "/api/downloadstats") == 0)
-        return api_serve_downloadstats(response, response_max);
-
-    /* Health check — lightweight, machine-readable */
-    if (strcmp(clean_path, "/api/health") == 0)
-        return api_serve_health(response, response_max);
-
-    /* Simple public status alias for dashboards and MCP-friendly clients */
-    if (strcmp(clean_path, "/api/status") == 0 ||
-        strcmp(clean_path, "/api/node/summary") == 0)
-        return api_serve_node_summary(response, response_max);
-
-    /* Route: /api/node/snapshot — snapshot sync service status */
-    if (strcmp(clean_path, "/api/node/snapshot") == 0)
-        return api_serve_node_snapshot(response, response_max);
-
-    /* Route: /api/node/mmb — Merkle Mountain Belt status */
-    if (strcmp(clean_path, "/api/node/mmb") == 0)
-        return api_serve_node_mmb(response, response_max);
-
-    /* Route: /api/node/status — comprehensive one-stop diagnostics */
-    if (strcmp(clean_path, "/api/node/status") == 0)
-        return api_serve_node_status(response, response_max);
-
-    /* Wallet data — balance, address, activity */
-    if (strcmp(clean_path, "/api/wallet") == 0)
-        return api_serve_wallet(response, response_max);
+    if (strncmp(route_path, "/api/events", 11) == 0 &&
+        (route_path[11] == '\0' || route_path[11] == '?'))
+        return api_serve_events(route_path, response, response_max);
 
     /* ── File Transfer Service — SHA3-verified chunks ──────────── */
 
-    /* GET /api/files/manifest — JSON manifest of all chunks */
-    if (strcmp(clean_path, "/api/files/manifest") == 0)
-        return api_serve_files_manifest(response, response_max);
-
     /* GET /api/files/:sha3hash — raw chunk bytes by SHA3 hash */
-    if (strncmp(clean_path, "/api/files/", 11) == 0 &&
-        strlen(clean_path + 11) == 64)
-        return api_serve_file_chunk(clean_path + 11, response, response_max);
+    if (strncmp(route_path, "/api/files/", 11) == 0 &&
+        strlen(route_path + 11) == 64)
+        return api_serve_file_chunk(route_path + 11, response, response_max);
 
     /* ── P2P Services Platform REST API ─────────────────────── */
 
     /* Helper: call an API function and return its JSON as HTTP response */
     #define API_JSON_ROUTE(path_str, api_fn) \
-    if (strcmp(clean_path, path_str) == 0) { \
+    if (strcmp(route_path, path_str) == 0) { \
         struct json_value jr = {0}; \
         if (api_fn(&jr)) { \
             size_t n = api_json_ok(response, response_max, &jr); \
@@ -775,10 +758,10 @@ size_t api_handle_request(const char *method, const char *path,
     API_JSON_ROUTE("/api/names",       api_name_list)
 
     /* Route: /api/name/:name — resolve single name */
-    if (strncmp(clean_path, "/api/name/", 10) == 0 && clean_path[10]) {
+    if (strncmp(route_path, "/api/name/", 10) == 0 && route_path[10]) {
         extern bool rpc_name_resolve_api(const char *name, struct json_value *result);
         struct json_value jr = {0};
-        if (rpc_name_resolve_api(clean_path + 10, &jr)) {
+        if (rpc_name_resolve_api(route_path + 10, &jr)) {
             size_t n = api_json_ok(response, response_max, &jr);
             json_free(&jr);
             return n;

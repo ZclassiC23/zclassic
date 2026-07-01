@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static int api_status_served_height(void)
 {
@@ -24,6 +25,73 @@ static int api_status_served_height(void)
 
     int served = reducer_frontier_provable_tip_cached();
     return served >= 0 ? served : 0;
+}
+
+/* Route: /api
+ * Self-describing REST entry point. Keep this compact and stable: it is the
+ * shape humans and agents should read before choosing a drill-down endpoint. */
+size_t api_serve_api_index(uint8_t *response, size_t response_max)
+{
+    const char *body =
+        "{"
+        "\"schema\":\"zcl.rest_index.v1\","
+        "\"name\":\"zclassic23 REST API\","
+        "\"api_version\":\"v1\","
+        "\"version\":\"v1\","
+        "\"base_path\":\"/api/v1\","
+        "\"compat_base_path\":\"/api\","
+        "\"first_call\":\"/api/v1/agent\","
+        "\"summary\":\"Use noun resources. GET reads collections/items; mutating operator actions stay private unless an endpoint explicitly documents POST.\","
+        "\"aliases\":{"
+          "\"agent\":\"/api/v1/agent\","
+          "\"node\":\"/api/v1/node\","
+          "\"node_summary\":\"/api/v1/node/summary\","
+          "\"status\":\"/api/v1/status\""
+        "},"
+        "\"crud\":{"
+          "\"read_collection\":\"GET /api/v1/{resource}\","
+          "\"read_item\":\"GET /api/v1/{resource}/{id}\","
+          "\"create\":\"POST /api/v1/{resource} when documented\","
+          "\"update\":\"PUT/PATCH /api/v1/{resource}/{id} when documented\","
+          "\"delete\":\"DELETE /api/v1/{resource}/{id} when documented\""
+        "},"
+        "\"resources\":["
+          "{\"name\":\"node\",\"collection\":\"/api/v1/node\",\"summary\":\"/api/v1/node/summary\",\"status\":\"/api/v1/node/status\"},"
+          "{\"name\":\"blocks\",\"collection\":\"/api/v1/blocks\",\"item\":\"/api/v1/block/{height_or_hash}\"},"
+          "{\"name\":\"transactions\",\"item\":\"/api/v1/tx/{txid}\"},"
+          "{\"name\":\"peers\",\"collection\":\"/api/v1/peers\"},"
+          "{\"name\":\"hodl\",\"collection\":\"/api/v1/hodl\"},"
+          "{\"name\":\"factoids\",\"collection\":\"/api/v1/factoids\"},"
+          "{\"name\":\"files\",\"collection\":\"/api/v1/files/manifest\",\"item\":\"/api/v1/files/{sha3}\"},"
+          "{\"name\":\"wallet\",\"collection\":\"/api/v1/wallet\",\"private\":true}"
+        "],"
+        "\"drilldown\":{"
+          "\"health\":\"/api/v1/health\","
+          "\"sync\":\"/api/v1/syncstate\","
+          "\"downloads\":\"/api/v1/downloadstats\","
+          "\"full_node_status\":\"/api/v1/node/status\""
+        "},"
+        "\"mcp\":{"
+          "\"first_tool\":\"zcl_agent\","
+          "\"drilldown_tool\":\"zcl_status\""
+        "},"
+        "\"cli\":{"
+          "\"first_command\":\"zclassic23 agent\","
+          "\"compat_command\":\"./tools/z\","
+          "\"drilldown_command\":\"zclassic23 healthcheck\""
+        "}"
+        "}";
+    size_t body_len = strlen(body);
+
+    return (size_t)snprintf((char *)response, response_max,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %zu\r\n\r\n"
+        "%s",
+        body_len, body);
 }
 
 /* Route: /api/status and /api/node/summary */
@@ -51,7 +119,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
 
     const char *status = "healthy";
     const char *primary = "none";
-    const char *next_endpoint = "/api/status";
+    const char *next_endpoint = "/api/v1/agent";
     bool material_gap = gap > 1;
 
     const char *summary = "node healthy at served frontier";
@@ -60,30 +128,30 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     if (!health.serving) {
         status = "blocked";
         primary = "not_serving";
-        next_endpoint = "/api/health";
+        next_endpoint = "/api/v1/health";
         summary = "node is not serving";
         operator_needed = true;
     } else if (!health.has_peers) {
         status = "blocked";
         primary = "no_peers";
-        next_endpoint = "/api/peers";
+        next_endpoint = "/api/v1/peers";
         summary = "node has no connected peers";
         operator_needed = true;
     } else if (material_gap && (dl_inflight > 0 || dl_queued > 0)) {
         status = "catching_up";
         primary = "chain_gap";
-        next_endpoint = "/api/downloadstats";
+        next_endpoint = "/api/v1/downloadstats";
         summary = "node is downloading blocks toward the best known tip";
     } else if (material_gap) {
         status = "degraded";
         primary = "download_queue_idle";
-        next_endpoint = "/api/downloadstats";
+        next_endpoint = "/api/v1/downloadstats";
         summary = "node is behind the best known tip without active downloads";
         operator_needed = true;
     } else if (!health.healthy) {
         status = "degraded";
         primary = "healthcheck_unhealthy";
-        next_endpoint = "/api/health";
+        next_endpoint = "/api/v1/health";
         summary = "node health checks are degraded";
         operator_needed = health.warning_count > 0;
     }
@@ -92,6 +160,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     int body_len = snprintf(body, sizeof(body),
         "{"
         "\"schema\":\"zcl.public_status.v1\","
+        "\"api_version\":\"v1\","
         "\"status\":\"%s\","
         "\"healthy\":%s,"
         "\"serving\":%s,"
@@ -127,11 +196,11 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
           "\"onion_service_ready\":%s"
         "},"
         "\"recommended_endpoints\":["
-          "\"/api/status\","
-          "\"/api/health\","
-          "\"/api/node/status\","
-          "\"/api/hodl\","
-          "\"/api/factoids\""
+          "\"/api/v1/agent\","
+          "\"/api/v1/health\","
+          "\"/api/v1/node/status\","
+          "\"/api/v1/hodl\","
+          "\"/api/v1/factoids\""
         "]"
         "}",
         status,

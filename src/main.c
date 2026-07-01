@@ -1,8 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * ZClassic full node — pure C23 implementation.
  *
- * One binary, two modes:
- *   zclassic23 [node options]         — run as full node
+ * One binary, three operator modes:
+ *   zclassic23 [node options]         — run as full node / linger service
+ *   zclassic23 -mcp                   — MCP stdio server for agents
+ *   zclassic23 agent                  — compact status from running node
  *   zclassic23 <method> [params...]   — RPC client to running node */
 
 #include "config/boot.h"
@@ -637,6 +639,11 @@ static int cli_main(int argc, char **argv)
     }
 
     const char *method = argv[arg_start];
+    if (strcmp(method, "--agent") == 0 || strcmp(method, "-agent") == 0)
+        method = "agent";
+    else if (strcmp(method, "--summary") == 0 ||
+             strcmp(method, "-summary") == 0)
+        method = "summary";
     const char **params = (const char **)&argv[arg_start + 1];
     int nparams = argc - arg_start - 1;
 
@@ -735,6 +742,9 @@ static void print_usage(const char *prog)
 {
     printf("Usage:\n");
     printf("  %s [node options]          Run full node\n", prog);
+    printf("  %s agent                   Compact status from running node\n", prog);
+    printf("  %s --agent                 Same compact status\n", prog);
+    printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);
     printf("Node options:\n");
     printf("  -datadir=<dir>      Data directory\n");
@@ -786,6 +796,11 @@ static bool is_cli_mode(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') return true;  /* RPC method name */
+        if (strcmp(argv[i], "--agent") == 0 ||
+            strcmp(argv[i], "-agent") == 0 ||
+            strcmp(argv[i], "--summary") == 0 ||
+            strcmp(argv[i], "-summary") == 0)
+            return true;
         /* Skip known node options with values */
         if (strncmp(argv[i], "-datadir=", 9) == 0 ||
             strncmp(argv[i], "-rpcport=", 9) == 0)

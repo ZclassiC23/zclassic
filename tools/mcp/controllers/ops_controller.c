@@ -695,6 +695,7 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_init(&root);
     json_set_object(&root);
     json_push_kv_str(&root, "schema", "zcl.operator_summary.v1");
+    json_push_kv_str(&root, "api_version", "v1");
     json_push_kv_str(&root, "status", status);
     json_push_kv_bool(&root, "healthy", strcmp(status, "healthy") == 0);
     json_push_kv_bool(&root, "serving", serving);
@@ -1253,6 +1254,11 @@ static const struct mcp_tool_route k_routes[] = {
       "bg-validation progress, health checks, and chain advance source "
       "scoring. The single command to check if everything is working.",
       NULL, 0, h_zcl_status, 0, NULL },
+    { "zcl_agent", "ops",
+      "Shortest MCP-friendly first check: stable top-level status, heights, "
+      "gap, peer counts, primary blocker, next action, and recommended next "
+      "tools, with raw diagnostics attached under `raw` for drill-down.",
+      NULL, 0, h_zcl_operator_summary, 0, NULL },
     { "zcl_operator_summary", "ops",
       "MCP-friendly operator summary: stable top-level status, height, "
       "target height, gap, peer counts, primary blocker, next action, "

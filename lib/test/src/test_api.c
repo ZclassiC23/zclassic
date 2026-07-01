@@ -24,6 +24,9 @@
 
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                       const char *message);
+size_t api_resource_route_count(void);
+const char *api_resource_route_resource_at(size_t i);
+const char *api_resource_route_action_at(size_t i);
 
 static struct block_index *api_test_insert_block(struct main_state *ms,
                                                  struct uint256 *hash,
@@ -300,6 +303,61 @@ int test_api(void)
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
         system(cmd);
 
+    if (ok) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: REST index explains v1 first call and CRUD shape... ");
+    {
+        size_t n = api_handle_request("GET", "/api/v1", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.rest_index.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                          "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "base_path")),
+                          "/api/v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "compat_base_path")),
+                          "/api") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "first_call")),
+                          "/api/v1/agent") == 0;
+        ok = ok && json_get(json_get(&root, "crud"), "read_collection") != NULL;
+        ok = ok && json_size(json_get(&root, "resources")) >= 4;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "first_tool")),
+                          "zcl_agent") == 0;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: resource route table exposes controller-style names... ");
+    {
+        bool saw_agent = false;
+        bool saw_blocks = false;
+        bool saw_factoids = false;
+        size_t count = api_resource_route_count();
+        for (size_t i = 0; i < count; i++) {
+            const char *resource = api_resource_route_resource_at(i);
+            const char *action = api_resource_route_action_at(i);
+            if (!resource || !action)
+                continue;
+            if (strcmp(resource, "agent") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_agent = true;
+            if (strcmp(resource, "blocks") == 0 &&
+                strcmp(action, "index") == 0)
+                saw_blocks = true;
+            if (strcmp(resource, "factoids") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_factoids = true;
+        }
+        bool ok = count >= 16 && saw_agent && saw_blocks && saw_factoids;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -381,6 +439,54 @@ int test_api(void)
         ok = ok && json_get(&root, "status") != NULL;
         ok = ok && json_get(&root, "height") != NULL;
         ok = ok && json_get(&root, "recommended_endpoints") != NULL;
+        json_free(&root);
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: /api/v1/agent and compat aliases compact summary... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct block_index *blocks[3] = {0};
+        bool ok = api_test_build_chain(&ms, blocks, 3);
+        reducer_frontier_provable_tip_set(2);
+        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+        size_t n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                          "v1") == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/node", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.public_status.v1") == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/agent", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.public_status.v1") == 0;
         json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
@@ -990,14 +1096,21 @@ int test_api(void)
     {
         /* True only at a path boundary (next char '\0', '/', '?'). */
         bool ok = api_route_is_operator_private("/api/wallet") &&
+                  api_route_is_operator_private("/api/v1/wallet") &&
                   api_route_is_operator_private("/api/wallet/") &&
+                  api_route_is_operator_private("/api/v1/wallet/") &&
                   api_route_is_operator_private("/api/wallet?x=1") &&
+                  api_route_is_operator_private("/api/v1/wallet?x=1") &&
                   api_route_is_operator_private("/api/messages") &&
+                  api_route_is_operator_private("/api/v1/messages") &&
+                  api_route_is_operator_private("/api/v1/swaps") &&
                   api_route_is_operator_private("/api/swaps");
         /* Public routes must stay public — in particular
          * /api/swap_chains must NOT match the /api/swaps prefix. */
         ok = ok && !api_route_is_operator_private("/api/swap_chains") &&
+                   !api_route_is_operator_private("/api/v1/swap_chains") &&
                    !api_route_is_operator_private("/api/blocks") &&
+                   !api_route_is_operator_private("/api/v1/blocks") &&
                    !api_route_is_operator_private("/api/stats") &&
                    !api_route_is_operator_private("/api/walletfoo") &&
                    !api_route_is_operator_private(NULL);

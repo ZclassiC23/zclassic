@@ -77,6 +77,7 @@ extern struct api_rpc_backend g_api_rpc;
 
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                   const char *message);
+size_t api_serve_api_index(uint8_t *response, size_t response_max);
 int api_rpc_call(const char *method, const char *params_json,
              char *out, size_t outmax);
 bool api_is_json_safe_param(const char *s, size_t maxlen);
@@ -89,6 +90,30 @@ bool api_parse_collection_limit(const char *path, const char *query_key,
 bool api_start_detached_thread(pthread_t *thread_out,
                                void *(*entry)(void *),
                                void *arg);
+
+/* ── Resource route registry (defined in api_controller_routes.c) ── */
+
+typedef size_t (*api_route_handler)(uint8_t *response, size_t response_max);
+
+struct api_resource_route {
+    const char *method;
+    const char *path;
+    const char *resource;
+    const char *action;
+    api_route_handler handler;
+};
+
+const char *api_canonical_route_path(const char *path, char *buf,
+                                     size_t buf_len);
+const struct api_resource_route *
+api_resource_route_find(const char *method, const char *path);
+
+size_t api_route_blocks(uint8_t *response, size_t response_max);
+size_t api_route_stats(uint8_t *response, size_t response_max);
+size_t api_route_deep_stats(uint8_t *response, size_t response_max);
+size_t api_route_supply(uint8_t *response, size_t response_max);
+size_t api_route_hodl(uint8_t *response, size_t response_max);
+size_t api_route_factoids(uint8_t *response, size_t response_max);
 
 /* ── Compute handlers (defined in api_controller_compute.c) ── */
 

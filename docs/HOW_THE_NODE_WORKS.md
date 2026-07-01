@@ -66,7 +66,8 @@ answer.
 
 | Call | Shows |
 |------|-------|
-| `zcl_status` | One snapshot: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Start here. |
+| `zcl_agent` | The simple first check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent`, `GET /api/v1/agent`, and `./tools/z`; `GET /api` or `GET /api/v1` explains versioned REST resources/CRUD, and `zcl_operator_summary` is the longer compatible alias. Start here. |
+| `zcl_status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Use after the summary names a drill-down. |
 | `zcl_syncdiag` | Sync state, header-sync counters, watchdog (= condition-engine health), chain/header heights, peer max height, download stats. **It does NOT list the eight stage cursors** — use `reducer_frontier` for those. |
 | `zcl_state subsystem=reducer_frontier` | The eight stage cursors, `H*` (deepest provably-consistent height — the tip `getblockcount` serves), and the success-checked log frontiers (the contiguous ok=1 prefix per log) |
 | `zcl_state subsystem=blocker` | Active blockers with deadlines and escape actions |
@@ -130,8 +131,10 @@ sovereign is its coin-set starting point. (Verify whether the cure has shipped v
    architecture; this page is its plain-language summary. **`docs/AGENT_TRAPS.md`**
    lists things that look broken but are not (don't re-chase them);
    **`docs/CODEBASE_MAP.md`** is where-things-live + how-to-do-each-thing.
-3. Look at the live node before trusting any doc: `zcl_status`, then
-   `zcl_state subsystem=reducer_frontier`. A doc can be stale; the node cannot.
+3. Look at the live node before trusting any doc: start with
+   `zclassic23 agent`, `zcl_agent`, or `./tools/z`, then drill down with `zcl_status`
+   and `zcl_state subsystem=reducer_frontier` only if needed. A doc can be
+   stale; the node cannot.
 4. To understand one stage, open its file — `app/jobs/src/<stage>_stage.c`. Each is
    one `step_*` function that does exactly the advance-or-name-a-blocker contract
    described in section 2.

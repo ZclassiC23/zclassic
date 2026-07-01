@@ -54,7 +54,8 @@ delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;
 NEVER ship a consensus-adjacent change without a copy proof.
 
 **MRS scoreboard:** see **[`docs/MVP.md`](../MVP.md)** (scoreboard of record).
-Summary: ~2/8 met by hand, 0/8 CI-verified full.
+Current score is **4/8** by local operator proof; hermetic slices keep the
+remaining criteria honest but do not promote them to ✅.
 
 ---
 
@@ -128,22 +129,24 @@ debt does not block a working sovereign node and must not jump the queue.
       copy-prove (generate 5 → kill-9 → restart → getblockcount==5, `(root=genesis)`
       log), and **`make test-crash-bootstrap` PASSES (`height_regress: 0`)**.
       **Live deploy owner-gated** (new binary on the live datadir = wipe+cold-import).
-- [ ] **C5 store gate → real ivk-decrypt purchase (Slice 1, additive+hermetic)** —
-      replace the fabricated placeholder-ivk note + address-string match with a
-      genuine `wallet_try_sapling_decrypt` + memo-bound reconcile (params-free,
-      reuses `test_shielded_receive_slice`), as a NEW `store_e2e_shielded`
-      selector that leaves the old `store_e2e` gate untouched. Design of record
-      (vetted, by-hand-reviewed against the code):
-      [`c5-real-shielded-purchase-plan.md`](./c5-real-shielded-purchase-plan.md).
-      No live behavior change; teeth-verified by `make test_zcl`.
+- [x] **C5 store gate → real ivk-decrypt purchase (Slice 1, additive+hermetic)** —
+      landed as `store_e2e_shielded` and wired into `ci-mvp-gates` with the
+      false-green sentinel. It leaves the old `store_e2e` gate intact, builds a
+      params-free Sapling output to a merchant wallet, decrypts it through
+      `wallet_try_sapling_decrypt`, persists the recovered note, proves
+      `db_store_received_payment_for_memo` credits only the matching
+      `ZCL23ORDER:<order_id>` memo, and proves the legacy address+amount finder
+      over-counts a same-address wrong-order payment. Current focused proof:
+      `ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e_shielded build/bin/test_zcl`
+      passes.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
-- [ ] **Code-review remediation** (secondary hardening lane; must not displace
+- [x] **Code-review remediation** (secondary hardening lane; must not displace
       the #1 spine) — the open, verified subset of the 2026-06-27 audit, batched
       into parallel-worktree lanes with a fix + proof-gate per item:
       [`code-review-remediation-2026-06-30.md`](./code-review-remediation-2026-06-30.md).
-      First move = the 3 P1s (qw9 explorer-OOB, qw10 diverged-sapling-tree,
-      Sprout-PHGR13 KAT).
+      Autonomous review-remediation items are now closed; continue MVP work from
+      the sovereign cure and fresh soak window.
 
 ### B. OWNER-GATED (consensus-critical; explicit owner go + repro-on-copy)
 > NOTE (2026-06-17): the C7 **restart-durability** blocker is now handled by the
@@ -171,16 +174,13 @@ debt does not block a working sovereign node and must not jump the queue.
       `chain_active` UAF, same class as the fixed phashBlock bug).
 - [ ] MVP feature e2e proofs: C4 (receive shielded) + C5 (store sell) on a
       funded test wallet.
-- [x] **C5 store gate Slice 2 (memo-bound reconcile) — LANDED** — the live
-      `store_process_payments` reconcile (`store_controller.c:556`) already
-      calls the memo-bound finder `db_store_received_payment_for_memo`; the old
-      amount/address finder `db_store_received_payment` has no app callers.
-      REMAINING open sub-task: remove the `zs1_pay_<time>` placeholder fallback
-      in `zslp_payment_generate_address` (`zslp_service.c:359`) so an order can
-      never bind to an undecryptable address (a real prod gameability hole found
-      2026-06-17). App-layer, no consensus, but it changes live payment matching
-      → copy-prove on a fixture first. Design of record:
-      [`c5-real-shielded-purchase-plan.md`](./c5-real-shielded-purchase-plan.md).
+- [x] **C5 store gate Slice 2 (memo-bound reconcile + no fake address fallback)
+      — LANDED** — the live `store_process_payments` reconcile calls the
+      memo-bound finder `db_store_received_payment_for_memo`; the old
+      amount/address finder has no app callers. `zslp_payment_generate_address`
+      now refuses to create an order unless the merchant wallet has a seeded
+      Sapling keystore, so it cannot bind to a synthetic or unrecoverable
+      `zs1_pay_<time>` address. App-layer only; no consensus path touched.
 
 ### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
 - [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — a second zcl23 node

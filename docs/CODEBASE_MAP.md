@@ -134,7 +134,14 @@ actually fires.
 controller `k_routes[]` arrays.
 
 ### Start here
-- `zcl_status` — height, peers, sync, onion, health in one call.
+- `zcl_agent` — shortest MCP-friendly first check: compact status with stable
+  top-level `status`, heights, gap, peer counts, primary blocker, and
+  recommended next tool. Same simple contract as native `zclassic23 agent`,
+  REST `GET /api/v1/agent`, and CLI shim `./tools/z`; `GET /api` or
+  `GET /api/v1` documents the versioned REST CRUD shape.
+  `zcl_operator_summary` is the longer compatible alias.
+- `zcl_status` — full diagnostic tree: height, peers, sync, onion, health,
+  reducer frontier, tip-finalize, condition engine, and chain source scoring.
 - `zcl_kpi` — aggregated KPIs (height, peer_count, sync, validation, mempool,
   wallet, chain, network).
 

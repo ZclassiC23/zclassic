@@ -1,9 +1,17 @@
 #!/bin/bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
-# z — LLM-optimized CRUD interface for zclassic23 node.
+# z — tiny operator entry point for zclassic23.
 #
-# Designed for AI/LLM tool calls: minimal input, clean output.
-# CRUD pattern: z <resource> [action] [params...]
+# Designed for humans and AI/LLM tool calls: `z` alone returns the compact
+# operator summary. Drill down only when the summary names a next step.
+#
+# SIMPLE:
+#   z                            Compact agent/operator summary
+#   z agent                      Same as above
+#   z summary                    Same as above
+#   z status                     Full healthcheck diagnostics
+#
+# CRUD pattern for drill-down: z <resource> [action] [params...]
 #
 # RESOURCES:
 #   z block <height>              Read block at height
@@ -69,6 +77,35 @@ if [ -n "${ZCL_RPCCONNECT:-}" ]; then
 fi
 
 rpc() { "$CLI" "${CLI_OPTS[@]}" "$@" 2>/dev/null; }
+
+api_summary_json() {
+    local scheme host port url out
+    scheme="${ZCL_API_SCHEME:-https}"
+    host="${ZCL_API_HOST:-127.0.0.1}"
+    port="${ZCL_API_PORT:-8443}"
+    url="${scheme}://${host}:${port}/api/v1/agent"
+    command -v curl >/dev/null 2>&1 || return 1
+    out="$(curl -sk --max-time "${ZCL_API_TIMEOUT:-4}" "$url" 2>/dev/null || true)"
+    if printf '%s\n' "$out" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"'; then
+        printf '%s\n' "$out"
+        return 0
+    fi
+    return 1
+}
+
+agent_summary_json() {
+    local out
+    out="$(api_summary_json || true)"
+    if [ -n "$out" ]; then
+        printf '%s\n' "$out"
+        return 0
+    fi
+
+    # Fallback for nodes without the HTTPS API bound. This is larger than the
+    # public summary, but it keeps `z` useful over the same RPC target selection
+    # logic as every other command.
+    rpc healthcheck
+}
 
 json_field() {
     printf '%s\n' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p; s/.*\"$2\"[[:space:]]*:[[:space:]]*\([-0-9][0-9]*\).*/\1/p; s/.*\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1
@@ -255,7 +292,12 @@ mirror_status_json() {
     fi
 }
 
-case "${1:-help}" in
+case "${1:-agent}" in
+
+# ── SIMPLE: agent/operator first check ───────────────────────────
+agent|summary|operator|ok|doctor)
+    agent_summary_json
+    ;;
 
 # ── READ: Chain ──────────────────────────────────────────────────
 blocks|height|tip)
@@ -466,7 +508,19 @@ rpc)
 # ── HELP ─────────────────────────────────────────────────────────
 help|--help|-h)
     cat <<'HELP'
-z — LLM-optimized CRUD interface for zclassic23
+z — tiny operator entry point for zclassic23
+
+SIMPLE:
+  z                     Compact agent/operator summary (recommended first call)
+  z agent               Same compact summary
+  z summary             Same compact summary
+  z status              Full healthcheck diagnostics for drill-down
+
+The simple summary is the same public contract as:
+  Binary: zclassic23 agent
+  REST:   GET /api/v1/agent
+  MCP:  zcl_agent
+  Docs: GET /api
 
 READ:
   z blocks              Chain height

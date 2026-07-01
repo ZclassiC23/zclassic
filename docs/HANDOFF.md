@@ -1,8 +1,12 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
 **Restart command:** type **`continue zclassic23 development`**. First checks:
-`git status --short --branch`, `./tools/z status`,
-`curl -sk https://127.0.0.1:8443/api/status`, and `./tools/z mirror --json`.
+`git status --short --branch`, then the simple agent API:
+`zclassic23 agent` (or `./tools/z`, MCP `zcl_agent`, or REST
+`GET /api/v1/agent`). `GET /api` or `GET /api/v1` is the REST discovery
+document for the versioned CRUD shape. Use
+`./tools/z status`, `/api/v1/node/status`,
+`zcl_status`, and `./tools/z mirror --json` only for drill-down.
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
@@ -298,7 +302,7 @@ sound source; the fold-speedup work targets making it tractable.
 | **P1-6** | Corrupted-authority crash-loop: a torn `coins_kv`/`progress.kv` authority store FATALs each boot under the loader flag instead of dropping+reseeding (red-team gap) | open |
 | **P1-7** | Slow recovery: every boot re-replays the Sapling note-commitment tree (~16 min). Persist + load a cached Sapling tree so a clean restart doesn't pay the full replay | open |
 | **P2-1** | MVP gate (CLAUDE.md #1 priority) — live scorer `tools/mvp_gate.sh`; hermetic `make ci-mvp-gates` / `make mvp-verify` | open |
-| **P2-2** | File market end-to-end (MVP C5) — `zmarket_buy` parks; `root_hash` is a `path:size` placeholder; remove the `zs1_pay_<time>` placeholder in `zslp_service.c` | open |
+| **P2-2** | File market end-to-end (MVP C5) — `zmarket_buy` parks and `root_hash` is a `path:size` placeholder. The store-side payment hardening is no longer the blocker: the synthetic `zs1_pay_<time>` fallback is removed, live store reconcile is memo-bound, and `store_e2e_shielded` proves real ivk-decrypt + memo-bound credit hermetically. Remaining C5 work is a full live buyer/file-transfer proof. | open |
 | **P2-3** | The permanent subtraction (~715 LOC): once a verified anchor is guaranteed reachable on every cold-start, make `-refold-from-anchor` the DEFAULT and delete the borrowed-seed machinery. Re-derive the delete-set from the CURRENT tree. KEEP the 5 legit `tip_finalize_stage_seed_anchor` callers. Parity-safe | gated on P0-2/P0-3 |
 
 The wedge-class root-fix design (the fold-forward cure, the per-100-block UTXO

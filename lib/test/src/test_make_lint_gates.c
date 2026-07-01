@@ -1966,6 +1966,11 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "rpc getnetworkinfo") != NULL);
         ASSERT(strstr(buf, "status|health)") != NULL);
         ASSERT(strstr(buf, "rpc healthcheck") != NULL);
+        ASSERT(strstr(buf, "case \"${1:-agent}\" in") != NULL);
+        ASSERT(strstr(buf, "agent|summary|operator|ok|doctor)") != NULL);
+        ASSERT(strstr(buf, "/api/v1/agent") != NULL);
+        ASSERT(strstr(buf, "Binary: zclassic23 agent") != NULL);
+        ASSERT(strstr(buf, "MCP:  zcl_agent") != NULL);
         ASSERT(strstr(buf, "advance|chain-advance)") != NULL);
         ASSERT(strstr(buf, "rpc dumpstate chain_advance_coordinator") != NULL);
         ASSERT(strstr(buf, "peerlife|peer-lifecycle)") != NULL);
@@ -2028,6 +2033,32 @@ static int t_tools_z_operator_diagnostics_contract(void)
         PASS();
     } _test_next:;
     free(buf);
+    return failures;
+}
+
+static int t_native_agent_api_contract(void)
+{
+    int failures = 0;
+    char *main_buf = NULL;
+    char *event_buf = NULL;
+    TEST("zclassic23 binary exposes native agent summary command") {
+        char main_path[PATH_MAX];
+        char event_path[PATH_MAX];
+        ASSERT(repo_path(main_path, sizeof(main_path), "src/main.c") == 0);
+        ASSERT(repo_path(event_path, sizeof(event_path),
+                         "app/controllers/src/event_controller.c") == 0);
+        ASSERT(read_entire_file(main_path, &main_buf) == 0);
+        ASSERT(read_entire_file(event_path, &event_buf) == 0);
+        ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
+        ASSERT(strstr(event_buf, "api_version\", \"v1\"") != NULL);
+        PASS();
+    } _test_next:;
+    free(main_buf);
+    free(event_buf);
     return failures;
 }
 
@@ -3592,6 +3623,7 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_native_agent_api_contract();
     failures += t_soak_assert_requires_known_mirror_lag();
     failures += t_boot_chain_advance_diagnostics_contract();
     failures += t_boot_addrman_persistence_contract();
