@@ -10,13 +10,14 @@ document for the versioned CRUD shape. Use
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
-code deploy verifier completed at h=3166149 on build `6786bcbae`; bare
+code deploy verifier completed at h=3166175 on build `e72677f96`; bare
 `zclassic23 agent` now discovers the running user service datadir/rpcport from
 systemd when the default cookie is absent, so no `-datadir` flag is needed for
 the normal owner command. At the latest handoff check the native node reported
 `sync_state=at_tip`, `consensus_authority=local_consensus_validation`,
-`healthy=true`, `serving=true`, 3 peers, `log_head=3166149`, and Tor/onion
-ready. The public
+`healthy=true`, `serving=true`, 4 peers, `log_head=3166175`, and Tor/onion
+ready; the compact agent endpoint was serving h=3166174 with the expected
+one-block indexed/header race (`gap=1`). The public
 `/api/status` surface is aligned with the health contract for the normal H*
 race: a one-block served-frontier gap reports `status=healthy`,
 `operator_needed=false`, and `primary_blocker=none`; gaps greater than one
@@ -24,9 +25,10 @@ remain named as catching-up or degraded.
 
 ```
 systems
-native node service        [##########] healthy/serving at local tip; build 6786bcbae
+native node service        [##########] healthy/serving at local tip; build e72677f96
 simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
 REST resource routing      [########--] `/api/v1` route table wired; dynamic/member routes still controller-owned
+lint-gate hardening        [#########-] coin lookup guard fails loud on empty/no-lookup scan surfaces
 HODL website freshness     [##########] current view refreshes to served tip
 factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
@@ -37,8 +39,16 @@ formal soak evidence       [##--------] live accruing; 168h judge NOT_MET
 window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01
 reported `VERDICT=NOT_MET reason=operator_intervention_detected_x2` over the
 current 168h evidence window (`window_samples=169`,
-`last_sample_age_sec=646`). Do not mark C6/MVP soak complete until a fresh
+`last_sample_age_sec=1626`). Do not mark C6/MVP soak complete until a fresh
 uninterrupted window is judged `MET`.
+
+**Lint-gate hardening landed.** The controller chainstate coin-lookup guard now
+fails loud instead of silently passing if its scan surface disappears:
+`tools/scripts/check_coins_lookup_nullcheck.sh` requires controller `.c` files,
+requires at least one `coins_view_cache_get_coins()` call site, and uses
+`gate_grep` for grep error handling. `test_make_lint_gates` now inject-verifies
+both an empty controller scan and a non-empty/no-lookup scan exit 2 before the
+real tree passes. The audit note is in `docs/work/lint-gate-hollowness-audit.md`.
 
 **Versioned agent API landed.** The owner/agent first call is now the same shape
 across the binary, REST, and MCP: `zclassic23 agent`, `GET /api/v1/agent`, and
@@ -77,7 +87,13 @@ full `make test` (`0/485 groups failed, 15 skipped` after the v1 API work),
 production binary builds, and `make deploy`. The final focused native-entrypoint
 fix re-ran `make -j32 build-only`, `make t ONLY=make_lint_gates`, `make lint`,
 `make deploy`, and live checks for `zclassic23 agent`, `./tools/z`,
-`GET /api/v1/agent`, `GET /api/v1`, and `zclassic23 healthcheck`. Live DB
+`GET /api/v1/agent`, `GET /api/v1`, and `zclassic23 healthcheck`. The lint-gate
+hardening pass then re-ran `bash -n`, `git diff --check`,
+`make check-coins-lookup-nullcheck`, `make t ONLY=make_lint_gates`,
+`make check-doc-accuracy`, `make lint`, `make -j32 build-only`, full
+`make test` (`0/485 groups failed, 14 skipped`), `make deploy`, and live checks
+for `zclassic23 agent`, `GET /api/v1/agent`, `zclassic23 healthcheck`,
+`./tools/z mirror --json`, and `make soak-evidence-report`. Live DB
 inspection from the wallet cleanup confirmed `wallet_sapling_notes.source`,
 schema migration `021`, and `idx_snote_view_address`.
 
@@ -90,7 +106,7 @@ health collection drains evidence to the recovered served tip immediately.
 
 **Public status false-alarm cleanup.** Commit `e0885b027` fixed the compact REST
 status contract after the startup-evidence deploy, and the current running
-build `6786bcbae` still includes it: `/api/status` no longer pages operator
+build `e72677f96` still includes it: `/api/status` no longer pages operator
 action for the normal one-block gap between `served_height` and
 `indexed_height`/`header_height`. Regression coverage lives in `test_api`
 (`public status treats one-block served gap as healthy` and
