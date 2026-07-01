@@ -9,10 +9,12 @@ live state use `zclassic23 agent` (same contract as MCP `zcl_agent` and REST
 `zclassic23 milestone` (same contract as REST `/api/v1/milestone` and MCP
 `zcl_milestone`): it emits node-computed ASCII `systems`, `goals`, and
 `subgoals` bars while keeping strict MRS separate from partial proof progress.
-Use `zclassic23 healthcheck`, `/api/v1/node/status`, `zcl_status`, and
-`zcl_state subsystem=reducer_frontier` only for drill-down. Latest runtime
-code deploy: `3347f42ab` (`repair: stop coin-backfill refusal fallthrough`);
-any later handoff-only docs commit does not require a binary redeploy.
+Use `zclassic23 healthcheck`, `/api/v1/node/status`, `zcl_status`,
+`zcl_state subsystem=reducer_frontier`, and `zcl_state subsystem=refold` only
+for drill-down. Latest runtime code deploy: `b6ab458f0`
+(`tools: harden refold copy proof`). `make deploy` installed it to the main
+linger lane at block 3166361, and the pinned soak binary was manually refreshed
+from the same build and restarted at `2026-07-01 10:41:37 UTC`.
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
@@ -58,25 +60,20 @@ reason=window_short_602714s_lt_604800s_slack900s` with
 `ok_samples=0/170`, `operator_interventions=3`, and `ambiguous_restarts=1`.
 The soak service was deliberately rebaselined 2026-07-01 because it was running
 stale pinned build `ecd14609c-dirty`, was OOM-killed under a local 12G cap, and
-was wedged at H\*=3056758. The pinned soak binary is now build `3347f42ab`, and
-the live local systemd drop-in
+was wedged at H\*=3056758. The pinned soak binary is now refreshed from build
+`b6ab458f0`, and the live local systemd drop-in
 `~/.config/systemd/user/zclassic23-soak.service.d/zz-oom-budget.conf` was
 restored to `MemoryHigh=24G` / `MemoryMax=32G` (matching the unit's intended
-budget). Fresh live health after the 3347f42ab soak restart:
-`sync_state=blocks_download`, `healthy=false`, `serving=false`,
-`log_head=3145595`, `tip_lag=20727`, 4 peers, `operator_needed=true`, direct
-operator detail `coin_backfill h=3145595 status=owner_refused
-reason=owner_ack_missing`, and `reducer_frontier_reconcile_light` reports
-`coin_backfill_status_label=owner_refused` at hole h=3145595 with
-`last_reconcile_repaired=false` and no body/tip/validate cursor clamps. Do not
-mark C6 complete until a fresh uninterrupted window is judged `MET`. Current
-runtime check after the copy-harness hardening: the main service is at
-`getblockcount=3166338`, `headers=3166339`, `verificationprogress=1`, 4 active
-peers, and `NRestarts=0`; the soak service has 4 peers and headers near tip
-(`headers=3166337`) but serves H\*=`3056758`, reports
-`syncstate=headers_download`, and its log still names the real blocker:
-`I4.3 utxo_apply log hole: contiguous ok=1 prefix h=3056758 but cursor=3145595
-(first hole h=3056759)`. Soak is therefore **not** green.
+budget). Do not mark C6 complete until a fresh uninterrupted window is judged
+`MET`. Current runtime check after the copy-harness hardening deploy: the main
+service is at `getblockcount=3166363`, `headers=3166364`,
+`verificationprogress=1`, 4 active peers, and `NRestarts=0`; `dumpstate refold`
+reports `anchor_snapshot_candidate_stat_present=false` for
+`/home/rhett/.zclassic-c23-fullhist/utxo-anchor.snapshot`. The soak service
+serves H\*=`3056758` with `headers=3166362`; its `dumpstate refold` reports
+`anchor_snapshot_candidate_stat_present=false` for
+`/home/rhett/.zclassic-c23-soak/utxo-anchor.snapshot`. Soak is therefore
+**not** green; the hard missing artifact remains the verified anchor snapshot.
 
 **Soak copy proof result.** Do **not** enable
 `ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. A full copy proof
@@ -284,7 +281,10 @@ a fake-node harness proving (a) missing verified snapshot-load log fails,
 (b) first-observed-above-gate fails, and (c) an observed 42→43 climb with the
 verified-load log passes, `git diff --check`, `make -j32 build-only`,
 `make check-doc-accuracy`, full `make lint`, full `make test` (`0/485 groups
-failed, 14 skipped`), and `make sim-fast` (`64` seeded replays).
+failed, 14 skipped`), and `make sim-fast` (`64` seeded replays). It was
+committed and pushed as `b6ab458f0`, deployed to the main service with
+`make deploy`, and installed into the pinned soak binary followed by
+`systemctl --user restart zclassic23-soak`.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip
