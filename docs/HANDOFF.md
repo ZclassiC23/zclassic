@@ -6,24 +6,32 @@
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
-post-commit deploy verifier completed at h=3166104 on build `e0885b027`; use
+code deploy verifier completed at h=3166108 on build `8f82a9a3c`; use
 `./tools/z status` for the exact running `build_commit`. At the latest handoff
 check the native node reported `sync_state=at_tip`,
 `consensus_authority=local_consensus_validation`, `healthy=true`,
-`serving=true`, 4 peers, and Tor/onion ready. The public `/api/status` surface is
-now aligned with the health contract for the normal H* race: a one-block
-served-frontier gap reports `status=healthy`, `operator_needed=false`, and
-`primary_blocker=none`; gaps greater than one remain named as catching-up or
-degraded.
+`serving=true`, 4 peers, `log_head=3166109`, and Tor/onion ready. The public
+`/api/status` surface is aligned with the health contract for the normal H*
+race: a one-block served-frontier gap reports `status=healthy`,
+`operator_needed=false`, and `primary_blocker=none`; gaps greater than one
+remain named as catching-up or degraded.
 
 ```
 systems
 native node service        [##########] healthy/serving at local tip
 REST/MCP public API        [##########] H*-honest; one-block H* race is green
-HODL website freshness     [#########-] current view refreshes to served tip
+HODL website freshness     [##########] current view refreshes to served tip
 factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
+formal soak evidence       [##--------] live accruing; 168h judge NOT_MET
 ```
+
+**Soak evidence.** The current node is healthy and can accrue a new clean soak
+window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01
+reported `VERDICT=NOT_MET reason=operator_intervention_detected_x2` over the
+current 168h evidence window (`window_samples=169`,
+`last_sample_age_sec=1370`). Do not mark C6/MVP soak complete until a fresh
+uninterrupted window is judged `MET`.
 
 **API/data hardening landed.** The REST/factoid/HODL work now serves honest JSON
 instead of transient 503s for normal projection races: `/api/hodl` refreshes
@@ -59,9 +67,10 @@ without stamping the chain-evidence pending tip, leaving health red
 path now calls `chain_evidence_note_finalized_tip(existing_tip)`, so the first
 health collection drains evidence to the recovered served tip immediately.
 
-**Public status false-alarm cleanup.** Build `e0885b027` fixed the compact REST
-status contract after the startup-evidence deploy: `/api/status` no longer pages
-operator action for the normal one-block gap between `served_height` and
+**Public status false-alarm cleanup.** Commit `e0885b027` fixed the compact REST
+status contract after the startup-evidence deploy, and the running build
+`8f82a9a3c` includes it: `/api/status` no longer pages operator action for the
+normal one-block gap between `served_height` and
 `indexed_height`/`header_height`. Regression coverage lives in `test_api`
 (`public status treats one-block served gap as healthy` and
 `public status still degrades material served gap`).
@@ -353,8 +362,10 @@ h=478544 lesson — `docs/CONSENSUS_PARITY_DOCTRINE.md`).
 onion <60s, **C4** receive shielded, **C7** kill-9 recovery all pass their local
 operator proof. **C3** cold-start (<10min), **C5** file market, **C6** 7-day soak,
 **C8** exact parity are gated on the **sovereign foundation + accumulated soak
-time** — soak hours can now ACCRUE since the node reaches and holds tip, so the
-remaining gate is the sovereign cure + soak, not un-wedging.
+time**. Soak hours can now ACCRUE because the node reaches and holds tip, but
+the current formal C6 judge is `NOT_MET` (`operator_intervention_detected_x2`);
+the remaining gate is a fresh clean soak window plus the sovereign cure, not
+un-wedging.
 The v1 contract is [`docs/MVP.md`](./MVP.md); THE plan is
 [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). Live scorer:
 `tools/mvp_gate.sh`.

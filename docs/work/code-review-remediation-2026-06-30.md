@@ -194,6 +194,13 @@ is serving, it returns `status=healthy`, `operator_needed=false`, and
 post-deploy `/api/status` at served height 3166103 / indexed+header 3166104
 with `gap=1`, `status=healthy`, `operator_needed=false`.
 
+Update 2026-07-01: handoff status is refreshed for the next developer. Running
+build `8f82a9a3c` is healthy/serving at local tip with REST/HODL/factoids tied
+to the served frontier; the formal 168h soak judge is still **NOT_MET** because
+the current evidence window includes two operator interventions. Treat this
+review-remediation lane as closed; continue MVP work from the sovereign cure and
+fresh soak window, not by reopening these hardening items.
+
 Update 2026-07-01: qw11 is implemented and proof-gated in this branch.
 `wallet_sapling_notes` now has a validated `source` field (`local` by default,
 `view` for zclassicd mirror placeholders). `wv_sync_wallet_from_zclassicd()`
@@ -236,10 +243,13 @@ over-reads 252 B). Folded into **cc-blob-swap** below.
 
 - **P0** — none in this code-review lane. Live soak status is tracked under
   the MVP/soak spine, not as a review-remediation P0 (latest check while
-  deploying REST freshness hardening, 2026-07-01: zclassic23 healthy/serving at
-  height 3166043 via native P2P with H* gap 0; `/api/hodl` and `/api/factoids`
-  both fresh at 3166043; legacy `zclassicd` oracle still advisory-blocked on
-  RPC `-28`).
+  refreshing this handoff, 2026-07-01: running build `8f82a9a3c` is
+  healthy/serving via native P2P at `log_head=3166109`; public `/api/status`
+  shows the expected one-block H* race as green; `/api/hodl` is fresh at
+  3166108; `/api/factoids` is capped to the served frontier with unsafe
+  sections suppressed; legacy `zclassicd` oracle is still advisory-blocked on
+  RPC `-28`; formal soak is `NOT_MET`
+  (`operator_intervention_detected_x2`)).
 - **P1** — closed in this branch: **qw10, qw9, tested-gap #1 (PHGR13 KAT)**.
 - **P2** — silent corruption / class-cure: **cc-blob DONE 2026-07-01**,
   **cc-mostwork DONE 2026-07-01**, **cc-gtod DONE 2026-07-01**,
@@ -251,7 +261,7 @@ over-reads 252 B). Folded into **cc-blob-swap** below.
 Give the next developer this exact goal:
 
 ```text
-continue zclassic23 hardening from docs/work/code-review-remediation-2026-06-30.md; autonomous review-remediation items are closed. Run remaining focused gates, full make test, build/deploy if promoting, then live MCP/REST freshness checks.
+continue zclassic23 development; review-remediation hardening is closed in docs/work/code-review-remediation-2026-06-30.md. Start with docs/HANDOFF.md, verify live node/API/HODL/factoids, then continue MVP from the sovereign cure plus fresh soak window.
 ```
 
 ## Completed first moves
