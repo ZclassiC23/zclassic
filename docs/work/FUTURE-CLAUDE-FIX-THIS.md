@@ -82,9 +82,14 @@ non-NULL with `count==1,354,771 height==3,056,758`.
 `-mint-anchor` driver now uses the same 10k cadence for its
 `applied-through=... / anchor` operator line. This was landed without touching
 the running mint; the active PID keeps its old binary, while the next run /
-fixture gets the new line. Remaining proof before closing CP-2: run a fixture
-or next mint until two increasing 10k heartbeats are observed and record the
-sample-twice delta as evidence.
+fixture gets the new line. Follow-up on 2026-07-01 replaced the old source-grep
+guard with the compiled predicate `boot_mint_anchor_should_log_progress()` and a
+focused `mint_skip_crypto` test that proves 10k heartbeats at 10000/20000 and
+the final-anchor tail. A full copied-chain sidecar run was attempted from
+`$HOME/.zclassic-c23-anchor-mint-cp2-proof` but did not reach the mint loop
+before being stopped, so it is NOT closing evidence. Remaining proof before
+closing CP-2: run a fixture or next mint until two increasing 10k heartbeats are
+observed and record the sample-twice delta as evidence.
 
 ### CP-3 — [I-OWN, blocks-sovereignty] Land the H\* CLIMB proof + wire the 3 orphans
 A COMPLETE worktree fixture already mints a verified mini-anchor, runs the

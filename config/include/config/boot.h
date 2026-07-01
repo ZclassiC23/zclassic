@@ -328,6 +328,8 @@ void boot_mint_anchor_reset(struct node_db *ndb, bool fast);
  * reach the anchor — bodies missing). Owner-gated; reads on-disk bodies +
  * coins_kv only. `datadir` is the active data directory. */
 bool boot_mint_anchor_run(const char *datadir);
+bool boot_mint_anchor_should_log_progress(int32_t applied_through,
+                                          int32_t anchor);
 
 /* B2 1c — boot torn-import AUTO-ARM (impl in config/src/boot_refold_staged.c).
  * Consults the pure detect predicate block_index_loader_torn_import_detect (no

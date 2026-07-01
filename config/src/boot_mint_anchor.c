@@ -50,6 +50,14 @@ static int32_t mint_applied_through(sqlite3 *pdb)
     return frontier - 1;
 }
 
+bool boot_mint_anchor_should_log_progress(int32_t applied_through,
+                                          int32_t anchor)
+{
+    const int kProgressEvery = 10000;
+    return (applied_through % kProgressEvery) == 0 ||
+           applied_through >= anchor - 16;
+}
+
 bool boot_mint_anchor_run(const char *datadir)
 {
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
@@ -87,7 +95,6 @@ bool boot_mint_anchor_run(const char *datadir)
     int32_t last_through = mint_applied_through(pdb);
     int stall_kicks = 0;
     const int kStallLimit = 64;   /* consecutive no-progress kicks → bodies gap */
-    const int kProgressEvery = 10000;
     fprintf(stderr,
             "[mint-anchor] driving the genesis..%d fold; "
             "starting at applied-through=%d\n", anchor, last_through);
@@ -103,7 +110,7 @@ bool boot_mint_anchor_run(const char *datadir)
         if (now > last_through) {
             last_through = now;
             stall_kicks = 0;
-            if (now % kProgressEvery == 0 || now >= anchor - 16)
+            if (boot_mint_anchor_should_log_progress(now, anchor))
                 fprintf(stderr, "[mint-anchor] applied-through=%d / %d\n",
                         now, anchor);
         } else if (++stall_kicks >= kStallLimit) {

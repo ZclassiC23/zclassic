@@ -39,6 +39,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
+#include "config/boot.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -446,19 +447,15 @@ int test_mint_skip_crypto(void)
     MSC_CHECK("offline shutdown closes wallet sqlite before wallet_free",
               wallet_close && wallet_free_call && wallet_close < wallet_free_call);
 
-    char *mint_src = read_source_file("config/src/boot_mint_anchor.c");
-    const char *mint_progress_10k = mint_src
-        ? strstr(mint_src, "kProgressEvery = 10000")
-        : NULL;
-    const char *mint_progress_cond = mint_src
-        ? strstr(mint_src, "now % kProgressEvery")
-        : NULL;
-    const char *mint_progress_50k = mint_src
-        ? strstr(mint_src, "now % 50000")
-        : NULL;
-    MSC_CHECK("mint-anchor progress cadence is 10k blocks",
-              mint_progress_10k && mint_progress_cond && !mint_progress_50k);
-    free(mint_src);
+    MSC_CHECK("mint-anchor emits 10k progress heartbeats",
+              !boot_mint_anchor_should_log_progress(9999, 3056758) &&
+              boot_mint_anchor_should_log_progress(10000, 3056758) &&
+              !boot_mint_anchor_should_log_progress(10001, 3056758) &&
+              boot_mint_anchor_should_log_progress(20000, 3056758));
+    MSC_CHECK("mint-anchor emits final-anchor tail heartbeats",
+              !boot_mint_anchor_should_log_progress(3056741, 3056758) &&
+              boot_mint_anchor_should_log_progress(3056742, 3056758) &&
+              boot_mint_anchor_should_log_progress(3056758, 3056758));
     free(boot_src);
     free(main_src);
 

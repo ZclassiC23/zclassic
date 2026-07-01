@@ -1,5 +1,31 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 14:36 UTC update.** Source is clean up through pushed
+`8f31dd95d` (`improve anchor mint progress observability`), with one local
+follow-up now proof-gated and ready to commit: the mint progress cadence
+predicate is exposed as `boot_mint_anchor_should_log_progress()` and
+`mint_skip_crypto` proves 10k heartbeats at 10000/20000 plus the final-anchor
+tail. Gates run for this follow-up: `git diff --check`, `make -j$(nproc)
+build-only`, `make t ONLY=mint_skip_crypto`, `make lint`, `make
+check-doc-accuracy`, full `make test` (`0/485` failed, 14 self-skipped), and
+`make -j$(nproc) build/bin/zclassic23`. A full copied-chain sidecar attempt at
+`$HOME/.zclassic-c23-anchor-mint-cp2-proof` did not reach the mint loop before
+being stopped and was removed, so CP-2 still needs runtime evidence from a
+fixture/next mint with two increasing 10k heartbeat samples before it can close.
+The active real producer was not touched: `zclassic23-anchor-mint.service` is
+still active as PID `3160516`, using the earlier fixed `16c841ca8` binary,
+memory about 6.5 GB, no snapshot artifact yet, with reducer cursors around
+17,000 (`tip_finalize` around 16,000) of 3,056,758. Main remains healthy at tip:
+native `zclassic23 agent` reported `status=healthy`, `serving=true`,
+`height=3166533`, `target_height=3166534`, `gap=1`, 4 peers, and Tor/onion
+ready. Soak remains red: `status=blocked`, `serving=false`, `height=3056758`,
+`target_height=3166534`, `gap=109776`, 4 peers, `sync_state=blocks_download`.
+Mirror remains legacy-oracle blocked: `mirror_running=true`, `reachable=false`,
+`zclassic23_height=3166534`, `zclassicd_height=0`, `in_flight=false`,
+`consensus_authority=local_consensus_validation`, `overrides_total=0`,
+`activation_blocker=rpc-unreachable`, and `last_error="rpc error -28:
+Activating best chain... height 0 (1%)"`.
+
 **2026-07-01 13:27 UTC update.** Source is clean and pushed at
 `81a6cc816` (`fix starter pack low frontier reseed`). That patch is proof-gated
 but not deployed to the live main/soak binaries yet; the deployed live runtime
