@@ -139,16 +139,19 @@ test_parallel.
   `block_index_loader_seed_stages_from_cold_import` is NOT called; trusted base stays
   at `seed_h`, not the checkpoint, with `loader_owns_seed=false` as the negative
   control.
-- **FIX 3 anchor-hash FATAL** (`config/src/boot_refold_staged.c:585-597` memcmp
-  `anchor_block_hash` → `_exit(FAILURE)`; `:571-583` no-index-block FATAL — line
-  ranges per commit `ab512d577`, which inserted the window-extension at `:551-569`) —
-  PARTIAL coverage: `test_boot_refold_window_extend` (wired `test_parallel.c:195`,
-  added with `ab512d577`) now pins the window-extend seam + the no-index-block
-  NULL→FATAL trigger (Cases A/B); the existing `test_refold_from_anchor_fatal` covers
-  a DIFFERENT FATAL (the `-refold-from-anchor` reset at `:305-468/:369`). STILL
-  UNCOVERED: the `anchor_block_hash` memcmp byte-flip itself. Refactor the cross-check
-  into a pure bool predicate returning a reject reason; forked-child test asserts FATAL
-  on a 1-byte-flipped hash, ACCEPT on byte-equal.
+- **FIX 3 anchor-hash FATAL** (`config/src/boot_refold_staged.c:1054-1066`
+  `boot_snapshot_anchor_hash_matches(...)` → `_exit(FAILURE)` on mismatch) —
+  PARTIAL coverage: `test_boot_refold_window_extend` (wired `test_parallel.c:195`)
+  pins the window-extend seam + the no-index-block NULL→FATAL trigger (Cases
+  A/B), and `test_loader_owns_seed_gate` (wired `test_parallel.c:196`) pins the
+  pure anchor-hash predicate itself: identical 32-byte hashes pass; first-byte
+  flip, last-byte flip, zero-vs-real, and NULL inputs refuse. The existing
+  `test_refold_from_anchor_fatal` covers a DIFFERENT FATAL (the
+  `-refold-from-anchor` reset). STILL OPEN if you want full end-to-end teeth: a
+  forked-child loader test that builds a self-SHA3-valid snapshot, gives `ms` a
+  PoW-proven block at `seed_h`, flips one byte in `hdr.anchor_block_hash`, and
+  asserts the actual `anchor_hash_mismatch` FATAL; byte-equal is the accept
+  control.
 - **FIX 5 block_parse_cache** (`lib/storage/src/block_parse_cache.c:122-191`) —
   [LANDED] covered by `test_block_parse_cache.c` (wired `test_parallel.c:257`): (a)
   `bpc_encode`↔`bpc_decode` round-trip byte-identical for a multi-tx block; (b) HIT
@@ -184,9 +187,16 @@ injected→exit 1, emptied/renamed scan→exit 2):
 - `check_raw_sqlite.sh` (sole AR-lifecycle gate) `2>/dev/null … || true` swallows
   grep exit ≥2. Add a non-empty-scan preflight + explicit grep-exit handling
   (mirror `check_consensus_parity.sh:62-70`).
-- Pre-push local-CI gate NOT INSTALLED on this clone (`core.hooksPath=.git/hooks`,
-  empty). Run `make install-hooks`; make `make ci` assert `core.hooksPath ==
-  tools/githooks` and fail LOUD otherwise.
+- **Pre-push local-CI gate — LANDED 2026-07-01.** `make install-hooks` now arms
+  this clone with `core.hooksPath=tools/githooks`, and `make lint` / `make ci`
+  run `check-git-hooks-installed`, which fails loud unless the tracked
+  `tools/githooks/pre-push` gate is active. The checker also verifies the
+  tracked hook still defaults to and invokes the local `make ci` gate, so a
+  no-op executable hook cannot pass. `test_make_lint_gates` injects `.git/hooks`
+  (must fail), `tools/githooks` (must pass), and a temporary no-op
+  `tools/githooks/pre-push` body (must fail, then restore). Limit: Git cannot
+  invoke an uninstalled hook on the first raw push from an unarmed clone; the
+  enforced path is `make install-hooks` plus `make lint` / `make ci`.
 
 ### CP-7 — [AT MINT COMPLETION, blocks-sovereignty] Copy-prove the sovereign cutover, then deploy
 > Operational runbook with the exact staging command + the durability fork:

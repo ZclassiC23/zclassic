@@ -194,11 +194,14 @@ these harden the bridge.
 
 ### L2 — continuous proof (all LOCAL, no GitHub Actions)
 
-- **(4.1) Local pre-push enforcement.** Add a tracked `.githooks/pre-push` running
-  `make lint` (incl. E13) + a fast `test_parallel` subset; `git config core.hooksPath
-  .githooks` (per-clone; document for wt2/wt3). A push failing lint or the
-  consensus-parity golden group is blocked locally. Keep it fast enough to not tempt
-  `--no-verify`.
+- **(4.1) Local pre-push enforcement.** Landed 2026-07-01 as tracked
+  `tools/githooks/pre-push`, armed per clone by `make install-hooks`
+  (`git config core.hooksPath tools/githooks`). The hook runs the local
+  `make ci` gate by default before push; `make lint` / `make ci` also run
+  `check-git-hooks-installed`, which fails if the clone is unarmed or if the
+  tracked hook no longer invokes the default `make ci` command. A raw first push
+  from an unarmed clone cannot be intercepted by Git because the hook is not yet
+  installed; run `make install-hooks` in each worktree.
 - **(4.2) systemd --user timer for the heavy gate + soak accrual.** Nightly `make ci`
   against HEAD, dated verdict = local CI. Pair with the dev lane staying up to accrue
   soak time toward MVP-C (7-day soak).

@@ -1,5 +1,68 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 15:17 UTC update.** CP-6 review hardening is no longer just a
+hook install check: the local review slice now also calibrates the reducer MVP
+gates to the current "publish each block on arrival" reducer contract. The
+tracked pre-push hook check is committed locally, `make lint` verifies
+`core.hooksPath=tools/githooks`, checks the hook is executable, and inspects the
+tracked pre-push body so a no-op executable hook fails. The pre-push hook then
+correctly blocked the first push attempt on `make ci`, exposing two stale test
+assumptions rather than letting them reach origin: (1) the one-block ingest gate
+expected `active_chain_height == genesis+1` even though the explicit lookahead
+block can leave the visible window at genesis+2; it now asserts block 1 was
+finalized and the window stayed within the prepared 1/2 span. (2) the
+forward-progress reorg gate stopped on stable active tip, but the production
+reorg repair is multi-pass: first purge L-bound rows and rewind upstream
+cursors, then after `body_persist` refills W, the condition rewinds
+`script_validate`/`proof_validate`, and only then can `utxo_apply` author the W
+coinbases. The test now clears the condition backoff via the existing testing
+hook and waits for the actual post-reorg coin state before asserting. Focused
+proofs now passing: `git diff --check`, `make mvp-it-works`, `make
+mvp-forward-progress`, and `make ci-mvp-gates`. The broad pre-push `make ci`
+then progressed through lint, core tests, MVP gates, doc checks, and timed fuzz
+runs before exposing a coverage-only source-list gap: `test_zcl_cov` linked the
+chaos harness without `tools/sim/sim_peer.c`. Coverage now includes the same
+`$(CHAOS_SIM_SRCS)` helper set as `test_zcl`/`test_parallel`, and focused proof
+`make test_zcl_cov` links cleanly. The next gate for this local slice is the
+normal pre-push `make ci` rerun; latest source is not deployed to live main/soak
+yet. Live refresh at this point: main is healthy/serving at
+`height=3166574`, `target_height=3166575`, `gap=1`, 4 peers, Tor/onion ready;
+soak remains red (`serving=false`, `height=3056758`, `target_height=3166575`,
+`gap=109817`, `sync_state=blocks_download`); mirror remains legacy-oracle
+blocked with `zclassic23_height=3166575`, `zclassicd_height=0`,
+`reachable=false`, `consensus_authority=local_consensus_validation`,
+`overrides_total=0`, and `activation_blocker=rpc-unreachable` / RPC `-28`
+activating best chain.
+
+**2026-07-01 14:58 UTC update.** A CP-6 review hardening patch is local and
+ready for final broad gates/commit: `check-git-hooks-installed` is wired into
+`make lint` as the first normal prerequisite, fails unless
+`core.hooksPath=tools/githooks`, verifies `tools/githooks/pre-push` is
+executable, and inspects the tracked hook body so a no-op executable hook cannot
+pass. `test_make_lint_gates` now proves `.git/hooks` fails, `tools/githooks`
+passes, and a temporary no-op `tools/githooks/pre-push` body fails before the
+test restores the hook. Focused proof so far: direct checker pass/fail,
+`git diff --check`, `make t ONLY=make_lint_gates`, `make t
+ONLY=loader_owns_seed_gate`, `make t ONLY=boot_refold_window_extend`, `make t
+ONLY=refold_from_anchor_fatal`, `make -j$(nproc) build-only`, `make lint`,
+`make check-doc-accuracy`, and one full pre-tightening `make test` run (`0/485`
+groups failed, 14 self-skipped). Final broad gates after the handoff edit also
+passed: `git diff --check`, `make -j$(nproc) build-only`, `make lint`,
+`make check-doc-accuracy`, and full `make test` (`0/485` groups failed, 14
+self-skipped). Live main remains healthy at tip:
+`zclassic23 agent` reported `status=healthy`, `serving=true`, `height=3166547`,
+`target_height=3166548`, `gap=1`, 4 peers, and Tor/onion ready. Soak remains
+red: `status=blocked`, `serving=false`, `height=3056758`,
+`target_height=3166548`, `gap=109790`, 4 peers, `sync_state=blocks_download`.
+Mirror remains legacy-oracle blocked: `mirror_running=true`, `reachable=false`,
+`zclassic23_height=3166548`, `zclassicd_height=0`, `in_flight=false`,
+`consensus_authority=local_consensus_validation`, `overrides_total=0`,
+`activation_blocker=rpc-unreachable`, and `last_error="rpc error -28:
+Activating best chain... height 0 (1%)"`. The active anchor producer was not
+touched: `zclassic23-anchor-mint.service` is still active as PID `3160516`,
+memory about 6.6 GB, no snapshot artifact yet, with stage cursors mostly at
+27,000 and `tip_finalize=26,000` of the 3,056,758 anchor fold.
+
 **2026-07-01 14:36 UTC update.** Source is clean up through pushed
 `8f31dd95d` (`improve anchor mint progress observability`), with one local
 follow-up now proof-gated and ready to commit: the mint progress cadence

@@ -703,10 +703,14 @@ int test_reducer_forward_progress_gate(void)
             reducer_frontier_test_set_compiled_anchor(0);
 
             /* Converge: one reducer_kick + one condition tick per round until
-             * neither the reducer nor the reorg re-bind moves the tip for a
-             * sustained run. The reducer drain advances the stages until it
-             * hits the label_splice refusal; the condition tick purges the
-             * stale verdicts + rewinds cursors; the next drain refills W. */
+             * the post-reorg coin state itself is stable. The first repair tick
+             * only purges stale L rows and rewinds upstream cursors; script/proof
+             * refill holes become visible after the next reducer drain recreates
+             * W's body_persist rows. Production waits for the 30s condition
+             * backoff between those repair passes; this deterministic harness
+             * clears that backoff so it can prove the same multi-pass repair
+             * without sleeping. Do not stop merely because the active tip is
+             * stable: the coin/refill work can still be in flight below it. */
             {
                 int prev_tip = -2, idle = 0;
                 for (int it = 0; it < 8000; it++) {
@@ -715,9 +719,21 @@ int test_reducer_forward_progress_gate(void)
                      * detect gate stays open across the whole convergence (a
                      * forward finalization mid-loop would otherwise reset it). */
                     sync_monitor_test_set_tip_advance_ts(1);
+                    reducer_frontier_reconcile_light_test_clear_backoff();
                     condition_engine_tick();
                     int t = active_chain_height(&ms.chain_active);
-                    if (kicked == 0 && t == prev_tip) {
+                    sqlite3 *pdb = progress_store_db();
+                    int l_live = 0, w_live = 0;
+                    for (int h = F + 1; h <= RFP_N + 1; h++) {
+                        if (coins_kv_exists(pdb, cbids[h].data, 0))
+                            l_live++;
+                    }
+                    for (int i = 0; i < W_LEN; i++) {
+                        if (coins_kv_exists(pdb, wcbid[i].data, 0))
+                            w_live++;
+                    }
+                    bool coins_converged = (l_live == 0 && w_live == W_LEN);
+                    if (kicked == 0 && t == prev_tip && coins_converged) {
                         if (++idle >= 16) break;
                     } else {
                         idle = 0;

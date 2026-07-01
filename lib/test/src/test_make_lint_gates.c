@@ -53,6 +53,8 @@
 #define RAW_MALLOC_OK_FIXTURE_DST_REL "app/_raw_malloc_ok_lint_fixture_tmp.c"
 #define RAW_SQLITE_SCRIPT_REL "tools/scripts/check_raw_sqlite.sh"
 #define RAW_MALLOC_SCRIPT_REL "tools/scripts/check_raw_malloc.sh"
+#define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
+#define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 
 static int run_gate_script(const char *script_rel, const char *mode);
 
@@ -895,6 +897,64 @@ static int run_gate_script_with_env(const char *script_rel,
         (void)sigaction(SIGCHLD, &old_chld, NULL);
     if (WIFEXITED(rc)) return WEXITSTATUS(rc);
     return -1;
+}
+
+static int run_git_hooks_gate_with_path(const char *hooks_path)
+{
+    return run_gate_script_with_env(GIT_HOOKS_SCRIPT_REL,
+                                    "ZCL_GIT_HOOKS_PATH_FOR_TEST",
+                                    hooks_path);
+}
+
+static int t_git_hooks_gate_enforces_tracked_pre_push(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] local pre-push hook gate enforces tools/githooks") {
+        ASSERT(run_git_hooks_gate_with_path(".git/hooks") != 0);
+        ASSERT(run_git_hooks_gate_with_path("tools/githooks") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_git_hooks_gate_rejects_noop_pre_push(void)
+{
+    int failures = 0;
+    char hook_path[PATH_MAX];
+    char *orig = NULL;
+    int resolved = repo_path(hook_path, sizeof(hook_path),
+                             GIT_HOOKS_PRE_PUSH_REL);
+    int read_ok = (resolved == 0 && read_entire_file(hook_path, &orig) == 0);
+    int wrote_noop = 0;
+    int noop_rc = -1;
+    int restore_ok = 0;
+    int restored_rc = -1;
+
+    if (read_ok) {
+        wrote_noop = (write_file(hook_path,
+                      "#!/usr/bin/env bash\n"
+                      "# fixture: no local CI gate\n"
+                      "exit 0\n") == 0 &&
+                      chmod(hook_path, 0755) == 0);
+        if (wrote_noop)
+            noop_rc = run_git_hooks_gate_with_path("tools/githooks");
+        restore_ok = (write_file(hook_path, orig) == 0 &&
+                      chmod(hook_path, 0755) == 0);
+        if (restore_ok)
+            restored_rc = run_git_hooks_gate_with_path("tools/githooks");
+    }
+
+    TEST("[lint-gate] local pre-push hook gate rejects no-op hook body") {
+        ASSERT(read_ok);
+        ASSERT(wrote_noop);
+        ASSERT(noop_rc != 0);
+        ASSERT(restore_ok);
+        ASSERT(restored_rc == 0);
+        PASS();
+    } _test_next:;
+
+    free(orig);
+    return failures;
 }
 
 #define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
@@ -3733,6 +3793,8 @@ int test_make_lint_gates(void)
     failures += t_no_new_coin_backfill_caller();
     failures += t_e9_operator_needed_sink();
     failures += t_systemd_memory_budget();
+    failures += t_git_hooks_gate_enforces_tracked_pre_push();
+    failures += t_git_hooks_gate_rejects_noop_pre_push();
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_gate22_framework_filename_suffix();
