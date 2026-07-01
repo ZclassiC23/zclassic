@@ -26,7 +26,10 @@ Proof for that patch: `git diff --check`, `make -j$(nproc) build-only`,
 `make lint`, `make t ONLY=sync_watchdog_conditions`, `make t
 ONLY=utxo_activation_paused`, `make t ONLY=tip_fork_stale`, full `make test`
 (`485` groups, `0` failed, `14` self-skipped), full `make -j$(nproc)`, and
-`make sim-fast` all passed.
+`make sim-fast` all passed. Commit `a02a1bac6` was pushed to `main` and
+deployed to the main user linger service with `ZCL_BUILD_COMMIT="a02a1bac6"`;
+post-deploy `zclassic23 agent` reported `status=healthy`, `serving=true`,
+`height=3166414`, `sync_state=at_tip`, `gap=0`, and `operator_needed=false`.
 
 **Restart command:** type **`continue zclassic23 development`**. First checks:
 `git status --short --branch`, then the native API discovery command:
