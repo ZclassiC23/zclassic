@@ -1599,9 +1599,17 @@ deploy: lint zclassic-cli tools/wal_checkpoint
 	$(MAKE) zclassic23
 	@SERVICE_BIN=$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null \
 	    | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1); \
+	if [ -z "$$SERVICE_BIN" ]; then SERVICE_BIN="$(abspath $(ZCLASSIC23_BIN))"; fi; \
 	if [ -n "$$SERVICE_BIN" ] && [ "$$SERVICE_BIN" != "$(abspath $(ZCLASSIC23_BIN))" ]; then \
 	    install -m 755 $(ZCLASSIC23_BIN) "$$SERVICE_BIN"; \
 	    echo "deploy: installed $(ZCLASSIC23_BIN) -> $$SERVICE_BIN (service ExecStart)"; \
+	fi; \
+	install -d "$(HOME)/.local/bin"; \
+	ln -sfn "$$SERVICE_BIN" "$(HOME)/.local/bin/zclassic23"; \
+	echo "deploy: linked owner command $(HOME)/.local/bin/zclassic23 -> $$SERVICE_BIN"; \
+	if [ -e "$(HOME)/bin/zclassic23" ] || [ -L "$(HOME)/bin/zclassic23" ]; then \
+	    ln -sfn "$$SERVICE_BIN" "$(HOME)/bin/zclassic23"; \
+	    echo "deploy: refreshed PATH shadow $(HOME)/bin/zclassic23 -> $$SERVICE_BIN"; \
 	fi
 	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
 	    $(WAL_CHECKPOINT_BIN) $(HOME)/.zclassic-c23/node.db \

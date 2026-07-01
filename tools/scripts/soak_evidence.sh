@@ -34,7 +34,9 @@
 #             evidence freshness. Verdict line:
 #               soak-evidence: VERDICT=MET|NOT_MET|INSUFFICIENT reason=...
 #             MET ONLY if ALL of:
-#               - window_covered >= N hours;
+#               - window_covered >= N hours, allowing the explicit
+#                 WINDOW_SLACK_SEC start-boundary tolerance for hourly
+#                 timer jitter;
 #               - no sampling hole > HOLE_THRESHOLD (2h cadence-doubling
 #                 + 15 min slack);
 #               - no operator intervention detected;
@@ -287,7 +289,8 @@ cmd_judge() {
             for (i = 1; i <= n; i++) { if (ts[i] < cutoff) i0 = i + 1; else break }
             if (i0 > n) i0 = n
             cnt = n - i0 + 1
-            covered = (last - ts[i0]) / 3600.0
+            covered_sec = last - ts[i0]
+            covered = covered_sec / 3600.0
 
             hole_max = 0; op = 0; ambiguous = 0; ok_cnt = 0; gap0 = 0; gapgt0 = 0
             soak_null = 0; zd_null = 0
@@ -343,7 +346,7 @@ cmd_judge() {
             gap0_pct = (ok_cnt > 0) ? (100.0 * gap0 / ok_cnt) : 0.0
 
             printf "soak-evidence: judge window_hours=%d file=%s file_samples=%d window_samples=%d malformed=%d\n", wh, file, n, cnt, malformed
-            printf "soak-evidence: window_covered_hours=%.1f first_ts=%d last_ts=%d last_sample_age_sec=%d allow_stale=%d\n", covered, ts[i0], last, now - last, allow_stale
+            printf "soak-evidence: window_covered_hours=%.3f window_covered_sec=%d first_ts=%d last_ts=%d last_sample_age_sec=%d allow_stale=%d\n", covered, covered_sec, ts[i0], last, now - last, allow_stale
             printf "soak-evidence: max_sampling_hole_sec=%d hole_threshold_sec=%d\n", hole_max, hole_thr
             printf "soak-evidence: restarts_in_window=%s ambiguous_restarts=%d operator_interventions=%d (NRestarts delta; in-binary watchdog self-recycles count as AUTONOMOUS recovery — count reported, the criterion text decides; ambiguous = restarts in AET-jump intervals where a manual reset-then-climb is indistinguishable at hourly sampling resolution; strict soak_harness math counts ANY observed downtime as FAIL_CRASH)\n", restarts, ambiguous, op
             printf "soak-evidence: ok_samples=%d/%d soak_null_samples=%d zd_null_samples=%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, soak_null, zd_null, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
@@ -356,8 +359,8 @@ cmd_judge() {
             # itself evidence — judged, not just collected.
             if (cnt < 2) {
                 v = "INSUFFICIENT"; reason = "too_few_samples"
-            } else if (covered < wh) {
-                v = "INSUFFICIENT"; reason = sprintf("window_short_%.1fh_lt_%dh", covered, wh)
+            } else if (covered_sec + slack < wh * 3600) {
+                v = "INSUFFICIENT"; reason = sprintf("window_short_%ds_lt_%ds_slack%ds", covered_sec, wh * 3600, slack)
             } else if (op > 0) {
                 v = "NOT_MET"; reason = sprintf("operator_intervention_detected_x%d", op)
             } else if (hole_max > hole_thr) {
@@ -456,6 +459,30 @@ cmd_selftest() {
     ZCL_SOAK_EVIDENCE_DIR="$f" ZCL_SOAK_NOW="$fresh" bash "$SELF" judge --window-hours 168 2>&1 \
         | grep -q 'restarts_in_window=1 ambiguous_restarts=1 operator_interventions=0' \
         || st_fail "case=full-green-window expected restarts_in_window=1 ambiguous_restarts=1 operator_interventions=0"
+
+    # A2) Timer-jitter boundary: the first selected sample is 2 minutes
+    #     after the nominal 168h start, so covered_sec is 604680 instead
+    #     of 604800. That is within WINDOW_SLACK_SEC and must not hide a
+    #     green week behind a bogus window_short verdict.
+    f="$tmp/slack-ok"; mkdir -p "$f"
+    st_line "$f/evidence.jsonl" $((base + 120)) 0 1 "$aet" 1500000
+    for ((i = 1; i <= 168; i++)); do
+        st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" 1500000
+    done
+    st_judge "$f" 168 "$fresh" MET "" 0 window-slack-ok
+    ZCL_SOAK_EVIDENCE_DIR="$f" ZCL_SOAK_NOW="$fresh" bash "$SELF" judge --window-hours 168 2>&1 \
+        | grep -q 'window_covered_sec=604680' \
+        || st_fail "case=window-slack-ok expected exact covered seconds"
+
+    # A3) Same boundary, but one second beyond the explicit 15-minute
+    #     start slack: still INSUFFICIENT, and the reason names exact
+    #     seconds instead of rounded hours.
+    f="$tmp/slack-short"; mkdir -p "$f"
+    st_line "$f/evidence.jsonl" $((base + WINDOW_SLACK_SEC + 1)) 0 1 "$aet" 1500000
+    for ((i = 1; i <= 168; i++)); do
+        st_line "$f/evidence.jsonl" $((base + i * 3600)) 0 1 "$aet" 1500000
+    done
+    st_judge "$f" 168 "$fresh" INSUFFICIENT "window_short_603899s_lt_604800s_slack900s" 2 window-slack-short
 
     # B) short window: 12 hourly samples (11 h) => INSUFFICIENT.
     f="$tmp/short"; mkdir -p "$f"

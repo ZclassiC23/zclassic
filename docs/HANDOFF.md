@@ -21,7 +21,10 @@ entry point, `zclassic23 agent` is the compact status entry point,
 shell wrapper is part of the operator path. Bare `zclassic23 agent` and
 `zclassic23 milestone` discover the running user service datadir/rpcport from
 systemd when the default cookie is absent, so no `-datadir` flag is needed for
-the normal owner command. At the latest handoff check the native node reported
+the normal owner command. `make deploy` now refreshes the owner-command symlink
+at `$HOME/.local/bin/zclassic23` and any existing `$HOME/bin/zclassic23` PATH
+shadow so those commands cannot point at a stale pre-API binary. At the latest
+handoff check the native node reported
 `sync_state=at_tip`,
 `healthy=true`, `serving=true`, 4 peers, Tor/onion ready, and the compact agent
 endpoint was serving at the local tip with the expected one-block
@@ -48,12 +51,14 @@ formal soak evidence       [##--------] live accruing; 168h judge not green
 ```
 
 **Soak evidence.** The current node is healthy and can accrue a new clean soak
-window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01
-reported `VERDICT=INSUFFICIENT reason=window_short_168.0h_lt_168h` over the
-current 168h evidence window (`window_samples=169`,
-`last_sample_age_sec=70`) and still counted
-`operator_interventions=2`. Do not mark C6/MVP soak complete until a fresh
-uninterrupted window is judged `MET`.
+window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01 now
+reports `VERDICT=NOT_MET reason=operator_intervention_detected_x2` over the
+current trailing evidence window (`window_samples=169`,
+`window_covered_sec=604793`, within the judge's 900s timer slack). The prior
+`window_short_168.0h_lt_168h` reason was a rounded-display artifact: the window
+was seven seconds under 168h and should have advanced to the real blocker. The
+same report still has `ok_samples=0/169`, so do not mark C6/MVP soak complete
+until a fresh uninterrupted, reachable window is judged `MET`.
 
 **Lint-gate hardening landed.** The controller chainstate coin-lookup guard now
 fails loud instead of silently passing if its scan surface disappears:
