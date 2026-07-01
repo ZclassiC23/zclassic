@@ -10,13 +10,12 @@ document for the versioned CRUD shape. Use
 
 **Live node.** The user linger service is running the locally deployed binary
 (`make deploy`, installed at `$HOME/.local/bin/zclassic23-live`). The latest
-code deploy verifier completed at h=3166175 on build `e72677f96`; bare
-`zclassic23 agent` now discovers the running user service datadir/rpcport from
+code deploy verifier completed at h=3166200 on build `8973e9cb9`; bare
+`zclassic23 agent` discovers the running user service datadir/rpcport from
 systemd when the default cookie is absent, so no `-datadir` flag is needed for
 the normal owner command. At the latest handoff check the native node reported
-`sync_state=at_tip`, `consensus_authority=local_consensus_validation`,
-`healthy=true`, `serving=true`, 4 peers, `log_head=3166175`, and Tor/onion
-ready; the compact agent endpoint was serving h=3166174 with the expected
+`sync_state=at_tip`, `healthy=true`, `serving=true`, 4 peers, Tor/onion ready,
+and the compact agent endpoint was serving h=3166201 with the expected
 one-block indexed/header race (`gap=1`). The public
 `/api/status` surface is aligned with the health contract for the normal H*
 race: a one-block served-frontier gap reports `status=healthy`,
@@ -25,22 +24,24 @@ remain named as catching-up or degraded.
 
 ```
 systems
-native node service        [##########] healthy/serving at local tip; build e72677f96
+native node service        [##########] healthy/serving at local tip; build 8973e9cb9
 simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
-REST resource routing      [########--] `/api/v1` route table wired; dynamic/member routes still controller-owned
-API version contract       [#########-] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
+REST resource routing      [#########-] `/api/v1` route table wired; dynamic/member routes still controller-owned
+API version contract       [##########] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
 lint-gate hardening        [#########-] coin lookup guard fails loud on empty/no-lookup scan surfaces
+startup health evidence    [##########] health falls back to durable tip_finalize cursor during boot
 HODL website freshness     [##########] current view refreshes to served tip
-factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
+factoids website freshness [#########-] capped to served tip; unsafe sections suppressed on projection holes
 legacy mirror advisory     [####------] monitor running; zclassicd RPC -28 at height 0
-formal soak evidence       [##--------] live accruing; 168h judge NOT_MET
+formal soak evidence       [##--------] live accruing; 168h judge not green
 ```
 
 **Soak evidence.** The current node is healthy and can accrue a new clean soak
 window, but C6 is **not green**. `make soak-evidence-report` on 2026-07-01
-reported `VERDICT=NOT_MET reason=operator_intervention_detected_x2` over the
+reported `VERDICT=INSUFFICIENT reason=window_short_168.0h_lt_168h` over the
 current 168h evidence window (`window_samples=169`,
-`last_sample_age_sec=1626`). Do not mark C6/MVP soak complete until a fresh
+`last_sample_age_sec=70`) and still counted
+`operator_interventions=2`. Do not mark C6/MVP soak complete until a fresh
 uninterrupted window is judged `MET`.
 
 **Lint-gate hardening landed.** The controller chainstate coin-lookup guard now
@@ -66,6 +67,15 @@ Resource routing now has an explicit v1 route table for exact noun resources
 private `wallet`); the older dynamic/member routes remain in their controllers
 until they are worth folding behind resource actions.
 
+**Startup health fallback landed.** A deploy of the versioned REST API exposed a
+startup-only false red health state: the node was at tip, but the in-memory
+`tip_finalize_stage_cursor()` was still absent, so health reported
+`log_head_unknown` while the durable `progress.kv`
+`stage_cursor('tip_finalize')` already existed. `node_health_collect()` now
+prefers the live cursor and falls back to that durable cursor during startup.
+Regression coverage is
+`node_health_service: durable tip_finalize cursor backs startup health`.
+
 **API/data hardening landed.** The REST/factoid/HODL work now serves honest JSON
 instead of transient 503s for normal projection races: `/api/hodl` refreshes
 synchronously from the transparent UTXO set when cache lags the served tip, and
@@ -73,8 +83,14 @@ synchronously from the transparent UTXO set when cache lags the served tip, and
 `chain_height`/`served_height`/`indexed_height`/`index_capped`. The
 `hodl_history` table is still a background time-series (`MAX(height)=3162240` at
 handoff), but the website appends the latest on-demand HODL point, so the visible
-current stats stay tied to the latest served block. If v1 wants the historical
-table caught up to tip, make that an explicit follow-up gate.
+current stats stay tied to the latest served block. Live check after deploy:
+`GET /api/v1/hodl` returned `height=3166202`,
+`served_tip_height=3166202`, `indexed_tip_height=3166202`,
+`block_tip_height=3166202`, `utxo_tip_height=3166202`, `skipped_rows=0`;
+`GET /api/v1/factoids` returned `chain_height=3166202`,
+`served_height=3166202`, `indexed_height=3166202`, `index_capped=false`.
+If v1 wants the historical table caught up to tip, make that an explicit
+follow-up gate.
 
 **Wallet-view cleanup landed.** `wallet_sapling_notes` schema v21 adds validated
 `source` (`local` by default, `view` for zclassicd mirror placeholders), a
@@ -90,21 +106,25 @@ yet have `source`.
 wallet/data/API paths, `git diff --check`, `make check-test-registration`,
 `make check-doc-accuracy`, `tools/scripts/check_raw_sqlite.sh`, `make lint`,
 full `make test` (`0/485 groups failed, 15 skipped` after the v1 API work),
-production binary builds, and `make deploy`. The final focused native-entrypoint
-fix re-ran `make -j32 build-only`, `make t ONLY=make_lint_gates`, `make lint`,
+production binary builds, and `make deploy`. The native-entrypoint fix re-ran
+`make -j32 build-only`, `make t ONLY=make_lint_gates`, `make lint`,
 `make deploy`, and live checks for `zclassic23 agent`, `./tools/z`,
 `GET /api/v1/agent`, `GET /api/v1`, and `zclassic23 healthcheck`. The lint-gate
-hardening pass then re-ran `bash -n`, `git diff --check`,
+hardening pass re-ran `bash -n`, `git diff --check`,
 `make check-coins-lookup-nullcheck`, `make t ONLY=make_lint_gates`,
 `make check-doc-accuracy`, `make lint`, `make -j32 build-only`, full
 `make test` (`0/485 groups failed, 14 skipped`), `make deploy`, and live checks
 for `zclassic23 agent`, `GET /api/v1/agent`, `zclassic23 healthcheck`,
-`./tools/z mirror --json`, and `make soak-evidence-report`. Live DB
-inspection from the wallet cleanup confirmed `wallet_sapling_notes.source`,
-schema migration `021`, and `idx_snote_view_address`. The follow-up API
-version hardening re-ran `git diff --check`, `make t ONLY=api`, and
-`make -j32 build-only`; run full lint/test again before the final push if more
-code lands on top.
+`./tools/z mirror --json`, and `make soak-evidence-report`. The follow-up API
+version and startup-health hardening re-ran `git diff --check`,
+`make t ONLY=api`, `make t ONLY=node_health_service`,
+`make -j32 build-only`, `make lint`, full `make test`
+(`0/485 groups failed, 14 skipped`), `make deploy`, and live checks for
+`zclassic23 agent`, `zclassic23 healthcheck`, `GET /api/v1`,
+`GET /api/v2/agent`, `GET /api/v1/hodl`, `GET /api/v1/factoids`, and
+`make soak-evidence-report`. Live DB inspection from the wallet cleanup
+confirmed `wallet_sapling_notes.source`, schema migration `021`, and
+`idx_snote_view_address`.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip
