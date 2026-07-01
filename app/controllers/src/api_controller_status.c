@@ -34,13 +34,14 @@ size_t api_serve_api_index(uint8_t *response, size_t response_max)
 {
     const char *body =
         "{"
-        "\"schema\":\"zcl.rest_index.v1\","
+        "\"schema\":\"" ZCL_REST_INDEX_SCHEMA "\","
         "\"name\":\"zclassic23 REST API\","
-        "\"api_version\":\"v1\","
-        "\"version\":\"v1\","
-        "\"base_path\":\"/api/v1\","
-        "\"compat_base_path\":\"/api\","
-        "\"first_call\":\"/api/v1/agent\","
+        "\"api_version\":\"" ZCL_REST_API_VERSION "\","
+        "\"version\":\"" ZCL_REST_API_VERSION "\","
+        "\"supported_versions\":" ZCL_REST_API_SUPPORTED_VERSIONS_JSON ","
+        "\"base_path\":\"" ZCL_REST_API_BASE_PATH "\","
+        "\"compat_base_path\":\"" ZCL_REST_API_COMPAT_BASE_PATH "\","
+        "\"first_call\":\"" ZCL_REST_API_BASE_PATH "/agent\","
         "\"summary\":\"Use noun resources. GET reads collections/items; mutating operator actions stay private unless an endpoint explicitly documents POST.\","
         "\"aliases\":{"
           "\"agent\":\"/api/v1/agent\","
@@ -90,6 +91,37 @@ size_t api_serve_api_index(uint8_t *response, size_t response_max)
         "Cache-Control: no-cache\r\n"
         "Connection: close\r\n"
         "Content-Length: %zu\r\n\r\n"
+        "%s",
+        body_len, body);
+}
+
+size_t api_serve_unsupported_version(const char *requested_version,
+                                     uint8_t *response,
+                                     size_t response_max)
+{
+    const char *requested = requested_version ? requested_version : "unknown";
+    char body[512];
+    int body_len = snprintf(body, sizeof(body),
+        "{"
+        "\"schema\":\"" ZCL_REST_ERROR_SCHEMA "\","
+        "\"error\":\"unsupported_api_version\","
+        "\"requested_version\":\"%s\","
+        "\"supported_versions\":" ZCL_REST_API_SUPPORTED_VERSIONS_JSON ","
+        "\"base_path\":\"" ZCL_REST_API_BASE_PATH "\","
+        "\"index\":\"" ZCL_REST_API_BASE_PATH "\""
+        "}",
+        requested);
+    if (body_len < 0 || (size_t)body_len >= sizeof(body))
+        return api_json_error(response, response_max, JSON_500_HEADERS,
+                              "API version error overflow");
+
+    return (size_t)snprintf((char *)response, response_max,
+        "HTTP/1.1 400 Bad Request\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: close\r\n"
+        "Content-Length: %d\r\n\r\n"
         "%s",
         body_len, body);
 }
@@ -159,8 +191,8 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     char body[4096];
     int body_len = snprintf(body, sizeof(body),
         "{"
-        "\"schema\":\"zcl.public_status.v1\","
-        "\"api_version\":\"v1\","
+        "\"schema\":\"" ZCL_PUBLIC_STATUS_SCHEMA "\","
+        "\"api_version\":\"" ZCL_REST_API_VERSION "\","
         "\"status\":\"%s\","
         "\"healthy\":%s,"
         "\"serving\":%s,"

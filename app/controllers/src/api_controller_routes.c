@@ -8,6 +8,7 @@
 
 #include "api_controller_internal.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -38,17 +39,54 @@ const char *api_canonical_route_path(const char *path, char *buf,
 {
     if (!path)
         return NULL;
-    if (strcmp(path, "/api/v1") == 0)
-        return "/api";
-    if (strncmp(path, "/api/v1/", 8) == 0) {
+    if (strcmp(path, ZCL_REST_API_BASE_PATH) == 0)
+        return ZCL_REST_API_COMPAT_BASE_PATH;
+
+    const char *prefix = ZCL_REST_API_BASE_PATH "/";
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(path, prefix, prefix_len) == 0) {
         if (!buf || buf_len == 0)
             return path;
-        int n = snprintf(buf, buf_len, "/api/%s", path + 8);
+        int n = snprintf(buf, buf_len, "%s/%s",
+                         ZCL_REST_API_COMPAT_BASE_PATH,
+                         path + prefix_len);
         if (n < 0 || (size_t)n >= buf_len)
             return path;
         return buf;
     }
     return path;
+}
+
+bool api_path_has_unsupported_version(const char *path, char *version_out,
+                                      size_t version_out_len)
+{
+    if (!path || strncmp(path, "/api/v", 6) != 0 ||
+        !isdigit((unsigned char)path[6]))
+        return false;
+
+    size_t len = 1; /* include the leading 'v' */
+    const char *p = path + 6;
+    while (isdigit((unsigned char)*p)) {
+        len++;
+        p++;
+    }
+
+    if (*p != '\0' && *p != '/' && *p != '?')
+        return false;
+
+    char version[32];
+    if (len >= sizeof(version))
+        len = sizeof(version) - 1;
+    memcpy(version, path + 5, len);
+    version[len] = '\0';
+
+    if (strcmp(version, ZCL_REST_API_VERSION) == 0)
+        return false;
+
+    if (version_out && version_out_len > 0) {
+        snprintf(version_out, version_out_len, "%s", version);
+    }
+    return true;
 }
 
 const struct api_resource_route *

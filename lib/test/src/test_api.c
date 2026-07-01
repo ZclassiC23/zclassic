@@ -336,6 +336,34 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: unsupported version reports supported versions... ");
+    {
+        size_t n = api_handle_request("GET", "/api/v2/agent", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && strstr((char *)resp,
+                                  "HTTP/1.1 400 Bad Request") != NULL;
+        ok = ok && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.rest_error.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "error")),
+                          "unsupported_api_version") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "requested_version")), "v2") == 0;
+        const struct json_value *supported =
+            ok ? json_get(&root, "supported_versions") : NULL;
+        ok = ok && json_size(supported) == 1;
+        ok = ok && strcmp(json_get_str(json_at(supported, 0)), "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "base_path")),
+                          "/api/v1") == 0;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: resource route table exposes controller-style names... ");
     {
         bool saw_agent = false;

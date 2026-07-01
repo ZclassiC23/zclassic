@@ -662,6 +662,12 @@ size_t api_handle_request(const char *method, const char *path,
         clean_path[plen - 1] = '\0';
 
     char route_path_buf[512];
+    char requested_version[32];
+    if (api_path_has_unsupported_version(clean_path, requested_version,
+                                         sizeof(requested_version)))
+        return api_serve_unsupported_version(requested_version, response,
+                                             response_max);
+
     const char *route_path =
         api_canonical_route_path(clean_path, route_path_buf,
                                  sizeof(route_path_buf));

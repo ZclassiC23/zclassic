@@ -28,6 +28,7 @@ systems
 native node service        [##########] healthy/serving at local tip; build e72677f96
 simple agent API           [##########] native `zclassic23 agent`, REST v1, MCP `zcl_agent` green
 REST resource routing      [########--] `/api/v1` route table wired; dynamic/member routes still controller-owned
+API version contract       [#########-] `/api/v1` canonical; unsupported `/api/vN` returns supported versions
 lint-gate hardening        [#########-] coin lookup guard fails loud on empty/no-lookup scan surfaces
 HODL website freshness     [##########] current view refreshes to served tip
 factoids website freshness [########--] capped to served tip; unsafe sections suppressed on projection holes
@@ -55,10 +56,15 @@ across the binary, REST, and MCP: `zclassic23 agent`, `GET /api/v1/agent`, and
 `zcl_agent` all return compact `zcl.public_status.v1` JSON with
 `api_version="v1"`. REST discovery is `GET /api` or `GET /api/v1`
 (`zcl.rest_index.v1`) and names `/api/v1` as canonical while keeping `/api`
-compat aliases. Resource routing now has an explicit v1 route table for exact
-noun resources (`node`, `blocks`, `transactions`, `peers`, `hodl`, `factoids`,
-`files`, private `wallet`); the older dynamic/member routes remain in their
-controllers until they are worth folding behind resource actions.
+compat aliases. The REST version constants live in
+`app/controllers/src/api_controller_internal.h`; requests for unsupported
+version prefixes such as `GET /api/v2/agent` now return structured
+`zcl.rest_error.v1` JSON with `error="unsupported_api_version"`,
+`requested_version`, `supported_versions=["v1"]`, and `base_path="/api/v1"`.
+Resource routing now has an explicit v1 route table for exact noun resources
+(`node`, `blocks`, `transactions`, `peers`, `hodl`, `factoids`, `files`,
+private `wallet`); the older dynamic/member routes remain in their controllers
+until they are worth folding behind resource actions.
 
 **API/data hardening landed.** The REST/factoid/HODL work now serves honest JSON
 instead of transient 503s for normal projection races: `/api/hodl` refreshes
@@ -95,7 +101,10 @@ hardening pass then re-ran `bash -n`, `git diff --check`,
 for `zclassic23 agent`, `GET /api/v1/agent`, `zclassic23 healthcheck`,
 `./tools/z mirror --json`, and `make soak-evidence-report`. Live DB
 inspection from the wallet cleanup confirmed `wallet_sapling_notes.source`,
-schema migration `021`, and `idx_snote_view_address`.
+schema migration `021`, and `idx_snote_view_address`. The follow-up API
+version hardening re-ran `git diff --check`, `make t ONLY=api`, and
+`make -j32 build-only`; run full lint/test again before the final push if more
+code lands on top.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip

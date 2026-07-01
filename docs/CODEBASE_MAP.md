@@ -159,6 +159,15 @@ controller `k_routes[]` arrays.
 ### Escape hatch
 - `zcl_rpc(method, params)` — any of 85+ RPC methods when no typed tool fits.
 
+### REST API versioning
+`/api/v1` is the canonical REST base and `/api` is the compatibility base.
+Keep version/schema constants in
+`app/controllers/src/api_controller_internal.h`, exact resource routes in
+`app/controllers/src/api_controller_routes.c`, and contract tests in
+`lib/test/src/test_api.c`. Unsupported version prefixes such as
+`/api/v2/agent` must return `zcl.rest_error.v1` with
+`error="unsupported_api_version"` and `supported_versions`.
+
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).
 For LIVE, use `mcp__zcl23-live__*` / curl port 18232 (`~/.zclassic-c23`).

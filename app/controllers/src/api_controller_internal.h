@@ -37,6 +37,16 @@ struct api_rpc_backend {
 extern struct api_context g_api_ctx;
 extern struct api_rpc_backend g_api_rpc;
 
+/* ── Versioned REST contract ── */
+
+#define ZCL_REST_API_VERSION "v1"
+#define ZCL_REST_API_SUPPORTED_VERSIONS_JSON "[\"v1\"]"
+#define ZCL_REST_API_BASE_PATH "/api/v1"
+#define ZCL_REST_API_COMPAT_BASE_PATH "/api"
+#define ZCL_REST_INDEX_SCHEMA "zcl.rest_index.v1"
+#define ZCL_REST_ERROR_SCHEMA "zcl.rest_error.v1"
+#define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
+
 /* ── HTTP response headers (kept here so siblings can emit errors) ── */
 
 #define SECURITY_HEADERS \
@@ -78,6 +88,9 @@ extern struct api_rpc_backend g_api_rpc;
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                   const char *message);
 size_t api_serve_api_index(uint8_t *response, size_t response_max);
+size_t api_serve_unsupported_version(const char *requested_version,
+                                     uint8_t *response,
+                                     size_t response_max);
 int api_rpc_call(const char *method, const char *params_json,
              char *out, size_t outmax);
 bool api_is_json_safe_param(const char *s, size_t maxlen);
@@ -105,6 +118,9 @@ struct api_resource_route {
 
 const char *api_canonical_route_path(const char *path, char *buf,
                                      size_t buf_len);
+bool api_path_has_unsupported_version(const char *path,
+                                      char *version_out,
+                                      size_t version_out_len);
 const struct api_resource_route *
 api_resource_route_find(const char *method, const char *path);
 
