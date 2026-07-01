@@ -7,8 +7,11 @@
 #include "models/hodl_wave.h"
 #include "crypto/sha3.h"
 #include "views/explorer_factoids_internal.h"
+#include "views/explorer_factoids_view.h"
 #include <string.h>
 #include <inttypes.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 int test_explorer(void)
 {
@@ -73,6 +76,50 @@ int test_explorer(void)
         bool ok = (n > 0 &&
                    strstr((char *)resp, "302 Found") != NULL &&
                    strstr((char *)resp, "Location: /explorer/hodl") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: factoids HTML caps to served frontier... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        sqlite3 *db = NULL;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_factoids_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER, "
+            "status INTEGER, num_tx INTEGER, sapling_value INTEGER, "
+            "sprout_value INTEGER);"
+            "CREATE TABLE utxos(height INTEGER, value INTEGER);"
+            "CREATE TABLE transactions(block_height INTEGER);"
+            "CREATE TABLE tx_outputs(block_height INTEGER);"
+            "CREATE TABLE view_integrity(height INTEGER);"
+            "INSERT INTO blocks(height,hash,time,status,num_tx,"
+            "sapling_value,sprout_value) VALUES"
+            "(0,x'00',1478403829,3,1,0,0),"
+            "(8,x'08',1478404429,3,1,0,0);"
+            "INSERT INTO utxos(height,value) VALUES(8,100000000);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db)
+            sqlite3_close(db);
+
+        uint8_t out[16384];
+        size_t n = explorer_factoids_build_for_served_tip(
+            out, sizeof(out) - 1, dbdir, 7);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+        ok = ok && n > 0 &&
+             strstr((char *)out, "Current chain height</td><td>7") != NULL &&
+             strstr((char *)out, "Current chain height</td><td>8") == NULL;
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

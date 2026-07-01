@@ -1,5 +1,16 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 22:37 UTC update.** Follow-up factoids HTML cache review found
+one remaining freshness bug after the `/factoids` route fix: `/api/v1/factoids`
+and `/api/v1/hodl` were fresh at H*, but the full `/explorer/factoids` HTML
+could keep serving the old full-page cache while the explorer projection was
+one block ahead of the served/provable frontier. The controller now lets the
+factoids HTML cache rebuild against the fixed served H* frontier even when the
+projection index is ahead; only an unknown/nonpositive served frontier defers
+the build. Added a regression proving the factoids HTML builder caps displayed
+height to the served frontier. Proof: `make build/bin/test_zcl -j2` and
+`ZCL_TEST_ONLY=explorer build/bin/test_zcl`.
+
 **2026-07-01 22:04 UTC update.** Public explorer click/freshness review
 landed and was deployed manually to the live `zclassic23` service after a
 focused low-memory proof pass. The visible bug was two-part: top-level

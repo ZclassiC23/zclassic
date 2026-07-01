@@ -251,9 +251,9 @@ void *factoids_compute_thread(void *arg)
     int64_t start_index_tip = -1;
     int64_t start_tip =
         explorer_page_served_tip_height(ctx->datadir, &start_index_tip);
-    if (start_index_tip >= 0 && start_tip >= 0 && start_index_tip > start_tip) {
-        printf("Factoids background: deferred until served frontier catches "
-               "index (served=%lld index=%lld)\n",
+    if (start_tip <= 0) {
+        printf("Factoids background: deferred until served frontier is known "
+               "(served=%lld index=%lld)\n",
                (long long)start_tip, (long long)start_index_tip);
         fflush(stdout);
         g_factoids_computing = 0;
@@ -285,7 +285,7 @@ void *factoids_compute_thread(void *arg)
         int64_t end_index_tip = -1;
         int64_t end_tip =
             explorer_page_served_tip_height(ctx->datadir, &end_index_tip);
-        bool publishable = start_tip > 0 && end_tip >= start_tip;
+        bool publishable = end_tip >= start_tip;
         if (publishable) {
             memcpy(g_factoids_cache, tmp, len);
             atomic_store_explicit(&g_factoids_cache_height, start_tip,
@@ -319,8 +319,7 @@ size_t serve_factoids(uint8_t *r, size_t max)
     int64_t cache_height =
         atomic_load_explicit(&g_factoids_cache_height, memory_order_acquire);
     if (cached > 0 && (tip <= 0 || cache_height > 0)) {
-        if (tip > 0 && cache_height < tip &&
-            !(index_tip >= 0 && index_tip > tip)) {
+        if (tip > 0 && cache_height < tip) {
             explorer_start_once(&g_factoids_computing, factoids_compute_thread,
                                 "factoids_compute");
         }
