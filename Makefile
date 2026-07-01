@@ -289,14 +289,16 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #     ZCL_RPCPORT=18299 ZCL_DATADIR=<copy> make diagnose-gap SLUG=onacopy
 # repro-on-copy: snapshot the live datadir to a throwaway COPY and run the node
 #   against it on an isolated port — validate consensus/recovery fixes BEFORE
-#   they can touch the live chain; FAILS LOUD on a tip regression.
+#   they can touch the live chain; FAILS LOUD on a tip regression. Set
+#   CLIMB_PAST=<height> to also require H* to climb strictly past that height.
 #     make repro-on-copy SLUG=import-reset ARGS='-nobgvalidation'
+#     make repro-on-copy SLUG=refold CLIMB_PAST=3056758 ARGS='-refold-from-anchor'
 .PHONY: diagnose-gap repro-on-copy
 diagnose-gap:
 	@tools/diagnose_gap.sh $(SLUG)
 
 repro-on-copy:
-	@tools/repro_on_copy.sh $(SLUG) $(if $(ARGS),-- $(ARGS),)
+	@tools/repro_on_copy.sh $(SLUG) $(if $(CLIMB_PAST),--expect-climb-past=$(CLIMB_PAST),) $(if $(ARGS),-- $(ARGS),)
 
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))

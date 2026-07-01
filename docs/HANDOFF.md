@@ -69,7 +69,14 @@ operator detail `coin_backfill h=3145595 status=owner_refused
 reason=owner_ack_missing`, and `reducer_frontier_reconcile_light` reports
 `coin_backfill_status_label=owner_refused` at hole h=3145595 with
 `last_reconcile_repaired=false` and no body/tip/validate cursor clamps. Do not
-mark C6 complete until a fresh uninterrupted window is judged `MET`.
+mark C6 complete until a fresh uninterrupted window is judged `MET`. Current
+runtime check after the copy-harness hardening: the main service is at
+`getblockcount=3166338`, `headers=3166339`, `verificationprogress=1`, 4 active
+peers, and `NRestarts=0`; the soak service has 4 peers and headers near tip
+(`headers=3166337`) but serves H\*=`3056758`, reports
+`syncstate=headers_download`, and its log still names the real blocker:
+`I4.3 utxo_apply log hole: contiguous ok=1 prefix h=3056758 but cursor=3145595
+(first hole h=3056759)`. Soak is therefore **not** green.
 
 **Soak copy proof result.** Do **not** enable
 `ZCL_REDUCER_COIN_BACKFILL_ACK=1` on the live soak datadir yet. A full copy proof
@@ -84,6 +91,15 @@ anchor (`validate_headers` near 2100, `utxo_apply` near 1, `tip_finalize` near
 0) while H\* stayed at 3056758. Treat this as an unsafe/no-go proof for live
 owner ack; next work should either prove a stable stopped-datadir copy or move
 to the sovereign `-refold-from-anchor` cure instead of live coin-backfill.
+
+**Copy-proof climb gate landed.** `tools/repro_on_copy.sh` now accepts
+`--expect-climb-past=H`, and `make repro-on-copy` exposes it as
+`CLIMB_PAST=H`. This upgrades the existing copy harness from only "no public tip
+regression" to the runbook bar: if RPC answers but H\* never climbs strictly
+past the named blocker/anchor before the deadline, the run exits FAIL instead
+of PASS. The repro manifest records `climb_past`, so failed copies are
+auditable after the process exits. Use this for refold/cure work, for example:
+`make repro-on-copy SLUG=refold CLIMB_PAST=3056758 ARGS='-refold-from-anchor'`.
 
 **Reducer-frontier refusal hardening landed.** A follow-up on 2026-07-01 pins
 the live soak failure class where `coin_backfill_status_label=owner_refused`
@@ -250,6 +266,16 @@ agent` healthy/serving at served height 3166321, `zclassic23 milestone` systems
 build `3347f42ab`, `healthy=false`, `serving=false`, `sync=blocks_download`,
 `operator_needed=true`, and `last_reconcile_repaired=false` for the
 owner-refused coin-backfill blocker.
+
+The copy-proof climb-gate pass re-ran `sh -n tools/repro_on_copy.sh`,
+`make -n repro-on-copy SLUG=refold CLIMB_PAST=3056758
+ARGS='-refold-from-anchor'`, a no-run fixture proving
+`REPRO_MANIFEST.txt` records `climb_past:  42`, `git diff --check`,
+`make check-doc-accuracy`, `make lint-fast`, full `make lint`, full
+`make test` (`0/485 groups failed, 14 skipped`), and `make sim-fast`
+(`64` seeded replays). It did not require a binary redeploy: the live node is
+still running deployed build `3347f42ab`, and this pass changes the developer
+copy-proof harness plus handoff/docs only.
 
 **Final deploy note.** A post-commit restart exposed a startup-only evidence
 lag: `tip_finalize_stage_init()` could publish an existing durable served tip

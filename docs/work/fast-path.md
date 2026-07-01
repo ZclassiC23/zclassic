@@ -36,7 +36,10 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
    throwaway copy and runs the node against it on an isolated port. It is a
    tip-regression detector: it FAILS LOUD if the public tip collapses — so the
    catastrophic tail (the 47,279 reset; the import-reset to ~199) is caught on
-   a copy, never on the live node. The live datadir is never written.
+   a copy, never on the live node. For recovery work, make it a real H* climb
+   gate too: `make repro-on-copy SLUG=<x> CLIMB_PAST=<height> ARGS='...'`
+   FAILS if the copy only boots/holds flat and never serves a provable tip
+   strictly above `<height>`. The live datadir is never written.
 
 5. **VERIFY + commit.** `make t ONLY=<group>` (inner loop) → `make build-only`
    / `make syntax-check` (does it compile) → `make lint` (full gates) → commit.

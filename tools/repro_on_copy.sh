@@ -12,6 +12,8 @@
 # TIP-REGRESSION DETECTOR: it boots the copy, watches the public tip for a
 # window, and FAILS LOUD if the tip ever drops (a reset) — the exact symptom
 # the import-reset (#10) and write-ordering (#7) tracks must reproduce safely.
+# When --expect-climb-past=H is supplied it is also an H* CLIMB gate: a run
+# that boots and holds flat at or below H is a FAIL, not a false-green PASS.
 #
 # SAFETY (enforced below):
 #   - copies to a brand-new $HOME/.zclassic-c23-COPY-<ts>-<slug> dir that must
@@ -38,6 +40,9 @@
 #                     (default is --light: node.db + progress.kv + block_index +
 #                     projections; skips the 14G blocks/ + 2.3G snapshot)
 #   --deadline=SECS   how long to watch the tip (default 180)
+#   --expect-climb-past=H
+#                     require the served/provable tip (H*) to climb strictly
+#                     above H before the deadline
 #   --no-run          snapshot + manifest only; do not launch the node
 #   --                everything after is passed verbatim to build/bin/zclassic23
 set -eu
@@ -56,6 +61,7 @@ HTTPSPORT=18935
 CONNECT="127.0.0.1:39999"
 LIGHT=1
 DEADLINE=180
+EXPECT_CLIMB_PAST=""
 RUN=1
 PASS=""
 
@@ -70,6 +76,7 @@ while [ $# -gt 0 ]; do
         --full)        LIGHT=0 ;;
         --light)       LIGHT=1 ;;
         --deadline=*)  DEADLINE="${1#--deadline=}" ;;
+        --expect-climb-past=*) EXPECT_CLIMB_PAST="${1#--expect-climb-past=}" ;;
         --no-run)      RUN=0 ;;
         --)            shift; PASS="$*"; break ;;
         --*)           echo "repro_on_copy: unknown option $1" >&2; exit 2 ;;
@@ -83,6 +90,14 @@ done
 [ -d "$SRC" ]  || { echo "repro_on_copy: source datadir not found: $SRC" >&2; exit 1; }
 [ -x "$NODE_BIN" ] || { echo "repro_on_copy: $NODE_BIN not built (run make)" >&2; exit 1; }
 [ -x "$RPC_BIN" ] || { echo "repro_on_copy: $RPC_BIN not built (run make zcl-rpc)" >&2; exit 1; }
+case "$EXPECT_CLIMB_PAST" in
+    ""|*[!0-9]*)
+        if [ -n "$EXPECT_CLIMB_PAST" ]; then
+            echo "repro_on_copy: --expect-climb-past must be a non-negative height" >&2
+            exit 2
+        fi
+        ;;
+esac
 
 refuse_live_port() {
     p="$1"
@@ -170,6 +185,7 @@ rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null || true
     echo "fs_port:     $FSPORT"
     echo "https_port:  $HTTPSPORT"
     echo "connect:     $CONNECT"
+    echo "climb_past:  ${EXPECT_CLIMB_PAST:-none}"
 } > "$DEST/REPRO_MANIFEST.txt"
 echo "[repro] manifest: $DEST/REPRO_MANIFEST.txt"
 
@@ -221,6 +237,7 @@ max_tip=-1
 first_tip=-1
 regressed=0
 seen_rpc=0
+climbed_past=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! kill -0 "$NODE_PID" 2>/dev/null; then
         echo "[repro] node exited early (see $DEST/repro_node.log)"; break
@@ -231,6 +248,12 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
             seen_rpc=1
             [ "$first_tip" -lt 0 ] && first_tip="$t" && echo "[repro] first tip: $t"
             if [ "$t" -gt "$max_tip" ]; then max_tip="$t"; fi
+            if [ -n "$EXPECT_CLIMB_PAST" ] &&
+               [ "$t" -gt "$EXPECT_CLIMB_PAST" ] 2>/dev/null; then
+                climbed_past=1
+                echo "[repro] H* CLIMBED to $t (> $EXPECT_CLIMB_PAST)"
+                break
+            fi
             # Regression = tip dropped meaningfully below the high-water mark.
             if [ "$max_tip" -ge 0 ] && [ "$t" -lt "$((max_tip - 5))" ]; then
                 echo "[repro] !! TIP REGRESSION: $max_tip -> $t (height dropped)"
@@ -254,6 +277,9 @@ echo "========================================================================"
 echo "  repro-on-copy [$SLUG]"
 echo "  copy:      $DEST"
 echo "  first_tip: $first_tip   max_tip: $max_tip   post_tip: $post_tip"
+if [ -n "$EXPECT_CLIMB_PAST" ]; then
+    echo "  climb_past: $EXPECT_CLIMB_PAST   climbed: $climbed_past"
+fi
 if [ "$LIGHT" = "1" ] && [ "$body_read_fails" -gt 0 ]; then
     echo "  VERDICT:   INVALID — $body_read_fails block-body read failures on a"
     echo "             --light copy (no blocks/). Re-run with --full; this run"
@@ -265,6 +291,10 @@ elif [ "$seen_rpc" = "0" ]; then
     RC=2
 elif [ "$regressed" = "1" ]; then
     echo "  VERDICT:   FAIL — public tip REGRESSED on the copy (reset reproduced)"
+    RC=1
+elif [ -n "$EXPECT_CLIMB_PAST" ] && [ "$climbed_past" != "1" ]; then
+    echo "  VERDICT:   FAIL — H* did not climb strictly past $EXPECT_CLIMB_PAST"
+    echo "             within ${DEADLINE}s (first=$first_tip max=$max_tip)."
     RC=1
 else
     echo "  VERDICT:   PASS — tip held/advanced (no regression) over ${DEADLINE}s"
