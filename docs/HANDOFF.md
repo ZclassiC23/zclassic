@@ -1,5 +1,62 @@
 ## CURRENT STATE (2026-07-01, live verified)
 
+**2026-07-01 13:27 UTC update.** Source is clean and pushed at
+`81a6cc816` (`fix starter pack low frontier reseed`). That patch is proof-gated
+but not deployed to the live main/soak binaries yet; the deployed live runtime
+remains the earlier `a02a1bac6` lineage. Main is healthy at tip: native
+`zclassic23 agent` reported `status=healthy`, `serving=true`,
+`operator_needed=false`, `height=3166481`, `target_height=3166482`, `gap=1`,
+Tor/onion ready, and 4 peers. Soak is still not green:
+`zclassic23-soak -datadir=$HOME/.zclassic-c23-soak -rpcport=18242 agent`
+reported `status=blocked`, `serving=false`, `height=3056758`,
+`indexed_height=3145595`, `header_height=3166481`, `gap=109723`, 4 peers, and
+`sync_state=blocks_download`. Mirror status is degraded only on the legacy
+oracle side: `./tools/z mirror --json` reported `zclassic23_height=3166483`,
+`zclassicd_height=0`, `reachable=false`, `mirror_running=true`,
+`in_flight=false`, `consensus_authority=local_consensus_validation`,
+`activation_blocker=rpc-unreachable`, and `last_error="rpc error -28:
+Activating best chain... height 0 (1%)"`.
+
+The missing sovereign artifact is now being produced from a stopped copy, not
+from a live datadir. A fresh isolated mint workspace was copied from
+`$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` to
+`$HOME/.zclassic-c23-anchor-mint` after confirming the source PID marker
+`2307660` was stale and the destination had no `.lock`, `.cookie`, or
+`zclassic23.pid`. The producer is running as the transient user service
+`zclassic23-anchor-mint.service`:
+
+```bash
+systemd-run --user --unit=zclassic23-anchor-mint \
+  --property=WorkingDirectory=/home/rhett/github/zclassic23 \
+  --setenv=ZCL_MINT_ANCHOR_OUT=/home/rhett/.zclassic-c23-anchor-mint/utxo-anchor.snapshot \
+  /home/rhett/github/zclassic23/build/bin/zclassic23 \
+  -datadir=/home/rhett/.zclassic-c23-anchor-mint \
+  -nolegacyimport -mint-anchor -mint-anchor-fast -nobgvalidation
+```
+
+At 13:28 UTC the service was active with PID `2922854`, memory about 4.8 GB,
+and no snapshot file written yet. The journal reached the expected mint path:
+`-refold-staged: staged reducer reset to genesis OK`,
+`-mint-anchor-fast: OFFLINE FAST-MINT`, and `-mint-anchor: reset to genesis;
+fold CAPPED at the SHA3 checkpoint anchor h=3056758`. Inspect with:
+
+```bash
+systemctl --user status zclassic23-anchor-mint --no-pager -l
+journalctl --user -u zclassic23-anchor-mint -n 120 --no-pager
+ls -lh $HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot*
+```
+
+Do not stage anything until the final snapshot exists and the mint has exited
+successfully; the mint path unlinks/fails the artifact on SHA3/count mismatch.
+After the artifact exists, run the opt-in artifact check and the full H* climb
+copy proof before any live cutover:
+
+```bash
+ZCL_SELF_FOLD_ANCHOR_FIXTURE=$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot build/bin/test_zcl
+ZCL_ANCHOR_SNAPSHOT_SRC=$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot make seed-anchor-snapshot
+make repro-on-copy SLUG=soak-refold REPRO_SRC=$HOME/.zclassic-c23-soak REPRO_FULL=1 CLIMB_PAST=3056758 ARGS='-refold-from-anchor -nobgvalidation -paramsdir=$$HOME/.zcash-params'
+```
+
 **2026-07-01 12:55 UTC update.** The code-review lane reopened briefly for one
 safe-fail hardening found by the soak copy proof; it is not a soak cure. The
 earlier live `block_failed_mask_at_tip` / missing-3166384 blocker is no longer

@@ -1,8 +1,10 @@
-# Sovereign cutover runbook — replace the borrowed seed with the self-minted anchor
+# Sovereign cutover runbook - replace the borrowed seed with the self-minted anchor
 
-**Status 2026-06-23.** The sovereign cure is ~95% in place. This is the exact, copy-prove-gated
-procedure to execute the *last* step when the mint finishes. Verified read-only against HEAD
-`9f48af7b5` (workflow `wf_6b148b3c-fa7`). Re-verify every file:line before acting — specifics rot.
+**Status 2026-07-01.** The sovereign cure is ~95% in place. This is the exact,
+copy-prove-gated procedure to execute the last step when the mint finishes.
+The current producer is a transient systemd user service named
+`zclassic23-anchor-mint.service`, launched from source commit `81a6cc816`.
+Re-verify every file:line before acting; specifics rot.
 
 ## Where we are (the only remaining gate is the durable artifact, not code)
 
@@ -18,31 +20,44 @@ procedure to execute the *last* step when the mint finishes. Verified read-only 
   resets the 8 stage cursors to anchor=3,056,758 + `coins_applied_height=anchor+1` (`:399-443`),
   confirms the explicit fold body span is present, then re-folds anchor+1..tip over on-disk bodies.
 - **The missing piece: a durable, checkpoint-verified anchor snapshot at h=3,056,758.** It does NOT
-  exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED — its header decodes to
+  exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED - its header decodes to
   height=3,151,901, count=1,344,817; the node rejects it on the count check. Do not use it.)
-- **The producer:** the running mint (PID 3857784, `-mint-anchor -mint-anchor-fast`, `/dev/shm/fmram`,
-  `ZCL_MINT_ANCHOR_OUT=/tmp/anchor-ram.snapshot`) at ~11.5% (h≈352k/3,056,758). On completion it
-  writes the verified snapshot to **`/tmp/anchor-ram.snapshot`** (durable disk, not /dev/shm).
+- **The producer:** a fresh offline mint is running from the stopped full-history copy
+  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384`, copied to the isolated
+  working datadir `$HOME/.zclassic-c23-anchor-mint`. It was launched as:
+  ```bash
+  systemd-run --user --unit=zclassic23-anchor-mint \
+    --property=WorkingDirectory=/home/rhett/github/zclassic23 \
+    --setenv=ZCL_MINT_ANCHOR_OUT=/home/rhett/.zclassic-c23-anchor-mint/utxo-anchor.snapshot \
+    /home/rhett/github/zclassic23/build/bin/zclassic23 \
+    -datadir=/home/rhett/.zclassic-c23-anchor-mint \
+    -nolegacyimport -mint-anchor -mint-anchor-fast -nobgvalidation
+  ```
+  On completion it writes the verified snapshot to
+  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. As of 2026-07-01
+  13:28 UTC it was active as PID `2922854`, had entered the expected
+  `-refold-staged`, `-mint-anchor-fast`, and `-mint-anchor` paths, and had no
+  snapshot file published yet.
 
-## The one open risk (owner call): the mint is volatile + non-resumable
+## The one open risk (owner call): the mint is non-resumable
 
 `-mint-anchor` resets the fold to genesis on every boot (`boot_refold_staged.c:113,115`), so it is
-NOT resumable; its working state is on volatile `/dev/shm` with system swap full. A reboot/OOM before
-completion loses ~15 days. The machine currently has ~66 GB available (cache reclaimable), so it is
-not presently threatening the live node — but the exposure stands for ~15 days.
+NOT resumable. A reboot/OOM before completion loses the current producer run.
+The current producer uses a durable disk datadir, not `/dev/shm`, and does not
+touch the live main or soak datadirs.
 
-- **Option A (let it ride — current recommendation):** the output lands durably at
-  `/tmp/anchor-ram.snapshot`; accept the reboot exposure. Zero extra load.
+- **Option A (let it ride - current recommendation):** the output lands durably at
+  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`; accept the reboot exposure. Zero extra load.
 - **Option B (durable + resumable, if the exposure is unacceptable):** run a SECOND fold on a DISK
   datadir WITHOUT `-mint-anchor` so it resumes from `progress.kv` and the per-block self-mint hook
-  (`utxo_apply_stage.c:607`) writes the verified snapshot at the anchor crossing — durable, resumable,
+  (`utxo_apply_stage.c:607`) writes the verified snapshot at the anchor crossing - durable, resumable,
   ~1.6 GB RSS (does not worsen the swap pressure), but slower (full crypto) and starts from 0. Needs
-  bodies genesis..3,056,758 on disk first (207 GB free on `/`; seed via the `--importblockindex`
+  bodies genesis..3,056,758 on disk first; seed via the `--importblockindex`
   two-step or a read-only copy of the live node's `blocks/`). Do NOT touch the running mint either way.
 
-## Cutover procedure (run when `/tmp/anchor-ram.snapshot` exists)
+## Cutover procedure (run when `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot` exists)
 
-NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without FATAL" — that is the
+NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without FATAL" - that is the
 `-load-verify-boot` false-green trap: it no-ops on the stamped coins_kv because
 `coins_kv_is_proven_authority` returns true, `boot_refold_staged.c:884`).
 
@@ -50,7 +65,7 @@ NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without
    - header height == 3,056,758, count == 1,354,771, body SHA3 == compiled `cp->sha3_hash` (`00e95dbd…`).
 2. **Stage it** (idempotent; the node re-verifies SHA3 before trusting — a bad copy is ignored):
    ```bash
-   ZCL_ANCHOR_SNAPSHOT_SRC=/tmp/anchor-ram.snapshot make seed-anchor-snapshot
+   ZCL_ANCHOR_SNAPSHOT_SRC=$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot make seed-anchor-snapshot
    # copies to ~/.zclassic-c23/utxo-anchor.snapshot (NOT the mislabeled /tmp default)
    ```
 3. **Copy-prove on a COPY of the live datadir** (never the live PID first):
