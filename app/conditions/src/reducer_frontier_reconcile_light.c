@@ -32,6 +32,11 @@
  * keep-alive fires every 300 s carrying the suppressed-tick count. */
 #define GATE_SUPPRESS_ACTIVE_KEY ((uint64_t)1)
 static struct log_throttle g_gate_suppress = LOG_THROTTLE_INIT;
+/* Emitted-WARN count for the gate-suppressed-actionable-detect path (only the
+ * throttle-passed emissions, not every suppressed tick). Serial condition-
+ * engine tick thread only, same as the throttle above. Test-visible via the
+ * src-private hook at the bottom of this file. */
+static int g_gate_suppress_warn_total;
 
 #ifdef ZCL_TESTING
 /* Test-only post-remedy hook: simulates the TIPFIN backfill bumping its
@@ -89,11 +94,17 @@ static void note_peer_gate_bypass(
     rfrl_increment_tear_bypass_warn_total();
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] peer-gate BYPASS: "
-             "%s (coins_applied_height=%d hstar=%d noncanonical_found=%d) — "
+             "%s (coins_applied_height=%d hstar=%d noncanonical_found=%d "
+             "validate_refill_hole=%d body_persist_refill_hole=%d "
+             "script_refill_hole=%d proof_refill_hole=%d) — "
              "durable internal-state damage is peer-independent evidence, "
              "detect proceeds with no peer ahead",
              reason, rr->coins_applied_height, rr->hstar,
-             rr->noncanonical_found);
+             rr->noncanonical_found,
+             rr->lowest_validate_headers_refill_hole,
+             rr->lowest_body_persist_refill_hole,
+             rr->lowest_script_validate_refill_hole,
+             rr->lowest_proof_validate_refill_hole);
 }
 
 /* True when the dry-run reports any refusal/backfill-pending signal, or a
@@ -134,17 +145,23 @@ static void note_gate_suppressed(
     if (!log_throttle_should_emit(&g_gate_suppress, GATE_SUPPRESS_ACTIVE_KEY,
                                   now, 300, &reps))
         return;
+    g_gate_suppress_warn_total++;
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] peer gate "
              "suppressed an actionable detect (repaired=%d "
              "vo_owner_refused=%d vo_attempted=%d cb_owner_refused=%d "
-             "cb_attempted=%d stale_script_attempted=%d) while "
+             "cb_attempted=%d stale_script_attempted=%d "
+             "bf_refill_hole=%d script_refill_hole=%d "
+             "proof_refill_hole=%d) while "
              "repair/backfill evidence is pending and no peer is ahead "
              "(suppressed_ticks=%llu)",
              rr->repaired, rr->value_overflow_repair_owner_refused,
              rr->value_overflow_repair_attempted,
              rr->coin_backfill_owner_refused, rr->coin_backfill_attempted,
              rr->stale_script_repair_attempted,
+             rr->lowest_body_fetch_refill_hole,
+             rr->lowest_script_validate_refill_hole,
+             rr->lowest_proof_validate_refill_hole,
              (unsigned long long)reps);
 }
 
@@ -250,6 +267,26 @@ static bool detect_reducer_frontier_reconcile_light(void)
              * LIVE node (peers at the tip, none ahead) never arms the
              * sticky_escalator and the wedge is silent. */
             note_peer_gate_bypass(&rr, "noncanonical_found pending");
+        } else if (rr.lowest_script_validate_refill_hole >= 0 ||
+                   rr.lowest_proof_validate_refill_hole >= 0 ||
+                   rr.lowest_validate_headers_refill_hole >= 0 ||
+                   rr.lowest_body_persist_refill_hole >= 0) {
+            /* A rowless stage-log hole below the stage cursor
+             * (script_validate_log / proof_validate_log /
+             * validate_headers_log / body_persist_log — e.g. the residue of a
+             * noncanonical purge that deleted stale-hash rows without
+             * clamping these cursors) is durable internal damage: the
+             * canonical body is already persisted on disk, so the
+             * re-derivation needs no peer. Gating this repair on "a peer is
+             * ahead" — connman_max_peer_height reads the peers' STATIC
+             * handshake starting_height (lib/net/src/connman.c), which near
+             * tip is <= the local height forever — suppressed the only healer
+             * for 3 h on 2026-07-02 (rowless hole at 3166989 in
+             * script_validate_log + proof_validate_log, H* pinned at
+             * 3166988). body_fetch refill holes stay gated (re-fetching a
+             * body needs a peer to serve it); their suppression is now LOUD
+             * via note_gate_suppressed below. */
+            note_peer_gate_bypass(&rr, "stage-log refill hole pending");
         } else {
             /* Gate KEPT for the plain cursor-churn repair class: peers that
              * exist but are not ahead are no staleness evidence. The tear
@@ -546,6 +583,7 @@ void reducer_frontier_reconcile_light_test_reset(void)
     struct condition_state *s = &c_reducer_frontier_reconcile_light.state;
     rfrl_observe_reset_for_testing();
     log_throttle_reset(&g_gate_suppress);
+    g_gate_suppress_warn_total = 0;
     g_test_post_remedy_hook = NULL;
     condition_reset_state(&c_reducer_frontier_reconcile_light);
     atomic_store(&s->last_remedy_unix, (int64_t)0);
@@ -579,5 +617,11 @@ int reducer_frontier_reconcile_light_test_bypass_warns(void);
 int reducer_frontier_reconcile_light_test_bypass_warns(void)
 {
     return rfrl_tear_bypass_warn_total();
+}
+
+int reducer_frontier_reconcile_light_test_gate_suppress_warns(void);
+int reducer_frontier_reconcile_light_test_gate_suppress_warns(void)
+{
+    return g_gate_suppress_warn_total;
 }
 #endif

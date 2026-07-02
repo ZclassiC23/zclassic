@@ -249,11 +249,32 @@ static inline bool stage_reducer_frontier_result_has_row_residue_evidence(
             rr->reorg_residue_tipfin_found > 0);
 }
 
+/* Rowless stage-log refill holes below a stage cursor (e.g. the residue of a
+ * noncanonical purge that deleted stale-hash rows without clamping the
+ * cursor): a *_log row is absent at a height the cursor already passed, so
+ * the stage never re-derives it and H* stays pinned one below the hole.
+ * Sentinel is -1 = no hole (the reconcile initializes all five to -1 before
+ * the scan; a zeroed struct reads as a hole at height 0 — initialize like the
+ * reconcile does). Suppressing a result carrying one of these MUST be loud:
+ * on 2026-07-02 the peer gate silently discarded the recomputed
+ * script_validate/proof_validate refill at 3166989 for 3 h. */
+static inline bool stage_reducer_frontier_result_has_refill_hole_evidence(
+    const struct stage_reducer_frontier_reconcile_result *rr)
+{
+    return rr &&
+           (rr->lowest_validate_headers_refill_hole >= 0 ||
+            rr->lowest_body_fetch_refill_hole >= 0 ||
+            rr->lowest_body_persist_refill_hole >= 0 ||
+            rr->lowest_script_validate_refill_hole >= 0 ||
+            rr->lowest_proof_validate_refill_hole >= 0);
+}
+
 static inline bool stage_reducer_frontier_result_has_gate_loudness_evidence(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {
     return stage_reducer_frontier_result_has_coin_repair_evidence(rr) ||
-           stage_reducer_frontier_result_has_row_residue_evidence(rr);
+           stage_reducer_frontier_result_has_row_residue_evidence(rr) ||
+           stage_reducer_frontier_result_has_refill_hole_evidence(rr);
 }
 
 static inline bool stage_reducer_frontier_result_is_memo_clean(

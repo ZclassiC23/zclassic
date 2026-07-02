@@ -46,6 +46,12 @@
 
 void reducer_frontier_test_set_compiled_anchor(int32_t height);
 
+/* src-private ZCL_TESTING hooks mirrored from
+ * reducer_frontier_reconcile_light.c (the test_reducer_reconcile_witness.c
+ * pattern — not in the public header). */
+int reducer_frontier_reconcile_light_test_bypass_warns(void);
+int reducer_frontier_reconcile_light_test_gate_suppress_warns(void);
+
 struct rfrl_fixture {
     char dir[256];
     struct main_state ms;
@@ -622,15 +628,26 @@ int test_reducer_frontier_reconcile_light(void)
     int failures = 0;
 
     {
-        struct stage_reducer_frontier_reconcile_result rr;
-        memset(&rr, 0, sizeof(rr));
+        /* Mirror reducer_frontier_reconcile_light_impl's init for the
+         * -1-sentinel refill-hole fields the classifiers read: a plain
+         * memset(0) reads as a refill hole at height 0. */
+        struct stage_reducer_frontier_reconcile_result zero;
+        memset(&zero, 0, sizeof(zero));
+        zero.lowest_validate_headers_refill_hole = -1;
+        zero.lowest_body_fetch_refill_hole = -1;
+        zero.lowest_body_persist_refill_hole = -1;
+        zero.lowest_script_validate_refill_hole = -1;
+        zero.lowest_proof_validate_refill_hole = -1;
+
+        struct stage_reducer_frontier_reconcile_result rr = zero;
         RFRL_CHECK("result helpers: clean baseline",
                    !stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
                    !stage_reducer_frontier_result_has_row_residue_evidence(&rr) &&
+                   !stage_reducer_frontier_result_has_refill_hole_evidence(&rr) &&
                    !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
                    stage_reducer_frontier_result_is_memo_clean(&rr));
 
-        memset(&rr, 0, sizeof(rr));
+        rr = zero;
         rr.coin_backfill_attempted = true;
         RFRL_CHECK("result helpers: coin repair evidence",
                    stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
@@ -638,7 +655,7 @@ int test_reducer_frontier_reconcile_light(void)
                    stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
                    !stage_reducer_frontier_result_is_memo_clean(&rr));
 
-        memset(&rr, 0, sizeof(rr));
+        rr = zero;
         rr.noncanonical_found = 1;
         RFRL_CHECK("result helpers: row residue evidence",
                    !stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
@@ -646,13 +663,22 @@ int test_reducer_frontier_reconcile_light(void)
                    stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
                    !stage_reducer_frontier_result_is_memo_clean(&rr));
 
-        memset(&rr, 0, sizeof(rr));
+        rr = zero;
+        rr.lowest_script_validate_refill_hole = A + 2;
+        RFRL_CHECK("result helpers: refill hole evidence",
+                   !stage_reducer_frontier_result_has_coin_repair_evidence(&rr) &&
+                   !stage_reducer_frontier_result_has_row_residue_evidence(&rr) &&
+                   stage_reducer_frontier_result_has_refill_hole_evidence(&rr) &&
+                   stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
+                   !stage_reducer_frontier_result_is_memo_clean(&rr));
+
+        rr = zero;
         rr.refused_coin_tear = true;
         RFRL_CHECK("result helpers: coin tear bypass separate",
                    !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
                    !stage_reducer_frontier_result_is_memo_clean(&rr));
 
-        memset(&rr, 0, sizeof(rr));
+        rr = zero;
         rr.repaired = true;
         RFRL_CHECK("result helpers: repaired is not memo-clean",
                    !stage_reducer_frontier_result_has_gate_loudness_evidence(&rr) &&
@@ -1591,6 +1617,202 @@ int test_reducer_frontier_reconcile_light(void)
                        chain_probe_arg.probed);
         }
 
+        teardown_fixture(&fx);
+    }
+
+    /* ── P3 (2026-07-02): peer-gate BYPASS for internal re-derivations ──
+     * A rowless script_validate_log + proof_validate_log hole below the
+     * cursors (noncanonical-purge residue; the live shape at 3166989 while
+     * H* sat at 3166988) re-derives from local persisted state alone, so
+     * peers-present-but-none-ahead must NOT suppress the healer. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("refill bypass: setup fixture",
+                   setup_fixture(&fx, "refill_bypass"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("refill bypass: delete script+proof rows at the hole",
+                   delete_height(db, "script_validate_log", A + 2) &&
+                   delete_height(db, "proof_validate_log", A + 2));
+
+        /* One peer, NOT ahead: services=0 keeps connman_max_peer_height at
+         * -1 while node_count=1, so peer_lag_allows_repair returns false —
+         * pre-P3 the whole detect was discarded here every 5 s. */
+        struct connman cm;
+        struct p2p_node p1;
+        struct p2p_node *peers[1];
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+        memset(&p1, 0, sizeof(p1));
+        p1.id = 1;
+        p1.starting_height = A + 1;
+        p1.state = PEER_ACTIVE;
+        peers[0] = &p1;
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        RFRL_CHECK("refill bypass: detect fires with no peer ahead and the "
+                   "remedy clamps script/proof cursors to the hole",
+                   got &&
+                   reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
+                   snap.currently_active &&
+                   cursor_value(db, "script_validate") == A + 2 &&
+                   cursor_value(db, "proof_validate") == A + 2);
+        RFRL_CHECK("refill bypass: transition WARN exactly once, no "
+                   "suppression WARN",
+                   reducer_frontier_reconcile_light_test_bypass_warns() == 1 &&
+                   reducer_frontier_reconcile_light_test_gate_suppress_warns()
+                       == 0);
+
+        cm.manager.nodes = NULL;
+        cm.manager.num_nodes = 0;
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    /* ── P3: gate PRESERVED for plain cursor churn (no repair evidence) ──
+     * Same peer state (present, not ahead) with every refill hole absent and
+     * no tear/residue: the tip_finalize clamp alone is not peer-independent
+     * evidence, so detect stays suppressed — silently (no evidence to name,
+     * so no WARN either). */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("churn suppress: setup fixture",
+                   setup_fixture(&fx, "churn_suppress"));
+        sqlite3 *db = progress_store_db();
+        /* Fill body_fetch_log A+1..A+3 so no body_fetch refill hole exists;
+         * the dry-run still reports repaired via the tip_finalize clamp and
+         * the unreadable-HAVE_DATA flag sweep. */
+        RFRL_CHECK("churn suppress: fill body_fetch rows",
+                   put_body_fetch_ok(db, A + 1, &fx.hashes[1]) &&
+                   put_body_fetch_ok(db, A + 2, &fx.hashes[2]) &&
+                   put_body_fetch_ok(db, A + 3, &fx.hashes[3]));
+
+        struct connman cm;
+        struct p2p_node p1;
+        struct p2p_node *peers[1];
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+        memset(&p1, 0, sizeof(p1));
+        p1.id = 1;
+        p1.starting_height = A + 1;
+        p1.state = PEER_ACTIVE;
+        peers[0] = &p1;
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        condition_engine_tick();
+        reducer_frontier_reconcile_light_test_clear_backoff();
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        RFRL_CHECK("churn suppress: gate holds, remedy never runs, silent",
+                   got &&
+                   reducer_frontier_reconcile_light_test_remedy_calls() == 0 &&
+                   !snap.currently_active &&
+                   reducer_frontier_reconcile_light_test_bypass_warns() == 0 &&
+                   reducer_frontier_reconcile_light_test_gate_suppress_warns()
+                       == 0);
+        RFRL_CHECK("churn suppress: no mutation while suppressed",
+                   cursor_value(db, "tip_finalize") == A + 4 &&
+                   cursor_value(db, "body_fetch") == A + 4);
+
+        cm.manager.nodes = NULL;
+        cm.manager.num_nodes = 0;
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    /* ── P3: LOUD suppression — actionable evidence discarded at the gate
+     * must WARN (throttled), never silently idle. The default fixture's
+     * empty body_fetch_log reports lowest_body_fetch_refill_hole=A+2, which
+     * is actionable but NOT in the internal-rederivation bypass list
+     * (re-fetching a body needs a peer to serve it), so the gate suppresses
+     * it and the suppression must be named in node.log. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("loud suppress: setup fixture",
+                   setup_fixture(&fx, "loud_suppress"));
+        sqlite3 *db = progress_store_db();
+
+        struct connman cm;
+        struct p2p_node p1;
+        struct p2p_node *peers[1];
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+        memset(&p1, 0, sizeof(p1));
+        p1.id = 1;
+        p1.starting_height = A + 1;
+        p1.state = PEER_ACTIVE;
+        peers[0] = &p1;
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        RFRL_CHECK("loud suppress: gate suppresses but WARNs once",
+                   got &&
+                   !snap.currently_active &&
+                   reducer_frontier_reconcile_light_test_remedy_calls() == 0 &&
+                   reducer_frontier_reconcile_light_test_bypass_warns() == 0 &&
+                   reducer_frontier_reconcile_light_test_gate_suppress_warns()
+                       == 1);
+
+        reducer_frontier_reconcile_light_test_clear_backoff();
+        condition_engine_tick();
+        RFRL_CHECK("loud suppress: WARN throttled on the next tick",
+                   reducer_frontier_reconcile_light_test_remedy_calls() == 0 &&
+                   reducer_frontier_reconcile_light_test_gate_suppress_warns()
+                       == 1);
+        RFRL_CHECK("loud suppress: no mutation while suppressed",
+                   cursor_value(db, "body_fetch") == A + 4 &&
+                   cursor_value(db, "tip_finalize") == A + 4);
+
+        cm.manager.nodes = NULL;
+        cm.manager.num_nodes = 0;
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
         teardown_fixture(&fx);
     }
 
