@@ -46,6 +46,33 @@ struct hodl_chart_row {
     double  older_1y_pct;
 };
 
+static bool hodl_chart_rows_have_gap(const struct hodl_chart_row *prev,
+                                     const struct hodl_chart_row *next)
+{
+    if (!prev || !next || next->height <= prev->height)
+        return false;
+    return next->height - prev->height >
+           HODL_HISTORY_SAMPLE_STRIDE + (HODL_HISTORY_SAMPLE_STRIDE / 2);
+}
+
+static int hodl_chart_x(const struct hodl_chart_row *row,
+                        int pl, int pw, int64_t t_min, int64_t t_max)
+{
+    if (!row || t_max <= t_min)
+        return pl;
+    return pl + (int)((double)(row->time - t_min) /
+                      (double)(t_max - t_min) * pw);
+}
+
+static int hodl_chart_y(const struct hodl_chart_row *row,
+                        int pt, int ph, double y_min, double y_max)
+{
+    if (!row || y_max <= y_min)
+        return pt + ph;
+    return pt + ph - (int)((row->older_1y_pct - y_min) /
+                           (y_max - y_min) * ph);
+}
+
 size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
 {
     sqlite3 *db = NULL;
@@ -192,6 +219,20 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                 int pw = W - pl - pr, ph = H - pt - pb;
                 int64_t t_min = rows[0].time, t_max = rows[n-1].time;
                 if (t_max <= t_min) t_max = t_min + 1;
+                int gap_count = 0;
+                for (int i = 1; i < n; i++) {
+                    if (hodl_chart_rows_have_gap(&rows[i - 1], &rows[i]))
+                        gap_count++;
+                }
+                char sample_meta[64];
+                if (gap_count > 0) {
+                    snprintf(sample_meta, sizeof(sample_meta),
+                             "%d samples · %d gap%s",
+                             n, gap_count, gap_count == 1 ? "" : "s");
+                } else {
+                    snprintf(sample_meta, sizeof(sample_meta),
+                             "%d samples · daily", n);
+                }
 
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto'>"
@@ -206,8 +247,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "font-family='Georgia,serif'>Historical transparent UTXO value: %% held &gt; 1 year</text>"
                     "<text x='%d' y='30' fill='#666' font-size='12' "
                     "text-anchor='end' font-family='Georgia,serif'>"
-                    "%d samples · daily</text>",
-                    W, H, W - pr, n);
+                    "%s</text>",
+                    W, H, W - pr, sample_meta);
 
                 /* Y-axis gridlines + labels */
                 for (int g = 0; g <= 4; g++) {
@@ -238,18 +279,69 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                         x, pt, x, pt + ph, x, pt + ph + 18, dbuf);
                 }
 
-                /* Polyline through points */
-                APPEND(off, r, max,
-                    "<polyline fill='none' stroke='#33ff99' "
-                    "stroke-width='2' points='");
-                for (int i = 0; i < n; i++) {
-                    int x = pl + (int)((double)(rows[i].time - t_min) /
-                                       (double)(t_max - t_min) * pw);
-                    int y = pt + ph - (int)((rows[i].older_1y_pct - y_min) /
-                                            (y_max - y_min) * ph);
-                    APPEND(off, r, max, "%s%d,%d", i ? " " : "", x, y);
+                /* Missing historical samples are a real data gap while the
+                 * repair worker backfills stale rows. Shade the gap and draw
+                 * separate line segments so the chart never interpolates
+                 * through years of unknown samples. */
+                for (int i = 1; i < n; i++) {
+                    if (!hodl_chart_rows_have_gap(&rows[i - 1], &rows[i]))
+                        continue;
+                    int x1 = hodl_chart_x(&rows[i - 1], pl, pw, t_min, t_max);
+                    int x2 = hodl_chart_x(&rows[i], pl, pw, t_min, t_max);
+                    int gx = x1 + 4;
+                    int gw = x2 - x1 - 8;
+                    if (gw <= 0)
+                        continue;
+                    APPEND(off, r, max,
+                        "<rect x='%d' y='%d' width='%d' height='%d' "
+                        "fill='#151515' opacity='0.55'/>"
+                        "<line x1='%d' y1='%d' x2='%d' y2='%d' "
+                        "stroke='#333' stroke-dasharray='3,4'/>"
+                        "<line x1='%d' y1='%d' x2='%d' y2='%d' "
+                        "stroke='#333' stroke-dasharray='3,4'/>",
+                        gx, pt, gw, ph, x1, pt, x1, pt + ph,
+                        x2, pt, x2, pt + ph);
+                    if (gw >= 120) {
+                        APPEND(off, r, max,
+                            "<text x='%d' y='%d' fill='#555' "
+                            "font-size='12' text-anchor='middle' "
+                            "font-family='Georgia,serif'>backfilling</text>",
+                            gx + gw / 2, pt + ph / 2);
+                    }
                 }
-                APPEND(off, r, max, "'/>");
+
+                int seg_start = 0;
+                while (seg_start < n) {
+                    int seg_end = seg_start;
+                    while (seg_end + 1 < n &&
+                           !hodl_chart_rows_have_gap(&rows[seg_end],
+                                                      &rows[seg_end + 1])) {
+                        seg_end++;
+                    }
+                    if (seg_end > seg_start) {
+                        APPEND(off, r, max,
+                            "<polyline fill='none' stroke='#33ff99' "
+                            "stroke-width='2' points='");
+                        for (int i = seg_start; i <= seg_end; i++) {
+                            int x = hodl_chart_x(&rows[i], pl, pw,
+                                                 t_min, t_max);
+                            int y = hodl_chart_y(&rows[i], pt, ph,
+                                                 y_min, y_max);
+                            APPEND(off, r, max, "%s%d,%d",
+                                   i == seg_start ? "" : " ", x, y);
+                        }
+                        APPEND(off, r, max, "'/>");
+                    } else {
+                        int x = hodl_chart_x(&rows[seg_start], pl, pw,
+                                             t_min, t_max);
+                        int y = hodl_chart_y(&rows[seg_start], pt, ph,
+                                             y_min, y_max);
+                        APPEND(off, r, max,
+                            "<circle cx='%d' cy='%d' r='3' fill='#33ff99'/>",
+                            x, y);
+                    }
+                    seg_start = seg_end + 1;
+                }
 
                 /* Hover crosshair + tooltip (hidden until JS shows it).
                  * pointer-events:none on every overlay node so the cursor

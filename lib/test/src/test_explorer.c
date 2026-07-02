@@ -99,26 +99,41 @@ int test_explorer(void)
             "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
             "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
             "INSERT INTO blocks(height,time) VALUES"
-            "(100,1000),(500,2000),(1000,3000);"
+            "(4320,1000),(8640,2000),(21600,5000),(25920,6000);"
             "INSERT INTO utxos(height,value) VALUES"
-            "(1000,1000);"
+            "(25920,1000);"
             "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
             "older_1y_pct) VALUES"
-            "(100,1000,400,50,12.5),(500,2000,800,200,25.0);",
+            "(4320,1000,400,50,12.5),"
+            "(8640,2000,800,200,25.0),"
+            "(21600,5000,900,450,50.0),"
+            "(25920,6000,1000,800,80.0);",
             NULL, NULL, NULL) == SQLITE_OK;
         if (db)
             sqlite3_close(db);
 
-        reducer_frontier_provable_tip_set(1000);
+        reducer_frontier_provable_tip_set(25920);
         uint8_t out[65536];
         size_t n = explorer_view_hodl(dbdir, out, sizeof(out) - 1);
         reducer_frontier_provable_tip_reset();
         out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
 
+        int green_segments = 0;
+        const char *scan = (const char *)out;
+        while ((scan = strstr(scan,
+                              "<polyline fill='none' stroke='#33ff99'")) != NULL) {
+            green_segments++;
+            scan++;
+        }
         ok = ok && n > 0 &&
              strstr((char *)out, "Historical transparent UTXO value") != NULL &&
-             strstr((char *)out, "[100,1000,400,50,12500]") != NULL &&
-             strstr((char *)out, "[500,2000,800,200,25000]") != NULL &&
+             strstr((char *)out, "[4320,1000,400,50,12500]") != NULL &&
+             strstr((char *)out, "[8640,2000,800,200,25000]") != NULL &&
+             strstr((char *)out, "[21600,5000,900,450,50000]") != NULL &&
+             strstr((char *)out, "[25920,6000,1000,800,80000]") != NULL &&
+             strstr((char *)out, "4 samples · 1 gap") != NULL &&
+             strstr((char *)out, "backfilling") != NULL &&
+             green_segments == 2 &&
              strstr((char *)out, "surviving") == NULL;
 
         char cmd[384];
