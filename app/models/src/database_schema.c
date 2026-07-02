@@ -249,6 +249,8 @@ static const char *SCHEMA[] = {
     "CREATE INDEX IF NOT EXISTS idx_txo_addr"
     " ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_txo_height ON tx_outputs(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_txo_hodl_scan"
+    " ON tx_outputs(block_height, value, txid, vout)",
 
     "CREATE TABLE IF NOT EXISTS tx_inputs ("
     "txid BLOB NOT NULL, vin_index INTEGER NOT NULL,"
@@ -256,6 +258,8 @@ static const char *SCHEMA[] = {
     "block_height INTEGER NOT NULL,"
     "PRIMARY KEY (txid, vin_index))",
     "CREATE INDEX IF NOT EXISTS idx_txi_prev ON tx_inputs(prev_txid, prev_vout)",
+    "CREATE INDEX IF NOT EXISTS idx_txi_prev_height"
+    " ON tx_inputs(prev_txid, prev_vout, block_height)",
     "CREATE INDEX IF NOT EXISTS idx_txi_height ON tx_inputs(block_height)",
 
     "CREATE TABLE IF NOT EXISTS sapling_spends ("

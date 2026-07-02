@@ -44,6 +44,8 @@
 #include "models/block.h"
 #include "event/event.h"
 #include "supervisors/domains.h"
+#include "util/log_macros.h"
+#include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include <stdatomic.h>
@@ -52,6 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <pthread.h>
 #include <errno.h>
@@ -87,9 +90,12 @@ static void *address_backfill_service_thread(void *arg);
 
 #define PAYMENT_SUPERVISOR_DEADLINE_SEC             120
 #define PROJECTION_BACKFILL_SUPERVISOR_DEADLINE_SEC 120
-#define HODL_HISTORY_SUPERVISOR_DEADLINE_SEC        180
+#define HODL_HISTORY_SUPERVISOR_DEADLINE_SEC        900
 #define UTXO_REPLAY_SUPERVISOR_DEADLINE_SEC         3600
 #define ADDRESS_BACKFILL_SUPERVISOR_DEADLINE_SEC    600
+#define HODL_HISTORY_FILL_BATCH                     1
+#define HODL_HISTORY_BACKLOG_SLEEP_SEC              1
+#define HODL_HISTORY_IDLE_SLEEP_SEC                 60
 
 static struct liveness_contract g_payment_contract;
 static struct liveness_contract g_projection_backfill_contract;
@@ -254,36 +260,58 @@ bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
  * render a time-series of "% of supply held > 1 year" without
  * recomputing on every page hit. The worker walks every ~day
  * (HODL_HISTORY_SAMPLE_STRIDE blocks) up to the current chain tip,
- * idempotent on already-filled rows. Each fill call does one sample
- * then sleeps 1s so we never starve the database. */
+ * idempotent on already-filled rows. It drains a bounded backlog quickly
+ * after restart/rebuild, then falls back to a slow idle tick once current. */
 static void *hodl_history_worker_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
+    struct node_db hdb = {0};
+    bool hdb_open = false;
+    char db_path[PATH_MAX];
     int64_t loop_iterations = 0;
     if (!svc)
         return NULL;
     /* Initial settle: wait for boot to complete + first chain advance. */
     sleep(15);
+    if (svc->datadir &&
+        zcl_node_db_path(db_path, sizeof(db_path), svc->datadir)[0] &&
+        node_db_open(&hdb, db_path)) {
+        hdb_open = true;
+    } else {
+        LOG_WARN("service",
+                 "HODL history: private node.db open failed; will retry");
+    }
     while (!svc->hodl_history_thread_stop) {
         supervisor_child_id sup_id = atomic_load(&g_hodl_history_sup_id);
         if (sup_id != SUPERVISOR_INVALID_ID) {
             supervisor_tick(sup_id);
             supervisor_progress(sup_id, ++loop_iterations);
         }
-        struct node_db *ndb = boot_node_db(svc);
-        if (ndb && ndb->open && svc->state) {
+        if (!hdb_open && svc->datadir &&
+            zcl_node_db_path(db_path, sizeof(db_path), svc->datadir)[0] &&
+            node_db_open(&hdb, db_path)) {
+            hdb_open = true;
+        }
+        if (hdb_open && hdb.open && svc->state) {
             int tip = active_chain_height(&svc->state->chain_active);
             if (tip > 0) {
-                /* Fill at most 4 samples per tick (~one minute of work
-                 * on a busy DB), then sleep so other readers move. */
-                (void)hodl_history_fill_pending(ndb->db, tip, 4);
+                int filled = hodl_history_fill_pending(
+                    hdb.db, tip, HODL_HISTORY_FILL_BATCH);
+                int sleep_secs = filled >= HODL_HISTORY_FILL_BATCH
+                    ? HODL_HISTORY_BACKLOG_SLEEP_SEC
+                    : HODL_HISTORY_IDLE_SLEEP_SEC;
+                for (int i = 0; i < sleep_secs &&
+                                !svc->hodl_history_thread_stop; i++)
+                    sleep(1);
+                continue;
             }
         }
-        /* Slow tick — 60s — until the table is caught up, then
-         * effectively idle since fill_pending becomes a no-op. */
-        for (int i = 0; i < 60 && !svc->hodl_history_thread_stop; i++)
+        for (int i = 0; i < HODL_HISTORY_IDLE_SLEEP_SEC &&
+                        !svc->hodl_history_thread_stop; i++)
             sleep(1);
     }
+    if (hdb_open)
+        node_db_close(&hdb);
     return NULL;
 }
 

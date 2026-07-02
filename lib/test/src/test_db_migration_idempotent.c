@@ -171,6 +171,15 @@ static int t_v20_wallet_notes_upgrade_adds_source(void)
             "SELECT count(*) FROM schema_migrations "
             "WHERE version='021'") == 1);
         ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='022'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='index' AND name='idx_txo_hodl_scan'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='index' AND name='idx_txi_prev_height'") == 1);
+        ASSERT(db_mig_count(raw,
             "SELECT count(*) FROM wallet_sapling_notes "
             "WHERE address='zs-v20-note' AND source='local'") == 1);
         sqlite3_close(raw);

@@ -68,7 +68,9 @@ static const char *const DB_DROP_INDEXES[] = {
      * per-block reindex (PKs stay to enforce idempotent overwrite). */
     "DROP INDEX IF EXISTS idx_txo_addr",
     "DROP INDEX IF EXISTS idx_txo_height",
+    "DROP INDEX IF EXISTS idx_txo_hodl_scan",
     "DROP INDEX IF EXISTS idx_txi_prev",
+    "DROP INDEX IF EXISTS idx_txi_prev_height",
     "DROP INDEX IF EXISTS idx_txi_height",
     "DROP INDEX IF EXISTS idx_ss_nf",
     "DROP INDEX IF EXISTS idx_ss_height",
@@ -96,8 +98,12 @@ static const char *const DB_CREATE_INDEXES[] = {
         " ON tx_outputs(address_hash) WHERE address_hash IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_txo_height"
         " ON tx_outputs(block_height)",
+    "CREATE INDEX IF NOT EXISTS idx_txo_hodl_scan"
+        " ON tx_outputs(block_height, value, txid, vout)",
     "CREATE INDEX IF NOT EXISTS idx_txi_prev"
         " ON tx_inputs(prev_txid, prev_vout)",
+    "CREATE INDEX IF NOT EXISTS idx_txi_prev_height"
+        " ON tx_inputs(prev_txid, prev_vout, block_height)",
     "CREATE INDEX IF NOT EXISTS idx_txi_height"
         " ON tx_inputs(block_height)",
     "CREATE INDEX IF NOT EXISTS idx_ss_nf"

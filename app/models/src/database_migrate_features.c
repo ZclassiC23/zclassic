@@ -254,6 +254,28 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 22) {
+        /* v22: covering indexes for HODL-history reconstruction. The
+         * background filler asks historical "alive at H" questions across
+         * tx_outputs/tx_inputs; these keep post-rebuild gap repair bounded. */
+        if (db_exec_checked(ndb->db,
+            "CREATE INDEX IF NOT EXISTS idx_txo_hodl_scan "
+            "ON tx_outputs(block_height, value, txid, vout)",
+            "v22: idx_txo_hodl_scan") != SQLITE_OK)
+            LOG_ERR("db", "v22 migration failed creating idx_txo_hodl_scan");
+        if (db_exec_checked(ndb->db,
+            "CREATE INDEX IF NOT EXISTS idx_txi_prev_height "
+            "ON tx_inputs(prev_txid, prev_vout, block_height)",
+            "v22: idx_txi_prev_height") != SQLITE_OK)
+            LOG_ERR("db", "v22 migration failed creating idx_txi_prev_height");
+        if (!node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('022')"))
+            LOG_ERR("db", "v22 migration failed stamping schema_migrations");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 22);
+        current_ver = 22;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
