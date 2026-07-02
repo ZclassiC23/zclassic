@@ -85,6 +85,34 @@ static void chain_restore_log_first_mismatch(
     LOG_WARN("chain", "[chain-integrity] first mismatch detail: h=%d at=%p " "at_h=%d at_hash=%s pprev=%p pprev_h=%d pprev_hash=%s " "prev_slot=%p prev_slot_h=%d prev_slot_hash=%s", h, (void *)at, at ? at->nHeight : -1, at_hash[0] ? at_hash : "<null>", at ? (void *)at->pprev : NULL, (at && at->pprev) ? at->pprev->nHeight : -1, pprev_hash[0] ? pprev_hash : "<null>", (void *)prev_slot, prev_slot ? prev_slot->nHeight : -1, prev_slot_hash[0] ? prev_slot_hash : "<null>");
 }
 
+/* Publish the container tip after a successful full ancestry rebuild: the
+ * rebuilds store slots directly into c->chain[] (bypassing the height bound)
+ * and may have REPLACED the tip entry with the disk-verified one, but only
+ * active_chain_install_tip_slot raises c->height. Without this, a rebuild
+ * that healed every slot can still leave c->height low, so every reader
+ * bounded by it (active_chain_at) sees a phantom hole at the tip. Container
+ * repair only — never publishes the durable authority. Idempotent. */
+static void chain_restore_publish_rebuilt_tip(struct active_chain *c,
+                                              int tip_h)
+{
+    if (!c || tip_h < 0 || tip_h >= c->capacity || !c->chain)
+        return;
+    /* RAISE-ONLY: at runtime (chain_integrity_failed remedy path) the window
+     * is routinely EXTENDED above the finalized tip (c->height = tip_h + K)
+     * for tip_finalize's one-block lookahead; install_tip_slot would SHRINK
+     * it to tip_h and kneecap the lookahead mid-tick. A window at or above
+     * tip_h already exposes the rebuilt slot to every reader — nothing to
+     * publish. */
+    if (c->height > tip_h)
+        return;
+    struct block_index *slot = c->chain[tip_h];
+    if (!slot)
+        return;
+    if (c->height == tip_h && active_chain_cached_tip(c) == slot)
+        return;
+    (void)active_chain_install_tip_slot(c, slot);
+}
+
 int chain_restore_rebuild_active_chain(struct main_state *ms,
                                        struct block_index *tip,
                                        const char *datadir)
@@ -98,8 +126,28 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     /* The tip must already be installed as the chain tip (so
      * active_chain's capacity covers [0..tip_h]); if a caller hands us
      * a tip that isn't installed, install it via the standard path
-     * first. Idempotent when already set. */
-    if (active_chain_tip(c) != tip || active_chain_height(c) != tip_h) {
+     * first. Idempotent when already set.
+     *
+     * Compare RAW container state (c->height + the raw tip slot), NOT
+     * active_chain_tip()/active_chain_height(): those resolve through the
+     * tip_finalize AUTHORITY (durable cursor -> block-map hash lookup), so
+     * when the container lags the authority (a placeholder-tip rewind left
+     * c->height at tip_h-1) they echo the authority's answer, this guard
+     * reads "already installed" and never fires, the rebuilds below fill
+     * arr[0..tip_h] but nothing raises c->height, and every
+     * active_chain_at(tip_h) stays NULL (bounded by c->height) — the
+     * post-restore integrity check then fails with a phantom tip-window
+     * hole and the node boots DEGRADED until the NEXT process start
+     * (the h=3166988 two-boot heal, 2026-07-02).
+     *
+     * RAISE-ONLY: c->height > tip_h is the normal RUNTIME shape (the
+     * window is extended above the finalized tip for tip_finalize's
+     * lookahead, and this function also runs as the chain_integrity_failed
+     * remedy) — installing there would SHRINK the window and starve the
+     * lookahead. Only fire when the container is BEHIND the tip or the
+     * exact tip slot is wrong. */
+    if (c->height < tip_h ||
+        (c->height == tip_h && active_chain_cached_tip(c) != tip)) {
         if (tip_h > 1000000) {
             /* The grow must go through the chainstate retire-not-free
              * helper — an in-place realloc here would free an array that
@@ -123,6 +171,7 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
         populated = chain_restore_rebuild_active_chain_from_disk(ms, tip,
                                                                 datadir);
         if (populated == tip_h + 1) {
+            chain_restore_publish_rebuilt_tip(c, tip_h);
             struct chain_integrity_result r;
             chain_integrity_check_post_restore(&r, ms);
             if (r.active_chain_mismatches == 0 &&
@@ -130,13 +179,17 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
                 return populated;
             populated = chain_restore_rebuild_active_chain_from_block_files(
                 ms, tip, datadir);
-            if (populated == tip_h + 1)
+            if (populated == tip_h + 1) {
+                chain_restore_publish_rebuilt_tip(c, tip_h);
                 return populated;
+            }
         } else {
             populated = chain_restore_rebuild_active_chain_from_block_files(
                 ms, tip, datadir);
-            if (populated == tip_h + 1)
+            if (populated == tip_h + 1) {
+                chain_restore_publish_rebuilt_tip(c, tip_h);
                 return populated;
+            }
         }
     }
 
@@ -627,14 +680,26 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
             BII_OK, BII_RECOVERY_ACCEPTED,
             "post-restore integrity clean; active chain reconciled",
             false, false);
-        /* Integrity is verifiably clean — any pending auto-reindex
-         * request is stale (already served, or written for a state that
-         * no longer exists). Without this, a stale sentinel makes every
-         * subsequent healthy boot re-run a full -reindex-chainstate forever. */
-        if (datadir && datadir[0] && boot_auto_reindex_pending(datadir)) {
-            boot_auto_reindex_clear(datadir);
-            LOG_INFO("chain", "[chain-integrity] cleared stale auto-reindex "
-                     "request: post-restore integrity is clean");
+        /* Integrity is verifiably clean — any auto-reindex sentinel is
+         * stale (already served, or written for a state that no longer
+         * exists). Without this, a stale pending sentinel makes every
+         * subsequent healthy boot re-run a full -reindex-chainstate
+         * forever. The TERMINAL marker must clear here too: it means
+         * "budget exhausted at a stall that needs a human", but the node
+         * is now provably healthy, so leaving it would permanently poison
+         * the reindex path for the NEXT genuine episode (attack-phase
+         * confirmed finding, 2026-07-02 — the marker was never
+         * auto-cleared because this clear was gated on pending(), which
+         * is false for terminal). */
+        if (datadir && datadir[0]) {
+            bool was_terminal = boot_auto_reindex_is_terminal(datadir);
+            if (was_terminal || boot_auto_reindex_pending(datadir)) {
+                boot_auto_reindex_clear(datadir);
+                LOG_INFO("chain",
+                         "[chain-integrity] cleared stale auto-reindex "
+                         "sentinel (%s): post-restore integrity is clean",
+                         was_terminal ? "terminal" : "pending");
+            }
         }
     }
 

@@ -1700,6 +1700,17 @@ bool app_init(struct app_context *ctx)
          * Skipped on the log-rebuild path: the legacy SQLite db_height is
          * not the authority there (the log/cursor tip is), and comparing
          * against it would spuriously discard the valid log-rebuilt map. */
+        /* Set when the loaded flat file is declared CORRUPT below (tip hash
+         * maps to the wrong height — evidence of a poisoned record). The
+         * "reload" that follows find-or-inserts LevelDB records ON TOP of
+         * the already-loaded flat entries, so the map is a union that may
+         * still carry the poison; re-saving that union at the save site
+         * below would launder the corrupt record into the next flat
+         * generation forever (this is how the h=3166988 height-0 stub
+         * survived across boots, 2026-07-02). The heal happens later this
+         * boot (projection topup hydration + height repair); the SHUTDOWN
+         * save persists the healed map instead. */
+        bool flat_union_tainted = false;
         if (!rebuilt_from_log && loaded && g_node_db.open) {
             int64_t db_height = node_db_sync_get_tip_height(&g_node_db);
             if (db_height < 0)
@@ -1735,6 +1746,7 @@ bool app_init(struct app_context *ctx)
                             flat_tip ? flat_tip->nHeight : -1,
                             (long long)db_height);
                         loaded = false;
+                        flat_union_tainted = true;
                     }
                 } else {
                     struct db_block tip_blk;
@@ -1753,6 +1765,7 @@ bool app_init(struct app_context *ctx)
                                 flat_tip ? flat_tip->nHeight : -1,
                                 (long long)db_height);
                             loaded = false;
+                            flat_union_tainted = true;
                         }
                     }
                 }
@@ -1771,9 +1784,19 @@ bool app_init(struct app_context *ctx)
             event_emitf(EV_BOOT_BLOCK_INDEX, 0, "loaded entries=%zu elapsed=%llds",
                         g_state.map_block_index.size, (long long)t_idx_elapsed);
 
-            /* Save flat file for next restart */
-            if (g_state.map_block_index.size > 1000)
-                save_block_index_flat(ctx->datadir, &g_state);
+            /* Save flat file for next restart — UNLESS the map is a union
+             * with a corrupt flat load (see flat_union_tainted above): the
+             * poison record is still in RAM here, and persisting it now
+             * re-infects every future boot. The shutdown save runs after
+             * the projection topup + height repair have healed the map. */
+            if (g_state.map_block_index.size > 1000) {
+                if (flat_union_tainted)
+                    printf("Block index flat: skipping mid-boot re-save of "
+                           "the corrupt-flat union — the healed map is "
+                           "persisted at shutdown\n");
+                else
+                    save_block_index_flat(ctx->datadir, &g_state);
+            }
         }
 
         /* If block index is much smaller than the chain, try loading

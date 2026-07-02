@@ -134,12 +134,13 @@ int test_block_index_topup(void)
     snprintf(bip_path, sizeof(bip_path), "%s/bip.db", dir);
 
     /* Unique hashes for heights 100..105 + disk block. */
-    struct uint256 h100, h101, h102, h103, h104;
+    struct uint256 h100, h101, h102, h103, h104, h105;
     topup_hash_for(100, &h100);
     topup_hash_for(101, &h101);
     topup_hash_for(102, &h102);
     topup_hash_for(103, &h103);
     topup_hash_for(104, &h104);
+    topup_hash_for(105, &h105);
 
     struct main_state ms;
     main_state_init(&ms);
@@ -161,8 +162,19 @@ int test_block_index_topup(void)
         memset(&e103->nChainWork, 0, sizeof(e103->nChainWork));
         e103->nChainWork.pn[0] = 0x1000;
     }
+    /* e105: a CONTENTLESS STUB at the wrong height (the corrupt-flat-load
+     * shape that birthed the h=3166988 placeholder tip, 2026-07-02):
+     * height 0, nBits 0, no HAVE_DATA, nTx 0. The projection row below
+     * carries the real record at height 105 — the topup must HYDRATE this
+     * entry instead of refusing the merge as a label conflict. */
+    struct block_index *e105 = topup_insert_entry(&ms, &h105, 0);
+    if (e105) {
+        e105->nBits = 0;
+        e105->nStatus = 0;
+        e105->nTx = 0;
+    }
     TOPUP_CHECK("setup: entries inserted",
-                e100 && e101 && e102 && e103);
+                e100 && e101 && e102 && e103 && e105);
 
     /* Disk-recovery entry: a REAL block on disk, nTx=0 in the entry. */
     struct block_index *edisk = NULL;
@@ -235,6 +247,11 @@ int test_block_index_topup(void)
     rows_ok &= topup_emit_row(log, &h100, NULL, 100,
                               BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA,
                               9, 9999, 999);
+    /* r105: the real record for the contentless stub e105 — height 105,
+     * real nBits (topup_emit_row stamps 0x2000ffff), data-backed. */
+    rows_ok &= topup_emit_row(log, &h105, &h104, 105,
+                              BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA,
+                              2, 5678, 6);
     TOPUP_CHECK("setup: rows emitted", rows_ok);
 
     /* ── Run the top-up. ─────────────────────────────────────────── */
@@ -279,6 +296,25 @@ int test_block_index_topup(void)
     TOPUP_CHECK("e100 kept nTx", e100 && e100->nTx == 5);
     TOPUP_CHECK("e100 kept positions",
                 e100 && e100->nFile == 1 && e100->nDataPos == 500);
+
+    /* 5b. contentless stub HYDRATED from the projection row (the
+     * corrupt-flat placeholder-tip class): height re-labelled, header
+     * fields + data availability adopted, pprev re-linked, chainwork
+     * recomputed above its parent. A REAL entry at a conflicting height
+     * (e103, case 4) still refuses — hydration is stub-only. */
+    TOPUP_CHECK("e105 stub re-heighted from the row",
+                e105 && e105->nHeight == 105);
+    TOPUP_CHECK("e105 gained real nBits", e105 && e105->nBits != 0);
+    TOPUP_CHECK("e105 gained HAVE_DATA + positions",
+                e105 && (e105->nStatus & BLOCK_HAVE_DATA) &&
+                e105->nFile == 2 && e105->nDataPos == 5678);
+    TOPUP_CHECK("e105 gained nTx", e105 && e105->nTx == 6);
+    TOPUP_CHECK("e105 pprev linked to h104",
+                e105 && e104 && e105->pprev == e104);
+    TOPUP_CHECK("e105 chainwork above parent's",
+                e105 && e104 &&
+                arith_uint256_compare(&e105->nChainWork,
+                                      &e104->nChainWork) > 0);
 
     /* 6. nTx recovered from disk for the legacy-emit entry. */
     TOPUP_CHECK("edisk nTx recovered from the block file",

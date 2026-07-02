@@ -69,6 +69,7 @@ struct topup_ctx {
     size_t ntx_applied;
     size_t valid_raised;
     size_t height_conflicts;
+    size_t stubs_hydrated;
     /* Inserted entries, collected for the bounded chainwork pass. */
     struct block_index **new_entries;
     size_t new_count;
@@ -144,9 +145,56 @@ static bool topup_row_cb(const uint8_t hash[32],
         return true;
     }
 
-    /* Same hash at a different recorded height: a label conflict. The
-     * loaded entry wins; surface the disagreement, never merge it. */
+    /* Same hash at a different recorded height: usually a label conflict
+     * (the loaded entry wins; surface it, never merge) — EXCEPT when the
+     * loaded entry is a contentless STUB: nBits==0 (no real header ever
+     * has that), no HAVE_DATA, no nTx. Such an entry is a corrupt-load
+     * artifact (flat-file reload placed the hash at height 0), not a
+     * competing label; refusing the projection's full crash-safe record
+     * here is what BIRTHS the boot placeholder tip — coins_best resolves
+     * to the stub, the restore rewinds one height, and the node degrades
+     * for a whole boot (the h=3166988 two-boot heal, 2026-07-02). Adopt
+     * the projection row wholesale and track the entry like an insert so
+     * the pprev-link + chainwork pass below covers it. */
     if (bi->nHeight != dbi->nHeight) {
+        bool stub = bi->nBits == 0 &&
+                    !(bi->nStatus & BLOCK_HAVE_DATA) &&
+                    bi->nTx == 0;
+        bool row_real = dbi->nHeight > 0 && dbi->nBits != 0;
+        if (stub && row_real) {
+            int stub_h = bi->nHeight;
+            bi->nHeight              = dbi->nHeight;
+            bi->nFile                = dbi->nFile;
+            bi->nDataPos             = dbi->nDataPos;
+            bi->nUndoPos             = dbi->nUndoPos;
+            bi->nVersion             = dbi->nVersion;
+            bi->hashMerkleRoot       = dbi->hashMerkleRoot;
+            bi->hashFinalSaplingRoot = dbi->hashFinalSaplingRoot;
+            bi->nTime                = dbi->nTime;
+            bi->nBits                = dbi->nBits;
+            bi->nNonce               = dbi->nNonce;
+            bi->nStatus              = dbi->nStatus & ~BLOCK_FAILED_MASK;
+            bi->nCachedBranchId      = dbi->nCachedBranchId;
+            bi->nTx                  = dbi->nTx;
+            if (dbi->has_sprout_value) {
+                bi->nSproutValue     = dbi->nSproutValue;
+                bi->has_sprout_value = true;
+            }
+            bi->nSaplingValue        = dbi->nSaplingValue;
+            bi->pprev                = NULL;   /* re-linked below */
+            bi->pskip                = NULL;
+            c->stubs_hydrated++;
+            if (c->stubs_hydrated <= 3)
+                LOG_INFO("block_index",
+                         "topup: hydrated contentless stub (loaded h=%d "
+                         "nBits=0) from projection row h=%d",
+                         stub_h, dbi->nHeight);
+            if (!topup_track_inserted(c, bi)) {
+                c->failed = true;
+                return false;
+            }
+            return true;
+        }
         if (c->height_conflicts < 3)
             LOG_WARN("block_index",
                      "topup: projection row height %d != loaded entry "
@@ -319,7 +367,7 @@ bool block_index_projection_topup_with(struct block_index_projection *bip,
                  "%zu rows", ctx.rows);
     }
 
-    if (ctx.inserted > 0) {
+    if (ctx.inserted > 0 || ctx.stubs_hydrated > 0) {
         if (block_index_projection_iterate(bip, topup_link_pprev_cb, ms)
                 != 0) {
             free(ctx.new_entries);
@@ -329,21 +377,62 @@ bool block_index_projection_topup_with(struct block_index_projection *bip,
     }
     free(ctx.new_entries);
 
+    /* A hydrated stub carried nChainWork==0 while it was a detached
+     * height-0 root, so any PRE-EXISTING entries loaded ABOVE it (flat
+     * header-only children) have cumulative work collapsed through the
+     * zero — and nothing downstream recomputes them (the inserted-entry
+     * pass covers only new entries; block_index_repair_* work passes are
+     * gated on height/pprev repairs, which hydration makes consistent).
+     * Collapsed descendant work pins best_header at the hydrated block —
+     * is_canonical_header_successor fails on work AND height and the fold
+     * stalls until the next boot's flat-load forward pass (a two-boot
+     * heal, the class P6/P7 exist to kill). Re-run the CANONICAL forward
+     * pass over the whole map — the same helper every loader uses — so
+     * descendants get true cumulative work in the same boot. Rare path
+     * (stubs_hydrated > 0 only): one sort + walk, seconds at boot. */
+    if (ctx.stubs_hydrated > 0) {
+        size_t total = block_map_count(&ms->map_block_index);
+        struct block_index **sorted = total
+            ? zcl_malloc(total * sizeof(*sorted), "topup.forward_pass")
+            : NULL;
+        if (sorted) {
+            size_t n = 0, it = 0;
+            struct block_index *e;
+            while (block_map_next(&ms->map_block_index, &it, NULL, &e)) {
+                if (e && e->phashBlock && n < total)
+                    sorted[n++] = e;
+            }
+            qsort(sorted, n, sizeof(*sorted), topup_cmp_height);
+            block_index_forward_pass(sorted, n);
+            free(sorted);
+            printf("[boot] topup: global forward pass after %zu stub "
+                   "hydration(s) — %zu entries recomputed\n",
+                   ctx.stubs_hydrated, n);
+        } else {
+            LOG_WARN("block_index",
+                     "topup: forward-pass alloc failed after %zu stub "
+                     "hydration(s) (%zu entries) — descendant chainwork may "
+                     "be collapsed until the next boot",
+                     ctx.stubs_hydrated, total);
+        }
+    }
+
     size_t ntx_recovered = 0, ntx_unreadable = 0, ntx_capped = 0;
     if (datadir && datadir[0])
         topup_recover_ntx_from_disk(ms, datadir, &ntx_recovered,
                                     &ntx_unreadable, &ntx_capped);
 
     if (ctx.inserted || ctx.data_applied || ctx.ntx_applied ||
-        ctx.valid_raised || ctx.height_conflicts || ntx_recovered ||
-        ntx_unreadable || ntx_capped) {
+        ctx.valid_raised || ctx.height_conflicts || ctx.stubs_hydrated ||
+        ntx_recovered || ntx_unreadable || ntx_capped) {
         printf("[boot] block index projection top-up: rows=%zu "
                "inserted=%zu data_applied=%zu ntx_applied=%zu "
                "valid_raised=%zu ntx_recovered_from_disk=%zu "
-               "ntx_unreadable=%zu height_conflicts=%zu\n",
+               "ntx_unreadable=%zu height_conflicts=%zu "
+               "stubs_hydrated=%zu\n",
                ctx.rows, ctx.inserted, ctx.data_applied, ctx.ntx_applied,
                ctx.valid_raised, ntx_recovered, ntx_unreadable,
-               ctx.height_conflicts);
+               ctx.height_conflicts, ctx.stubs_hydrated);
         if (ntx_capped > 0)
             LOG_WARN("block_index",
                      "topup: nTx disk recovery CAPPED at %d reads — "
