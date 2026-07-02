@@ -18,7 +18,11 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/refold_progress.h"
+#include "jobs/stage_repair.h"
+#include "services/sync_monitor.h"
 #include "storage/boot_auto_reindex.h"
+#include "storage/progress_store.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -51,6 +55,15 @@ static _Atomic uint64_t g_ladder_cycles    = 0;
 
 /* Pluggable rung actions; NULL = default stub (advance). */
 static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
+
+/* Wall-unix of the last targeted_rederive apply pass that reported repaired
+ * work (cursor clamp / residue purge). While within the rung's witness window
+ * a follow-up pass that finds nothing NEW actionable holds the rung
+ * (PROGRESSING) instead of advancing: the forward stages are still consuming
+ * the clamp (re-deriving the hole from on-disk bodies), and advancing on the
+ * very next 5 s tick would cascade into the reindex rung's durable
+ * boot_auto_reindex_request seconds after the cure landed. */
+static _Atomic int64_t g_rederive_last_repair_unix = 0;
 
 /* Per-rung witness windows (seconds): the slow re-derivation rungs get a long
  * window so a legitimately multi-minute reindex/refold is not prematurely
@@ -96,10 +109,11 @@ static int64_t observe_tip(void)
     return -1; // raw-return-ok:no-tip-observable-sentinel-not-an-error
 }
 
-/* ── Default rung stubs ────────────────────────────────────────────────
+/* ── Default rung actions ──────────────────────────────────────────────
  *
- * Rungs 0/1/3 have real in-process surfaces and run them. Rungs 2/4/5/6 are
- * stubs that emit a typed EV_RECOVERY_ACTION (another lane's worker consumes it)
+ * Rungs 0/1/3 have real in-process surfaces and run them (rung 1 runs the
+ * reducer-frontier reconcile apply pass, ungated). Rungs 2/4/5/6 are stubs
+ * that emit a typed EV_RECOVERY_ACTION (another lane's worker consumes it)
  * and report NOT_IMPLEMENTED so the ladder advances. A lane can plug a real
  * action via sticky_escalator_register_rung() with no edit here. */
 
@@ -116,13 +130,94 @@ static enum sticky_rung_result rung_retry_default(void)
 
 static enum sticky_rung_result rung_targeted_rederive_default(void)
 {
-    /* Ask the S8 re-derivation lane to re-pull + re-run the suspect stage.
-     * (The general hash-mismatch condition / Track A consumes this action.) */
+    /* Fire any due blocker escape_actions first (cheap, edge-triggered). */
     (void)blocker_supervisor_sweep();
+
+    /* The in-process curative surface for the stale-cursor / rowless-hole
+     * class: the reducer-frontier reconcile APPLY pass — the SAME entry the
+     * reducer_frontier_reconcile_light Condition's remedy calls
+     * (stage_reducer_frontier_reconcile_light). That Condition's detect() is
+     * peer-gated on connman_max_peer_height(), which reports peers' static
+     * handshake starting_height, so near tip it reads "no peer ahead" and
+     * discards the recomputed repair on every tick (observed live 2026-07-02:
+     * rowless script_validate_log/proof_validate_log hole at 3166989 pinned
+     * H* at 3166988 for 3 h while the dry-run recomputed the exact clamp
+     * every 5 s). This rung only runs after the condition layer failed to
+     * clear the stall, so it calls the apply entry DIRECTLY — no peer gate,
+     * no tear gate. Consensus-safe: the pass only purges non-canonical
+     * residue rows and clamps stage cursors; the forward stages re-derive
+     * every verdict from PoW-verified on-disk bodies. */
+    if (refold_in_progress()) {
+        /* A staged refold legitimately re-walks below-anchor heights; the
+         * reconcile would drag those cursors back up and fight the fold (the
+         * same suspension the Condition's detect() honours). The fold itself
+         * is the recovery work — hold this rung for its window. */
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-targeted-rederive skip=refold_in_progress");
+        return STICKY_RUNG_PROGRESSING;
+    }
+
+    sqlite3 *db = progress_store_db();
+    struct main_state *ms = g_ms ? g_ms : sync_monitor_main_state();
+    if (!db || !ms) {
+        LOG_FAIL("sticky_escalator",
+                 "[sticky_escalator] targeted_rederive: %s unavailable — "
+                 "cannot run the reducer-frontier reconcile",
+                 db ? "main_state" : "progress db");
+        return STICKY_RUNG_FAILED;
+    }
+
+    struct stage_reducer_frontier_reconcile_result rr;
+    if (!stage_reducer_frontier_reconcile_light(db, ms, &rr)) {
+        LOG_FAIL("sticky_escalator",
+                 "[sticky_escalator] targeted_rederive: reconcile apply "
+                 "pass failed (progress store error)");
+        return STICKY_RUNG_FAILED;
+    }
+
+    if (rr.repaired) {
+        atomic_store(&g_rederive_last_repair_unix, now_unix());
+        LOG_WARN("sticky_escalator",
+                 "[sticky_escalator] targeted_rederive repaired: hstar=%d "
+                 "coins_applied=%d noncanonical_purged=%d "
+                 "script_validate=%d->%d proof_validate=%d->%d "
+                 "tip_finalize=%d->%d",
+                 rr.hstar, rr.coins_applied_height, rr.noncanonical_purged,
+                 rr.script_validate_cursor_before,
+                 rr.script_validate_cursor_after,
+                 rr.proof_validate_cursor_before,
+                 rr.proof_validate_cursor_after,
+                 rr.tip_finalize_cursor_before,
+                 rr.tip_finalize_cursor_after);
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-targeted-rederive repaired=1 hstar=%d "
+                    "coins_applied=%d noncanonical_purged=%d "
+                    "script_validate=%d->%d proof_validate=%d->%d "
+                    "tip_finalize=%d->%d",
+                    rr.hstar, rr.coins_applied_height, rr.noncanonical_purged,
+                    rr.script_validate_cursor_before,
+                    rr.script_validate_cursor_after,
+                    rr.proof_validate_cursor_before,
+                    rr.proof_validate_cursor_after,
+                    rr.tip_finalize_cursor_before,
+                    rr.tip_finalize_cursor_after);
+        return STICKY_RUNG_PROGRESSING; /* clamps durable; stages re-derive */
+    }
+
+    /* Nothing NEW actionable, but a pass in the current window DID repair:
+     * hold while the stages consume it (see g_rederive_last_repair_unix). */
+    int64_t last_repair = atomic_load(&g_rederive_last_repair_unix);
+    if (last_repair != 0 &&
+        now_unix() - last_repair <
+            g_rung_window_secs[STICKY_RUNG_TARGETED_REDERIVE])
+        return STICKY_RUNG_PROGRESSING;
+
     event_emitf(EV_RECOVERY_ACTION, 0,
-                "action=sticky-targeted-rederive unresolved=%d",
+                "action=sticky-targeted-rederive repaired=0 "
+                "refused_coin_tear=%d refused_coin_unknown=%d unresolved=%d",
+                (int)rr.refused_coin_tear, (int)rr.refused_coin_unknown,
                 condition_engine_get_unresolved_count());
-    return STICKY_RUNG_FAILED; /* no in-process curative surface yet -> advance */
+    return STICKY_RUNG_FAILED; /* nothing actionable -> advance the ladder */
 }
 
 static enum sticky_rung_result rung_resnapshot_default(void)
@@ -441,6 +536,7 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_fires_operator_needed, 0u);
     atomic_store(&g_episodes_cleared, 0u);
     atomic_store(&g_ladder_cycles, 0u);
+    atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
     for (int i = 0; i < STICKY_RUNG_COUNT; i++) {
         atomic_store(&g_rung_dispatches[i], 0u);
         g_rung_fn[i] = NULL;

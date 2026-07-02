@@ -1112,6 +1112,8 @@ int main(void)
     failures += test_sync_watchdog_conditions();
     { extern int test_sticky_conditions(void);
       failures += test_sticky_conditions(); }
+    { extern int test_sticky_escalator(void);
+      failures += test_sticky_escalator(); }
     failures += test_peer_snapshot_conditions();
     failures += test_snapshot_receive_stalled_condition();
     failures += test_snapshot_negotiation_stalled_condition();
