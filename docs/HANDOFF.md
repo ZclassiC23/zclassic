@@ -1,4 +1,90 @@
-## CURRENT STATE (2026-07-01, live verified)
+## CURRENT STATE (2026-07-02, live: bounded self-recovery in progress)
+
+**2026-07-02 ~08:30 UTC — the fail-safe stack shipped and the live node is
+curing itself through it.** Everything below is on origin/main
+(`bd9268db6..1c5364cf8` + the F4 matrix merge `cdce010d0`); design of record:
+[`docs/work/fail-safe-architecture.md`](./work/fail-safe-architecture.md).
+
+**What shipped (nine fixes, all copy-proven + adversarially reviewed):**
+
+- **P1** condition engine: an ACTIVE episode keeps remedying/paging even when
+  detect() reads false — the fire-once limbo is gone
+  (`lib/framework/src/condition.c`).
+- **P2** atomic reorg purge: `purge_noncanonical` clamps the
+  script/proof_validate cursors in the SAME BEGIN IMMEDIATE tx as its deletes
+  — the rowless-hole birth channel is closed
+  (`app/jobs/src/stage_repair_reducer_frontier_purge.c`).
+- **P3** the reconcile-light healer runs for internal re-derivations without
+  the peer gate; refold-guarded
+  (`app/conditions/src/reducer_frontier_reconcile_light.c`).
+- **P4** every reducer stall names a repair owner + registers a typed blocker
+  (`reducer_frontier_dump.c`, `utxo_apply_stage_observe.c`).
+- **P5** the sticky escalator's targeted_rederive rung calls the real cure;
+  error paths report FAILED honestly (`app/services/src/sticky_escalator.c`).
+- **P6** boot restore: the install guard compares RAW container state
+  (raise-only — never shrinks the runtime lookahead window) and
+  `chain_restore_publish_rebuilt_tip` raises `c->height` after full rebuilds
+  (`app/services/src/chain_restore_repair.c`). Kills the two-boot heal.
+- **P7** topup hydrates contentless stubs (nBits=0, no data, nTx=0) from the
+  crash-safe projection row + re-runs `block_index_forward_pass` over the map
+  so descendant chainwork is never collapsed
+  (`app/services/src/block_index_loader_topup.c`; pinned by
+  `test_block_index_topup`).
+- **P8** a corrupt flat block-index file is no longer re-saved as a
+  flat+LevelDB union mid-boot (the stub launderer) — the shutdown save
+  persists the healed map (`config/src/boot.c`, `flat_union_tainted`).
+- **P9** the auto-reindex budget counts BOOTS, not supervisor ticks: runtime
+  requesters hold while a request is pending, and a clean post-restore boot
+  clears a TERMINAL marker (`sticky_escalator.c`, `stage_db_fault.c`,
+  `chain_restore_repair.c`).
+
+**Verification trail:** copy-proof round 3 `oneboot-final` PASS (stalled
+specimen `~/.zclassic-c23-SPECIMEN-stall-3166989` climbed 3166989→3167046 on
+its FIRST boot, offline, dead-sink peer); `make ci` ALL STAGES PASSED
+(0/486 groups); three workflows (diagnosis 14-step causal chain, 3-lens
+adversarial review, crash/byzantine/resource attack phase — 2 confirmed
+attacks, both P9, both fixed; everything else refuted). The F4
+stall-totality matrix (`lib/test/src/test_stall_totality_matrix.c`, 7 cases
+K1–K6 incl. the 3166989 regression pin) is merged.
+
+**Live state when this handoff was written:** the deploy restarted the node;
+boot-1 hydrated the live stub at h=3166988 (`stubs_hydrated=1`), passed
+post-restore integrity, and cleared a stale TERMINAL auto-reindex marker.
+The fold then hit a DIFFERENT blocker than the specimen: an unprovable-coin
+refusal at h=3167216 (`refused coin backfill status=refused_unprovable`) that
+targeted_rederive correctly refuses (parity-safe). The ladder escalated
+exactly as designed: armed ONE durable reindex request (budget 1/3), the node
+self-restarted, and boot consumed it — a full `-reindex-chainstate` is
+rebuilding the UTXO set from block data through the production validation
+pipeline (~3.17M blocks, several-hundred blk/s, ~1.5–2.5 h). **No human
+action was taken or needed — this is the fail-safe architecture working.**
+
+**For the next developer:**
+1. Verify the reindex completed and the node holds tip: `zcl_status`,
+   `zcl_state subsystem=reducer_frontier` (H\* == network tip), and
+   `~/.zclassic-c23/node.log`. If it stalled again, the stall MUST name an
+   owner (`zcl_blockers`, `zcl_state subsystem=condition_engine`) — an
+   unnamed stall is a NEW defect class; capture a specimen
+   (`tools/repro_on_copy.sh`) before touching anything.
+2. The unprovable-coin refusal at 3167216 deserves a root-cause: WHY was a
+   created-output missing/unprovable there? The reindex cures the instance;
+   the class may want its own detector. Specimen preserved at
+   `~/.zclassic-c23-SPECIMEN-stall-3166989` (pre-deploy shape).
+3. Remaining roadmap (fail-safe-architecture.md §4): LCC write rules +
+   deletions (seed_exempt out, ZCL_REPLAY_COUNT_ONLY deleted), rung-3 real
+   (runtime refold-from-anchor without restart), the subtraction pass, and
+   the full corrupt-flat quarantine (clear-before-fallback needs an
+   arena-aware block_map reset — P8 only stops the launder).
+4. Traps re-learned this session: kill prior copy-prove/diagnostic nodes BY
+   PID before launching another (a zombie holding the rpcport invalidated a
+   proof verdict); `make test | tail` masks exit codes — write to a file and
+   check `$?`; a killed `make ci` can orphan
+   `app/controllers/src/_e1_size_ceiling_fixture_tmp.c` which then breaks the
+   build (delete it).
+
+---
+
+## PRIOR STATE (2026-07-01, live verified)
 
 **2026-07-01 22:37 UTC update.** Follow-up factoids HTML cache review found
 one remaining freshness bug after the `/factoids` route fix: `/api/v1/factoids`
