@@ -74,8 +74,12 @@ stage_db_fault_note(struct stage_db_fault *f, int rc, const char *datadir,
 
     /* Persistent: request the bounded, self-terminating rebuild. The request is
      * capped per anchor episode (BOOT_AUTO_REINDEX_MAX) and pages the operator
-     * on exhaustion, so escalation can never loop. */
-    if (datadir && datadir[0]) {
+     * on exhaustion, so escalation can never loop. The count is the CROSS-BOOT
+     * attempt budget — if a request is already pending (this lifetime armed it,
+     * or the one boot consumed is still converging), do NOT increment it again:
+     * repeated runtime fault episodes must not burn boot attempts that never
+     * ran (the sticky-escalator reindex rung applies the same gate). */
+    if (datadir && datadir[0] && !boot_auto_reindex_pending(datadir)) {
         int req = boot_auto_reindex_request(datadir, anchor);
         if (req == 0)
             LOG_WARN("stage_db_fault",

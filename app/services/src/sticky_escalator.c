@@ -160,7 +160,10 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
     sqlite3 *db = progress_store_db();
     struct main_state *ms = g_ms ? g_ms : sync_monitor_main_state();
     if (!db || !ms) {
-        LOG_FAIL("sticky_escalator",
+        /* NOT LOG_FAIL: that macro returns false == STICKY_RUNG_RESOLVED
+         * here, which would report this error path as rung success and
+         * disarm the ladder. */
+        LOG_WARN("sticky_escalator",
                  "[sticky_escalator] targeted_rederive: %s unavailable — "
                  "cannot run the reducer-frontier reconcile",
                  db ? "main_state" : "progress db");
@@ -169,7 +172,7 @@ static enum sticky_rung_result rung_targeted_rederive_default(void)
 
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light(db, ms, &rr)) {
-        LOG_FAIL("sticky_escalator",
+        LOG_WARN("sticky_escalator",
                  "[sticky_escalator] targeted_rederive: reconcile apply "
                  "pass failed (progress store error)");
         return STICKY_RUNG_FAILED;
@@ -238,6 +241,23 @@ static enum sticky_rung_result rung_reindex_default(void)
                     "action=sticky-reindex-skip reason=no_datadir");
         return STICKY_RUNG_NOT_IMPLEMENTED;
     }
+    /* The on-disk count is the CROSS-BOOT attempt budget (boot_crashonly
+     * treats n in [1..MAX] as "reindex attempt n"), so it must count BOOTS
+     * that attempt the rebuild, not runtime dispatches. apply_drive
+     * re-dispatches this rung every supervisor tick; without the pending
+     * gate, three ticks burned the whole budget to TERMINAL in minutes
+     * with no reindex ever running (observed on the h=3166988 specimen,
+     * 2026-07-02) — permanently blocking the ladder's real last rung. A
+     * pending request means this lifetime's attempt is already armed (or
+     * the one boot consumed is still converging): HOLD and let the
+     * restart/boot consume it. */
+    if (boot_auto_reindex_is_terminal(g_datadir))
+        return STICKY_RUNG_FAILED;   /* budget spent -> go deeper */
+    if (boot_auto_reindex_pending(g_datadir)) {
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-reindex-hold reason=request_pending");
+        return STICKY_RUNG_PROGRESSING;
+    }
     int64_t tip = observe_tip();
     int rc = boot_auto_reindex_request(g_datadir,
                                        (int32_t)(tip > 0 ? tip : 0));
@@ -246,13 +266,14 @@ static enum sticky_rung_result rung_reindex_default(void)
                 (long long)tip, rc);
     if (rc == BOOT_AUTO_REINDEX_TERMINAL)
         return STICKY_RUNG_FAILED;   /* budget spent here -> go deeper */
-    /* Cap the RUNTIME request budget at the same bound boot enforces. Without
-     * this, apply_drive re-dispatches this rung every supervisor tick and the
-     * on-disk count climbs unbounded (observed live: 4002) — a durable-write
-     * storm that never self-terminates because the node, mid-stall, never
-     * reboots to let boot_crashonly mark the budget terminal. Persist the
-     * exhausted state now and go deeper, exactly as the boot path would. */
-    if (rc >= BOOT_AUTO_REINDEX_MAX) {
+    if (rc == 0)
+        return STICKY_RUNG_FAILED;   /* durable write failed -> go deeper */
+    /* Backstop only (the pending gate above makes this unreachable via this
+     * rung): a count already past the boot budget is exhausted — persist
+     * the terminal state exactly as boot_crashonly would and go deeper.
+     * Strictly > MAX so a legitimately armed MAX-th attempt still gets
+     * consumed by the next boot instead of being killed here. */
+    if (rc > BOOT_AUTO_REINDEX_MAX) {
         (void)boot_auto_reindex_mark_terminal(g_datadir,
                                               (int32_t)(tip > 0 ? tip : 0));
         return STICKY_RUNG_FAILED;
