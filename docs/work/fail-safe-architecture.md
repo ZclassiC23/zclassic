@@ -1,0 +1,417 @@
+# FAIL-SAFE ARCHITECTURE — the progress law + universal repair ladder
+
+**Status: DESIGN (2026-07-02). Plan of record for making "stuck-needs-a-human"
+structurally impossible.** Supersedes per-class whack-a-mole; absorbs
+`sticky-node-plan.md` and `never-stuck-plan.md` §1b. Grounded in a 6-mapper
+code audit + live forensics of the stall active while this was written.
+
+## 0. The live specimen (2026-07-02, observed on main)
+
+Live node stalled 2.3h at H\*=3166988 (header frontier 3167119). Full causal
+chain, every link verified in code + live logs:
+
+1. 00:26:38 UTC Jul 2: the node folded stale block `00001b41` at 3166989 —
+   all stage rows ok=1, coins applied. ~00:32:10: the network's canonical
+   branch (`00001763` at 3166989) arrived; `tip_fork_stale` fired and its
+   remedy invalidated the stale active tip. A real, routine 1-block reorg.
+2. `purge_noncanonical` (`app/jobs/src/stage_repair_reducer_frontier_purge.c:129-255`)
+   deleted the hash-mismatched script/proof rows at 3166989 **while leaving
+   cursors at 3167048** — deliberately manufacturing a rowless hole, on the
+   assumption the refill layer heals it. Worse: the purge runs with **no
+   enclosing BEGIN IMMEDIATE** (each DELETE auto-commits; only
+   `progress_store_tx_lock` at `:105`) and **no cursor write anywhere in the
+   TU**; and the refill scan in the same repair pass ran on a **pre-purge
+   frontier snapshot** (`stage_repair_reducer_frontier.c:555` reads before
+   the purge at `:561`), so the pass that created the hole could not see it.
+3. The refill REFUSES rowless holes below `coins_applied_height`
+   (`app/jobs/src/stage_repair_reducer_frontier_refill.c:385-391` — "replay
+   domain (inverse-delta), refusing forward refill clamp"), and the layer it
+   defers to, the stale-script/proof replay, matches only EXISTING ok=0 rows
+   (`reducer_frontier_replay.c:98-104`) — a rowless hole matches nothing.
+   **Two repair layers, mutually exclusive domains, this class in the gap.**
+4. The healer condition's detect dry-run found "nothing actionable" (no
+   clamped/refused/loudness evidence flags set for this shape,
+   `reducer_frontier_reconcile_light.c:227-238`), and its peer gate compares
+   `peer_max` to the header/download tip instead of H\*
+   (`reconcile_light.c:56-74`) — suppressing repair precisely when stalled
+   below the header tip.
+5. The condition entered the framework zombie state: `currently_active=true`,
+   `detect()=false`, `witness()=false` ⇒ `lib/framework/src/condition.c:288-296`
+   does nothing every tick, forever. Attempts froze at 1 of 5, so the
+   operator page at `attempts >= max_attempts` (condition.c:366-401) never
+   fired either. `utxo_apply` idles "by design — the reconcile-light
+   Condition is the healer" (`utxo_apply_stage_observe.c:145`), alarm fired
+   ~2000×.
+6. L0 named the blocker perfectly (`log_hole / missing-success-row @3166989`)
+   but `repair_owner=""` — the owner hint is a 3-string reason-text lookup
+   (`reducer_frontier_dump.c:69-82`) that doesn't contain
+   "missing-success-row"; and the frontier never registers into the typed
+   blocker registry, so `zcl_blockers` showed **0 active** during the stall.
+7. The advertised deep ladder is stubs: `targeted_rederive` returns FAILED
+   ("no in-process curative surface yet", `sticky_escalator.c:118-127`),
+   resnapshot / self_mint_refold / widen_peers / rebootstrap are
+   NOT_IMPLEMENTED (`:128-186`), zero `sticky_escalator_register_rung`
+   production callers; the one real rung (reindex) arms for the NEXT boot
+   while `chain_tip_watchdog.c:202-226` deliberately refuses to restart a
+   deterministic stall — so it never executes on a wedged-but-alive node.
+
+## 0b. The structural defects (each verified at file:line)
+
+| # | Defect | Where |
+|---|--------|-------|
+| D1 | **Open blocker space, enumerated healers.** Owner hint = 3-string reason lookup; `log_hole` unowned by construction; proof/utxo logs have no reason column at all (dump.c:218-220). Healer detects pattern-match specific shapes; anything else is invisible. Nothing enforces totality. | `reducer_frontier_dump.c:69-82`, `reconcile_light.c:227-238` |
+| D2 | **Fire-once meta-machinery.** Active + !detect + !witness ⇒ zombie (no retry/page/clear, forever). Pages keyed to attempts≥max, not age. Legacy conditions latch permanently at max_attempts (condition.c:220-221). Blocker escapes: 1 of N registered binary-wide; unregistered escape latches "operator must clear" (blocker.c:407-414); deadline-less blockers never sweep (blocker.c:397). | `condition.c:288-296,366-401`, `blocker.c` |
+| D3 | **No progress law.** Nothing enforces "header frontier ahead + H\* flat ⇒ escalation running." Supervisor watches ticks, not outcomes. Frontier blockers never reach the typed registry. One stale PERMANENT blocker makes every stall read "deterministic" and disables the restart rung globally (chain_tip_watchdog.c:296-297). | watchdog/supervisor layer |
+| D4 | **Repair layers can CREATE unowned states.** purge_noncanonical manufactures rowless holes assuming another layer heals them; the assumed healer refuses below the coins floor. Also: purge never touches utxo_apply_log/coins, so an orphaned block's coins stay applied with contiguity intact — **silent coins divergence with no tear signal** (safety, not just liveness). | `purge.c:129-255`, `refill.c:25-30,385-391` |
+| D5 | **The guaranteed last rung doesn't exist.** Only executable UTXO rewind base = the single compiled anchor at 3,056,758 (checkpoints.c:86-104). The per-1000-block seal ring is LIVE write-side (co-committed in the utxo_apply txn, `utxo_apply_stage.c:465`, `seal_service.c:127`) but the rewind consumer is comment-only vaporware (`seal_kv.h:7`); seals record coins_sha3 but not the set; sha3_windows_verify has zero callers; the XOR mmr_commitment is dead/forgeable. | mapper R4 findings |
+
+Historical confirmation: all ~12 stall classes since May reduce to the same
+shape — *state at height h contradicts the fold/log contract via some birth
+mechanism the enumerated healers don't recognize* (borrowed-seed rowless span,
+torn snapshot coin holes, truncated header solution, stale terminal verdicts,
+finalize/download deadlock, pointer-identity freeze, XOR-audit latch, fork
+residue, this hole). Every cure so far was instance- or class-specific.
+
+## 0c. Synthesis of the two independent designs (both completed 2026-07-02)
+
+Two designers worked the same maps from opposite frames and CONVERGED; the
+final architecture is their union — B prevents births, A guarantees response:
+
+**Design B — LOG-CURSOR CONTIGUITY (LCC), the prevention side.** Invariant:
+for every success-checked stage log L with cursor C and trusted base B, every
+height in [B+1, C) has a row in L at every commit boundary. Two write rules
+imply it, enforced at the single cursor-write chokepoint (not caller
+discipline):
+- **RAISE rule**: a cursor moves up only in a transaction that inserts the
+  covering row (the normal `stage.c:441-476` step already does this) or
+  raises the trusted base itself in the same tx with a consensus-bound hash.
+  `seed_exempt` (caller-declared trust) is DELETED; the only exemption is
+  `target <= trusted_base+1` where the base is a durable crypto-vetted fact.
+- **DELETE rule**: a transaction deleting a row at h must, in the same
+  transaction, lower that cursor and every downstream cursor to ≤ h, and
+  inverse-rewind coins to h when h is below the coins frontier — exactly the
+  shape `reducer_frontier_replay_stale_script_tx` already implements
+  (`replay_tx.c:297-365`).
+- **The universal primitive `stage_rederive_range(db, ms, lowest_stage, h)`**:
+  factor that replay tx into one general entry — created_outputs backfill +
+  inverse-delta coins rewind iff needed + delete rows [h, cursor) in the
+  stage log and all downstream logs + lower cursors + commit; the forward
+  fold rewrites fresh verdicts from PoW-verified on-disk bodies. Idempotent,
+  bounded, needs no peer (bodies are local; absent bodies go through normal
+  body_fetch). This one primitive replaces the detector zoo AND the refill
+  layer. The ONLY row it never touches: a genuine consensus reject (ok=0,
+  terminal status, stored hash == canonical) — the parity-correct named halt.
+- **Deletion list** (every remaining hole factory, verified): purge without
+  clamp (`purge.c:105-268`), `seed_exempt` (`stage_anchor.c:191` + plumbing),
+  boot force-raise (`stage_repair.c:127`), `ZCL_REPLAY_COUNT_ONLY` cursor
+  advance (`utxo_apply_stage.c:328-348` — the last second writer),
+  `stage_repair_force_stage_cursor` as a raise primitive (becomes lower-only).
+- **Ratchet**: post-commit O(log n) first-gap assertion after every
+  repair/seed tx (a hole birth becomes a loud LOG_FAIL naming stage+height,
+  never a silent pin) + lint gate restricting stage_cursor writes to the
+  chokepoint TUs.
+
+**Design A — TOTAL REPAIR FUNCTION, the response side.** Closed stall-kind
+enum minted in one header; `repair_owner` keyed on KIND (never reason
+strings), never empty; every kind dispatches to an owner whose contract is
+bounded + idempotent + ends in repaired-or-stronger-rung; totality enforced
+by a matrix CI test (synthesize each fault kind on a fixture progress.kv —
+including the exact live 3166989 shape as a pinned regression — and assert
+H\* climbs or a durable rung-3 refold request is armed) + a lint gate (kind
+strings minted only in `stall_kind.h`; every `blocker_set` site names an
+owner or registered escape).
+
+**With LCC in place, a pinned H\* has exactly five causes, each owned:**
+(a) genuine consensus reject → named PERMANENT halt, by design (parity);
+(b) disk/resource → existing typed blocker; (c) network starvation at
+body_fetch → peer machinery; (d) any stored-row-vs-fold divergence including
+corruption → `stage_rederive_range` at H\*+1 (the blocker escape);
+(e) primitive refusal (missing inverse-delta) → arm refold-from-anchor via
+the existing durable-request pattern + self-respawn via the existing
+`/proc/self/exe` path so the armed deep rung actually executes. The 7-rung
+stub escalator collapses to **3 implemented rungs: rederive → restart with
+refold armed → page** — every rung real, bounded, auto-terminating.
+
+## 1. The design in one sentence
+
+**One law, one ladder, one default owner:** if the header frontier is ahead
+and H\* has not advanced for T, a single watchdog fires a universal,
+rung-escalating repair ladder at the named blocker height; rung 1 re-derives
+everything at h from the canonical body with no knowledge of the birth
+mechanism; rungs strictly strengthen; the final rung (refold from the newest
+self-verified rolling anchor) cannot fail while disk and peers exist — so
+class-specific healers become fast-path optimizations, never correctness
+requirements.
+
+### The progress law
+
+```
+INVARIANT (H*-progress): header_frontier > H*  ∧  H* unchanged for T
+    ⇒ the universal ladder is actively executing a rung at blocker(H*+1),
+      and each unwitnessed rung hands off to a strictly stronger rung
+      within its bounded time budget. Witness for EVERY rung = H* > h.
+```
+
+L0 already always names `blocker(H*+1)` — that part is correct and stays.
+The response becomes total *by construction* instead of total by enumeration.
+
+### The universal ladder (default owner for EVERY blocker kind)
+
+- **Rung 0 — class fast-path.** Existing conditions, ≤2 attempts. Optional.
+- **Rung 1 — single-height re-derivation (the universal repair).** For
+  blocker at h, in ONE transaction: delete every stage row at h for stages ≥
+  body_fetch (ALL hashes — canonical and residue), rewind those cursors to
+  h−1, mark the canonical body (hash from the PoW-proven header chain) for
+  refetch if unreadable, let the normal stage drives re-run. Idempotent,
+  bounded, mechanism-agnostic. Implementation seed: generalize the existing
+  one-shot `stale_script_replay_tx` (already deletes stale script+proof rows
+  and re-runs one body) to be stage-general, all-hashes-at-h, rowless-hole-
+  capable, and **domain-unrestricted** (kills the refill/replay gap).
+  Coins safety: h > coins contiguous-ok frontier by definition of blocker(H\*+1)
+  when utxo_apply is the blocked stage; when the hole is BELOW
+  coins_applied_height (the live case — coins writer ran ahead), rung 1
+  re-derives script/proof verdicts only and never touches coins (verdict
+  re-derivation is pure; `DEFENSIVE` rule: same validation code, no skips).
+- **Rung 2 — window re-derivation.** Rung 1 over [h−K, h] (K ≈ seal grid,
+  1000). Catches multi-height residue/contamination, and re-verifies the
+  seal at the window base (catches D4's silent coins divergence).
+- **Rung 3 — refold from the newest verified rolling anchor ≤ h.** Reset
+  coins to the anchor set, purge stage logs above it, refold forward.
+  Bounded by anchor cadence. Preconditions maintained continuously (§3).
+- **There is no rung 4.** If disk/peers are truly gone, the node emits a
+  typed RESOURCE/DEPENDENCY blocker with syscall/peer evidence — an honest
+  named external halt, not a stuck internal state.
+
+Rules: every rung bounded in time; unwitnessed ⇒ next rung automatically;
+every transition emits an event AND a typed-registry blocker (zcl_blockers
+can never again show 0 during a stall); ladder state is durable (crash mid-
+rung resumes at the same rung, idempotent by design).
+
+### Why this ends the whack-a-mole
+
+Rung 1 repairs *state at h from first principles* (canonical body +
+re-execution) without knowing the birth mechanism; rung 3 repairs *anything
+below h* the same way. New birth mechanisms are auto-cured on day 0;
+recurring ones earn a rung-0 fast path for latency only.
+
+## 2. Framework fixes (small, immediate — D2/D3)
+
+- **F1 Kill the zombie** (`condition.c`): while `currently_active`, remedy
+  cadence continues on backoff regardless of detect() flapping; an episode
+  ends ONLY via witness-clear. detect() gates episode START, never
+  CONTINUATION.
+- **F2 Page + escalate on AGE, not attempts**: `active_for > age_budget` ⇒
+  operator page AND hand-off to the ladder, even at attempts=1.
+- **F3 Frontier ⇒ typed blocker registry, always**: `hstar_next_blocked`
+  registers a typed blocker whose escape action IS the ladder;
+  `repair_owner` defaults to `universal_ladder`, never `""`.
+- **F4 Totality gate (CI)**: test walks every emittable (kind × stage ×
+  reason) and asserts non-empty owner (trivial once F3 lands) + lint gate
+  banning `JOB_IDLE`-waiting-on-a-healer without a registered ladder binding,
+  and banning any purge/repair that deletes rows without either rewinding
+  cursors or holding a registered filler for the exact domain it creates.
+- **F5 H\*-progress watchdog**: supervisor child `chain.hstar_progress` whose
+  progress marker IS H\*; stall ⇒ fire ladder. Replaces the stub escalator's
+  arming logic (which today only triggers off conditions that detected —
+  the exact thing that fails, `sticky_escalator.c:258-266`).
+- **F6 Peer-gate fix**: `peer_lag_allows_repair` compares against H\*, not
+  the header tip (`reconcile_light.c:56-74`).
+
+## 3. Rung-3 preconditions become continuous duties (D5, sovereign cure)
+
+- **Seal ring → real rolling anchors.** The write side already co-commits
+  (block_hash, coins_sha3, count, supply) per 1000 blocks inside the
+  utxo_apply txn and ratifies at finality depth. Add: (a) retain a local
+  coins snapshot at every Mth seal grid point (M×1000 blocks; prune older),
+  SHA3-bound to the ratified seal; (b) implement the seal window_rebuild
+  consumer; (c) `-refold-from-anchor` generalizes from the one compiled
+  height to "newest verified anchor ≤ h", runtime-invocable (not boot-only).
+- **Continuous seal verify** (background duty): recompute coins_sha3 over the
+  window at each ratification; a mismatch fires the ladder at the window —
+  this converts D4's silent coins divergence from undetectable to bounded.
+- **Close the remaining hole factories** (subtraction): purge_noncanonical
+  rewinds cursors for what it deletes (or is deleted in favor of rung 1);
+  boot clamp `stage_reconcile_clamp_tip_finalize_to_floor` and the
+  seed-exempt span become unnecessary once the sovereign anchor replaces the
+  borrowed seed (in-flight, `self-verified-tip-plan.md` Act 3) — delete them.
+- Crash-atomicity is already sound (rows+cursor per txn, `stage.c:420-476`;
+  drain batches `job.h:56-81`) — keep it gated so it stays true.
+
+## 4. Execution order (each copy-proven before live; H\* CLIMB is the gate)
+
+0. **Live-cure the instance by its class** (S/M): (a) add the rowless-hole
+   detector to the stale-script replay (`reducer_frontier_replay.c:68-136`
+   detectors all require an EXISTING row; add "row ABSENT below cursor" as a
+   fourth match routing to the SAME `stale_script_replay_tx`), (b) purge
+   co-commits cursor rewind in one BEGIN IMMEDIATE (`purge.c:105-268`),
+   (c) F6 peer-gate compares H\* not header tip / bypasses for local
+   re-derivation (`reconcile_light.c:56-74,240-263`). The body at 3166989 IS
+   persisted (contiguous body frontier 3167047). Copy-prove on a copy of the
+   live stalled datadir, watch H\* climb past 3166989, deploy.
+1. **F1+F2 condition-engine zombie + age-paging** (S) — cures the meta-defect.
+2. **F3+F5 kind-keyed owner (never "") + H\*-progress watchdog** wired to
+   `stage_rederive_range` + typed-blocker mint on persistent frontier
+   blockers (M).
+3. **LCC write rules + deletions** (M): seed_exempt out, boot force-raise
+   through the cap, `ZCL_REPLAY_COUNT_ONLY` deleted, force_stage_cursor
+   lower-only, post-commit first-gap assertion + cursor-write lint gate.
+4. **F4 totality matrix test** (L): synthesize every stall kind on a fixture,
+   assert H\* climbs or rung-3 arms; pin the 3166989 shape as regression.
+5. **Rung 3 real** (L): seal-grid snapshot retention + `window_rebuild`
+   consumer + runtime refold-from-newest-anchor + self-respawn so an armed
+   refold executes without a human (the anchor mint at 3,056,758 currently
+   running is the first sovereign base of this ladder).
+6. **Subtraction pass** (M): delete the refill layer + tear/peer gates for
+   internal repairs + 4 stub escalator rungs + `diagnostic_repair_hint`
+   string table (kind-keyed now); demote bespoke conditions to rung-0;
+   delete the borrowed-seed loader once rung 3 is live.
+
+## 4a. Copy-proof round 1 findings (2026-07-02): the two-boot heal — P6 + P7
+
+The first copy-proof of P1–P5 on the stalled specimen FAILED the climb gate,
+and the failure exposed a sixth defect class: **the boot restore can leave the
+node DEGRADED for a whole process lifetime while its own repairs are already
+on disk — the heal lands on the NEXT boot** (boot-1 stayed at H\*=3166988 for
+1500 s; boot-2 of the same datadir, equally isolated to a dead-sink peer,
+climbed to 3167141 purely from local bodies).
+
+Causal chain (all verified at file:line):
+
+1. The flat block-index file was corrupt at the tip mapping → reload from
+   SQLite left the canonical tip hash `00002161b…` as a contentless stub
+   (height 0, nBits 0, no HAVE_DATA).
+2. `topup_row_cb` saw projection row h=3166988 vs loaded h=0 and REFUSED the
+   merge (`block_index_loader_topup.c:149-157` pre-fix) — discarding the
+   crash-safe projection record that carried the full header + file coords.
+3. `utxo_recovery_restore_chain_tip` resolved coins_best to the stub,
+   declared "not backed by real block data", rewound the container to
+   3166987 (`utxo_recovery_restore.c:660-669`) — c->height=3166987.
+4. `chain_restore_rebuild_active_chain`'s install guard asked
+   `active_chain_tip()/active_chain_height()` — which resolve through the
+   tip_finalize AUTHORITY (durable cursor → block-map hash lookup), not the
+   container — got "already installed at 3166988", and skipped
+   `active_chain_install_tip_slot` (`chain_restore_repair.c:102` pre-fix).
+5. Both ancestry rebuilds filled `arr[0..3166988]` directly (and the
+   block-file rebuild fully HEALED the stub in place from the on-disk
+   header, `chain_restore_disk_repair.c:442-481`) but nothing raised
+   `c->height`, so `active_chain_at(3166988)` stayed NULL
+   (`chainstate.c:283` bounds by c->height).
+6. The integrity check mixes both authorities — tip_height from the
+   authority (3166988), slot lookups bounded by the container (3166987) —
+   and reported a phantom `tip_window_holes=1 tip_slot_ok=0 tip_real=1` →
+   DEGRADED_SERVING; the stages stayed JOB_IDLE behind the un-exposed tip.
+7. Boot-1's own flat-file save + cursor clamps persisted the repairs;
+   boot-2 loaded them clean and climbed. Two boots for one heal = the exact
+   "wait for the next boot" failure mode this document exists to kill.
+
+Fixes (both container-only derived state, zero consensus surface):
+
+- **P6** `chain_restore_repair.c` — the install guard now compares CONTAINER
+  truth (`active_chain_cached_tip(c) != tip || c->height != tip_h`), and a
+  new `chain_restore_publish_rebuilt_tip()` raises c->height after any full
+  rebuild (`populated == tip_h+1`), using the slot entry the rebuild actually
+  placed (which may be the disk-verified replacement).
+- **P7** `block_index_loader_topup.c` — a height conflict against a
+  contentless stub (nBits=0 ∧ no HAVE_DATA ∧ nTx=0) hydrates the stub from
+  the projection row (tracked like an insert: pprev-link + chainwork pass
+  cover it); genuine label conflicts (loaded entry has real content) still
+  refuse loudly.
+
+## 4a-bis. Review + attack round results (2026-07-02) — P8, P9, and the raise-only correction
+
+The P6/P7 adversarial review (3 lenses → refute-or-confirm, `wf_79f7208d-58d`)
+and the re-run attack phase (crash/byzantine/resource, `wf_02ae44d3-410`)
+confirmed four more defects, all fixed the same day:
+
+- **P6 correction (raise-only)** — `chain_restore_finalize` is NOT boot-only
+  (it is the `chain_integrity_failed` runtime remedy,
+  `chain_integrity_failed.c:67`), and at runtime `c->height` legitimately
+  runs up to 8192 ABOVE the finalized tip (the lookahead window). The first
+  container guard (`c->height != tip_h`) would have fired there and
+  install_tip_slot would have SHRUNK the window mid-tick. Both the guard and
+  `chain_restore_publish_rebuilt_tip` are now raise-only: they act only when
+  the container is BEHIND the tip (or the exact tip slot is wrong), never
+  when it is ahead.
+- **P7 correction (descendant chainwork)** — a hydrated stub had
+  nChainWork==0 while detached, so PRE-EXISTING flat-loaded children above
+  it carry work collapsed through the zero; nothing recomputed them, pinning
+  best_header at the hydrated block (the pinned-best_header stall class,
+  a re-introduced two-boot heal for the work field). `topup` now re-runs the
+  canonical `block_index_forward_pass` over the whole map whenever
+  `stubs_hydrated > 0`.
+- **P8 (stub launderer)** — the corrupt-flat "quarantine" (`boot.c:1729-1776`)
+  only set `loaded=false`; the LevelDB fallback find-or-inserted ON TOP of
+  the 3.1M stale flat entries and the mid-boot save re-persisted the corrupt
+  UNION every boot — how the height-0 stub survived across generations
+  (proof: "3168944 entries in 2s" is impossible for a real LevelDB load).
+  Fixed by subtraction: the mid-boot re-save is skipped when the flat was
+  declared corrupt (`flat_union_tainted`); the shutdown save persists the
+  HEALED map. Full clear-before-fallback deferred (block_map_free leaks
+  arena entries by design; needs its own copy-prove).
+- **P9 (reindex budget burn → TERMINAL poison)** — the attack phase's only
+  two confirmed attacks, both the same defect: the escalator's reindex rung
+  called `boot_auto_reindex_request` on EVERY dispatch (5s self-heal
+  cadence), burning the 3-attempt CROSS-BOOT budget to TERMINAL in ~15s with
+  zero actual reindexes, and the TERMINAL marker was never auto-cleared
+  (`chain_restore_repair.c` gated the clear on `pending()`, false for
+  terminal) — permanently poisoning the only rebuild-from-blocks path
+  (`boot_crashonly.c:19` skips consume forever). Fixed: (a) both runtime
+  requesters (`sticky_escalator.c` reindex rung, `stage_db_fault.c`) hold
+  while a request is pending instead of re-incrementing — the budget now
+  counts BOOTS, not ticks; (b) a clean post-restore boot clears the terminal
+  marker too (the node is provably healthy, the marker describes a state
+  that no longer exists).
+
+Everything else the adversaries tried was refuted by an existing layer:
+reorg-spam lands in the explicitly-permitted growing-gap + ladder branch;
+SQLITE_BUSY storms are impossible in-process (single progress.kv connection
+behind a recursive mutex); the operator_needed-latch chain was caught.
+
+## 4b. Verification status of this document
+
+- Map + Design phases: 8 subagents completed (6 mappers, 2 independent
+  designers), all claims file:line-grounded; full outputs in the session
+  workflow transcript (`wf_70afc3c5-46d`).
+- Copy-proof round 1: P1–P5 fired correctly (reconcile clamped
+  script/proof cursors 3167048→3166989 on the copy) but the climb gate
+  FAILED on the boot-restore defect above (§4a).
+- Copy-proof round 2 (P6+P7): the NODE's own log proved the one-boot heal —
+  boot-1 of the stalled specimen hydrated the stub at load
+  (`stubs_hydrated=1, height_conflicts=0`), passed post-restore integrity
+  ("OK: tip_h=3166988 nbits clean, active_chain full"), and folded offline
+  to H\*=3167141 / coins=3167143. The SCRIPT verdict, however, was
+  INCONCLUSIVE: a leftover diagnostic node from round 1 still held
+  rpcport 18299, so the round-2 node never bound RPC and the script's polls
+  hit the zombie's mismatched cookie (401). Trap re-learned: kill every
+  prior copy-prove/diagnostic node BY PID before launching the next run.
+- Copy-proof round 3 (`oneboot-final`): clean-port re-run on the exact
+  deploy binary (P6 raise-only + P7 + forward-pass + P8 + P9 +
+  terminal-clear) — the formal deploy gate.
+- Diagnosis workflow (`wf_15dea1ec-362`, 4 mappers + synthesis): 14-step
+  causal chain, all file:line; independently converged on P6/P7 as ranks
+  1-2 and surfaced P8; refuted the duplicate-same-hash-entry theory (one
+  entry mutated across lifetimes — a view split, not an entry split).
+- Attack phase COMPLETED 2026-07-02 (13 agents, `wf_02ae44d3-410`):
+  2 confirmed (both P9), all others refuted — see §4a-bis.
+
+## 5. What this deliberately does NOT change
+
+- The fold's refusal to advance past an unproven height (consensus safety).
+- Consensus parity: rungs re-execute the SAME validation code — never skip,
+  never force-accept.
+- One authority: rungs repair stage logs/coins from bodies + PoW-bound
+  anchors; no projection or heuristic ever gates or rolls back the fold
+  (the commitment-audit lesson, kept).
+
+## 6. Observability debts found during diagnosis (fix alongside)
+
+- `zcl_node_log` MCP returns "cannot open node.log" while the file exists at
+  `~/.zclassic-c23/node.log` — path resolution bug in the live MCP config.
+- `zcl_sql` cannot reach `*_log` tables (progress.kv, not node.db) — attach
+  progress.kv read-only or add a typed read surface.
+- `legacy_mirror` WARN-spams thousands of identical lines while zclassicd
+  resyncs (RPC −28) — throttle to transitions + periodic keep-alive.
+- zclassicd (C++ reference) is itself at height 0 activating best chain;
+  until it recovers, oracle-coupled repairs (header backfill hardwired to
+  127.0.0.1:8232) have no oracle — another reason repairs must be
+  self-contained (P2P/bodies), which the ladder is.
