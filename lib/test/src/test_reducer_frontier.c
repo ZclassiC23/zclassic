@@ -843,6 +843,17 @@ static int case_dump_reports_hstar_log_hole(void)
                  strcmp(json_get_str(json_get(&out,
                            "first_hstar_blocker_reason")),
                         "missing-success-row") == 0);
+        /* kind=log_hole names its repair owner — repair_owner="" here is the
+         * 3166989 regression (a rowless hole stalled 3 h with no named
+         * owner). */
+        RF_CHECK("dump-hole: blocker repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_repair_owner")),
+                        "reducer_frontier_reconcile_light") == 0);
+        RF_CHECK("dump-hole: hstar next repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_repair_owner")),
+                        "reducer_frontier_reconcile_light") == 0);
         RF_CHECK("dump-hole: hstar next kind",
                  strcmp(json_get_str(json_get(&out,
                            "hstar_next_primary_kind")),
@@ -923,6 +934,14 @@ static int case_dump_reports_hstar_hash_split(void)
                  strcmp(json_get_str(json_get(&out,
                            "first_hstar_blocker_reason")),
                         "validate-script-hash-mismatch") == 0);
+        RF_CHECK("dump-split: blocker repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_repair_owner")),
+                        "reducer_frontier_reconcile_light") == 0);
+        RF_CHECK("dump-split: hstar next repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_repair_owner")),
+                        "reducer_frontier_reconcile_light") == 0);
         RF_CHECK("dump-split: hstar next kind",
                  strcmp(json_get_str(json_get(&out,
                            "hstar_next_primary_kind")),

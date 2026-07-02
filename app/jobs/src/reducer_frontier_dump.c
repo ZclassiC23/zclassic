@@ -66,19 +66,23 @@ static int64_t next_cursor_for_dump(const struct dump_log *log, int64_t cursor)
     return log && log->served_tip_cursor && cursor > 0 ? cursor + 1 : cursor;
 }
 
-static const char *diagnostic_repair_hint(const char *reason)
+/* Map a first-H*-blocker to the subsystem that owns its repair. Kind-keyed
+ * with a reason refinement, and NEVER empty: the reason-only table this
+ * replaced had no entry for kind=log_hole (missing-success-row), so the
+ * 3166989 script_validate_log hole dumped repair_owner="" and the 3 h stall
+ * surfaced with zero named owners. kind=ok0_failure keeps the two stored-
+ * header reasons with stale_validate_headers_repair; log_hole (refill from
+ * the on-disk body), hash_split (one-shot script re-derivation via
+ * maybe_repair_validate_script_hash_split in try_replay_repairs), and every
+ * other ok=0 reason are driven by the reducer_frontier_reconcile_light
+ * condition. */
+static const char *diagnostic_repair_hint(const char *kind, const char *reason)
 {
-    if (!reason || !reason[0])
-        return "";
-    if (strcmp(reason, "no-header-solution-backfill-required") == 0 ||
-        strcmp(reason, "header-source-hash-mismatch") == 0)
+    if (kind && strcmp(kind, "ok0_failure") == 0 && reason &&
+        (strcmp(reason, "no-header-solution-backfill-required") == 0 ||
+         strcmp(reason, "header-source-hash-mismatch") == 0))
         return "stale_validate_headers_repair";
-    /* hash_split: the reducer_frontier_reconcile_light condition drives the
-     * one-shot script re-derivation (maybe_repair_validate_script_hash_split in
-     * try_replay_repairs) and witnesses on H* advancing past the split. */
-    if (strcmp(reason, "validate-script-hash-mismatch") == 0)
-        return "reducer_frontier_reconcile_light";
-    return "";
+    return "reducer_frontier_reconcile_light";
 }
 
 static bool table_exists(sqlite3 *db, const char *name, bool *out)
@@ -500,7 +504,8 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      blocker.found ? blocker.reason : "");
     json_push_kv_str(out, "hstar_next_primary_repair_owner",
                      blocker.found
-                         ? diagnostic_repair_hint(blocker.reason)
+                         ? diagnostic_repair_hint(blocker.kind,
+                                                  blocker.reason)
                          : "");
     json_push_kv_int(out, "hstar_next_blocker_count",
                      blocker.found ? 1 : 0);
@@ -517,7 +522,8 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      blocker.found ? blocker.reason : "");
     json_push_kv_str(out, "first_hstar_blocker_repair_owner",
                      blocker.found
-                         ? diagnostic_repair_hint(blocker.reason)
+                         ? diagnostic_repair_hint(blocker.kind,
+                                                  blocker.reason)
                          : "");
 
     bool fail_found = false;
@@ -538,7 +544,9 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_str(out, "first_validate_failure_reason",
                      fail_found ? fail_reason : "");
     json_push_kv_str(out, "first_validate_failure_repair_owner",
-                     fail_found ? diagnostic_repair_hint(fail_reason) : "");
+                     fail_found
+                         ? diagnostic_repair_hint("ok0_failure", fail_reason)
+                         : "");
 
     progress_store_tx_unlock();
     return true;

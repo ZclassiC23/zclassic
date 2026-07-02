@@ -22,6 +22,11 @@
 #define STAGE_NAME "utxo_apply"
 #define REJECT_REEMIT_SECS 300
 
+/* Registry id for the durable-upstream-hole typed blocker. Named for the
+ * subsystem that OWNS the repair (the reducer_frontier log set), not for the
+ * stage that observes it. */
+#define UA_UPSTREAM_HOLE_BLOCKER_ID "reducer_frontier.upstream_log_hole"
+
 /* Fold-progress heartbeat cadence (Task A — mint/catch-up observability). One
  * LOG_INFO every UA_PROGRESS_LOG_EVERY applied heights so a from-genesis fold
  * (the mint, whose own log is ~88% schema-version spam) and the daily catch-up
@@ -138,6 +143,34 @@ void utxo_apply_upstream_hole_note(int height, uint64_t pv_cursor)
     } else {
         atomic_fetch_add(&g_ua_upstream_hole_consec, 1);
     }
+
+    /* Registry-visible typed blocker alongside the WARN + dump counters. A
+     * durable hole holds utxo_apply (and therefore H*) indefinitely, and
+     * without this record zcl_blockers reads 0 for the whole stall — the
+     * 3166989 script_validate_log/proof_validate_log hole ran 3 h with zero
+     * named blockers. DEPENDENCY, not TRANSIENT: utxo_apply cannot fill the
+     * row itself — it waits on the reducer_frontier_reconcile_light condition
+     * to refill it from the PoW-verified on-disk body (escape_action names
+     * that healer; no deadline — the condition runs on its own cadence).
+     * Deliberately NOT c->blocker/JOB_BLOCKED (see step_apply): the registry
+     * record only names the fact and never feeds the restart ladder.
+     * blocker_set's token bucket dedups the per-tick re-fire. */
+    struct blocker_record rec;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "proof_validate_log row ABSENT at height=%d while the "
+             "proof_validate cursor=%llu is already past it; utxo_apply "
+             "holds below the hole until reducer_frontier_reconcile_light "
+             "refills the row",
+             height, (unsigned long long)pv_cursor);
+    if (blocker_init(&rec, UA_UPSTREAM_HOLE_BLOCKER_ID, STAGE_NAME,
+                     BLOCKER_DEPENDENCY, reason)) {
+        snprintf(rec.escape_action, sizeof(rec.escape_action),
+                 "reducer_frontier_reconcile_light");
+        (void)blocker_set(&rec);  /* 1 = rate-limited dup — the fact persists;
+                                   * -1 already logged by blocker_set */
+    }
+
     uint64_t shown = 0;
     if (warn_throttled(changed, now, &g_upstream_hole_warn.reps,
                        &g_upstream_hole_warn.last_log, &shown)) {
@@ -160,6 +193,7 @@ void utxo_apply_upstream_hole_healed(int height)
         g_upstream_hole_warn.reps = 0;
         g_upstream_hole_warn.last_log = 0;
         atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
+        blocker_clear(UA_UPSTREAM_HOLE_BLOCKER_ID);
     }
 }
 
@@ -239,6 +273,8 @@ void utxo_apply_progress_note(int applied_height, uint64_t next_cursor)
 void utxo_apply_observe_reset(void)
 {
     utxo_apply_reject_memo_clear();
+    if (g_upstream_hole_warn.h >= 0)
+        blocker_clear(UA_UPSTREAM_HOLE_BLOCKER_ID);
     g_upstream_hole_warn.h = -1;
     g_upstream_hole_warn.reps = 0;
     g_upstream_hole_warn.last_log = 0;

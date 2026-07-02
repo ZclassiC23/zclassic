@@ -14,7 +14,13 @@
  *     utxo_apply_dump_state_json,
  *   - the WARN is transition-logged: exactly once across repeated ticks at
  *     the same height (300 s keep-alive not reached in-test),
- *   - healing the hole resumes the stage and zeroes consec.
+ *   - the hole registers the DEPENDENCY blocker
+ *     reducer_frontier.upstream_log_hole (escape_action names the healer,
+ *     reducer_frontier_reconcile_light) so zcl_blockers is non-zero for the
+ *     stall's whole duration — the 3166989 hole ran 3 h with zcl_blockers=0
+ *     because only the WARN/dump path existed,
+ *   - healing the hole resumes the stage, zeroes consec, and clears the
+ *     blocker.
  *
  * Fixture is a trimmed copy of test_utxo_apply_stage.c's synthetic chain
  * (happy path only — no fail kinds needed). */
@@ -316,6 +322,8 @@ int test_utxo_apply_upstream_hole(void)
      * past it — the durable stale-replay artifact class. */
     UH_CHECK("setup: pv row at h=0 deleted (durable hole)",
              uh_delete_pv_row(db, 0));
+    UH_CHECK("setup: upstream_log_hole blocker absent before first tick",
+             !blocker_exists("reducer_frontier.upstream_log_hole"));
     UH_CHECK("setup: stage init", utxo_apply_stage_init(&ms));
     utxo_apply_stage_set_reader(uh_reader, &sc);
     utxo_apply_stage_set_lookup(uh_lookup, &sc);
@@ -336,6 +344,26 @@ int test_utxo_apply_upstream_hole(void)
              atomic_load(&g_ua_upstream_hole_warn_total) == 1);
     UH_CHECK("hole tick 1: cursor held at 0",
              utxo_apply_stage_cursor() == 0);
+    UH_CHECK("hole tick 1: upstream_log_hole blocker registered",
+             blocker_exists("reducer_frontier.upstream_log_hole"));
+    UH_CHECK("hole tick 1: blocker class DEPENDENCY (waits on the "
+             "reconcile-light condition, never the restart ladder)",
+             blocker_class_for("reducer_frontier.upstream_log_hole")
+                 == BLOCKER_DEPENDENCY);
+    {
+        struct blocker_snapshot snaps[BLOCKER_CAP];
+        int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+        bool escape_named = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id,
+                       "reducer_frontier.upstream_log_hole") == 0 &&
+                strcmp(snaps[i].escape_action,
+                       "reducer_frontier_reconcile_light") == 0)
+                escape_named = true;
+        }
+        UH_CHECK("hole tick 1: escape_action names "
+                 "reducer_frontier_reconcile_light", escape_named);
+    }
 
     /* Repeated ticks: total counts HOLES not ticks; consec counts ticks;
      * the WARN stays at 1 (same height, 300 s keep-alive not reached). */
@@ -349,9 +377,11 @@ int test_utxo_apply_upstream_hole(void)
              uh_dump_int("upstream_hole_consec") == 6);
     UH_CHECK("hole ticks 2-6: WARN still exactly once",
              atomic_load(&g_ua_upstream_hole_warn_total) == 1);
-    UH_CHECK("hole ticks 2-6: no typed blocker (alarm path, not the "
-             "restart ladder)",
+    UH_CHECK("hole ticks 2-6: no JOB_BLOCKED restart-ladder blocker "
+             "(the hole stays out of supervisor escalation)",
              !blocker_exists("utxo_apply.apply_failed"));
+    UH_CHECK("hole ticks 2-6: upstream_log_hole blocker persists",
+             blocker_exists("reducer_frontier.upstream_log_hole"));
 
     /* Heal: restore the row; the stage resumes forward and consec zeroes
      * (the dump's "currently observing" signal); the hole evidence
@@ -361,6 +391,8 @@ int test_utxo_apply_upstream_hole(void)
              utxo_apply_stage_step_once() == JOB_ADVANCED);
     UH_CHECK("heal: consec reset to 0",
              uh_dump_int("upstream_hole_consec") == 0);
+    UH_CHECK("heal: upstream_log_hole blocker cleared",
+             !blocker_exists("reducer_frontier.upstream_log_hole"));
     UH_CHECK("heal: total stays 1 (last-hole evidence preserved)",
              uh_dump_int("upstream_hole_total") == 1);
     UH_CHECK("heal: remaining heights drain",
