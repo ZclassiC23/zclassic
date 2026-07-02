@@ -2158,7 +2158,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(event_path, sizeof(event_path),
                          "app/controllers/src/event_controller.c") == 0);
         ASSERT(repo_path(api_path, sizeof(api_path),
-                         "app/controllers/src/api_controller_status.c") == 0);
+                         "app/controllers/src/api_controller_index.c") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
@@ -2178,16 +2178,16 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"milestone\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"refold\"") != NULL);
         ASSERT(strstr(event_buf, "api_version\", \"v1\"") != NULL);
-        ASSERT(strstr(api_buf, "\\\"api_command\\\":\\\"zclassic23 api\\\"")
-               != NULL);
         ASSERT(strstr(api_buf,
-                      "\\\"milestone_command\\\":\\\"zclassic23 milestone\\\"")
-               != NULL);
+                      "json_push_kv_str(cli, \"api_command\", "
+                      "\"zclassic23 api\")") != NULL);
         ASSERT(strstr(api_buf,
-                      "\\\"refold_command\\\":\\\"zclassic23 refold\\\"")
-               != NULL);
-        ASSERT(strstr(api_buf, "\\\"compat_command\\\":\\\"./tools/z\\\"")
-               == NULL);
+                      "json_push_kv_str(cli, \"milestone_command\", "
+                      "\"zclassic23 milestone\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"refold_command\", "
+                      "\"zclassic23 refold\")") != NULL);
+        ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         PASS();
     } _test_next:;
     free(main_buf);

@@ -18,6 +18,7 @@
 #include "config/runtime.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "json/json.h"
 #include "keys/key_io.h"
 #include "models/block.h"
 #include "models/database.h"
@@ -135,7 +136,8 @@ size_t api_serve_zslp_tokens(const char *path, uint8_t *response,
     struct db_zslp_token_info tokens[64];
     size_t limit = 50;
     int count;
-    size_t w = 0;
+    struct json_value root;
+    struct json_value arr;
 
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
@@ -144,27 +146,36 @@ size_t api_serve_zslp_tokens(const char *path, uint8_t *response,
                           "Invalid limit parameter");
 
     count = db_zslp_token_list(ndb, tokens, limit);
-    w += (size_t)snprintf((char *)response + w, response_max - w,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"tokens\":[");
-    for (int i = 0; i < count && w + 256 < response_max; i++) {
-        w += (size_t)snprintf((char *)response + w, response_max - w,
-            "%s{\"token_id\":\"%s\",\"ticker\":\"%s\",\"name\":\"%s\","
-            "\"decimals\":%d,\"genesis_height\":%d,\"total_minted\":%lld}",
-            i > 0 ? "," : "",
-            tokens[i].token_id,
-            tokens[i].ticker,
-            tokens[i].name,
-            tokens[i].decimals,
-            tokens[i].genesis_height,
-            (long long)tokens[i].total_minted);
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema", "zcl.zslp_tokens.index.v1");
+    api_json_add_freshness(&root, "zslp_projection",
+                           db_zslp_max_height(ndb));
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    json_init(&arr);
+    json_set_array(&arr);
+    for (int i = 0; i < count; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "token_id", tokens[i].token_id);
+        json_push_kv_str(&item, "ticker", tokens[i].ticker);
+        json_push_kv_str(&item, "name", tokens[i].name);
+        json_push_kv_int(&item, "decimals", tokens[i].decimals);
+        json_push_kv_int(&item, "genesis_height",
+                         tokens[i].genesis_height);
+        json_push_kv_int(&item, "total_minted",
+                         tokens[i].total_minted);
+        json_push_back(&arr, &item);
+        json_free(&item);
     }
-    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
-    return w < response_max ? w : response_max;
+    json_push_kv(&root, "tokens", &arr);
+    json_free(&arr);
+
+    size_t n = api_json_ok(response, response_max, &root);
+    json_free(&root);
+    return n;
 }
 
 size_t api_serve_zslp_token(const char *token_id, uint8_t *response,
@@ -172,6 +183,7 @@ size_t api_serve_zslp_token(const char *token_id, uint8_t *response,
 {
     struct node_db *ndb = api_node_db();
     struct db_zslp_token_info token;
+    struct json_value root;
 
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
@@ -183,16 +195,21 @@ size_t api_serve_zslp_token(const char *token_id, uint8_t *response,
         return api_json_error(response, response_max, JSON_404_HEADERS,
                           "Token not found");
 
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"token_id\":\"%s\",\"ticker\":\"%s\",\"name\":\"%s\","
-        "\"decimals\":%d,\"genesis_height\":%d,\"total_minted\":%lld}",
-        token.token_id, token.ticker, token.name, token.decimals,
-        token.genesis_height, (long long)token.total_minted);
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema", "zcl.zslp_tokens.show.v1");
+    api_json_add_freshness(&root, "zslp_projection",
+                           db_zslp_max_height(ndb));
+    json_push_kv_str(&root, "token_id", token.token_id);
+    json_push_kv_str(&root, "ticker", token.ticker);
+    json_push_kv_str(&root, "name", token.name);
+    json_push_kv_int(&root, "decimals", token.decimals);
+    json_push_kv_int(&root, "genesis_height", token.genesis_height);
+    json_push_kv_int(&root, "total_minted", token.total_minted);
+
+    size_t n = api_json_ok(response, response_max, &root);
+    json_free(&root);
+    return n;
 }
 
 size_t api_serve_zslp_token_transfers(const char *path,
@@ -204,7 +221,8 @@ size_t api_serve_zslp_token_transfers(const char *path,
     struct db_zslp_transfer_info transfers[64];
     size_t limit = 50;
     int count;
-    size_t w = 0;
+    struct json_value root;
+    struct json_value arr;
 
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
@@ -217,31 +235,39 @@ size_t api_serve_zslp_token_transfers(const char *path,
                           "Invalid limit parameter");
 
     count = db_zslp_transfer_list_by_token(ndb, token_id, transfers, limit);
-    w += (size_t)snprintf((char *)response + w, response_max - w,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"token_id\":\"%s\",\"transfers\":[",
-        token_id);
-    for (int i = 0; i < count && w + 256 < response_max; i++) {
-        w += (size_t)snprintf((char *)response + w, response_max - w,
-            "%s{\"txid\":\"%s\",\"token_id\":\"%s\",\"block_height\":%d,"
-            "\"tx_type\":%d,\"amount\":%lld,\"vout\":%d%s%s%s}",
-            i > 0 ? "," : "",
-            transfers[i].txid,
-            transfers[i].token_id,
-            transfers[i].block_height,
-            transfers[i].tx_type,
-            (long long)transfers[i].amount,
-            transfers[i].vout,
-            transfers[i].to_addr_hex[0] ? ",\"to_addr_hex\":\"" : "",
-            transfers[i].to_addr_hex,
-            transfers[i].to_addr_hex[0] ? "\"" : "");
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema",
+                     "zcl.zslp_token_transfers.index.v1");
+    api_json_add_freshness(&root, "zslp_projection",
+                           db_zslp_max_height(ndb));
+    json_push_kv_str(&root, "token_id", token_id);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    json_init(&arr);
+    json_set_array(&arr);
+    for (int i = 0; i < count; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "txid", transfers[i].txid);
+        json_push_kv_str(&item, "token_id", transfers[i].token_id);
+        json_push_kv_int(&item, "block_height", transfers[i].block_height);
+        json_push_kv_int(&item, "tx_type", transfers[i].tx_type);
+        json_push_kv_int(&item, "amount", transfers[i].amount);
+        json_push_kv_int(&item, "vout", transfers[i].vout);
+        if (transfers[i].to_addr_hex[0])
+            json_push_kv_str(&item, "to_addr_hex",
+                             transfers[i].to_addr_hex);
+        json_push_back(&arr, &item);
+        json_free(&item);
     }
-    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
-    return w < response_max ? w : response_max;
+    json_push_kv(&root, "transfers", &arr);
+    json_free(&arr);
+
+    size_t n = api_json_ok(response, response_max, &root);
+    json_free(&root);
+    return n;
 }
 
 size_t api_serve_onion_announcements(const char *path,
@@ -252,7 +278,8 @@ size_t api_serve_onion_announcements(const char *path,
     struct db_onion_announcement rows[32];
     size_t limit = 16;
     int count;
-    size_t w = 0;
+    struct json_value root;
+    struct json_value arr;
 
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
@@ -261,24 +288,31 @@ size_t api_serve_onion_announcements(const char *path,
                           "Invalid limit parameter");
     memset(rows, 0, sizeof(rows));
     count = db_onion_announcement_recent(ndb, rows, limit);
-    w += (size_t)snprintf((char *)response + w, response_max - w,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"announcements\":[");
-    for (int i = 0; i < count && w + 256 < response_max; i++) {
-        w += (size_t)snprintf((char *)response + w, response_max - w,
-            "%s{\"onion_address\":\"%s\",\"announced_at\":%" PRId64
-            ",\"script_hex\":\"%s\"}",
-            i > 0 ? "," : "",
-            rows[i].onion_address,
-            rows[i].announced_at,
-            rows[i].script_hex);
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema",
+                     "zcl.onion_announcements.index.v1");
+    api_json_add_freshness(&root, "onion_projection", -1);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    json_init(&arr);
+    json_set_array(&arr);
+    for (int i = 0; i < count; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "onion_address", rows[i].onion_address);
+        json_push_kv_int(&item, "announced_at", rows[i].announced_at);
+        json_push_kv_str(&item, "script_hex", rows[i].script_hex);
+        json_push_back(&arr, &item);
+        json_free(&item);
     }
-    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
-    return w < response_max ? w : response_max;
+    json_push_kv(&root, "announcements", &arr);
+    json_free(&arr);
+
+    size_t n = api_json_ok(response, response_max, &root);
+    json_free(&root);
+    return n;
 }
 
 size_t api_serve_file_services(const char *path,
@@ -289,7 +323,8 @@ size_t api_serve_file_services(const char *path,
     struct db_file_service rows[32];
     size_t limit = 16;
     int count;
-    size_t w = 0;
+    struct json_value root;
+    struct json_value arr;
 
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
@@ -298,29 +333,35 @@ size_t api_serve_file_services(const char *path,
                           "Invalid limit parameter");
     memset(rows, 0, sizeof(rows));
     count = db_file_service_recent(ndb, rows, limit);
-    w += (size_t)snprintf((char *)response + w, response_max - w,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"file_services\":[");
-    for (int i = 0; i < count && w + 256 < response_max; i++) {
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema", "zcl.file_services.index.v1");
+    api_json_add_freshness(&root, "file_service_projection", -1);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    json_init(&arr);
+    json_set_array(&arr);
+    for (int i = 0; i < count; i++) {
         char ip_hex[33];
         for (int j = 0; j < 16; j++)
             snprintf(ip_hex + j * 2, 3, "%02x", rows[i].ip[j]);
-        w += (size_t)snprintf((char *)response + w, response_max - w,
-            "%s{\"ip\":\"%s\",\"port\":%u,\"p2p_port\":%u,"
-            "\"last_seen\":%" PRId64 ",\"is_zcl23\":%s}",
-            i > 0 ? "," : "",
-            ip_hex,
-            (unsigned)rows[i].port,
-            (unsigned)rows[i].p2p_port,
-            rows[i].last_seen,
-            rows[i].is_zcl23 ? "true" : "false");
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "ip", ip_hex);
+        json_push_kv_int(&item, "port", rows[i].port);
+        json_push_kv_int(&item, "p2p_port", rows[i].p2p_port);
+        json_push_kv_int(&item, "last_seen", rows[i].last_seen);
+        json_push_kv_bool(&item, "is_zcl23", rows[i].is_zcl23);
+        json_push_back(&arr, &item);
+        json_free(&item);
     }
-    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
-    return w < response_max ? w : response_max;
+    json_push_kv(&root, "file_services", &arr);
+    json_free(&arr);
+
+    size_t n = api_json_ok(response, response_max, &root);
+    json_free(&root);
+    return n;
 }
 
 size_t api_serve_peers(const char *path,
@@ -331,7 +372,8 @@ size_t api_serve_peers(const char *path,
     struct db_peer rows[32];
     size_t limit = 16;
     int count;
-    size_t w = 0;
+    struct json_value root;
+    struct json_value arr;
 
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
@@ -340,38 +382,42 @@ size_t api_serve_peers(const char *path,
                           "Invalid limit parameter");
     memset(rows, 0, sizeof(rows));
     count = db_peer_recent(ndb, rows, limit);
-    w += (size_t)snprintf((char *)response + w, response_max - w,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"peers\":[");
-    for (int i = 0; i < count && w + 320 < response_max; i++) {
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "schema", "zcl.peers.index.v1");
+    api_json_add_freshness(&root, "peer_projection", -1);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    json_init(&arr);
+    json_set_array(&arr);
+    for (int i = 0; i < count; i++) {
         char ip_hex[33];
         char src_hex[33];
         for (int j = 0; j < 16; j++) {
             snprintf(ip_hex + j * 2, 3, "%02x", rows[i].ip[j]);
             snprintf(src_hex + j * 2, 3, "%02x", rows[i].source[j]);
         }
-        w += (size_t)snprintf((char *)response + w, response_max - w,
-            "%s{\"ip\":\"%s\",\"port\":%u,\"services\":%llu,"
-            "\"last_seen\":%" PRId64 ",\"last_try\":%" PRId64
-            ",\"attempts\":%d,\"bandwidth_score\":%u,"
-            "\"is_zcl23\":%s%s%s%s}",
-            i > 0 ? "," : "",
-            ip_hex,
-            (unsigned)rows[i].port,
-            (unsigned long long)rows[i].services,
-            rows[i].last_seen,
-            rows[i].last_try,
-            rows[i].attempts,
-            (unsigned)rows[i].bandwidth_score,
-            rows[i].is_zcl23 ? "true" : "false",
-            rows[i].has_source ? ",\"source\":\"" : "",
-            rows[i].has_source ? src_hex : "",
-            rows[i].has_source ? "\"" : "");
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "ip", ip_hex);
+        json_push_kv_int(&item, "port", rows[i].port);
+        json_push_kv_int(&item, "services", (int64_t)rows[i].services);
+        json_push_kv_int(&item, "last_seen", rows[i].last_seen);
+        json_push_kv_int(&item, "last_try", rows[i].last_try);
+        json_push_kv_int(&item, "attempts", rows[i].attempts);
+        json_push_kv_int(&item, "bandwidth_score",
+                         (int64_t)rows[i].bandwidth_score);
+        json_push_kv_bool(&item, "is_zcl23", rows[i].is_zcl23);
+        if (rows[i].has_source)
+            json_push_kv_str(&item, "source", src_hex);
+        json_push_back(&arr, &item);
+        json_free(&item);
     }
-    w += (size_t)snprintf((char *)response + w, response_max - w, "]}");
-    return w < response_max ? w : response_max;
+    json_push_kv(&root, "peers", &arr);
+    json_free(&arr);
+
+    size_t n = api_json_ok(response, response_max, &root);
+    json_free(&root);
+    return n;
 }

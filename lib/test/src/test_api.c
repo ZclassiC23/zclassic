@@ -5,14 +5,17 @@
 #include "test/test_helpers.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
+#include "controllers/file_controller.h"
 #include "controllers/name_controller.h"
 #include "controllers/network_controller.h"
+#include "event/event.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "models/file_service.h"
 #include "models/znam.h"
 #include "net/connman.h"
 #include "net/net.h"
+#include "platform/time_compat.h"
 #include "services/block_source_policy.h"
 #include "services/node_health_service.h"
 #include "storage/progress_store.h"
@@ -21,14 +24,152 @@
 #include "validation/main_state.h"
 #include <string.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <sqlite3.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+#include <utime.h>
 
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                       const char *message);
 size_t api_resource_route_count(void);
 const char *api_resource_route_resource_at(size_t i);
 const char *api_resource_route_action_at(size_t i);
+size_t api_route_contract_count(void);
+size_t api_dynamic_resource_route_count(void);
+const char *api_dynamic_resource_route_pattern_at(size_t i);
+const char *api_dynamic_resource_route_resource_at(size_t i);
+const char *api_dynamic_resource_route_action_at(size_t i);
+void api_test_seed_supply_caches(const char *canonical, const char *legacy);
+size_t compute_deep_stats(uint8_t *r, size_t max);
+typedef int (*api_test_rpc_call_fn)(const char *method,
+                                    const char *params_json,
+                                    char *out,
+                                    size_t outmax);
+void api_test_set_rpc_call(api_test_rpc_call_fn fn);
+
+#define API_TEST_BLOCK_HASH \
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define API_TEST_PREV_HASH \
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+#define API_TEST_NEXT_HASH \
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+#define API_TEST_TXID \
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+#define API_TEST_TXID2 \
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+#define API_TEST_ADDR "t1TestLookupAddr0000000000"
+
+static int api_test_write_rpc(char *out, size_t outmax, const char *json)
+{
+    size_t len;
+
+    if (!out || outmax == 0 || !json)
+        return 0;
+    len = strlen(json);
+    if (len >= outmax)
+        len = outmax - 1;
+    memcpy(out, json, len);
+    out[len] = '\0';
+    return (int)len;
+}
+
+static int api_test_lookup_rpc(const char *method,
+                               const char *params_json,
+                               char *out,
+                               size_t outmax)
+{
+    (void)params_json;
+
+    if (strcmp(method, "getblockhash") == 0)
+        return api_test_write_rpc(out, outmax,
+            "{\"result\":\"" API_TEST_BLOCK_HASH "\",\"error\":null}");
+    if (strcmp(method, "getblock") == 0)
+        return api_test_write_rpc(out, outmax,
+            "{\"result\":{\"hash\":\"" API_TEST_BLOCK_HASH "\","
+            "\"height\":10,\"time\":1700000010,\"size\":1234,"
+            "\"difficulty\":12.5,\"confirmations\":2,"
+            "\"merkleroot\":\"abababababababababababababababababababababababababababababababab\","
+            "\"previousblockhash\":\"" API_TEST_PREV_HASH "\","
+            "\"nextblockhash\":\"" API_TEST_NEXT_HASH "\","
+            "\"nonce\":\"01020304\","
+            "\"tx\":[\"" API_TEST_TXID "\",\"" API_TEST_TXID2 "\"]},"
+            "\"error\":null}");
+    if (strcmp(method, "getrawtransaction") == 0)
+        return api_test_write_rpc(out, outmax,
+            "{\"result\":{\"txid\":\"" API_TEST_TXID "\","
+            "\"version\":4,\"size\":456,\"locktime\":0,"
+            "\"confirmations\":2,\"blockhash\":\"" API_TEST_BLOCK_HASH "\","
+            "\"height\":10,\"valuebalance\":0,"
+            "\"vout\":[{\"n\":0,\"value\":1.25,"
+            "\"scriptPubKey\":{\"addresses\":[\"" API_TEST_ADDR "\"]}}],"
+            "\"vin\":[{\"txid\":\"" API_TEST_TXID2 "\",\"vout\":1}]},"
+            "\"error\":null}");
+    if (strcmp(method, "getaddressbalance") == 0)
+        return api_test_write_rpc(out, outmax,
+            "{\"result\":{\"balance\":123456789},\"error\":null}");
+    if (strcmp(method, "getaddressutxos") == 0)
+        return api_test_write_rpc(out, outmax,
+            "{\"result\":[{\"txid\":\"" API_TEST_TXID "\","
+            "\"outputIndex\":0,\"satoshis\":123456789,\"height\":10}],"
+            "\"error\":null}");
+    return 0;
+}
+
+static const struct json_value *api_test_find_contract(
+    const struct json_value *routes,
+    const char *path)
+{
+    if (!routes || !path)
+        return NULL;
+    for (size_t i = 0; i < json_size(routes); i++) {
+        const struct json_value *item = json_at(routes, i);
+        const char *item_path = json_get_str(json_get(item, "path"));
+        if (item_path && strcmp(item_path, path) == 0)
+            return item;
+    }
+    return NULL;
+}
+
+static bool api_test_contract_has_query(const struct json_value *contract,
+                                        const char *name)
+{
+    const struct json_value *params = json_get(contract, "query_params");
+    if (!params || !name)
+        return false;
+    for (size_t i = 0; i < json_size(params); i++) {
+        const char *param = json_get_str(json_at(params, i));
+        if (param && strcmp(param, name) == 0)
+            return true;
+    }
+    return false;
+}
+
+static const struct json_value *api_test_openapi_get(
+    const struct json_value *root,
+    const char *path)
+{
+    const struct json_value *paths = json_get(root, "paths");
+    const struct json_value *path_item = json_get(paths, path);
+    return json_get(path_item, "get");
+}
+
+static bool api_test_openapi_has_param(const struct json_value *operation,
+                                       const char *name,
+                                       const char *location)
+{
+    const struct json_value *params = json_get(operation, "parameters");
+    if (!params || !name || !location)
+        return false;
+    for (size_t i = 0; i < json_size(params); i++) {
+        const struct json_value *param = json_at(params, i);
+        if (strcmp(json_get_str(json_get(param, "name")), name) == 0 &&
+            strcmp(json_get_str(json_get(param, "in")), location) == 0)
+            return true;
+    }
+    return false;
+}
 
 static struct block_index *api_test_insert_block(struct main_state *ms,
                                                  struct uint256 *hash,
@@ -159,6 +300,35 @@ static const char *api_test_body(uint8_t *resp, size_t n, size_t cap)
     return body ? body + 4 : NULL;
 }
 
+static bool api_test_expect_freshness(const struct json_value *root,
+                                      const char *source_projection,
+                                      int64_t served_height,
+                                      int64_t indexed_height,
+                                      bool fresh)
+{
+    if (!root || !source_projection)
+        return false;
+    const char *actual_source =
+        json_get_str(json_get(root, "source_projection"));
+    const char *actual_freshness =
+        json_get_str(json_get(root, "freshness"));
+    const char *actual_blocker = json_get_str(json_get(root, "blocker"));
+    if (!actual_source || strcmp(actual_source, source_projection) != 0)
+        return false;
+    if (json_get_int(json_get(root, "served_height")) != served_height)
+        return false;
+    if (json_get_int(json_get(root, "indexed_height")) != indexed_height)
+        return false;
+    if (json_get_bool(json_get(root, "fresh")) != fresh)
+        return false;
+    if (fresh) {
+        return actual_freshness && strcmp(actual_freshness, "fresh") == 0 &&
+               actual_blocker && strcmp(actual_blocker, "none") == 0;
+    }
+    return actual_freshness && strcmp(actual_freshness, "fresh") != 0 &&
+           actual_blocker && strcmp(actual_blocker, "none") != 0;
+}
+
 static bool api_test_save_model_block(struct node_db *ndb, int height,
                                       uint8_t seed)
 {
@@ -222,7 +392,18 @@ int test_api(void)
     {
         size_t n = api_handle_request("POST", "/api/blocks", NULL, 0,
                                        resp, sizeof(resp));
-        bool ok = (n > 0 && strstr((char *)resp, "405") != NULL);
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = (n > 0 && strstr((char *)resp, "405") != NULL &&
+                   body && json_read(&root, body, strlen(body)));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.rest_error.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                          "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "error")),
+                          "Method not allowed") == 0;
+        json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -241,8 +422,18 @@ int test_api(void)
     {
         size_t n = api_handle_request("GET", "/api/nonexistent", NULL, 0,
                                        resp, sizeof(resp));
-        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
-        bool ok = (n > 0 && strstr((char *)resp, "404") != NULL);
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = (n > 0 && strstr((char *)resp, "404") != NULL &&
+                   body && json_read(&root, body, strlen(body)));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.rest_error.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                          "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "error")),
+                          "Unknown API endpoint") == 0;
+        json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -262,6 +453,10 @@ int test_api(void)
         if (ok) {
             body += 4;
             ok = json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.rest_error.v1") == 0;
+            ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                              "v1") == 0;
             ok = ok && strcmp(json_get_str(json_get(&root, "error")),
                               msg) == 0;
         }
@@ -273,6 +468,9 @@ int test_api(void)
     printf("api: health escapes runtime error strings... ");
     {
         test_reset_shared_globals();
+        progress_store_close();
+        reducer_frontier_provable_tip_reset();
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
         struct error_ring *er = error_ring_global();
         const char *msg = "bad \"msg\"\n\"healthy\":true";
         error_ring_init(er);
@@ -284,11 +482,17 @@ int test_api(void)
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         const char *body = strstr((char *)resp, "\r\n\r\n");
         bool ok = n > 0 && body != NULL;
+        ok = ok && strstr((char *)resp,
+                          "HTTP/1.1 503 Service Unavailable") != NULL;
         struct json_value root;
         json_init(&root);
         if (ok) {
             body += 4;
             ok = json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.health.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "served_tip",
+                                                 0, 0, true);
             const struct json_value *errors =
                 ok ? json_get(&root, "errors") : NULL;
             ok = errors != NULL;
@@ -312,6 +516,9 @@ int test_api(void)
         }
         json_free(&root);
         error_ring_init(er);
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        test_reset_shared_globals();
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -365,9 +572,10 @@ int test_api(void)
 
     printf("api: REST index explains v1 first call and CRUD shape... ");
     {
+        uint8_t index_resp[65536];
         size_t n = api_handle_request("GET", "/api/v1", NULL, 0,
-                                      resp, sizeof(resp));
-        const char *body = api_test_body(resp, n, sizeof(resp));
+                                      index_resp, sizeof(index_resp));
+        const char *body = api_test_body(index_resp, n, sizeof(index_resp));
         struct json_value root;
         json_init(&root);
         bool ok = n > 0 && body && json_read(&root, body, strlen(body));
@@ -383,6 +591,131 @@ int test_api(void)
                           "/api/v1/agent") == 0;
         ok = ok && json_get(json_get(&root, "crud"), "read_collection") != NULL;
         ok = ok && json_size(json_get(&root, "resources")) >= 4;
+        const struct json_value *routes = json_get(&root, "route_contracts");
+        ok = ok && routes &&
+             json_size(routes) == api_route_contract_count();
+        ok = ok && json_get_int(json_get(&root, "route_contract_count")) ==
+             (int64_t)api_route_contract_count();
+        const struct json_value *hodl =
+            api_test_find_contract(routes, "/api/v1/hodl");
+        const struct json_value *wallet =
+            api_test_find_contract(routes, "/api/v1/wallet");
+        const struct json_value *zslp =
+            api_test_find_contract(routes, "/api/v1/zslp/tokens");
+        const struct json_value *names =
+            api_test_find_contract(routes, "/api/v1/names/{name}");
+        const struct json_value *legacy_name =
+            api_test_find_contract(routes, "/api/v1/name/{name}");
+        const struct json_value *swap_chains =
+            api_test_find_contract(routes, "/api/v1/swaps/chains");
+        const struct json_value *legacy_swap_chains =
+            api_test_find_contract(routes, "/api/v1/swap_chains");
+        const struct json_value *events =
+            api_test_find_contract(routes, "/api/v1/events");
+        const struct json_value *supply =
+            api_test_find_contract(routes, "/api/v1/supply");
+        const struct json_value *block_show =
+            api_test_find_contract(routes, "/api/v1/blocks/{height_or_hash}");
+        const struct json_value *legacy_block_show =
+            api_test_find_contract(routes, "/api/v1/block/{height_or_hash}");
+        const struct json_value *tx_show =
+            api_test_find_contract(routes, "/api/v1/transactions/{txid}");
+        const struct json_value *legacy_tx_show =
+            api_test_find_contract(routes, "/api/v1/tx/{txid}");
+        const struct json_value *address_show =
+            api_test_find_contract(routes, "/api/v1/addresses/{address}");
+        const struct json_value *legacy_address_show =
+            api_test_find_contract(routes, "/api/v1/address/{address}");
+        ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
+                                    "response_schema")),
+                                  "zcl.hodl_wave.v1") == 0;
+        ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
+                                    "error_schema")),
+                                  "zcl.rest_error.v1") == 0;
+        ok = ok && hodl && json_get_bool(json_get(hodl,
+                                                  "freshness_scoped"));
+        ok = ok && wallet && json_get_bool(json_get(wallet, "private"));
+        ok = ok && wallet && strcmp(json_get_str(json_get(wallet, "auth")),
+                                    "operator_private") == 0;
+        ok = ok && wallet && strcmp(json_get_str(json_get(wallet,
+                                    "auth_policy")),
+                                    "operator_private") == 0;
+        ok = ok && hodl && json_get_bool(json_get(hodl,
+                                    "gateway_auth_compatible"));
+        ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
+                                    "preferred_service_auth")),
+                                  "hash512_sha3_gost_commitments") == 0;
+        const struct json_value *hodl_telemetry =
+            json_get(hodl, "telemetry");
+        ok = ok && hodl_telemetry &&
+             strcmp(json_get_str(json_get(hodl_telemetry, "counter")),
+                    "zcl_api_requests_total") == 0;
+        ok = ok && hodl_telemetry &&
+             strcmp(json_get_str(json_get(hodl_telemetry,
+                                          "latency_histogram")),
+                    "zcl_api_request_duration_seconds") == 0;
+        const struct json_value *hodl_crypto =
+            json_get(hodl, "crypto_policy");
+        ok = ok && hodl_crypto &&
+             strcmp(json_get_str(json_get(hodl_crypto,
+                                          "service_auth_primary_digest")),
+                    "SHA3-512") == 0;
+        ok = ok && hodl_crypto &&
+             strcmp(json_get_str(json_get(hodl_crypto,
+                                          "service_auth_secondary_digest")),
+                    "GOST R 34.11-2012-512") == 0;
+        ok = ok && hodl_crypto &&
+             json_get_int(json_get(hodl_crypto, "hash_output_bits")) == 512;
+        ok = ok && hodl_crypto &&
+             json_get_bool(json_get(hodl_crypto, "requires_all_digests"));
+        ok = ok && hodl_crypto &&
+             !json_get_bool(json_get(hodl_crypto,
+                                     "signature_scheme_claimed"));
+        ok = ok && zslp && api_test_contract_has_query(zslp, "limit");
+        ok = ok && zslp && json_get_bool(json_get(zslp, "pagination"));
+        ok = ok && events && api_test_contract_has_query(events, "limit");
+        ok = ok && events && api_test_contract_has_query(events, "type");
+        ok = ok && events && strcmp(json_get_str(json_get(events,
+                                    "freshness")),
+                                    "event_projection") == 0;
+        ok = ok && supply && strcmp(json_get_str(json_get(supply,
+                                    "response_schema")),
+                                    "zcl.supply.v1") == 0;
+        ok = ok && supply && strcmp(json_get_str(json_get(supply,
+                                    "compat_response_schema")),
+                                    "zcl.supply_legacy_number.v1") == 0;
+        ok = ok && block_show && json_get_bool(json_get(block_show,
+                                                        "canonical"));
+        ok = ok && legacy_block_show &&
+             strcmp(json_get_str(json_get(legacy_block_show,
+                                          "legacy_alias_of")),
+                    "/api/v1/blocks/{height_or_hash}") == 0;
+        ok = ok && tx_show && strcmp(json_get_str(json_get(tx_show,
+                                    "response_schema")),
+                                    "zcl.transactions.show.v1") == 0;
+        ok = ok && legacy_tx_show &&
+             strcmp(json_get_str(json_get(legacy_tx_show,
+                                          "legacy_alias_of")),
+                    "/api/v1/transactions/{txid}") == 0;
+        ok = ok && address_show &&
+             strcmp(json_get_str(json_get(address_show, "freshness")),
+                    "utxo_projection") == 0;
+        ok = ok && legacy_address_show &&
+             strcmp(json_get_str(json_get(legacy_address_show,
+                                          "legacy_alias_of")),
+                    "/api/v1/addresses/{address}") == 0;
+        ok = ok && names && json_get_bool(json_get(names, "canonical"));
+        ok = ok && legacy_name &&
+             !json_get_bool(json_get(legacy_name, "canonical"));
+        ok = ok && legacy_name &&
+             strcmp(json_get_str(json_get(legacy_name, "legacy_alias_of")),
+                    "/api/v1/names/{name}") == 0;
+        ok = ok && swap_chains && json_get_bool(json_get(swap_chains,
+                                                         "canonical"));
+        ok = ok && legacy_swap_chains &&
+             strcmp(json_get_str(json_get(legacy_swap_chains,
+                                          "legacy_alias_of")),
+                    "/api/v1/swaps/chains") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "first_tool")),
                           "zcl_agent") == 0;
@@ -406,6 +739,129 @@ int test_api(void)
                           "zclassic23 refold") == 0;
         ok = ok && json_get(json_get(&root, "cli"),
                             "compat_command") == NULL;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: OpenAPI document is generated from route contracts... ");
+    {
+        static uint8_t openapi_resp[262144];
+        size_t n = api_handle_request("GET", "/api/v1/openapi", NULL, 0,
+                                      openapi_resp, sizeof(openapi_resp));
+        const char *body = api_test_body(openapi_resp, n,
+                                         sizeof(openapi_resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.openapi.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "openapi")),
+                          "3.1.0") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "info"),
+                                                "version")),
+                          "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_at(json_get(&root,
+                                      "servers"), 0), "url")),
+                          "/api/v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                          "x-zcl-crypto-policy"),
+                          "service_auth_primary_digest")),
+                          "SHA3-512") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                          "x-zcl-crypto-policy"),
+                          "service_auth_secondary_digest")),
+                          "GOST R 34.11-2012-512") == 0;
+        ok = ok && json_get_int(json_get(&root,
+                          "x-route-contract-count")) ==
+                          (int64_t)api_route_contract_count();
+
+        const struct json_value *hodl =
+            api_test_openapi_get(&root, "/api/v1/hodl");
+        const struct json_value *wallet =
+            api_test_openapi_get(&root, "/api/v1/wallet");
+        const struct json_value *events =
+            api_test_openapi_get(&root, "/api/v1/events");
+        const struct json_value *block_show =
+            api_test_openapi_get(&root, "/api/v1/blocks/{height_or_hash}");
+        const struct json_value *legacy_name =
+            api_test_openapi_get(&root, "/api/v1/name/{name}");
+        const struct json_value *supply =
+            api_test_openapi_get(&root, "/api/v1/supply");
+        const struct json_value *openapi =
+            api_test_openapi_get(&root, "/api/v1/openapi");
+
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(hodl, "x-resource")),
+                    "hodl") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(hodl, "x-response-schema")),
+                    "zcl.hodl_wave.v1") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(hodl, "x-auth-policy")),
+                    "public") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(json_get(hodl,
+                    "x-zcl-telemetry"), "counter")),
+                    "zcl_api_requests_total") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(json_get(hodl,
+                    "x-zcl-crypto-policy"), "service_auth_primary_digest")),
+                    "SHA3-512") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(json_get(hodl,
+                    "x-zcl-crypto-policy"),
+                    "service_auth_secondary_digest")),
+                    "GOST R 34.11-2012-512") == 0;
+        const struct json_value *hodl_200 =
+            json_get(json_get(hodl, "responses"), "200");
+        ok = ok && strcmp(json_get_str(json_get(json_get(json_get(
+            json_get(hodl_200, "content"), "application/json"), "schema"),
+            "$ref")), "#/components/schemas/zcl.hodl_wave.v1") == 0;
+
+        ok = ok && wallet && json_get_bool(json_get(wallet, "x-private"));
+        ok = ok && wallet && json_size(json_get(wallet, "security")) == 1;
+        ok = ok && events &&
+             api_test_openapi_has_param(events, "limit", "query");
+        ok = ok && events &&
+             api_test_openapi_has_param(events, "type", "query");
+        ok = ok && block_show &&
+             api_test_openapi_has_param(block_show, "height_or_hash", "path");
+        ok = ok && legacy_name &&
+             strcmp(json_get_str(json_get(legacy_name,
+                                          "x-legacy-alias-of")),
+                    "/api/v1/names/{name}") == 0;
+        ok = ok && supply &&
+             strcmp(json_get_str(json_get(supply,
+                                          "x-compat-response-schema")),
+                    "zcl.supply_legacy_number.v1") == 0;
+        ok = ok && openapi &&
+             strcmp(json_get_str(json_get(openapi, "x-response-schema")),
+                    "zcl.openapi.v1") == 0;
+
+        const struct json_value *components = json_get(&root, "components");
+        const struct json_value *schemas = json_get(components, "schemas");
+        const struct json_value *security =
+            json_get(components, "securitySchemes");
+        const struct json_value *error_schema =
+            json_get(schemas, "zcl.rest_error.v1");
+        const struct json_value *error_properties =
+            json_get(error_schema, "properties");
+        ok = ok && json_get(schemas, "zcl.wallet_status.v1") != NULL;
+        ok = ok && error_schema != NULL;
+        ok = ok && strcmp(json_get_str(json_get(error_schema, "type")),
+                          "object") == 0;
+        ok = ok && json_get(error_properties, "schema") != NULL;
+        ok = ok && json_get(error_properties, "api_version") != NULL;
+        ok = ok && json_get(error_properties, "error") != NULL;
+        ok = ok && json_size(json_get(error_schema, "required")) == 3;
+        ok = ok && strcmp(json_get_str(json_get(json_get(schemas,
+                                      "zcl.supply_legacy_number.v1"),
+                                      "type")),
+                          "number") == 0;
+        ok = ok && json_get(security, "operatorAuth") != NULL;
+        ok = ok && json_get(security, "serviceHash512Auth") != NULL;
         json_free(&root);
 
         if (ok) printf("OK\n");
@@ -480,6 +936,8 @@ int test_api(void)
         ok = ok && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.rest_error.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
+                          "v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "error")),
                           "unsupported_api_version") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
@@ -531,6 +989,212 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: dynamic resource routes expose REST member metadata... ");
+    {
+        bool saw_block = false;
+        bool saw_legacy_block = false;
+        bool saw_tx = false;
+        bool saw_legacy_tx = false;
+        bool saw_address = false;
+        bool saw_legacy_address = false;
+        bool saw_token = false;
+        bool saw_transfer = false;
+        bool saw_file = false;
+        bool saw_name = false;
+        bool saw_legacy_name = false;
+        size_t count = api_dynamic_resource_route_count();
+        for (size_t i = 0; i < count; i++) {
+            const char *pattern = api_dynamic_resource_route_pattern_at(i);
+            const char *resource = api_dynamic_resource_route_resource_at(i);
+            const char *action = api_dynamic_resource_route_action_at(i);
+            if (!pattern || !resource || !action)
+                continue;
+            if (strcmp(pattern, "/api/blocks/{height_or_hash}") == 0 &&
+                strcmp(resource, "blocks") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_block = true;
+            if (strcmp(pattern, "/api/block/{height_or_hash}") == 0 &&
+                strcmp(resource, "blocks") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_legacy_block = true;
+            if (strcmp(pattern, "/api/transactions/{txid}") == 0 &&
+                strcmp(resource, "transactions") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_tx = true;
+            if (strcmp(pattern, "/api/tx/{txid}") == 0 &&
+                strcmp(resource, "transactions") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_legacy_tx = true;
+            if (strcmp(pattern, "/api/addresses/{address}") == 0 &&
+                strcmp(resource, "addresses") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_address = true;
+            if (strcmp(pattern, "/api/address/{address}") == 0 &&
+                strcmp(resource, "addresses") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_legacy_address = true;
+            if (strcmp(pattern, "/api/zslp/tokens/{token_id}") == 0 &&
+                strcmp(resource, "zslp_tokens") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_token = true;
+            if (strcmp(pattern, "/api/zslp/tokens/{token_id}/transfers") == 0 &&
+                strcmp(resource, "zslp_token_transfers") == 0 &&
+                strcmp(action, "index") == 0)
+                saw_transfer = true;
+            if (strcmp(pattern, "/api/files/{sha3}") == 0 &&
+                strcmp(resource, "files") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_file = true;
+            if (strcmp(pattern, "/api/names/{name}") == 0 &&
+                strcmp(resource, "names") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_name = true;
+            if (strcmp(pattern, "/api/name/{name}") == 0 &&
+                strcmp(resource, "names") == 0 &&
+                strcmp(action, "show") == 0)
+                saw_legacy_name = true;
+        }
+        bool ok = count >= 16 && saw_block && saw_legacy_block && saw_tx &&
+                  saw_legacy_tx && saw_address && saw_legacy_address &&
+                  saw_token && saw_transfer && saw_file && saw_name &&
+                  saw_legacy_name;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: lookup resources emit REST schemas and freshness... ");
+    {
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(11);
+        api_test_set_rpc_call(api_test_lookup_rpc);
+
+        size_t n = api_handle_request("GET", "/api/v1/blocks/10", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.blocks.show.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_height",
+                                             11, 11, true);
+        ok = ok && json_get_int(json_get(&root, "height")) == 10;
+        ok = ok && json_get_int(json_get(&root, "num_tx")) == 2;
+        ok = ok && json_get_int(json_get(&root, "tx_returned")) == 2;
+        ok = ok && !json_get_bool(json_get(&root, "tx_truncated"));
+        ok = ok && strcmp(json_get_str(json_at(json_get(&root, "tx"), 0)),
+                          API_TEST_TXID) == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/block/10", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.blocks.show.v1") == 0;
+        ok = ok && json_get_int(json_get(&root, "height")) == 10;
+        json_free(&root);
+
+        n = api_handle_request("GET",
+                               "/api/v1/transactions/" API_TEST_TXID,
+                               NULL, 0, resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.transactions.show.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_height",
+                                             11, 11, true);
+        ok = ok && strcmp(json_get_str(json_get(&root, "txid")),
+                          API_TEST_TXID) == 0;
+        const struct json_value *vout = json_get(&root, "vout");
+        const struct json_value *vin = json_get(&root, "vin");
+        ok = ok && json_get_int(json_get(&root, "vout_returned")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(json_at(vout, 0),
+                                                "address")),
+                          API_TEST_ADDR) == 0;
+        ok = ok && json_get_int(json_get(json_at(vin, 0), "vout")) == 1;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/addresses/" API_TEST_ADDR,
+                               NULL, 0, resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.addresses.show.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "utxo_projection",
+                                             11, 11, true);
+        ok = ok && json_get_int(json_get(&root, "balance_sat")) ==
+                  123456789;
+        ok = ok && json_get_int(json_get(&root, "utxo_count")) == 1;
+        const struct json_value *utxos = json_get(&root, "utxos");
+        ok = ok && strcmp(json_get_str(json_get(json_at(utxos, 0),
+                                                "txid")),
+                          API_TEST_TXID) == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/address/" API_TEST_ADDR,
+                               NULL, 0, resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.addresses.show.v1") == 0;
+        ok = ok && json_get_int(json_get(&root, "balance_sat")) ==
+                  123456789;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/tx/" API_TEST_TXID,
+                               NULL, 0, resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.transactions.show.v1") == 0;
+        json_free(&root);
+
+        api_test_set_rpc_call(NULL);
+        reducer_frontier_provable_tip_reset();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: events resource emits REST envelope and freshness... ");
+    {
+        event_log_init();
+        progress_store_close();
+        reducer_frontier_provable_tip_reset();
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        event_emitf(EV_NODE_READY, 0, "height=4 peers=1");
+
+        size_t n = api_handle_request("GET",
+                                      "/api/events?limit=5&type=sys.",
+                                      NULL, 0, resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.events.index.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "event_projection",
+                                             0, 0, true);
+        ok = ok && strcmp(json_get_str(json_get(&root, "type")),
+                          "sys.") == 0;
+        ok = ok && json_get_int(json_get(&root, "limit")) == 5;
+        const struct json_value *events = json_get(&root, "events");
+        ok = ok && events && json_size(events) == 1;
+        ok = ok && strcmp(json_get_str(json_get(json_at(events, 0),
+                                                "type")),
+                          "sys.ready") == 0;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: empty block ID not routed... ");
     {
         size_t n = api_handle_request("GET", "/api/block/", NULL, 0,
@@ -578,6 +1242,22 @@ int test_api(void)
         ok = ok && strstr((char *)resp, "\"tip_height\":1") != NULL;
         ok = ok && strstr((char *)resp, expected) != NULL;
         ok = ok && strstr((char *)resp, forbidden) == NULL;
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.node_status.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_tip",
+                                             1, 1, true);
+        const struct json_value *chain = json_get(&root, "chain");
+        ok = ok && chain != NULL;
+        ok = ok && json_get_int(json_get(chain, "tip_height")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(chain, "tip_hash")),
+                          hstar_hex) == 0;
+        const struct json_value *errors = json_get(&root, "errors");
+        ok = ok && errors && json_get(errors, "recent") != NULL;
+        json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         reducer_frontier_provable_tip_reset();
@@ -605,6 +1285,8 @@ int test_api(void)
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_tip",
+                                             2, 2, true);
         ok = ok && json_get(&root, "status") != NULL;
         ok = ok && json_get(&root, "height") != NULL;
         ok = ok && json_get(&root, "recommended_endpoints") != NULL;
@@ -638,6 +1320,8 @@ int test_api(void)
                           "zcl.public_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_tip",
+                                             2, 2, true);
         json_free(&root);
 
         n = api_handle_request("GET", "/api/v1/node", NULL, 0,
@@ -647,6 +1331,9 @@ int test_api(void)
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "source_projection")),
+                          "served_tip") == 0;
         json_free(&root);
 
         n = api_handle_request("GET", "/api/agent", NULL, 0,
@@ -656,6 +1343,9 @@ int test_api(void)
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "source_projection")),
+                          "served_tip") == 0;
         json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
@@ -720,6 +1410,11 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "primary_blocker")),
                               "none") == 0;
+            ok = ok && json_get_int(json_get(&root, "served_height")) == 2;
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "source_projection")),
+                              "served_tip") == 0;
+            ok = ok && json_get(&root, "freshness") != NULL;
             json_free(&root);
         }
 
@@ -787,6 +1482,11 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "primary_blocker")),
                               "download_queue_idle") == 0;
+            ok = ok && json_get_int(json_get(&root, "served_height")) == 1;
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "source_projection")),
+                              "served_tip") == 0;
+            ok = ok && json_get(&root, "freshness") != NULL;
             json_free(&root);
         }
 
@@ -859,6 +1559,14 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "primary_blocker")),
                               "none") == 0;
+            ok = ok && json_get_int(json_get(&root, "served_height")) == 2;
+            ok = ok && json_get_int(json_get(&root, "indexed_height")) >= 2;
+            ok = ok && json_get_bool(json_get(&root, "fresh"));
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "source_projection")),
+                              "served_tip") == 0;
+            ok = ok && strcmp(json_get_str(json_get(&root, "blocker")),
+                              "none") == 0;
             json_free(&root);
         }
 
@@ -911,7 +1619,8 @@ int test_api(void)
         ok = ok && json_get_int(json_get(&root, "indexed_tip_height")) == 8;
         ok = ok && json_get_int(json_get(&root, "block_tip_height")) == 8;
         ok = ok && json_get_int(json_get(&root, "utxo_tip_height")) == 6;
-        ok = ok && json_get_bool(json_get(&root, "fresh"));
+        ok = ok && api_test_expect_freshness(&root, "utxo_projection",
+                                             7, 8, true);
         json_free(&root);
 
         reducer_frontier_provable_tip_set(8);
@@ -924,12 +1633,62 @@ int test_api(void)
         ok = ok && json_get_int(json_get(&root, "served_tip_height")) == 8;
         ok = ok && json_get_int(json_get(&root, "indexed_tip_height")) == 8;
         ok = ok && json_get_int(json_get(&root, "block_tip_height")) == 8;
+        ok = ok && api_test_expect_freshness(&root, "utxo_projection",
+                                             8, 8, true);
         json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         api_stop_cache();
         reducer_frontier_provable_tip_reset();
         progress_store_close();
+        node_db_close(&ndb);
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: deep stats suppressed envelope has schema and freshness... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        uint8_t stats_resp[65536];
+        memset(&ndb, 0, sizeof(ndb));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_deep_stats_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        progress_store_close();
+        reducer_frontier_provable_tip_reset();
+        bool ok = node_db_open(&ndb, dbpath);
+        api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+        size_t n = compute_deep_stats(stats_resp, sizeof(stats_resp));
+        const char *body = api_test_body(stats_resp, n, sizeof(stats_resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.stats.deep.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_height",
+                                             0, 0, true);
+        ok = ok && !json_get_bool(json_get(&root, "history_index_usable"));
+        ok = ok && json_get_bool(json_get(&root,
+                                          "unsafe_sections_suppressed"));
+        ok = ok && strcmp(json_get_str(json_get(&root, "reason")),
+                          "blocks projection is empty") == 0;
+        ok = ok && json_get(json_get(&root, "utxo"), "count") != NULL;
+        ok = ok && json_get(json_get(&root, "index"), "blocks") != NULL;
+        json_free(&root);
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        progress_store_close();
+        reducer_frontier_provable_tip_reset();
         node_db_close(&ndb);
 
         char cmd[384];
@@ -1123,6 +1882,45 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: canonical supply is REST; compat supply stays numeric... ");
+    {
+        const char *canonical =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            "{\"schema\":\"zcl.supply.v1\",\"served_height\":9,"
+            "\"indexed_height\":9,\"fresh\":true,\"freshness\":\"fresh\","
+            "\"source_projection\":\"served_height\",\"blocker\":\"none\","
+            "\"height\":9,\"supply_zatoshi\":11250000000,"
+            "\"supply\":112.5}";
+        const char *legacy =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            "112.50000000";
+        api_test_seed_supply_caches(canonical, legacy);
+
+        size_t n = api_handle_request("GET", "/api/v1/supply", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.supply.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "served_height",
+                                             9, 9, true);
+        ok = ok && json_get_int(json_get(&root, "height")) == 9;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/supply", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        ok = ok && body && strcmp(body, "112.50000000") == 0;
+        api_test_seed_supply_caches(NULL, NULL);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: zslp token resources serve REST reads... ");
     {
         char dbdir[256];
@@ -1147,23 +1945,54 @@ int test_api(void)
             ok = ok && db_zslp_token_save_key(&ndb,
                 "5555555555555555555555555555555555555555555555555555555555555555",
                 "HEX55", "Hex Token", 0, "", 99, 77);
+            ok = ok && api_test_seed_durable_tip(dbdir, 99);
+            reducer_frontier_provable_tip_reset();
             api_set_state(NULL, NULL, NULL, &ndb, dbdir);
 
             size_t n = api_handle_request("GET", "/api/zslp/tokens?limit=10",
                                           NULL, 0, resp, sizeof(resp));
             ok = ok && (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
-            ok = ok && (strstr((char *)resp, "\"tokens\"") != NULL);
-            ok = ok && (strstr((char *)resp, "APITOKEN") != NULL);
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.zslp_tokens.index.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "zslp_projection",
+                                                 99, 99, true);
+            ok = ok && json_size(json_get(&root, "tokens")) >= 2;
+            ok = ok && (strstr(body, "APITOKEN") != NULL);
+            json_free(&root);
 
             n = api_handle_request("GET", "/api/zslp/tokens/APITOKEN",
                                    NULL, 0, resp, sizeof(resp));
-            ok = ok && (n > 0) && (strstr((char *)resp, "\"token_id\":\"APITOKEN\"") != NULL);
+            ok = ok && (n > 0);
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.zslp_tokens.show.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "zslp_projection",
+                                                 99, 99, true);
+            ok = ok && strcmp(json_get_str(json_get(&root, "token_id")),
+                              "APITOKEN") == 0;
+            json_free(&root);
 
             n = api_handle_request("GET",
                 "/api/zslp/tokens/5555555555555555555555555555555555555555555555555555555555555555/transfers?limit=5",
                 NULL, 0, resp, sizeof(resp));
-            ok = ok && (n > 0) && (strstr((char *)resp, "\"transfers\"") != NULL);
-            ok = ok && (strstr((char *)resp, "\"amount\":77") != NULL);
+            ok = ok && (n > 0);
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.zslp_token_transfers.index.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "zslp_projection",
+                                                 99, 99, true);
+            ok = ok && json_size(json_get(&root, "transfers")) == 1;
+            ok = ok && json_get_int(json_get(json_at(json_get(&root,
+                                      "transfers"), 0), "amount")) == 77;
+            json_free(&root);
 
             n = api_handle_request("GET", "/api/zslp/tokens/BAD-TOKEN!",
                                    NULL, 0, resp, sizeof(resp));
@@ -1174,6 +2003,8 @@ int test_api(void)
             ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
 
             api_set_state(NULL, NULL, NULL, NULL, NULL);
+            reducer_frontier_provable_tip_reset();
+            progress_store_close();
             node_db_close(&ndb);
         }
 
@@ -1211,19 +2042,33 @@ int test_api(void)
             b.announced_at = 2;
             ok = db_onion_announcement_save(&ndb, &a);
             ok = ok && db_onion_announcement_save(&ndb, &b);
+            ok = ok && api_test_seed_durable_tip(dbdir, 77);
+            reducer_frontier_provable_tip_reset();
             api_set_state(NULL, NULL, NULL, &ndb, dbdir);
 
             size_t n = api_handle_request("GET", "/api/onion/announcements?limit=2",
                                           NULL, 0, resp, sizeof(resp));
-            ok = ok && (n > 0) && (strstr((char *)resp, "\"announcements\"") != NULL);
-            ok = ok && (strstr((char *)resp,
+            ok = ok && (n > 0);
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.onion_announcements.index.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "onion_projection",
+                                                 77, 77, true);
+            ok = ok && json_size(json_get(&root, "announcements")) == 2;
+            ok = ok && (strstr(body,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion") != NULL);
+            json_free(&root);
 
             n = api_handle_request("GET", "/api/onion/announcements?limit=99",
                                    NULL, 0, resp, sizeof(resp));
             ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
 
             api_set_state(NULL, NULL, NULL, NULL, NULL);
+            reducer_frontier_provable_tip_reset();
+            progress_store_close();
             node_db_close(&ndb);
         }
 
@@ -1254,20 +2099,107 @@ int test_api(void)
             fs.port = 8080;
             fs.is_zcl23 = true;
             ok = db_file_service_save(&ndb, &fs);
+            ok = ok && api_test_seed_durable_tip(dbdir, 88);
+            reducer_frontier_provable_tip_reset();
             api_set_state(NULL, NULL, NULL, &ndb, dbdir);
 
             size_t n = api_handle_request("GET", "/api/file-services?limit=1",
                                           NULL, 0, resp, sizeof(resp));
-            ok = ok && (n > 0) && (strstr((char *)resp, "\"file_services\"") != NULL);
-            ok = ok && (strstr((char *)resp, "\"port\":8080") != NULL);
+            ok = ok && (n > 0);
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.file_services.index.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root,
+                                                 "file_service_projection",
+                                                 88, 88, true);
+            ok = ok && json_size(json_get(&root, "file_services")) == 1;
+            ok = ok && json_get_int(json_get(json_at(json_get(&root,
+                                      "file_services"), 0), "port")) == 8080;
+            json_free(&root);
 
             n = api_handle_request("GET", "/api/file-services?limit=99",
                                    NULL, 0, resp, sizeof(resp));
             ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
 
             api_set_state(NULL, NULL, NULL, NULL, NULL);
+            reducer_frontier_provable_tip_reset();
+            progress_store_close();
             node_db_close(&ndb);
         }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: file manifest exposes REST envelope and freshness... ");
+    {
+        char dbdir[256];
+        char blocksdir[320];
+        char blkpath[384];
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_manifest_%d",
+                 (int)getpid());
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", dbdir);
+        snprintf(blkpath, sizeof(blkpath), "%s/blk00000.dat", blocksdir);
+        mkdir(dbdir, 0755);
+        mkdir(blocksdir, 0755);
+
+        FILE *f = fopen(blkpath, "wb");
+        bool ok = f != NULL;
+        if (ok) {
+            static const unsigned char payload[] = {
+                0x5a, 0x43, 0x4c, 0x32, 0x33, 0x2d, 0x61, 0x70, 0x69
+            };
+            ok = fwrite(payload, 1, sizeof(payload), f) == sizeof(payload);
+            fclose(f);
+        }
+        if (ok) {
+            struct utimbuf old_time;
+            time_t stable_time =
+                (time_t)(platform_time_wall_time_t() - 7200);
+            old_time.actime = stable_time;
+            old_time.modtime = stable_time;
+            ok = utime(blkpath, &old_time) == 0;
+        }
+        if (ok) {
+            progress_store_close();
+            reducer_frontier_provable_tip_reset();
+            api_set_state(NULL, NULL, NULL, NULL, dbdir);
+            file_controller_init(dbdir);
+            ok = file_controller_refresh_manifest();
+        }
+        if (ok) {
+            size_t n = api_handle_request("GET", "/api/files/manifest",
+                                          NULL, 0, resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.files_manifest.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "file_manifest",
+                                                 0, 0, true);
+            ok = ok && json_get_int(json_get(&root, "num_chunks")) == 1;
+            ok = ok && json_get_int(json_get(&root, "total_bytes")) == 9;
+            const struct json_value *chunks = json_get(&root, "chunks");
+            ok = ok && chunks && json_size(chunks) == 1;
+            ok = ok && json_get_int(json_get(json_at(chunks, 0),
+                                             "size")) == 9;
+            ok = ok && json_get_int(json_get(json_at(chunks, 0),
+                                             "file")) == 0;
+            json_free(&root);
+        }
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        progress_store_close();
+        file_controller_init(NULL);
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
@@ -1297,18 +2229,33 @@ int test_api(void)
             peer.services = 5;
             peer.is_zcl23 = true;
             ok = db_peer_save(&ndb, &peer);
+            ok = ok && api_test_seed_durable_tip(dbdir, 66);
+            reducer_frontier_provable_tip_reset();
             api_set_state(NULL, NULL, NULL, &ndb, dbdir);
 
             size_t n = api_handle_request("GET", "/api/peers?limit=1",
                                           NULL, 0, resp, sizeof(resp));
-            ok = ok && (n > 0) && (strstr((char *)resp, "\"peers\"") != NULL);
-            ok = ok && (strstr((char *)resp, "\"port\":8333") != NULL);
+            ok = ok && (n > 0);
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.peers.index.v1") == 0;
+            ok = ok && api_test_expect_freshness(&root, "peer_projection",
+                                                 66, 66, true);
+            ok = ok && json_size(json_get(&root, "peers")) == 1;
+            ok = ok && json_get_int(json_get(json_at(json_get(&root,
+                                      "peers"), 0), "port")) == 8333;
+            json_free(&root);
 
             n = api_handle_request("GET", "/api/peers?limit=99",
                                    NULL, 0, resp, sizeof(resp));
             ok = ok && (n > 0) && (strstr((char *)resp, "404") != NULL);
 
             api_set_state(NULL, NULL, NULL, NULL, NULL);
+            reducer_frontier_provable_tip_reset();
+            progress_store_close();
             node_db_close(&ndb);
         }
 
@@ -1349,19 +2296,70 @@ int test_api(void)
                   api_route_is_operator_private("/api/v1/wallet/") &&
                   api_route_is_operator_private("/api/wallet?x=1") &&
                   api_route_is_operator_private("/api/v1/wallet?x=1") &&
+                  api_route_is_operator_private("/api/wallet/keys") &&
                   api_route_is_operator_private("/api/messages") &&
+                  api_route_is_operator_private("/api/messages/thread/1") &&
                   api_route_is_operator_private("/api/v1/messages") &&
                   api_route_is_operator_private("/api/v1/swaps") &&
-                  api_route_is_operator_private("/api/swaps");
-        /* Public routes must stay public — in particular
-         * /api/swap_chains must NOT match the /api/swaps prefix. */
+                  api_route_is_operator_private("/api/swaps") &&
+                  api_route_is_operator_private("/api/swaps/contracts");
+        /* Public routes must stay public — swap chain discovery must not be
+         * captured by the private /api/swaps resource prefix. */
         ok = ok && !api_route_is_operator_private("/api/swap_chains") &&
                    !api_route_is_operator_private("/api/v1/swap_chains") &&
+                   !api_route_is_operator_private("/api/swaps/chains") &&
+                   !api_route_is_operator_private("/api/v1/swaps/chains") &&
+                   !api_route_is_operator_private("/api/swaps/chains?x=1") &&
+                   !api_route_is_operator_private("/api/swaps/chains/zcl") &&
                    !api_route_is_operator_private("/api/blocks") &&
                    !api_route_is_operator_private("/api/v1/blocks") &&
                    !api_route_is_operator_private("/api/stats") &&
                    !api_route_is_operator_private("/api/walletfoo") &&
                    !api_route_is_operator_private(NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: wallet route exposes projection freshness... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_wallet_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = node_db_open(&ndb, dbpath);
+        ok = ok && api_test_save_model_block(&ndb, 4, 0x94);
+        ok = ok && api_test_seed_durable_tip(dbdir, 4);
+        reducer_frontier_provable_tip_reset();
+        api_set_state(NULL, NULL, NULL, &ndb, dbdir);
+
+        size_t n = api_handle_request("GET", "/api/wallet", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.wallet_status.v1") == 0;
+        ok = ok && api_test_expect_freshness(&root, "wallet_projection",
+                                             4, 4, true);
+        ok = ok && json_get_int(json_get(&root, "height")) == 4;
+        ok = ok && json_size(json_get(&root, "activity")) == 0;
+        json_free(&root);
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        progress_store_close();
+        node_db_close(&ndb);
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

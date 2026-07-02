@@ -70,7 +70,8 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "gethodlwave\n"
-        "\nScans the entire UTXO set and reports value distribution by age.\n"
+        "\nScans the current transparent UTXO set and reports value distribution by age.\n"
+        "The denominator is transparent UTXO value, not total issued supply.\n"
         "Inspired by Unchained Capital's Bitcoin HODL Waves analysis.\n"
         "\nBuckets: <1d, 1d-1w, 1w-1m, 1-3m, 3-6m, 6-12m, 1-2y, 2-3y, 3-5y, >5y\n"
         "\nResult: { buckets: [{label, value, pct, utxo_count}], summary }\n");
@@ -104,6 +105,9 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
     char amt[32];
     double total_zcl = (double)hodl.total_value / (double)ZATOSHI_PER_ZCL;
     snprintf(amt, sizeof(amt), "%.8f", total_zcl);
+    json_push_kv_str(result, "denominator", "current_transparent_utxo_set");
+    json_push_kv_str(result, "transparent_utxo_value_zcl", amt);
+    json_push_kv_bool(result, "total_supply_zcl_legacy_alias", true);
     json_push_kv_str(result, "total_supply_zcl", amt);
 
     /* Build buckets with cumulative % (oldest-first accumulation).

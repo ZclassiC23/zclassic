@@ -40,11 +40,12 @@ extern struct api_rpc_backend g_api_rpc;
 /* ── Versioned REST contract ── */
 
 #define ZCL_REST_API_VERSION "v1"
-#define ZCL_REST_API_SUPPORTED_VERSIONS_JSON "[\"v1\"]"
 #define ZCL_REST_API_BASE_PATH "/api/v1"
 #define ZCL_REST_API_COMPAT_BASE_PATH "/api"
 #define ZCL_REST_INDEX_SCHEMA "zcl.rest_index.v1"
+#define ZCL_REST_OPENAPI_SCHEMA "zcl.openapi.v1"
 #define ZCL_REST_ERROR_SCHEMA "zcl.rest_error.v1"
+#define ZCL_REST_ROUTE_CONTRACT_SCHEMA "zcl.rest_route_contract.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
 #define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"
@@ -87,20 +88,48 @@ extern struct api_rpc_backend g_api_rpc;
 
 struct json_value;
 
+struct api_freshness_meta {
+    int64_t served_height;
+    int64_t indexed_height;
+    bool fresh;
+    const char *freshness;
+    const char *source_projection;
+    const char *blocker;
+};
+
 /* ── Helpers defined in api_controller.c ── */
 
 size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                   const char *message);
+size_t api_json_status(uint8_t *r, size_t max, const char *status,
+                       const struct json_value *body);
+size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body);
 const char *api_rest_index_body_json(void);
 int64_t api_served_tip_height(void);
+void api_freshness_prepare(struct api_freshness_meta *out,
+                           const char *source_projection,
+                           int64_t indexed_height);
+void api_freshness_push_json(struct json_value *obj,
+                             const struct api_freshness_meta *freshness);
+void api_json_add_freshness(struct json_value *obj,
+                            const char *source_projection,
+                            int64_t indexed_height);
 void api_milestone_status_json(struct json_value *result);
 void api_refold_status_json(struct json_value *result);
 size_t api_serve_api_index(uint8_t *response, size_t response_max);
+size_t api_serve_openapi(uint8_t *response, size_t response_max);
 size_t api_serve_unsupported_version(const char *requested_version,
                                      uint8_t *response,
                                      size_t response_max);
 int api_rpc_call(const char *method, const char *params_json,
              char *out, size_t outmax);
+#ifdef ZCL_TESTING
+typedef int (*api_test_rpc_call_fn)(const char *method,
+                                    const char *params_json,
+                                    char *out,
+                                    size_t outmax);
+void api_test_set_rpc_call(api_test_rpc_call_fn fn);
+#endif
 bool api_is_json_safe_param(const char *s, size_t maxlen);
 struct node_db *api_node_db(void);
 bool api_is_printable_ascii(const char *s);
@@ -115,6 +144,17 @@ bool api_start_detached_thread(pthread_t *thread_out,
 /* ── Resource route registry (defined in api_controller_routes.c) ── */
 
 typedef size_t (*api_route_handler)(uint8_t *response, size_t response_max);
+typedef void (*api_route_contract_visit_fn)(
+    void *ctx,
+    const char *method,
+    const char *path,
+    const char *resource,
+    const char *action,
+    const char *response_schema,
+    const char *query_params_csv,
+    const char *freshness,
+    const char *alias_of,
+    bool private_route);
 
 struct api_resource_route {
     const char *method;
@@ -122,6 +162,11 @@ struct api_resource_route {
     const char *resource;
     const char *action;
     api_route_handler handler;
+    const char *response_schema;
+    const char *query_params_csv;
+    const char *freshness;
+    const char *alias_of;
+    bool private_route;
 };
 
 const char *api_canonical_route_path(const char *path, char *buf,
@@ -131,11 +176,21 @@ bool api_path_has_unsupported_version(const char *path,
                                       size_t version_out_len);
 const struct api_resource_route *
 api_resource_route_find(const char *method, const char *path);
+bool api_route_registry_is_private(const char *path);
+void api_route_registry_visit(api_route_contract_visit_fn visit, void *ctx);
+size_t api_resource_route_dispatch_dynamic(const char *method,
+                                           const char *path,
+                                           uint8_t *response,
+                                           size_t response_max,
+                                           bool *handled);
+size_t api_route_contract_count(void);
+void api_route_contracts_json(struct json_value *out);
 
 size_t api_route_blocks(uint8_t *response, size_t response_max);
 size_t api_route_stats(uint8_t *response, size_t response_max);
 size_t api_route_deep_stats(uint8_t *response, size_t response_max);
 size_t api_route_supply(uint8_t *response, size_t response_max);
+size_t api_route_supply_legacy(uint8_t *response, size_t response_max);
 size_t api_route_hodl(uint8_t *response, size_t response_max);
 size_t api_route_factoids(uint8_t *response, size_t response_max);
 
@@ -144,6 +199,7 @@ size_t api_route_factoids(uint8_t *response, size_t response_max);
 size_t compute_blocks(uint8_t *r, size_t max);
 size_t compute_stats(uint8_t *r, size_t max);
 size_t compute_supply(uint8_t *r, size_t max);
+size_t compute_supply_legacy(uint8_t *r, size_t max);
 size_t compute_hodl(uint8_t *r, size_t max);
 int64_t api_hodl_index_tip_height(void);
 int64_t api_hodl_current_tip_height(void);

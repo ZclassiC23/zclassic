@@ -263,31 +263,10 @@ size_t api_serve_milestone(uint8_t *response, size_t response_max)
     struct json_value body;
     json_init(&body);
     api_milestone_status_json(&body);
-
-    size_t body_len = json_write(&body, NULL, 0);
-    int header_len = snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json; charset=utf-8\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %zu\r\n\r\n",
-        body_len);
-    if (header_len < 0 || (size_t)header_len >= response_max) {
-        json_free(&body);
-        return 0;
-    }
-
-    size_t hlen = (size_t)header_len;
-    if (body_len > response_max - hlen) {
-        json_free(&body);
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                              "Milestone response too large");
-    }
-
-    json_write(&body, (char *)response + hlen, response_max - hlen);
+    api_json_add_freshness(&body, "operator_status", -1);
+    size_t n = api_json_ok(response, response_max, &body);
     json_free(&body);
-    return hlen + body_len;
+    return n;
 }
 
 void api_refold_status_json(struct json_value *result)
@@ -385,112 +364,10 @@ size_t api_serve_refold_status(uint8_t *response, size_t response_max)
     struct json_value body;
     json_init(&body);
     api_refold_status_json(&body);
-
-    size_t body_len = json_write(&body, NULL, 0);
-    int header_len = snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json; charset=utf-8\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %zu\r\n\r\n",
-        body_len);
-    if (header_len < 0 || (size_t)header_len >= response_max) {
-        json_free(&body);
-        return 0;
-    }
-
-    size_t hlen = (size_t)header_len;
-    if (body_len > response_max - hlen) {
-        json_free(&body);
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                              "Refold status response too large");
-    }
-
-    json_write(&body, (char *)response + hlen, response_max - hlen);
+    api_json_add_freshness(&body, "anchor_snapshot", -1);
+    size_t n = api_json_ok(response, response_max, &body);
     json_free(&body);
-    return hlen + body_len;
-}
-
-const char *api_rest_index_body_json(void)
-{
-    return
-        "{"
-        "\"schema\":\"" ZCL_REST_INDEX_SCHEMA "\","
-        "\"name\":\"zclassic23 REST API\","
-        "\"api_version\":\"" ZCL_REST_API_VERSION "\","
-        "\"version\":\"" ZCL_REST_API_VERSION "\","
-        "\"supported_versions\":" ZCL_REST_API_SUPPORTED_VERSIONS_JSON ","
-        "\"base_path\":\"" ZCL_REST_API_BASE_PATH "\","
-        "\"compat_base_path\":\"" ZCL_REST_API_COMPAT_BASE_PATH "\","
-        "\"first_call\":\"" ZCL_REST_API_BASE_PATH "/agent\","
-        "\"summary\":\"Use noun resources. GET reads collections/items; mutating operator actions stay private unless an endpoint explicitly documents POST.\","
-        "\"aliases\":{"
-          "\"agent\":\"/api/v1/agent\","
-          "\"milestone\":\"/api/v1/milestone\","
-          "\"refold\":\"/api/v1/refold\","
-          "\"node\":\"/api/v1/node\","
-          "\"node_summary\":\"/api/v1/node/summary\","
-          "\"status\":\"/api/v1/status\""
-        "},"
-        "\"crud\":{"
-          "\"read_collection\":\"GET /api/v1/{resource}\","
-          "\"read_item\":\"GET /api/v1/{resource}/{id}\","
-          "\"create\":\"POST /api/v1/{resource} when documented\","
-          "\"update\":\"PUT/PATCH /api/v1/{resource}/{id} when documented\","
-          "\"delete\":\"DELETE /api/v1/{resource}/{id} when documented\""
-        "},"
-        "\"resources\":["
-          "{\"name\":\"node\",\"collection\":\"/api/v1/node\",\"summary\":\"/api/v1/node/summary\",\"status\":\"/api/v1/node/status\"},"
-          "{\"name\":\"milestone\",\"collection\":\"/api/v1/milestone\"},"
-          "{\"name\":\"refold\",\"collection\":\"/api/v1/refold\"},"
-          "{\"name\":\"blocks\",\"collection\":\"/api/v1/blocks\",\"item\":\"/api/v1/block/{height_or_hash}\"},"
-          "{\"name\":\"transactions\",\"item\":\"/api/v1/tx/{txid}\"},"
-          "{\"name\":\"peers\",\"collection\":\"/api/v1/peers\"},"
-          "{\"name\":\"hodl\",\"collection\":\"/api/v1/hodl\"},"
-          "{\"name\":\"factoids\",\"collection\":\"/api/v1/factoids\"},"
-          "{\"name\":\"files\",\"collection\":\"/api/v1/files/manifest\",\"item\":\"/api/v1/files/{sha3}\"},"
-          "{\"name\":\"wallet\",\"collection\":\"/api/v1/wallet\",\"private\":true}"
-        "],"
-        "\"drilldown\":{"
-          "\"health\":\"/api/v1/health\","
-          "\"sync\":\"/api/v1/syncstate\","
-          "\"downloads\":\"/api/v1/downloadstats\","
-          "\"full_node_status\":\"/api/v1/node/status\""
-        "},"
-        "\"mcp\":{"
-          "\"first_tool\":\"zcl_agent\","
-          "\"milestone_tool\":\"zcl_milestone\","
-          "\"refold_tool\":\"zcl_refold_status\","
-          "\"drilldown_tool\":\"zcl_status\""
-        "},"
-        "\"cli\":{"
-          "\"api_command\":\"zclassic23 api\","
-          "\"first_command\":\"zclassic23 agent\","
-          "\"milestone_command\":\"zclassic23 milestone\","
-          "\"refold_command\":\"zclassic23 refold\","
-          "\"drilldown_command\":\"zclassic23 healthcheck\""
-        "}"
-        "}";
-}
-
-/* Route: /api
- * Self-describing REST entry point. Keep this compact and stable: it is the
- * shape humans and agents should read before choosing a drill-down endpoint. */
-size_t api_serve_api_index(uint8_t *response, size_t response_max)
-{
-    const char *body = api_rest_index_body_json();
-    size_t body_len = strlen(body);
-
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %zu\r\n\r\n"
-        "%s",
-        body_len, body);
+    return n;
 }
 
 size_t api_serve_unsupported_version(const char *requested_version,
@@ -498,30 +375,33 @@ size_t api_serve_unsupported_version(const char *requested_version,
                                      size_t response_max)
 {
     const char *requested = requested_version ? requested_version : "unknown";
-    char body[512];
-    int body_len = snprintf(body, sizeof(body),
-        "{"
-        "\"schema\":\"" ZCL_REST_ERROR_SCHEMA "\","
-        "\"error\":\"unsupported_api_version\","
-        "\"requested_version\":\"%s\","
-        "\"supported_versions\":" ZCL_REST_API_SUPPORTED_VERSIONS_JSON ","
-        "\"base_path\":\"" ZCL_REST_API_BASE_PATH "\","
-        "\"index\":\"" ZCL_REST_API_BASE_PATH "\""
-        "}",
-        requested);
-    if (body_len < 0 || (size_t)body_len >= sizeof(body))
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                              "API version error overflow");
 
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 400 Bad Request\r\n"
-        "Content-Type: application/json; charset=utf-8\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %d\r\n\r\n"
-        "%s",
-        body_len, body);
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", ZCL_REST_ERROR_SCHEMA);
+    json_push_kv_str(&body, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(&body, "error", "unsupported_api_version");
+    json_push_kv_str(&body, "requested_version", requested);
+
+    struct json_value supported;
+    json_init(&supported);
+    json_set_array(&supported);
+    struct json_value version;
+    json_init(&version);
+    json_set_str(&version, ZCL_REST_API_VERSION);
+    json_push_back(&supported, &version);
+    json_free(&version);
+    json_push_kv(&body, "supported_versions", &supported);
+    json_free(&supported);
+
+    json_push_kv_str(&body, "base_path", ZCL_REST_API_BASE_PATH);
+    json_push_kv_str(&body, "index", ZCL_REST_API_BASE_PATH);
+
+    size_t n = api_json_status(response, response_max, "400 Bad Request",
+                               &body);
+    json_free(&body);
+    return n;
 }
 
 /* Route: /api/status and /api/node/summary */
@@ -537,15 +417,17 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     uint64_t dl_inflight = 0, dl_queued = 0;
     dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
 
-    int indexed_height = health.tip_height;
-    int height = (int)api_served_tip_height();
-    int target = indexed_height > height ? indexed_height : height;
+    struct api_freshness_meta freshness;
+    api_freshness_prepare(&freshness, "served_tip", health.tip_height);
+    int64_t height = freshness.served_height;
+    int64_t indexed_height = freshness.indexed_height;
+    int64_t target = indexed_height > height ? indexed_height : height;
     if (health.header_height > target)
         target = health.header_height;
     if (health.peer_best_height > target)
         target = health.peer_best_height;
-    int gap = target > height ? target - height : 0;
-    int index_gap = indexed_height > height ? indexed_height - height : 0;
+    int64_t gap = target > height ? target - height : 0;
+    int64_t index_gap = indexed_height > height ? indexed_height - height : 0;
 
     const char *status = "healthy";
     const char *primary = "none";
@@ -586,92 +468,82 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         operator_needed = health.warning_count > 0;
     }
 
-    char body[4096];
-    int body_len = snprintf(body, sizeof(body),
-        "{"
-        "\"schema\":\"" ZCL_PUBLIC_STATUS_SCHEMA "\","
-        "\"api_version\":\"" ZCL_REST_API_VERSION "\","
-        "\"status\":\"%s\","
-        "\"healthy\":%s,"
-        "\"serving\":%s,"
-        "\"operator_needed\":%s,"
-        "\"summary\":\"%s\","
-        "\"primary_blocker\":\"%s\","
-        "\"next_endpoint\":\"%s\","
-        "\"height\":%d,"
-        "\"served_height\":%d,"
-        "\"indexed_height\":%d,"
-        "\"header_height\":%d,"
-        "\"peer_best_height\":%d,"
-        "\"target_height\":%d,"
-        "\"gap\":%d,"
-        "\"index_gap\":%d,"
-        "\"sync_state\":\"%s\","
-        "\"peers\":{"
-          "\"total\":%zu,"
-          "\"has_peers\":%s,"
-          "\"magicbean\":%zu,"
-          "\"zclassic23\":%zu"
-        "},"
-        "\"download\":{"
-          "\"requested\":%llu,"
-          "\"received\":%llu,"
-          "\"timed_out\":%llu,"
-          "\"in_flight\":%llu,"
-          "\"queued\":%llu"
-        "},"
-        "\"services\":{"
-          "\"tor_enabled\":%s,"
-          "\"tor_ready\":%s,"
-          "\"onion_service_ready\":%s"
-        "},"
-        "\"recommended_endpoints\":["
-          "\"/api/v1/agent\","
-          "\"/api/v1/health\","
-          "\"/api/v1/node/status\","
-          "\"/api/v1/hodl\","
-          "\"/api/v1/factoids\""
-        "]"
-        "}",
-        status,
-        health.healthy ? "true" : "false",
-        health.serving ? "true" : "false",
-        operator_needed ? "true" : "false",
-        summary,
-        primary,
-        next_endpoint,
-        height,
-        height,
-        indexed_height,
-        health.header_height,
-        health.peer_best_height,
-        target,
-        gap,
-        index_gap,
-        sync_state_name(health.sync_state),
-        health.peer_count,
-        health.has_peers ? "true" : "false",
-        health.magicbean_peer_count,
-        health.zclassic_c23_peer_count,
-        (unsigned long long)dl_req,
-        (unsigned long long)dl_recv,
-        (unsigned long long)dl_tout,
-        (unsigned long long)dl_inflight,
-        (unsigned long long)dl_queued,
-        health.tor_enabled ? "true" : "false",
-        health.tor_ready ? "true" : "false",
-        health.onion_service_ready ? "true" : "false");
-    if (body_len < 0 || body_len >= (int)sizeof(body))
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                              "Status response too large");
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", ZCL_PUBLIC_STATUS_SCHEMA);
+    json_push_kv_str(&body, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(&body, "status", status);
+    json_push_kv_bool(&body, "healthy", health.healthy);
+    json_push_kv_bool(&body, "serving", health.serving);
+    json_push_kv_bool(&body, "operator_needed", operator_needed);
+    json_push_kv_str(&body, "summary", summary);
+    json_push_kv_str(&body, "primary_blocker", primary);
+    json_push_kv_str(&body, "next_endpoint", next_endpoint);
+    json_push_kv_int(&body, "height", height);
+    api_freshness_push_json(&body, &freshness);
+    json_push_kv_int(&body, "header_height", health.header_height);
+    json_push_kv_int(&body, "peer_best_height", health.peer_best_height);
+    json_push_kv_int(&body, "target_height", target);
+    json_push_kv_int(&body, "gap", gap);
+    json_push_kv_int(&body, "index_gap", index_gap);
+    json_push_kv_str(&body, "sync_state",
+                     sync_state_name(health.sync_state));
 
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %d\r\n\r\n"
-        "%s",
-        body_len, body);
+    struct json_value peers;
+    json_init(&peers);
+    json_set_object(&peers);
+    json_push_kv_int(&peers, "total", (int64_t)health.peer_count);
+    json_push_kv_bool(&peers, "has_peers", health.has_peers);
+    json_push_kv_int(&peers, "magicbean",
+                     (int64_t)health.magicbean_peer_count);
+    json_push_kv_int(&peers, "zclassic23",
+                     (int64_t)health.zclassic_c23_peer_count);
+    json_push_kv(&body, "peers", &peers);
+    json_free(&peers);
+
+    struct json_value download;
+    json_init(&download);
+    json_set_object(&download);
+    json_push_kv_int(&download, "requested", (int64_t)dl_req);
+    json_push_kv_int(&download, "received", (int64_t)dl_recv);
+    json_push_kv_int(&download, "timed_out", (int64_t)dl_tout);
+    json_push_kv_int(&download, "in_flight", (int64_t)dl_inflight);
+    json_push_kv_int(&download, "queued", (int64_t)dl_queued);
+    json_push_kv(&body, "download", &download);
+    json_free(&download);
+
+    struct json_value services;
+    json_init(&services);
+    json_set_object(&services);
+    json_push_kv_bool(&services, "tor_enabled", health.tor_enabled);
+    json_push_kv_bool(&services, "tor_ready", health.tor_ready);
+    json_push_kv_bool(&services, "onion_service_ready",
+                      health.onion_service_ready);
+    json_push_kv(&body, "services", &services);
+    json_free(&services);
+
+    static const char *recommended[] = {
+        "/api/v1/agent",
+        "/api/v1/health",
+        "/api/v1/node/status",
+        "/api/v1/hodl",
+        "/api/v1/factoids",
+    };
+    struct json_value endpoints;
+    json_init(&endpoints);
+    json_set_array(&endpoints);
+    for (size_t i = 0; i < sizeof(recommended) / sizeof(recommended[0]); i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, recommended[i]);
+        json_push_back(&endpoints, &item);
+        json_free(&item);
+    }
+    json_push_kv(&body, "recommended_endpoints", &endpoints);
+    json_free(&endpoints);
+
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
 }

@@ -29,13 +29,12 @@ void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
 void api_start_cache(void);
 void api_stop_cache(void);
 
-/* Operator-private surface classifier. True for routes that expose
- * wallet/messaging/swap state (/api/wallet, /api/messages,
- * /api/swaps) with boundary matching — the char after the prefix
- * must be '\0', '/' or '?' — so public routes like /api/swap_chains
- * stay public. Untrusted listeners (the clearnet TLS server) must
- * 403 these BEFORE dispatching into api_handle_request: the router
- * never sees headers or peer identity and cannot authenticate. */
+/* Operator-private surface classifier. The answer comes from the REST route
+ * registry's private_route metadata, with path-boundary matching for private
+ * resource prefixes and explicit public subresource overrides such as
+ * /api/v1/swaps/chains. Untrusted listeners (the clearnet TLS server) must
+ * 403 these BEFORE dispatching into api_handle_request: the router never sees
+ * headers or peer identity and cannot authenticate. */
 bool api_route_is_operator_private(const char *path);
 
 /* Handle an API request. Returns bytes written to response, or 0 if not handled.

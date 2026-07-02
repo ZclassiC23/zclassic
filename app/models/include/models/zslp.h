@@ -71,6 +71,7 @@ int db_zslp_token_list(struct node_db *ndb,
 int db_zslp_transfer_list_by_token(struct node_db *ndb, const char *token_key,
                                    struct db_zslp_transfer_info *out,
                                    size_t max_out);
+int db_zslp_max_height(struct node_db *ndb);
 
 /* Save a ZSLP token GENESIS record. token_id = genesis txid (internal order). */
 bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],

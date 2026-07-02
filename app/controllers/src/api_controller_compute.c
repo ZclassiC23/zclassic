@@ -19,6 +19,7 @@
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"
+#include "json/json.h"
 #include "keys/key_io.h"
 #include "models/block.h"
 #include "models/database.h"
@@ -151,7 +152,6 @@ bool api_hodl_index_ahead_of_served(int64_t *index_tip_out,
 size_t compute_blocks(uint8_t *r, size_t max)
 {
     char buf[65536];
-    size_t off = 0;
 
     /* Get current height */
     if (api_rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
@@ -161,12 +161,21 @@ size_t compute_blocks(uint8_t *r, size_t max)
     if (height < 0)
         return api_json_error(r, max, JSON_500_HEADERS, "Cannot get block count");
 
-    off += (size_t)snprintf((char *)r + off, max - off, "%s[", JSON_HEADERS);
-
     int count = 25;
     if (height < count) count = (int)height + 1;
 
-    for (int i = 0; i < count && off + 512 < max; i++) {
+    struct json_value body;
+    struct json_value blocks;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.blocks.index.v1");
+    api_json_add_freshness(&body, "served_height", height);
+    json_push_kv_int(&body, "height", height);
+    json_push_kv_int(&body, "limit", count);
+
+    json_init(&blocks);
+    json_set_array(&blocks);
+    for (int i = 0; i < count; i++) {
         int64_t h = height - i;
         char params[64];
         snprintf(params, sizeof(params), "[%" PRId64 "]", h);
@@ -188,18 +197,25 @@ size_t compute_blocks(uint8_t *r, size_t max)
         /* Count transactions */
         int tx_count = explorer_count_json_tx_array(buf);
 
-        if (i > 0) off += (size_t)snprintf((char *)r + off, max - off, ",");
-        off += (size_t)snprintf((char *)r + off, max - off,
-            "{\"height\":%" PRId64
-            ",\"hash\":\"%s\""
-            ",\"time\":%" PRId64
-            ",\"num_tx\":%d"
-            ",\"difficulty\":%.8f}",
-            h, hash, blk_time, tx_count, diff);
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_int(&item, "height", h);
+        json_push_kv_str(&item, "hash", hash);
+        json_push_kv_int(&item, "time", blk_time);
+        json_push_kv_int(&item, "num_tx", tx_count);
+        json_push_kv_real(&item, "difficulty", diff);
+        json_push_back(&blocks, &item);
+        json_free(&item);
     }
 
-    off += (size_t)snprintf((char *)r + off, max - off, "]");
-    return off;
+    json_push_kv(&body, "blocks", &blocks);
+    json_push_kv_int(&body, "count", (int64_t)json_size(&blocks));
+    json_free(&blocks);
+
+    size_t n = api_json_ok(r, max, &body);
+    json_free(&body);
+    return n;
 }
 size_t compute_stats(uint8_t *r, size_t max)
 {
@@ -229,23 +245,22 @@ size_t compute_stats(uint8_t *r, size_t max)
     if (api_rpc_call("gettxoutsetinfo", "[]", ubuf, sizeof(ubuf)) > 0)
         utxo_count = zcl_json_int(ubuf, "txouts");
 
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"height\":%" PRId64
-        ",\"difficulty\":%.8f"
-        ",\"networkhashps\":%.2f"
-        ",\"supply\":%.8f"
-        ",\"chain\":\"%s\"",
-        JSON_HEADERS,
-        height, diff, hashrate, supply, chain);
-
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.stats.v1");
+    api_json_add_freshness(&body, "served_height", height);
+    json_push_kv_int(&body, "height", height);
+    json_push_kv_real(&body, "difficulty", diff);
+    json_push_kv_real(&body, "networkhashps", hashrate);
+    json_push_kv_real(&body, "supply", supply);
+    json_push_kv_str(&body, "chain", chain);
     if (utxo_count >= 0)
-        off += (size_t)snprintf((char *)r + off, max - off,
-            ",\"utxo_count\":%" PRId64, utxo_count);
+        json_push_kv_int(&body, "utxo_count", utxo_count);
 
-    off += (size_t)snprintf((char *)r + off, max - off, "}");
-    return off;
+    size_t n = api_json_ok(r, max, &body);
+    json_free(&body);
+    return n;
 }
 size_t compute_supply(uint8_t *r, size_t max)
 {
@@ -258,7 +273,36 @@ size_t compute_supply(uint8_t *r, size_t max)
     if (height < 0)
         return api_json_error(r, max, JSON_500_HEADERS, "Cannot get height");
 
-    double supply = (double)zcl_total_supply_zatoshi(height) / (double)ZATOSHI_PER_ZCL;
+    int64_t supply_sat = zcl_total_supply_zatoshi(height);
+    double supply = (double)supply_sat / (double)ZATOSHI_PER_ZCL;
+
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.supply.v1");
+    api_json_add_freshness(&body, "served_height", height);
+    json_push_kv_int(&body, "height", height);
+    json_push_kv_int(&body, "supply_zatoshi", supply_sat);
+    json_push_kv_real(&body, "supply", supply);
+
+    size_t n = api_json_ok(r, max, &body);
+    json_free(&body);
+    return n;
+}
+
+size_t compute_supply_legacy(uint8_t *r, size_t max)
+{
+    char buf[8192];
+
+    if (api_rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
+        return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
+
+    int64_t height = zcl_json_int(buf, "result");
+    if (height < 0)
+        return api_json_error(r, max, JSON_500_HEADERS, "Cannot get height");
+
+    double supply = (double)zcl_total_supply_zatoshi(height) /
+                    (double)ZATOSHI_PER_ZCL;
 
     /* Plain number -- CoinGecko expects just a number */
     return (size_t)snprintf((char *)r, max,
@@ -292,47 +336,60 @@ size_t compute_hodl(uint8_t *r, size_t max)
 
     double over_1y_pct = hodl_wave_older_than_1y_percent(&hodl);
 
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"schema\":\"zcl.hodl_wave.v1\""
-        ",\"generated_at\":%" PRId64
-        ",\"fresh\":true"
-        ",\"source\":\"%s\""
-        ",\"metric\":\"%s\""
-        ",\"status\":\"%s\""
-        ",\"height\":%" PRId64
-        ",\"served_tip_height\":%" PRId64
-        ",\"indexed_tip_height\":%" PRId64
-        ",\"block_tip_height\":%" PRId64
-        ",\"utxo_tip_height\":%" PRId64
-        ",\"total_utxos\":%" PRId64
-        ",\"total_value\":%.8f"
-        ",\"older_than_1y\":{\"value\":%.8f,\"percent\":%.6f}"
-        ",\"skipped_rows\":%" PRId64
-        ",\"buckets\":[",
-        JSON_HEADERS,
-        (int64_t)platform_time_wall_time_t(),
-        hodl.source, hodl.metric, hodl.status,
-        hodl.tip_height, tip, index_tip, block_tip, utxo_tip, hodl.total_count,
-        (double)hodl.total_value / (double)ZATOSHI_PER_ZCL,
-        (double)hodl.older_than_1y_value / (double)ZATOSHI_PER_ZCL,
-        over_1y_pct, hodl.skipped_rows);
+    struct json_value body;
+    struct json_value older;
+    struct json_value buckets;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.hodl_wave.v1");
+    json_push_kv_int(&body, "generated_at",
+                     (int64_t)platform_time_wall_time_t());
+    api_json_add_freshness(&body, "utxo_projection", index_tip);
+    json_push_kv_str(&body, "source", hodl.source);
+    json_push_kv_str(&body, "metric", hodl.metric);
+    json_push_kv_str(&body, "status", hodl.status);
+    json_push_kv_int(&body, "height", hodl.tip_height);
+    json_push_kv_int(&body, "served_tip_height", tip);
+    json_push_kv_int(&body, "indexed_tip_height", index_tip);
+    json_push_kv_int(&body, "block_tip_height", block_tip);
+    json_push_kv_int(&body, "utxo_tip_height", utxo_tip);
+    json_push_kv_int(&body, "total_utxos", hodl.total_count);
+    json_push_kv_real(&body, "total_value",
+                      (double)hodl.total_value / (double)ZATOSHI_PER_ZCL);
 
-    for (int i = 0; i < HODL_WAVE_BUCKETS && off + 256 < max; i++) {
+    json_init(&older);
+    json_set_object(&older);
+    json_push_kv_real(&older, "value",
+                      (double)hodl.older_than_1y_value /
+                      (double)ZATOSHI_PER_ZCL);
+    json_push_kv_real(&older, "percent", over_1y_pct);
+    json_push_kv(&body, "older_than_1y", &older);
+    json_free(&older);
+
+    json_push_kv_int(&body, "skipped_rows", hodl.skipped_rows);
+    json_init(&buckets);
+    json_set_array(&buckets);
+    for (int i = 0; i < HODL_WAVE_BUCKETS; i++) {
         double value_zcl = (double)hodl.buckets[i].value / (double)ZATOSHI_PER_ZCL;
         double pct = hodl.total_value > 0
             ? (double)hodl.buckets[i].value / (double)hodl.total_value * 100.0 : 0.0;
-        if (i > 0)
-            off += (size_t)snprintf((char *)r + off, max - off, ",");
-        off += (size_t)snprintf((char *)r + off, max - off,
-            "{\"label\":\"%s\",\"utxos\":%" PRId64
-            ",\"value\":%.8f,\"percent\":%.6f}",
-            hodl.buckets[i].label, hodl.buckets[i].count, value_zcl, pct);
-    }
 
-    off += (size_t)snprintf((char *)r + off, max - off, "]}");
-    return off;
+        struct json_value bucket;
+        json_init(&bucket);
+        json_set_object(&bucket);
+        json_push_kv_str(&bucket, "label", hodl.buckets[i].label);
+        json_push_kv_int(&bucket, "utxos", hodl.buckets[i].count);
+        json_push_kv_real(&bucket, "value", value_zcl);
+        json_push_kv_real(&bucket, "percent", pct);
+        json_push_back(&buckets, &bucket);
+        json_free(&bucket);
+    }
+    json_push_kv(&body, "buckets", &buckets);
+    json_free(&buckets);
+
+    size_t n = api_json_ok(r, max, &body);
+    json_free(&body);
+    return n;
 }
 size_t compute_deep_stats(uint8_t *r, size_t max)
 {
@@ -360,22 +417,39 @@ size_t compute_deep_stats(uint8_t *r, size_t max)
             "SELECT COALESCE(SUM(value),0) FROM utxos");
         int64_t supply_sat = zcl_total_supply_zatoshi(current_height);
         sqlite3_close(db);
-        return (size_t)snprintf((char *)r, max,
-            "%s{"
-            "\"history_index_usable\":false,"
-            "\"unsafe_sections_suppressed\":true,"
-            "\"reason\":\"%s\","
-            "\"height\":%" PRId64 ","
-            "\"supply\":%.8f,"
-            "\"utxo\":{\"count\":%" PRId64 ",\"value\":%.8f},"
-            "\"index\":{\"blocks\":%" PRId64 ",\"transactions\":%" PRId64 "}"
-            "}",
-            JSON_HEADERS,
-            history.reason,
-            current_height,
-            (double)supply_sat / (double)ZATOSHI_PER_ZCL,
-            utxo_count, (double)utxo_value / (double)ZATOSHI_PER_ZCL,
-            block_rows, tx_rows);
+
+        struct json_value body;
+        struct json_value utxo;
+        struct json_value index;
+        json_init(&body);
+        json_set_object(&body);
+        json_push_kv_str(&body, "schema", "zcl.stats.deep.v1");
+        api_json_add_freshness(&body, "served_height", current_height);
+        json_push_kv_bool(&body, "history_index_usable", false);
+        json_push_kv_bool(&body, "unsafe_sections_suppressed", true);
+        json_push_kv_str(&body, "reason", history.reason);
+        json_push_kv_int(&body, "height", current_height);
+        json_push_kv_real(&body, "supply",
+                          (double)supply_sat / (double)ZATOSHI_PER_ZCL);
+
+        json_init(&utxo);
+        json_set_object(&utxo);
+        json_push_kv_int(&utxo, "count", utxo_count);
+        json_push_kv_real(&utxo, "value",
+                          (double)utxo_value / (double)ZATOSHI_PER_ZCL);
+        json_push_kv(&body, "utxo", &utxo);
+        json_free(&utxo);
+
+        json_init(&index);
+        json_set_object(&index);
+        json_push_kv_int(&index, "blocks", block_rows);
+        json_push_kv_int(&index, "transactions", tx_rows);
+        json_push_kv(&body, "index", &index);
+        json_free(&index);
+
+        size_t n = api_json_ok(r, max, &body);
+        json_free(&body);
+        return n;
     }
     struct explorer_transaction_stats transaction_stats = {0};
     explorer_query_transaction_stats(db, &transaction_stats);
@@ -405,34 +479,75 @@ size_t compute_deep_stats(uint8_t *r, size_t max)
 
     sqlite3_close(db);
 
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"height\":%" PRId64
-        ",\"blocks\":%" PRId64
-        ",\"transactions\":%" PRId64
-        ",\"supply\":%.8f"
-        ",\"shielded_net\":%.8f"
-        ",\"sprout\":{\"joinsplits\":%" PRId64 ",\"first_height\":%" PRId64 "}"
-        ",\"sapling\":{\"spends\":%" PRId64 ",\"outputs\":%" PRId64
-            ",\"first_height\":%" PRId64 "}"
-        ",\"utxo\":{\"count\":%" PRId64 ",\"dust_under_0001\":%" PRId64 "}"
-        ",\"addresses\":{\"total\":%" PRId64 ",\"nonzero\":%" PRId64 "}"
-        ",\"zslp\":{\"tokens\":%" PRId64 ",\"transfers\":%" PRId64 "}"
-        ",\"integrity\":{\"indexed_blocks\":%" PRId64
-            ",\"latest_hash\":\"%s\"}"
-        "}",
-        JSON_HEADERS,
-        chain_stats.height, chain_stats.blocks, transaction_stats.total,
-        (double)supply_sat / (double)ZATOSHI_PER_ZCL,
-        (double)privacy_stats.net_shielded_sat / (double)ZATOSHI_PER_ZCL,
-        privacy_stats.joinsplits, first_privacy.joinsplit_height,
-        privacy_stats.sapling_spends, privacy_stats.sapling_outputs,
-        first_privacy.sapling_height,
-        utxo_stats.count, utxo_stats.dust_under_0001,
-        address_stats.total, address_stats.nonzero,
-        token_stats.token_count, token_stats.transfer_count,
-        chain_stats.blocks, latest_hash);
+    struct json_value body;
+    struct json_value sprout;
+    struct json_value sapling;
+    struct json_value utxo;
+    struct json_value addresses;
+    struct json_value zslp;
+    struct json_value integrity;
 
-    return off;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.stats.deep.v1");
+    api_json_add_freshness(&body, "served_height", current_height);
+    json_push_kv_bool(&body, "history_index_usable", true);
+    json_push_kv_bool(&body, "unsafe_sections_suppressed", false);
+    json_push_kv_int(&body, "height", chain_stats.height);
+    json_push_kv_int(&body, "blocks", chain_stats.blocks);
+    json_push_kv_int(&body, "transactions", transaction_stats.total);
+    json_push_kv_real(&body, "supply",
+                      (double)supply_sat / (double)ZATOSHI_PER_ZCL);
+    json_push_kv_real(&body, "shielded_net",
+                      (double)privacy_stats.net_shielded_sat /
+                      (double)ZATOSHI_PER_ZCL);
+
+    json_init(&sprout);
+    json_set_object(&sprout);
+    json_push_kv_int(&sprout, "joinsplits", privacy_stats.joinsplits);
+    json_push_kv_int(&sprout, "first_height",
+                     first_privacy.joinsplit_height);
+    json_push_kv(&body, "sprout", &sprout);
+    json_free(&sprout);
+
+    json_init(&sapling);
+    json_set_object(&sapling);
+    json_push_kv_int(&sapling, "spends", privacy_stats.sapling_spends);
+    json_push_kv_int(&sapling, "outputs", privacy_stats.sapling_outputs);
+    json_push_kv_int(&sapling, "first_height",
+                     first_privacy.sapling_height);
+    json_push_kv(&body, "sapling", &sapling);
+    json_free(&sapling);
+
+    json_init(&utxo);
+    json_set_object(&utxo);
+    json_push_kv_int(&utxo, "count", utxo_stats.count);
+    json_push_kv_int(&utxo, "dust_under_0001", utxo_stats.dust_under_0001);
+    json_push_kv(&body, "utxo", &utxo);
+    json_free(&utxo);
+
+    json_init(&addresses);
+    json_set_object(&addresses);
+    json_push_kv_int(&addresses, "total", address_stats.total);
+    json_push_kv_int(&addresses, "nonzero", address_stats.nonzero);
+    json_push_kv(&body, "addresses", &addresses);
+    json_free(&addresses);
+
+    json_init(&zslp);
+    json_set_object(&zslp);
+    json_push_kv_int(&zslp, "tokens", token_stats.token_count);
+    json_push_kv_int(&zslp, "transfers", token_stats.transfer_count);
+    json_push_kv(&body, "zslp", &zslp);
+    json_free(&zslp);
+
+    json_init(&integrity);
+    json_set_object(&integrity);
+    json_push_kv_int(&integrity, "indexed_blocks", chain_stats.blocks);
+    json_push_kv_str(&integrity, "latest_hash", latest_hash);
+    json_push_kv(&body, "integrity", &integrity);
+    json_free(&integrity);
+
+    size_t n = api_json_ok(r, max, &body);
+    json_free(&body);
+    return n;
 }

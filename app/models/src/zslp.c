@@ -514,6 +514,26 @@ int db_zslp_transfer_list_by_token(struct node_db *ndb, const char *token_key,
     return count;
 }
 
+int db_zslp_max_height(struct node_db *ndb)
+{
+    sqlite3_stmt *s = NULL;
+    int h = -1;
+
+    if (!ndb || !ndb->open)
+        return -1;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT MAX(h) FROM ("
+        "  SELECT genesis_height AS h FROM zslp_tokens"
+        "  UNION ALL "
+        "  SELECT block_height AS h FROM zslp_transfers"
+        ")",
+        -1);
+    if (AR_STEP_ROW(s))
+        h = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return h;
+}
+
 bool db_zslp_balance_credit(struct node_db *ndb, const char *token_id,
                             const char *address, int64_t amount)
 {

@@ -74,6 +74,15 @@ struct api_rpc_backend g_api_rpc = {
     .port = 18232,
 };
 
+#ifdef ZCL_TESTING
+static api_test_rpc_call_fn g_api_test_rpc_call;
+
+void api_test_set_rpc_call(api_test_rpc_call_fn fn)
+{
+    g_api_test_rpc_call = fn;
+}
+#endif
+
 /* ── Background cache ─────────────────────────────────────── */
 
 #define API_BLOCKS_CACHE_SIZE 131072   /* 128KB */
@@ -89,6 +98,8 @@ static size_t g_api_stats_cache_len = 0;
 
 static char   g_api_supply_cache[API_SUPPLY_CACHE_SIZE];
 static size_t g_api_supply_cache_len = 0;
+static char   g_api_supply_legacy_cache[API_SUPPLY_CACHE_SIZE];
+static size_t g_api_supply_legacy_cache_len = 0;
 
 static char   g_api_hodl_cache[API_HODL_CACHE_SIZE];
 static size_t g_api_hodl_cache_len = 0;
@@ -133,6 +144,11 @@ void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
 int api_rpc_call(const char *method, const char *params_json,
                      char *out, size_t outmax)
 {
+#ifdef ZCL_TESTING
+    if (g_api_test_rpc_call)
+        return g_api_test_rpc_call(method, params_json, out, outmax);
+#endif
+
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) LOG_ERR("api", "api_rpc_call(%s): socket() failed", method);
 
@@ -250,6 +266,8 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
     struct json_value body;
     json_init(&body);
     json_set_object(&body);
+    json_push_kv_str(&body, "schema", ZCL_REST_ERROR_SCHEMA);
+    json_push_kv_str(&body, "api_version", ZCL_REST_API_VERSION);
     json_push_kv_str(&body, "error", message ? message : "error");
 
     const char *h = headers ? headers : "";
@@ -270,7 +288,8 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
     return total;
 }
 
-static size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body)
+size_t api_json_status(uint8_t *r, size_t max, const char *status,
+                       const struct json_value *body)
 {
     if (!r || max == 0 || !body)
         return 0;
@@ -278,12 +297,13 @@ static size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body)
     size_t blen = json_write(body, NULL, 0);
     char headers[256];
     int hn = snprintf(headers, sizeof(headers),
-        "HTTP/1.1 200 OK\r\n"
+        "HTTP/1.1 %s\r\n"
         "Content-Type: application/json\r\n"
         "Access-Control-Allow-Origin: *\r\n"
         "Cache-Control: no-cache\r\n"
         "Connection: close\r\n"
-        "Content-Length: %zu\r\n\r\n", blen);
+        "Content-Length: %zu\r\n\r\n",
+        status ? status : "200 OK", blen);
     if (hn < 0 || (size_t)hn >= sizeof(headers))
         return 0;
 
@@ -298,6 +318,11 @@ static size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body)
     memcpy(r, headers, hlen);
     json_write(body, (char *)r + hlen, max - hlen);
     return hlen + blen;
+}
+
+size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body)
+{
+    return api_json_status(r, max, "200 OK", body);
 }
 
 /* ── Compute functions (called ONLY from background thread) ── */
@@ -356,6 +381,18 @@ static void *api_cache_refresh_thread(void *arg)
                     pthread_mutex_lock(&g_api_cache_mutex);
                     memcpy(g_api_supply_cache, tmp, len);
                     g_api_supply_cache_len = len;
+                    pthread_mutex_unlock(&g_api_cache_mutex);
+                }
+                free(tmp);
+            }
+            tmp = zcl_malloc(API_SUPPLY_CACHE_SIZE, "api_supply_legacy_tmp");
+            if (tmp) {
+                size_t len = compute_supply_legacy(tmp, API_SUPPLY_CACHE_SIZE);
+                if (len > 0 && len < API_SUPPLY_CACHE_SIZE &&
+                    api_response_cacheable(tmp, len)) {
+                    pthread_mutex_lock(&g_api_cache_mutex);
+                    memcpy(g_api_supply_legacy_cache, tmp, len);
+                    g_api_supply_legacy_cache_len = len;
                     pthread_mutex_unlock(&g_api_cache_mutex);
                 }
                 free(tmp);
@@ -551,29 +588,9 @@ static size_t serve_hodl_fresh(uint8_t *r, size_t max)
                           "HODL data unavailable, please retry");
 }
 
-/* ── Operator-private route classifier ───────────────────── */
-
-/* True when `path` begins with `prefix` at a path boundary — the
- * char after the prefix must be '\0', '/' or '?' so e.g.
- * "/api/swaps" never captures the public "/api/swap_chains". */
-static bool api_path_prefix_boundary(const char *path, const char *prefix)
-{
-    size_t n = strlen(prefix);
-    if (strncmp(path, prefix, n) != 0)
-        return false;
-    return path[n] == '\0' || path[n] == '/' || path[n] == '?';
-}
-
 bool api_route_is_operator_private(const char *path)
 {
-    if (!path)
-        return false;
-    return api_path_prefix_boundary(path, "/api/wallet") ||
-           api_path_prefix_boundary(path, "/api/v1/wallet") ||
-           api_path_prefix_boundary(path, "/api/messages") ||
-           api_path_prefix_boundary(path, "/api/v1/messages") ||
-           api_path_prefix_boundary(path, "/api/v1/swaps") ||
-           api_path_prefix_boundary(path, "/api/swaps");
+    return api_route_registry_is_private(path);
 }
 
 size_t api_route_blocks(uint8_t *response, size_t response_max)
@@ -599,6 +616,41 @@ size_t api_route_supply(uint8_t *response, size_t response_max)
     return serve_from_cache(g_api_supply_cache, &g_api_supply_cache_len,
                             response, response_max);
 }
+
+size_t api_route_supply_legacy(uint8_t *response, size_t response_max)
+{
+    return serve_from_cache(g_api_supply_legacy_cache,
+                            &g_api_supply_legacy_cache_len,
+                            response, response_max);
+}
+
+#ifdef ZCL_TESTING
+void api_test_seed_supply_caches(const char *canonical,
+                                 const char *legacy)
+{
+    pthread_mutex_lock(&g_api_cache_mutex);
+
+    g_api_supply_cache_len = 0;
+    if (canonical) {
+        size_t len = strlen(canonical);
+        if (len < sizeof(g_api_supply_cache)) {
+            memcpy(g_api_supply_cache, canonical, len);
+            g_api_supply_cache_len = len;
+        }
+    }
+
+    g_api_supply_legacy_cache_len = 0;
+    if (legacy) {
+        size_t len = strlen(legacy);
+        if (len < sizeof(g_api_supply_legacy_cache)) {
+            memcpy(g_api_supply_legacy_cache, legacy, len);
+            g_api_supply_legacy_cache_len = len;
+        }
+    }
+
+    pthread_mutex_unlock(&g_api_cache_mutex);
+}
+#endif
 
 size_t api_route_hodl(uint8_t *response, size_t response_max)
 {
@@ -668,6 +720,11 @@ size_t api_handle_request(const char *method, const char *path,
         return api_serve_unsupported_version(requested_version, response,
                                              response_max);
 
+    /* Compatibility exception: legacy /api/supply is a raw numeric feed used
+     * by old callers, while /api/v1/supply is the canonical REST resource. */
+    if (strcmp(clean_path, "/api/supply") == 0)
+        return api_route_supply_legacy(response, response_max);
+
     const char *route_path =
         api_canonical_route_path(clean_path, route_path_buf,
                                  sizeof(route_path_buf));
@@ -677,110 +734,11 @@ size_t api_handle_request(const char *method, const char *path,
     if (route)
         return route->handler(response, response_max);
 
-    /* Route: /api/block/:id — served via lookup thread */
-    if (strncmp(route_path, "/api/block/", 11) == 0 && route_path[11])
-        return do_lookup(LOOKUP_BLOCK, route_path + 11, response, response_max);
-
-    /* Route: /api/tx/:txid — served via lookup thread */
-    if (strncmp(route_path, "/api/tx/", 8) == 0 && route_path[8])
-        return do_lookup(LOOKUP_TX, route_path + 8, response, response_max);
-
-    /* Route: /api/address/:addr — served via lookup thread */
-    if (strncmp(route_path, "/api/address/", 13) == 0 && route_path[13])
-        return do_lookup(LOOKUP_ADDRESS, route_path + 13, response, response_max);
-
-    /* Route: /api/zslp/tokens — resource collection */
-    if (strcmp(route_path, "/api/zslp/tokens") == 0 ||
-        strncmp(route_path, "/api/zslp/tokens?", 17) == 0)
-        return api_serve_zslp_tokens(route_path, response, response_max);
-
-    /* Route: /api/zslp/tokens/:id/transfers — member subresource */
-    if (strncmp(route_path, "/api/zslp/tokens/", 17) == 0 && route_path[17]) {
-        const char *token_id = route_path + 17;
-        const char *suffix = strstr(token_id, "/transfers");
-        if (suffix &&
-            (strcmp(suffix, "/transfers") == 0 ||
-             strncmp(suffix, "/transfers?", 11) == 0)) {
-            char token_buf[ZSLP_TOKEN_KEY_MAX + 1];
-            size_t token_len = (size_t)(suffix - token_id);
-            if (token_len == 0 || token_len > ZSLP_TOKEN_KEY_MAX)
-                return api_json_error(response, response_max, JSON_404_HEADERS,
-                                  "Invalid token id");
-            memcpy(token_buf, token_id, token_len);
-            token_buf[token_len] = '\0';
-            return api_serve_zslp_token_transfers(route_path, token_buf,
-                                                  response, response_max);
-        }
-        return api_serve_zslp_token(token_id, response, response_max);
-    }
-
-    /* Route: /api/onion/announcements — resource collection */
-    if (strcmp(route_path, "/api/onion/announcements") == 0 ||
-        strncmp(route_path, "/api/onion/announcements?", 25) == 0)
-        return api_serve_onion_announcements(route_path, response, response_max);
-
-    /* Route: /api/file-services — resource collection */
-    if (strcmp(route_path, "/api/file-services") == 0 ||
-        strncmp(route_path, "/api/file-services?", 19) == 0)
-        return api_serve_file_services(route_path, response, response_max);
-
-    /* Route: /api/peers — resource collection */
-    if (strcmp(route_path, "/api/peers") == 0 ||
-        strncmp(route_path, "/api/peers?", 11) == 0)
-        return api_serve_peers(route_path, response, response_max);
-
-    /* Event log — lock-free atomic reads, safe from any handler thread */
-    if (strncmp(route_path, "/api/events", 11) == 0 &&
-        (route_path[11] == '\0' || route_path[11] == '?'))
-        return api_serve_events(route_path, response, response_max);
-
-    /* ── File Transfer Service — SHA3-verified chunks ──────────── */
-
-    /* GET /api/files/:sha3hash — raw chunk bytes by SHA3 hash */
-    if (strncmp(route_path, "/api/files/", 11) == 0 &&
-        strlen(route_path + 11) == 64)
-        return api_serve_file_chunk(route_path + 11, response, response_max);
-
-    /* ── P2P Services Platform REST API ─────────────────────── */
-
-    /* Helper: call an API function and return its JSON as HTTP response */
-    #define API_JSON_ROUTE(path_str, api_fn) \
-    if (strcmp(route_path, path_str) == 0) { \
-        struct json_value jr = {0}; \
-        if (api_fn(&jr)) { \
-            size_t n = api_json_ok(response, response_max, &jr); \
-            json_free(&jr); \
-            return n; \
-        } \
-        json_free(&jr); \
-        return api_json_error(response, response_max, JSON_500_HEADERS, \
-                          "Internal error"); \
-    }
-
-    API_JSON_ROUTE("/api/sync/detail", api_getsyncdetail)
-    API_JSON_ROUTE("/api/services",    api_getservicehealth)
-    API_JSON_ROUTE("/api/latency",     api_getpeerlatency)
-    API_JSON_ROUTE("/api/games",       api_gametypes)
-    API_JSON_ROUTE("/api/names",       api_name_list)
-
-    /* Route: /api/name/:name — resolve single name */
-    if (strncmp(route_path, "/api/name/", 10) == 0 && route_path[10]) {
-        extern bool rpc_name_resolve_api(const char *name, struct json_value *result);
-        struct json_value jr = {0};
-        if (rpc_name_resolve_api(route_path + 10, &jr)) {
-            size_t n = api_json_ok(response, response_max, &jr);
-            json_free(&jr);
-            return n;
-        }
-        json_free(&jr);
-        return api_json_error(response, response_max, JSON_404_HEADERS, "Name not found");
-    }
-    API_JSON_ROUTE("/api/market",      api_market_list)
-    API_JSON_ROUTE("/api/swaps",       api_swap_list)
-    API_JSON_ROUTE("/api/swap_chains", api_swap_chains)
-    API_JSON_ROUTE("/api/messages",    api_msg_inbox)
-
-    #undef API_JSON_ROUTE
+    bool handled = false;
+    size_t dynamic = api_resource_route_dispatch_dynamic(
+        method, route_path, response, response_max, &handled);
+    if (handled)
+        return dynamic;
 
     return api_json_error(response, response_max, JSON_404_HEADERS,
                       "Unknown API endpoint");

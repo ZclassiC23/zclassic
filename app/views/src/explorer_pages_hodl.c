@@ -3,8 +3,8 @@
  * Explorer HODL-wave VIEW.
  *
  * Part of the explorer secondary-pages split: this TU owns the HODL-wave
- * page — the cumulative-value bisect helpers, the time-series chart
- * assembly, and explorer_view_hodl. The other secondary pages (tokens,
+ * page — the historical snapshot chart assembly and explorer_view_hodl.
+ * The other secondary pages (tokens,
  * token detail, event log, names, market, swaps, messages, loading
  * placeholder) live in explorer_pages_view.c. explorer_view_hodl is declared
  * in views/explorer_pages_view.h. */
@@ -15,24 +15,14 @@
 #include "jobs/reducer_frontier.h"
 #include "models/hodl_wave.h"
 #include "services/hodl_history_service.h"
-#include "util/ar_step_readonly.h"
-#include "util/log_macros.h"
 #include "views/format_helpers.h"
 
 #include <inttypes.h>
-#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 /* ── HODL Wave Page ────────────────────────────────────────── */
-
-/* Helper for the HODL page: bisect a height-sorted cumulative-value
- * array. Returns the cumulative value at the largest stored height
- * that does not exceed target_h, or 0 when no such row exists. */
-struct hodl_cum_row { int64_t h; int64_t cum_v; };
 
 static int64_t hodl_view_cap_to_served_tip(int64_t index_tip)
 {
@@ -47,89 +37,14 @@ static int64_t hodl_view_cap_to_served_tip(int64_t index_tip)
     return index_tip;
 }
 
-static int64_t hodl_cum_at(const struct hodl_cum_row *cum, int n,
-                           int64_t target_h)
-{
-    int lo = 0, hi = n - 1, found = -1;
-    while (lo <= hi) {
-        int m = (lo + hi) / 2;
-        if (cum[m].h <= target_h) { found = m; lo = m + 1; }
-        else hi = m - 1;
-    }
-    return found >= 0 ? cum[found].cum_v : (int64_t)0;
-}
-
-/* Same bisect but returns the array INDEX (0-based) of the matched
- * row, or -1. Use to convert a height boundary into a UTXO count. */
-static int hodl_cum_idx_at(const struct hodl_cum_row *cum, int n,
-                           int64_t target_h)
-{
-    int lo = 0, hi = n - 1, found = -1;
-    while (lo <= hi) {
-        int m = (lo + hi) / 2;
-        if (cum[m].h <= target_h) { found = m; lo = m + 1; }
-        else hi = m - 1;
-    }
-    return found;
-}
-
-/* Invert hodl_wave_age_seconds: return the creation height whose age,
- * measured with sample_h as the tip, equals age_sec. Mirrors the model's
- * Buttercup-aware spacing (pre-BC 150 s/block, post-BC 75 s/block) so the
- * per-band split computed here lines up with hodl_wave_bucket_index. */
-static int64_t hodl_height_for_age(int64_t sample_h, int64_t age_sec)
-{
-    const int64_t BC = 707000, PRE = 150, POST = 75;
-    if (age_sec <= 0) return sample_h;
-    if (sample_h >= BC) {
-        int64_t post_span = (sample_h - BC) * POST; /* max age inside post-BC */
-        if (age_sec <= post_span) return sample_h - age_sec / POST;
-        int64_t rem = age_sec - post_span;           /* spill into pre-BC */
-        return BC - rem / PRE;
-    }
-    /* sample_h below Buttercup: only the 150 s spacing applies */
-    return sample_h - age_sec / PRE;
-}
-
-/* Per-sample chart row including the day-window movement counters and the
- * per-age-band value split (percent x1000) used by the hover legend. */
+/* Per-sample chart row loaded from hodl_history, plus a live tip anchor. */
 struct hodl_chart_row {
     int64_t height;
     int64_t time;
     int64_t total_zat;
     int64_t older_1y_zat;
     double  older_1y_pct;
-    int64_t created_count;  /* UTXOs created in this day's window, still unspent */
-    int64_t created_zat;
-    int     band_x1000[HODL_WAVE_BUCKETS]; /* per-band share of total, pct x1000 */
 };
-
-/* Fill band_x1000[] with each age band's share (percent x1000) of `total`
- * at sample_h. Band b covers ages [prev_max, max); the youngest band starts
- * at 0, the oldest band runs to genesis. The split telescopes to `total`,
- * so the bands sum to ~100%. Bisects the cumulative-value array at the
- * height boundaries that the band's age edges map to. */
-static void hodl_fill_bands(const struct hodl_cum_row *cum, int n_cum,
-                            const struct hodl_wave_snapshot *hodl,
-                            int64_t sample_h, int64_t total,
-                            int *band_x1000)
-{
-    for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
-        int64_t young_age = b == 0 ? 0 : hodl->buckets[b - 1].max_age_seconds;
-        int64_t cv_young = hodl_cum_at(cum, n_cum,
-                                       hodl_height_for_age(sample_h, young_age));
-        int64_t cv_old = 0; /* last band runs to genesis → 0 */
-        if (b < HODL_WAVE_BUCKETS - 1) {
-            int64_t old_h = hodl_height_for_age(sample_h,
-                                                hodl->buckets[b].max_age_seconds);
-            cv_old = hodl_cum_at(cum, n_cum, old_h);
-        }
-        int64_t band_val = cv_young - cv_old;
-        if (band_val < 0) band_val = 0;
-        band_x1000[b] = total > 0
-            ? (int)((double)band_val / (double)total * 100000.0) : 0;
-    }
-}
 
 size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
 {
@@ -200,173 +115,62 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
 
     /* ── Time-series chart: % held > 1y over time ────────────────
      *
-     * Metric: at each historical block height H, what fraction of
-     * TODAY'S transparent UTXO supply was already > 1 year old at H?
+     * Metric: at each historical block height H, what fraction of the
+     * transparent UTXO value alive at H was already older than 1 year?
      *
-     * Source: the live `utxos` table. Every row is a currently-unspent
-     * output with its creation height — dense, no indexer dependency.
-     *
-     * Note: this metric measures "% of supply that survives today, as
-     * a function of how long it was held when the chart sampled". It
-     * does NOT include UTXOs that existed at H but have since been
-     * spent (those rows aren't in the utxos table by definition). The
-     * right edge of the chart equals the headline `older_pct` because
-     * at H = today every current UTXO contributes to the denominator
-     * and the >1y subset to the numerator.
-     *
-     * Correctness: each (total, older) pair is computed from a strict
-     * subset of current UTXOs, so the displayed pct is always a real
-     * ratio of real-value sums. No partial-index assumptions. */
+     * Source: hodl_history snapshots, filled by hodl_history_service from
+     * tx_outputs + tx_inputs. The service computes "alive at H" by including
+     * outputs created on or before H and excluding outputs spent on or before
+     * H, so old chart points do not depend on today's surviving UTXOs. */
     {
         sqlite3 *udb = NULL;
         if (explorer_open_readonly_db(datadir, &udb)) {
-            /* Pass 1: load utxos sorted by creation height; build a
-             * cumulative-value array so we can answer "sum of value of
-             * UTXOs created at height ≤ H" via a binary search.
-             * Static buffer sized for ~2 M current UTXOs (today: 1.34 M
-             * on mainnet). If the table exceeds the cap, sample
-             * accuracy degrades smoothly — we just stop accumulating. */
-            #define HODL_CUM_MAX 2000000
-            static struct hodl_cum_row cum[HODL_CUM_MAX];
-            int n_cum = 0;
-            int64_t total_supply_zat = 0;
-            {
-                sqlite3_stmt *s = NULL;
-                if (sqlite3_prepare_v2(udb,
-                        "SELECT height, value FROM utxos "
-                        "WHERE value > 0 ORDER BY height ASC",
-                        -1, &s, NULL) == SQLITE_OK && s) {
-                    int64_t running = 0;
-                    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW &&
-                           n_cum < HODL_CUM_MAX) {
-                        int64_t h = sqlite3_column_int64(s, 0);
-                        int64_t v = sqlite3_column_int64(s, 1);
-                        if (h < 0) continue;
-                        running += v;
-                        cum[n_cum].h     = h;
-                        cum[n_cum].cum_v = running;
-                        n_cum++;
-                    }
-                    sqlite3_finalize(s);
-                    total_supply_zat = running;
-                }
-            }
-            /* bisect via the file-scope helper hodl_cum_at(cum, n_cum, h). */
-
-            /* Real on-chain timestamps: one point lookup per sample height
-             * against blocks.time (the canonical mined-block time). Prepared
-             * once and reused; udb stays open through the sample loop and is
-             * closed below. Falls back to the spacing estimate only if a row
-             * is missing (a gap during indexing). */
-            sqlite3_stmt *ts = NULL;
-            if (sqlite3_prepare_v2(udb,
-                    "SELECT time FROM blocks WHERE height=?1 AND status>=3 "
-                    "LIMIT 1", -1, &ts, NULL) != SQLITE_OK) {
-                LOG_WARN("hodl", "prepare blocks.time lookup failed: %s",
-                         sqlite3_errmsg(udb));
-                ts = NULL;
-            }
-
-            /* Sample one row per ~day from stride to tip. Use the
-             * chain tip from the headline snapshot as the right edge
-             * so the last sample lines up with the headline value.
-             *
-             * Per-sample movement metric: count + value of UTXOs whose
-             * creation height falls inside the day's window
-             * (sample_h - stride, sample_h] AND that are still unspent
-             * today. This is a strict subset of true daily UTXO creation
-             * (we can't see UTXOs that got spent before today since
-             * those rows aren't in the utxos table) — labelled as
-             * "surviving" in the hover so the metric isn't oversold. */
-            int64_t bpY = HODL_HISTORY_BLOCKS_PER_YEAR;
-            int64_t stride = HODL_HISTORY_SAMPLE_STRIDE;
-            int64_t tip_h = hodl.tip_height;
             static struct hodl_chart_row rows[2048];
+            static struct hodl_history_row hist[2048];
             int n = 0;
-            const int64_t GENESIS_TIME = 1478403829LL;
-            const int64_t BC_HEIGHT    = 707000;
-            for (int64_t sample_h = stride;
-                 sample_h <= tip_h &&
-                 n < (int)(sizeof(rows)/sizeof(rows[0])) - 1;
-                 sample_h += stride) {
-                int64_t total = hodl_cum_at(cum, n_cum, sample_h);
-                if (total <= 0) continue;
-                int64_t older = sample_h > bpY
-                              ? hodl_cum_at(cum, n_cum, sample_h - bpY)
-                              : 0;
 
-                /* Day-window: indices of (sample_h - stride, sample_h]. */
-                int hi_idx = hodl_cum_idx_at(cum, n_cum, sample_h);
-                int lo_idx = sample_h >= stride
-                           ? hodl_cum_idx_at(cum, n_cum, sample_h - stride)
-                           : -1;
-                int64_t created_count = (int64_t)(hi_idx - lo_idx);
-                int64_t created_zat =
-                    (hi_idx >= 0 ? cum[hi_idx].cum_v : 0) -
-                    (lo_idx >= 0 ? cum[lo_idx].cum_v : 0);
-
-                /* True on-chain block time; fall back to the spacing
-                 * estimate (pre-Buttercup 150 s, post-Buttercup 75 s) only
-                 * when the row is absent. */
-                int64_t btime = 0;
-                if (ts) {
-                    sqlite3_reset(ts);
-                    sqlite3_bind_int64(ts, 1, sample_h);
-                    if (AR_STEP_ROW_READONLY(ts) == SQLITE_ROW)
-                        btime = sqlite3_column_int64(ts, 0);
-                }
-                if (btime <= 0) {
-                    int64_t pre  = sample_h < BC_HEIGHT ? sample_h : BC_HEIGHT;
-                    int64_t post = sample_h < BC_HEIGHT
-                                 ? 0 : (sample_h - BC_HEIGHT);
-                    btime = GENESIS_TIME + pre * 150 + post * 75;
-                }
-                rows[n].height        = sample_h;
-                rows[n].time          = btime;
-                rows[n].total_zat     = total;
-                rows[n].older_1y_zat  = older;
-                rows[n].older_1y_pct  = (double)older / (double)total * 100.0;
-                rows[n].created_count = created_count;
-                rows[n].created_zat   = created_zat;
-                hodl_fill_bands(cum, n_cum, &hodl, sample_h, total,
-                                rows[n].band_x1000);
+            int hist_n = hodl_history_load_all(
+                udb, hist, (int)(sizeof(hist) / sizeof(hist[0])) - 1);
+            for (int i = 0; i < hist_n &&
+                            n < (int)(sizeof(rows) / sizeof(rows[0])) - 1; i++) {
+                if (hist[i].height < 1 || hist[i].height > hodl.tip_height ||
+                    hist[i].time <= 0 || hist[i].total_zat <= 0)
+                    continue;
+                int64_t older = hist[i].older_1y_zat;
+                if (older < 0) older = 0;
+                if (older > hist[i].total_zat) older = hist[i].total_zat;
+                rows[n].height       = hist[i].height;
+                rows[n].time         = hist[i].time;
+                rows[n].total_zat    = hist[i].total_zat;
+                rows[n].older_1y_zat = older;
+                rows[n].older_1y_pct =
+                    (double)older / (double)hist[i].total_zat * 100.0;
                 n++;
             }
 
-            /* Append a "today" anchor — uses the live headline values
-             * directly so the rightmost data point IS the headline. */
+            /* Append an exact live-tip anchor when the daily history filler has
+             * not sampled the current tip yet. At tip, the current transparent
+             * UTXO scan and the alive-at-H definition are the same set. */
             if (n < (int)(sizeof(rows)/sizeof(rows[0])) &&
-                hodl.total_value > 0) {
-                int hi_idx = hodl_cum_idx_at(cum, n_cum, hodl.tip_height);
-                int lo_idx = hodl.tip_height >= stride
-                           ? hodl_cum_idx_at(cum, n_cum,
-                                             hodl.tip_height - stride)
-                           : -1;
+                hodl.total_value > 0 &&
+                (n == 0 || rows[n - 1].height < hodl.tip_height)) {
                 rows[n].height        = hodl.tip_height;
                 rows[n].time          = (int64_t)platform_time_wall_time_t();
                 rows[n].total_zat     = hodl.total_value;
                 rows[n].older_1y_zat  = hodl.older_than_1y_value;
                 rows[n].older_1y_pct  = older_pct;
-                rows[n].created_count = (int64_t)(hi_idx - lo_idx);
-                rows[n].created_zat   =
-                    (hi_idx >= 0 ? cum[hi_idx].cum_v : 0) -
-                    (lo_idx >= 0 ? cum[lo_idx].cum_v : 0);
-                hodl_fill_bands(cum, n_cum, &hodl, hodl.tip_height,
-                                hodl.total_value, rows[n].band_x1000);
                 n++;
             }
-            if (ts) sqlite3_finalize(ts);
             sqlite3_close(udb);
-            #undef HODL_CUM_MAX
 
-            if (n < 2 || total_supply_zat <= 0) {
+            if (n < 2) {
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto;"
                     "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
                     "border-radius:8px;color:#888'>"
                     "<h2 style='color:#bbb;margin-top:0'>"
                     "%% held &gt; 1 year over time</h2>"
-                    "<p>The UTXO set is still being indexed. Refresh in "
+                    "<p>The HODL history snapshots are still being indexed. Refresh in "
                     "a minute.</p>"
                     "</div>");
             } else {
@@ -392,14 +196,14 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto'>"
                     "<svg id='hodl-ts' viewBox='0 0 %d %d' tabindex='0' "
-                    "role='img' aria-label='Time series: percent of the current "
-                    "transparent supply already held longer than one year, by "
-                    "historical block. Use left/right arrows to inspect samples.' "
+                    "role='img' aria-label='Time series: percent of historical "
+                    "transparent UTXO value held longer than one year at each "
+                    "sampled block. Use left/right arrows to inspect samples.' "
                     "style='width:100%%;"
                     "height:auto;background:#0c0c0c;border:1px solid #1a1a1a;"
                     "border-radius:8px;display:block;outline:none'>"
                     "<text x='30' y='30' fill='#bbb' font-size='18' "
-                    "font-family='Georgia,serif'>Current supply: %% already held &gt; 1 year, by historical block</text>"
+                    "font-family='Georgia,serif'>Historical transparent UTXO value: %% held &gt; 1 year</text>"
                     "<text x='%d' y='30' fill='#666' font-size='12' "
                     "text-anchor='end' font-family='Georgia,serif'>"
                     "%d samples · daily</text>",
@@ -485,33 +289,18 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                 APPEND(off, r, max, "</svg></div>");
 
                 /* Inline data block for JS — one row per sample, packed
-                 * as comma-separated integers
-                 * [height, time, total_zat, older_zat, pct_x1000,
-                 *  created_count, created_zat, band0_x1000 .. band9_x1000]
-                 * to keep the inline blob compact. created_* are the UTXOs
-                 * created in this day's window that are still unspent today
-                 * ("surviving creation"); bandN_x1000 is the percent-x1000
-                 * share of total value in age band N at the sample. */
+                 * as [height, time, total_zat, older_zat, pct_x1000]. */
                 APPEND(off, r, max,
                     "<script>(function(){"
-                    "var NS='http://www.w3.org/2000/svg';"
                     "var data=[");
                 for (int i = 0; i < n; i++) {
                     APPEND(off, r, max,
-                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d,%" PRId64 ",%" PRId64,
+                        "%s[%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d]",
                         i ? "," : "",
                         rows[i].height, rows[i].time,
                         rows[i].total_zat, rows[i].older_1y_zat,
-                        (int)(rows[i].older_1y_pct * 1000.0),
-                        rows[i].created_count, rows[i].created_zat);
-                    for (int b = 0; b < HODL_WAVE_BUCKETS; b++)
-                        APPEND(off, r, max, ",%d", rows[i].band_x1000[b]);
-                    APPEND(off, r, max, "]");
+                        (int)(rows[i].older_1y_pct * 1000.0));
                 }
-                APPEND(off, r, max, "];var bands=[");
-                for (int b = 0; b < HODL_WAVE_BUCKETS; b++)
-                    APPEND(off, r, max, "%s[\"%s\",\"%s\"]", b ? "," : "",
-                           hodl.buckets[b].color, hodl.buckets[b].label);
                 APPEND(off, r, max,
                     "];"
                     "var W=%d,pl=%d,pr=%d,pt=%d,pb=%d,ph=%d,pw=W-pl-pr;"
@@ -526,30 +315,9 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "var ta=document.getElementById('hodl-tip-amt');"
                     "var tm=document.getElementById('hodl-tip-mv');"
                     "var th=document.getElementById('hodl-tip-h');"
-                    /* tooltip geometry: summary block, then one 15px legend
-                     * row per band; bg rect sized to fit + clamped in plot */
-                    "var TIPW=290,SUMH=104,ROWH=15,NB=bands.length;"
-                    "var TIPH=SUMH+NB*ROWH+6;"
+                    "var TIPW=290,TIPH=104;"
                     "tipBg.setAttribute('width',TIPW);"
                     "tipBg.setAttribute('height',TIPH);"
-                    "var legend=[];"
-                    "for(var bi=0;bi<NB;bi++){"
-                    "var yy=SUMH+bi*ROWH;"
-                    "var sw=document.createElementNS(NS,'rect');"
-                    "sw.setAttribute('x',10);sw.setAttribute('y',yy-9);"
-                    "sw.setAttribute('width',10);sw.setAttribute('height',10);"
-                    "sw.setAttribute('rx',2);sw.setAttribute('fill',bands[bi][0]);"
-                    "tip.appendChild(sw);"
-                    "var lt=document.createElementNS(NS,'text');"
-                    "lt.setAttribute('x',26);lt.setAttribute('y',yy);"
-                    "lt.setAttribute('fill','#bbb');lt.setAttribute('font-size','11');"
-                    "lt.textContent=bands[bi][1];tip.appendChild(lt);"
-                    "var pv=document.createElementNS(NS,'text');"
-                    "pv.setAttribute('x',TIPW-12);pv.setAttribute('y',yy);"
-                    "pv.setAttribute('text-anchor','end');"
-                    "pv.setAttribute('fill','#fff');pv.setAttribute('font-size','11');"
-                    "tip.appendChild(pv);legend.push(pv);"
-                    "}"
                     "function fmtZcl(z){"
                     "var v=z/1e8;"
                     "if(v>=1e6)return(v/1e6).toFixed(2)+'M';"
@@ -598,10 +366,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "td.textContent=fmtDate(row[1]);"
                     "tp.textContent=pct.toFixed(3)+'%% held > 1 year';"
                     "ta.textContent=fmtZcl(row[3])+' / '+fmtZcl(row[2])+' ZCL';"
-                    "tm.textContent='+ '+row[5].toLocaleString()+' UTXOs, '+fmtZcl(row[6])+' ZCL surviving';"
+                    "tm.textContent='Transparent UTXOs alive at sampled height';"
                     "th.textContent='Block '+row[0].toLocaleString();"
-                    "for(var bi=0;bi<NB;bi++)"
-                    "legend[bi].textContent=(row[7+bi]/1000).toFixed(2)+'%%';"
                     "}"
                     /* coalesce pointer moves into one rAF tick per frame */
                     "var pend=null,raf=0;"

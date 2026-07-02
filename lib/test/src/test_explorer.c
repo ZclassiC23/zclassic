@@ -4,10 +4,12 @@
 #include "test/test_helpers.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
+#include "jobs/reducer_frontier.h"
 #include "models/hodl_wave.h"
 #include "crypto/sha3.h"
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
+#include "views/explorer_pages_view.h"
 #include <string.h>
 #include <inttypes.h>
 #include <sys/stat.h>
@@ -76,6 +78,53 @@ int test_explorer(void)
         bool ok = (n > 0 &&
                    strstr((char *)resp, "302 Found") != NULL &&
                    strstr((char *)resp, "Location: /explorer/hodl") != NULL);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: HODL page uses historical snapshots for time series... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        sqlite3 *db = NULL;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_hodl_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER);"
+            "CREATE TABLE utxos(height INTEGER, value INTEGER);"
+            "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
+            "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
+            "INSERT INTO blocks(height,time) VALUES"
+            "(100,1000),(500,2000),(1000,3000);"
+            "INSERT INTO utxos(height,value) VALUES"
+            "(1000,1000);"
+            "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
+            "older_1y_pct) VALUES"
+            "(100,1000,400,50,12.5),(500,2000,800,200,25.0);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db)
+            sqlite3_close(db);
+
+        reducer_frontier_provable_tip_set(1000);
+        uint8_t out[65536];
+        size_t n = explorer_view_hodl(dbdir, out, sizeof(out) - 1);
+        reducer_frontier_provable_tip_reset();
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        ok = ok && n > 0 &&
+             strstr((char *)out, "Historical transparent UTXO value") != NULL &&
+             strstr((char *)out, "[100,1000,400,50,12500]") != NULL &&
+             strstr((char *)out, "[500,2000,800,200,25000]") != NULL &&
+             strstr((char *)out, "surviving") == NULL;
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

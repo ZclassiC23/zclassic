@@ -23,5 +23,6 @@ struct tx_mempool;
 /* REST API */
 #include "json/json.h"
 bool api_name_list(struct json_value *result);
+bool rpc_name_resolve_api(const char *name, struct json_value *result);
 
 #endif

@@ -27,6 +27,7 @@
 #include "models/onion_announcement.h"
 #include "models/peer.h"
 #include "models/zslp.h"
+#include "json/json.h"
 #include "views/explorer_factoids_view.h"
 #include "net/download.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -59,6 +60,182 @@
 
 /* Lookup queue and parameterized handlers: /api/block/:id, /tx/:txid, /address/:addr. Single-slot work queue, served via background thread. */
 
+#define LOOKUP_HEIGHT_UNAVAILABLE INT64_C(-1)
+
+static int64_t json_i64_or(const struct json_value *obj, const char *key,
+                           int64_t fallback)
+{
+    const struct json_value *v = json_get(obj, key);
+
+    if (!v || json_is_null(v))
+        return fallback;
+    return json_get_int(v);
+}
+
+static double json_real_or(const struct json_value *obj, const char *key,
+                           double fallback)
+{
+    const struct json_value *v = json_get(obj, key);
+
+    if (!v || json_is_null(v))
+        return fallback;
+    return json_get_real(v);
+}
+
+static const char *json_str_or(const struct json_value *obj, const char *key,
+                               const char *fallback)
+{
+    const struct json_value *v = json_get(obj, key);
+
+    if (!v || v->type != JSON_STR)
+        return fallback;
+    return v->val.s ? v->val.s : fallback;
+}
+
+static const struct json_value *rpc_result_json(const char *buf,
+                                                struct json_value *root)
+{
+    const struct json_value *result;
+    const struct json_value *error;
+
+    if (!buf || !root || !json_read(root, buf, strlen(buf)))
+        return NULL;
+    error = json_get(root, "error");
+    if (error && !json_is_null(error))
+        return NULL;
+    result = json_get(root, "result");
+    if (!result || json_is_null(result))
+        return NULL;
+    return result;
+}
+
+static int64_t indexed_height_from_confirmations(int64_t height,
+                                                 int64_t confirmations)
+{
+    if (height >= 0 && confirmations > 0)
+        return height + confirmations - 1;
+    if (height >= 0)
+        return height;
+    return LOOKUP_HEIGHT_UNAVAILABLE;
+}
+
+static size_t push_string_array_limited(struct json_value *out,
+                                        const struct json_value *src,
+                                        size_t limit)
+{
+    size_t n;
+    size_t pushed = 0;
+
+    json_set_array(out);
+    n = json_size(src);
+    if (limit > 0 && n > limit)
+        n = limit;
+    for (size_t i = 0; i < n; i++) {
+        const struct json_value *item = json_at(src, i);
+        const char *s;
+        if (!item || item->type != JSON_STR)
+            continue;
+        s = item->val.s;
+        if (!s)
+            continue;
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, s);
+        json_push_back(out, &v);
+        json_free(&v);
+        pushed++;
+    }
+    return pushed;
+}
+
+static size_t push_tx_vouts(struct json_value *out,
+                            const struct json_value *vout)
+{
+    size_t pushed = 0;
+
+    json_set_array(out);
+    for (size_t i = 0; i < json_size(vout); i++) {
+        const struct json_value *entry = json_at(vout, i);
+        if (!entry || entry->type != JSON_OBJ)
+            continue;
+
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_int(&item, "n", json_i64_or(entry, "n", -1));
+        json_push_kv_real(&item, "value", json_real_or(entry, "value", 0.0));
+
+        const struct json_value *script = json_get(entry, "scriptPubKey");
+        const struct json_value *addresses = json_get(script, "addresses");
+        const struct json_value *addr_v = json_at(addresses, 0);
+        const char *addr = addr_v && addr_v->type == JSON_STR
+            ? addr_v->val.s : NULL;
+        if (addr && addr[0])
+            json_push_kv_str(&item, "address", addr);
+
+        json_push_back(out, &item);
+        json_free(&item);
+        pushed++;
+    }
+    return pushed;
+}
+
+static size_t push_tx_vins(struct json_value *out,
+                           const struct json_value *vin)
+{
+    size_t pushed = 0;
+
+    json_set_array(out);
+    for (size_t i = 0; i < json_size(vin); i++) {
+        const struct json_value *entry = json_at(vin, i);
+        if (!entry || entry->type != JSON_OBJ)
+            continue;
+
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        if (json_get(entry, "coinbase")) {
+            json_push_kv_bool(&item, "coinbase", true);
+        } else {
+            json_push_kv_str(&item, "txid", json_str_or(entry, "txid", ""));
+            json_push_kv_int(&item, "vout", json_i64_or(entry, "vout", -1));
+        }
+        json_push_back(out, &item);
+        json_free(&item);
+        pushed++;
+    }
+    return pushed;
+}
+
+static size_t push_address_utxos(struct json_value *out,
+                                 const struct json_value *utxos)
+{
+    size_t pushed = 0;
+
+    json_set_array(out);
+    for (size_t i = 0; i < json_size(utxos); i++) {
+        const struct json_value *entry = json_at(utxos, i);
+        if (!entry || entry->type != JSON_OBJ)
+            continue;
+
+        int64_t satoshis = json_i64_or(entry, "satoshis", 0);
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "txid", json_str_or(entry, "txid", ""));
+        json_push_kv_int(&item, "vout",
+                         json_i64_or(entry, "outputIndex", -1));
+        json_push_kv_int(&item, "satoshis", satoshis);
+        json_push_kv_real(&item, "value",
+                          (double)satoshis / (double)ZATOSHI_PER_ZCL);
+        json_push_kv_int(&item, "height", json_i64_or(entry, "height", -1));
+        json_push_back(out, &item);
+        json_free(&item);
+        pushed++;
+    }
+    return pushed;
+}
+
 size_t compute_block(const char *param, uint8_t *r, size_t max)
 {
     if (!param || !*param)
@@ -66,6 +243,8 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
 
     char buf[262144];
     char hash[65] = "";
+    struct json_value root;
+    const struct json_value *result;
 
     /* Resolve height to hash if needed */
     if (zcl_is_all_digits(param)) {
@@ -73,7 +252,15 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
         snprintf(params, sizeof(params), "[%s]", param);
         if (api_rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
             return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
-        zcl_json_extract_str(buf, "result", hash, sizeof(hash));
+
+        json_init(&root);
+        result = rpc_result_json(buf, &root);
+        if (result) {
+            const char *s = json_get_str(result);
+            if (s)
+                snprintf(hash, sizeof(hash), "%s", s);
+        }
+        json_free(&root);
     } else if (zcl_is_hex_string(param, 64)) {
         snprintf(hash, sizeof(hash), "%s", param);
     }
@@ -87,76 +274,55 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
     if (api_rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
         return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
 
-    if (strstr(buf, "\"error\":null") == NULL)
+    json_init(&root);
+    result = rpc_result_json(buf, &root);
+    if (!result || result->type != JSON_OBJ) {
+        json_free(&root);
         return api_json_error(r, max, JSON_404_HEADERS, "Block not found");
-
-    int64_t height = zcl_json_int(buf, "height");
-    int64_t blk_time = zcl_json_int(buf, "time");
-    int64_t blk_size = zcl_json_int(buf, "size");
-    double diff = zcl_json_real(buf, "difficulty");
-
-    char merkle[65] = "", prev[65] = "", next_hash[65] = "", nonce[65] = "";
-    zcl_json_extract_str(buf, "merkleroot", merkle, sizeof(merkle));
-    zcl_json_extract_str(buf, "previousblockhash", prev, sizeof(prev));
-    zcl_json_extract_str(buf, "nextblockhash", next_hash, sizeof(next_hash));
-    zcl_json_extract_str(buf, "nonce", nonce, sizeof(nonce));
-
-    int64_t confirmations = zcl_json_int(buf, "confirmations");
-
-    /* Count and collect transaction IDs */
-    int tx_count = explorer_count_json_tx_array(buf);
-    const char *txarr = strstr(buf, "\"tx\":[");
-
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"hash\":\"%s\""
-        ",\"height\":%" PRId64
-        ",\"time\":%" PRId64
-        ",\"size\":%" PRId64
-        ",\"difficulty\":%.8f"
-        ",\"confirmations\":%" PRId64
-        ",\"num_tx\":%d"
-        ",\"merkleroot\":\"%s\""
-        ",\"nonce\":\"%s\"",
-        JSON_HEADERS,
-        hash, height, blk_time, blk_size, diff,
-        confirmations, tx_count, merkle, nonce);
-
-    if (prev[0])
-        off += (size_t)snprintf((char *)r + off, max - off,
-            ",\"previousblockhash\":\"%s\"", prev);
-    if (next_hash[0])
-        off += (size_t)snprintf((char *)r + off, max - off,
-            ",\"nextblockhash\":\"%s\"", next_hash);
-
-    /* Transaction ID array */
-    off += (size_t)snprintf((char *)r + off, max - off, ",\"tx\":[");
-    if (txarr) {
-        const char *p = txarr + 6; /* skip "tx":[ */
-        int idx = 0;
-        while (p && idx < 200 && off + 128 < max) {
-            if (*p == '"') {
-                p++;
-                const char *end = strchr(p, '"');
-                if (!end) break;
-                size_t tlen = (size_t)(end - p);
-                if (tlen > 64) tlen = 64;
-                if (idx > 0)
-                    off += (size_t)snprintf((char *)r + off, max - off, ",");
-                off += (size_t)snprintf((char *)r + off, max - off,
-                    "\"%.*s\"", (int)tlen, p);
-                idx++;
-                p = end + 1;
-            } else if (*p == ']') {
-                break;
-            } else {
-                p++;
-            }
-        }
     }
-    off += (size_t)snprintf((char *)r + off, max - off, "]}");
-    return off;
+
+    int64_t height = json_i64_or(result, "height", -1);
+    int64_t confirmations = json_i64_or(result, "confirmations", -1);
+    const struct json_value *tx_src = json_get(result, "tx");
+
+    struct json_value body;
+    struct json_value txs;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.blocks.show.v1");
+    api_json_add_freshness(&body, "served_height",
+                           indexed_height_from_confirmations(height,
+                                                             confirmations));
+    json_push_kv_str(&body, "hash", json_str_or(result, "hash", hash));
+    json_push_kv_int(&body, "height", height);
+    json_push_kv_int(&body, "time", json_i64_or(result, "time", -1));
+    json_push_kv_int(&body, "size", json_i64_or(result, "size", -1));
+    json_push_kv_real(&body, "difficulty",
+                      json_real_or(result, "difficulty", 0.0));
+    json_push_kv_int(&body, "confirmations", confirmations);
+    json_push_kv_int(&body, "num_tx", (int64_t)json_size(tx_src));
+    json_push_kv_str(&body, "merkleroot",
+                     json_str_or(result, "merkleroot", ""));
+    json_push_kv_str(&body, "nonce", json_str_or(result, "nonce", ""));
+    const char *prev_hash = json_str_or(result, "previousblockhash", NULL);
+    const char *next_hash = json_str_or(result, "nextblockhash", NULL);
+    if (prev_hash && prev_hash[0])
+        json_push_kv_str(&body, "previousblockhash",
+                         prev_hash);
+    if (next_hash && next_hash[0])
+        json_push_kv_str(&body, "nextblockhash", next_hash);
+
+    json_init(&txs);
+    size_t tx_returned = push_string_array_limited(&txs, tx_src, 200);
+    json_push_kv(&body, "tx", &txs);
+    json_push_kv_int(&body, "tx_returned", (int64_t)tx_returned);
+    json_push_kv_bool(&body, "tx_truncated", json_size(tx_src) > tx_returned);
+    json_free(&txs);
+
+    size_t n = api_json_ok(r, max, &body);
+    json_free(&body);
+    json_free(&root);
+    return n;
 }
 size_t compute_tx(const char *param, uint8_t *r, size_t max)
 {
@@ -167,139 +333,58 @@ size_t compute_tx(const char *param, uint8_t *r, size_t max)
     char params[128];
     snprintf(params, sizeof(params), "[\"%s\", 1]", param);
     int n = api_rpc_call("getrawtransaction", params, buf, sizeof(buf));
-    if (n <= 0 || strstr(buf, "\"error\":null") == NULL)
+    if (n <= 0)
         return api_json_error(r, max, JSON_404_HEADERS, "Transaction not found");
 
-    /* Extract the result object */
-    const char *result = strstr(buf, "\"result\":{");
-    if (!result) result = buf;
-
-    int64_t confirmations = zcl_json_int(result, "confirmations");
-    int64_t blk_height = zcl_json_int(result, "height");
-    int64_t tx_size = zcl_json_int(result, "size");
-    int64_t version = zcl_json_int(result, "version");
-    int64_t locktime = zcl_json_int(result, "locktime");
-    double value_balance = zcl_json_real(result, "valuebalance");
-
-    char blockhash[65] = "";
-    zcl_json_extract_str(result, "blockhash", blockhash, sizeof(blockhash));
-
-    size_t off = 0;
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{"
-        "\"txid\":\"%s\""
-        ",\"version\":%" PRId64
-        ",\"size\":%" PRId64
-        ",\"locktime\":%" PRId64
-        ",\"confirmations\":%" PRId64
-        ",\"blockhash\":\"%s\""
-        ",\"blockheight\":%" PRId64
-        ",\"valuebalance\":%.8f",
-        JSON_HEADERS,
-        param, version, tx_size, locktime,
-        confirmations, blockhash, blk_height, value_balance);
-
-    /* Parse vout array */
-    off += (size_t)snprintf((char *)r + off, max - off, ",\"vout\":[");
-    const char *vout = strstr(result, "\"vout\":[");
-    if (vout) {
-        const char *p = vout + 7;
-        int brace = 0, idx = 0;
-        while (*p && off + 512 < max) {
-            if (*p == '{') {
-                brace++;
-                if (brace == 1) {
-                    const char *entry = p;
-                    int depth = 0;
-                    const char *entry_end = NULL;
-                    for (const char *q = p; *q; q++) {
-                        if (*q == '{') depth++;
-                        if (*q == '}') { depth--; if (depth == 0) { entry_end = q + 1; break; } }
-                    }
-                    if (!entry_end) break;
-
-                    double val = zcl_json_real(entry, "value");
-                    int64_t vn = zcl_json_int(entry, "n");
-
-                    char addr[64] = "";
-                    const char *addrs = strstr(entry, "\"addresses\":[\"");
-                    if (addrs && addrs < entry_end) {
-                        addrs += 14;
-                        size_t ai = 0;
-                        while (addrs[ai] && addrs[ai] != '"' && ai < sizeof(addr) - 1) {
-                            addr[ai] = addrs[ai]; ai++;
-                        }
-                        addr[ai] = '\0';
-                    }
-
-                    if (idx > 0)
-                        off += (size_t)snprintf((char *)r + off, max - off, ",");
-                    off += (size_t)snprintf((char *)r + off, max - off,
-                        "{\"n\":%" PRId64 ",\"value\":%.8f", vn, val);
-                    if (addr[0])
-                        off += (size_t)snprintf((char *)r + off, max - off,
-                            ",\"address\":\"%s\"", addr);
-                    off += (size_t)snprintf((char *)r + off, max - off, "}");
-                    idx++;
-
-                    p = entry_end;
-                    brace = 0;
-                    continue;
-                }
-            }
-            if (*p == ']' && brace == 0) break;
-            p++;
-        }
+    struct json_value root;
+    json_init(&root);
+    const struct json_value *result = rpc_result_json(buf, &root);
+    if (!result || result->type != JSON_OBJ) {
+        json_free(&root);
+        return api_json_error(r, max, JSON_404_HEADERS,
+                              "Transaction not found");
     }
-    off += (size_t)snprintf((char *)r + off, max - off, "]");
 
-    /* Parse vin array */
-    off += (size_t)snprintf((char *)r + off, max - off, ",\"vin\":[");
-    const char *vin = strstr(result, "\"vin\":[");
-    if (vin) {
-        const char *p = vin + 6;
-        int brace = 0, idx = 0;
-        while (*p && off + 256 < max) {
-            if (*p == '{') {
-                brace++;
-                if (brace == 1) {
-                    const char *entry = p;
-                    int depth = 0;
-                    const char *entry_end = NULL;
-                    for (const char *q = p; *q; q++) {
-                        if (*q == '{') depth++;
-                        if (*q == '}') { depth--; if (depth == 0) { entry_end = q + 1; break; } }
-                    }
-                    if (!entry_end) break;
+    int64_t confirmations = json_i64_or(result, "confirmations", -1);
+    int64_t blk_height = json_i64_or(result, "height", -1);
+    const struct json_value *vout_src = json_get(result, "vout");
+    const struct json_value *vin_src = json_get(result, "vin");
 
-                    char prev_txid[65] = "";
-                    zcl_json_extract_str(entry, "txid", prev_txid, sizeof(prev_txid));
-                    int64_t vout_n = zcl_json_int(entry, "vout");
+    struct json_value body;
+    struct json_value vout;
+    struct json_value vin;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.transactions.show.v1");
+    api_json_add_freshness(&body, "served_height",
+                           indexed_height_from_confirmations(blk_height,
+                                                             confirmations));
+    json_push_kv_str(&body, "txid", json_str_or(result, "txid", param));
+    json_push_kv_int(&body, "version", json_i64_or(result, "version", -1));
+    json_push_kv_int(&body, "size", json_i64_or(result, "size", -1));
+    json_push_kv_int(&body, "locktime", json_i64_or(result, "locktime", -1));
+    json_push_kv_int(&body, "confirmations", confirmations);
+    json_push_kv_str(&body, "blockhash", json_str_or(result, "blockhash", ""));
+    json_push_kv_int(&body, "blockheight", blk_height);
+    json_push_kv_real(&body, "valuebalance",
+                      json_real_or(result, "valuebalance", 0.0));
 
-                    if (idx > 0)
-                        off += (size_t)snprintf((char *)r + off, max - off, ",");
+    json_init(&vout);
+    size_t vout_returned = push_tx_vouts(&vout, vout_src);
+    json_push_kv(&body, "vout", &vout);
+    json_push_kv_int(&body, "vout_returned", (int64_t)vout_returned);
+    json_free(&vout);
 
-                    /* Check for coinbase */
-                    if (strstr(entry, "\"coinbase\"") && (const char*)strstr(entry, "\"coinbase\"") < entry_end) {
-                        off += (size_t)snprintf((char *)r + off, max - off,
-                            "{\"coinbase\":true}");
-                    } else {
-                        off += (size_t)snprintf((char *)r + off, max - off,
-                            "{\"txid\":\"%s\",\"vout\":%" PRId64 "}",
-                            prev_txid, vout_n);
-                    }
-                    idx++;
-                    p = entry_end;
-                    brace = 0;
-                    continue;
-                }
-            }
-            if (*p == ']' && brace == 0) break;
-            p++;
-        }
-    }
-    off += (size_t)snprintf((char *)r + off, max - off, "]}");
-    return off;
+    json_init(&vin);
+    size_t vin_returned = push_tx_vins(&vin, vin_src);
+    json_push_kv(&body, "vin", &vin);
+    json_push_kv_int(&body, "vin_returned", (int64_t)vin_returned);
+    json_free(&vin);
+
+    size_t out_n = api_json_ok(r, max, &body);
+    json_free(&body);
+    json_free(&root);
+    return out_n;
 }
 size_t compute_address(const char *param, uint8_t *r, size_t max)
 {
@@ -326,76 +411,52 @@ size_t compute_address(const char *param, uint8_t *r, size_t max)
     int64_t balance_sat = 0;
     bool got_balance = false;
 
-    if (n > 0 && strstr(buf, "\"error\":null")) {
-        balance_sat = zcl_json_int(buf, "balance");
-        got_balance = true;
+    if (n > 0) {
+        struct json_value root;
+        json_init(&root);
+        const struct json_value *result = rpc_result_json(buf, &root);
+        if (result && result->type == JSON_OBJ) {
+            balance_sat = json_i64_or(result, "balance", 0);
+            got_balance = true;
+        }
+        json_free(&root);
     }
 
     /* Try getaddressutxos */
     char ubuf[262144];
     n = api_rpc_call("getaddressutxos", params, ubuf, sizeof(ubuf));
 
-    off += (size_t)snprintf((char *)r + off, max - off,
-        "%s{\"address\":\"%s\"", JSON_HEADERS, param);
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.addresses.show.v1");
+    api_json_add_freshness(&body, "utxo_projection", -1);
+    json_push_kv_str(&body, "address", param);
 
     if (got_balance) {
-        off += (size_t)snprintf((char *)r + off, max - off,
-            ",\"balance_sat\":%" PRId64
-            ",\"balance\":%.8f",
-            balance_sat, (double)balance_sat / (double)ZATOSHI_PER_ZCL);
+        json_push_kv_int(&body, "balance_sat", balance_sat);
+        json_push_kv_real(&body, "balance",
+                          (double)balance_sat / (double)ZATOSHI_PER_ZCL);
     }
 
-    /* Parse UTXOs from result array */
-    off += (size_t)snprintf((char *)r + off, max - off, ",\"utxos\":[");
-
-    if (n > 0 && strstr(ubuf, "\"error\":null")) {
-        const char *result = strstr(ubuf, "\"result\":[");
-        if (result) {
-            const char *p = result + 10;
-            int brace = 0, idx = 0;
-            while (*p && off + 512 < max) {
-                if (*p == '{') {
-                    brace++;
-                    if (brace == 1) {
-                        const char *entry = p;
-                        int depth = 0;
-                        const char *entry_end = NULL;
-                        for (const char *q = p; *q; q++) {
-                            if (*q == '{') depth++;
-                            if (*q == '}') { depth--; if (depth == 0) { entry_end = q + 1; break; } }
-                        }
-                        if (!entry_end) break;
-
-                        char txid[65] = "";
-                        zcl_json_extract_str(entry, "txid", txid, sizeof(txid));
-                        int64_t output_idx = zcl_json_int(entry, "outputIndex");
-                        int64_t satoshis = zcl_json_int(entry, "satoshis");
-                        int64_t utxo_height = zcl_json_int(entry, "height");
-
-                        if (idx > 0)
-                            off += (size_t)snprintf((char *)r + off, max - off, ",");
-                        off += (size_t)snprintf((char *)r + off, max - off,
-                            "{\"txid\":\"%s\""
-                            ",\"vout\":%" PRId64
-                            ",\"satoshis\":%" PRId64
-                            ",\"value\":%.8f"
-                            ",\"height\":%" PRId64 "}",
-                            txid, output_idx, satoshis,
-                            (double)satoshis / (double)ZATOSHI_PER_ZCL, utxo_height);
-                        idx++;
-
-                        p = entry_end;
-                        brace = 0;
-                        continue;
-                    }
-                }
-                if (*p == ']' && brace == 0) break;
-                p++;
-            }
-        }
+    struct json_value utxos;
+    json_init(&utxos);
+    json_set_array(&utxos);
+    size_t utxo_count = 0;
+    if (n > 0) {
+        struct json_value root;
+        json_init(&root);
+        const struct json_value *result = rpc_result_json(ubuf, &root);
+        if (result)
+            utxo_count = push_address_utxos(&utxos, result);
+        json_free(&root);
     }
+    json_push_kv(&body, "utxos", &utxos);
+    json_push_kv_int(&body, "utxo_count", (int64_t)utxo_count);
+    json_free(&utxos);
 
-    off += (size_t)snprintf((char *)r + off, max - off, "]}");
+    off = api_json_ok(r, max, &body);
+    json_free(&body);
     return off;
 }
 /* ── Parameterized endpoint request queue ────────────────── */

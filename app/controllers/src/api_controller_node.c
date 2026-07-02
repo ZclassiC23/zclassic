@@ -1,14 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
-
 /* Node / diagnostics route handlers for the REST API controller.
  *
- * These functions own node, diagnostics, event-log, and explorer factoid
+ * These functions own node, diagnostics, and explorer factoid
  * response helpers for the route table in api_controller.c. They read
  * g_api_ctx, lock-free atomics, and node state, then write directly into the
  * caller's response buffer. */
-
 #include "platform/time_compat.h"
 #include "controllers/api_controller.h"
 #include "controllers/blockchain_controller.h"
@@ -20,6 +18,7 @@
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"
+#include "json/json.h"
 #include "sync/sync_state.h"
 #include "keys/key_io.h"
 #include "models/database.h"
@@ -34,7 +33,6 @@
 #include "validation/contextual_check_tx.h"
 #include "validation/main_state.h"
 #include "views/explorer_factoids_view.h"
-
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
@@ -45,11 +43,9 @@
 #include <unistd.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
 static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
-
     if (svc) {
         if (initialized)
             *initialized = true;
@@ -59,159 +55,78 @@ static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
         *initialized = snapsync_global_initialized();
     return snapsync_global_initialized() ? snapsync_global() : NULL;
 }
-
-static bool api_json_quote_or_null(char *out, size_t out_sz, const char *src)
+static void api_json_push_kv_nullable_str(struct json_value *obj,
+                                          const char *key,
+                                          const char *value)
 {
-    static const char hex[] = "0123456789abcdef";
-    if (!out || out_sz == 0)
-        return false;
-    if (!src)
-        return (size_t)snprintf(out, out_sz, "null") < out_sz;
-
-    size_t w = 0;
-    if (w + 1 >= out_sz)
-        return false;
-    out[w++] = '"';
-    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
-        unsigned char c = *p;
-        const char *esc = NULL;
-        switch (c) {
-        case '"':  esc = "\\\""; break;
-        case '\\': esc = "\\\\"; break;
-        case '\b': esc = "\\b";  break;
-        case '\f': esc = "\\f";  break;
-        case '\n': esc = "\\n";  break;
-        case '\r': esc = "\\r";  break;
-        case '\t': esc = "\\t";  break;
-        default: break;
-        }
-        if (esc) {
-            size_t n = strlen(esc);
-            if (w + n >= out_sz)
-                return false;
-            memcpy(out + w, esc, n);
-            w += n;
-        } else if (c < 0x20) {
-            if (w + 6 >= out_sz)
-                return false;
-            out[w++] = '\\';
-            out[w++] = 'u';
-            out[w++] = '0';
-            out[w++] = '0';
-            out[w++] = hex[(c >> 4) & 0x0f];
-            out[w++] = hex[c & 0x0f];
-        } else {
-            if (w + 1 >= out_sz)
-                return false;
-            out[w++] = (char)c;
-        }
-    }
-    if (w + 1 >= out_sz)
-        return false;
-    out[w++] = '"';
-    out[w] = '\0';
-    return true;
-}
-
-/* Event log — lock-free atomic reads, safe from any handler thread */
-size_t api_serve_events(const char *path, uint8_t *response,
-                        size_t response_max)
-{
-    size_t count = 200;
-    const char *q = strchr(path, '?');
-    if (q) {
-        const char *cp = strstr(q, "count=");
-        if (cp) {
-            long v = strtol(cp + 6, NULL, 10);
-            if (v > 0 && v <= 65536) count = (size_t)v;
-        }
-    }
-    /* Build JSON body: {"sync_state":"...","events":[...]} */
-    char *buf = zcl_malloc(524288, "api_events_buf");
-    if (!buf)
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                          "Out of memory");
-    size_t w = 0;
-    w += (size_t)snprintf(buf + w, 524288 - w,
-        "{\"sync_state\":\"%s\",\"events\":",
-        sync_state_name(sync_get_state()));
-    /* Parse ?type= filter from query string */
-    const char *type_filter = NULL;
-    if (q) {
-        const char *tp = strstr(q, "type=");
-        if (tp) {
-            static char type_buf[64];
-            size_t tlen = 0;
-            for (const char *c = tp + 5; *c && *c != '&' && tlen < 63; c++)
-                type_buf[tlen++] = *c;
-            type_buf[tlen] = '\0';
-            type_filter = type_buf;
-        }
-    }
-    if (type_filter)
-        w += event_dump_json_filtered(buf + w, 524288 - w, count, type_filter);
+    struct json_value v;
+    json_init(&v);
+    if (value && value[0])
+        json_set_str(&v, value);
     else
-        w += event_dump_json(buf + w, 524288 - w, count);
-    if (w + 1 < 524288) buf[w++] = '}';
-
-    size_t off = (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json; charset=utf-8\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %zu\r\n\r\n", w);
-    if (w > 524288) w = 524288;  /* cap to buf size */
-    if (off + w <= response_max)
-        memcpy(response + off, buf, w);
-    else if (off < response_max) {
-        size_t avail = response_max - off;
-        if (avail > w) avail = w;
-        memcpy(response + off, buf, avail);
-    }
-    free(buf);
-    return off + w < response_max ? off + w : response_max;
+        json_set_null(&v);
+    json_push_kv(obj, key, &v);
+    json_free(&v);
 }
 
+static void api_json_push_recent_errors(struct json_value *obj,
+                                        const char *key,
+                                        struct error_ring *er)
+{
+    char errors_json[2048];
+    struct json_value recent;
+    size_t elen = er ? error_ring_dump_json(er, errors_json,
+                                            sizeof(errors_json)) : 0;
+
+    json_init(&recent);
+    if (elen == 0 || elen >= sizeof(errors_json) ||
+        !json_read(&recent, errors_json, elen)) {
+        json_set_array(&recent);
+    }
+    json_push_kv(obj, key, &recent);
+    json_free(&recent);
+}
 /* Sync state — minimal monitoring endpoint */
 size_t api_serve_syncstate(uint8_t *response, size_t response_max)
 {
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"sync_state\":\"%s\","
-        "\"utxo_replay_active\":%s,"
-        "\"utxo_replay_height\":%d}",
-        sync_state_name(sync_get_state()),
-        atomic_load(&g_utxo_replay_active) ? "true" : "false",
-        atomic_load(&g_utxo_replay_height));
-}
+    struct json_value body;
 
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.syncstate.v1");
+    api_json_add_freshness(&body, "sync_projection", -1);
+    json_push_kv_str(&body, "sync_state", sync_state_name(sync_get_state()));
+    json_push_kv_bool(&body, "utxo_replay_active",
+                      atomic_load(&g_utxo_replay_active));
+    json_push_kv_int(&body, "utxo_replay_height",
+                     atomic_load(&g_utxo_replay_height));
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
+}
 /* Download stats — IBD progress monitoring */
 size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
 {
     struct download_manager *dm = msg_get_download_mgr();
     uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;
+    struct json_value body;
     dl_get_stats(dm, &req, &recv, &tout, &inflight, &queued);
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"sync_state\":\"%s\","
-        "\"requested\":%llu,\"received\":%llu,"
-        "\"timed_out\":%llu,\"in_flight\":%llu,"
-        "\"queued\":%llu,\"defer_proof_validation_below_height\":%d}",
-        sync_state_name(sync_get_state()),
-        (unsigned long long)req, (unsigned long long)recv,
-        (unsigned long long)tout, (unsigned long long)inflight,
-        (unsigned long long)queued, g_deferred_proof_validation_below_height);
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.downloadstats.v1");
+    api_json_add_freshness(&body, "download_manager", -1);
+    json_push_kv_str(&body, "sync_state", sync_state_name(sync_get_state()));
+    json_push_kv_int(&body, "requested", (int64_t)req);
+    json_push_kv_int(&body, "received", (int64_t)recv);
+    json_push_kv_int(&body, "timed_out", (int64_t)tout);
+    json_push_kv_int(&body, "in_flight", (int64_t)inflight);
+    json_push_kv_int(&body, "queued", (int64_t)queued);
+    json_push_kv_int(&body, "defer_proof_validation_below_height",
+                     g_deferred_proof_validation_below_height);
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
 }
-
 /* Health check — lightweight, machine-readable */
 size_t api_serve_health(uint8_t *response, size_t response_max)
 {
@@ -220,174 +135,144 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
         g_api_ctx.node_db : app_runtime_node_db(),
         g_api_ctx.main_state);
 
-    char onion_json[1024];
-    char last_error_json[8192];
-    char last_error_type_json[512];
-    char wd_name_json[512];
-    char wd_trigger_json[1024];
-    char wd_reason_json[1024];
-    char degraded_json[1024];
-    char blocking_json[1024];
-    char warnings_json[1024];
-    if (!api_json_quote_or_null(onion_json, sizeof(onion_json),
-                                health.onion_address[0]
-                                    ? health.onion_address : NULL) ||
-        !api_json_quote_or_null(last_error_json, sizeof(last_error_json),
-                                health.last_error[0]
-                                    ? health.last_error : NULL) ||
-        !api_json_quote_or_null(last_error_type_json,
-                                sizeof(last_error_type_json),
-                                health.last_error_type[0]
-                                    ? health.last_error_type : NULL) ||
-        !api_json_quote_or_null(wd_name_json, sizeof(wd_name_json),
-                                health.wd_last_recovery_name) ||
-        !api_json_quote_or_null(wd_trigger_json, sizeof(wd_trigger_json),
-                                health.wd_last_recovery_trigger) ||
-        !api_json_quote_or_null(wd_reason_json, sizeof(wd_reason_json),
-                                health.wd_last_recovery_reason) ||
-        !api_json_quote_or_null(degraded_json, sizeof(degraded_json),
-                                health.degraded_reason[0]
-                                    ? health.degraded_reason : NULL) ||
-        !api_json_quote_or_null(blocking_json, sizeof(blocking_json),
-                                health.blocking_reason[0]
-                                    ? health.blocking_reason : NULL) ||
-        !api_json_quote_or_null(warnings_json, sizeof(warnings_json),
-                                health.warning_reasons[0]
-                                    ? health.warning_reasons : NULL))
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                              "Health string too large");
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.health.v1");
+    api_json_add_freshness(&body, "served_tip", -1);
+    json_push_kv_bool(&body, "healthy", health.healthy);
+    json_push_kv_bool(&body, "serving", health.serving);
+    json_push_kv_int(&body, "warning_count", (int64_t)health.warning_count);
+    json_push_kv_str(&body, "sync_state", sync_state_name(health.sync_state));
 
-    char body[16384];
-    int body_len = snprintf(body, sizeof(body),
-        "{"
-        "\"healthy\":%s,"
-        "\"serving\":%s,"
-        "\"warning_count\":%zu,"
-        "\"sync_state\":\"%s\","
-        "\"chain\":{"
-          "\"tip_height\":%d,"
-          "\"header_height\":%d,"
-          "\"peer_best_height\":%d,"
-          "\"tip_lag\":%d"
-        "},"
-        "\"database\":{"
-          "\"wal_size_bytes\":%lld,"
-          "\"utxo_count\":%lld"
-        "},"
-        "\"network\":{"
-          "\"peer_count\":%zu,"
-          "\"has_peers\":%s,"
-          "\"tip_stale\":%s,"
-          "\"tip_stale_seconds\":%lld,"
-          "\"magicbean_peer_count\":%zu,"
-          "\"zclassic_c23_peer_count\":%zu"
-        "},"
-        "\"services\":{"
-          "\"tor_enabled\":%s,"
-          "\"tor_ready\":%s,"
-          "\"onion_service_ready\":%s,"
-          "\"onion_address\":%s"
-        "},"
-        "\"download\":{"
-          "\"requested\":%llu,"
-          "\"received\":%llu,"
-          "\"timed_out\":%llu,"
-          "\"in_flight\":%llu,"
-          "\"queued\":%llu,"
-          "\"queue_backed_up\":%s"
-        "},"
-        "\"boot\":{\"uptime_seconds\":%lld},"
-        "\"errors\":{"
-          "\"total\":%d,"
-          "\"last\":%s,"
-          "\"last_type\":%s,"
-          "\"last_age_seconds\":%lld,"
-          "\"last_recent\":%s"
-        "},"
-        "\"watchdog\":{"
-          "\"checks_run\":%d,"
-          "\"recoveries\":%d,"
-          "\"blocks_per_sec\":%.1f,"
-          "\"escalation_level\":%d,"
-          "\"last_recovery\":%s,"
-          "\"last_recovery_ago_secs\":%lld,"
-          "\"last_recovery_target_height\":%d,"
-          "\"last_recovery_manifest_height\":%d,"
-          "\"last_recovery_trigger\":%s,"
-          "\"last_recovery_reason\":%s"
-        "},"
-        "\"status\":{"
-          "\"serving\":%s,"
-          "\"blocking_reason\":%s,"
-          "\"warning\":%s,"
-          "\"warning_count\":%zu,"
-          "\"warning_reasons\":%s,"
-          "\"degraded_reason\":%s"
-        "}"
-        "}",
-        health.healthy ? "true" : "false",
-        health.serving ? "true" : "false",
-        health.warning_count,
-        sync_state_name(health.sync_state),
-        health.tip_height,
-        health.header_height,
-        health.peer_best_height,
-        health.tip_lag,
-        (long long)health.wal_size_bytes,
-        (long long)health.utxo_count,
-        health.peer_count,
-        health.has_peers ? "true" : "false",
-        health.tip_stale ? "true" : "false",
-        (long long)health.tip_stale_seconds,
-        health.magicbean_peer_count,
-        health.zclassic_c23_peer_count,
-        health.tor_enabled ? "true" : "false",
-        health.tor_ready ? "true" : "false",
-        health.onion_service_ready ? "true" : "false",
-        onion_json,
-        (unsigned long long)health.blocks_requested,
-        (unsigned long long)health.blocks_received,
-        (unsigned long long)health.blocks_timed_out,
-        (unsigned long long)health.in_flight,
-        (unsigned long long)health.queued,
-        health.queue_backed_up ? "true" : "false",
-        (long long)health.uptime_seconds,
-        health.error_total,
-        last_error_json,
-        last_error_type_json,
-        (long long)health.last_error_age_seconds,
-        health.last_error_recent ? "true" : "false",
-        health.wd_checks_run,
-        health.wd_recoveries,
-        health.wd_blocks_per_sec,
-        health.wd_escalation_level,
-        wd_name_json,
+    struct json_value chain;
+    json_init(&chain);
+    json_set_object(&chain);
+    json_push_kv_int(&chain, "tip_height", health.tip_height);
+    json_push_kv_int(&chain, "header_height", health.header_height);
+    json_push_kv_int(&chain, "peer_best_height", health.peer_best_height);
+    json_push_kv_int(&chain, "tip_lag", health.tip_lag);
+    json_push_kv(&body, "chain", &chain);
+    json_free(&chain);
+
+    struct json_value database;
+    json_init(&database);
+    json_set_object(&database);
+    json_push_kv_int(&database, "wal_size_bytes", health.wal_size_bytes);
+    json_push_kv_int(&database, "utxo_count", health.utxo_count);
+    json_push_kv(&body, "database", &database);
+    json_free(&database);
+
+    struct json_value network;
+    json_init(&network);
+    json_set_object(&network);
+    json_push_kv_int(&network, "peer_count", (int64_t)health.peer_count);
+    json_push_kv_bool(&network, "has_peers", health.has_peers);
+    json_push_kv_bool(&network, "tip_stale", health.tip_stale);
+    json_push_kv_int(&network, "tip_stale_seconds",
+                     health.tip_stale_seconds);
+    json_push_kv_int(&network, "magicbean_peer_count",
+                     (int64_t)health.magicbean_peer_count);
+    json_push_kv_int(&network, "zclassic_c23_peer_count",
+                     (int64_t)health.zclassic_c23_peer_count);
+    json_push_kv(&body, "network", &network);
+    json_free(&network);
+
+    struct json_value services;
+    json_init(&services);
+    json_set_object(&services);
+    json_push_kv_bool(&services, "tor_enabled", health.tor_enabled);
+    json_push_kv_bool(&services, "tor_ready", health.tor_ready);
+    json_push_kv_bool(&services, "onion_service_ready",
+                      health.onion_service_ready);
+    api_json_push_kv_nullable_str(&services, "onion_address",
+                                  health.onion_address);
+    json_push_kv(&body, "services", &services);
+    json_free(&services);
+
+    struct json_value download;
+    json_init(&download);
+    json_set_object(&download);
+    json_push_kv_int(&download, "requested",
+                     (int64_t)health.blocks_requested);
+    json_push_kv_int(&download, "received",
+                     (int64_t)health.blocks_received);
+    json_push_kv_int(&download, "timed_out",
+                     (int64_t)health.blocks_timed_out);
+    json_push_kv_int(&download, "in_flight", (int64_t)health.in_flight);
+    json_push_kv_int(&download, "queued", (int64_t)health.queued);
+    json_push_kv_bool(&download, "queue_backed_up",
+                      health.queue_backed_up);
+    json_push_kv(&body, "download", &download);
+    json_free(&download);
+
+    struct json_value boot;
+    json_init(&boot);
+    json_set_object(&boot);
+    json_push_kv_int(&boot, "uptime_seconds", health.uptime_seconds);
+    json_push_kv(&body, "boot", &boot);
+    json_free(&boot);
+
+    struct json_value errors;
+    json_init(&errors);
+    json_set_object(&errors);
+    json_push_kv_int(&errors, "total", health.error_total);
+    api_json_push_kv_nullable_str(&errors, "last", health.last_error);
+    api_json_push_kv_nullable_str(&errors, "last_type",
+                                  health.last_error_type);
+    json_push_kv_int(&errors, "last_age_seconds",
+                     health.last_error_age_seconds);
+    json_push_kv_bool(&errors, "last_recent", health.last_error_recent);
+    json_push_kv(&body, "errors", &errors);
+    json_free(&errors);
+
+    struct json_value watchdog;
+    json_init(&watchdog);
+    json_set_object(&watchdog);
+    json_push_kv_int(&watchdog, "checks_run", health.wd_checks_run);
+    json_push_kv_int(&watchdog, "recoveries", health.wd_recoveries);
+    json_push_kv_real(&watchdog, "blocks_per_sec",
+                      health.wd_blocks_per_sec);
+    json_push_kv_int(&watchdog, "escalation_level",
+                     health.wd_escalation_level);
+    api_json_push_kv_nullable_str(&watchdog, "last_recovery",
+                                  health.wd_last_recovery_name);
+    json_push_kv_int(&watchdog, "last_recovery_ago_secs",
         health.wd_last_recovery_time > 0
-            ? (long long)((int64_t)platform_time_wall_time_t() - health.wd_last_recovery_time)
-            : 0LL,
-        health.wd_last_recovery_target_height,
-        health.wd_last_recovery_manifest_height,
-        wd_trigger_json,
-        wd_reason_json,
-        health.serving ? "true" : "false",
-        blocking_json,
-        health.warning ? "true" : "false",
-        health.warning_count,
-        warnings_json,
-        degraded_json);
-    if (body_len < 0 || body_len >= (int)sizeof(body))
-        return api_json_error(response, response_max, JSON_500_HEADERS,
-                              "Health response too large");
+            ? (int64_t)platform_time_wall_time_t() -
+                health.wd_last_recovery_time
+            : 0);
+    json_push_kv_int(&watchdog, "last_recovery_target_height",
+                     health.wd_last_recovery_target_height);
+    json_push_kv_int(&watchdog, "last_recovery_manifest_height",
+                     health.wd_last_recovery_manifest_height);
+    api_json_push_kv_nullable_str(&watchdog, "last_recovery_trigger",
+                                  health.wd_last_recovery_trigger);
+    api_json_push_kv_nullable_str(&watchdog, "last_recovery_reason",
+                                  health.wd_last_recovery_reason);
+    json_push_kv(&body, "watchdog", &watchdog);
+    json_free(&watchdog);
 
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 %s\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "%s",
-        health.healthy ? "200 OK" : "503 Service Unavailable",
-        body);
+    struct json_value status;
+    json_init(&status);
+    json_set_object(&status);
+    json_push_kv_bool(&status, "serving", health.serving);
+    api_json_push_kv_nullable_str(&status, "blocking_reason",
+                                  health.blocking_reason);
+    json_push_kv_bool(&status, "warning", health.warning);
+    json_push_kv_int(&status, "warning_count",
+                     (int64_t)health.warning_count);
+    api_json_push_kv_nullable_str(&status, "warning_reasons",
+                                  health.warning_reasons);
+    api_json_push_kv_nullable_str(&status, "degraded_reason",
+                                  health.degraded_reason);
+    json_push_kv(&body, "status", &status);
+    json_free(&status);
+
+    size_t n = api_json_status(response, response_max,
+        health.healthy ? "200 OK" : "503 Service Unavailable", &body);
+    json_free(&body);
+    return n;
 }
 
 /* Route: /api/node/snapshot — snapshot sync service status */
@@ -401,26 +286,30 @@ size_t api_serve_node_snapshot(uint8_t *response, size_t response_max)
     double rate = 0;
     if (init) snapsync_get_status_snapshot(svc, &snap_status);
     if (init) snapsync_get_progress(svc, &received, &total, &rate);
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"state\":\"%s\","
-        "\"received\":%llu,\"total\":%llu,"
-        "\"rate_per_sec\":%.0f,"
-        "\"percent\":%.1f,"
-        "\"serving_peer\":%u,"
-        "\"offered_height\":%d,"
-        "\"turbo_active\":%s}",
-        init ? snapsync_state_name(snap_status.state) : "not_initialized",
-        (unsigned long long)received, (unsigned long long)total,
-        rate,
-        total > 0 ? 100.0 * (double)received / (double)total : 0,
-        init ? snap_status.serving_peer_id : 0,
-        init ? snap_status.offered_height : 0,
-        (init && snap_status.turbo_active) ? "true" : "false");
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.node_snapshot.v1");
+    api_json_add_freshness(&body, "snapshot_sync_service", -1);
+    json_push_kv_str(&body, "state",
+                     init ? snapsync_state_name(snap_status.state)
+                          : "not_initialized");
+    json_push_kv_int(&body, "received", (int64_t)received);
+    json_push_kv_int(&body, "total", (int64_t)total);
+    json_push_kv_real(&body, "rate_per_sec", rate);
+    json_push_kv_real(&body, "percent",
+                      total > 0 ? 100.0 * (double)received / (double)total
+                                : 0.0);
+    json_push_kv_int(&body, "serving_peer",
+                     init ? snap_status.serving_peer_id : 0);
+    json_push_kv_int(&body, "offered_height",
+                     init ? snap_status.offered_height : 0);
+    json_push_kv_bool(&body, "turbo_active",
+                      init && snap_status.turbo_active);
+
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
 }
 
 /* Route: /api/node/mmb — Merkle Mountain Belt status */
@@ -431,18 +320,19 @@ size_t api_serve_node_mmb(uint8_t *response, size_t response_max)
     if (mb && mb->num_leaves > 0) mmb_root(mb, root);
     char hex[65];
     HexStr(root, 32, false, hex, sizeof(hex));
-    return (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"mmb_root\":\"%s\","
-        "\"num_leaves\":%llu,"
-        "\"num_peaks\":%u}",
-        hex,
-        (unsigned long long)(mb ? mb->num_leaves : 0),
-        mb ? mb->num_mountains : 0);
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.node_mmb.v1");
+    api_json_add_freshness(&body, "mmb_projection", -1);
+    json_push_kv_str(&body, "mmb_root", hex);
+    json_push_kv_int(&body, "num_leaves",
+                     (int64_t)(mb ? mb->num_leaves : 0));
+    json_push_kv_int(&body, "num_peaks", mb ? mb->num_mountains : 0);
+
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
 }
 
 /* Route: /api/node/status — comprehensive one-stop diagnostics */
@@ -523,115 +413,135 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
         }
     }
 
-    /* Recent errors (up to last 8) */
-    char errors_json[2048];
-    size_t elen = error_ring_dump_json(er, errors_json, sizeof(errors_json));
-    if (elen == 0) {
-        errors_json[0] = '['; errors_json[1] = ']'; errors_json[2] = '\0';
-    }
-
     /* Download stats */
     struct download_manager *dm = msg_get_download_mgr();
     uint64_t dl_req = 0, dl_recv = 0, dl_tout = 0, dl_inflight = 0, dl_queued = 0;
     dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
 
-    char *body = zcl_malloc(8192, "api_sync_body");
-    if (!body)
-        return api_json_error(response, response_max, JSON_500_HEADERS, "OOM");
+    struct json_value body;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.node_status.v1");
+    api_json_add_freshness(&body, "served_tip", tip_height);
 
-    snprintf(body, 8192,
-        "{"
-        "\"sync\":{\"state\":\"%s\","
-          "\"replay_active\":%s,\"replay_height\":%d},"
-        "\"chain\":{"
-          "\"tip_height\":%d,"
-          "\"tip_hash\":\"%s\","
-          "\"tip_time\":%lld,"
-          "\"header_height\":%d,"
-          "\"best_header_hash\":\"%s\","
-          "\"peer_best_height\":%d,"
-          "\"tip_lag\":%d,"
-          "\"blocks_behind\":%d"
-        "},"
-        "\"sapling\":{"
-          "\"tree_size\":%zu,"
-          "\"tree_root\":\"%s\","
-          "\"header_root\":\"%s\","
-          "\"roots_match\":%s"
-        "},"
-        "\"network\":{"
-          "\"peer_count\":%zu,"
-          "\"tip_stale\":%s,"
-          "\"tip_stale_seconds\":%lld"
-        "},"
-        "\"download\":{"
-          "\"requested\":%llu,\"received\":%llu,"
-          "\"timed_out\":%llu,\"in_flight\":%llu,\"queued\":%llu"
-        "},"
-        "\"snapshot\":{\"state\":\"%s\","
-          "\"received\":%llu,\"total\":%llu,\"rate\":%.0f},"
-        "\"mmb\":{\"leaves\":%llu,\"peaks\":%u},"
-        "\"database\":{"
-          "\"wal_size_bytes\":%lld,"
-          "\"utxo_count\":%lld"
-        "},"
-        "\"errors\":{\"total\":%d,"
-          "\"last_type\":%s%s%s,"
-          "\"last_age_seconds\":%lld,"
-          "\"last_recent\":%s,"
-          "\"recent\":%s},"
-        "\"defer_proof_validation_below_height\":%d,"
-        "\"uptime_seconds\":%lld"
-        "}",
-        sync_state_name(ss),
-        atomic_load(&g_utxo_replay_active) ? "true" : "false",
-        atomic_load(&g_utxo_replay_height),
-        tip_height,
-        tip_hash_hex,
-        (long long)tip_time,
-        header_height,
-        best_header_hex,
-        health.peer_best_height,
-        health.tip_lag,
+    struct json_value sync;
+    json_init(&sync);
+    json_set_object(&sync);
+    json_push_kv_str(&sync, "state", sync_state_name(ss));
+    json_push_kv_bool(&sync, "replay_active",
+                      atomic_load(&g_utxo_replay_active));
+    json_push_kv_int(&sync, "replay_height",
+                     atomic_load(&g_utxo_replay_height));
+    json_push_kv(&body, "sync", &sync);
+    json_free(&sync);
+
+    struct json_value chain;
+    json_init(&chain);
+    json_set_object(&chain);
+    json_push_kv_int(&chain, "tip_height", tip_height);
+    api_json_push_kv_nullable_str(&chain, "tip_hash",
+                                  strcmp(tip_hash_hex, "null") == 0
+                                      ? NULL : tip_hash_hex);
+    json_push_kv_int(&chain, "tip_time", tip_time);
+    json_push_kv_int(&chain, "header_height", header_height);
+    api_json_push_kv_nullable_str(&chain, "best_header_hash",
+                                  strcmp(best_header_hex, "null") == 0
+                                      ? NULL : best_header_hex);
+    json_push_kv_int(&chain, "peer_best_height", health.peer_best_height);
+    json_push_kv_int(&chain, "tip_lag", health.tip_lag);
+    json_push_kv_int(&chain, "blocks_behind",
         health.peer_best_height > tip_height ?
-            health.peer_best_height - tip_height : 0,
-        sapling_tree_size,
-        sapling_tree_root_hex,
-        sapling_root_hex,
-        (sapling_tree_size > 0 &&
-         strcmp(sapling_tree_root_hex, sapling_root_hex) == 0) ?
-            "true" : "false",
-        health.peer_count,
-        health.tip_stale ? "true" : "false",
-        (long long)health.tip_stale_seconds,
-        (unsigned long long)dl_req, (unsigned long long)dl_recv,
-        (unsigned long long)dl_tout, (unsigned long long)dl_inflight,
-        (unsigned long long)dl_queued,
-        snap_init ? snapsync_state_name(snap_status.state) : "not_initialized",
-        (unsigned long long)(snap_init ? snap_received : 0),
-        (unsigned long long)(snap_init ? snap_total : 0),
-        snap_rate,
-        (unsigned long long)(mb ? mb->num_leaves : 0),
-        mb ? mb->num_mountains : 0,
-        (long long)health.wal_size_bytes,
-        (long long)health.utxo_count,
-        error_ring_total(er),
-        health.last_error_type[0] ? "\"" : "null",
-        health.last_error_type,
-        health.last_error_type[0] ? "\"" : "",
-        (long long)health.last_error_age_seconds,
-        health.last_error_recent ? "true" : "false",
-        errors_json,
-        g_deferred_proof_validation_below_height,
-        (long long)health.uptime_seconds);
+            health.peer_best_height - tip_height : 0);
+    json_push_kv(&body, "chain", &chain);
+    json_free(&chain);
 
-    size_t n = (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n%s", body);
-    free(body);
+    struct json_value sapling;
+    json_init(&sapling);
+    json_set_object(&sapling);
+    json_push_kv_int(&sapling, "tree_size", (int64_t)sapling_tree_size);
+    api_json_push_kv_nullable_str(&sapling, "tree_root",
+                                  strcmp(sapling_tree_root_hex, "null") == 0
+                                      ? NULL : sapling_tree_root_hex);
+    api_json_push_kv_nullable_str(&sapling, "header_root",
+                                  strcmp(sapling_root_hex, "null") == 0
+                                      ? NULL : sapling_root_hex);
+    json_push_kv_bool(&sapling, "roots_match",
+                      sapling_tree_size > 0 &&
+                      strcmp(sapling_tree_root_hex, sapling_root_hex) == 0);
+    json_push_kv(&body, "sapling", &sapling);
+    json_free(&sapling);
+
+    struct json_value network;
+    json_init(&network);
+    json_set_object(&network);
+    json_push_kv_int(&network, "peer_count", (int64_t)health.peer_count);
+    json_push_kv_bool(&network, "tip_stale", health.tip_stale);
+    json_push_kv_int(&network, "tip_stale_seconds",
+                     health.tip_stale_seconds);
+    json_push_kv(&body, "network", &network);
+    json_free(&network);
+
+    struct json_value download;
+    json_init(&download);
+    json_set_object(&download);
+    json_push_kv_int(&download, "requested", (int64_t)dl_req);
+    json_push_kv_int(&download, "received", (int64_t)dl_recv);
+    json_push_kv_int(&download, "timed_out", (int64_t)dl_tout);
+    json_push_kv_int(&download, "in_flight", (int64_t)dl_inflight);
+    json_push_kv_int(&download, "queued", (int64_t)dl_queued);
+    json_push_kv(&body, "download", &download);
+    json_free(&download);
+
+    struct json_value snapshot;
+    json_init(&snapshot);
+    json_set_object(&snapshot);
+    json_push_kv_str(&snapshot, "state",
+                     snap_init ? snapsync_state_name(snap_status.state)
+                               : "not_initialized");
+    json_push_kv_int(&snapshot, "received",
+                     (int64_t)(snap_init ? snap_received : 0));
+    json_push_kv_int(&snapshot, "total",
+                     (int64_t)(snap_init ? snap_total : 0));
+    json_push_kv_real(&snapshot, "rate", snap_rate);
+    json_push_kv(&body, "snapshot", &snapshot);
+    json_free(&snapshot);
+
+    struct json_value mmb;
+    json_init(&mmb);
+    json_set_object(&mmb);
+    json_push_kv_int(&mmb, "leaves",
+                     (int64_t)(mb ? mb->num_leaves : 0));
+    json_push_kv_int(&mmb, "peaks", mb ? mb->num_mountains : 0);
+    json_push_kv(&body, "mmb", &mmb);
+    json_free(&mmb);
+
+    struct json_value database;
+    json_init(&database);
+    json_set_object(&database);
+    json_push_kv_int(&database, "wal_size_bytes", health.wal_size_bytes);
+    json_push_kv_int(&database, "utxo_count", health.utxo_count);
+    json_push_kv(&body, "database", &database);
+    json_free(&database);
+
+    struct json_value errors;
+    json_init(&errors);
+    json_set_object(&errors);
+    json_push_kv_int(&errors, "total", error_ring_total(er));
+    api_json_push_kv_nullable_str(&errors, "last_type",
+                                  health.last_error_type);
+    json_push_kv_int(&errors, "last_age_seconds",
+                     health.last_error_age_seconds);
+    json_push_kv_bool(&errors, "last_recent", health.last_error_recent);
+    api_json_push_recent_errors(&errors, "recent", er);
+    json_push_kv(&body, "errors", &errors);
+    json_free(&errors);
+
+    json_push_kv_int(&body, "defer_proof_validation_below_height",
+                     g_deferred_proof_validation_below_height);
+    json_push_kv_int(&body, "uptime_seconds", health.uptime_seconds);
+
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
     return n;
 }
 
@@ -671,35 +581,37 @@ size_t api_serve_wallet(uint8_t *response, size_t response_max)
     struct db_wallet_activity activity[20];
     int activity_count = db_wallet_utxo_recent_activity(ndb, activity, 20);
 
-    size_t w = 0;
-    char *buf = (char *)response;
-    w += (size_t)snprintf(buf + w, response_max - w,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: close\r\n\r\n"
-        "{\"transparent\":%lld,\"shielded\":%lld,"
-        "\"address\":\"%s\",\"height\":%lld,"
-        "\"block_time\":%lld,\"now\":%lld,"
-        "\"activity\":[",
-        (long long)transparent, (long long)shielded,
-        address, (long long)height,
-        (long long)block_time, (long long)platform_time_wall_time_t());
+    struct json_value body;
+    struct json_value events;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.wallet_status.v1");
+    api_json_add_freshness(&body, "wallet_projection", height);
+    json_push_kv_int(&body, "transparent", transparent);
+    json_push_kv_int(&body, "shielded", shielded);
+    json_push_kv_str(&body, "address", address);
+    json_push_kv_int(&body, "height", height);
+    json_push_kv_int(&body, "block_time", block_time);
+    json_push_kv_int(&body, "now", (int64_t)platform_time_wall_time_t());
 
-    bool first = true;
-    for (int i = 0; i < activity_count && w + 100 < response_max; i++) {
-        if (!first) buf[w++] = ',';
-        first = false;
-        w += (size_t)snprintf(buf + w, response_max - w,
-            "{\"value\":%lld,\"height\":%d,\"time\":%lld}",
-            (long long)activity[i].value,
-            activity[i].height,
-            (long long)activity[i].time);
+    json_init(&events);
+    json_set_array(&events);
+    for (int i = 0; i < activity_count; i++) {
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_int(&item, "value", activity[i].value);
+        json_push_kv_int(&item, "height", activity[i].height);
+        json_push_kv_int(&item, "time", activity[i].time);
+        json_push_back(&events, &item);
+        json_free(&item);
     }
+    json_push_kv(&body, "activity", &events);
+    json_free(&events);
 
-    w += (size_t)snprintf(buf + w, response_max - w, "]}");
-    return w;
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
 }
 
 /* GET /api/files/manifest — JSON manifest of all chunks */
@@ -718,43 +630,45 @@ size_t api_serve_files_manifest(uint8_t *response, size_t response_max)
         return api_json_error(response, response_max, JSON_500_HEADERS,
                           "No block files for manifest");
 
-    /* Build JSON response */
-    char *buf = zcl_malloc(131072, "api_manifest_buf");
-    if (!buf)
-        return api_json_error(response, response_max, JSON_500_HEADERS, "OOM");
-    size_t w = 0;
     char root_hex[65];
+    char mmr_hex[65];
     HexStr(manifest.root_hash, 32, false, root_hex, sizeof(root_hex));
+    HexStr(manifest.mmr_root, 32, false, mmr_hex, sizeof(mmr_hex));
 
-    w += (size_t)snprintf(buf + w, 131072 - w,
-        "{\"root_hash\":\"%s\","
-        "\"num_chunks\":%u,"
-        "\"total_bytes\":%llu,"
-        "\"chunks\":[",
-        root_hex, manifest.num_chunks,
-        (unsigned long long)manifest.total_bytes);
-    for (uint32_t i = 0; i < manifest.num_chunks && w + 256 < 131072; i++) {
+    struct json_value body;
+    struct json_value chunks;
+    json_init(&body);
+    json_set_object(&body);
+    json_push_kv_str(&body, "schema", "zcl.files_manifest.v1");
+    api_json_add_freshness(&body, "file_manifest", manifest.chain_height);
+    json_push_kv_str(&body, "root_hash", root_hex);
+    json_push_kv_str(&body, "mmr_root", mmr_hex);
+    json_push_kv_int(&body, "chain_height", manifest.chain_height);
+    json_push_kv_int(&body, "num_chunks", manifest.num_chunks);
+    json_push_kv_int(&body, "total_bytes", (int64_t)manifest.total_bytes);
+
+    json_init(&chunks);
+    json_set_array(&chunks);
+    for (uint32_t i = 0; i < manifest.num_chunks; i++) {
         char hex[65];
+        struct json_value item;
         HexStr(manifest.chunks[i].sha3, 32, false, hex, sizeof(hex));
-        w += (size_t)snprintf(buf + w, 131072 - w,
-            "%s{\"sha3\":\"%s\",\"size\":%u,\"file\":%d,\"offset\":%llu}",
-            i > 0 ? "," : "", hex, manifest.chunks[i].size,
-            manifest.chunks[i].file_index,
-            (unsigned long long)manifest.chunks[i].offset);
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "sha3", hex);
+        json_push_kv_int(&item, "size", manifest.chunks[i].size);
+        json_push_kv_int(&item, "file", manifest.chunks[i].file_index);
+        json_push_kv_int(&item, "offset",
+                         (int64_t)manifest.chunks[i].offset);
+        json_push_back(&chunks, &item);
+        json_free(&item);
     }
-    w += (size_t)snprintf(buf + w, 131072 - w, "]}");
+    json_push_kv(&body, "chunks", &chunks);
+    json_free(&chunks);
 
-    size_t off = (size_t)snprintf((char *)response, response_max,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Cache-Control: public, max-age=300\r\n"
-        "Connection: close\r\n"
-        "Content-Length: %zu\r\n\r\n", w);
-    if (off + w <= response_max)
-        memcpy(response + off, buf, w);
-    free(buf);
-    return off + w < response_max ? off + w : response_max;
+    size_t n = api_json_ok(response, response_max, &body);
+    json_free(&body);
+    return n;
 }
 
 /* GET /api/files/:sha3hash — raw chunk bytes by SHA3 hash */
