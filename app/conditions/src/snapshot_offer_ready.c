@@ -103,6 +103,28 @@ static bool detect_snapshot_offer_ready(void)
     return true;
 }
 
+/* Read the CURRENT offer state (same test-service branch as detect). The
+ * remedy and witness must never act on the at-detect snapshot alone: the
+ * condition engine keeps remedying an ACTIVE episode even when detect()
+ * reads false, so a dead offer would otherwise re-force
+ * SYNC_SNAPSHOT_RECEIVE from stale state forever. */
+static bool snapshot_offer_currently_active(void)
+{
+    struct snapshot_sync_service *svc = runtime_snapsync();
+    struct snapsync_status status = {0};
+    if (!svc)
+        return false;
+#ifdef ZCL_TESTING
+    if (svc == g_test_svc) {
+        status.state = svc->state;
+    } else
+#endif
+    {
+        snapsync_get_status_snapshot(svc, &status);
+    }
+    return snapshot_offer_is_active(status.state);
+}
+
 static enum condition_remedy_result remedy_snapshot_offer_ready(void)
 {
     int local_h = atomic_load(&g_local_height_at_detect);
@@ -112,6 +134,15 @@ static enum condition_remedy_result remedy_snapshot_offer_ready(void)
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
+
+    if (!snapshot_offer_currently_active()) {
+        LOG_INFO("condition",
+                 "[condition:snapshot_offer_ready] offer no longer active "
+                 "(local=%d snapshot=%d peer=%d) — skip, not forcing "
+                 "SYNC_SNAPSHOT_RECEIVE from stale detect state",
+                 local_h, snap_h, peer_id);
+        return COND_REMEDY_SKIP;
+    }
 
     LOG_INFO("condition", "[condition:snapshot_offer_ready] local=%d snapshot=%d " "peer=%d sync_state=%s action=set_snapshot_receive", local_h, snap_h, peer_id, sync_state_name(sync_get_state()));
 
@@ -134,6 +165,17 @@ static enum condition_remedy_result remedy_snapshot_offer_ready(void)
 static bool witness_snapshot_offer_ready(int64_t target_at_detect)
 {
     (void)target_at_detect;
+
+    /* Episode-moot clear: if the offer this condition fired on is no longer
+     * active (SNAPSYNC_COMPLETE, FAILED, or back to IDLE), the symptom
+     * "offer ready but not receiving" no longer exists — clear the episode.
+     * Those terminal states have their own condition owners
+     * (snapshot_complete_resume, snapshot_failed_reset,
+     * snapshot_negotiation_stalled); without this, an active episode whose
+     * offer died could never witness-clear and would latch forever, arming
+     * the sticky escalator on a healthy node. */
+    if (!snapshot_offer_currently_active())
+        return true;
 
     /* The remedy unconditionally drives the SYNC FSM to SYNC_SNAPSHOT_RECEIVE,
      * so observing that state alone proves nothing — it is a remedy echo. The

@@ -413,6 +413,18 @@ done_locked:
              * no rowless height is ever left with a cursor above it. */
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         }
+        /* Belt-and-braces: if COMMIT and ROLLBACK BOTH failed (I/O-error
+         * class), the shared progress.kv connection would be left inside a
+         * transaction and every later BEGIN IMMEDIATE on it would fail
+         * ("cannot start a transaction within a transaction"), turning one
+         * purge hiccup into a whole-fold-drive JOB_FATAL. Force it closed
+         * (same recovery stage_batch_end uses). */
+        if (!sqlite3_get_autocommit(db)) {
+            LOG_WARN("stage_repair",
+                     "purge_noncanonical: transaction still open after "
+                     "COMMIT/ROLLBACK failure — forcing ROLLBACK");
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        }
     }
     progress_store_tx_unlock();
     free(canon);

@@ -330,6 +330,14 @@ static bool detect_reducer_frontier_reconcile_light(void)
 
 static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void)
 {
+    /* detect() suspends during a staged refold, but the condition engine
+     * keeps remedying an ACTIVE episode even when detect() reads false
+     * (limbo fix in lib/framework/src/condition.c), so the remedy needs the
+     * same guard: the apply pass would drag below-anchor cursors back up
+     * and fight the in-progress fold. The fold IS the recovery work. */
+    if (refold_in_progress())
+        return COND_REMEDY_SKIP;
+
     sqlite3 *db = progress_store_db();
     struct main_state *ms = sync_monitor_main_state();
     if (!db || !ms)
