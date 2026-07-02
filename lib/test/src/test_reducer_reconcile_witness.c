@@ -880,6 +880,120 @@ int test_reducer_reconcile_witness(void)
         teardown_fixture(&fx);
     }
 
+    /* ── P2: the purge clamps script/proof cursors to the hole it makes ──
+     * Pinned live regression (2026-07-02, height 3166989): a 1-block reorg
+     * left rows at h describing the invalidated block; the reconcile apply
+     * pass purged them (rowless holes in script_validate_log /
+     * proof_validate_log) but left the script_validate / proof_validate
+     * cursors ABOVE h — the refill scan keys on the body_persist_log anchor
+     * row the same pass deleted, so it read no hole and no stage ever
+     * re-derived the rows (H* frozen 3 h at 3166988). Live shape: h ==
+     * coins_applied == hstar+1 (NO coin tear), cursors above h. The purge
+     * must now clamp both cursors to h in the SAME apply pass, atomically
+     * with the deletes (stage_repair_reducer_frontier_purge.c). */
+    {
+        struct rrw_fixture fx;
+        RRW_CHECK("P2: setup fixture", setup_fixture(&fx, "p2_purge_clamp"));
+        sqlite3 *db = progress_store_db();
+        /* progress.kv reopens per fixture; drop the dry-run detect memo so a
+         * reused db pointer cannot replay a prior fixture's clean result. */
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        /* Anchor floor (the T10c precedent): without the coins_kv
+         * proven-authority stamp the phantom-anchor guard drops the H* floor
+         * to 0 and the purge window [hstar+1, hstar+8192] misses A+2. */
+        RRW_CHECK("P2: coins_kv proven-authority stamped",
+                  stamp_coins_kv_migration(db));
+
+        /* The purge judges rows against the ACTIVE chain at their height. */
+        RRW_CHECK("P2: active chain installs",
+                  active_chain_move_window_tip(&fx.ms.chain_active,
+                                               fx.idx[3]));
+
+        /* Reorg residue at h=A+2 (== coins_applied == hstar+1): rewrite the
+         * validate/script rows with the invalidated block's hash, ok=0 (the
+         * tip_fork_stale verdict shape). The hashless body_persist / proof
+         * rows at A+2 are transitively stale; the purge deletes them too. */
+        struct uint256 stale;
+        memset(&stale, 0, sizeof(stale));
+        stale.data[0] = 0x41;
+        stale.data[31] = 0x1b;
+        RRW_CHECK("P2: seed stale validate row at A+2",
+                  put_hash_log(db, "validate_headers_log", "hash", A + 2, 0,
+                               &stale));
+        RRW_CHECK("P2: seed stale script row at A+2",
+                  put_hash_log(db, "script_validate_log", "block_hash", A + 2,
+                               0, &stale));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        RRW_CHECK("P2: dry-run succeeds",
+                  stage_reducer_frontier_reconcile_light_needed(db, &fx.ms,
+                                                                &dry));
+        RRW_CHECK("P2: dry-run finds the residue and the would-be clamp",
+                  dry.noncanonical_found >= 1 &&
+                  dry.noncanonical_purged == 0 &&
+                  dry.lowest_noncanonical == A + 2 &&
+                  dry.clamped_script_validate &&
+                  dry.clamped_proof_validate);
+        RRW_CHECK("P2: dry-run mutates no cursor",
+                  cursor_value(db, "script_validate") == A + 4 &&
+                  cursor_value(db, "proof_validate") == A + 4);
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RRW_CHECK("P2: apply succeeds",
+                  stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RRW_CHECK("P2: apply purges the residue rows",
+                  rr.noncanonical_purged >= 2 && rr.repaired &&
+                  rr.clamped_script_validate && rr.clamped_proof_validate);
+        /* THE regression: the SAME apply pass that deleted the rows leaves
+         * no script/proof cursor above the now-rowless height A+2. */
+        RRW_CHECK("P2: script/proof cursors clamped to the purged height",
+                  cursor_value(db, "script_validate") == A + 2 &&
+                  cursor_value(db, "proof_validate") == A + 2);
+        RRW_CHECK("P2: utxo_apply cursor untouched (coins-floor rule)",
+                  cursor_value(db, "utxo_apply") == A + 4);
+
+        sqlite3_stmt *st = NULL;
+        int rows_left = -1;
+        if (sqlite3_prepare_v2(db,
+                "SELECT"
+                " (SELECT COUNT(*) FROM validate_headers_log WHERE height=?1)"
+                " + (SELECT COUNT(*) FROM script_validate_log WHERE height=?1)"
+                " + (SELECT COUNT(*) FROM body_persist_log WHERE height=?1)"
+                " + (SELECT COUNT(*) FROM proof_validate_log WHERE height=?1)",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(st, 1, A + 2);
+            if (sqlite3_step(st) == SQLITE_ROW)
+                rows_left = sqlite3_column_int(st, 0);
+        }
+        sqlite3_finalize(st);
+        RRW_CHECK("P2: purged height is fully rowless", rows_left == 0);
+
+        /* Stages re-run from the clamped cursors: they rewrite canonical
+         * ok=1 rows at A+2 and walk back up. Simulate that, then assert the
+         * dry-run reports no remaining script/proof hole or residue. */
+        RRW_CHECK("P2: stages re-derive canonical rows at A+2",
+                  put_upstream_ok(db, A + 2, &fx.hashes[2]) &&
+                  seed_cursor(db, "validate_headers", A + 4) &&
+                  seed_cursor(db, "body_fetch", A + 4) &&
+                  seed_cursor(db, "body_persist", A + 4) &&
+                  seed_cursor(db, "script_validate", A + 4) &&
+                  seed_cursor(db, "proof_validate", A + 4));
+
+        struct stage_reducer_frontier_reconcile_result dry2;
+        RRW_CHECK("P2: post-re-derive dry-run succeeds",
+                  stage_reducer_frontier_reconcile_light_needed(db, &fx.ms,
+                                                                &dry2));
+        RRW_CHECK("P2: no remaining script/proof hole or residue",
+                  dry2.noncanonical_found == 0 &&
+                  dry2.lowest_script_validate_refill_hole == -1 &&
+                  dry2.lowest_proof_validate_refill_hole == -1 &&
+                  !dry2.clamped_script_validate &&
+                  !dry2.clamped_proof_validate &&
+                  !dry2.refused_coin_tear);
+
+        teardown_fixture(&fx);
+    }
+
     printf("reducer_reconcile_witness: %d failures\n", failures);
     return failures;
 }

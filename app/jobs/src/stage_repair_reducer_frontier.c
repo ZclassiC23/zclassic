@@ -557,11 +557,28 @@ static bool reducer_frontier_reconcile_light_impl(
 
     /* Non-canonical residue purge runs FIRST: rows describing the wrong
      * block at their height (relabel/reorg residue) become ordinary
-     * rowless holes, so every repair below sees a consistent world. */
+     * rowless holes, so every repair below sees a consistent world. The
+     * purge itself clamps the script_validate / proof_validate cursors to
+     * the lowest height it made rowless, in the same transaction as the
+     * deletes (2026-07-02, height 3166989: deletes without the clamp
+     * stranded the hole — the refill scan keys on the body_persist_log
+     * anchor row the purge also deleted, so it read no hole). */
     if (!stage_reducer_frontier_purge_noncanonical(db, ms, apply, &local))
         return false;
-    if (local.noncanonical_purged > 0)
+    if (local.noncanonical_purged > 0) {
         local.repaired = true;
+        /* Rows were deleted and cursors may have moved; re-read the
+         * snapshot so every gate below sees the post-purge frontier and
+         * cursors, not the pre-purge world. Counters / clamp flags are
+         * preserved (read_frontier_snapshot rewrites only the frontier /
+         * cursor fields). The refusal flags are LATCHED (the snapshot only
+         * ever SETS them true), so clear them first — the re-read
+         * re-derives them from the post-purge store. */
+        local.refused_coin_tear = false;
+        local.refused_coin_unknown = false;
+        if (!read_frontier_snapshot(db, &local))
+            return false;
+    }
 
     /* FIX-A — stale reorg-residue tip_finalize verdict replacement. A depth-N
      * reorg can leave an ok=0 'reorg_detected' tip_finalize row at a height

@@ -7,6 +7,7 @@
 #include "stage_repair_reducer_frontier_internal.h"
 
 #include "jobs/stage_repair.h"
+#include "jobs/stage_repair_internal.h"
 #include "tip_finalize_log_store.h"
 
 #include "core/arith_uint256.h"
@@ -84,6 +85,61 @@ static bool rf_height_is_vs_hash_split(sqlite3 *db, int h, bool *out_split)
     return true;
 }
 
+/* Lazily-opened purge transaction. The row deletes and the script/proof
+ * cursor clamps below MUST commit atomically: the 2026-07-02 stall at height
+ * 3166989 was a purge whose deletes committed (rowless holes in
+ * script_validate_log/proof_validate_log) while both cursors stayed above the
+ * hole — the later refill scan could not see it (its body_persist_log anchor
+ * row was deleted by the same pass), so no stage ever re-derived the rows.
+ * Caller holds progress_store_tx_lock(). */
+static bool rf_purge_tx_begin(sqlite3 *db, bool *tx_open)
+{
+    if (*tx_open)
+        return true;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair", "purge_noncanonical: BEGIN failed: %s",
+                 err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    *tx_open = true;
+    return true;
+}
+
+/* Clamp one of the script_validate / proof_validate cursors down to `target`
+ * (a height whose rows this purge deleted). Dry-run records the would-be
+ * clamp; apply writes it inside the purge's open transaction so the deletes
+ * and the clamp commit together. Caller holds progress_store_tx_lock(). */
+static bool rf_purge_clamp_cursor(sqlite3 *db, bool apply,
+                                  const char *stage_name, int target,
+                                  int *cursor_before, int *cursor_after,
+                                  bool *clamped)
+{
+    int cur = -1;
+    if (!stage_repair_cursor_at_unlocked(db, stage_name, &cur)) {
+        LOG_WARN("stage_repair",
+                 "purge_noncanonical: %s cursor read failed target=%d",
+                 stage_name, target);
+        return false;
+    }
+    *cursor_before = cur;
+    *cursor_after = cur;
+    if (cur <= target)
+        return true;
+    *clamped = true;
+    *cursor_after = target;
+    if (!apply)
+        return true;
+    if (!stage_repair_force_stage_cursor(db, stage_name, target)) {
+        LOG_WARN("stage_repair",
+                 "purge_noncanonical: %s cursor clamp failed target=%d "
+                 "before=%d", stage_name, target, cur);
+        return false;
+    }
+    return true;
+}
+
 bool stage_reducer_frontier_purge_noncanonical(
     sqlite3 *db,
     struct main_state *ms,
@@ -102,6 +158,13 @@ bool stage_reducer_frontier_purge_noncanonical(
                  RF_NONCANON_MAX_PER_PASS);
 
     bool ok = true;
+    bool tx_open = false;
+    /* Lowest height whose rows this pass judges stale, split by the FIX-2
+     * coins floor: heights >= coins_applied_height are provably unapplied
+     * (forward re-walk safe — the clamp target), heights below it are the
+     * stale-script replay's domain (never clamped, warned below). */
+    int lowest_stale_unapplied = -1;
+    int lowest_stale_replay_domain = -1;
     progress_store_tx_lock();
 
     int tip_h = active_chain_height(&ms->chain_active);
@@ -209,6 +272,10 @@ bool stage_reducer_frontier_purge_noncanonical(
                 out->lowest_noncanonical = h;
             if (!apply)
                 continue;
+            if (!rf_purge_tx_begin(db, &tx_open)) {
+                ok = false;
+                goto done_locked;
+            }
             snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE height = ?",
                      hash_logs[t].table);
             if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
@@ -253,7 +320,73 @@ bool stage_reducer_frontier_purge_noncanonical(
                 sqlite3_finalize(st);
             }
         }
+        if (stale_here) {
+            /* The loop ascends, so the first stale height per domain is the
+             * lowest. Domain split mirrors refill_target_in_unapplied_domain
+             * (stage_repair_reducer_frontier_refill.c): unknown coins
+             * frontier or h below it => replay domain, never a clamp. */
+            bool frontier_known = out->coins_applied_found &&
+                                  out->coins_applied_height >= 0;
+            if (frontier_known && h >= out->coins_applied_height) {
+                if (lowest_stale_unapplied < 0)
+                    lowest_stale_unapplied = h;
+            } else if (lowest_stale_replay_domain < 0) {
+                lowest_stale_replay_domain = h;
+            }
+        }
     }
+
+    /* The deletes above turned the stale heights into rowless holes. A
+     * script_validate / proof_validate cursor left ABOVE such a height would
+     * strand it forever: the forward stages only walk up, and the refill
+     * scans key on upstream anchor rows (body_persist_log / script_validate_
+     * log) this same pass just deleted, so they read no hole (the 2026-07-02
+     * stall at height 3166989). Clamp both cursors to the lowest purged
+     * height in the unapplied domain, in the SAME transaction as the deletes
+     * — both log stores are INSERT OR REPLACE, the forward re-walk rewrites
+     * fresh verdicts from the persisted canonical bodies and deletes nothing.
+     * validate_headers / body_fetch / body_persist / tip_finalize cursors
+     * stay with their existing caller-side reconciles (header_admit-keyed
+     * scans survive the purge); the utxo_apply cursor is NEVER touched
+     * (coins double-apply — the refill coins-floor rule). */
+    if (lowest_stale_unapplied >= 0) {
+        if (apply && !rf_purge_tx_begin(db, &tx_open)) {
+            ok = false;
+            goto done_locked;
+        }
+        if (!rf_purge_clamp_cursor(db, apply, "script_validate",
+                                   lowest_stale_unapplied,
+                                   &out->script_validate_cursor_before,
+                                   &out->script_validate_cursor_after,
+                                   &out->clamped_script_validate) ||
+            !rf_purge_clamp_cursor(db, apply, "proof_validate",
+                                   lowest_stale_unapplied,
+                                   &out->proof_validate_cursor_before,
+                                   &out->proof_validate_cursor_after,
+                                   &out->clamped_proof_validate)) {
+            ok = false;
+            goto done_locked;
+        }
+        if (out->clamped_script_validate || out->clamped_proof_validate)
+            LOG_WARN("stage_repair",
+                     "[stage_repair] purge_noncanonical clamped "
+                     "script_validate=%d->%d proof_validate=%d->%d to purged "
+                     "rowless height h=%d (hstar=%d coins_applied=%d)%s",
+                     out->script_validate_cursor_before,
+                     out->script_validate_cursor_after,
+                     out->proof_validate_cursor_before,
+                     out->proof_validate_cursor_after,
+                     lowest_stale_unapplied, out->hstar,
+                     out->coins_applied_height, apply ? "" : "; dry-run");
+    }
+    if (lowest_stale_replay_domain >= 0)
+        LOG_WARN("stage_repair",
+                 "[stage_repair] purge_noncanonical left rowless heights "
+                 "below/without the coins frontier (lowest=%d "
+                 "coins_applied=%d found=%d): script/proof clamp refused, "
+                 "stale-script replay domain%s",
+                 lowest_stale_replay_domain, out->coins_applied_height,
+                 out->coins_applied_found, apply ? "" : "; dry-run");
 
     if (out->noncanonical_found > 0)
         LOG_WARN("stage_repair",
@@ -264,6 +397,23 @@ bool stage_reducer_frontier_purge_noncanonical(
                  apply ? "" : "; dry-run");
 
 done_locked:
+    if (tx_open) {
+        if (ok) {
+            char *err = NULL;
+            if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+                LOG_WARN("stage_repair",
+                         "purge_noncanonical: COMMIT failed: %s",
+                         err ? err : "(no message)");
+                if (err) sqlite3_free(err);
+                sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+                ok = false;
+            }
+        } else {
+            /* All-or-nothing: a failed pass rolls the deletes back too, so
+             * no rowless height is ever left with a cursor above it. */
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        }
+    }
     progress_store_tx_unlock();
     free(canon);
     return ok;
