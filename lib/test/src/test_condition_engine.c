@@ -271,6 +271,112 @@ int test_condition_engine(void)
         CE_CHECK("witnessed clear after unwitnessed attempt resolves", ok);
     }
 
+    /* P0 LIMBO REGRESSION (live 2026-07-02, H*=3166988): an ACTIVE episode
+     * whose detect() flapped false while witness() stayed false froze — no
+     * remedy retry, no attempts accrual, no operator page for 3h
+     * (reducer_frontier_reconcile_light attempts stuck 1/5 while the
+     * script_validate_log hole at 3166989 persisted). detect() gates episode
+     * START only; while active the remedy cadence must continue and the
+     * episode may end ONLY via witness-clear. */
+    static struct condition c_limbo = {
+        .name = "ce_limbo",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 0,
+        .max_attempts = 3,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        bool ok = condition_register(&c_limbo);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();            /* activates, attempt 1 */
+        ok = ok && atomic_load(&g_remedy_calls) == 1;
+        atomic_store(&g_detect, false);     /* detect flaps false */
+        atomic_store(&g_witness, false);    /* symptom NOT cleared */
+        condition_engine_tick();            /* must retry, not freeze */
+        ok = ok && atomic_load(&g_remedy_calls) == 2;
+        ok = ok && atomic_load(&c_limbo.state.attempts) == 2;
+        ok = ok && atomic_load(&c_limbo.state.currently_active);
+        CE_CHECK("active undetected unwitnessed episode keeps remedy cadence",
+                 ok);
+    }
+
+    {
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_limbo);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();            /* attempt 1 */
+        atomic_store(&g_detect, false);
+        condition_engine_tick();            /* attempt 2 */
+        condition_engine_tick();            /* attempt 3 = max_attempts */
+        ok = ok && atomic_load(&g_remedy_calls) == 3;
+        ok = ok && atomic_load(&c_limbo.state.operator_needed_emitted);
+        ok = ok && atomic_load(&g_operator_events) >= 1;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        CE_CHECK("undetected active episode still escalates to operator", ok);
+    }
+
+    /* Age-based page: an episode older than its schedule budget
+     * (max(600, poll + backoff*max_attempts*2)) pages even at attempts=1 —
+     * cooldown_rearm/progressing() resets can otherwise hold attempts below
+     * max_attempts forever without a page. */
+    static struct condition c_aged = {
+        .name = "ce_aged",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 1000,   /* second attempt never due in this test */
+        .max_attempts = 5,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_aged);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();            /* activates, attempt 1 */
+        ok = ok && atomic_load(&c_aged.state.attempts) == 1;
+        ok = ok && !atomic_load(&c_aged.state.operator_needed_emitted);
+        /* Age the episode past the budget (1 + 1000*5*2 = 10001s): rewind
+         * first_detect_unix as if detection happened 20000s ago. */
+        atomic_store(&c_aged.state.first_detect_unix,
+                     atomic_load(&c_aged.state.first_detect_unix) - 20000);
+        condition_engine_tick();            /* backoff holds attempt 2 */
+        ok = ok && atomic_load(&c_aged.state.attempts) == 1;
+        ok = ok && atomic_load(&c_aged.state.operator_needed_emitted);
+        ok = ok && atomic_load(&g_operator_events) >= 1;
+        CE_CHECK("age budget pages operator at attempts below max", ok);
+    }
+
+    {
+        /* Witness-clear still ends a limbo episode and resets its state. */
+        reset_fixture();
+        bool ok = condition_register(&c_limbo);
+        int cleared_before = atomic_load(&c_limbo.state.cleared_count);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();            /* attempt 1 */
+        atomic_store(&g_detect, false);
+        condition_engine_tick();            /* limbo retry, attempt 2 */
+        ok = ok && atomic_load(&c_limbo.state.currently_active);
+        atomic_store(&g_witness, true);     /* symptom resolved */
+        condition_engine_tick();            /* witness-clear */
+        ok = ok && !atomic_load(&c_limbo.state.currently_active);
+        ok = ok && atomic_load(&c_limbo.state.cleared_count) ==
+                       cleared_before + 1;
+        ok = ok && atomic_load(&c_limbo.state.attempts) == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        CE_CHECK("witness clear resets active undetected episode", ok);
+    }
+
     {
         reset_fixture();
         bool ok = condition_register(&c_basic);

@@ -67,6 +67,10 @@ static int condition_find_locked(const char *name)
  * rewinds an existing slot, so the lock-free scan is safe. */
 #define COND_PAGE_BASE_SECS 60
 #define COND_PAGE_CAP_SECS 3600
+/* Floor for the per-condition episode age budget (see condition_tick_one):
+ * even a condition with tiny poll/backoff numbers gets at least this long
+ * before an age-based operator page. */
+#define COND_PAGE_AGE_FLOOR_SECS 600
 
 struct page_ladder {
     const struct condition_state *owner;
@@ -286,13 +290,20 @@ static void condition_tick_one(const struct condition *cond, int64_t now)
     bool detected = cond->detect();
 
     if (!detected) {
-        if (atomic_load(&s->currently_active) && cond->witness(target))
-            condition_mark_cleared(cond, s, now);
-        else if (!atomic_load(&s->currently_active)) {
+        if (!atomic_load(&s->currently_active)) {
             condition_state_reset(s);
             atomic_store(&s->last_poll_unix, now);
+            return;
         }
-        return;
+        /* ACTIVE + detect()==false: detect() gates episode START, never
+         * CONTINUATION — an active episode ends ONLY via the witness. Fall
+         * through to the shared witness/remedy/page cadence below (the
+         * witness check there clears; otherwise the remedy retries on
+         * backoff and attempts keep accruing toward operator_needed).
+         * Returning here instead put reducer_frontier_reconcile_light in
+         * limbo for 3h at H*=3166988 (script_validate_log hole at 3166989):
+         * its detect() peer gate read false while witness() stayed false, so
+         * attempts froze at 1/5 with no remedy retry and no page. */
     }
 
     if (!atomic_load(&s->currently_active)) {
@@ -364,7 +375,22 @@ static void condition_tick_one(const struct condition *cond, int64_t now)
     }
 
     int max_attempts = cond->max_attempts > 0 ? cond->max_attempts : 1;
-    if (atomic_load(&s->attempts) >= max_attempts) {
+    /* Age-based page: attempts alone can sit below max_attempts indefinitely
+     * (cooldown_rearm and progressing() both reset the counter, and a long
+     * backoff accrues slowly), so an episode active longer than the worst
+     * case its own schedule needs (one poll + max_attempts backoffs, doubled
+     * for slack, floored at COND_PAGE_AGE_FLOOR_SECS) pages the operator
+     * even at attempts < max_attempts. The existing page ladder still rate
+     * limits repages (60s doubling to the 3600s cap). */
+    int backoff = cond->backoff_secs > 0 ? cond->backoff_secs : 0;
+    int64_t age_budget =
+        (int64_t)poll_secs + (int64_t)backoff * max_attempts * 2;
+    if (age_budget < COND_PAGE_AGE_FLOOR_SECS)
+        age_budget = COND_PAGE_AGE_FLOOR_SECS;
+    int64_t first_detect = atomic_load(&s->first_detect_unix);
+    bool over_age_budget =
+        first_detect != 0 && now - first_detect >= age_budget;
+    if (atomic_load(&s->attempts) >= max_attempts || over_age_budget) {
         struct page_ladder *pl = page_ladder_for(s, true);
         int interval = pl ? atomic_load(&pl->interval_secs)
                           : COND_PAGE_BASE_SECS;
