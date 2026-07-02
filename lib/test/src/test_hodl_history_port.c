@@ -26,6 +26,7 @@
 #include "adapters/outbound/persistence/hodl_history_sqlite.h"
 #include "ports/hodl_history_port.h"
 #include "services/hodl_history_service.h"
+#include "util/ar_step_readonly.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -76,6 +77,22 @@ static bool make_fixture_db(sqlite3 **out_db)
 static bool exec_sql(sqlite3 *db, const char *sql)
 {
     return sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
+}
+
+static int64_t query_total_at_height(sqlite3 *db, int64_t height, int64_t fallback)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t v = fallback;
+    if (!db ||
+        sqlite3_prepare_v2(db,
+            "SELECT total_zat FROM hodl_history WHERE height=?1",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return fallback;
+    sqlite3_bind_int64(s, 1, height);
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
+        v = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    return v;
 }
 
 /* Seed a scenario:
@@ -199,6 +216,49 @@ int test_hodl_history_port(void)
                  !hodl_history_fill_one(db, 99).ok);
         n = hodl_history_load_all(db, rows, 8);
         HH_CHECK("still 1 row after miss", n == 1);
+
+        sqlite3_close(db);
+    }
+
+    /* ---- fill_pending repairs stale/missing rows below the max height ---- */
+    {
+        sqlite3 *db = NULL;
+        if (!make_fixture_db(&db)) {
+            HH_CHECK("repair fixture builds", false);
+            return failures;
+        }
+
+        const int64_t S = HODL_HISTORY_SAMPLE_STRIDE;
+        char sql[2048];
+        snprintf(sql, sizeof sql,
+            "INSERT INTO blocks(hash,height,time) VALUES"
+            " (x'10',%lld,%lld),(x'11',%lld,%lld),(x'12',%lld,%lld);"
+            "INSERT INTO tx_outputs(txid,vout,value,block_height) VALUES"
+            " (x'DD',0,100,%lld);"
+            "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
+            "older_1y_pct) VALUES"
+            " (%lld,%lld,0,0,0.0),"
+            " (%lld,%lld,100,0,0.0);",
+            (long long)S,       (long long)YEAR,
+            (long long)(2 * S), (long long)(YEAR + 100),
+            (long long)(3 * S), (long long)(YEAR + 200),
+            (long long)S,
+            (long long)S,       (long long)YEAR,
+            (long long)(3 * S), (long long)(YEAR + 200));
+        HH_CHECK("repair scenario seeds", exec_sql(db, sql));
+
+        HH_CHECK("repair stale zero below max",
+                 hodl_history_fill_pending(db, 3 * S, 1) == 1);
+        HH_CHECK("stale zero recomputed",
+                 query_total_at_height(db, S, -1) == 100);
+
+        HH_CHECK("repair missing middle sample",
+                 hodl_history_fill_pending(db, 3 * S, 1) == 1);
+        HH_CHECK("middle sample inserted",
+                 query_total_at_height(db, 2 * S, -1) == 100);
+
+        HH_CHECK("repair complete no-op",
+                 hodl_history_fill_pending(db, 3 * S, 1) == 0);
 
         sqlite3_close(db);
     }

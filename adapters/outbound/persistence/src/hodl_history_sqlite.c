@@ -127,6 +127,54 @@ static int64_t hh_max_filled_height(void *self)
     return v;
 }
 
+static bool hh_next_fill_height(void *self,
+                                int64_t stride,
+                                int64_t target,
+                                int64_t *out_height)
+{
+    sqlite3 *db = db_of(self);
+    if (!db || !out_height || stride <= 0 || target < stride)
+        return false;
+
+    *out_height = 0;
+    sqlite3_stmt *s = NULL;
+    const char *sql =
+        "WITH RECURSIVE expected(h) AS ("
+        "  SELECT ?1"
+        "  UNION ALL SELECT h + ?1 FROM expected WHERE h + ?1 <= ?2"
+        ") "
+        "SELECT e.h "
+        "FROM expected e "
+        "LEFT JOIN hodl_history hh ON hh.height = e.h "
+        "WHERE hh.height IS NULL "
+        "   OR (hh.total_zat = 0 AND EXISTS ("
+        "       SELECT 1 FROM tx_outputs o "
+        "       LEFT JOIN tx_inputs i "
+        "         ON i.prev_txid = o.txid AND i.prev_vout = o.vout "
+        "        AND i.block_height <= e.h "
+        "       WHERE o.block_height <= e.h AND o.value > 0 "
+        "         AND i.txid IS NULL LIMIT 1"
+        "   )) "
+        "ORDER BY e.h LIMIT 1";
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
+        LOG_FAIL("hodl_history",
+                 "prepare next-fill SQL failed: %s", sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(s, 1, stride);
+    sqlite3_bind_int64(s, 2, target);
+    int rc = AR_STEP_ROW_READONLY(s);
+    if (rc == SQLITE_ROW)
+        *out_height = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        LOG_FAIL("hodl_history",
+                 "next-fill step rc=%d: %s", rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
 static int hh_load_all(void *self,
                        struct hodl_history_snapshot *out,
                        int max_rows)
@@ -163,6 +211,7 @@ bool hodl_history_sqlite_bind(sqlite3 *db, struct hodl_history_port *out_port)
         .compute_snapshot  = hh_compute_snapshot,
         .upsert_snapshot   = hh_upsert_snapshot,
         .max_filled_height = hh_max_filled_height,
+        .next_fill_height  = hh_next_fill_height,
         .load_all          = hh_load_all,
     };
     return true;

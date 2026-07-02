@@ -132,29 +132,39 @@ int hodl_history_fill_pending(sqlite3 *db, int64_t chain_tip, int max_rows)
         LOG_FAIL("hodl_history", "failed to bind sqlite port");
     }
 
-    int64_t last_filled = port.max_filled_height(port.self);
-
     /* The most recent useful sample is (chain_tip - 1y_blocks) — beyond
      * that "older than 1y" can't be true. We do still sample within the
      * last year so the chart's right edge follows tip. */
     int64_t target = chain_tip - (chain_tip % HODL_HISTORY_SAMPLE_STRIDE);
 
     int filled = 0;
-    int64_t next = last_filled > 0
-        ? last_filled + HODL_HISTORY_SAMPLE_STRIDE
-        : HODL_HISTORY_SAMPLE_STRIDE;
-    while (filled < max_rows && next <= target) {
+    while (filled < max_rows) {
+        int64_t next = 0;
+        if (port.next_fill_height) {
+            if (!port.next_fill_height(port.self,
+                                       HODL_HISTORY_SAMPLE_STRIDE,
+                                       target, &next))
+                break;
+        } else {
+            int64_t last_filled = port.max_filled_height(port.self);
+            next = last_filled > 0
+                ? last_filled + HODL_HISTORY_SAMPLE_STRIDE
+                : HODL_HISTORY_SAMPLE_STRIDE;
+        }
+        if (next <= 0 || next > target)
+            break;
+
         /* Break on first failure rather than skip — fill_one fails when
          * the source index (tx_outputs) doesn't cover the sample. If we
          * advanced past the failed height we'd create a permanent gap
-         * that later passes couldn't retry, because fill_pending picks
-         * next = MAX(filled) + stride. Leaving `next` unchanged on
-         * failure means the next tick (after the indexer makes more
-         * progress) will retry the same height. */
+         * that later passes couldn't retry. Asking the port for the
+         * lowest missing/stale sample on each iteration also repairs
+         * rows that were cached as total_zat=0 before tx_outputs caught
+         * up, which keeps the explorer chart anchored from genesis after
+         * projection rebuilds. */
         if (!fill_one_via_port(&port, next))
             break;
         filled++;
-        next += HODL_HISTORY_SAMPLE_STRIDE;
     }
     return filled;
 }

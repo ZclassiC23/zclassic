@@ -18,6 +18,7 @@
  *                            yields (total_zat, older_than_1y_zat)
  *   upsert_snapshot(row)     "INSERT OR REPLACE INTO hodl_history ..."
  *   max_filled_height()      "SELECT COALESCE(MAX(height),0) FROM ..."
+ *   next_fill_height()       first missing/stale sample height in stride order
  *   load_all(out, max)       "SELECT ... FROM hodl_history ORDER BY height"
  *
  * No sqlite type appears in this header. The adapter under
@@ -77,6 +78,15 @@ struct hodl_history_port {
     /* Highest height already persisted, or 0 if the table is empty.
      * (COALESCE(MAX(height),0).) */
     int64_t (*max_filled_height)(void *self);
+
+    /* Lowest expected sample height that should be computed or refreshed.
+     * A height needs fill when its row is missing, or when a prior run saved
+     * total_zat=0 while the indexed outputs now prove historical value existed
+     * at that height. Sets *out_height to 0 when no work is pending. */
+    bool (*next_fill_height)(void *self,
+                             int64_t stride,
+                             int64_t target,
+                             int64_t *out_height);
 
     /* Load all persisted snapshots in ascending height order into the
      * caller-owned `out` buffer. Returns the number of rows written
