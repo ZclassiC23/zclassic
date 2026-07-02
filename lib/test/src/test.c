@@ -1114,6 +1114,8 @@ int main(void)
       failures += test_sticky_conditions(); }
     { extern int test_sticky_escalator(void);
       failures += test_sticky_escalator(); }
+    { extern int test_stall_totality_matrix(void);
+      failures += test_stall_totality_matrix(); }
     failures += test_peer_snapshot_conditions();
     failures += test_snapshot_receive_stalled_condition();
     failures += test_snapshot_negotiation_stalled_condition();
