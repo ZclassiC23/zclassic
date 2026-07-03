@@ -23,6 +23,7 @@
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "config/boot_internal.h"        /* boot_index_clear_coins_state */
+#include "config/mint_anchor_progress.h" /* mint_anchor_progress_* */
 #include "jobs/reducer_frontier.h"       /* progress_meta_delete_in_tx,
                                           * REDUCER_TRUSTED_BASE_*_KEY,
                                           * REDUCER_FRONTIER_TRUSTED_ANCHOR,
@@ -1833,8 +1834,32 @@ void boot_mint_anchor_reset(struct node_db *ndb, bool fast)
         _exit(EXIT_FAILURE);
     }
 
-    /* (1) genesis reset — identical machinery to -refold-staged. */
-    boot_refold_staged_reset(ndb);
+    int32_t resume_through = -1;
+    bool legacy_adopted = false;
+    bool resume = mint_anchor_progress_can_resume(progress_store_db(), cp,
+                                                  &resume_through,
+                                                  &legacy_adopted);
+
+    if (resume) {
+        fprintf(stderr,
+                "[boot] -mint-anchor: resuming existing checkpoint-bound fold "
+                "at applied-through=%d (anchor h=%d%s); NOT resetting to "
+                "genesis\n",
+                resume_through, cp->height,
+                legacy_adopted ? ", legacy marker adopted" : "");
+    } else {
+        /* (1) genesis reset — identical machinery to -refold-staged. */
+        boot_refold_staged_reset(ndb);
+        if (!mint_anchor_progress_mark(progress_store_db(), cp)) {
+            fprintf(stderr,
+                    "FATAL: -mint-anchor: could not persist the checkpoint-"
+                    "bound resume marker — refusing to start a non-resumable "
+                    "anchor mint\n");
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "mint_anchor resume_marker_persist_failed");
+            _exit(EXIT_FAILURE);
+        }
+    }
 
     /* (2) cap the fold AT the anchor (inclusive). header_admit stops here. */
     mint_fold_ceiling_set(cp->height);
@@ -1862,10 +1887,18 @@ void boot_mint_anchor_reset(struct node_db *ndb, bool fast)
      * (the from-genesis refold L0 floor = 0). */
     (void)refold_progress_mark_started(progress_store_db());
 
-    fprintf(stderr,
-            "[boot] -mint-anchor: reset to genesis; fold CAPPED at the SHA3 "
-            "checkpoint anchor h=%d (want count=%llu); the staged pipeline folds "
-            "genesis..anchor over on-disk bodies, then the mint writes + asserts "
-            "the snapshot\n",
-            cp->height, (unsigned long long)cp->utxo_count);
+    if (!resume) {
+        fprintf(stderr,
+                "[boot] -mint-anchor: reset to genesis; fold CAPPED at the SHA3 "
+                "checkpoint anchor h=%d (want count=%llu); the staged pipeline folds "
+                "genesis..anchor over on-disk bodies, then the mint writes + asserts "
+                "the snapshot\n",
+                cp->height, (unsigned long long)cp->utxo_count);
+    } else {
+        fprintf(stderr,
+                "[boot] -mint-anchor: resumed fold remains CAPPED at the SHA3 "
+                "checkpoint anchor h=%d (want count=%llu); the mint writes + asserts "
+                "the snapshot only after the frontier reaches the anchor\n",
+                cp->height, (unsigned long long)cp->utxo_count);
+    }
 }

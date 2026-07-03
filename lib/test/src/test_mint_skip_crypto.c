@@ -36,10 +36,13 @@
 #include "primitives/transaction.h"
 #include "script/script.h"
 #include "jobs/mint_skip_crypto.h"
+#include "jobs/refold_progress.h"
 #include "jobs/proof_validate_stage.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
+#include "chain/checkpoints.h"
 #include "config/boot.h"
+#include "config/mint_anchor_progress.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -354,6 +357,114 @@ static char *read_source_file(const char *path)
     return buf;
 }
 
+static bool msc_set_applied_height(sqlite3 *db, int32_t h)
+{
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) == SQLITE_OK;
+    if (ok)
+        ok = coins_kv_set_applied_height_in_tx(db, h);
+    if (ok)
+        ok = sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err)
+        sqlite3_free(err);
+    return ok;
+}
+
+static struct sha3_utxo_checkpoint msc_checkpoint(int32_t height,
+                                                  uint64_t count,
+                                                  uint8_t salt)
+{
+    struct sha3_utxo_checkpoint cp;
+    memset(&cp, 0, sizeof(cp));
+    cp.height = height;
+    cp.utxo_count = count;
+    cp.total_supply = 123456;
+    for (int i = 0; i < 32; i++) {
+        cp.sha3_hash[i] = (uint8_t)(salt + i);
+        cp.block_hash[i] = (uint8_t)(0x80 + salt + i);
+    }
+    return cp;
+}
+
+static void msc_clear_refold_progress(sqlite3 *db)
+{
+    if (db) {
+        (void)progress_meta_delete(db, REFOLD_IN_PROGRESS_KEY);
+        (void)progress_meta_delete(db, REFOLD_FROM_ANCHOR_KEY);
+        (void)progress_meta_delete(db, REFOLD_FROM_ANCHOR_TARGET_KEY);
+        (void)refold_progress_refresh(db);
+    }
+    refold_progress_test_set_cached(false);
+}
+
+static int test_mint_anchor_progress_resume(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "mint_skip_crypto", "resume_marker");
+    mkdir_p("./test-tmp");
+    mkdir_p(dir);
+
+    struct sha3_utxo_checkpoint cp = msc_checkpoint(200, 9, 0x11);
+    struct sha3_utxo_checkpoint other = msc_checkpoint(200, 9, 0x22);
+
+    bool opened = progress_store_open(dir);
+    sqlite3 *db = opened ? progress_store_db() : NULL;
+    MSC_CHECK("mint progress: progress store opens", opened && db);
+    if (!opened || !db)
+        return failures + 1;
+
+    int32_t through = -99;
+    bool legacy = true;
+    MSC_CHECK("mint progress: no marker does not resume",
+              !mint_anchor_progress_can_resume(db, &cp, &through, &legacy));
+
+    MSC_CHECK("mint progress: seed applied frontier",
+              msc_set_applied_height(db, 43));
+    MSC_CHECK("mint progress: mark in progress",
+              mint_anchor_progress_mark(db, &cp));
+    through = -99;
+    legacy = true;
+    MSC_CHECK("mint progress: matching marker resumes",
+              mint_anchor_progress_can_resume(db, &cp, &through, &legacy) &&
+              through == 42 && !legacy);
+    MSC_CHECK("mint progress: checkpoint mismatch refuses resume",
+              !mint_anchor_progress_can_resume(db, &other, NULL, NULL));
+
+    MSC_CHECK("mint progress: clear marker",
+              mint_anchor_progress_clear(db));
+    (void)progress_meta_delete(db, REFOLD_IN_PROGRESS_KEY);
+    (void)refold_progress_refresh(db);
+    MSC_CHECK("mint progress: cleared marker no longer resumes",
+              !mint_anchor_progress_can_resume(db, &cp, NULL, NULL));
+
+    MSC_CHECK("mint progress: legacy refold signal armed",
+              refold_progress_mark_started(db));
+    through = -99;
+    legacy = false;
+    MSC_CHECK("mint progress: legacy interrupted fold adopted",
+              mint_anchor_progress_can_resume(db, &cp, &through, &legacy) &&
+              through == 42 && legacy);
+    through = -99;
+    legacy = true;
+    MSC_CHECK("mint progress: adopted marker resumes normally",
+              mint_anchor_progress_can_resume(db, &cp, &through, &legacy) &&
+              through == 42 && !legacy);
+
+    MSC_CHECK("mint progress: frontier past anchor recorded",
+              msc_set_applied_height(db, cp.height + 2));
+    MSC_CHECK("mint progress: marker refuses past-anchor frontier",
+              !mint_anchor_progress_can_resume(db, &cp, NULL, NULL));
+
+    msc_clear_refold_progress(db);
+    progress_store_close();
+    refold_progress_test_set_cached(false);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_mint_skip_crypto(void);
 int test_mint_skip_crypto(void)
 {
@@ -456,6 +567,7 @@ int test_mint_skip_crypto(void)
               !boot_mint_anchor_should_log_progress(3056741, 3056758) &&
               boot_mint_anchor_should_log_progress(3056742, 3056758) &&
               boot_mint_anchor_should_log_progress(3056758, 3056758));
+    failures += test_mint_anchor_progress_resume();
     free(boot_src);
     free(main_src);
 

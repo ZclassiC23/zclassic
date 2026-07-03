@@ -20,6 +20,7 @@
  * SHA3/count hard-assert. */
 
 #include "config/boot.h"
+#include "config/mint_anchor_progress.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -196,5 +197,10 @@ bool boot_mint_anchor_run(const char *datadir)
             "checkpoint. Snapshot artifact: %s\n",
             anchor, (unsigned long long)got_count, (long long)got_supply,
             sha3_hex, out_path);
+    if (!mint_anchor_progress_clear(pdb))
+        LOG_WARN("mint_anchor",
+                 "[mint-anchor] verified snapshot was written, but clearing "
+                 "the resume marker failed; future -mint-anchor runs may "
+                 "resume/rewrite the same verified artifact");
     return true;
 }

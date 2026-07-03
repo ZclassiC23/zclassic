@@ -1,15 +1,17 @@
 # Sovereign cutover runbook - replace the borrowed seed with the self-minted anchor
 
-**Status 2026-07-01.** The sovereign cure is ~95% in place. This is the exact,
+**Status 2026-07-03.** The sovereign cure is ~95% in place. This is the exact,
 copy-prove-gated procedure to execute the last step when the mint finishes.
 The previous transient producer was stopped before publishing an artifact after
 review exposed that `-mint-anchor-fast` could still start normal runtime
 services before the one-shot driver. The current fix makes `-mint-anchor` an
 offline reducer driver: `app_init` returns before `app_init_services`, the eight
 stages are initialized without supervisor children, and shutdown uses
-`app_shutdown_offline`. The fixed producer is now running from commit
-`16c841ca8` as `zclassic23-anchor-mint.service` (PID `3160516`). Re-verify
-every file:line before acting; specifics rot.
+`app_shutdown_offline`. A later producer run reached ~110k/3,056,758 and then
+OOM-killed before producing an artifact; `-mint-anchor` is now restart-safe via
+a checkpoint-bound `progress.kv` marker (`mint_anchor_in_progress_v1`) so a
+restart resumes a matching interrupted fold instead of resetting to genesis.
+Re-verify every file:line before acting; specifics rot.
 
 ## Where we are (the only remaining gate is the durable artifact, not code)
 
@@ -27,11 +29,15 @@ every file:line before acting; specifics rot.
 - **The missing piece: a durable, checkpoint-verified anchor snapshot at h=3,056,758.** It does NOT
   exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED - its header decodes to
   height=3,151,901, count=1,344,817; the node rejects it on the count check. Do not use it.)
-- **The producer:** running, but no durable artifact exists yet. The active
-  isolated mint datadir was recreated from the stopped full-history copy
+- **The producer:** no durable artifact exists yet. The isolated mint datadir was
+  recreated from the stopped full-history copy
   `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and launched from
-  a clean `build/bin/zclassic23` built at `16c841ca8`. If it must be restarted
-  before publishing the snapshot, recreate the datadir again:
+  a clean `build/bin/zclassic23` built at `16c841ca8`, but that run OOM-killed
+  before completion. On a post-2026-07-03 binary, restart the same datadir with
+  `-mint-anchor`; the resume marker logic will adopt the legacy interrupted
+  fold only when `refold_in_progress` is set and `coins_applied_height` is still
+  within the genesis..anchor span. Recreate the datadir only if you intentionally
+  want to discard the partial fold or the resume predicate refuses it:
   ```bash
   rm -rf $HOME/.zclassic-c23-anchor-mint
   cp -a $HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384/. \
@@ -62,21 +68,23 @@ every file:line before acting; specifics rot.
   `3160516`, memory was about 6.4 GB, the fold had emitted
   `applied_height=0`, and no snapshot artifact existed yet.
 
-## The one open risk (owner call): the mint is non-resumable
+## Restart posture
 
-`-mint-anchor` resets the fold to genesis on every boot (`boot_refold_staged.c:113,115`), so it is
-NOT resumable. A reboot/OOM before completion loses the current producer run.
-The current producer uses a durable disk datadir, not `/dev/shm`, and does not
-touch the live main or soak datadirs.
+`-mint-anchor` no longer blindly resets the fold to genesis on every boot. A
+fresh mint writes a checkpoint-bound `mint_anchor_in_progress_v1` blob after the
+genesis reset; a restart with the same compiled checkpoint and a sane
+`coins_applied_height` resumes from the existing `progress.kv` state, re-arms
+the anchor ceiling and optional `-mint-anchor-fast` crypto pass-through, and
+continues driving the fold. Older interrupted mints that predate the marker are
+adopted only when the durable `refold_in_progress` signal is set and the applied
+frontier is within the genesis..anchor span. A different checkpoint marker or a
+frontier past the anchor resets instead of inheriting stale state.
 
-- **Option A (let it ride - current recommendation):** the output lands durably at
-  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`; accept the reboot exposure. Zero extra load.
-- **Option B (durable + resumable, if the exposure is unacceptable):** run a SECOND fold on a DISK
-  datadir WITHOUT `-mint-anchor` so it resumes from `progress.kv` and the per-block self-mint hook
-  (`utxo_apply_stage.c:607`) writes the verified snapshot at the anchor crossing - durable, resumable,
-  ~1.6 GB RSS (does not worsen the swap pressure), but slower (full crypto) and starts from 0. Needs
-  bodies genesis..3,056,758 on disk first; seed via the `--importblockindex`
-  two-step or a read-only copy of the live node's `blocks/`). Do NOT touch the running mint either way.
+The producer still uses a durable disk datadir and does not touch live main,
+soak, or `zclassicd`. A wrong resumed state still cannot publish: the terminal
+`coins_kv_commitment == compiled checkpoint SHA3` and `count == 1,354,771`
+hard-assert remains the trust gate, and a mismatch unlinks the artifact and
+FATALs.
 
 ## Cutover procedure (run when `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot` exists)
 
