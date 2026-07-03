@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels, on-chain via Sapling encrypted memo field), cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels; on-chain Sapling-memo channel: in progress), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -376,7 +376,7 @@ Progress via: `zcl_validationstatus`
 ### Build
 ```bash
 make -j$(nproc)     # Builds build/bin/zclassic23, build/bin/test_zcl, build/bin/zclassic-cli
-make test           # Run 1500+ tests
+make test           # Run 487 test groups (~9k check sites)
 make deploy         # Build + setcap + restart service
 ```
 

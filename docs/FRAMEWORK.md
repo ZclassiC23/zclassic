@@ -192,7 +192,7 @@ know the shape.
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (28 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-empty **by design** — owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c`; see `app/events/README.md` | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 15 ports + 10 sqlite impls (13 persistence adapters total); `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 12 port interfaces + 13 sqlite/file write impls; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, the projection/state-dump registry, and
 the Storage Adapter (outbound-only by design) are real and enforced; Supervisor is
@@ -259,7 +259,7 @@ lib/
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (outbound-only by design: 15 ports + 10 sqlite impls for writes; reads owned by Models per Law 5)
+adapters/ ports/  hexagonal seam (outbound-only by design: 12 port interfaces + 13 sqlite/file write impls for writes; reads owned by Models per Law 5)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
@@ -337,8 +337,8 @@ next routing, all without the domain moving.
 Honest status: the domain core is **real but partial** — `domain/` (top-level)
 holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is **outbound-only by design**: 15 ports + 10 sqlite impls carry
-writes out through swappable ports (Law 2); reads are owned by the Models (Law 5),
+test. The adapter tree is **outbound-only by design**: 12 port interfaces + 13 sqlite/file
+write impls carry writes out through swappable ports (Law 2); reads are owned by the Models (Law 5),
 so no inbound "repository" port fronts them — the same reserved-empty-by-design
 posture as `app/events/`. App sites that call `lib/storage/*_sqlite.c` directly are
 legitimate (Models ARE storage; Jobs use the progress-kv kernel store; Views are

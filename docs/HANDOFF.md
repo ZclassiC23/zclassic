@@ -41,7 +41,7 @@ curing itself through it.** Everything below is on origin/main
 **Verification trail:** copy-proof round 3 `oneboot-final` PASS (stalled
 specimen `~/.zclassic-c23-SPECIMEN-stall-3166989` climbed 3166989→3167046 on
 its FIRST boot, offline, dead-sink peer); `make ci` ALL STAGES PASSED
-(0/486 groups); three workflows (diagnosis 14-step causal chain, 3-lens
+(0 failed / 487 test groups); three workflows (diagnosis 14-step causal chain, 3-lens
 adversarial review, crash/byzantine/resource attack phase — 2 confirmed
 attacks, both P9, both fixed; everything else refuted). The F4
 stall-totality matrix (`lib/test/src/test_stall_totality_matrix.c`, 7 cases

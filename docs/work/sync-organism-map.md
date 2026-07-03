@@ -63,18 +63,28 @@ orphan coin rides in with the copy; later the honest fold can't re-derive it; it
 refuses; **that refusal is the wedge.** Chasing the individual coin is chasing a
 symptom — the bug is that a UTXO set is allowed to *exist that was never folded*.
 
-## Wound 2 — the served tip ≠ the provable tip
+## Wound 2 — the served tip ≠ the provable tip  *(SUPERSEDED — see AGENT_TRAPS.md)*
+
+> **Correction (2026-07-03):** the served-height claim below was STALE. As of commit
+> `e75b5c62c` (2026-06-20), `getblockcount` and the P2P `start_height` both SERVE
+> `reducer_frontier_provable_tip_cached()` (H*, the provable frontier) — NOT
+> `active_chain_height`. The canonical, current truth is in
+> [`docs/AGENT_TRAPS.md`](../AGENT_TRAPS.md) (the "FALSE at HEAD" entries). The original
+> (wrong) text is kept below only to explain what the "wound" framing was about.
 
 There are THREE competing notions of "how far am I":
-- `active_chain_height` — what `getblockcount` and P2P `start_height` SERVE and
-  ADVERTISE. *(blockchain_controller_blocks.c:39; msg_version.c:148)*
-- `H*` — the provable fold (`reducer_frontier.c`).
+- `active_chain_height` — the lookahead/sync-window height used internally; **NOT what
+  is served externally**. `getblockcount` and P2P `start_height` actually serve H*
+  (see below). *(lookahead: blockchain_controller_blocks.c:39; msg_version.c:148 —
+  served H*: blockchain_controller_blocks.c:50, msg_version.c:155)*
+- `H*` — the provable fold (`reducer_frontier.c`); **this is what getblockcount and
+  P2P start_height SERVE and ADVERTISE.**
 - `coins_applied_height` — coins_kv's co-committed cursor.
 
-**Nothing caps the served/advertised height down to H\*.** So the node can advertise
-blocks it cannot fold-prove. The HOLD latch (`chain_linkage_check.c:264-281`) and the
-per-case patches in `chain_state_validator` exist to reconcile this divergence — they
-are scaffolding around wound 2.
+**The served/advertised height IS now capped to H\*** (FIX-1, `e75b5c62c`, recorded as
+DONE in `never-stuck-plan.md`): the node no longer advertises blocks it cannot
+fold-prove. The HOLD latch (`chain_linkage_check.c:264-281`) and the per-case patches
+in `chain_state_validator` remain as reconciliation backstops.
 
 ## The stores and engines (why it LOOKS complicated)
 

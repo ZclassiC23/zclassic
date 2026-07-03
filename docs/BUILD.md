@@ -89,7 +89,7 @@ make zclassic23     # full link
 
 ```bash
 make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
-make test           # full suite (460 parallel groups)
+make test           # full suite (487 parallel groups)
 make lint           # 40 defensive-coding gates
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # force-fresh rebuild + restart the live service + verify build_commit

@@ -50,6 +50,17 @@ Outbound-only by design: 12 port interfaces in `ports/include/ports/*_port.h`
 (26 files = 13 `.c` + 13 `.h`). Reads are owned by Models (Law 5), so inbound
 repository ports are reserved-empty.
 
+<!-- DOC-COUNTS-BEGIN -->
+<!-- Canonical code-derived counts (machine-checked by tools/scripts/check_doc_counts.sh). -->
+<!-- Update BOTH this block AND any prose that cites these numbers when the code moves. -->
+<!--   test_groups          = parallel test groups in lib/test/src/test_parallel.c   -->
+<!--   port_interfaces      = ports/include/ports/*.h                                -->
+<!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
+test_groups: 487
+port_interfaces: 12
+persistence_adapters: 13
+<!-- DOC-COUNTS-END -->
+
 ### Composition root — `config/src/` (26 files)
 
 Boot orchestration. `boot.c` (main orchestrator) + fragments
