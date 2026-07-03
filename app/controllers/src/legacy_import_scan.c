@@ -308,6 +308,12 @@ void *legacy_import_sapling_filter_thread(void *arg)
     ctx->hits = zcl_malloc((size_t)ctx->hit_cap *
                            sizeof(struct legacy_import_block_pos),
                            "legacy scan hits");
+    if (!ctx->hits) {
+        /* zcl_malloc already logged the OOM; unmap the block file and abort
+         * the scan thread rather than writing through NULL at the hit append. */
+        munmap(fdata, fsize);
+        return NULL;
+    }
 
     size_t pos = 0;
     while (pos + 8 <= fsize) {

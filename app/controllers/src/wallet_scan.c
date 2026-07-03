@@ -206,6 +206,12 @@ int wallet_scan_blocks(struct node_db *ndb,
 
     /* Launch threads — up to 8 at a time */
     bool *file_has_match = zcl_calloc((size_t)num_files, sizeof(bool), "wallet scan file match");
+    if (!file_has_match) {
+        /* zcl_calloc already logged the OOM; release the address hash table
+         * and fail the scan rather than dereferencing NULL at the join loop. */
+        aht_free(&aht);
+        return -1; /* raw-return-ok:zcl_calloc-logged */
+    }
     int batch = 8;
 
     for (int base = 0; base < num_files; base += batch) {

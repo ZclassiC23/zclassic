@@ -591,7 +591,26 @@ void boot_index_verify_coins_tip_consistency(struct main_state *ms,
                    "h=%d — promoting anchor to h=%d%s\n",
                    coins_bi->nHeight, utxo_max_h, promote_bi->nHeight,
                    (promote_bi->nStatus & BLOCK_HAVE_DATA) ? " HAVE_DATA" : "");
-            if (boot_promote_tip_via_csr(
+            /* Invariant A — the same hash-linked-to-a-trust-root guard the
+             * two sibling tip-promotion paths below enforce (the coins_bi
+             * path and the best_have_data path). Without it, a header-only
+             * or detached-island block resolved as the highest anchor would
+             * be installed as the live tip: coins_best stamps onto a block
+             * with no real pprev chain, the active_chain is left with
+             * thousands of holes, and Part L's post-restore integrity gate
+             * fail-fasts the boot. Refusing here falls through to the
+             * HAVE_DATA search below, which re-derives forward via gap-fill. */
+            if (!utxo_recovery_block_trust_rooted(promote_bi)) {
+                fprintf(stderr,
+                        "[boot] UTXO/chain mismatch: highest anchor h=%d "
+                        "is NOT hash-linked to a trust root (detached "
+                        "island); refusing tip promotion, keeping tip at "
+                        "h=%d\n", promote_bi->nHeight, chain_h);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=restore_tip_refused candidate=%d "
+                    "via=unrooted reason=utxo_height_anchor",
+                    promote_bi->nHeight);
+            } else if (boot_promote_tip_via_csr(
                     promote_bi, "promote_utxo_height_anchor", true)) {
                 snapsync_set_anchor(promote_bi);
                 chain_h = promote_bi->nHeight;

@@ -86,6 +86,17 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     struct incremental_witness *witnesses = zcl_calloc((size_t)n_notes,
         sizeof(struct incremental_witness), "rescan witnesses");
     bool *witness_active = zcl_calloc((size_t)n_notes, sizeof(bool), "rescan witness active");
+    if (!witnesses || !witness_active) {
+        /* zcl_calloc already logged the OOM. Match the function's existing
+         * cleanup convention (see the diverged-tree refusal path): free all
+         * three arrays, release the global rescan latch, and fail the RPC. */
+        free(witnesses);
+        free(witness_active);
+        free(notes);
+        atomic_store(&g_sapling_rescan_active, false);
+        json_set_str(result, "Out of memory building witness arrays");
+        return false;
+    }
     int witnesses_built = 0;
 
     /* mmap cache */
