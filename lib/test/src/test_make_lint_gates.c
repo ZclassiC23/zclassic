@@ -2232,6 +2232,77 @@ static int t_native_agent_api_contract(void)
     return failures;
 }
 
+static int t_mvp_reporters_resolve_live_service_rpc_contract(void)
+{
+    int failures = 0;
+    char *scoreboard = NULL;
+    char *gate = NULL;
+    TEST("MVP reporters resolve the live service datadir and RPC port") {
+        char scoreboard_path[PATH_MAX];
+        char gate_path[PATH_MAX];
+        ASSERT(repo_path(scoreboard_path, sizeof(scoreboard_path),
+                         "tools/scripts/mvp_scoreboard.sh") == 0);
+        ASSERT(repo_path(gate_path, sizeof(gate_path), "tools/mvp_gate.sh") == 0);
+        ASSERT(read_entire_file(scoreboard_path, &scoreboard) == 0);
+        ASSERT(read_entire_file(gate_path, &gate) == 0);
+
+        ASSERT(strstr(scoreboard, "ZCL_NODE_UNIT=\"${ZCL_NODE_UNIT:-zclassic23}\"")
+               != NULL);
+        ASSERT(strstr(scoreboard, "systemd_exec_arg()") != NULL);
+        ASSERT(strstr(scoreboard,
+                      "systemctl --user show \"$ZCL_NODE_UNIT\" -p ExecStart --value")
+               != NULL);
+        ASSERT(strstr(scoreboard, "SERVICE_DATADIR=\"$(systemd_exec_arg datadir || true)\"")
+               != NULL);
+        ASSERT(strstr(scoreboard, "SERVICE_RPCPORT=\"$(systemd_exec_arg rpcport || true)\"")
+               != NULL);
+        ASSERT(strstr(scoreboard, "ZCL_DATADIR=$LIVE_DATADIR") != NULL);
+        ASSERT(strstr(scoreboard, "ZCL_RPCPORT=$LIVE_RPCPORT") != NULL);
+        ASSERT(strstr(scoreboard, "TIP_GAP_OK") != NULL);
+        ASSERT(strstr(scoreboard, "LIVE_GAP=$(( LIVE_HEADERS - LIVE_HEIGHT ))")
+               != NULL);
+        ASSERT(strstr(scoreboard, "gap=${LIVE_GAP:-?}<=$TIP_GAP_OK")
+               != NULL);
+        ASSERT(strstr(scoreboard,
+                      "NOT_MET) VERDICT[6]=\"BLOCKED\"")
+               != NULL);
+        ASSERT(strstr(scoreboard,
+                      "clean 168h evidence is not established yet")
+               != NULL);
+
+        ASSERT(strstr(gate, "ZCL_NODE_UNIT=\"${ZCL_NODE_UNIT:-$ZCL_SOAK_UNIT}\"")
+               != NULL);
+        ASSERT(strstr(gate, "systemd_exec_arg()") != NULL);
+        ASSERT(strstr(gate,
+                      "systemctl --user show \"$ZCL_NODE_UNIT\" -p ExecStart --value")
+               != NULL);
+        ASSERT(strstr(gate, "SERVICE_DATADIR=\"$(systemd_exec_arg datadir || true)\"")
+               != NULL);
+        ASSERT(strstr(gate, "SERVICE_RPCPORT=\"$(systemd_exec_arg rpcport || true)\"")
+               != NULL);
+        ASSERT(strstr(gate, "ZCL_DATADIR=\"$LIVE_DATADIR\" ZCL_RPCPORT=\"$LIVE_RPCPORT\"")
+               != NULL);
+        ASSERT(strstr(gate, "ZD_DATADIR=\"${ZD_DATADIR:-$HOME/.zclassic}\"")
+               != NULL);
+        ASSERT(strstr(gate, "ZCL_DATADIR=\"$ZD_DATADIR\" ZCL_RPCPORT=\"$ZD_RPCPORT\"")
+               != NULL);
+        ASSERT(strstr(gate,
+                      "absence of a listed z-addr is\n"
+                      "# BLOCKED to the owner/test proof")
+               != NULL);
+        ASSERT(strstr(gate,
+                      "z_gettotalbalance answers but no sapling z-addr is listed")
+               != NULL);
+        ASSERT(strstr(gate, "z_gettotalbalance did not answer") != NULL);
+        ASSERT(strstr(gate, "\"datadir\":\"%s\"") != NULL);
+        ASSERT(strstr(gate, "\"rpcport\":%s") != NULL);
+        PASS();
+    } _test_next:;
+    free(scoreboard);
+    free(gate);
+    return failures;
+}
+
 static int t_soak_assert_requires_known_mirror_lag(void)
 {
     int failures = 0;
@@ -3832,6 +3903,7 @@ int test_make_lint_gates(void)
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
     failures += t_native_agent_api_contract();
+    failures += t_mvp_reporters_resolve_live_service_rpc_contract();
     failures += t_soak_assert_requires_known_mirror_lag();
     failures += t_boot_chain_advance_diagnostics_contract();
     failures += t_boot_core_liveness_precedes_frontend_contract();

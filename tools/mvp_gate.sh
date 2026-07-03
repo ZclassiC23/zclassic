@@ -47,7 +47,9 @@ set -uo pipefail
 
 ZCL_RPC_BIN="${ZCL_RPC_BIN:-build/bin/zcl-rpc}"
 ZCL_SOAK_UNIT="${ZCL_SOAK_UNIT:-zclassic23}"
+ZCL_NODE_UNIT="${ZCL_NODE_UNIT:-$ZCL_SOAK_UNIT}"
 ZD_RPCPORT="${ZD_RPCPORT:-8232}"
+ZD_DATADIR="${ZD_DATADIR:-$HOME/.zclassic}"
 TIP_GAP_OK="${TIP_GAP_OK:-10}"
 
 JSON_OUT=0
@@ -73,15 +75,43 @@ json_str() {  # <json> <key>   -> string value (unquoted) or empty
     printf '%s' "$1" | grep -oE "\"$2\":[ ]*\"[^\"]*\"" | head -1 | sed -E "s/.*:[ ]*\"//; s/\"$//"
 }
 
+systemd_exec_arg() {
+    local key="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show "$ZCL_NODE_UNIT" -p ExecStart --value 2>/dev/null |
+        tr ' ' '\n' |
+        sed -n "s/^-${key}=//p" |
+        head -1
+}
+
+DEFAULT_DATADIR="$HOME/.zclassic-c23"
+LIVE_DATADIR="${ZCL_DATADIR:-$DEFAULT_DATADIR}"
+if [[ -z "${ZCL_DATADIR:-}" ]]; then
+    SERVICE_DATADIR="$(systemd_exec_arg datadir || true)"
+    if [[ -n "$SERVICE_DATADIR" ]]; then LIVE_DATADIR="$SERVICE_DATADIR"; fi
+fi
+
+LIVE_RPCPORT="${ZCL_RPCPORT:-18232}"
+if [[ -z "${ZCL_RPCPORT:-}" ]]; then
+    SERVICE_RPCPORT="$(systemd_exec_arg rpcport || true)"
+    if [[ -n "$SERVICE_RPCPORT" ]]; then LIVE_RPCPORT="$SERVICE_RPCPORT"; fi
+fi
+
 # ── read-only RPC against the live c23 node ────────────────────────
 rpc() {  # <method> [paramsjson]   -> raw json on stdout, "" on failure
     if [[ ! -x "$ZCL_RPC_BIN" ]]; then echo ""; return 1; fi
-    "$ZCL_RPC_BIN" "$@" 2>/dev/null
+    if [[ -n "${ZCL_RPCCONNECT:-}" ]]; then
+        ZCL_DATADIR="$LIVE_DATADIR" ZCL_RPCPORT="$LIVE_RPCPORT" \
+            ZCL_RPCCONNECT="$ZCL_RPCCONNECT" "$ZCL_RPC_BIN" "$@" 2>/dev/null
+    else
+        ZCL_DATADIR="$LIVE_DATADIR" ZCL_RPCPORT="$LIVE_RPCPORT" \
+            "$ZCL_RPC_BIN" "$@" 2>/dev/null
+    fi
 }
 # zclassicd oracle (separate RPC port) — uses the same client with ZCL_RPCPORT.
 zd_rpc() {  # <method>
     if [[ ! -x "$ZCL_RPC_BIN" ]]; then echo ""; return 1; fi
-    ZCL_RPCPORT="$ZD_RPCPORT" "$ZCL_RPC_BIN" "$@" 2>/dev/null
+    ZCL_DATADIR="$ZD_DATADIR" ZCL_RPCPORT="$ZD_RPCPORT" "$ZCL_RPC_BIN" "$@" 2>/dev/null
 }
 
 # ── result accumulators (criterion 1..8) ───────────────────────────
@@ -167,8 +197,10 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────
-# C4 — receive shielded payment e2e. Measurable live surface: the node
-# can MINT a sapling z-addr and z_getbalance answers (the receive half).
+# C4 — receive shielded payment e2e. Measurable read-only live surface:
+# existing sapling z-addrs, if any, plus z_gettotalbalance. Minting a new
+# receive address would mutate the wallet, so absence of a listed z-addr is
+# BLOCKED to the owner/test proof, not a live-regression FAIL.
 # The funded e2e on mainnet needs real funds (owner-gated) => the FULL
 # claim is proven by make test-shielded-payment (params host), not here.
 # ────────────────────────────────────────────────────────────────────
@@ -179,8 +211,10 @@ else
     ZB="$(rpc z_gettotalbalance)"
     if printf '%s' "$ZL" | grep -q '"zs1' && printf '%s' "$ZB" | grep -q '"private"'; then
         set_v 4 "PASS" "sapling z-addr present + z_gettotalbalance answers (receive surface live); funded e2e via make test-shielded-payment" 1
+    elif printf '%s' "$ZB" | grep -q '"private"'; then
+        set_v 4 "BLOCKED" "z_gettotalbalance answers but no sapling z-addr is listed; creating one is wallet-mutating, so live receive proof is owner/test-gated (make test-shielded-payment)" 0
     else
-        set_v 4 "FAIL" "z_listaddresses/z_gettotalbalance did not answer (shielded receive surface down)" 0
+        set_v 4 "FAIL" "z_gettotalbalance did not answer (shielded balance surface down)" 0
     fi
 fi
 
@@ -305,6 +339,8 @@ done
 if [[ "$JSON_OUT" == 1 ]]; then
     printf '{'
     printf '"node_up":%s,' "$NODE_UP"
+    printf '"datadir":"%s",' "${LIVE_DATADIR//\"/\\\"}"
+    printf '"rpcport":%s,' "$LIVE_RPCPORT"
     printf '"height":%s,' "${HEIGHT:-null}"
     printf '"reftip":%s,' "${REFTIP:-null}"
     printf '"gap":%s,' "${GAP:-null}"
@@ -326,9 +362,9 @@ else
     echo " ZClassic23 MVP live-node gate  (READ-ONLY probe; docs/MVP.md)"
     echo "════════════════════════════════════════════════════════════════════"
     if [[ "$NODE_UP" == 1 ]]; then
-        echo " live node: UP  height=$HEIGHT  reftip=$REFTIP  gap=${GAP:-?}  at_tip=$AT_TIP  chain=$CHAIN"
+        echo " live node: UP  datadir=$LIVE_DATADIR  rpcport=$LIVE_RPCPORT  height=$HEIGHT  reftip=$REFTIP  gap=${GAP:-?}  at_tip=$AT_TIP  chain=$CHAIN"
     else
-        echo " live node: DOWN (getblockchaininfo did not answer via $ZCL_RPC_BIN)"
+        echo " live node: DOWN (getblockchaininfo did not answer via $ZCL_RPC_BIN datadir=$LIVE_DATADIR rpcport=$LIVE_RPCPORT)"
     fi
     echo "────────────────────────────────────────────────────────────────────"
     for i in 1 2 3 4 5 6 7 8; do

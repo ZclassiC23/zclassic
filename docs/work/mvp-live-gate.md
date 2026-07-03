@@ -35,8 +35,14 @@ C8 FAIL, shielded-receive surface down => C4 FAIL, node unreachable).
 
 ### Env overrides
 - `ZCL_RPC_BIN` — c23 client (default `build/bin/zcl-rpc`)
+- `ZCL_NODE_UNIT` — systemd `--user` unit whose `ExecStart` supplies the
+  live `-datadir` / `-rpcport` defaults (default: `ZCL_SOAK_UNIT`)
+- `ZCL_DATADIR` / `ZCL_RPCPORT` — explicit live-node RPC target overrides;
+  when unset, the script reads them from `ZCL_NODE_UNIT` and falls back to
+  `~/.zclassic-c23` / `18232`
 - `ZCL_SOAK_UNIT` — systemd `--user` unit for uptime (default `zclassic23`)
 - `ZD_RPCPORT` — zclassicd oracle RPC port for the parity probe (default `8232`)
+- `ZD_DATADIR` — zclassicd datadir for oracle auth (default `~/.zclassic`)
 - `TIP_GAP_OK` — max blocks-behind-peer still "at tip" (default `10` = `ZCL_FINALITY_DEPTH`)
 
 ## What each criterion probes live
@@ -51,7 +57,9 @@ C8 FAIL, shielded-receive surface down => C4 FAIL, node unreachable).
   blocks`. At tip ⇒ BLOCKED (the **fresh** <10min cold-boot is a distinct
   claim no live probe can make; `make ci-coldstart`). Behind tip ⇒ **FAIL**.
 - **C4** — sapling z-addr present + `z_gettotalbalance` answers ⇒ PASS
-  (receive surface; the funded e2e is `make test-shielded-payment`).
+  (receive surface; the funded e2e is `make test-shielded-payment`). If
+  `z_gettotalbalance` answers but no z-addr is listed, the live probe reports
+  BLOCKED rather than creating one, because `z_getnewaddress` mutates the wallet.
 - **C5** — BLOCKED: `zmarket_list` answers but the market is a stub (no
   payment/transfer settlement, per `docs/HANDOFF.md`).
 - **C6** — BLOCKED to the soak window; the **soak-accrual** line reports

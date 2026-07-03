@@ -70,6 +70,9 @@ Live baseline checked before edits:
 - [x] H: clear stale tip-height auto-reindex requests when durable coins
   authority has advanced beyond their anchor, without weakening terminal or
   boot-storage reindex markers.
+- [x] V1: make MVP reporters resolve the actual live service datadir/RPC port
+  and use the finality-gap at-tip rule, so `make mvp` cannot misreport the
+  healthy full-history node as stopped.
 - [ ] I: remaining binary/client consolidation remains owner-gated, especially
   `session`/`bot`, `zclassic-cli`/`zcl-rpc`, and any `zclassic23` ->
   `zclassic` naming move.
@@ -156,6 +159,24 @@ Live baseline checked before edits:
   - Full `coins_kv_get_coins()` reconstruction remains for actual whole-tx
     view callers and the coin-backfill classifier that needs txid-level
     metadata.
+- V1 MVP reporter target-resolution patch:
+  - `tools/scripts/mvp_scoreboard.sh` now resolves the live node's effective
+    `-datadir` and `-rpcport` from `zclassic23.service` unless explicitly
+    overridden, matching the deploy verifier and the operator `tools/z` path.
+  - The scoreboard's "synced" predicate now uses the same `TIP_GAP_OK` budget
+    as the live gate instead of strict `blocks == headers`, so a healthy
+    one-header race no longer blocks soak-accrual reporting as a wedge.
+  - `tools/mvp_gate.sh` uses the same live target resolution, includes the
+    target in JSON/human output, and points zclassicd oracle auth at
+    `~/.zclassic` by default.
+  - The live gate no longer false-fails C4 when `z_gettotalbalance` works but
+    no Sapling receive address is listed; creating one would mutate the wallet,
+    so that state is now owner/test-gated `BLOCKED`.
+  - The scoreboard no longer counts historical soak `NOT_MET` as a regression
+    `FAIL`; C6 remains `BLOCKED` until the authoritative 168h judge returns
+    `MET`.
+  - Added a source-text regression in `test_make_lint_gates` pinning the live
+    service lookup and RPC environment threading for both reporters.
 - V1 protocol identity patch:
   - The advertised P2P user-agent is now the canonical
     `/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/` string.

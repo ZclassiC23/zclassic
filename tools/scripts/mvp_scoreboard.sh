@@ -45,6 +45,34 @@ cd "$REPO_ROOT"
 
 TEST_ZCL_BIN="${TEST_ZCL_BIN:-$REPO_ROOT/build/bin/test_zcl}"
 ZCL_RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+ZCL_NODE_UNIT="${ZCL_NODE_UNIT:-zclassic23}"
+TIP_GAP_OK="${TIP_GAP_OK:-10}"
+
+systemd_exec_arg() {
+    local key="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show "$ZCL_NODE_UNIT" -p ExecStart --value 2>/dev/null |
+        tr ' ' '\n' |
+        sed -n "s/^-${key}=//p" |
+        head -1
+}
+
+DEFAULT_DATADIR="$HOME/.zclassic-c23"
+LIVE_DATADIR="${ZCL_DATADIR:-$DEFAULT_DATADIR}"
+if [ -z "${ZCL_DATADIR:-}" ]; then
+    SERVICE_DATADIR="$(systemd_exec_arg datadir || true)"
+    if [ -n "$SERVICE_DATADIR" ]; then
+        LIVE_DATADIR="$SERVICE_DATADIR"
+    fi
+fi
+
+LIVE_RPCPORT="${ZCL_RPCPORT:-18232}"
+if [ -z "${ZCL_RPCPORT:-}" ]; then
+    SERVICE_RPCPORT="$(systemd_exec_arg rpcport || true)"
+    if [ -n "$SERVICE_RPCPORT" ]; then
+        LIVE_RPCPORT="$SERVICE_RPCPORT"
+    fi
+fi
 
 # ── result accumulators (indexed by criterion 1..8) ───────────────
 declare -A VERDICT     # PASS | FAIL | BLOCKED
@@ -104,10 +132,20 @@ run_slice() {
 # Returns the live node's health JSON on stdout, or empty if unreachable.
 LIVE_JSON=""
 LIVE_REACHABLE=0
+rpc_live() {
+    if [ -n "${ZCL_RPCCONNECT:-}" ]; then
+        timeout 8 env "ZCL_DATADIR=$LIVE_DATADIR" "ZCL_RPCPORT=$LIVE_RPCPORT" \
+            "ZCL_RPCCONNECT=$ZCL_RPCCONNECT" "$ZCL_RPC_BIN" "$@"
+    else
+        timeout 8 env "ZCL_DATADIR=$LIVE_DATADIR" "ZCL_RPCPORT=$LIVE_RPCPORT" \
+            "$ZCL_RPC_BIN" "$@"
+    fi
+}
+
 probe_live_node() {
     [ -x "$ZCL_RPC_BIN" ] || return 1
     local out
-    out="$(timeout 8 "$ZCL_RPC_BIN" getblockchaininfo 2>/dev/null)" || return 1
+    out="$(rpc_live getblockchaininfo 2>/dev/null)" || return 1
     [ -n "$out" ] || return 1
     LIVE_JSON="$out"
     LIVE_REACHABLE=1
@@ -130,14 +168,22 @@ if [ "$LIVE_REACHABLE" = "1" ]; then
     LIVE_HEIGHT="$(printf '%s' "$LIVE_JSON" | grep -oE '"blocks"[ ]*:[ ]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
     # getblockchaininfo reports headers vs blocks; synced when blocks==headers
     LIVE_HEADERS="$(printf '%s' "$LIVE_JSON" | grep -oE '"headers"[ ]*:[ ]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
-    if [ -n "$LIVE_HEIGHT" ] && [ -n "${LIVE_HEADERS:-}" ] && [ "$LIVE_HEIGHT" = "$LIVE_HEADERS" ]; then
+    if [ -z "${LIVE_HEADERS:-}" ]; then
+        LIVE_HEADERS="$(printf '%s' "$LIVE_JSON" | grep -oE '"best_header_height"[ ]*:[ ]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
+    fi
+    LIVE_GAP=""
+    if [ -n "$LIVE_HEIGHT" ] && [ -n "${LIVE_HEADERS:-}" ]; then
+        LIVE_GAP=$(( LIVE_HEADERS - LIVE_HEIGHT ))
+        if [ "$LIVE_GAP" -lt 0 ]; then LIVE_GAP=0; fi
+    fi
+    if [ -n "${LIVE_GAP:-}" ] && [ "$LIVE_GAP" -le "$TIP_GAP_OK" ]; then
         LIVE_SYNCED="yes"
     else
         LIVE_SYNCED="no"
     fi
-    echo "live node: REACHABLE height=${LIVE_HEIGHT:-?} headers=${LIVE_HEADERS:-?} synced=${LIVE_SYNCED:-?}"
+    echo "live node: REACHABLE datadir=$LIVE_DATADIR rpcport=$LIVE_RPCPORT height=${LIVE_HEIGHT:-?} headers=${LIVE_HEADERS:-?} gap=${LIVE_GAP:-?} synced=${LIVE_SYNCED:-?}"
 else
-    echo "live node: UNREACHABLE (stopped / not serving RPC) — synced-node criteria BLOCKED by construction"
+    echo "live node: UNREACHABLE via datadir=$LIVE_DATADIR rpcport=$LIVE_RPCPORT (stopped / not serving RPC) — synced-node criteria BLOCKED by construction"
 fi
 echo ""
 
@@ -212,7 +258,11 @@ echo ""
     run_slice cold_start "=== Cold-start subset complete:"
     case $? in
         0) VERDICT[3]="BLOCKED"
-           DETAIL[3]="needs synced node — sync-FSM slice PASS ($SLICE_OUT) but real <10min sync-to-tip needs a serving peer + a fresh node reaching the 3M-block tip; live node is wedged below tip (h=${LIVE_HEIGHT:-stopped})" ;;
+           if [ "$LIVE_REACHABLE" = "1" ] && [ "${LIVE_SYNCED:-no}" = "yes" ]; then
+               DETAIL[3]="sync-FSM slice PASS ($SLICE_OUT); live node is at tip within gap budget (h=${LIVE_HEIGHT:-?}, gap=${LIVE_GAP:-?}<=$TIP_GAP_OK), but real <10min sync-to-tip still needs a fresh node reaching the 3M-block tip"
+           else
+               DETAIL[3]="needs synced node — sync-FSM slice PASS ($SLICE_OUT) but real <10min sync-to-tip needs a serving peer + a fresh node reaching the 3M-block tip; live node is not serving/at-tip (h=${LIVE_HEIGHT:-stopped}, gap=${LIVE_GAP:-?})"
+           fi ;;
         2) VERDICT[3]="BLOCKED"; DETAIL[3]="needs synced node + test_zcl built" ;;
         *) VERDICT[3]="FAIL"; DETAIL[3]="cold_start FSM slice FAILED: $SLICE_OUT" ;;
     esac
@@ -274,7 +324,11 @@ echo ""
         2) VERDICT[5]="BLOCKED"; DETAIL[5]="needs test_zcl built" ;;
         0) if [ "$r2" -eq 0 ]; then
                VERDICT[5]="BLOCKED"
-               DETAIL[5]="needs synced node — store e2e + shielded-ivk slices PASS ($SLICE_OUT) but full list->shielded-pay->.onion-file-transfer needs a live serving node + a real buyer"
+               if [ "$LIVE_REACHABLE" = "1" ] && [ "${LIVE_SYNCED:-no}" = "yes" ]; then
+                   DETAIL[5]="store e2e + shielded-ivk slices PASS ($SLICE_OUT); live serving node is at tip, but full list->shielded-pay->.onion-file-transfer still needs a real buyer"
+               else
+                   DETAIL[5]="needs synced node — store e2e + shielded-ivk slices PASS ($SLICE_OUT) but full list->shielded-pay->.onion-file-transfer needs a live serving node + a real buyer"
+               fi
            else
                VERDICT[5]="FAIL"; DETAIL[5]="store_e2e_shielded slice FAILED: $SLICE_OUT"
            fi ;;
@@ -290,10 +344,10 @@ echo ""
 # (operator_needed) NO clean window accrues, so C6 is BLOCKED(needs synced
 # node) by construction — regardless of any stale historical evidence that
 # happens to be on disk. Only when the live node IS synced + healthy do we
-# let the soak-evidence JUDGE decide: MET=PASS, NOT_MET=FAIL (a clean window
-# was broken by an intervention/stall), INSUFFICIENT=BLOCKED (window too
-# short yet). This ordering keeps C6 from false-GREENing AND from a misleading
-# FAIL on prior-run evidence that no live window is currently extending.
+# let the soak-evidence JUDGE decide: MET=PASS; every non-MET verdict remains
+# BLOCKED with the judge reason. A historical NOT_MET is real evidence that the
+# 168h claim is not satisfied, but it is not a hermetic-slice regression and
+# must not inflate the "FAIL" count in this non-fatal reporter.
 # ═══════════════════════════════════════════════════════════════════
 {
     judge_log="$(mktemp)"
@@ -311,13 +365,13 @@ echo ""
         # synced/serving. BLOCKED by construction. Report the judge's read of
         # any historical evidence for context, but it does NOT earn PASS.
         VERDICT[6]="BLOCKED"
-        DETAIL[6]="needs synced node — live node not synced (height=${LIVE_HEIGHT:-stopped}, wedged below tip), so NO clean 168h window is accruing; soak-evidence judge over historical samples: VERDICT=${v:-NONE} reason=${reason:-no_window}"
+        DETAIL[6]="needs synced node — live node not synced/serving (height=${LIVE_HEIGHT:-stopped}, gap=${LIVE_GAP:-?}), so NO clean 168h window is accruing; soak-evidence judge over historical samples: VERDICT=${v:-NONE} reason=${reason:-no_window}"
     elif [ -z "$verdict_line" ]; then
         VERDICT[6]="BLOCKED"; DETAIL[6]="soak-evidence judge printed no VERDICT line (rc=$jrc) — no soak window to judge"
     else
         case "$v" in
             MET) VERDICT[6]="PASS"; FULL_PASS[6]=1; DETAIL[6]="live node synced + soak-evidence VERDICT=MET over the 168h window" ;;
-            NOT_MET) VERDICT[6]="FAIL"; DETAIL[6]="soak-evidence VERDICT=NOT_MET reason=$reason (a clean window was broken — operator intervention / stall / unreachable)" ;;
+            NOT_MET) VERDICT[6]="BLOCKED"; DETAIL[6]="soak-evidence VERDICT=NOT_MET reason=$reason — clean 168h evidence is not established yet; live node is synced, so a new window can accrue" ;;
             *) VERDICT[6]="BLOCKED"; DETAIL[6]="soak-evidence VERDICT=INSUFFICIENT reason=$reason — clean window accruing but not yet 168h" ;;
         esac
     fi
@@ -368,7 +422,11 @@ echo ""
     run_slice parity_slice "=== parity_slice subset complete:"
     case $? in
         0) VERDICT[8]="BLOCKED"
-           DETAIL[8]="needs synced node + exact oracle — parity mismatch-detection slice PASS ($SLICE_OUT) but '0 byte-mismatches over 168h vs live zclassicd' needs an EXACT reference (gettxoutsetinfo is height-only) + the soak window; live node is wedged below tip" ;;
+           if [ "$LIVE_REACHABLE" = "1" ] && [ "${LIVE_SYNCED:-no}" = "yes" ]; then
+               DETAIL[8]="parity mismatch-detection slice PASS ($SLICE_OUT); live node is at tip within gap budget, but '0 byte-mismatches over 168h vs live zclassicd' needs an EXACT reference (gettxoutsetinfo is height-only) + the soak window"
+           else
+               DETAIL[8]="needs synced node + exact oracle — parity mismatch-detection slice PASS ($SLICE_OUT) but '0 byte-mismatches over 168h vs live zclassicd' needs an EXACT reference (gettxoutsetinfo is height-only) + the soak window"
+           fi ;;
         2) VERDICT[8]="BLOCKED"; DETAIL[8]="needs synced node + test_zcl built" ;;
         *) VERDICT[8]="FAIL"; DETAIL[8]="parity_slice gate FAILED: $SLICE_OUT" ;;
     esac
@@ -403,8 +461,8 @@ if [ "$fails" -gt 0 ]; then
     echo "  ⚠ $fails criterion check(s) FAILED — a hermetic slice regressed. Investigate."
 fi
 if [ "$blocked" -gt 0 ]; then
-    echo "  ℹ $blocked criterion(s) BLOCKED — expected while the live node is"
-    echo "    stopped/wedged below tip. NOT counted as PASS (no false-green)."
+    echo "  ℹ $blocked criterion(s) BLOCKED — expected while a full operator"
+    echo "    proof/resource is still missing. NOT counted as PASS (no false-green)."
 fi
 echo "  This reporter is non-fatal (exits 0): BLOCKED is the honest state of a"
 echo "  stopped node. A real regression shows as FAIL above and in the summary."
