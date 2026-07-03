@@ -148,14 +148,14 @@ CLI_BIN="$REPO_ROOT/build/bin/zclassic-cli"
 # hand the result back to make on the command line. A command-line assignment
 # overrides the Makefile's `CFLAGS =` / `LDFLAGS =` definitions wholesale, so
 # reconstructing from the resolved value is what keeps the include paths intact.
-make_var() { make -pn 2>/dev/null | grep -E "^$1 = " | head -1 | cut -d= -f2- | sed 's/^ //'; }
-
-SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
-export SOURCE_DATE_EPOCH
+#
+# The flag computation is shared with the build-twice byte-identity gate
+# (tools/scripts/check_reproducible_build.sh) via tools/scripts/repro_build_vars.sh
+# so the release artifact and the reproducibility gate provably use the SAME
+# determinism profile — they cannot drift apart.
+# shellcheck source=tools/scripts/repro_build_vars.sh
+. "$SCRIPT_DIR/scripts/repro_build_vars.sh"
 info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (HEAD commit time)"
-
-REL_CFLAGS="$(make_var CFLAGS | sed 's/-march=native/-march=x86-64-v3/g')"
-REL_LDFLAGS="$(make_var LDFLAGS) -Wl,--build-id=none"
 info "Release CFLAGS:  $REL_CFLAGS"
 info "Release LDFLAGS: $REL_LDFLAGS"
 
@@ -181,7 +181,7 @@ GIT_DIRTY=$(git diff --quiet 2>/dev/null && echo "clean" || echo "dirty")
 # Record the *release* flags actually used (computed above), not the dev
 # defaults. The load-bearing reproducibility fields are -march (pinned to
 # x86-64-v3) and -flto (CFLAGS + LDFLAGS), plus the dropped build-id.
-CC="${CC:-$(make_var CC)}"
+CC="${CC:-$(_repro_make_var CC)}"
 CC="${CC:-cc}"
 COMPILER=$($CC --version 2>/dev/null | head -1 || echo "unknown")
 # Build date is derived from the commit time so BUILDINFO stays reproducible.

@@ -157,9 +157,12 @@ build_openssl() {      # FETCHED: OpenSSL -> libcrypto.a + libssl.a
     # MODULESDIR string constants — derived from --prefix/--openssldir — into
     # the static library; with the old --prefix="$d/_install" (under the build
     # tree, i.e. /home/<user>/...) those leaked the build user's $HOME into the
-    # final zclassic23 binary, failing test_no_hardcoded_home and breaking
-    # build-twice byte-reproducibility. We only ever copy the .a files (never
-    # `make install`), so these paths affect ONLY the embedded strings — the
+    # final zclassic23 binary, failing test_no_hardcoded_home. This leakage is
+    # exactly what the build-twice byte-identity gate catches
+    # (tools/scripts/check_reproducible_build.sh, exposed as `make
+    # ci-reproducible`): a non-neutral prefix bakes a per-build path into the
+    # .a, so two builds of zclassic23 fail byte-identity. We only ever copy the
+    # .a files (never `make install`), so these paths affect ONLY the embedded strings — the
     # canonical /usr/local + /etc/ssl values are relocatable and operator-
     # agnostic. (Do NOT pass -DOPENSSLDIR etc — Configure already defines them
     # from --prefix/--openssldir, and a -D redefine errors the build.)

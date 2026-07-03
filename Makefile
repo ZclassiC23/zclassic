@@ -2386,6 +2386,25 @@ ci-symbol-floor: zclassic23
 	@bash -c 'bash tools/scripts/ci_symbol_floor_gate.sh; rc=$$?; \
 	 if [ "$$rc" -eq 2 ]; then echo "ci-symbol-floor: SKIP (objdump/ldd absent)"; exit 0; fi; exit $$rc'
 
+# ci-reproducible: build-twice byte-identity gate. Builds the zclassic23 binary
+# TWICE in two isolated temp build dirs under the EXACT release flag profile
+# (shared with tools/release.sh via tools/scripts/repro_build_vars.sh) and
+# asserts the two artifacts are byte-for-byte identical. Exit 0 = MATCH (prints
+# the SHA3-256 + records it); exit 1 = MISMATCH with a diagnosing diff (first
+# differing byte offset + likely-cause checklist: embedded build path,
+# __DATE__/__TIME__, nondeterministic link order, build-id).
+#
+# DELIBERATELY opt-in (NOT in `make ci`) — it runs TWO full whole-program LTO
+# links of zclassic23, so it is far too slow for the hot CI path. Like
+# ci-stress / ci-install-linger / soak-ci it lives outside `make ci`. Run it
+# before cutting a release (or on a worker) to PROVE the artifact is
+# reproducible. This is the gate CLAUDE.md said was missing ("byte-identity is
+# not yet proven by a build-twice-and-compare gate"). Does NOT set ZCL_NATIVE,
+# so the test reflects the portable x86-64-v3 release baseline exactly.
+.PHONY: ci-reproducible
+ci-reproducible:
+	@bash tools/scripts/check_reproducible_build.sh
+
 ci: lint bench-regress zclassic23 test_parallel
 	@echo "══ CI: portability symbol-floor (C1) ══"
 	$(MAKE) ci-symbol-floor
