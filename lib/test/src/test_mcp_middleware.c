@@ -157,6 +157,7 @@ static int test_env_overrides(void)
     int failures = 0;
     TEST("mcp_middleware_load_from_env overrides defaults") {
         setenv("ZCL_MCP_BEARER_TOKEN", "secret123", 1);
+        setenv("ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN", "destruct456", 1);
         setenv("ZCL_MCP_GLOBAL_RPS", "50", 1);
         setenv("ZCL_MCP_DESTRUCTIVE_RPS", "3", 1);
         setenv("ZCL_MCP_TIMEOUT_MS", "1000", 1);
@@ -166,11 +167,13 @@ static int test_env_overrides(void)
         mcp_middleware_load_from_env(&mw);
 
         ASSERT(strcmp(mw.required_bearer_token, "secret123") == 0);
+        ASSERT(strcmp(mw.required_destructive_bearer_token, "destruct456") == 0);
         ASSERT(mw.global_rps == 50);
         ASSERT(mw.destructive_rps == 3);
         ASSERT(mw.default_timeout_ms == 1000);
 
         unsetenv("ZCL_MCP_BEARER_TOKEN");
+        unsetenv("ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN");
         unsetenv("ZCL_MCP_GLOBAL_RPS");
         unsetenv("ZCL_MCP_DESTRUCTIVE_RPS");
         unsetenv("ZCL_MCP_TIMEOUT_MS");
@@ -247,6 +250,178 @@ static int test_auth_pass_with_bearer_prefix(void)
         ASSERT(contains(r, "\"ok\":true"));
         free(r);
 
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── Two-tier (escalated destructive) auth ───────────────────────
+ *
+ * ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN is opt-in.  Unset → today's behavior.
+ * Set → destructive tools require the destructive token and reject the
+ * normal token; non-destructive tools require the normal token and reject
+ * the destructive token (least-privilege in both directions).
+ */
+
+/* T1: back-compat — no destructive token configured. */
+static int test_auth_back_compat_no_destructive_tier(void)
+{
+    int failures = 0;
+    TEST("destructive token unset → normal token governs destructive tools (back-compat)") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        snprintf(mw.required_bearer_token, sizeof(mw.required_bearer_token),
+                 "%s", "normal-secret");
+        /* required_destructive_bearer_token intentionally left empty */
+        register_routes();
+
+        /* Destructive tool + correct normal token → allowed (today's behavior). */
+        char *r = run(&mw, "zcl_send", "normal-secret");
+        ASSERT(contains(r, "\"ok\":true"));
+        ASSERT(!contains(r, "AUTH_REQUIRED"));
+        free(r);
+
+        /* Destructive tool + no token → AUTH_REQUIRED. */
+        r = run(&mw, "zcl_send", NULL);
+        ASSERT(contains(r, "AUTH_REQUIRED"));
+        free(r);
+
+        /* Destructive tool + wrong token → AUTH_REQUIRED. */
+        r = run(&mw, "zcl_send", "wrong-token");
+        ASSERT(contains(r, "AUTH_REQUIRED"));
+        free(r);
+
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* T2: destructive token configured → destructive tool accepts destructive,
+ * rejects the normal token. */
+static int test_auth_destructive_tool_requires_destructive_tier(void)
+{
+    int failures = 0;
+    TEST("destructive token set → destructive tool accepts destructive, rejects normal") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        snprintf(mw.required_bearer_token, sizeof(mw.required_bearer_token),
+                 "%s", "normal-secret");
+        snprintf(mw.required_destructive_bearer_token,
+                 sizeof(mw.required_destructive_bearer_token),
+                 "%s", "destruct-secret");
+        register_routes();
+
+        /* Correct destructive token → allowed. */
+        char *r = run(&mw, "zcl_send", "destruct-secret");
+        ASSERT(contains(r, "\"ok\":true"));
+        ASSERT(!contains(r, "AUTH_REQUIRED"));
+        free(r);
+
+        /* "Bearer " prefix form also accepted for the destructive tier. */
+        r = run(&mw, "zcl_send", "Bearer destruct-secret");
+        ASSERT(contains(r, "\"ok\":true"));
+        ASSERT(!contains(r, "AUTH_REQUIRED"));
+        free(r);
+
+        /* Normal token is rejected for the destructive tool — 401 names the
+         * destructive tier, no token material disclosed. */
+        r = run(&mw, "zcl_send", "normal-secret");
+        ASSERT(contains(r, "AUTH_REQUIRED"));
+        ASSERT(contains(r, "destructive bearer token required"));
+        ASSERT(!contains(r, "destruct-secret"));
+        ASSERT(!contains(r, "normal-secret"));
+        free(r);
+
+        /* No token → rejected with destructive-tier reason. */
+        r = run(&mw, "zcl_send", NULL);
+        ASSERT(contains(r, "AUTH_REQUIRED"));
+        ASSERT(contains(r, "destructive bearer token required"));
+        free(r);
+
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* T3: non-destructive tool rejects the destructive token, accepts normal. */
+static int test_auth_read_tool_rejects_destructive_tier(void)
+{
+    int failures = 0;
+    TEST("destructive token set → read tool rejects destructive, accepts normal") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        snprintf(mw.required_bearer_token, sizeof(mw.required_bearer_token),
+                 "%s", "normal-secret");
+        snprintf(mw.required_destructive_bearer_token,
+                 sizeof(mw.required_destructive_bearer_token),
+                 "%s", "destruct-secret");
+        register_routes();
+
+        /* Correct normal token → allowed. */
+        char *r = run(&mw, "t_read", "normal-secret");
+        ASSERT(contains(r, "\"ok\":true"));
+        ASSERT(!contains(r, "AUTH_REQUIRED"));
+        free(r);
+
+        /* Destructive token rejected for the read tool — 401 names the
+         * normal tier.  An ops/destructive credential cannot be reused to
+         * read introspection or normal RPC. */
+        r = run(&mw, "t_read", "destruct-secret");
+        ASSERT(contains(r, "AUTH_REQUIRED"));
+        ASSERT(contains(r, "normal bearer token required"));
+        ASSERT(!contains(r, "destruct-secret"));
+        ASSERT(!contains(r, "normal-secret"));
+        free(r);
+
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* T4: destructive rate-limit fires independently of which auth tier passed.
+ * Auth tier ≠ rate-limit tier: a destructive tool always drains the
+ * destructive bucket regardless of which credential satisfied auth. */
+static int test_destructive_ratelimit_independent_of_auth_tier(void)
+{
+    int failures = 0;
+    TEST("destructive rate-limit fires regardless of which auth tier passed") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        snprintf(mw.required_bearer_token, sizeof(mw.required_bearer_token),
+                 "%s", "normal-secret");
+        snprintf(mw.required_destructive_bearer_token,
+                 sizeof(mw.required_destructive_bearer_token),
+                 "%s", "destruct-secret");
+        /* Pin buckets: global plenty, destructive tiny. */
+        mw.global_rps = 1000;
+        mw.burst_global = 1000;
+        mw.global_bucket = 1000.0;
+        mw.destructive_rps = 1;
+        mw.burst_destructive = 1;
+        mw.destructive_bucket = 1.0;
+        register_routes();
+
+        /* First destructive call (valid destructive token) → allowed,
+         * drains the single destructive bucket token. */
+        char *r1 = run(&mw, "zcl_send", "destruct-secret");
+        ASSERT(contains(r1, "\"ok\":true"));
+        ASSERT(!contains(r1, "AUTH_REQUIRED"));
+        ASSERT(!contains(r1, "RATE_LIMITED"));
+        free(r1);
+
+        /* Second destructive call (same valid token) → RATE_LIMITED, NOT
+         * auth-denied: auth passed, the destructive bucket is empty. */
+        char *r2 = run(&mw, "zcl_send", "destruct-secret");
+        ASSERT(contains(r2, "RATE_LIMITED"));
+        ASSERT(contains(r2, "\"param\":\"destructive\""));
+        ASSERT(!contains(r2, "AUTH_REQUIRED"));
+        free(r2);
+
+        ASSERT(mw.stat_rate_limited_destructive >= 1);
         mcp_middleware_destroy(&mw);
         PASS();
     } _test_next:;
@@ -577,6 +752,10 @@ int test_mcp_middleware(void)
     failures += test_auth_pass_when_unset();
     failures += test_auth_fail();
     failures += test_auth_pass_with_bearer_prefix();
+    failures += test_auth_back_compat_no_destructive_tier();
+    failures += test_auth_destructive_tool_requires_destructive_tier();
+    failures += test_auth_read_tool_rejects_destructive_tier();
+    failures += test_destructive_ratelimit_independent_of_auth_tier();
     failures += test_global_rate_limit();
     failures += test_destructive_rate_limit();
     failures += test_timeout_fires();

@@ -96,9 +96,21 @@ connect path is tracked as a hardening item, not a claimed property.
   review/comment on pull requests; there is no hosted build/test CI workflow
   (CI runs locally via `make ci`).
 - **MCP middleware:** tool routes carry destructive flags, destructive tools
-  are rate-limited separately, tool calls emit events, and `ZCL_MCP_BEARER_TOKEN`
-  can require bearer auth where a transport supports it. The default `-mcp`
-  mode is a local stdio operator interface.
+  are rate-limited separately, tool calls emit events, and bearer auth is
+  opt-in via two env vars. `ZCL_MCP_BEARER_TOKEN` is the **normal** token;
+  `ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN` is an **escalated** token for tools
+  flagged destructive (the same set that drains the destructive rate-limit
+  bucket). The destructive token is strictly opt-in and backward-compatible:
+  when UNSET, the normal token governs ALL tools (destructive included) —
+  identical to the single-token behavior. When SET, destructive tools
+  REQUIRE the destructive token and REJECT the normal one, and
+  non-destructive tools REQUIRE the normal token and REJECT the destructive
+  one (least-privilege in both directions — an ops/destructive credential
+  cannot be reused to read introspection or run normal RPC, and vice-versa).
+  Both tiers use a constant-time compare; 401 error bodies name the tier
+  that was required without disclosing token material. Auth tier is
+  independent of the rate-limit tier. The default `-mcp` mode is a local
+  stdio operator interface (no auth).
 - **Operator-private HTTP routes:** wallet, message, and swap API routes are
   blocked on the clearnet listener as recorded in the June 2026 audit response.
 - **Data-integrity discipline:** application writes go through the ActiveRecord

@@ -40,8 +40,23 @@ extern "C" {
 #define MCP_MIDDLEWARE_DESTRUCT_MAX 32
 
 struct mcp_middleware {
-    /* Auth — empty token disables auth check. */
+    /* Auth — empty token disables auth check for that tier.
+     *
+     * Two-tier model (backward-compatible):
+     *   - required_bearer_token governs NON-destructive tools, and — when
+     *     required_destructive_bearer_token is EMPTY — governs EVERY tool
+     *     (today's behavior, preserved exactly when the destructive env
+     *     var is unset).
+     *   - required_destructive_bearer_token, when NON-empty, escalates the
+     *     auth requirement for tools flagged MCP_TOOL_FLAG_DESTRUCTIVE: a
+     *     destructive tool then REQUIRES this token and REJECTS the normal
+     *     one (least-privilege: an ops/destructive credential cannot be
+     *     reused to read introspection or normal RPC, and vice-versa).
+     *     For the tier separation to be meaningful the two tokens MUST
+     *     differ; if the operator configures them identically the tiers
+     *     collapse to a single shared credential. */
     char required_bearer_token[MCP_MIDDLEWARE_TOKEN_MAX];
+    char required_destructive_bearer_token[MCP_MIDDLEWARE_TOKEN_MAX];
 
     /* Rate limiting — tokens-per-second for each bucket. */
     int64_t global_rps;       /* default 100 */
@@ -82,11 +97,17 @@ void mcp_middleware_init(struct mcp_middleware *mw);
 void mcp_middleware_destroy(struct mcp_middleware *mw);
 
 /* Populate config fields from environment variables:
- *   ZCL_MCP_BEARER_TOKEN       → required_bearer_token
- *   ZCL_MCP_GLOBAL_RPS         → global_rps      (default 100)
- *   ZCL_MCP_DESTRUCTIVE_RPS    → destructive_rps (default 1)
- *   ZCL_MCP_TIMEOUT_MS         → default_timeout_ms (default 5000)
- * Unknown / unset vars keep their current struct values. */
+ *   ZCL_MCP_BEARER_TOKEN             → required_bearer_token
+ *   ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN → required_destructive_bearer_token
+ *   ZCL_MCP_GLOBAL_RPS               → global_rps      (default 100)
+ *   ZCL_MCP_DESTRUCTIVE_RPS          → destructive_rps (default 1)
+ *   ZCL_MCP_TIMEOUT_MS               → default_timeout_ms (default 5000)
+ *
+ * When ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN is UNSET, behavior is identical to
+ * today: ZCL_MCP_BEARER_TOKEN governs every tool (destructive included).
+ * When SET, destructive tools require the destructive token and reject the
+ * normal token; non-destructive tools require the normal token and reject
+ * the destructive token.  Unknown / unset vars keep their current values. */
 void mcp_middleware_load_from_env(struct mcp_middleware *mw);
 
 /* Process-wide middleware singleton.  init_global() is idempotent and

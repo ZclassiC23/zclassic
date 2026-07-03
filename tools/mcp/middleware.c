@@ -116,6 +116,15 @@ void mcp_middleware_load_from_env(struct mcp_middleware *mw)
                  sizeof(mw->required_bearer_token), "%s", token);
     }
 
+    /* Escalated destructive tier — UNSET preserves today's behavior (the
+     * normal token governs all tools). When set, destructive tools require
+     * this token and reject the normal one (least-privilege). See middleware.h. */
+    const char *dtoken = getenv("ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN");
+    if (dtoken && dtoken[0]) {
+        snprintf(mw->required_destructive_bearer_token,
+                 sizeof(mw->required_destructive_bearer_token), "%s", dtoken);
+    }
+
     const char *grps = getenv("ZCL_MCP_GLOBAL_RPS");
     if (grps && grps[0]) {
         int64_t v = strtoll(grps, NULL, 10);
@@ -174,17 +183,58 @@ static int constant_time_memcmp(const void *a, const void *b, size_t n)
     return diff == 0 ? 0 : 1;
 }
 
-static bool auth_ok(const struct mcp_middleware *mw, const char *bearer_token)
+/* True iff `bearer_token` matches one specific required token.  An empty
+ * `required` means auth is DISABLED for that tier (pass-through), preserving
+ * the original `auth_ok` semantic.  Accepts both "Bearer <token>" and the
+ * bare token form.  Constant-time over the token bytes. */
+static bool token_matches(const char *required, const char *bearer_token)
 {
-    if (mw->required_bearer_token[0] == '\0') return true;
+    if (required[0] == '\0') return true;
     if (!bearer_token) return false;
-    /* Accept both "Bearer <token>" and the bare token. */
     const char *candidate = bearer_token;
     if (strncmp(candidate, "Bearer ", 7) == 0) candidate += 7;
-    size_t req_len = strlen(mw->required_bearer_token);
+    size_t req_len = strlen(required);
     size_t got_len = strlen(candidate);
     if (req_len != got_len) return false;
-    return constant_time_memcmp(mw->required_bearer_token, candidate, req_len) == 0;
+    return constant_time_memcmp(required, candidate, req_len) == 0;
+}
+
+/* Back-compat single-tier check: the normal token governs every tool.
+ * Used when no destructive tier is configured (today's behavior). */
+static bool auth_ok(const struct mcp_middleware *mw, const char *bearer_token)
+{
+    return token_matches(mw->required_bearer_token, bearer_token);
+}
+
+/* Two-tier auth classifier.  Returns NULL on success; on failure returns a
+ * static reason string naming the tier that was required/missing — no token
+ * material is disclosed.  `is_destructive` is the tool's classified tier.
+ *
+ * Semantics (see middleware.h):
+ *   - destructive token UNSET → normal token governs ALL tools (back-compat).
+ *   - destructive token SET   → destructive tool REQUIRES the destructive
+ *                               token; non-destructive REQUIRES the normal
+ *                               token.  The "wrong" tier is rejected even
+ *                               when it is a valid token of the other tier. */
+static const char *auth_check(const struct mcp_middleware *mw,
+                              const char *bearer_token, bool is_destructive)
+{
+    /* No destructive tier configured → back-compat: normal token for all. */
+    if (mw->required_destructive_bearer_token[0] == '\0') {
+        if (auth_ok(mw, bearer_token)) return NULL;
+        return "bearer token required";
+    }
+
+    /* Two-tier mode: select the required token by tool class.  An empty
+     * normal token still means "auth disabled for non-destructive tools",
+     * but a SET destructive token always gates destructive tools. */
+    const char *required = is_destructive
+        ? mw->required_destructive_bearer_token
+        : mw->required_bearer_token;
+    if (token_matches(required, bearer_token)) return NULL;
+    return is_destructive
+        ? "destructive bearer token required"
+        : "normal bearer token required";
 }
 
 /* ── Token bucket ────────────────────────────────────────────── */
@@ -373,13 +423,21 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
     }
     if (!tool_name) tool_name = "";
 
-    /* 1. Auth */
-    if (!auth_ok(mw, bearer_token)) {
+    /* Classify the tool once: this drives BOTH the auth tier selection and
+     * the destructive rate-limit bucket.  Auth and rate-limit remain
+     * INDEPENDENT policies — which tier passed auth does not change which
+     * bucket is consumed (a destructive tool always drains the destructive
+     * bucket regardless of which credential satisfied auth). */
+    bool is_dest = mcp_middleware_is_destructive(mw, tool_name);
+
+    /* 1. Auth (tiered) */
+    const char *auth_reason = auth_check(mw, bearer_token, is_dest);
+    if (auth_reason) {
         mw->stat_auth_denied++;
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=AUTH_REQUIRED", tool_name);
         return mcp_router_error_envelope_strdup(MCP_ERR_AUTH_REQUIRED,
-                              tool_name, NULL, "bearer token required");
+                              tool_name, NULL, auth_reason);
     }
 
     /* 2. Global rate limit */
@@ -391,8 +449,7 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
                               tool_name, "global", "global rate limit exceeded");
     }
 
-    /* 3. Destructive rate limit */
-    bool is_dest = mcp_middleware_is_destructive(mw, tool_name);
+    /* 3. Destructive rate limit (independent of auth tier) */
     if (is_dest && !consume_destructive(mw)) {
         mw->stat_rate_limited_destructive++;
         event_emitf(EV_MCP_REQUEST, 0,

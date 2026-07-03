@@ -134,6 +134,31 @@ claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir=/path/to/data -rpcpor
 
 Restart Claude Code after adding. The tools appear automatically.
 
+### Auth (two-tier, opt-in)
+
+The MCP server is a local stdio operator interface by default — no auth.
+Where a transport wants a credential, set env vars before launching the
+binary:
+
+- `ZCL_MCP_BEARER_TOKEN` — the **normal** bearer token. When set, every
+  tool call must present it (or the destructive token, see below) in the
+  `authorization` metadata, bare or `Bearer <token>` form.
+- `ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN` — an **escalated** token for tools
+  flagged destructive (`zcl_send`, `zcl_invalidateblock`,
+  `zcl_importprivkey`, etc. — the same set that drains the destructive
+  rate-limit bucket). **Backward-compatible**: when UNSET, the normal token
+  governs ALL tools (destructive included) — identical to today. When SET,
+  a destructive tool REQUIRES the destructive token and REJECTS the normal
+  one; a non-destructive tool REQUIRES the normal token and REJECTS the
+  destructive one (least-privilege: an ops/destructive credential cannot be
+  reused to read introspection or run normal RPC, and vice-versa). 401
+  errors name the tier that was required without disclosing token material.
+  For the tier separation to be meaningful the two tokens MUST differ.
+
+Both comparisons are constant-time. Auth tier is independent of the
+rate-limit tier: a destructive tool always drains the destructive bucket
+regardless of which credential satisfied auth.
+
 ### Quick Reference
 
 There are ~100 typed tools (call `zcl_tools_list` for the exact live count). **This table lists only the ones you reach for
