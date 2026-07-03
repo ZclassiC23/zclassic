@@ -363,6 +363,7 @@ add/remove a gate.
 - `check-coins-lookup-nullcheck`
 - `check-consensus-parity`
 - `check-doc-accuracy`
+- `check-doc-counts`
 - `check-domain-purity`
 - `check-file-size-ceiling`
 - `check-framework-filename-suffix`

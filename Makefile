@@ -2275,6 +2275,14 @@ check-doc-accuracy:
 	@echo "══ LINT: doc accuracy (E11) ══"
 	@./tools/scripts/check_doc_accuracy.sh
 
+# Doc counts vs code: numeric claims (test_groups / port_interfaces /
+# persistence_adapters) declared in the <!-- DOC-COUNTS --> block of
+# docs/CODEBASE_MAP.md must agree with the code, and known-stale compound
+# phrases ("15 ports", "1500+ tests", ...) must not return to the prose.
+check-doc-counts:
+	@echo "══ LINT: doc counts vs code ══"
+	@./tools/scripts/check_doc_counts.sh
+
 # Gate E2 — new service functions return struct zcl_result, not bare
 # bool/int (RATCHET at file granularity; baseline at
 # tools/scripts/one_result_type_baseline.txt may only shrink).
@@ -2355,7 +2363,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
+lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
