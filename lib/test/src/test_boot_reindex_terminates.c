@@ -191,5 +191,52 @@ int test_boot_reindex_terminates(void)
         test_cleanup_tmpdir(dir);
     }
 
+    /* ──────────────────────────────────────────────────────────────────
+     * (D) A stale tip-height request self-clears once durable coins authority
+     * has advanced beyond its anchor. Equality is still the first boot that
+     * should consume a freshly requested reindex; above-anchor progress proves
+     * the live reducer moved on without the request. The special boot-storage
+     * anchor 0 and terminal markers are not cleared by this covered-tip guard.
+     * ────────────────────────────────────────────────────────────────── */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "boot_reindex_term", "covered");
+        mkdir_p_br(dir);
+
+        const int32_t ANCHOR = 4321;
+        int n1 = boot_auto_reindex_request(dir, ANCHOR);
+        BR_CHECK("covered: request starts pending",
+                 n1 == 1 && boot_auto_reindex_pending(dir));
+        BR_CHECK("covered: below-anchor coins-best does not clear",
+                 !boot_crashonly_clear_reindex_request_if_covered(
+                     dir, ANCHOR - 1) &&
+                 boot_auto_reindex_pending(dir));
+        BR_CHECK("covered: coins-best at anchor keeps fresh request",
+                 !boot_crashonly_clear_reindex_request_if_covered(
+                     dir, ANCHOR) &&
+                 boot_auto_reindex_pending(dir));
+        BR_CHECK("covered: coins-best above anchor clears stale request",
+                 boot_crashonly_clear_reindex_request_if_covered(
+                     dir, ANCHOR + 1) &&
+                 !boot_auto_reindex_pending(dir));
+
+        int n2 = boot_auto_reindex_request(dir, 0);
+        BR_CHECK("covered: boot-storage anchor 0 starts pending",
+                 n2 == 1 && boot_auto_reindex_pending(dir));
+        BR_CHECK("covered: boot-storage anchor 0 is never stale-cleared",
+                 !boot_crashonly_clear_reindex_request_if_covered(
+                     dir, 999999) &&
+                 boot_auto_reindex_pending(dir));
+        boot_auto_reindex_clear(dir);
+
+        (void)boot_auto_reindex_mark_terminal(dir, ANCHOR);
+        BR_CHECK("covered: terminal marker is not stale-cleared",
+                 !boot_crashonly_clear_reindex_request_if_covered(
+                     dir, ANCHOR + 100) &&
+                 boot_auto_reindex_is_terminal(dir));
+
+        test_cleanup_tmpdir(dir);
+    }
+
     return failures;
 }

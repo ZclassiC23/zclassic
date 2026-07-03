@@ -82,6 +82,83 @@ static bool api_contract_freshness_scoped(const char *freshness)
     return freshness && freshness[0] && strcmp(freshness, "static") != 0;
 }
 
+static const char *api_contract_crud_operation(const char *method)
+{
+    if (!method)
+        return "action";
+    if (strcmp(method, "GET") == 0)
+        return "read";
+    if (strcmp(method, "POST") == 0)
+        return "create";
+    if (strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0)
+        return "update";
+    if (strcmp(method, "DELETE") == 0)
+        return "delete";
+    return "action";
+}
+
+static bool api_contract_path_has_id(const char *path)
+{
+    return path && strchr(path, '{') != NULL && strchr(path, '}') != NULL;
+}
+
+static const char *api_contract_resource_scope(const char *method,
+                                               const char *action,
+                                               const char *path)
+{
+    const bool has_id = api_contract_path_has_id(path);
+
+    if (!method || strcmp(method, "GET") != 0)
+        return has_id ? "item" : "collection";
+    if (action && strcmp(action, "index") == 0)
+        return has_id ? "subcollection" : "collection";
+    if (action && strcmp(action, "show") == 0)
+        return has_id ? "item" : "singleton";
+    if (has_id)
+        return "subresource";
+    return "singleton";
+}
+
+static void api_contract_crud_name(char *buf, size_t buf_len,
+                                   const char *operation,
+                                   const char *scope)
+{
+    if (!buf || buf_len == 0)
+        return;
+    snprintf(buf, buf_len, "%s_%s",
+             operation && operation[0] ? operation : "action",
+             scope && scope[0] ? scope : "resource");
+    buf[buf_len - 1] = '\0';
+}
+
+static void api_contract_path_params_json(const char *path,
+                                          struct json_value *out)
+{
+    json_set_array(out);
+    const char *p = path;
+    while (p && (p = strchr(p, '{')) != NULL) {
+        const char *end = strchr(p + 1, '}');
+        if (!end)
+            return;
+
+        size_t len = (size_t)(end - (p + 1));
+        if (len > 0) {
+            char name[64];
+            if (len >= sizeof(name))
+                len = sizeof(name) - 1;
+            memcpy(name, p + 1, len);
+            name[len] = '\0';
+
+            struct json_value item;
+            json_init(&item);
+            json_set_str(&item, name);
+            json_push_back(out, &item);
+            json_free(&item);
+        }
+        p = end + 1;
+    }
+}
+
 static void api_contract_append_slug(char *buf, size_t buf_len,
                                      size_t *off, const char *s)
 {
@@ -217,6 +294,12 @@ static void api_contract_push(struct json_value *out, const char *method,
     const char *schema = response_schema && response_schema[0]
         ? response_schema : "zcl.rest.response.v1";
     const char *fresh = freshness && freshness[0] ? freshness : "none";
+    const char *crud_operation = api_contract_crud_operation(method);
+    const char *resource_scope =
+        api_contract_resource_scope(method, action, public_path);
+    char crud_name[64];
+    api_contract_crud_name(crud_name, sizeof(crud_name), crud_operation,
+                           resource_scope);
     char route_id[256];
     api_contract_route_id(route_id, sizeof(route_id), method, resource,
                           action, public_path);
@@ -233,6 +316,9 @@ static void api_contract_push(struct json_value *out, const char *method,
         json_push_kv_str(&item, "compat_path", path);
     json_push_kv_str(&item, "resource", resource);
     json_push_kv_str(&item, "action", action);
+    json_push_kv_str(&item, "crud_operation", crud_operation);
+    json_push_kv_str(&item, "resource_scope", resource_scope);
+    json_push_kv_str(&item, "crud_name", crud_name);
     json_push_kv_bool(&item, "private", private_route);
     json_push_kv_str(&item, "auth",
                      private_route ? "operator_private" : "public");
@@ -260,6 +346,12 @@ static void api_contract_push(struct json_value *out, const char *method,
     api_contract_query_params_json(query_params_csv, &query_params);
     json_push_kv(&item, "query_params", &query_params);
     json_free(&query_params);
+
+    struct json_value id_params;
+    json_init(&id_params);
+    api_contract_path_params_json(public_path, &id_params);
+    json_push_kv(&item, "id_params", &id_params);
+    json_free(&id_params);
 
     struct json_value telemetry;
     json_init(&telemetry);

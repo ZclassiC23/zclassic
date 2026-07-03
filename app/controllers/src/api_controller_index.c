@@ -37,12 +37,18 @@ static void api_rest_index_crud_json(struct json_value *crud)
     json_set_object(crud);
     json_push_kv_str(crud, "read_collection", "GET /api/v1/{resource}");
     json_push_kv_str(crud, "read_item", "GET /api/v1/{resource}/{id}");
+    json_push_kv_str(crud, "read_singleton",
+                     "GET /api/v1/{resource} for one node/operator status");
+    json_push_kv_str(crud, "read_subcollection",
+                     "GET /api/v1/{resource}/{id}/{child_resource}");
     json_push_kv_str(crud, "create",
                      "POST /api/v1/{resource} when documented");
     json_push_kv_str(crud, "update",
                      "PUT/PATCH /api/v1/{resource}/{id} when documented");
     json_push_kv_str(crud, "delete",
                      "DELETE /api/v1/{resource}/{id} when documented");
+    json_push_kv_str(crud, "contract_fields",
+                     "route_contracts[].crud_operation/resource_scope/crud_name/id_params");
 }
 
 static void api_rest_index_push_resource(struct json_value *resources,
@@ -406,6 +412,11 @@ static void api_openapi_operation_json(const struct json_value *contract,
     const char *path = json_get_str(json_get(contract, "path"));
     const char *resource = json_get_str(json_get(contract, "resource"));
     const char *action = json_get_str(json_get(contract, "action"));
+    const char *crud_operation =
+        json_get_str(json_get(contract, "crud_operation"));
+    const char *resource_scope =
+        json_get_str(json_get(contract, "resource_scope"));
+    const char *crud_name = json_get_str(json_get(contract, "crud_name"));
     const char *response_schema =
         json_get_str(json_get(contract, "response_schema"));
     const char *error_schema = json_get_str(json_get(contract, "error_schema"));
@@ -449,6 +460,9 @@ static void api_openapi_operation_json(const struct json_value *contract,
 
     json_push_kv_str(operation, "x-resource", resource);
     json_push_kv_str(operation, "x-action", action);
+    json_push_kv_str(operation, "x-crud-operation", crud_operation);
+    json_push_kv_str(operation, "x-resource-scope", resource_scope);
+    json_push_kv_str(operation, "x-crud-name", crud_name);
     json_push_kv_str(operation, "x-route-id", route_id);
     json_push_kv_bool(operation, "x-private", private_route);
     json_push_kv_str(operation, "x-auth",
@@ -475,6 +489,9 @@ static void api_openapi_operation_json(const struct json_value *contract,
         json_get(contract, "crypto_policy");
     if (crypto_policy)
         json_push_kv(operation, "x-zcl-crypto-policy", crypto_policy);
+    const struct json_value *id_params = json_get(contract, "id_params");
+    if (id_params)
+        json_push_kv(operation, "x-id-params", id_params);
     if (private_route)
         api_openapi_security_json(operation);
 
@@ -710,7 +727,7 @@ static void api_rest_index_json(struct json_value *root)
 
 const char *api_rest_index_body_json(void)
 {
-    static _Thread_local char body[65536];
+    static _Thread_local char body[262144];
 
     struct json_value root;
     json_init(&root);

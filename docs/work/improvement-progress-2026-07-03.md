@@ -65,6 +65,11 @@ Live baseline checked before edits:
   the canonical `ZClassic23` identity.
 - [x] V1: keep the ACME path hardening portable in the clang/fuzzer build and
   keep the nullifier activation blocker reason within its durable cap.
+- [x] REST: make route contracts expose explicit CRUD operation/scope metadata
+  and pin the generated `/api/v1` + OpenAPI shapes in tests.
+- [x] H: clear stale tip-height auto-reindex requests when durable coins
+  authority has advanced beyond their anchor, without weakening terminal or
+  boot-storage reindex markers.
 - [ ] I: remaining binary/client consolidation remains owner-gated, especially
   `session`/`bot`, `zclassic-cli`/`zcl-rpc`, and any `zclassic23` ->
   `zclassic` naming move.
@@ -325,6 +330,27 @@ Live baseline checked before edits:
   - The nullifier activation-gap blocker reason was shortened to fit
     `BLOCKER_REASON_MAX` without compile-time truncation while preserving the
     operator meaning.
+- REST/CRUD contract slice:
+  - Route contracts now derive `crud_operation`, `resource_scope`, `crud_name`,
+    and `id_params` from the registered method/path/action instead of forcing
+    humans or clients to infer CRUD shape from prose.
+  - The generated OpenAPI operation now mirrors those fields as `x-*`
+    extensions so REST clients can distinguish collection, singleton, item, and
+    subcollection reads from one contract.
+  - The `/api/v1` index buffer now matches the OpenAPI contract buffer size so
+    the richer route contract remains available as a complete JSON document.
+  - Verification: `make t ONLY=api` PASS.
+- Boot stale-auto-reindex guard:
+  - `boot_auto_reindex_status()` now exposes the durable marker for read-only
+    policy checks.
+  - Boot clears a positive tip-height auto-reindex request before consuming it
+    when the derived coins-best height has advanced beyond the request anchor.
+    Equality remains pending so a freshly requested reindex still runs on the
+    next boot.
+  - The guard deliberately refuses to clear terminal markers and anchor-0
+    boot-storage episodes, preserving the bounded crash-only recovery contract.
+  - Added a regression to `test_boot_reindex_terminates`; verification:
+    `make t ONLY=boot_reindex_terminates` PASS.
 
 ## Verification
 
@@ -440,6 +466,14 @@ Live baseline checked before edits:
 - `make session bot` was also attempted; `session` compiled, then the simulator
   failed its pre-existing `z-address shown` runtime check, so that target was
   not counted as a passing verification for this slice.
+- `make t ONLY=api` PASS after REST/CRUD contract metadata and `/api/v1`
+  contract-buffer sizing.
+- `make t ONLY=boot_reindex_terminates` PASS after the stale auto-reindex
+  marker guard.
+- `git diff --check` PASS after REST/CRUD and stale auto-reindex guard work.
+- `make lint` PASS after REST/CRUD and stale auto-reindex guard work;
+  file-size warnings remain advisory and are the same known oversized-file
+  class called out above.
 - `git diff --check` PASS after the `CLIENT_NAME` identity cleanup.
 - `make lint` PASS after the `CLIENT_NAME` identity cleanup;
   remaining file-size output is advisory and limited to pre-existing unrelated

@@ -146,6 +146,20 @@ static bool api_test_contract_has_query(const struct json_value *contract,
     return false;
 }
 
+static bool api_test_contract_has_id_param(const struct json_value *contract,
+                                           const char *name)
+{
+    const struct json_value *params = json_get(contract, "id_params");
+    if (!params || !name)
+        return false;
+    for (size_t i = 0; i < json_size(params); i++) {
+        const char *param = json_get_str(json_at(params, i));
+        if (param && strcmp(param, name) == 0)
+            return true;
+    }
+    return false;
+}
+
 static const struct json_value *api_test_openapi_get(
     const struct json_value *root,
     const char *path)
@@ -586,7 +600,7 @@ int test_api(void)
 
     printf("api: REST index explains v1 first call and CRUD shape... ");
     {
-        uint8_t index_resp[65536];
+        static uint8_t index_resp[262144];
         size_t n = api_handle_request("GET", "/api/v1", NULL, 0,
                                       index_resp, sizeof(index_resp));
         const char *body = api_test_body(index_resp, n, sizeof(index_resp));
@@ -604,6 +618,13 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(&root, "first_call")),
                           "/api/v1/agent") == 0;
         ok = ok && json_get(json_get(&root, "crud"), "read_collection") != NULL;
+        ok = ok && json_get(json_get(&root, "crud"), "read_item") != NULL;
+        ok = ok && json_get(json_get(&root, "crud"),
+                            "read_singleton") != NULL;
+        ok = ok && json_get(json_get(&root, "crud"),
+                            "read_subcollection") != NULL;
+        ok = ok && json_get(json_get(&root, "crud"),
+                            "contract_fields") != NULL;
         ok = ok && json_size(json_get(&root, "resources")) >= 4;
         const struct json_value *routes = json_get(&root, "route_contracts");
         ok = ok && routes &&
@@ -646,6 +667,15 @@ int test_api(void)
         ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
                                     "error_schema")),
                                   "zcl.rest_error.v1") == 0;
+        ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
+                                    "crud_operation")),
+                                  "read") == 0;
+        ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
+                                    "resource_scope")),
+                                  "singleton") == 0;
+        ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
+                                    "crud_name")),
+                                  "read_singleton") == 0;
         ok = ok && hodl && json_get_bool(json_get(hodl,
                                                   "freshness_scoped"));
         ok = ok && wallet && json_get_bool(json_get(wallet, "private"));
@@ -687,8 +717,14 @@ int test_api(void)
                                      "signature_scheme_claimed"));
         ok = ok && zslp && api_test_contract_has_query(zslp, "limit");
         ok = ok && zslp && json_get_bool(json_get(zslp, "pagination"));
+        ok = ok && zslp && strcmp(json_get_str(json_get(zslp,
+                                    "crud_name")),
+                                  "read_collection") == 0;
         ok = ok && events && api_test_contract_has_query(events, "limit");
         ok = ok && events && api_test_contract_has_query(events, "type");
+        ok = ok && events && strcmp(json_get_str(json_get(events,
+                                    "resource_scope")),
+                                    "collection") == 0;
         ok = ok && events && strcmp(json_get_str(json_get(events,
                                     "freshness")),
                                     "event_projection") == 0;
@@ -700,6 +736,11 @@ int test_api(void)
                                     "zcl.supply_legacy_number.v1") == 0;
         ok = ok && block_show && json_get_bool(json_get(block_show,
                                                         "canonical"));
+        ok = ok && block_show &&
+             strcmp(json_get_str(json_get(block_show, "crud_name")),
+                    "read_item") == 0;
+        ok = ok && block_show &&
+             api_test_contract_has_id_param(block_show, "height_or_hash");
         ok = ok && legacy_block_show &&
              strcmp(json_get_str(json_get(legacy_block_show,
                                           "legacy_alias_of")),
@@ -719,6 +760,10 @@ int test_api(void)
                                           "legacy_alias_of")),
                     "/api/v1/addresses/{address}") == 0;
         ok = ok && names && json_get_bool(json_get(names, "canonical"));
+        ok = ok && names && strcmp(json_get_str(json_get(names,
+                                    "resource_scope")),
+                                   "item") == 0;
+        ok = ok && names && api_test_contract_has_id_param(names, "name");
         ok = ok && legacy_name &&
              !json_get_bool(json_get(legacy_name, "canonical"));
         ok = ok && legacy_name &&
@@ -810,6 +855,15 @@ int test_api(void)
              strcmp(json_get_str(json_get(hodl, "x-resource")),
                     "hodl") == 0;
         ok = ok && hodl &&
+             strcmp(json_get_str(json_get(hodl, "x-crud-operation")),
+                    "read") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(hodl, "x-resource-scope")),
+                    "singleton") == 0;
+        ok = ok && hodl &&
+             strcmp(json_get_str(json_get(hodl, "x-crud-name")),
+                    "read_singleton") == 0;
+        ok = ok && hodl &&
              strcmp(json_get_str(json_get(hodl, "x-response-schema")),
                     "zcl.hodl_wave.v1") == 0;
         ok = ok && hodl &&
@@ -840,8 +894,18 @@ int test_api(void)
              api_test_openapi_has_param(events, "limit", "query");
         ok = ok && events &&
              api_test_openapi_has_param(events, "type", "query");
+        ok = ok && events &&
+             strcmp(json_get_str(json_get(events, "x-crud-name")),
+                    "read_collection") == 0;
         ok = ok && block_show &&
              api_test_openapi_has_param(block_show, "height_or_hash", "path");
+        ok = ok && block_show &&
+             strcmp(json_get_str(json_get(block_show, "x-crud-name")),
+                    "read_item") == 0;
+        ok = ok && block_show &&
+             strcmp(json_get_str(json_at(json_get(block_show,
+                                                  "x-id-params"), 0)),
+                    "height_or_hash") == 0;
         ok = ok && legacy_name &&
              strcmp(json_get_str(json_get(legacy_name,
                                           "x-legacy-alias-of")),

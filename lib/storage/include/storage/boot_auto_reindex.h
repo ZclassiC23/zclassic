@@ -51,6 +51,12 @@ int boot_auto_reindex_request(const char *datadir, int32_t anchor);
  * runs. A terminal marker is present-but-not-pending: the budget is spent. */
 bool boot_auto_reindex_pending(const char *datadir);
 
+/* Read the durable marker for diagnostics/guards. Returns true iff the marker
+ * is well-formed. `count == BOOT_AUTO_REINDEX_TERMINAL` means exhausted; a
+ * positive count means pending; zero/no marker returns false. */
+bool boot_auto_reindex_status(const char *datadir, int32_t *anchor,
+                              int *count);
+
 /* True iff the on-disk request is the TERMINAL marker (count == -1): the budget
  * was exhausted at a stable anchor, the operator was paged, and no further
  * reindex must be requested. */

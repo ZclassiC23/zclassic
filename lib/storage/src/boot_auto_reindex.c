@@ -150,6 +150,29 @@ bool boot_auto_reindex_pending(const char *datadir)
     return true;
 }
 
+bool boot_auto_reindex_status(const char *datadir, int32_t *anchor,
+                              int *count)
+{
+    if (anchor)
+        *anchor = 0;
+    if (count)
+        *count = 0;
+    if (!datadir)
+        return false;
+
+    char path[512];
+    ar_path(datadir, path, sizeof(path));
+    int32_t a = 0;
+    int c = 0;
+    if (!ar_read(path, &a, &c))
+        return false;
+    if (anchor)
+        *anchor = a;
+    if (count)
+        *count = c;
+    return true;
+}
+
 void boot_auto_reindex_clear(const char *datadir)
 {
     if (!datadir)

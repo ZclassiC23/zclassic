@@ -1456,9 +1456,15 @@ bool app_init(struct app_context *ctx)
          * re-derives the UTXO set from blocks/ at the post-block-index site.
          * The request file is a top-level sentinel (no DB needed), so it is safe
          * to read before the coins view opens. */
-        if (!ctx->reindex_chainstate &&
-            boot_crashonly_consume_reindex_request(ctx->datadir))
-            ctx->reindex_chainstate = true;
+        if (!ctx->reindex_chainstate) {
+            struct boot_derived_coins_best pre_reindex_dcb;
+            if (boot_derive_coins_best(&pre_reindex_dcb)) {
+                (void)boot_crashonly_clear_reindex_request_if_covered(
+                    ctx->datadir, pre_reindex_dcb.height);
+            }
+            if (boot_crashonly_consume_reindex_request(ctx->datadir))
+                ctx->reindex_chainstate = true;
+        }
 
         /* -reindex-chainstate explicitly rebuilds the UTXO set from on-disk
          * block data, discarding the stored coins state. Clear that state

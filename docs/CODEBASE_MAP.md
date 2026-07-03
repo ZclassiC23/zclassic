@@ -177,6 +177,14 @@ Keep version/schema constants in
 `/api/v2/agent` must return `zcl.rest_error.v1` with
 `error="unsupported_api_version"` and `supported_versions`.
 
+Route contracts must be self-describing for CRUD clients. Every entry emitted
+by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
+`update`, `delete`), `resource_scope` (`collection`, `item`, `singleton`,
+`subcollection`, `subresource`), `crud_name` (`read_item`, etc.), and
+`id_params`. Keep `/api/v1` and `/api/v1/openapi` generated from that one
+contract source and pin representative collection/item/singleton routes in
+`test_api` whenever adding a new route shape.
+
 Public status/freshness endpoints must get their served height through
 `api_served_tip_height()`, not by reading one endpoint-specific cursor. That
 helper prefers the published in-memory H* frontier and falls back to the durable

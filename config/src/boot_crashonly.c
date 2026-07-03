@@ -24,6 +24,36 @@ bool boot_crashonly_consume_reindex_request(const char *datadir)
     return true;
 }
 
+bool boot_crashonly_clear_reindex_request_if_covered(const char *datadir,
+                                                     int coins_best_height)
+{
+    int32_t anchor = 0;
+    int count = 0;
+
+    if (coins_best_height < 0)
+        return false;
+    if (!boot_auto_reindex_status(datadir, &anchor, &count))
+        return false;
+    if (count <= 0 || count == BOOT_AUTO_REINDEX_TERMINAL)
+        return false;
+    if (anchor <= 0)
+        return false; /* anchor 0 is the boot-storage episode, not a tip. */
+    if (coins_best_height <= anchor)
+        return false;
+
+    fprintf(stderr,
+            "[boot] crash-only recovery: clearing stale auto-reindex request "
+            "anchor=%d count=%d because derived coins-best h=%d already "
+            "advanced beyond it\n",
+            (int)anchor, count, coins_best_height);
+    event_emitf(EV_BOOT_ACTIVATE, 0,
+                "crashonly_auto_reindex_cleared_stale anchor=%d count=%d "
+                "coins_best=%d",
+                (int)anchor, count, coins_best_height);
+    boot_auto_reindex_clear(datadir);
+    return true;
+}
+
 void boot_crashonly_clear(const char *datadir)
 {
     boot_auto_reindex_clear(datadir);
