@@ -985,6 +985,10 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
 /* A foreign-shape suffix (*_controller) planted under app/services/src. */
 #define FSUF_FIXTURE_DST "app/services/src/_fsuf_fixture_tmp_controller.c"
+#define LOG_MACRO_RETURN_SCRIPT_REL \
+    "tools/lint/check_log_macro_return_type.sh"
+#define LOG_MACRO_RETURN_FIXTURE_DST \
+    "app/services/src/_log_macro_return_type_fixture_tmp.c"
 #define E12_SCRIPT_REL   "tools/lint/check_honest_witness.sh"
 /* A condition .c with a PURE-INVERSE witness (the canonical Law-7 lie:
  * "return !detect_x()"), planted under app/conditions/src so the gate's
@@ -1329,6 +1333,38 @@ static int t_gate22_framework_filename_suffix(void)
     unlink_rel(FSUF_FIXTURE_DST);
     int recover_rc = run_gate_script(FSUF_SCRIPT_REL, NULL);
     TEST("[lint-gate] #22 framework-filename-suffix: clean, trips foreign suffix, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Returning LOG_* macros must match the enclosing function's return type:
+ * LOG_ERR in bool functions used to return -1, which converts to true. */
+static int t_log_macro_return_type_gate(void)
+{
+    int failures = 0;
+    unlink_rel(LOG_MACRO_RETURN_FIXTURE_DST);
+    int baseline_rc = run_gate_script(LOG_MACRO_RETURN_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted =
+        (repo_path(path, sizeof(path), LOG_MACRO_RETURN_FIXTURE_DST) == 0 &&
+         write_file(path,
+                    "#include <stdbool.h>\n"
+                    "#include \"util/log_macros.h\"\n"
+                    "bool bad_bool(void) { LOG_ERR(\"fixture\", \"bad\"); }\n"
+                    "int bad_int(void) { LOG_FAIL(\"fixture\", \"bad\"); }\n") == 0)
+            ? 0
+            : -1;
+    int trip_rc =
+        planted == 0 ? run_gate_script(LOG_MACRO_RETURN_SCRIPT_REL, NULL) : -1;
+    unlink_rel(LOG_MACRO_RETURN_FIXTURE_DST);
+    int recover_rc = run_gate_script(LOG_MACRO_RETURN_SCRIPT_REL, NULL);
+
+    TEST("[lint-gate] LOG_* return-type gate: clean, trips, recovers") {
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
         ASSERT(trip_rc != 0);
@@ -3835,6 +3871,7 @@ int test_make_lint_gates(void)
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_gate22_framework_filename_suffix();
+    failures += t_log_macro_return_type_gate();
     failures += t_e11_doc_accuracy();
     failures += t_e2_one_result_type();
     failures += t_e3_shape_includes_header();

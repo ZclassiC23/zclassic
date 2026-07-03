@@ -1479,7 +1479,7 @@ int test_net(void)
         vm.timestamp = 1700000000;
         vm.nonce = 0xDEADBEEFCAFEBABE;
         snprintf(vm.sub_version, sizeof(vm.sub_version),
-                 "/ZClassic-C23:1.0.0/");
+                 "/ZClassic23:0.1.0/");
         vm.start_height = 3040000;
         vm.relay = true;
 
@@ -1500,11 +1500,35 @@ int test_net(void)
         ok = ok && (vm2.services == NODE_NETWORK);
         ok = ok && (vm2.timestamp == 1700000000);
         ok = ok && (vm2.nonce == 0xDEADBEEFCAFEBABE);
-        ok = ok && (strcmp(vm2.sub_version, "/ZClassic-C23:1.0.0/") == 0);
+        ok = ok && (strcmp(vm2.sub_version, "/ZClassic23:0.1.0/") == 0);
         ok = ok && (vm2.start_height == 3040000);
         ok = ok && vm2.relay;
         stream_free(&s);
         stream_free(&r);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* msg_version: external IP accepts optional port */
+    {
+        printf("msg_version: externalip parses optional port... ");
+        char ip[64];
+        uint16_t port = 0;
+        bool ok;
+
+        msg_version_clear_external_ip_for_test();
+        msg_version_set_external_ip("198.51.100.7", 8033);
+        ok = msg_version_get_external_ip(ip, sizeof(ip), &port);
+        ok = ok && (strcmp(ip, "198.51.100.7") == 0);
+        ok = ok && (port == 8033);
+
+        msg_version_set_external_ip("203.0.113.7:8023", 8033);
+        port = 0;
+        ok = ok && msg_version_get_external_ip(ip, sizeof(ip), &port);
+        ok = ok && (strcmp(ip, "203.0.113.7") == 0);
+        ok = ok && (port == 8023);
+        msg_version_clear_external_ip_for_test();
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1964,7 +1988,7 @@ int test_net(void)
         connman_set_onion_peer_discovery(NULL, onion_datadir,
                                          test_onion_peer_discover);
         char *sv = cm.manager.sub_version;
-        ok = ok && (strstr(sv, "ZClassic") != NULL);
+        ok = ok && (strcmp(sv, msg_version_user_agent()) == 0);
         connman_free(&cm);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

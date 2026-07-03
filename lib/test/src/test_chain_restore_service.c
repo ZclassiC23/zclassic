@@ -1172,6 +1172,88 @@ static int test_backfill_nbits_reads_from_block_file(void) {
     return failures;
 }
 
+static int test_backfill_nbits_recomputes_chainwork_by_height(void) {
+    int failures = 0;
+    TEST("chain_restore_backfill_nbits: recomputes chainwork parent-before-child") {
+        char tmpdir[256];
+        snprintf(tmpdir, sizeof(tmpdir), "./test-tmp/%d_nbits_chainwork",
+                 (int)getpid());
+        mkdir("./test-tmp", 0755);
+        mkdir(tmpdir, 0755);
+        char blocksdir[320];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", tmpdir);
+        mkdir(blocksdir, 0755);
+
+        struct disk_block_pos pos[2] = {{ .nFile = 0, .nPos = 0 }};
+        struct uint256 disk_hash[2];
+        ASSERT(write_chain_block_fixture(tmpdir, &pos[0], NULL,
+                                         0x1e14f400, 1700000000,
+                                         &disk_hash[0]));
+        ASSERT(next_block_append_pos(tmpdir, &pos[1]));
+        ASSERT(write_chain_block_fixture(tmpdir, &pos[1], &disk_hash[0],
+                                         0x1e14f401, 1700000001,
+                                         &disk_hash[1]));
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct uint256 parent_key, child_key;
+        uint256_set_null(&parent_key);
+        uint256_set_null(&child_key);
+        parent_key.data[0] = 0xf0; /* later block-map bucket */
+        child_key.data[0] = 0x01;  /* earlier block-map bucket */
+
+        struct block_index *parent = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &parent_key);
+        struct block_index *child = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &child_key);
+        ASSERT(parent != NULL && child != NULL);
+        parent->hashBlock = disk_hash[0];
+        parent->phashBlock = &parent->hashBlock;
+        child->hashBlock = disk_hash[1];
+        child->phashBlock = &child->hashBlock;
+
+        parent->nHeight = 1;
+        parent->nBits = 0;
+        parent->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        parent->nFile = pos[0].nFile;
+        parent->nDataPos = pos[0].nPos;
+        arith_uint256_set_zero(&parent->nChainWork);
+
+        child->nHeight = 2;
+        child->pprev = parent;
+        child->nBits = 0;
+        child->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        child->nFile = pos[1].nFile;
+        child->nDataPos = pos[1].nPos;
+        arith_uint256_set_zero(&child->nChainWork);
+
+        size_t iter = 0;
+        struct block_index *first = NULL;
+        ASSERT(block_map_next(&ms.map_block_index, &iter, NULL, &first));
+        ASSERT(first == child);
+
+        int fixed = chain_restore_backfill_nbits_from_disk(&ms, tmpdir);
+        ASSERT(fixed == 2);
+        ASSERT(parent->nBits == 0x1e14f400);
+        ASSERT(child->nBits == 0x1e14f401);
+        struct arith_uint256 zero;
+        arith_uint256_set_zero(&zero);
+        ASSERT(arith_uint256_compare(&parent->nChainWork, &zero) > 0);
+        ASSERT(arith_uint256_compare(&child->nChainWork,
+                                     &parent->nChainWork) > 0);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+
+        char rm_cmd[512];
+        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmpdir);
+        (void)system(rm_cmd);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_connect_tip_hydrates_placeholder_from_disk(void) {
     int failures = 0;
     TEST("connect_tip hydration: verified disk block repairs nBits=0 HAVE_DATA entry") {
@@ -1411,6 +1493,7 @@ int test_chain_restore_service(void) {
     failures += test_seed_anchor_backing_requires_exact_provenance();
     failures += test_rebuild_active_chain_scans_block_files_for_canonical_positions();
     failures += test_backfill_nbits_reads_from_block_file();
+    failures += test_backfill_nbits_recomputes_chainwork_by_height();
     failures += test_connect_tip_hydrates_placeholder_from_disk();
     failures += test_backfill_nbits_skips_synthetic_anchor();
     failures += test_finalize_null_datadir_skips_disk();

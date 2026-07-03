@@ -102,7 +102,8 @@ int db_file_offer_list(struct node_db *ndb,
                        struct file_offer *out, size_t max)
 {
     if (!ndb || !ndb->open) return 0;
-    if (!out && max > 0) LOG_FAIL("market", "db_file_offer_list: out is NULL");
+    if (!out && max > 0)
+        LOG_RETURN(0, "market", "db_file_offer_list: out is NULL");
 
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,

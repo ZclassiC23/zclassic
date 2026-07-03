@@ -958,6 +958,33 @@ static int case_dump_reports_hstar_hash_split(void)
     return failures;
 }
 
+static int case_log_frontier_above_tip_finalize_cursor(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("tipfin-above: schema", build_schema(db));
+
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 3; h++)
+        built = built &&
+            put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+    RF_CHECK("tipfin-above: rows built", built);
+    RF_CHECK("tipfin-above: served-height cursor",
+             set_cursor(db, "tip_finalize", A + 3));
+
+    int32_t frontier = -1;
+    bool ok = reducer_frontier_log_frontier_above(db, "tip_finalize_log",
+                                                  "tip_finalize", A,
+                                                  &frontier);
+    RF_CHECK("tipfin-above: returns true", ok);
+    RF_CHECK("tipfin-above: frontier includes served cursor height",
+             frontier == A + 3);
+
+    sqlite3_close(db);
+    return failures;
+}
+
 int test_reducer_frontier(void)
 {
     int failures = 0;
@@ -973,6 +1000,7 @@ int test_reducer_frontier(void)
     failures += case_dump_reports_unavailable_store();
     failures += case_dump_reports_hstar_log_hole();
     failures += case_dump_reports_hstar_hash_split();
+    failures += case_log_frontier_above_tip_finalize_cursor();
     if (failures == 0)
         printf("reducer_frontier: all cases passed\n");
     else

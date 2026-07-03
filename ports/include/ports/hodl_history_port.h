@@ -37,6 +37,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Bump when the persisted HODL snapshot calculation semantics change.
+ * Rows with an older version are lazily recomputed by the background
+ * filler. */
+#define HODL_HISTORY_SNAPSHOT_CALC_VERSION 1
+
 /* One persisted supply-age snapshot. Mirrors struct hodl_history_row in
  * services/hodl_history_service.h field-for-field; declared here so the
  * port has no dependency on the service header. */
@@ -80,9 +85,10 @@ struct hodl_history_port {
     int64_t (*max_filled_height)(void *self);
 
     /* Lowest expected sample height that should be computed or refreshed.
-     * A height needs fill when its row is missing, or when a prior run saved
-     * total_zat=0 while the indexed outputs now prove historical value existed
-     * at that height. Sets *out_height to 0 when no work is pending. */
+     * A height needs fill when its row is missing, was written by an older
+     * calculation version, or was written before the source projection proved
+     * coverage through that sample. Sets *out_height to 0 when no work is
+     * pending. */
     bool (*next_fill_height)(void *self,
                              int64_t stride,
                              int64_t target,

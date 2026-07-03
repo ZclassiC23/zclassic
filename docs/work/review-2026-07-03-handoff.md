@@ -153,8 +153,8 @@ Mirror the transparent-keystore locking convention across all three.
 ### I. [LOW, subtract-don't-add] Binary consolidation (owner directive 2026-07-03)
 The architecture already bundles every service into one binary (`zclassic23`,
 Makefile:505). The split is clients + dev/test/ops tools (legitimate). Cleanups:
-- **Delete `zcl-browser`** (target + `tools/zcl-browser.c`) — orphan, duplicates `-gui`,
-  fails on headless boxes.
+- **DONE 2026-07-03:** delete `zcl-browser` (target + `tools/zcl-browser.c`) —
+  orphan, duplicates `-gui`, fails on headless boxes.
 - Fold `session` / `bot` dev scenarios into `test_parallel`.
 - Consolidate `zclassic-cli` + `zcl-rpc` into the one installed client.
 - **OPEN QUESTION (owner decision):** the binary is built as `zclassic23` everywhere

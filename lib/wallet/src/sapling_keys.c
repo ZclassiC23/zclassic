@@ -171,20 +171,32 @@ bool sapling_decode_payment_address(const char *str,
 bool sapling_keystore_have_spending_key(const struct sapling_keystore *sks,
                                          const uint8_t ivk[32])
 {
+    if (!sks || !ivk)
+        return false;
+    zcl_mutex_lock((zcl_mutex_t *)&sks->cs);
     for (size_t i = 0; i < sks->num_keys; i++) {
-        if (sks->keys[i].used && memcmp(sks->keys[i].ivk, ivk, 32) == 0)
+        if (sks->keys[i].used && memcmp(sks->keys[i].ivk, ivk, 32) == 0) {
+            zcl_mutex_unlock((zcl_mutex_t *)&sks->cs);
             return true;
+        }
     }
+    zcl_mutex_unlock((zcl_mutex_t *)&sks->cs);
     return false;
 }
 
 const struct sapling_key_entry *sapling_keystore_find_by_ivk(
     const struct sapling_keystore *sks, const uint8_t ivk[32])
 {
+    if (!sks || !ivk)
+        return NULL;
+    zcl_mutex_lock((zcl_mutex_t *)&sks->cs);
     for (size_t i = 0; i < sks->num_keys; i++) {
-        if (sks->keys[i].used && memcmp(sks->keys[i].ivk, ivk, 32) == 0)
+        if (sks->keys[i].used && memcmp(sks->keys[i].ivk, ivk, 32) == 0) {
+            zcl_mutex_unlock((zcl_mutex_t *)&sks->cs);
             return &sks->keys[i];
+        }
     }
+    zcl_mutex_unlock((zcl_mutex_t *)&sks->cs);
     return NULL;
 }
 
@@ -193,12 +205,18 @@ const struct sapling_key_entry *sapling_keystore_find_by_address(
     const uint8_t diversifier[ZC_DIVERSIFIER_SIZE],
     const uint8_t pk_d[32])
 {
+    if (!sks || !diversifier || !pk_d)
+        return NULL;
+    zcl_mutex_lock((zcl_mutex_t *)&sks->cs);
     for (size_t i = 0; i < sks->num_keys; i++) {
         if (sks->keys[i].used &&
             memcmp(sks->keys[i].diversifier, diversifier, ZC_DIVERSIFIER_SIZE) == 0 &&
-            memcmp(sks->keys[i].pk_d, pk_d, 32) == 0)
+            memcmp(sks->keys[i].pk_d, pk_d, 32) == 0) {
+            zcl_mutex_unlock((zcl_mutex_t *)&sks->cs);
             return &sks->keys[i];
+        }
     }
+    zcl_mutex_unlock((zcl_mutex_t *)&sks->cs);
     return NULL;
 }
 

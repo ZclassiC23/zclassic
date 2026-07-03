@@ -213,7 +213,7 @@ void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
 
 /* Peer-kind gauges. Tracks "Magic Bean reporting" over time: how many
  * connected peers identify as zclassicd-era /MagicBean:.../ clients
- * and how many identify as native ZClassic-C23 (via NODE_ZCL23 service
+ * and how many identify as native ZClassic23 (via NODE_ZCL23 service
  * bit or subver tag). Fed from node_health_snapshot peer iteration. */
 void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
                                 int64_t zcl23_count);

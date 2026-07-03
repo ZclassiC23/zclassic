@@ -38,9 +38,6 @@
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
 
-extern bool msg_version_get_external_ip(char *buf, size_t buflen,
-                                        uint16_t *port);
-
 /* -connect mode: only connect to specified peers, no seeds */
 bool g_connect_only = false;
 
@@ -1656,8 +1653,8 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     if (bip37_enabled())
         cm->manager.local_services |= NODE_BLOOM;
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
-    snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH,
-             "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/");
+    snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH, "%s",
+             msg_version_user_agent());
 
     return true;
 }

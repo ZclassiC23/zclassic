@@ -550,7 +550,7 @@ int test_postmortem(void)
     PM_CHECK("manifest records reason",
              file_contains(manifest_path, "\"reason\": \"unit-test\""));
     PM_CHECK("manifest records build id",
-             file_contains(manifest_path, "\"build_id\": \"ZClassic-C23-"));
+             file_contains(manifest_path, "\"build_id\": \"ZClassic23-"));
     PM_CHECK("manifest records git sha placeholder",
              file_contains(manifest_path, "\"git_sha\": \"unknown\""));
 

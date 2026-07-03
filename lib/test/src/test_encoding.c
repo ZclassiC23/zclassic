@@ -401,7 +401,7 @@ int test_encoding(void)
 
     printf("CLIENT_NAME... ");
     {
-        if (strcmp(CLIENT_NAME, "ZClassic-C23") == 0)
+        if (strcmp(CLIENT_NAME, "ZClassic23") == 0)
             printf("OK\n");
         else {
             printf("FAIL: %s\n", CLIENT_NAME);

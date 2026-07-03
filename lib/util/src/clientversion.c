@@ -6,7 +6,7 @@
 #include "util/clientversion.h"
 #include <stdio.h>
 
-const char CLIENT_NAME[] = "ZClassic-C23";
+const char CLIENT_NAME[] = "ZClassic23";
 
 #ifndef ZCL_BUILD_COMMIT
 #define ZCL_BUILD_COMMIT "unknown"
@@ -33,4 +33,3 @@ void FormatVersion(int nVersion, char *out, size_t out_size)
     else
         snprintf(out, out_size, "%d.%d.%d-%d", major, minor, rev, build - 50);
 }
-

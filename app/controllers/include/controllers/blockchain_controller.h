@@ -9,6 +9,8 @@
 #include "rpc/server.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 struct coins_view_db;
 struct coins_view_cache;
@@ -26,7 +28,8 @@ void rpc_blockchain_mmr_append(const uint8_t block_hash[32]);
 void rpc_blockchain_mmr_init_from_state(struct node_db *ndb);
 void rpc_blockchain_mmr_catchup(struct main_state *ms);
 void rpc_blockchain_mmr_save(struct node_db *ndb);
-struct mmr *rpc_blockchain_get_mmr(void);
+bool rpc_blockchain_mmr_snapshot(uint8_t root[32], uint64_t *num_leaves,
+                                 uint32_t *num_peaks);
 
 /* MMB (Merkle Mountain Belt) — O(1) append, rich FlyClient leaves.
  * Runs alongside MMR during transition. */
@@ -36,14 +39,17 @@ void rpc_blockchain_mmb_append(const struct mmb_leaf *leaf);
 void rpc_blockchain_mmb_init_from_state(struct node_db *ndb);
 void rpc_blockchain_mmb_catchup(struct main_state *ms);
 void rpc_blockchain_mmb_save(struct node_db *ndb);
-struct mmb *rpc_blockchain_get_mmb(void);
+bool rpc_blockchain_mmb_snapshot(uint8_t root[32], uint64_t *num_leaves,
+                                 uint32_t *num_mountains);
 
 /* Commitment MMR — binds UTXO state to PoW chain every 100 blocks.
  * Each leaf: SHA3(height || block_hash || utxo_root).
  * Used to verify imported UTXO snapshots without replaying history. */
-struct mmr *rpc_blockchain_get_commitment_mmr(void);
 void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb);
 void rpc_blockchain_commitment_mmr_save(struct node_db *ndb);
+bool rpc_blockchain_commitment_mmr_snapshot(uint8_t root[32],
+                                            uint64_t *num_leaves,
+                                            uint32_t *num_peaks);
 
 /* Append commitment at current height if it's a commitment interval.
  * Called from connect_block after UTXO set is updated.

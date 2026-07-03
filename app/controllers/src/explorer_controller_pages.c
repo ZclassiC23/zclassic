@@ -45,6 +45,7 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -238,11 +239,110 @@ size_t serve_stats(uint8_t *r, size_t max)
 /* ── Factoids Page ────────────────────────────────────────── */
 
 #define FACTOIDS_CACHE_SIZE (1024 * 1024)  /* 1MB — 17 sections with SHA3 */
+#define FACTOIDS_CACHE_HASH_MAX 80
 static char g_factoids_cache[FACTOIDS_CACHE_SIZE] = "";
 /* Published with release after the bytes are in place and read with acquire in
  * serve_factoids() (same contract as g_stats_cache_len). */
 static _Atomic size_t g_factoids_cache_len = 0;
 static _Atomic int64_t g_factoids_cache_height = 0;
+static pthread_mutex_t g_factoids_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_factoids_cache_hash[FACTOIDS_CACHE_HASH_MAX] = "";
+
+static bool factoids_block_hash_at(const char *datadir, int64_t height,
+                                   char out[FACTOIDS_CACHE_HASH_MAX])
+{
+    sqlite3 *db = NULL;
+    char sql[160];
+
+    if (out)
+        out[0] = '\0';
+    if (!datadir || height < 0 || !out ||
+        !explorer_open_readonly_db(datadir, &db))
+        return false;
+
+    snprintf(sql, sizeof(sql),
+             "SELECT hex(hash) FROM blocks WHERE height=%" PRId64, height);
+    bool ok = sql_query_text(db, sql, out, FACTOIDS_CACHE_HASH_MAX);
+    sqlite3_close(db);
+    return ok && out[0] != '\0';
+}
+
+#ifdef ZCL_TESTING
+static void factoids_cache_clear(void)
+{
+    pthread_mutex_lock(&g_factoids_cache_lock);
+    g_factoids_cache[0] = '\0';
+    g_factoids_cache_hash[0] = '\0';
+    atomic_store_explicit(&g_factoids_cache_height, 0, memory_order_release);
+    atomic_store_explicit(&g_factoids_cache_len, 0, memory_order_release);
+    pthread_mutex_unlock(&g_factoids_cache_lock);
+}
+#endif
+
+static void factoids_cache_publish(const char *data, size_t len,
+                                   int64_t height, const char *hash)
+{
+    if (!data || len == 0 || len >= FACTOIDS_CACHE_SIZE || height <= 0 ||
+        !hash || !hash[0])
+        return;
+
+    pthread_mutex_lock(&g_factoids_cache_lock);
+    memcpy(g_factoids_cache, data, len);
+    g_factoids_cache[len] = '\0';
+    snprintf(g_factoids_cache_hash, sizeof(g_factoids_cache_hash), "%s", hash);
+    atomic_store_explicit(&g_factoids_cache_height, height,
+                          memory_order_release);
+    atomic_store_explicit(&g_factoids_cache_len, len, memory_order_release);
+    pthread_mutex_unlock(&g_factoids_cache_lock);
+}
+
+static size_t factoids_cache_copy_if_valid(const char *datadir, int64_t tip,
+                                           uint8_t *r, size_t max,
+                                           bool *behind_tip_out)
+{
+    size_t cached;
+    int64_t cache_height;
+    char cache_hash[FACTOIDS_CACHE_HASH_MAX];
+    char live_hash[FACTOIDS_CACHE_HASH_MAX];
+
+    if (behind_tip_out)
+        *behind_tip_out = false;
+    if (!r || max == 0)
+        return 0;
+
+    pthread_mutex_lock(&g_factoids_cache_lock);
+    cached = atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
+    cache_height =
+        atomic_load_explicit(&g_factoids_cache_height, memory_order_acquire);
+    snprintf(cache_hash, sizeof(cache_hash), "%s", g_factoids_cache_hash);
+    pthread_mutex_unlock(&g_factoids_cache_lock);
+
+    if (cached == 0 || cache_height <= 0 || !cache_hash[0])
+        return 0;
+    if (tip > 0 && cache_height > tip)
+        return 0;
+    if (!factoids_block_hash_at(datadir, cache_height, live_hash) ||
+        strcmp(cache_hash, live_hash) != 0)
+        return 0;
+
+    pthread_mutex_lock(&g_factoids_cache_lock);
+    size_t current_len =
+        atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
+    int64_t current_height =
+        atomic_load_explicit(&g_factoids_cache_height, memory_order_acquire);
+    bool same_entry = current_len == cached && current_height == cache_height &&
+                      strcmp(g_factoids_cache_hash, cache_hash) == 0;
+    size_t copy = 0;
+    if (same_entry) {
+        copy = cached < max ? cached : max;
+        memcpy(r, g_factoids_cache, copy);
+    }
+    pthread_mutex_unlock(&g_factoids_cache_lock);
+
+    if (copy > 0 && behind_tip_out && tip > 0 && cache_height < tip)
+        *behind_tip_out = true;
+    return copy;
+}
 
 void *factoids_compute_thread(void *arg)
 {
@@ -251,6 +351,7 @@ void *factoids_compute_thread(void *arg)
     int64_t start_index_tip = -1;
     int64_t start_tip =
         explorer_page_served_tip_height(ctx->datadir, &start_index_tip);
+    char start_hash[FACTOIDS_CACHE_HASH_MAX];
     if (start_tip <= 0) {
         printf("Factoids background: deferred until served frontier is known "
                "(served=%lld index=%lld)\n",
@@ -259,14 +360,13 @@ void *factoids_compute_thread(void *arg)
         g_factoids_computing = 0;
         return NULL;
     }
-    /* Load previous cache from disk for instant serving */
-    if (g_factoids_cache_len == 0) {
-        size_t disk_len = cache_load("factoids", g_factoids_cache, FACTOIDS_CACHE_SIZE);
-        if (disk_len > 0) {
-            atomic_store_explicit(&g_factoids_cache_len, disk_len, memory_order_release);
-            printf("Factoids: loaded %zu bytes from disk cache (instant)\n", disk_len);
-            fflush(stdout);
-        }
+    if (!factoids_block_hash_at(ctx->datadir, start_tip, start_hash)) {
+        printf("Factoids background: deferred until served tip hash is indexed "
+               "(served=%lld index=%lld)\n",
+               (long long)start_tip, (long long)start_index_tip);
+        fflush(stdout);
+        g_factoids_computing = 0;
+        return NULL;
     }
     printf("Factoids background: computing historian data...\n");
     fflush(stdout);
@@ -285,13 +385,13 @@ void *factoids_compute_thread(void *arg)
         int64_t end_index_tip = -1;
         int64_t end_tip =
             explorer_page_served_tip_height(ctx->datadir, &end_index_tip);
-        bool publishable = end_tip >= start_tip;
+        char end_hash[FACTOIDS_CACHE_HASH_MAX];
+        bool publishable =
+            end_tip >= start_tip &&
+            factoids_block_hash_at(ctx->datadir, start_tip, end_hash) &&
+            strcmp(start_hash, end_hash) == 0;
         if (publishable) {
-            memcpy(g_factoids_cache, tmp, len);
-            atomic_store_explicit(&g_factoids_cache_height, start_tip,
-                                  memory_order_release);
-            atomic_store_explicit(&g_factoids_cache_len, len, memory_order_release);
-            cache_save("factoids", g_factoids_cache, len);
+            factoids_cache_publish(tmp, len, start_tip, start_hash);
         } else {
             printf("Factoids background: discarded unpublished build "
                    "(served_start=%lld start_index=%lld end_index=%lld "
@@ -315,18 +415,18 @@ size_t serve_factoids(uint8_t *r, size_t max)
     /* Return cached version if available. Acquire-load pairs with the release
      * store in factoids_compute_thread(): a nonzero length guarantees the
      * matching g_factoids_cache bytes are visible. */
-    size_t cached = atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
-    int64_t cache_height =
-        atomic_load_explicit(&g_factoids_cache_height, memory_order_acquire);
-    if (cached > 0 && (tip <= 0 || cache_height > 0)) {
-        if (tip > 0 && cache_height < tip) {
+    bool cached_behind_tip = false;
+    size_t copied = factoids_cache_copy_if_valid(ctx->datadir, tip, r, max,
+                                                 &cached_behind_tip);
+    if (copied > 0) {
+        if (cached_behind_tip) {
             explorer_start_once(&g_factoids_computing, factoids_compute_thread,
                                 "factoids_compute");
         }
-        size_t copy = cached < max ? cached : max;
-        memcpy(r, g_factoids_cache, copy);
-        return copy;
+        return copied;
     }
+    size_t cached =
+        atomic_load_explicit(&g_factoids_cache_len, memory_order_acquire);
     if (index_tip >= 0 && tip >= 0 && index_tip > tip)
         return explorer_view_loading_placeholder(r, max,
             cached > 0 ? "Updating Factoids..." : "Loading Factoids...",
@@ -339,6 +439,33 @@ size_t serve_factoids(uint8_t *r, size_t max)
         cached > 0 ? "Updating Factoids..." : "Loading Factoids...",
         "#33ff99", "Computing historian data from blockchain.");
 }
+
+#ifdef ZCL_TESTING
+void explorer_test_set_datadir(const char *datadir)
+{
+    explorer_ctx()->datadir = datadir;
+}
+
+void explorer_test_reset_factoids_cache(void)
+{
+    factoids_cache_clear();
+    atomic_store_explicit(&g_factoids_computing, 0, memory_order_release);
+}
+
+bool explorer_test_compute_factoids_cache_now(void)
+{
+    atomic_store_explicit(&g_factoids_computing, 1, memory_order_release);
+    factoids_compute_thread(NULL);
+    return atomic_load_explicit(&g_factoids_cache_len,
+                                memory_order_acquire) > 0;
+}
+
+bool explorer_test_factoids_compute_active(void)
+{
+    return atomic_load_explicit(&g_factoids_computing,
+                                memory_order_acquire) != 0;
+}
+#endif
 
 /* ── ZSLP Tokens Page ─────────────────────────────────────── */
 

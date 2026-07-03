@@ -22,8 +22,6 @@
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"
-#include "chain/mmr.h"
-#include "chain/mmb.h"
 #include "config/runtime.h"
 #include "controllers/blockchain_controller.h"
 #include "validation/process_block.h" /* g_body_pull_active */
@@ -37,6 +35,20 @@
 /* Internal to app/jobs/src (tip_finalize_post_step.h is not on the
  * include path by design); declare the entry point directly. */
 extern void tip_finalize_run_post_finalize(struct block_index *pindex_new);
+
+static uint64_t tp_mmr_leaves(void)
+{
+    uint64_t leaves = 0;
+    rpc_blockchain_mmr_snapshot(NULL, &leaves, NULL);
+    return leaves;
+}
+
+static uint64_t tp_mmb_leaves(void)
+{
+    uint64_t leaves = 0;
+    rpc_blockchain_mmb_snapshot(NULL, &leaves, NULL);
+    return leaves;
+}
 
 #define TP_CHECK(name, expr) do { \
     printf("tip_finalize_post_step: %s... ", (name)); \
@@ -197,10 +209,8 @@ int test_tip_finalize_post_step(void)
     rt.mempool = &g_tp_pool;
     app_runtime_set_current(&rt);
 
-    struct mmr *mmr = rpc_blockchain_get_mmr();
-    struct mmb *mmb = rpc_blockchain_get_mmb();
-    uint64_t mmr0 = mmr->num_leaves;
-    uint64_t mmb0 = mmb->num_leaves;
+    uint64_t mmr0 = tp_mmr_leaves();
+    uint64_t mmb0 = tp_mmb_leaves();
 
     /* ── Positive: body readable → all assertable effects fire ── */
     tip_finalize_run_post_finalize(&bi);
@@ -210,14 +220,14 @@ int test_tip_finalize_post_step(void)
              w->sapling_notes[0].spent == true);
     TP_CHECK("wallet: best_block_height advanced",
              w->best_block_height == 1);
-    TP_CHECK("MMR: one leaf appended", mmr->num_leaves == mmr0 + 1);
-    TP_CHECK("MMB: one leaf appended", mmb->num_leaves == mmb0 + 1);
+    TP_CHECK("MMR: one leaf appended", tp_mmr_leaves() == mmr0 + 1);
+    TP_CHECK("MMB: one leaf appended", tp_mmb_leaves() == mmb0 + 1);
 
     /* ── Negative: HAVE_DATA absent → diagnosed skip, zero effects ── */
     w->sapling_notes[0].spent = false;
     TP_CHECK("re-arm mempool", tp_pool_add(&blk.vtx[1]));
-    mmr0 = mmr->num_leaves;
-    mmb0 = mmb->num_leaves;
+    mmr0 = tp_mmr_leaves();
+    mmb0 = tp_mmb_leaves();
     struct block_index bi_nodata;
     block_index_init(&bi_nodata);
     memset(bi_nodata.hashBlock.data, 0x31, 32);
@@ -228,8 +238,8 @@ int test_tip_finalize_post_step(void)
              tx_mempool_exists(&g_tp_pool, &blk.vtx[1].hash));
     TP_CHECK("no-body skip: note not marked spent",
              w->sapling_notes[0].spent == false);
-    TP_CHECK("no-body skip: MMR unchanged", mmr->num_leaves == mmr0);
-    TP_CHECK("no-body skip: MMB unchanged", mmb->num_leaves == mmb0);
+    TP_CHECK("no-body skip: MMR unchanged", tp_mmr_leaves() == mmr0);
+    TP_CHECK("no-body skip: MMB unchanged", tp_mmb_leaves() == mmb0);
     TP_CHECK("no-body skip: wallet height unchanged",
              w->best_block_height == 1);
 
@@ -245,12 +255,12 @@ int test_tip_finalize_post_step(void)
     tip_finalize_run_post_finalize(&bi_unread);
     TP_CHECK("unreadable skip: mempool untouched",
              tx_mempool_exists(&g_tp_pool, &blk.vtx[1].hash));
-    TP_CHECK("unreadable skip: MMR unchanged", mmr->num_leaves == mmr0);
+    TP_CHECK("unreadable skip: MMR unchanged", tp_mmr_leaves() == mmr0);
 
     /* NULL pindex is a guarded no-op. */
     tip_finalize_run_post_finalize(NULL);
     TP_CHECK("NULL pindex: no crash, MMR unchanged",
-             mmr->num_leaves == mmr0);
+             tp_mmr_leaves() == mmr0);
 
     app_runtime_set_current(NULL);
     tx_mempool_free(&g_tp_pool);

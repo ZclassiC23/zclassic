@@ -176,7 +176,8 @@ int db_swap_list(struct node_db *ndb, struct swap_contract *out,
                  size_t max, int state_filter)
 {
     if (!ndb || !ndb->open) return 0;
-    if (!out && max > 0) LOG_FAIL("htlc", "db_swap_list: out is NULL");
+    if (!out && max > 0)
+        LOG_RETURN(0, "htlc", "db_swap_list: out is NULL");
 
     sqlite3_stmt *s = NULL;
     if (state_filter >= 0) {

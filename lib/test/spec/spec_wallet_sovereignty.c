@@ -33,7 +33,7 @@ int spec_wallet_sovereignty(void)
             GIVEN("node page loads")
                 GET("/wallet/node");
             THEN("version string shows what they run")
-                EXPECT(has("ZClassic-C23"));
+                EXPECT(has("ZClassic23:0.1.0"));
             THEN("protocol capabilities listed")
                 EXPECT(has("NODE_NETWORK"));
             PASS();

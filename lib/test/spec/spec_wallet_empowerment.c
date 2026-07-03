@@ -43,7 +43,7 @@ int spec_wallet_empowerment(void)
             THEN("sovereignty language is present")
                 EXPECT(has("sovereign") || has("Sovereign"));
             THEN("user sees their identity on the network")
-                EXPECT(has("ZClassic-C23"));
+                EXPECT(has("ZClassic23:0.1.0"));
             PASS();
         }
 

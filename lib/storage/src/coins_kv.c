@@ -325,6 +325,42 @@ bool coins_kv_get_sqlite(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
     return found;
 }
 
+bool coins_kv_get_prevout_sqlite(sqlite3 *db, const uint8_t txid[32],
+                                 uint32_t vout, int64_t *value_out,
+                                 uint8_t *script_out, size_t script_cap,
+                                 size_t *script_len_out,
+                                 int32_t *height_out,
+                                 bool *is_coinbase_out)
+{
+    if (!db || !txid) return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT value, script, height, is_coinbase "
+        "FROM coins WHERE txid=? AND vout=?",
+        -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int (s, 2, (int)vout);
+
+    bool found = false;
+    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        found = true;
+        if (value_out) *value_out = sqlite3_column_int64(s, 0);
+        int slen = sqlite3_column_bytes(s, 1);
+        const void *sblob = sqlite3_column_blob(s, 1);
+        if (script_len_out) *script_len_out = (size_t)slen;
+        if (height_out) *height_out = sqlite3_column_int(s, 2);
+        if (is_coinbase_out) *is_coinbase_out = sqlite3_column_int(s, 3) != 0;
+        if (script_out && script_cap > 0 && sblob && slen > 0) {
+            size_t copy = (size_t)slen < script_cap
+                        ? (size_t)slen : script_cap;
+            memcpy(script_out, sblob, copy);
+        }
+    }
+    sqlite3_finalize(s);
+    return found;
+}
+
 bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t *value_out, uint8_t *script_out, size_t script_cap,
                   size_t *script_len_out)
@@ -334,6 +370,20 @@ bool coins_kv_get(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                              script_len_out);
     return coins_kv_get_sqlite(db, txid, vout, value_out, script_out,
                                script_cap, script_len_out);
+}
+
+bool coins_kv_get_prevout(sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+                          int64_t *value_out, uint8_t *script_out,
+                          size_t script_cap, size_t *script_len_out,
+                          int32_t *height_out, bool *is_coinbase_out)
+{
+    if (coins_kv_overlay_safe())
+        return coins_ram_get_prevout(txid, vout, value_out, script_out,
+                                     script_cap, script_len_out, height_out,
+                                     is_coinbase_out);
+    return coins_kv_get_prevout_sqlite(db, txid, vout, value_out, script_out,
+                                       script_cap, script_len_out, height_out,
+                                       is_coinbase_out);
 }
 
 int64_t coins_kv_count_sqlite(sqlite3 *db)

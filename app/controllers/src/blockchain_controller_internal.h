@@ -45,10 +45,6 @@ struct blockchain_context *blockchain_ctx(void);
 void block_header_to_json(const struct block_index *bi,
                           struct json_value *result);
 
-/* MMR initialization predicates — preserve the original gating that lived
- * alongside the static globals in blockchain_controller.c. */
-bool rpc_blockchain_mmr_initialized(void);
-
 /* ── RPC handler declarations (defined in sibling files) ── */
 
 /* blockchain_controller_blocks.c */

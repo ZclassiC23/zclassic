@@ -501,63 +501,68 @@ static bool log_hash_at(sqlite3 *db, const char *log_table,
  * validate_headers_log.hash and script_validate_log.block_hash. A split
  * counts only when BOTH rows are present with non-NULL 32-byte hashes that
  * differ. Walks anchor+1 .. *hstar; clamps on the first split.
- *
- * STEP 5 (2026-06-28): this clamp used to be a SILENT permanent cap that set
- * *hstar = h-1 and returned, delegating 100% of the cure to an unbounded
- * downstream remedy with no named signal — a height could sit frozen one below
- * forever with nothing on record. That silent delegation is removed here:
- *
- *   (1) A split now has a BOUNDED, auto-terminating repair OWNER:
- *       maybe_repair_validate_script_hash_split() (stage_repair_reducer_-
- *       frontier_coin.c) self-discovers the lowest split via
- *       stale_script_hash_split_unlocked() and re-derives BOTH sides from the
- *       one canonical active block (delete stale script+proof rows, rewind
- *       cursors, replay). With both verdicts re-derived from a single body a
- *       standing split can no longer be produced — this branch is the dead
- *       band-aid for a defect class that now has a real owner.
- *
- *   (2) On the off chance a residual/transient split (a pre-fix stale row) is
- *       still seen, the clamp is KEPT as a pure SAFETY floor so H* never
- *       advances past an unproven height (compute_hstar's returned value is
- *       byte-identical to the old behavior in every case) — but it is no
- *       longer SILENT: it emits a throttled, named blocker line identifying
- *       the exact height + both 4-byte hash prefixes and the repair owner, so
- *       the pass TERMINATES as a named-and-owned condition rather than a quiet
- *       freeze. The repair owner is the auto-terminating remedy; if IT cannot
- *       make progress it raises EV_OPERATOR_NEEDED itself.
+ * Residual splits are now owned by maybe_repair_validate_script_hash_split()
+ * (re-derive both verdicts from the canonical body). This clamp stays as the
+ * safety floor and names the owner instead of silently freezing H* below the
+ * split.
  *
  * Returns false on a DB read error. Caller holds progress_store_tx_lock(). */
 static bool apply_hash_agreement(sqlite3 *db, int32_t anchor, int32_t *hstar)
 {
-    for (int32_t h = anchor + 1; h <= *hstar; h++) {
-        uint8_t vh[32], sv[32];
-        bool vh_found = false, sv_found = false;
-        if (!log_hash_at(db, "validate_headers_log", "hash", h, vh, &vh_found))
-            return false;
-        if (!log_hash_at(db, "script_validate_log", "block_hash", h, sv,
-                         &sv_found))
-            return false;
-        if (vh_found && sv_found && memcmp(vh, sv, 32) != 0) {
-            /* Genuine residual split: clamp H* to h-1 (never below the anchor)
-             * so we never serve the unproven height, and NAME it loudly so the
-             * bounded repair owner's work is visible — never a silent freeze. */
-            *hstar = (h - 1 < anchor) ? anchor : (h - 1);
-            static struct log_throttle split_throttle = LOG_THROTTLE_INIT;
-            int64_t now = platform_time_wall_unix();
-            uint64_t reps = 0;
-            if (log_throttle_should_emit(&split_throttle, (uint64_t)(uint32_t)h,
-                                         now, 300, &reps))
-                LOG_WARN("reducer",
-                         "validate_headers vs script_validate hash split at "
-                         "h=%d (vh=%02x%02x%02x%02x sv=%02x%02x%02x%02x) — H* "
-                         "clamped to %d; owner = maybe_repair_validate_script_"
-                         "hash_split (re-derive from canonical body) "
-                         "repeated=%llu",
-                         h, vh[0], vh[1], vh[2], vh[3], sv[0], sv[1], sv[2],
-                         sv[3], *hstar, (unsigned long long)reps);
-            return true;
-        }
+    if (*hstar <= anchor)
+        return true;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT v.height, v.hash, s.block_hash "
+            "FROM validate_headers_log v "
+            "JOIN script_validate_log s ON s.height = v.height "
+            "WHERE v.height > ? AND v.height <= ? "
+            "AND length(v.hash) = 32 AND length(s.block_hash) = 32 "
+            "AND v.hash <> s.block_hash "
+            "ORDER BY v.height ASC LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare hash-agreement split scan failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)anchor);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)*hstar);
+
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        int h = sqlite3_column_int(st, 0);
+        const void *vh_blob = sqlite3_column_blob(st, 1);
+        const void *sv_blob = sqlite3_column_blob(st, 2);
+        uint8_t vh[32] = {0};
+        uint8_t sv[32] = {0};
+        if (vh_blob) memcpy(vh, vh_blob, 32);
+        if (sv_blob) memcpy(sv, sv_blob, 32);
+
+        /* Genuine residual split: clamp H* to h-1 (never below the anchor)
+         * so we never serve the unproven height, and NAME it loudly so the
+         * bounded repair owner's work is visible — never a silent freeze. */
+        *hstar = (h - 1 < anchor) ? anchor : (h - 1);
+        static struct log_throttle split_throttle = LOG_THROTTLE_INIT;
+        int64_t now = platform_time_wall_unix();
+        uint64_t reps = 0;
+        if (log_throttle_should_emit(&split_throttle, (uint64_t)(uint32_t)h,
+                                     now, 300, &reps))
+            LOG_WARN("reducer",
+                     "validate_headers vs script_validate hash split at "
+                     "h=%d (vh=%02x%02x%02x%02x sv=%02x%02x%02x%02x) — H* "
+                     "clamped to %d; owner = maybe_repair_validate_script_"
+                     "hash_split (re-derive from canonical body) "
+                     "repeated=%llu",
+                     h, vh[0], vh[1], vh[2], vh[3], sv[0], sv[1], sv[2],
+                     sv[3], *hstar, (unsigned long long)reps);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("reducer", "step hash-agreement split scan failed: %s",
+                 sqlite3_errmsg(db));
+        rc_ok = false;
     }
+    sqlite3_finalize(st);
+    if (!rc_ok)
+        return false;
     return true;
 }
 
@@ -753,6 +758,9 @@ bool reducer_frontier_log_frontier_above(sqlite3 *progress_db,
     int64_t cursor = 0;
     int32_t h = verified_floor;
     bool ok = cursor_at(progress_db, cursor_name, &cursor);
+    if (ok && (strcmp(log_table, "tip_finalize_log") == 0 ||
+               strcmp(cursor_name, "tip_finalize") == 0))
+        cursor = cursor > 0 ? cursor + 1 : cursor;
     if (ok)
         ok = log_contiguous_prefix(progress_db, log_table, verified_floor,
                                    cursor, &h);

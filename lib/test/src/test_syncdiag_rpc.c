@@ -28,6 +28,7 @@
 #include "validation/mirror_consensus.h"
 #include "net/connman.h"
 #include "net/fast_sync.h"
+#include "net/version.h"
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "json/json.h"
@@ -117,7 +118,7 @@ static struct p2p_node *syncdiag_add_peer(struct connman *cm,
     node->state = state;
     node->services = NODE_NETWORK | NODE_ZCL23;
     snprintf(node->sub_ver, sizeof(node->sub_ver),
-             "%s", "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/");
+             "%s", "/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/");
     snprintf(node->clean_sub_ver, sizeof(node->clean_sub_ver),
              "%s", node->sub_ver);
     node->starting_height = 3117074;
@@ -364,6 +365,7 @@ int test_syncdiag_rpc(void)
         ok = ok && life && json_get(life, "rejected") != NULL;
         ok = ok && life && json_get(life, "cache_skipped") != NULL;
         ok = ok && life && json_get(life, "magicbean_handshakes") != NULL;
+        ok = ok && life && json_get(life, "zclassic23_handshakes") != NULL;
         ok = ok && life && json_get(life, "zclassic_c23_handshakes") != NULL;
         ok = ok && life_sources && life_sources->type == JSON_ARR;
         ok = ok && addnodes && addnodes->type == JSON_ARR;
@@ -377,6 +379,55 @@ int test_syncdiag_rpc(void)
 
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("getnetworkinfo: exposes configured external endpoint "
+           "(RED)... ");
+    {
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+
+        msg_version_clear_external_ip_for_test();
+        msg_version_set_external_ip("203.0.113.7:8023", 8033);
+        rpc_table_init(&tbl);
+        register_net_rpc_commands(&tbl);
+        rpc_net_set_connman(NULL);
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        bool ok = rpc_table_execute(&tbl, "getnetworkinfo",
+                                    &params, &result);
+
+        const struct json_value *localaddrs =
+            json_get(&result, "localaddresses");
+        const struct json_value *first =
+            localaddrs && localaddrs->type == JSON_ARR
+                ? json_at(localaddrs, 0)
+                : NULL;
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "externalip_configured"));
+        ok = ok && localaddrs && localaddrs->type == JSON_ARR;
+        ok = ok && json_size(localaddrs) == 1;
+        ok = ok && first && strcmp(json_get_str(json_get(first, "address")),
+                                   "203.0.113.7") == 0;
+        ok = ok && first &&
+             json_get_int(json_get(first, "port")) == 8023;
+        ok = ok && first &&
+             json_get_int(json_get(first, "score")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "advertised_subver")),
+                          msg_version_user_agent()) == 0;
+
+        json_free(&params);
+        json_free(&result);
+        rpc_net_set_connman(NULL);
+        msg_version_clear_external_ip_for_test();
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -438,6 +489,8 @@ int test_syncdiag_rpc(void)
                                           "inbound_handshake_seen"));
         ok = ok && json_get_bool(json_get(&result,
                                           "remote_handshake_seen"));
+        ok = ok && json_get_int(json_get(&result, "zclassic23_peers")) ==
+                  json_get_int(json_get(&result, "zclassic_c23_peers"));
         const struct json_value *addnodes =
             json_get(&result, "addnode_status");
         const struct json_value *first =
@@ -456,6 +509,15 @@ int test_syncdiag_rpc(void)
              json_get_int(json_get(first, "tcp_failures")) == 1;
         ok = ok && first &&
              json_get_int(json_get(first, "protocol_failures")) == 0;
+
+        json_free(&result);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "getpeerinfo",
+                                     &params, &result);
+        const struct json_value *peer0 =
+            result.type == JSON_ARR ? json_at(&result, 0) : NULL;
+        ok = ok && peer0 && json_get_bool(json_get(peer0, "zclassic23"));
+        ok = ok && peer0 && json_get_bool(json_get(peer0, "zclassic_c23"));
 
         json_free(&params);
         json_free(&result);

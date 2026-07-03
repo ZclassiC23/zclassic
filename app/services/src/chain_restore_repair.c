@@ -40,6 +40,60 @@ static bool chain_restore_candidate_matches_disk(
     return chain_restore_block_is_consensus_backed_on_disk(cand, datadir);
 }
 
+static int chain_restore_block_index_height_cmp(const void *a, const void *b)
+{
+    const struct block_index *ia = *(const struct block_index * const *)a;
+    const struct block_index *ib = *(const struct block_index * const *)b;
+    int ha = ia ? ia->nHeight : -1;
+    int hb = ib ? ib->nHeight : -1;
+    return (ha > hb) - (ha < hb);
+}
+
+static bool chain_restore_fixed_list_push(struct block_index ***items,
+                                          size_t *count,
+                                          size_t *cap,
+                                          struct block_index *p)
+{
+    if (!items || !count || !cap || !p)
+        return false;
+    if (*count == *cap) {
+        size_t new_cap = *cap ? *cap * 2 : 64;
+        if (new_cap < *cap ||
+            new_cap > ((size_t)-1) / sizeof(struct block_index *))
+            return false;
+        struct block_index **grown = zcl_realloc(
+            *items, new_cap * sizeof(struct block_index *),
+            "chain_restore/fixed_nbits");
+        if (!grown)
+            return false;
+        *items = grown;
+        *cap = new_cap;
+    }
+    (*items)[(*count)++] = p;
+    return true;
+}
+
+static void chain_restore_recompute_chainwork_sorted(
+    struct block_index **items,
+    size_t count)
+{
+    if (!items || count == 0)
+        return;
+    qsort(items, count, sizeof(*items), chain_restore_block_index_height_cmp);
+    for (size_t i = 0; i < count; i++) {
+        struct block_index *p = items[i];
+        if (!p)
+            continue;
+        if (p->pprev) {
+            block_index_build_skip(p);
+            struct arith_uint256 proof = GetBlockProof(p);
+            arith_uint256_add(&p->nChainWork, &p->pprev->nChainWork, &proof);
+        } else {
+            p->nChainWork = GetBlockProof(p);
+        }
+    }
+}
+
 /* Slot store under the active_chain writer lock: a concurrent window grow
  * republishes c->chain, so an unlocked store could land in a just-retired
  * array and be lost. The store itself stays a plain pointer write per the
@@ -338,6 +392,8 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     int tip_h = active_chain_height(&ms->chain_active);
 
     int fixed = 0, read_errors = 0, invalidated_off_chain = 0;
+    struct block_index **fixed_items = NULL;
+    size_t fixed_count = 0, fixed_cap = 0;
     size_t iter = 0;
     struct block_index *p;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
@@ -371,24 +427,30 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
         }
 
         if (blk.header.nBits != 0) {
+            if (!chain_restore_fixed_list_push(&fixed_items, &fixed_count,
+                                               &fixed_cap, p)) {
+                LOG_WARN("chain",
+                         "[nbits-backfill] could not track repaired entry "
+                         "h=%d for ordered chainwork recompute; leaving it "
+                         "unchanged",
+                         p->nHeight);
+                read_errors++;
+                block_free(&blk);
+                continue;
+            }
             p->nVersion = blk.header.nVersion;
             p->hashMerkleRoot = blk.header.hashMerkleRoot;
             p->hashFinalSaplingRoot = blk.header.hashFinalSaplingRoot;
             p->nTime = blk.header.nTime;
             p->nBits = blk.header.nBits;
             p->nNonce = blk.header.nNonce;
-            if (p->pprev) {
-                block_index_build_skip(p);
-                struct arith_uint256 proof = GetBlockProof(p);
-                arith_uint256_add(&p->nChainWork,
-                                  &p->pprev->nChainWork, &proof);
-            } else {
-                p->nChainWork = GetBlockProof(p);
-            }
             fixed++;
         }
         block_free(&blk);
     }
+
+    chain_restore_recompute_chainwork_sorted(fixed_items, fixed_count);
+    free(fixed_items);
 
     if (fixed > 0 || read_errors > 0 || invalidated_off_chain > 0)
         printf("[nbits-backfill] fixed=%d pindex entries (read_errors=%d "
@@ -407,6 +469,8 @@ int chain_restore_clear_failed_above_tip(struct main_state *ms)
         return 0;
 
     int tip_h = active_chain_height(&ms->chain_active);
+    if (tip_h < 0)
+        return 0;
 
     int cleared = 0;
     int refetch = 0;
@@ -576,31 +640,19 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
      * fields under ms->cs_main, so this rebuild MUST hold cs_main too —
      * otherwise it tears block_index/active_chain state out from under a
      * concurrent reader (the malloc_trim-during-free heap-corruption SEGV, same
-     * class as the fixed phashBlock UAF). Lock order is progress_store_tx_lock
-     * -> cs_main (see stage_repair_reducer_frontier.c); chain_restore_quarantine
-     * _synthetic_tip above owns progress_store_tx_lock and has already returned,
-     * so acquiring cs_main here introduces no inversion. cs_main -> csr->lock
-     * (reachable via the small-tip csr commit) and cs_main -> active_chain
-     * write_lock are forward edges. Released before the lock-free post-restore
+     * class as the fixed phashBlock UAF). The tip read inside this lock uses
+     * active_chain_cached_tip(), not active_chain_tip(): the latter can consult
+     * the tip authority and, before that authority is registered, fall back
+     * through active_chain_height() into progress_store_tx_lock(). Taking that
+     * path under cs_main would invert the reducer reconcile order
+     * (progress_store_tx_lock -> cs_main). active_chain_cached_tip() is the raw,
+     * lock-free container read and keeps this section on cs_main only, followed
+     * by cs_main -> csr->lock (small-tip commit) or cs_main ->
+     * active_chain.write_lock. Released before the lock-free post-restore
      * integrity reader below. The rebuild path takes no coins_kv, so the
-     * LOCK-ORDER LAW (drive's coins_kv never crosses cs_main) is preserved.
-     *
-     * DORMANT-EDGE NOTE (keep this invariant intact): at the BOOT call site
-     * (boot.c:~3408, before app_init_services registers the tip_finalize
-     * chain-height authority) active_chain_tip/active_chain_height fall back to
-     * progress_store_tx_lock (chainstate.c), so this wrap transiently takes
-     * cs_main -> progress_store_tx_lock — the OPPOSITE of the reducer reconcile's
-     * progress_store_tx_lock -> cs_main. That is NOT a deadlock today only
-     * because the two orders are TEMPORALLY DISJOINT: the condition-engine /
-     * reducer-reconcile threads start AFTER boot's finalize, and at RUNTIME the
-     * registered authority makes active_chain_height take its lock-free atomic
-     * fast-path so this wrap never touches progress. Do NOT (a) start a
-     * progress->cs_main thread before app_init_services, (b) defer authority
-     * registration, or (c) call this from a new concurrent pre-app_init_services
-     * context. Permanent fix (tracked follow-up): read the tip via lock-free
-     * active_chain_cached_tip / c->height inside the wrap to delete the edge. */
+     * LOCK-ORDER LAW (drive's coins_kv never crosses cs_main) is preserved. */
     zcl_mutex_lock(&ms->cs_main);
-    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    struct block_index *tip = active_chain_cached_tip(&ms->chain_active);
     if (tip)
         (void)chain_restore_rebuild_active_chain(ms, tip, datadir);
 

@@ -12,6 +12,36 @@
 
 #include "views/explorer_stats_internal.h"
 
+static void gather_tx_output_stats(sqlite3 *db, struct stats_ctx *c)
+{
+    sqlite3_stmt *s = NULL;
+    const char *sql =
+        "SELECT COUNT(*),"
+        "COALESCE(SUM(CASE WHEN script_type=0 THEN 1 ELSE 0 END),0),"
+        "COALESCE(SUM(CASE WHEN script_type=1 THEN 1 ELSE 0 END),0),"
+        "COALESCE(MAX(value),0),"
+        "COALESCE(SUM(value),0) "
+        "FROM tx_outputs";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
+        printf("Stats: tx-output aggregate prepare failed: %s\n",
+               sqlite3_errmsg(db));
+        fflush(stdout);
+        if (s)
+            sqlite3_finalize(s);
+        return;
+    }
+
+    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        c->total_outputs = sqlite3_column_int64(s, 0);
+        c->p2pkh_outputs = sqlite3_column_int64(s, 1);
+        c->p2sh_outputs = sqlite3_column_int64(s, 2);
+        c->max_output_value = sqlite3_column_int64(s, 3);
+        c->total_value_moved = sqlite3_column_int64(s, 4);
+    }
+    sqlite3_finalize(s);
+}
+
 /* Phase 1h: deep chain queries (tx_outputs, joinsplits, sapling_*,
  * sprout_nullifiers, view_integrity, firsts & records). Writes
  * directly into the supplied stats_ctx. */
@@ -20,12 +50,8 @@ void gather_deep_chain_data(sqlite3 *db, struct stats_ctx *c)
     printf("Stats: querying deep chain data...\n"); fflush(stdout);
 
     /* Transaction I/O */
-    c->total_outputs = stats_q_i64(db, "SELECT count(*) FROM tx_outputs");
+    gather_tx_output_stats(db, c);
     c->total_inputs  = stats_q_i64(db, "SELECT count(*) FROM tx_inputs");
-    c->p2pkh_outputs = stats_q_i64(db, "SELECT count(*) FROM tx_outputs WHERE script_type=0");
-    c->p2sh_outputs  = stats_q_i64(db, "SELECT count(*) FROM tx_outputs WHERE script_type=1");
-    c->max_output_value = stats_q_i64(db, "SELECT MAX(value) FROM tx_outputs");
-    c->total_value_moved = stats_q_i64(db, "SELECT COALESCE(SUM(value),0) FROM tx_outputs");
 
     /* Shielded deep dive (per-tx tables) */
     c->total_joinsplits   = stats_q_i64(db, "SELECT count(*) FROM joinsplits");

@@ -154,24 +154,129 @@ static inline int64_t block_index_get_median_time_past(const struct block_index 
     return pmedian[count / 2];
 }
 
+/* Cross-thread block-index fields.
+ *
+ * Reducer/body stages publish nStatus/nFile/nDataPos while background workers
+ * may read or clear transient status bits. Keep those accesses behind these
+ * helpers instead of adding cs_main to the reducer hot path. The disk position
+ * is written before the HAVE_DATA bit is release-published; readers acquire
+ * nStatus before copying the position. */
+static inline unsigned int block_index_status_load(const struct block_index *bi)
+{
+    return bi ? __atomic_load_n(&bi->nStatus, __ATOMIC_ACQUIRE) : 0u;
+}
+
+static inline unsigned int block_index_status_fetch_or(struct block_index *bi,
+                                                       unsigned int bits)
+{
+    return bi ? __atomic_fetch_or(&bi->nStatus, bits, __ATOMIC_ACQ_REL) : 0u;
+}
+
+static inline unsigned int block_index_status_fetch_and(struct block_index *bi,
+                                                        unsigned int mask)
+{
+    return bi ? __atomic_fetch_and(&bi->nStatus, mask, __ATOMIC_ACQ_REL) : 0u;
+}
+
+static inline unsigned int block_index_status_clear_bits(struct block_index *bi,
+                                                         unsigned int bits)
+{
+    return block_index_status_fetch_and(bi, ~bits);
+}
+
+static inline unsigned int
+block_index_status_set_valid_level(struct block_index *bi,
+                                   enum block_status level)
+{
+    if (!bi)
+        return 0u;
+    unsigned int old = block_index_status_load(bi);
+    unsigned int desired;
+    do {
+        desired = (old & ~(unsigned int)BLOCK_VALID_MASK) | (unsigned int)level;
+    } while (!__atomic_compare_exchange_n(&bi->nStatus, &old, desired,
+                                          false, __ATOMIC_ACQ_REL,
+                                          __ATOMIC_ACQUIRE));
+    return desired;
+}
+
+static inline int block_index_file_load(const struct block_index *bi)
+{
+    return bi ? __atomic_load_n(&bi->nFile, __ATOMIC_RELAXED) : -1;
+}
+
+static inline unsigned int
+block_index_data_pos_load(const struct block_index *bi)
+{
+    return bi ? __atomic_load_n(&bi->nDataPos, __ATOMIC_RELAXED) : 0u;
+}
+
+static inline unsigned int
+block_index_undo_pos_load(const struct block_index *bi)
+{
+    return bi ? __atomic_load_n(&bi->nUndoPos, __ATOMIC_RELAXED) : 0u;
+}
+
+static inline void block_index_disk_pos_store(struct block_index *bi,
+                                              int file,
+                                              unsigned int data_pos)
+{
+    if (!bi)
+        return;
+    __atomic_store_n(&bi->nFile, file, __ATOMIC_RELAXED);
+    __atomic_store_n(&bi->nDataPos, data_pos, __ATOMIC_RELAXED);
+}
+
+static inline bool block_index_disk_pos_snapshot(const struct block_index *bi,
+                                                 struct disk_block_pos *out,
+                                                 unsigned int *status_out)
+{
+    if (!bi || !out)
+        return false;
+    unsigned int status = block_index_status_load(bi);
+    if (status_out)
+        *status_out = status;
+    if ((status & BLOCK_HAVE_DATA) == 0)
+        return false;
+    out->nFile = block_index_file_load(bi);
+    out->nPos = block_index_data_pos_load(bi);
+    return out->nFile >= 0;
+}
+
+static inline bool block_index_undo_pos_snapshot(const struct block_index *bi,
+                                                 struct disk_block_pos *out,
+                                                 unsigned int *status_out)
+{
+    if (!bi || !out)
+        return false;
+    unsigned int status = block_index_status_load(bi);
+    if (status_out)
+        *status_out = status;
+    if ((status & BLOCK_HAVE_UNDO) == 0)
+        return false;
+    out->nFile = block_index_file_load(bi);
+    out->nPos = block_index_undo_pos_load(bi);
+    return out->nFile >= 0;
+}
+
 /* Typed failure classification (Round 6 C4). Prefer these over raw
  * nStatus bit tests so the future TRANSIENT retry policy lands at one
  * site. */
 static inline bool block_is_permanently_failed(const struct block_index *bi)
 {
-    return bi && (bi->nStatus & BLOCK_FAILED_VALID) != 0;
+    return (block_index_status_load(bi) & BLOCK_FAILED_VALID) != 0;
 }
 static inline bool block_is_dependency_failed(const struct block_index *bi)
 {
-    return bi && (bi->nStatus & BLOCK_FAILED_CHILD) != 0;
+    return (block_index_status_load(bi) & BLOCK_FAILED_CHILD) != 0;
 }
 static inline bool block_is_transiently_failed(const struct block_index *bi)
 {
-    return bi && (bi->nStatus & BLOCK_FAILED_TRANSIENT) != 0;
+    return (block_index_status_load(bi) & BLOCK_FAILED_TRANSIENT) != 0;
 }
 static inline bool block_has_any_failure(const struct block_index *bi)
 {
-    return bi && (bi->nStatus & BLOCK_FAILED_ANY_MASK) != 0;
+    return (block_index_status_load(bi) & BLOCK_FAILED_ANY_MASK) != 0;
 }
 
 static inline bool block_index_is_valid(const struct block_index *bi,
@@ -179,7 +284,7 @@ static inline bool block_index_is_valid(const struct block_index *bi,
 {
     if (block_has_any_failure(bi))
         return false;
-    return (bi->nStatus & BLOCK_VALID_MASK) >= (unsigned int)up_to;
+    return (block_index_status_load(bi) & BLOCK_VALID_MASK) >= (unsigned int)up_to;
 }
 
 struct block_index *block_index_get_ancestor(struct block_index *bi, int height);

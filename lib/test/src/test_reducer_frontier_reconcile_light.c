@@ -51,6 +51,11 @@ void reducer_frontier_test_set_compiled_anchor(int32_t height);
  * pattern — not in the public header). */
 int reducer_frontier_reconcile_light_test_bypass_warns(void);
 int reducer_frontier_reconcile_light_test_gate_suppress_warns(void);
+bool stage_reducer_frontier_purge_noncanonical(
+    sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
 
 struct rfrl_fixture {
     char dir[256];
@@ -973,6 +978,28 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("setup unknown-coin fixture",
                    setup_fixture(&fx, "unknown"));
         sqlite3 *db = progress_store_db();
+        RFRL_CHECK("unknown-coin: active chain installs",
+                   active_chain_move_window_tip(&fx.ms.chain_active,
+                                                fx.idx[3]));
+        RFRL_CHECK("unknown-coin: seed noncanonical script row",
+                   put_script_status(db, A + 2, 0, "contextual_invalid",
+                                     &fx.hashes[3]));
+        struct stage_reducer_frontier_reconcile_result purge;
+        memset(&purge, 0, sizeof(purge));
+        purge.hstar = A + 1;
+        purge.sweep_top = A + 2;
+        purge.coins_applied_found = false;
+        purge.coins_applied_height = -1;
+        purge.lowest_noncanonical = -1;
+        RFRL_CHECK("unknown-coin: direct purge detects but refuses",
+                   stage_reducer_frontier_purge_noncanonical(db, &fx.ms, true,
+                                                             &purge) &&
+                   purge.noncanonical_found >= 1 &&
+                   purge.noncanonical_purged == 0);
+        RFRL_CHECK("unknown-coin: direct purge leaves rows intact",
+                   count_range(db, "script_validate_log", A + 2, A + 3) == 1 &&
+                   count_range(db, "body_persist_log", A + 2, A + 3) == 1 &&
+                   count_range(db, "proof_validate_log", A + 2, A + 3) == 1);
         RFRL_CHECK("delete coins_applied frontier",
                    exec_sql(db, "DELETE FROM progress_meta "
                                 "WHERE key='coins_applied_height'"));
@@ -983,8 +1010,13 @@ int test_reducer_frontier_reconcile_light(void)
                        db, &fx.ms, &rr));
         RFRL_CHECK("unknown-coin refused without mutation",
                    rr.refused_coin_unknown &&
+                   rr.noncanonical_purged == 0 &&
                    cursor_value(db, "tip_finalize") == A + 4 &&
                    (fx.idx[2]->nStatus & BLOCK_VALID_MASK) == 0);
+        RFRL_CHECK("unknown-coin leaves purge evidence rows intact",
+                   count_range(db, "script_validate_log", A + 2, A + 3) == 1 &&
+                   count_range(db, "body_persist_log", A + 2, A + 3) == 1 &&
+                   count_range(db, "proof_validate_log", A + 2, A + 3) == 1);
 
         teardown_fixture(&fx);
     }
@@ -1616,6 +1648,43 @@ int test_reducer_frontier_reconcile_light(void)
             RFRL_CHECK("noncanon: active-chain lock released",
                        chain_probe_arg.probed);
         }
+
+        teardown_fixture(&fx);
+    }
+
+    /* Non-canonical evidence below the known coins frontier is replay-domain,
+     * not purge-domain. Deleting it creates a rowless hole below coins where
+     * forward refills intentionally refuse to run. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("noncanon-below-coins: setup fixture",
+                   setup_fixture(&fx, "noncanon_below_coins"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("noncanon-below-coins: active chain installs",
+                   active_chain_move_window_tip(&fx.ms.chain_active,
+                                                fx.idx[3]));
+        RFRL_CHECK("noncanon-below-coins: seed coins above stale row",
+                   seed_coins_applied(db, A + 3));
+        RFRL_CHECK("noncanon-below-coins: seed stale script row",
+                   put_script_status(db, A + 2, 0, "contextual_invalid",
+                                     &fx.hashes[3]));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        memset(&rr, 0, sizeof(rr));
+        rr.hstar = A + 1;
+        rr.sweep_top = A + 2;
+        rr.coins_applied_found = true;
+        rr.coins_applied_height = A + 3;
+        rr.lowest_noncanonical = -1;
+        RFRL_CHECK("noncanon-below-coins: direct purge succeeds",
+                   stage_reducer_frontier_purge_noncanonical(db, &fx.ms, true,
+                                                             &rr));
+        RFRL_CHECK("noncanon-below-coins: evidence is not purged",
+                   rr.noncanonical_found >= 1 &&
+                   rr.noncanonical_purged == 0 &&
+                   count_range(db, "script_validate_log", A + 2, A + 3) == 1 &&
+                   count_range(db, "body_persist_log", A + 2, A + 3) == 1 &&
+                   count_range(db, "proof_validate_log", A + 2, A + 3) == 1);
 
         teardown_fixture(&fx);
     }

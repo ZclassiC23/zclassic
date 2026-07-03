@@ -13,8 +13,55 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
+#include <string.h>
+
 /* `self` aliases the sqlite3* directly — there is no wrapper struct. */
 static inline sqlite3 *db_of(void *self) { return (sqlite3 *)self; }
+
+#define HODL_HISTORY_SOURCE_TIP_KEY "sync_projection_tip_height"
+
+static int64_t hh_projection_tip_height(sqlite3 *db, int64_t tableless_fallback)
+{
+    if (!db)
+        return 0;
+
+    sqlite3_stmt *s = NULL;
+    const char *sql =
+        "SELECT value FROM node_state WHERE key='" HODL_HISTORY_SOURCE_TIP_KEY "'";
+    int rc = sqlite3_prepare_v2(db, sql, -1, &s, NULL);
+    if (rc != SQLITE_OK || !s) {
+        const char *err = sqlite3_errmsg(db);
+        if (err && strstr(err, "no such table") != NULL)
+            return tableless_fallback;
+        LOG_WARN("hodl_history",
+                 "prepare source-tip SQL failed: %s", err ? err : "(null)");
+        return 0;
+    }
+
+    int64_t h = 0;
+    rc = AR_STEP_ROW_READONLY(s);
+    if (rc == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(s, 0);
+        int len = sqlite3_column_bytes(s, 0);
+        if (blob && len == (int)sizeof(int64_t)) {
+            memcpy(&h, blob, sizeof(h));
+        } else if (blob && len == (int)sizeof(int32_t)) {
+            int32_t h32 = 0;
+            memcpy(&h32, blob, sizeof(h32));
+            h = h32;
+        } else {
+            LOG_WARN("hodl_history",
+                     "source-tip value has unexpected length %d", len);
+        }
+    }
+    sqlite3_finalize(s);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        LOG_WARN("hodl_history",
+                 "source-tip step rc=%d: %s", rc, sqlite3_errmsg(db));
+        return 0;
+    }
+    return h > 0 ? h : 0;
+}
 
 static bool hh_block_time(void *self, int64_t height, int64_t *out_time)
 {
@@ -86,10 +133,12 @@ static bool hh_upsert_snapshot(void *self,
     if (!db || !row)
         return false;
     sqlite3_stmt *ins = NULL;
+    int64_t source_tip = hh_projection_tip_height(db, row->height);
     const char *ins_sql =
         "INSERT OR REPLACE INTO hodl_history "
-        "(height, time, total_zat, older_1y_zat, older_1y_pct) "
-        "VALUES (?1, ?2, ?3, ?4, ?5)";
+        "(height, time, total_zat, older_1y_zat, older_1y_pct, "
+        " calc_version, source_tip_height) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
     if (sqlite3_prepare_v2(db, ins_sql, -1, &ins, NULL) != SQLITE_OK || !ins) {
         LOG_FAIL("hodl_history",
                  "prepare INSERT failed: %s", sqlite3_errmsg(db));
@@ -100,6 +149,8 @@ static bool hh_upsert_snapshot(void *self,
     sqlite3_bind_int64(ins, 3, row->total_zat);
     sqlite3_bind_int64(ins, 4, row->older_1y_zat);
     sqlite3_bind_double(ins, 5, row->older_1y_pct);
+    sqlite3_bind_int(ins, 6, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
+    sqlite3_bind_int64(ins, 7, source_tip);
     int rc = AR_STEP_WRITE(ins);
     sqlite3_finalize(ins);
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
@@ -137,6 +188,12 @@ static bool hh_next_fill_height(void *self,
         return false;
 
     *out_height = 0;
+    int64_t source_tip = hh_projection_tip_height(db, target);
+    if (source_tip > target)
+        source_tip = target;
+    if (source_tip < stride)
+        return true;
+
     sqlite3_stmt *s = NULL;
     const char *sql =
         "WITH RECURSIVE expected(h) AS ("
@@ -146,15 +203,11 @@ static bool hh_next_fill_height(void *self,
         "SELECT e.h "
         "FROM expected e "
         "LEFT JOIN hodl_history hh ON hh.height = e.h "
-        "WHERE hh.height IS NULL "
-        "   OR (hh.total_zat = 0 AND EXISTS ("
-        "       SELECT 1 FROM tx_outputs o "
-        "       LEFT JOIN tx_inputs i "
-        "         ON i.prev_txid = o.txid AND i.prev_vout = o.vout "
-        "        AND i.block_height <= e.h "
-        "       WHERE o.block_height <= e.h AND o.value > 0 "
-        "         AND i.txid IS NULL LIMIT 1"
-        "   )) "
+        "WHERE e.h <= ?3 AND ("
+        "   hh.height IS NULL "
+        "   OR hh.calc_version < ?4 "
+        "   OR hh.source_tip_height < e.h"
+        ") "
         "ORDER BY e.h LIMIT 1";
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
         LOG_FAIL("hodl_history",
@@ -163,6 +216,8 @@ static bool hh_next_fill_height(void *self,
     }
     sqlite3_bind_int64(s, 1, stride);
     sqlite3_bind_int64(s, 2, target);
+    sqlite3_bind_int64(s, 3, source_tip);
+    sqlite3_bind_int(s, 4, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
     int rc = AR_STEP_ROW_READONLY(s);
     if (rc == SQLITE_ROW)
         *out_height = sqlite3_column_int64(s, 0);
@@ -184,10 +239,14 @@ static int hh_load_all(void *self,
         return 0;
     const char *sql =
         "SELECT height, time, total_zat, older_1y_zat, older_1y_pct "
-        "FROM hodl_history ORDER BY height ASC";
+        "FROM ("
+        "  SELECT height, time, total_zat, older_1y_zat, older_1y_pct "
+        "  FROM hodl_history ORDER BY height DESC LIMIT ?"
+        ") ORDER BY height ASC";
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
         return 0;
+    sqlite3_bind_int(s, 1, max_rows);
     int n = 0;
     while (n < max_rows && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         out[n].height       = sqlite3_column_int64(s, 0);

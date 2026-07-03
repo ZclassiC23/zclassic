@@ -225,7 +225,7 @@ int main(int argc, char **argv)
     VERIFY("sovereignty", has("sovereign"));
     VERIFY("block height", has("Block Height"));
     VERIFY("peers", has("Connected Peers"));
-    VERIFY("version", has("ZClassic-C23"));
+    VERIFY("version", has("ZClassic23:0.1.0"));
 
     printf("\n── User audits coins ──\n");
 

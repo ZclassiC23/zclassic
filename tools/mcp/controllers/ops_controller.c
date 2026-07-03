@@ -217,6 +217,66 @@ static bool status_json_bool(const struct json_value *obj,
     return v ? json_get_bool(v) : dflt;
 }
 
+static bool status_peer_subver_has(const struct json_value *peer,
+                                   const char *token)
+{
+    const char *subver = status_json_str(peer, "subver", "");
+    return token && strstr(subver, token) != NULL;
+}
+
+static bool status_peer_is_zcl23(const struct json_value *peer)
+{
+    return status_json_bool(peer, "zclassic23", false) ||
+           status_json_bool(peer, "zclassic_c23", false) ||
+           status_peer_subver_has(peer, "ZClassic23") ||
+           status_peer_subver_has(peer, "ZClassic-C23");
+}
+
+static bool status_peer_is_magicbean(const struct json_value *peer)
+{
+    return status_json_bool(peer, "magicbean", false) ||
+           status_peer_subver_has(peer, "MagicBean");
+}
+
+static void status_peer_status_counts(const struct json_value *peers,
+                                      int *total_out,
+                                      int *inbound_out,
+                                      int *outbound_out,
+                                      int *zcl23_out,
+                                      int *magicbean_out,
+                                      int *max_height_out)
+{
+    int total = 0, inbound = 0, outbound = 0, zcl23 = 0, magicbean = 0;
+    int max_h = 0;
+
+    if (peers && peers->type == JSON_ARR) {
+        total = (int)json_size(peers);
+        for (size_t i = 0; i < json_size(peers); i++) {
+            const struct json_value *peer = json_at(peers, i);
+            if (!peer || peer->type != JSON_OBJ)
+                continue;
+            if (status_json_bool(peer, "inbound", false))
+                inbound++;
+            else
+                outbound++;
+            if (status_peer_is_zcl23(peer))
+                zcl23++;
+            else if (status_peer_is_magicbean(peer))
+                magicbean++;
+            int h = (int)status_json_int(peer, "startingheight", 0);
+            if (h > max_h)
+                max_h = h;
+        }
+    }
+
+    if (total_out) *total_out = total;
+    if (inbound_out) *inbound_out = inbound;
+    if (outbound_out) *outbound_out = outbound;
+    if (zcl23_out) *zcl23_out = zcl23;
+    if (magicbean_out) *magicbean_out = magicbean;
+    if (max_height_out) *max_height_out = max_h;
+}
+
 static long long status_max_ll(long long a, long long b)
 {
     return a > b ? a : b;
@@ -381,46 +441,20 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     char *ce = mcp_node_rpc("dumpstate", "[\"condition_engine\"]");
 
     int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
-    if (p) {
+    int max_peer_height = 0;
+    struct json_value peers_j;
+    bool peers_ok = status_parse_json(&peers_j, p) &&
+                    peers_j.type == JSON_ARR;
+    if (peers_ok) {
+        status_peer_status_counts(&peers_j, &pc, &inbound, &outbound,
+                                  &zcl23_cnt, &magicbean_cnt,
+                                  &max_peer_height);
+    } else {
         pc = status_count_json_objects(p);
-        /* Count inbound vs outbound */
-        const char *sp = p;
-        while ((sp = strstr(sp, "\"inbound\"")) != NULL) {
-            sp += strlen("\"inbound\"");
-            while (*sp == ' ' || *sp == ':') sp++;
-            if (strncmp(sp, "true", 4) == 0)
-                inbound++;
-            else
-                outbound++;
-        }
-        /* Count by client type via subver */
-        sp = p;
-        while ((sp = strstr(sp, "\"subver\"")) != NULL) {
-            sp += strlen("\"subver\"");
-            while (*sp == ' ' || *sp == ':' || *sp == '"') sp++;
-            if (strstr(sp, "ZClassic-C23") != NULL &&
-                (strchr(sp, '"') == NULL || strstr(sp, "ZClassic-C23") < strchr(sp, '"')))
-                zcl23_cnt++;
-            else if (strstr(sp, "MagicBean") != NULL &&
-                     (strchr(sp, '"') == NULL || strstr(sp, "MagicBean") < strchr(sp, '"')))
-                magicbean_cnt++;
-        }
     }
 
     /* Extract header_height from getblockchaininfo best_header_height */
     int header_height = (int)status_extract_json_int(ci, "best_header_height", 0);
-
-    /* Extract max peer starting_height from getpeerinfo */
-    int max_peer_height = 0;
-    if (p) {
-        const char *sp = p;
-        while ((sp = strstr(sp, "\"startingheight\"")) != NULL) {
-            sp += strlen("\"startingheight\"");
-            while (*sp == ' ' || *sp == ':') sp++;
-            int sh = atoi(sp);
-            if (sh > max_peer_height) max_peer_height = sh;
-        }
-    }
 
     int block_height = h ? atoi(h) : 0;
     int header_gap = max_peer_height - header_height;
@@ -478,6 +512,7 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
 
     char *out = json_value_to_body(&root, "status_body");
     json_free(&root);
+    json_free(&peers_j);
     free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
     free(rf); free(tf); free(ce);
     if (!out) {

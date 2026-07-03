@@ -228,6 +228,7 @@ assert green).
 | `check-silent-errors` (+ `-services`/`-controllers`/`-jobs`/`-conditions`) | HARD | Bare `return -1;` with no error-level log (§4/§5). Override `// raw-return-ok:<tag>`. |
 | `check-before-save-hooks` | HARD | `utxo`/`block`/`wallet_key`/`wallet_tx` keep before/after-save hooks (§6). |
 | `check-coins-lookup-nullcheck` | HARD | Coins lookups null-check the returned coin before use. |
+| `check-log-macro-return-type` | HARD | Returning `LOG_*` macros match the enclosing function return type (`LOG_FAIL` only in bool-returning functions, `LOG_ERR` only in int-returning functions, `LOG_NULL` only in pointer-returning functions). |
 | `check-observability-pairing` | HARD | `fprintf(stderr,…)` pairs with an event emit / terminal propagation. Override `// obs-ok:<tag>`. |
 | `check-pthread-create` | HARD | Thread spawns go through the sanctioned registry, not raw `pthread_create`. |
 
@@ -370,6 +371,7 @@ add/remove a gate.
 - `check-honest-witness`
 - `check-lag-slo-observable`
 - `check-lib-layering`
+- `check-log-macro-return-type`
 - `check-long-functions`
 - `check-malloc`
 - `check-model-validation`

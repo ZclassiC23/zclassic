@@ -465,6 +465,20 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: json error truncation returns written bytes... ");
+    {
+        const char *headers = "HTTP/1.1 500\r\n\r\n";
+        uint8_t tiny[48];
+        memset(tiny, 0xA5, sizeof(tiny));
+        size_t n = api_json_error(tiny, sizeof(tiny), headers,
+                                  "this message is intentionally longer than the response buffer");
+        bool ok = n < sizeof(tiny) && tiny[n] == '\0';
+        ok = ok && strstr((char *)tiny, "HTTP/1.1 500") != NULL;
+        ok = ok && strstr((char *)tiny, "\r\n\r\n") != NULL;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: health escapes runtime error strings... ");
     {
         test_reset_shared_globals();

@@ -323,6 +323,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
                                  rr.hstar, rr.sweep_top);
         rfrl_snapshot_reducer_cursors(db);
         rfrl_snapshot_coin_backfill_scan(db);
+        rfrl_snapshot_coin_backfill_insert_progress();
         rfrl_snapshot_tipfin_backfill(db);
     }
     return true;
@@ -550,8 +551,14 @@ static bool progressing_reducer_frontier_reconcile_light(
             progressed = true;
     }
 
-    /* (3) the most recent reconcile pass inserted coins this round. */
-    if (rfrl_last_coin_backfill_inserted() > 0)
+    /* (3) the most recent reconcile pass inserted coins after the current
+     * progress baseline. The inserted count itself is a last-result field, not
+     * a monotonically increasing cursor; key it to the remedy call that produced
+     * that result so a stale nonzero value cannot refresh attempts forever. */
+    int insert_remedy_call = rfrl_last_reconcile_remedy_call();
+    if (rfrl_last_coin_backfill_inserted() > 0 &&
+        insert_remedy_call >
+            rfrl_coin_backfill_insert_remedy_call_at_detect())
         progressed = true;
 
     /* Re-snapshot the delta baselines ONLY on a true return (REFRESH-only) so
@@ -562,6 +569,7 @@ static bool progressing_reducer_frontier_reconcile_light(
             rfrl_set_coin_backfill_scan_snapshot(true, coin_next);
         if (tip_present)
             rfrl_set_tipfin_backfill_snapshot(true, tip_progress);
+        rfrl_snapshot_coin_backfill_insert_progress();
     }
     return progressed;
 }
@@ -631,5 +639,26 @@ int reducer_frontier_reconcile_light_test_gate_suppress_warns(void);
 int reducer_frontier_reconcile_light_test_gate_suppress_warns(void)
 {
     return g_gate_suppress_warn_total;
+}
+
+bool reducer_frontier_reconcile_light_test_progressing(void);
+bool reducer_frontier_reconcile_light_test_progressing(void)
+{
+    return progressing_reducer_frontier_reconcile_light(0);
+}
+
+void reducer_frontier_reconcile_light_test_snapshot_insert_baseline(void);
+void reducer_frontier_reconcile_light_test_snapshot_insert_baseline(void)
+{
+    rfrl_snapshot_coin_backfill_insert_progress();
+}
+
+void reducer_frontier_reconcile_light_test_note_coin_insert_result(int inserted);
+void reducer_frontier_reconcile_light_test_note_coin_insert_result(int inserted)
+{
+    rfrl_increment_remedy_calls();
+    struct stage_reducer_frontier_reconcile_result rr = {0};
+    rr.coin_backfill_inserted = inserted;
+    rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_REMEDY, &rr);
 }
 #endif

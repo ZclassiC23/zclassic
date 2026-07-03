@@ -280,7 +280,7 @@ bool mcp_notify_start(mcp_notify_fetch_fn fetch, void *fetch_ctx,
     /* raw-pthread-ok: long-lived notifier joined in mcp_notify_stop() */
     if (pthread_create(&g_thread, NULL, notify_thread_main, NULL) != 0) {
         pthread_mutex_unlock(&g_run_lock);
-        LOG_ERR("mcp.notify", "pthread_create failed for notifier");
+        LOG_WARN("mcp.notify", "pthread_create failed for notifier");
         return false;
     }
     g_running = true;

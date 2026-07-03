@@ -35,8 +35,11 @@
  * the refills fire only on ROWLESS holes, and the cursors moved past
  * them) — pinning H* forever. Purging converts them
  * into ordinary rowless holes the existing refill + cursor machinery
- * already heals. Genuine consensus rejects are SAFE: their stored hash
- * IS the canonical block at that height, so they never match the
+ * already heals, but ONLY when the coins frontier is known and the stale
+ * height is at/above it. Below or without that frontier, deleting can make an
+ * unfillable hole, so this pass reports the evidence and leaves rows intact
+ * for the replay owners. Genuine consensus rejects are SAFE: their stored
+ * hash IS the canonical block at that height, so they never match the
  * predicate. Heights above the active tip carry no canonical hash and
  * are left alone. This function owns the full progress-store tx lock while it
  * compares/deletes rows, and briefly takes active_chain.write_lock to copy a
@@ -174,6 +177,8 @@ bool stage_reducer_frontier_purge_noncanonical(
         goto done_locked;
     if (hi - lo + 1 > RF_NONCANON_MAX_PER_PASS)
         hi = lo + RF_NONCANON_MAX_PER_PASS - 1;
+    bool frontier_known = out->coins_applied_found &&
+                          out->coins_applied_height >= 0;
 
     /* Keep active-chain writes out of the SQL decision window: copy exactly the
      * canonical hashes this pass will judge under the writer lock, then do all
@@ -214,8 +219,7 @@ bool stage_reducer_frontier_purge_noncanonical(
          * (refill_target_in_unapplied_domain). COUNT it so the condition stays
          * actionable (and the peer-gate bypass / sticky_escalator can arm), but
          * leave the evidence rows intact for the replay owner. */
-        bool below_frontier = out->coins_applied_found &&
-                              out->coins_applied_height >= 0 &&
+        bool below_frontier = frontier_known &&
                               h < out->coins_applied_height;
         if (below_frontier) {
             bool vs_split = false;
@@ -231,6 +235,8 @@ bool stage_reducer_frontier_purge_noncanonical(
                 continue; /* leave evidence rows for the stale-script replay */
             }
         }
+        bool purge_allowed = frontier_known &&
+                             h >= out->coins_applied_height;
 
         bool stale_here = false;
         for (size_t t = 0; t < sizeof(hash_logs) / sizeof(hash_logs[0]); t++) {
@@ -270,6 +276,8 @@ bool stage_reducer_frontier_purge_noncanonical(
             if (out->lowest_noncanonical < 0 ||
                 h < out->lowest_noncanonical)
                 out->lowest_noncanonical = h;
+            if (!purge_allowed)
+                continue;
             if (!apply)
                 continue;
             if (!rf_purge_tx_begin(db, &tx_open)) {
@@ -295,7 +303,7 @@ bool stage_reducer_frontier_purge_noncanonical(
             }
             out->noncanonical_purged++;
         }
-        if (stale_here && apply) {
+        if (stale_here && apply && purge_allowed) {
             /* Hashless downstream rows at this height describe the same
              * wrong block — transitively stale. */
             for (size_t t = 0; t < sizeof(dep_logs) / sizeof(dep_logs[0]); t++) {
@@ -325,9 +333,7 @@ bool stage_reducer_frontier_purge_noncanonical(
              * lowest. Domain split mirrors refill_target_in_unapplied_domain
              * (stage_repair_reducer_frontier_refill.c): unknown coins
              * frontier or h below it => replay domain, never a clamp. */
-            bool frontier_known = out->coins_applied_found &&
-                                  out->coins_applied_height >= 0;
-            if (frontier_known && h >= out->coins_applied_height) {
+            if (purge_allowed) {
                 if (lowest_stale_unapplied < 0)
                     lowest_stale_unapplied = h;
             } else if (lowest_stale_replay_domain < 0) {
@@ -381,9 +387,10 @@ bool stage_reducer_frontier_purge_noncanonical(
     }
     if (lowest_stale_replay_domain >= 0)
         LOG_WARN("stage_repair",
-                 "[stage_repair] purge_noncanonical left rowless heights "
+                 "[stage_repair] purge_noncanonical left noncanonical evidence "
                  "below/without the coins frontier (lowest=%d "
-                 "coins_applied=%d found=%d): script/proof clamp refused, "
+                 "coins_applied=%d found=%d): purge refused because no "
+                 "forward refill can prove the rowless hole is safe; "
                  "stale-script replay domain%s",
                  lowest_stale_replay_domain, out->coins_applied_height,
                  out->coins_applied_found, apply ? "" : "; dry-run");

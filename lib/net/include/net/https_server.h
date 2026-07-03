@@ -25,4 +25,12 @@ bool https_server_is_running(void);   /* true once the listener bound + workers 
 int  https_server_port(void);         /* bound HTTPS port, or 0 if not running */
 bool https_deferred_pending(void);    /* HTTPS start deferred during IBD, not yet up */
 
+#ifdef ZCL_TESTING
+#include <stddef.h>
+bool https_server_acme_challenge_filepath_for_testing(const char *root,
+                                                      const char *path,
+                                                      char *out,
+                                                      size_t out_len);
+#endif
+
 #endif

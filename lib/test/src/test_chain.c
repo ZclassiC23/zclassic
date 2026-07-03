@@ -2034,5 +2034,84 @@ int test_chain(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("block_index atomic status helpers... ");
+    {
+        struct block_index bi;
+        block_index_init(&bi);
+        bi.nStatus = BLOCK_VALID_TREE;
+
+        bool ok = true;
+        ok = ok && block_index_status_load(&bi) == BLOCK_VALID_TREE;
+
+        unsigned int old =
+            block_index_status_fetch_or(&bi, BLOCK_HAVE_DATA | BLOCK_FAILED_CHILD);
+        ok = ok && old == BLOCK_VALID_TREE;
+        ok = ok && block_is_dependency_failed(&bi);
+        ok = ok && !block_index_is_valid(&bi, BLOCK_VALID_TREE);
+
+        old = block_index_status_clear_bits(&bi, BLOCK_FAILED_CHILD);
+        ok = ok && (old & BLOCK_FAILED_CHILD) != 0;
+        ok = ok && !block_is_dependency_failed(&bi);
+
+        unsigned int now =
+            block_index_status_set_valid_level(&bi, BLOCK_VALID_SCRIPTS);
+        ok = ok && (now & BLOCK_VALID_MASK) == BLOCK_VALID_SCRIPTS;
+        ok = ok && block_index_is_valid(&bi, BLOCK_VALID_SCRIPTS);
+
+        ok = ok && block_index_status_load(NULL) == 0;
+        ok = ok && block_index_status_fetch_or(NULL, BLOCK_HAVE_DATA) == 0;
+        ok = ok && block_index_status_clear_bits(NULL, BLOCK_HAVE_DATA) == 0;
+        ok = ok &&
+             block_index_status_set_valid_level(NULL, BLOCK_VALID_TREE) == 0;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("block_index disk position snapshot helpers... ");
+    {
+        struct block_index bi;
+        block_index_init(&bi);
+        struct disk_block_pos pos;
+        unsigned int status = 0;
+        bool ok = true;
+
+        disk_block_pos_init(&pos);
+        ok = ok && !block_index_disk_pos_snapshot(&bi, &pos, &status);
+        ok = ok && status == 0;
+
+        block_index_disk_pos_store(&bi, 7, 12345);
+        disk_block_pos_init(&pos);
+        ok = ok && !block_index_disk_pos_snapshot(&bi, &pos, &status);
+
+        block_index_status_fetch_or(&bi, BLOCK_HAVE_DATA);
+        disk_block_pos_init(&pos);
+        ok = ok && block_index_disk_pos_snapshot(&bi, &pos, &status);
+        ok = ok && (status & BLOCK_HAVE_DATA) != 0;
+        ok = ok && pos.nFile == 7;
+        ok = ok && pos.nPos == 12345;
+
+        __atomic_store_n(&bi.nUndoPos, 67890u, __ATOMIC_RELAXED);
+        block_index_status_fetch_or(&bi, BLOCK_HAVE_UNDO);
+        disk_block_pos_init(&pos);
+        ok = ok && block_index_undo_pos_snapshot(&bi, &pos, &status);
+        ok = ok && (status & BLOCK_HAVE_UNDO) != 0;
+        ok = ok && pos.nFile == 7;
+        ok = ok && pos.nPos == 67890u;
+
+        block_index_status_clear_bits(&bi, BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+        disk_block_pos_init(&pos);
+        ok = ok && !block_index_disk_pos_snapshot(&bi, &pos, NULL);
+        ok = ok && !block_index_undo_pos_snapshot(&bi, &pos, NULL);
+
+        ok = ok && !block_index_disk_pos_snapshot(NULL, &pos, NULL);
+        ok = ok && !block_index_disk_pos_snapshot(&bi, NULL, NULL);
+        ok = ok && !block_index_undo_pos_snapshot(NULL, &pos, NULL);
+        ok = ok && !block_index_undo_pos_snapshot(&bi, NULL, NULL);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

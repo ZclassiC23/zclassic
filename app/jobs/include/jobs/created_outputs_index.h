@@ -52,9 +52,17 @@ bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
                                        size_t *script_len_out,
                                        int *height_out);
 
-/* Prune all rows with height < floor (finality pruning). UNWIRED in v1 —
- * exported for a follow-up once on-disk storage is measured. Returns false
- * on a real SQLite error. */
+/* Prune all rows with height < floor (finality/retention pruning). Returns
+ * false on a real SQLite error. */
 bool created_outputs_index_prune_below(sqlite3 *db, int floor);
+
+/* Bounded form for production cleanup: delete all rows for at most
+ * max_heights distinct old heights below floor. This keeps one reducer tick
+ * from turning a historically large table into one giant DELETE, while still
+ * reclaiming stale creation-index rows over time. rows_deleted_out may be
+ * NULL. */
+bool created_outputs_index_prune_below_limited(sqlite3 *db, int floor,
+                                               int max_heights,
+                                               int *rows_deleted_out);
 
 #endif /* ZCL_JOBS_CREATED_OUTPUTS_INDEX_H */

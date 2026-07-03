@@ -29,7 +29,7 @@ You are running a sovereign full node on the ZClassic network.</div>
 <div class='val' style='color:#555;font-size:12px'>
 Full relay + validation. Every block verified independently.</div>
 <div class='lbl'>Version</div>
-<div class='val' style='color:#34d399'>/ZClassic-C23:0.1.0/</div>
+<div class='val' style='color:#34d399'>{{{version}}}</div>
 </div>
 
 {{{tor_section}}}

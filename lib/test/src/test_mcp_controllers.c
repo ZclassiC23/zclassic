@@ -633,7 +633,7 @@ static char *mock_status_rpc(const char *method, const char *params_json)
     if (strcmp(method, "getblockcount") == 0)
         return strdup("3117073");
     if (strcmp(method, "getpeerinfo") == 0)
-        return strdup("[{\"inbound\":false,\"subver\":\"/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/\",\"startingheight\":3117074}]");
+        return strdup("[{\"inbound\":false,\"subver\":\"/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/\",\"startingheight\":3117074}]");
     if (strcmp(method, "syncstate") == 0)
         return strdup("{\"state\":\"at_tip\"}");
     if (strcmp(method, "validationstatus") == 0)
@@ -1086,6 +1086,16 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT(json_get_int(json_get(blockers, "resource_count")) == 0);
         ASSERT(json_is_null(json_get(blockers, "dominant")));
         ASSERT(json_is_null(json_get(&root, "dominant_blocker")));
+        const struct json_value *connections = json_get(&root, "connections");
+        ASSERT(connections != NULL);
+        ASSERT(json_get_int(json_get(connections, "total")) == 1);
+        ASSERT(json_get_int(json_get(connections, "inbound")) == 0);
+        ASSERT(json_get_int(json_get(connections, "outbound")) == 1);
+        ASSERT(json_get_int(json_get(connections, "zcl23")) == 1);
+        ASSERT(json_get_int(json_get(connections, "magicbean")) == 0);
+        ASSERT(json_get_int(json_get(&root, "max_peer_height")) == 3117074);
+        ASSERT(json_get_int(json_get(&root, "header_gap")) == 0);
+        ASSERT(!json_get_bool(json_get(&root, "sync_behind")));
         const struct json_value *chain_advance =
             json_get(&root, "chain_advance");
         ASSERT(chain_advance != NULL);
@@ -1521,6 +1531,7 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"inbound_handshake_seen\":true,"
                       "\"remote_handshake_seen\":true,"
                       "\"magicbean_peers\":2,"
+                      "\"zclassic23_peers\":1,"
                       "\"zclassic_c23_peers\":1,"
                       "\"peer_lifecycle\":{"
                       "\"attempted\":4,"
@@ -1534,6 +1545,7 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"timeout\":1,"
                       "\"rejected\":0,"
                       "\"magicbean_handshakes\":2,"
+                      "\"zclassic23_handshakes\":1,"
                       "\"zclassic_c23_handshakes\":1,"
                       "\"sources\":["
                       "{\"source\":\"addnode\",\"attempted\":2,"
@@ -1571,12 +1583,16 @@ static int test_zcl_networkinfo_exposes_reachability_fields(void)
                                      "outbound_handshaked_connections")) == 1);
         ASSERT(json_get_bool(json_get(&root, "inbound_handshake_seen")));
         ASSERT(json_get_bool(json_get(&root, "remote_handshake_seen")));
+        ASSERT(json_get_int(json_get(&root, "zclassic23_peers")) == 1);
+        ASSERT(json_get_int(json_get(&root, "zclassic_c23_peers")) == 1);
         const struct json_value *life = json_get(&root, "peer_lifecycle");
         const struct json_value *sources =
             life ? json_get(life, "sources") : NULL;
         ASSERT(life && life->type == JSON_OBJ);
         ASSERT(json_get_int(json_get(life, "attempted")) == 4);
         ASSERT(json_get_int(json_get(life, "timeout")) == 1);
+        ASSERT(json_get_int(json_get(life, "zclassic23_handshakes")) == 1);
+        ASSERT(json_get_int(json_get(life, "zclassic_c23_handshakes")) == 1);
         ASSERT(sources && sources->type == JSON_ARR);
         ASSERT(json_size(sources) == 2);
         ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 0), "source")),

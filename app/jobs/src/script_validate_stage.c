@@ -445,7 +445,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
-    if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+    if (!bi || !(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
@@ -550,8 +550,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * EV_BLOCK_HEADER so the projection persists the new nStatus across
          * restart. bi is the live in-memory entry from active_chain_at; blk
          * was freed above but bi is independent. */
-        bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK)
-                      | BLOCK_VALID_SCRIPTS;
+        block_index_status_set_valid_level(bi, BLOCK_VALID_SCRIPTS);
         block_index_emit_header_event(bi, "script_validate", &g_header_event_emit_total, &g_header_event_emit_fail_total);
     }
 

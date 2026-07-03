@@ -5,10 +5,10 @@
  * Chunks are served by hash over REST, RPC, and P2P. */
 
 #include "platform/time_compat.h"
+#include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
 #include "controllers/strong_params.h"
 #include "views/format_helpers.h"
-#include "chain/mmr.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -468,11 +468,10 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
      * Receivers verify: MMR root matches expected value for this chain.
      * This binds the file data to the PoW-secured block hash chain. */
     {
-        extern struct mmr *rpc_blockchain_get_mmr(void);
-        struct mmr *m = rpc_blockchain_get_mmr();
-        if (m && m->num_leaves > 0) {
-            mmr_root(m, fm->mmr_root);
-            fm->chain_height = (int32_t)m->num_leaves;
+        uint64_t leaves = 0;
+        if (rpc_blockchain_mmr_snapshot(fm->mmr_root, &leaves, NULL) &&
+            leaves > 0) {
+            fm->chain_height = (int32_t)leaves;
         } else {
             memset(fm->mmr_root, 0, 32);
         }

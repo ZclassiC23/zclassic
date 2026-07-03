@@ -194,18 +194,15 @@ static bool bg_validation_register_supervisor(
  * This caps memory per-block without rejecting large rev files. */
 #define MAX_UNDO_READ  (4 * 1024 * 1024)
 
-static bool read_block_undo(struct block_undo *undo,
-                            const struct block_index *pindex,
+static bool read_block_undo(struct block_undo *undo, const struct block_index *pindex,
                             const char *datadir)
 {
     block_undo_init(undo);
 
-    struct disk_block_pos undo_pos;
-    undo_pos.nFile = pindex->nFile;
-    undo_pos.nPos = pindex->nUndoPos;
+    struct disk_block_pos undo_pos = { .nFile = -1, .nPos = 0 };
+    if (!block_index_undo_pos_snapshot(pindex, &undo_pos, NULL)) return false; // raw-return-ok:missing-undo-is-counted-as-script-skip
 
-    if (undo_pos.nPos == 0)
-        LOG_FAIL("bg_validation", "read_block_undo: undo pos is 0 for file %d", pindex->nFile);
+    if (undo_pos.nPos == 0) LOG_FAIL("bg_validation", "read_block_undo: undo pos is 0 for file %d", undo_pos.nFile);
 
     char path[512];
     get_block_pos_filename(path, sizeof(path), datadir, &undo_pos, "rev");
@@ -497,7 +494,9 @@ static void *bg_validation_thread(void *arg)
         /* Skip genesis (hardcoded, nothing to validate) and blocks
          * without valid disk positions */
         if (h == 0) continue;
-        if (pindex->nFile < 0 || !(pindex->nStatus & BLOCK_HAVE_DATA)) {
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        if (!block_index_disk_pos_snapshot(pindex, &pos, NULL)) {
             continue;
         }
 
@@ -705,7 +704,7 @@ bool bg_validation_start(struct bg_validation_service *svc)
     if (chain_h > 1000) {
         struct block_index *h0 = active_chain_at(&svc->ms->chain_active, 0);
         struct block_index *h1 = active_chain_at(&svc->ms->chain_active, 1);
-        if (!h0 || !h1 || !(h0->nStatus & BLOCK_HAVE_DATA)) {
+        if (!h0 || !h1 || !(block_index_status_load(h0) & BLOCK_HAVE_DATA)) {
             printf("[bg-valid] Deferred — chain[0] or chain[1] not valid "
                    "(tip=%d)\n", chain_h);
             atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);

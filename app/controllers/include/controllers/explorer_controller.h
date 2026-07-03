@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 struct main_state;
 struct tx_mempool;
@@ -26,5 +27,12 @@ size_t explorer_handle_request(const char *method, const char *path,
 /* Return the canonical /explorer/... location for supported top-level
  * explorer shortcuts such as /factoids and /hodl, or NULL otherwise. */
 const char *explorer_canonical_shortcut(const char *path);
+
+#ifdef ZCL_TESTING
+void explorer_test_set_datadir(const char *datadir);
+void explorer_test_reset_factoids_cache(void);
+bool explorer_test_compute_factoids_cache_now(void);
+bool explorer_test_factoids_compute_active(void);
+#endif
 
 #endif

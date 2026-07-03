@@ -21,7 +21,9 @@
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "jobs/reducer_frontier.h"  // lib-layer-ok:provable-tip-served-to-peers
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <arpa/inet.h>
@@ -30,6 +32,56 @@
 static uint8_t g_external_ip[4];
 static uint16_t g_external_port;
 static bool g_has_external_ip = false;
+
+static bool msg_version_parse_external_ip(const char *ip_str,
+                                          uint16_t default_port,
+                                          uint8_t out_ip[4],
+                                          uint16_t *out_port)
+{
+    char host[INET_ADDRSTRLEN];
+    const char *port_part = NULL;
+    const char *colon;
+    struct in_addr addr;
+
+    if (!ip_str || ip_str[0] == '\0')
+        LOG_RETURN(false, "net", "externalip is empty");
+
+    colon = strchr(ip_str, ':');
+    if (colon) {
+        size_t host_len = (size_t)(colon - ip_str);
+        if (host_len == 0 || host_len >= sizeof(host))
+            LOG_RETURN(false, "net", "invalid externalip host: %s", ip_str);
+        memcpy(host, ip_str, host_len);
+        host[host_len] = '\0';
+        port_part = colon + 1;
+        if (port_part[0] == '\0')
+            LOG_RETURN(false, "net", "externalip port is empty: %s", ip_str);
+    } else {
+        size_t host_len = strlen(ip_str);
+        if (host_len >= sizeof(host))
+            LOG_RETURN(false, "net", "invalid externalip host: %s", ip_str);
+        memcpy(host, ip_str, host_len + 1);
+    }
+
+    if (inet_pton(AF_INET, host, &addr) != 1)
+        LOG_RETURN(false, "net", "externalip is not IPv4: %s", ip_str);
+
+    if (port_part) {
+        char *end = NULL;
+        unsigned long parsed;
+
+        errno = 0;
+        parsed = strtoul(port_part, &end, 10);
+        if (errno != 0 || end == port_part || *end != '\0' ||
+            parsed == 0 || parsed > 65535)
+            LOG_RETURN(false, "net", "invalid externalip port: %s", ip_str);
+        default_port = (uint16_t)parsed;
+    }
+
+    memcpy(out_ip, &addr, 4);
+    *out_port = default_port;
+    return true;
+}
 
 static void msg_version_save_peer(struct msg_processor *mp,
                                   const struct p2p_node *node)
@@ -42,13 +94,22 @@ static void msg_version_save_peer(struct msg_processor *mp,
 
 void msg_version_set_external_ip(const char *ip_str, uint16_t port)
 {
+    uint8_t ip[4];
+    uint16_t parsed_port = port;
+    char printable_ip[INET_ADDRSTRLEN];
     struct in_addr addr;
-    if (inet_pton(AF_INET, ip_str, &addr) == 1) {
-        memcpy(g_external_ip, &addr, 4);
-        g_external_port = port;
-        g_has_external_ip = true;
-        printf("External IP configured: %s:%u\n", ip_str, port);
-    }
+
+    if (!msg_version_parse_external_ip(ip_str, port, ip, &parsed_port))
+        return;
+
+    memcpy(g_external_ip, ip, 4);
+    g_external_port = parsed_port;
+    g_has_external_ip = true;
+
+    memcpy(&addr, g_external_ip, 4);
+    if (inet_ntop(AF_INET, &addr, printable_ip, sizeof(printable_ip)))
+        printf("External IP configured: %s:%u\n", printable_ip,
+               g_external_port);
 }
 
 bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port)
@@ -61,9 +122,25 @@ bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port)
     return true;
 }
 
+#ifdef ZCL_TESTING
+void msg_version_clear_external_ip_for_test(void)
+{
+    memset(g_external_ip, 0, sizeof(g_external_ip));
+    g_external_port = 0;
+    g_has_external_ip = false;
+}
+#endif
+
 const char *msg_version_user_agent(void)
 {
-    return "/MagicBean:2.1.2-beta1/ZClassic-C23:1.0.0/";
+    return "/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/";
+}
+
+static bool msg_version_subver_is_zcl23(const char *subver)
+{
+    return subver &&
+           (strstr(subver, "ZClassic23") != NULL ||
+            strstr(subver, "ZClassic-C23") != NULL);
 }
 
 bool msg_version_classify_peer(const char *subver, uint64_t services,
@@ -71,7 +148,7 @@ bool msg_version_classify_peer(const char *subver, uint64_t services,
 {
     bool mb = subver && strstr(subver, "MagicBean") != NULL;
     bool z23 = peer_supports_fast_sync(services) ||
-               (subver && strstr(subver, "ZClassic-C23") != NULL);
+               msg_version_subver_is_zcl23(subver);
     if (is_magicbean) *is_magicbean = mb;
     if (is_zcl23) *is_zcl23 = z23;
     return mb || z23;
@@ -133,7 +210,7 @@ void msg_version_build(struct version_message *ver,
     /* User-agent: lead with /MagicBean:.../ so existing zclassicd peers
      * recognize us as a same-network client (some peer filters check
      * this prefix when picking outbound slots). Append our own
-     * ZClassic-C23 identifier so operators can tell us apart from the
+     * ZClassic23 identifier so operators can tell us apart from the
      * legacy C++ daemon in `getpeerinfo` output. The MagicBean version
      * stays in sync with the running zclassicd reference so the
      * protocol version signaling matches what peers expect. */

@@ -55,10 +55,10 @@ static inline void block_index_emit_header_event(
         memcpy(h.hashPrev, bi->pprev->phashBlock->data, 32);
     /* else: genesis — hashPrev stays all-zero (memset above) */
     h.height        = bi->nHeight;
-    h.nStatus       = bi->nStatus;
-    h.nFile         = bi->nFile;
-    h.nDataPos      = bi->nDataPos;
-    h.nUndoPos      = bi->nUndoPos;
+    h.nStatus       = block_index_status_load(bi);
+    h.nFile         = block_index_file_load(bi);
+    h.nDataPos      = block_index_data_pos_load(bi);
+    h.nUndoPos      = block_index_undo_pos_load(bi);
     h.nTime         = bi->nTime;
     h.nBits         = bi->nBits;
     memcpy(h.nNonce, bi->nNonce.data, 32);

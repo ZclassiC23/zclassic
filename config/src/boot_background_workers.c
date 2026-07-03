@@ -561,9 +561,9 @@ static void watchdog_check_stuck(struct boot_svc_ctx *svc)
             while (block_map_next(&svc->state->map_block_index,
                                    &iter, NULL, &bi)) {
                 if (bi && bi->nHeight == h + 1 &&
-                    (bi->nStatus & BLOCK_FAILED_CHILD) &&
-                    !(bi->nStatus & BLOCK_FAILED_VALID)) {
-                    bi->nStatus &= ~BLOCK_FAILED_CHILD;
+                    block_is_dependency_failed(bi) &&
+                    !block_is_permanently_failed(bi)) {
+                    block_index_status_clear_bits(bi, BLOCK_FAILED_CHILD);
                     fprintf(stderr, "WATCHDOG: stuck at h=%d for %llds; "
                             "cleared transient BLOCK_FAILED_CHILD on h=%d "
                             "to retry\n", h,
@@ -571,13 +571,13 @@ static void watchdog_check_stuck(struct boot_svc_ctx *svc)
                             bi->nHeight);
                 }
             }
-        } else if ((next->nStatus & BLOCK_FAILED_CHILD) &&
-                   !(next->nStatus & BLOCK_FAILED_VALID)) {
-            next->nStatus &= ~BLOCK_FAILED_CHILD;
+        } else if (block_is_dependency_failed(next) &&
+                   !block_is_permanently_failed(next)) {
+            block_index_status_clear_bits(next, BLOCK_FAILED_CHILD);
             fprintf(stderr, "WATCHDOG: stuck at h=%d for %llds; cleared "
                     "transient BLOCK_FAILED_CHILD on h=%d to retry\n", h,
                     (long long)(now - last_height_change), next->nHeight);
-        } else if (next->nStatus & BLOCK_FAILED_VALID) {
+        } else if (block_is_permanently_failed(next)) {
             /* Deterministic self-attributed failure: a blind clear would
              * re-admit a forgery. Leave it for the re-derivation invariant
              * (re-pull bytes from peers + re-run the stage) to repair. */

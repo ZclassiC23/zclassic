@@ -93,16 +93,98 @@ static void failure_detail_set(uint8_t out[36], const struct uint256 *txid,
     out[35] = (uint8_t)((vout >> 24) & 0xff);
 }
 
-static bool lookup_added(const struct delta_entry *added, size_t n,
-                         const struct uint256 *txid, uint32_t vout,
-                         const struct delta_entry **out_entry)
+struct added_index {
+    size_t *slots;  /* delta_entry index + 1; 0 means empty */
+    size_t mask;
+};
+
+static uint64_t added_index_hash(const struct uint256 *txid, uint32_t vout)
 {
-    for (size_t i = 0; i < n; i++) {
-        if (added[i].vout == vout && uint256_eq(&added[i].txid, txid)) {
-            if (out_entry) *out_entry = &added[i];
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < sizeof(txid->data); i++) {
+        h ^= txid->data[i];
+        h *= 1099511628211ULL;
+    }
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        h ^= (uint8_t)(vout >> shift);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static bool added_index_init(struct added_index *idx, size_t add_cap)
+{
+    memset(idx, 0, sizeof(*idx));
+    if (add_cap == 0)
+        return true;
+    if (add_cap > SIZE_MAX / 2)
+        return false;
+    size_t want = add_cap * 2;
+    if (want < 8)
+        want = 8;
+    size_t cap = 1;
+    while (cap < want) {
+        if (cap > SIZE_MAX / 2)
+            return false;
+        cap <<= 1;
+    }
+    idx->slots = zcl_calloc(cap, sizeof(*idx->slots), "utxo_apply_add_index");
+    if (!idx->slots)
+        return false;
+    idx->mask = cap - 1;
+    return true;
+}
+
+static void added_index_free(struct added_index *idx)
+{
+    if (idx)
+        free(idx->slots);
+}
+
+static bool added_index_lookup(const struct added_index *idx,
+                               const struct delta_entry *added,
+                               const struct uint256 *txid, uint32_t vout,
+                               const struct delta_entry **out_entry)
+{
+    if (!idx->slots)
+        return false;
+    size_t pos = (size_t)added_index_hash(txid, vout) & idx->mask;
+    for (size_t probes = 0; probes <= idx->mask; probes++) {
+        size_t slot = idx->slots[pos];
+        if (slot == 0)
+            return false;
+        const struct delta_entry *e = &added[slot - 1];
+        if (e->vout == vout && uint256_eq(&e->txid, txid)) {
+            if (out_entry)
+                *out_entry = e;
             return true;
         }
+        pos = (pos + 1) & idx->mask;
     }
+    return false;
+}
+
+static bool added_index_insert(struct added_index *idx,
+                               const struct delta_entry *added,
+                               size_t entry_i)
+{
+    if (!idx->slots)
+        return true;
+    const struct delta_entry *entry = &added[entry_i];
+    size_t pos = (size_t)added_index_hash(&entry->txid, entry->vout)
+        & idx->mask;
+    for (size_t probes = 0; probes <= idx->mask; probes++) {
+        size_t slot = idx->slots[pos];
+        if (slot == 0) {
+            idx->slots[pos] = entry_i + 1;
+            return true;
+        }
+        const struct delta_entry *e = &added[slot - 1];
+        if (e->vout == entry->vout && uint256_eq(&e->txid, &entry->txid))
+            return true;
+        pos = (pos + 1) & idx->mask;
+    }
+    LOG_WARN("utxo_apply", "[utxo_apply] added-output lookup table full");
     return false;
 }
 
@@ -198,6 +280,20 @@ void utxo_apply_compute_block_delta(const struct block *blk,
     out->spent = spent;
     out->added = added;
 
+    struct added_index add_idx;
+    if (!added_index_init(&add_idx, add_cap)) {
+        out->ok = false;
+        out->status = "internal_error";
+        out->failure_kind = "alloc";
+        free_delta(out);
+        return;
+    }
+#define UTXO_DELTA_FAIL_AND_RETURN() do { \
+        added_index_free(&add_idx); \
+        free_delta(out); \
+        return; \
+    } while (0)
+
     /* Running fee total for the end-of-block coinbase subsidy ceiling below
      * (zclassicd's nFees accumulator, main.cpp:2695). */
     int64_t fees_total = 0;
@@ -222,8 +318,8 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                  * memcpy'd into se->script_owned after that block has closed. */
                 struct utxo_apply_lookup lk;
                 const struct delta_entry *intra = NULL;
-                bool found = lookup_added(added, out->added_count,
-                                          &op->hash, op->n, &intra);
+                bool found = added_index_lookup(&add_idx, added, &op->hash,
+                                                op->n, &intra);
                 if (found && intra) {
                     /* Created earlier in THIS block: its pre-image is the
                      * added entry we just recorded (height = this block). */
@@ -238,8 +334,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                     if (lookup && !lookup(&op->hash, op->n, &lk, lookup_user)) {
                         lookup_fail(out, "lookup_spend", block_height,
                                     &op->hash, op->n);
-                        free_delta(out);
-                        return;
+                        UTXO_DELTA_FAIL_AND_RETURN();
                     }
                     found = lk.found;
                     value = lk.value;
@@ -251,14 +346,12 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                 if (!found) {
                     delta_fail(out, "spend_unknown_utxo",
                                "spend_unknown_utxo", &op->hash, op->n);
-                    free_delta(out);
-                    return;
+                    UTXO_DELTA_FAIL_AND_RETURN();
                 }
                 if (value < 0 || value > MAX_MONEY_ZAT) {
                     delta_fail(out, "value_overflow",
                                "input_value", &op->hash, op->n);
-                    free_delta(out);
-                    return;
+                    UTXO_DELTA_FAIL_AND_RETURN();
                 }
                 struct delta_entry *se = &spent[out->spent_count];
                 se->txid = op->hash;
@@ -306,6 +399,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                          * (the block is not authored) and return ok=true so the
                          * stage skips authoring without taking the reject/halt
                          * path. */
+                        added_index_free(&add_idx);
                         free_delta(out);
                         out->ok = true;
                         out->status = "verified";
@@ -320,8 +414,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                     delta_fail(out, "coinbase_immature",
                                "bad-txns-premature-spend-of-coinbase",
                                &op->hash, op->n);
-                    free_delta(out);
-                    return;
+                    UTXO_DELTA_FAIL_AND_RETURN();
                 }
                 /* Own a copy of the restore script: the lookup buffer is
                  * stack-scoped and the intra-block add aliases the live
@@ -338,8 +431,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                         out->ok = false;
                         out->status = "internal_error";
                         out->failure_kind = "script_too_large";
-                        free_delta(out);
-                        return;
+                        UTXO_DELTA_FAIL_AND_RETURN();
                     }
                     se->script_owned =
                         zcl_malloc(restore_script_len, "utxo_apply_restore_sc");
@@ -347,8 +439,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                         out->ok = false;
                         out->status = "internal_error";
                         out->failure_kind = "alloc";
-                        free_delta(out);
-                        return;
+                        UTXO_DELTA_FAIL_AND_RETURN();
                     }
                     memcpy(se->script_owned, restore_script, restore_script_len);
                     se->script = se->script_owned;
@@ -387,37 +478,43 @@ void utxo_apply_compute_block_delta(const struct block *blk,
             if (txo->value < 0 || txo->value > MAX_MONEY_ZAT) {
                 delta_fail(out, "value_overflow", "output_value",
                            &tx->hash, (uint32_t)vo);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
-            if (lookup_added(added, out->added_count, &tx->hash,
-                             (uint32_t)vo, NULL)) {
+            if (added_index_lookup(&add_idx, added, &tx->hash, (uint32_t)vo,
+                                   NULL)) {
                 delta_fail(out, "utxo_collision", "duplicate_output",
                            &tx->hash, (uint32_t)vo);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
             struct utxo_apply_lookup lk;
             memset(&lk, 0, sizeof(lk));
             if (lookup && !lookup(&tx->hash, (uint32_t)vo, &lk, lookup_user)) {
                 lookup_fail(out, "lookup_output", block_height,
                             &tx->hash, (uint32_t)vo);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
             if (lk.found) {
                 delta_fail(out, "utxo_collision", "utxo_collision",
                            &tx->hash, (uint32_t)vo);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
-            added[out->added_count].txid = tx->hash;
-            added[out->added_count].vout = (uint32_t)vo;
-            added[out->added_count].value = txo->value;
-            added[out->added_count].script = txo->script_pub_key.data;
-            added[out->added_count].script_len =
+            size_t add_i = out->added_count;
+            added[add_i].txid = tx->hash;
+            added[add_i].vout = (uint32_t)vo;
+            added[add_i].value = txo->value;
+            added[add_i].script = txo->script_pub_key.data;
+            added[add_i].script_len =
                 (uint32_t)txo->script_pub_key.size;
-            added[out->added_count].is_coinbase = transaction_is_coinbase(tx);
+            added[add_i].is_coinbase = transaction_is_coinbase(tx);
+            if (!added_index_insert(&add_idx, added, add_i)) {
+                LOG_WARN("utxo_apply",
+                         "[utxo_apply] added-output index insert failed "
+                         "height=%u entry=%zu", block_height, add_i);
+                out->ok = false;
+                out->status = "internal_error";
+                out->failure_kind = "added_index";
+                UTXO_DELTA_FAIL_AND_RETURN();
+            }
             out->added_count++;
             out->total_value_delta += txo->value;
         }
@@ -438,8 +535,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                 delta_fail(out, "coinbase_protect",
                            "bad-txns-coinbase-spend-has-transparent-outputs",
                            &tx->hash, 0);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
             /* Full Zcash money rule. The canonical check (connect_block.c
              * value_in<value_out -> "bad-txns-in-belowout") has NO production
@@ -459,15 +555,13 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                 sh_in > MAX_MONEY_ZAT - tx_input_value) {
                 delta_fail(out, "value_overflow", "inputvalues_outofrange",
                            &tx->hash, 0);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
             int64_t value_in_full = tx_input_value + sh_in;
             if (value_in_full < value_out_full) {
                 delta_fail(out, "value_overflow", "outputs_exceed_inputs",
                            &tx->hash, 0);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
             /* Accumulate this tx's fee for the coinbase ceiling. tx_fee >= 0
              * by the check above, and value_in_full is already
@@ -478,8 +572,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
             if (tx_fee > MAX_MONEY_ZAT - fees_total) {
                 delta_fail(out, "value_overflow", "fee_outofrange",
                            &tx->hash, 0);
-                free_delta(out);
-                return;
+                UTXO_DELTA_FAIL_AND_RETURN();
             }
             fees_total += tx_fee;
         }
@@ -507,8 +600,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
         if (fees_total > INT64_MAX - subsidy) {
             delta_fail(out, "bad_cb_amount", "bad-cb-reward-overflow",
                        &blk->vtx[0].hash, 0);
-            free_delta(out);
-            return;
+            UTXO_DELTA_FAIL_AND_RETURN();
         }
         /* transaction_get_value_out returns -1 on a MoneyRange violation;
          * comparing -1 against the reward would FALSE-PASS, so a negative
@@ -517,8 +609,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
         if (cb_out < 0 || cb_out > fees_total + subsidy) {
             delta_fail(out, "bad_cb_amount", "bad-cb-amount",
                        &blk->vtx[0].hash, 0);
-            free_delta(out);
-            return;
+            UTXO_DELTA_FAIL_AND_RETURN();
         }
     }
 
@@ -527,11 +618,12 @@ void utxo_apply_compute_block_delta(const struct block *blk,
         out->ok = false;
         out->status = "value_overflow";
         out->failure_kind = "total_value_delta";
-        free_delta(out);
-        return;
+        UTXO_DELTA_FAIL_AND_RETURN();
     }
 
     /* Success: out->spent/out->added own the arrays (see header). */
+    added_index_free(&add_idx);
+#undef UTXO_DELTA_FAIL_AND_RETURN
 }
 
 /* ── Schema ────────────────────────────────────────────────────────── */

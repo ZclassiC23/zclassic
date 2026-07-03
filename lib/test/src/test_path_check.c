@@ -7,15 +7,29 @@
  * tests are simple table-driven assertions. */
 
 #include "test/test_helpers.h"
+#include "net/https_server.h"
 #include "util/path_check.h"
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define PC_CHECK(name, expr) do { \
     printf("path_check: %s... ", (name)); \
     if ((expr)) printf("OK\n");           \
     else { printf("FAIL\n"); failures++; } \
 } while (0)
+
+static bool write_small_file(const char *path, const char *body)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fputs(body, f) >= 0;
+    fclose(f);
+    return ok;
+}
 
 int test_path_check(void)
 {
@@ -123,6 +137,52 @@ int test_path_check(void)
         path_check_url_arg("/api/health", 32));
     PC_CHECK("url_arg \"/directory.json\" accepted",
         path_check_url_arg("/directory.json", 32));
+
+    /* ── ACME redirect passthrough containment ───────────────── */
+    {
+        char dir[256];
+        char root[PATH_MAX];
+        char token_path[PATH_MAX];
+        char outside_path[PATH_MAX];
+        char link_path[PATH_MAX];
+        char out[PATH_MAX];
+        char real_token[PATH_MAX];
+
+        test_make_tmpdir(dir, sizeof(dir), "path_check", "acme");
+        snprintf(root, sizeof(root), "%s/acme", dir);
+        PC_CHECK("acme root mkdir", mkdir(root, 0700) == 0);
+
+        snprintf(token_path, sizeof(token_path), "%s/token", root);
+        PC_CHECK("acme token fixture",
+                 write_small_file(token_path, "challenge"));
+        PC_CHECK("acme resolver accepts token",
+                 realpath(token_path, real_token) &&
+                 https_server_acme_challenge_filepath_for_testing(
+                     root, "/.well-known/acme-challenge/token",
+                     out, sizeof(out)) &&
+                 strcmp(out, real_token) == 0);
+
+        PC_CHECK("acme resolver rejects traversal segment",
+                 !https_server_acme_challenge_filepath_for_testing(
+                     root, "/.well-known/acme-challenge/../token",
+                     out, sizeof(out)));
+        PC_CHECK("acme resolver rejects empty challenge token",
+                 !https_server_acme_challenge_filepath_for_testing(
+                     root, "/.well-known/acme-challenge/",
+                     out, sizeof(out)));
+
+        snprintf(outside_path, sizeof(outside_path), "%s/outside", dir);
+        snprintf(link_path, sizeof(link_path), "%s/link", root);
+        PC_CHECK("acme outside fixture",
+                 write_small_file(outside_path, "outside") &&
+                 symlink("../outside", link_path) == 0);
+        PC_CHECK("acme resolver rejects symlink escape",
+                 !https_server_acme_challenge_filepath_for_testing(
+                     root, "/.well-known/acme-challenge/link",
+                     out, sizeof(out)));
+
+        test_cleanup_tmpdir(dir);
+    }
 
     return failures;
 }

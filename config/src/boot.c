@@ -248,6 +248,26 @@ struct boot_svc_ctx *boot_active_svc(void) { return &g_svc; }
  * mainnet zk-params gate before its definition appears. */
 static bool boot_park_until_shutdown(const char *gate_name);
 
+static bool boot_params_thread_failure_is_fatal(const struct app_context *ctx,
+                                                const char *network_id)
+{
+    return ctx && ctx->params_dir && network_id &&
+           strcmp(network_id, "main") == 0 && !ctx->mint_anchor_fast;
+}
+
+#ifdef ZCL_TESTING
+bool boot_test_params_thread_failure_is_fatal(bool has_params_dir,
+                                              bool is_mainnet,
+                                              bool mint_anchor_fast)
+{
+    struct app_context ctx = {0};
+    ctx.params_dir = has_params_dir ? "/tmp/zcash-params" : NULL;
+    ctx.mint_anchor_fast = mint_anchor_fast;
+    return boot_params_thread_failure_is_fatal(&ctx,
+                                               is_mainnet ? "main" : "test");
+}
+#endif
+
 void *load_params_thread(void *arg)
 {
     (void)arg;
@@ -695,9 +715,27 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
          * app_shutdown's params_thread field. raw-pthread-ok */
         if (pthread_create(&g_params_thread, NULL, load_params_thread, NULL) == 0)
             g_params_thread_started = true;
-        else
+        else if (boot_params_thread_failure_is_fatal(
+                     ctx, params ? params->strNetworkID : NULL)) {
+            struct blocker_record rec;
+            if (blocker_init(&rec, "params_missing", "crypto.params",
+                             BLOCKER_PERMANENT,
+                             "mainnet zk params loader thread failed to start "
+                             "— proof validation cannot run") &&
+                blocker_set(&rec) == 0)
+                event_emitf(EV_OPERATOR_NEEDED, 0,
+                            "check=params_missing reason=params_loader_thread_start_failed dir=%s",
+                            g_params_dir_buf);
+            LOG_WARN("crypto.params",
+                     "[crypto.params] failed to start zk params loader thread "
+                     "for mainnet dir=%s — NOT advancing CRYPTO_READY; parking "
+                     "alive-degraded after paging the operator",
+                     g_params_dir_buf);
+            return boot_park_until_shutdown("crypto_params_loader_thread");
+        } else {
             fprintf(stderr,
                     "WARNING: failed to start ZK params loader thread\n");
+        }
     }
 
     boot_stage_advance_to(BOOT_STAGE_CRYPTO_READY);

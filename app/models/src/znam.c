@@ -181,7 +181,8 @@ bool db_znam_find(struct node_db *ndb, const char *name,
 int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max)
 {
     if (!ndb || !ndb->open) return 0;
-    if (!out && max > 0) LOG_FAIL("znam", "db_znam_list: out is NULL");
+    if (!out && max > 0)
+        LOG_RETURN(0, "znam", "db_znam_list: out is NULL");
 
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
@@ -199,7 +200,7 @@ int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
     if (!ndb || !ndb->open) return 0;
     if (!owner) return 0;
     if (!out && max > 0)
-        LOG_FAIL("znam", "db_znam_list_by_owner: out is NULL");
+        LOG_RETURN(0, "znam", "db_znam_list_by_owner: out is NULL");
 
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
@@ -283,7 +284,7 @@ int db_znam_text_list(struct node_db *ndb, const char *name,
     if (!ndb || !ndb->open) return 0;
     if (!name) return 0;
     if (!out && max > 0)
-        LOG_FAIL("znam", "db_znam_text_list: out is NULL");
+        LOG_RETURN(0, "znam", "db_znam_text_list: out is NULL");
 
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,

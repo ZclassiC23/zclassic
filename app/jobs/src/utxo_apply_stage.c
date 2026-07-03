@@ -6,6 +6,7 @@
  * It writes only utxo_apply_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
+#include "jobs/created_outputs_index.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/replay_count_only.h"
@@ -32,6 +33,7 @@
 #include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "util/util.h"
+#include "validation/main_constants.h"
 #include "validation/main_state.h"
 #include <pthread.h>
 #include <sqlite3.h>
@@ -42,6 +44,14 @@
 #include <string.h>
 
 #define STAGE_NAME "utxo_apply"
+
+/* The forward creation index is needed only for the replayable/reorgable
+ * window above the durable coin frontier. Keep a large margin over the IBD
+ * reorg allowance plus the block-download lookahead, then prune a bounded
+ * number of old heights inside each successful apply transaction. */
+#define CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS \
+    (MAX_IBD_REORG_LENGTH + BLOCK_DOWNLOAD_WINDOW + 1024)
+#define CREATED_OUTPUTS_PRUNE_MAX_HEIGHTS_PER_STEP 32
 
 /* struct proof_validate_row + the utxo_apply_log schema/read/write helpers
  * live in utxo_apply_log_store.c (pure sqlite kernel helpers below the AR
@@ -462,6 +472,20 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                    "coins_applied_height co-commit store failure");
         return JOB_FATAL;
     }
+    if (next_cursor > CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS) {
+        int prune_floor = (int)next_cursor -
+                          CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS;
+        int pruned_rows = 0;
+        if (!created_outputs_index_prune_below_limited(
+                db, prune_floor, CREATED_OUTPUTS_PRUNE_MAX_HEIGHTS_PER_STEP,
+                &pruned_rows)) {
+            LOG_WARN(STAGE_NAME,
+                     "[utxo_apply] created_outputs prune failed "
+                     "floor=%d retain=%d max_heights=%d",
+                     prune_floor, CREATED_OUTPUTS_PRUNE_RETAIN_BLOCKS,
+                     CREATED_OUTPUTS_PRUNE_MAX_HEIGHTS_PER_STEP);
+        }
+    }
     seal_candidate_hook_in_tx(db, g_ms, (int32_t)next_cursor);
     /* SELF-MINT the SHA3-verified anchor snapshot the first time the fold lands
      * the compiled checkpoint height — coins_kv provably holds the
@@ -526,6 +550,10 @@ bool utxo_apply_stage_init(struct main_state *ms)
         return false;
     }
     if (!coins_kv_ensure_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    if (!created_outputs_index_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

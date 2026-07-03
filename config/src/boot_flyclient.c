@@ -31,10 +31,11 @@ bool boot_build_flyclient_proof(struct fc_response *resp,
                  (void *)resp, (const void *)challenge,
                  (const void *)chain_active);
 
-    struct mmb *mmb = rpc_blockchain_get_mmb();
+    uint64_t mmb_leaves = 0;
+    rpc_blockchain_mmb_snapshot(NULL, &mmb_leaves, NULL);
     const uint8_t (*all_hashes)[32] =
         mmb_leaf_store_all(&g_mmb_leaf_store);
-    if (!mmb || mmb->num_leaves == 0 || !all_hashes)
+    if (mmb_leaves == 0 || !all_hashes)
         return false;
 
     return snapsync_build_fc_response(resp, challenge, chain_active,
@@ -193,11 +194,12 @@ bool boot_prepare_mmb_leaf_store(struct boot_svc_ctx *svc,
                  datadir);
 
     mmb_leaf_store_open(&g_mmb_leaf_store, leaf_path);
-    struct mmb *mmb = rpc_blockchain_get_mmb();
-    if (mmb && g_mmb_leaf_store.num_leaves < mmb->num_leaves) {
+    uint64_t mmb_leaves = 0;
+    rpc_blockchain_mmb_snapshot(NULL, &mmb_leaves, NULL);
+    if (g_mmb_leaf_store.num_leaves < mmb_leaves) {
         printf("[FlyClient] Rebuilding MMB leaf store (%llu -> %llu)...\n",
                (unsigned long long)g_mmb_leaf_store.num_leaves,
-               (unsigned long long)mmb->num_leaves);
+               (unsigned long long)mmb_leaves);
         mmb_leaf_store_rebuild(&g_mmb_leaf_store,
                                &svc->state->chain_active);
     }

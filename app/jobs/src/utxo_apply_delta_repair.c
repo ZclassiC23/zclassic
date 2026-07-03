@@ -165,31 +165,24 @@ static bool repair_live_lookup(const struct uint256 *txid, uint32_t vout,
     if (!db)
         return true;
 
-    struct coins c;
-    coins_init(&c);
-    if (!coins_kv_get_coins(db, txid->data, &c)) {
-        coins_free(&c);
+    int64_t value = 0;
+    int32_t height = 0;
+    bool is_coinbase = false;
+    size_t slen = 0;
+    if (!coins_kv_get_prevout(db, txid->data, vout, &value, out->script,
+                              UTXO_APPLY_SCRIPT_MAX, &slen, &height,
+                              &is_coinbase))
         return true;
-    }
 
-    bool ok = true;
-    if (vout < c.num_vout && !tx_out_is_null(&c.vout[vout])) {
-        const struct tx_out *o = &c.vout[vout];
-        size_t slen = o->script_pub_key.size;
-        if (slen > UTXO_APPLY_SCRIPT_MAX) {
-            ok = false;
-        } else {
-            out->found = true;
-            out->value = o->value;
-            out->height = (uint32_t)(c.height < 0 ? 0 : c.height);
-            out->is_coinbase = c.is_coinbase;
-            out->script_len = (uint32_t)slen;
-            if (slen)
-                memcpy(out->script, o->script_pub_key.data, slen);
-        }
-    }
-    coins_free(&c);
-    return ok;
+    if (slen > UTXO_APPLY_SCRIPT_MAX)
+        return false;
+
+    out->found = true;
+    out->value = value;
+    out->height = (uint32_t)(height < 0 ? 0 : height);
+    out->is_coinbase = is_coinbase;
+    out->script_len = (uint32_t)slen;
+    return true;
 }
 
 static bool dry_run_after_inverse(sqlite3 *db, int height, int cursor,

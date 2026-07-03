@@ -65,7 +65,9 @@ static bool make_fixture_db(sqlite3 **out_db)
         " total_zat INTEGER NOT NULL DEFAULT 0 CHECK(total_zat >= 0),"
         " older_1y_zat INTEGER NOT NULL DEFAULT 0"
         "   CHECK(older_1y_zat >= 0 AND older_1y_zat <= total_zat),"
-        " older_1y_pct REAL NOT NULL DEFAULT 0);";
+        " older_1y_pct REAL NOT NULL DEFAULT 0,"
+        " calc_version INTEGER NOT NULL DEFAULT 0,"
+        " source_tip_height INTEGER NOT NULL DEFAULT -1);";
     if (sqlite3_exec(db, ddl, NULL, NULL, NULL) != SQLITE_OK) {
         sqlite3_close(db);
         return false;
@@ -77,6 +79,28 @@ static bool make_fixture_db(sqlite3 **out_db)
 static bool exec_sql(sqlite3 *db, const char *sql)
 {
     return sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
+}
+
+static bool set_projection_tip(sqlite3 *db, int64_t height)
+{
+    sqlite3_stmt *s = NULL;
+    if (!db ||
+        sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS node_state ("
+            "key TEXT PRIMARY KEY,value BLOB)",
+            NULL, NULL, NULL) != SQLITE_OK)
+        return false;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO node_state(key,value) VALUES(?1,?2)",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_text(s, 1, "sync_projection_tip_height", -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, &height, (int)sizeof(height),
+                      SQLITE_TRANSIENT);
+    int rc = sqlite3_step(s);
+    sqlite3_finalize(s);
+    return rc == SQLITE_DONE;
 }
 
 static int64_t query_total_at_height(sqlite3 *db, int64_t height, int64_t fallback)
@@ -232,33 +256,110 @@ int test_hodl_history_port(void)
         char sql[2048];
         snprintf(sql, sizeof sql,
             "INSERT INTO blocks(hash,height,time) VALUES"
-            " (x'10',%lld,%lld),(x'11',%lld,%lld),(x'12',%lld,%lld);"
+            " (x'10',%lld,%lld),(x'11',%lld,%lld),"
+            " (x'12',%lld,%lld),(x'13',%lld,%lld);"
             "INSERT INTO tx_outputs(txid,vout,value,block_height) VALUES"
             " (x'DD',0,100,%lld);"
             "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
-            "older_1y_pct) VALUES"
-            " (%lld,%lld,0,0,0.0),"
-            " (%lld,%lld,100,0,0.0);",
+            "older_1y_pct,calc_version,source_tip_height) VALUES"
+            " (%lld,%lld,0,0,0.0,%d,%lld),"
+            " (%lld,%lld,50,0,0.0,%d,%lld),"
+            " (%lld,%lld,100,0,0.0,%d,%lld);",
             (long long)S,       (long long)YEAR,
             (long long)(2 * S), (long long)(YEAR + 100),
             (long long)(3 * S), (long long)(YEAR + 200),
+            (long long)(4 * S), (long long)(YEAR + 300),
             (long long)S,
             (long long)S,       (long long)YEAR,
-            (long long)(3 * S), (long long)(YEAR + 200));
+            HODL_HISTORY_SNAPSHOT_CALC_VERSION, (long long)(S - 1),
+            (long long)(3 * S), (long long)(YEAR + 200),
+            HODL_HISTORY_SNAPSHOT_CALC_VERSION, (long long)(3 * S - 1),
+            (long long)(4 * S), (long long)(YEAR + 300),
+            HODL_HISTORY_SNAPSHOT_CALC_VERSION, (long long)(4 * S));
         HH_CHECK("repair scenario seeds", exec_sql(db, sql));
 
         HH_CHECK("repair stale zero below max",
-                 hodl_history_fill_pending(db, 3 * S, 1) == 1);
+                 hodl_history_fill_pending(db, 4 * S, 1) == 1);
         HH_CHECK("stale zero recomputed",
                  query_total_at_height(db, S, -1) == 100);
 
         HH_CHECK("repair missing middle sample",
-                 hodl_history_fill_pending(db, 3 * S, 1) == 1);
+                 hodl_history_fill_pending(db, 4 * S, 1) == 1);
         HH_CHECK("middle sample inserted",
                  query_total_at_height(db, 2 * S, -1) == 100);
 
+        HH_CHECK("repair stale nonzero with insufficient source coverage",
+                 hodl_history_fill_pending(db, 4 * S, 1) == 1);
+        HH_CHECK("stale nonzero recomputed",
+                 query_total_at_height(db, 3 * S, -1) == 100);
+
         HH_CHECK("repair complete no-op",
-                 hodl_history_fill_pending(db, 3 * S, 1) == 0);
+                 hodl_history_fill_pending(db, 4 * S, 1) == 0);
+
+        sqlite3_close(db);
+    }
+
+    /* ---- fill_pending waits for source projection coverage ---- */
+    {
+        sqlite3 *db = NULL;
+        if (!make_fixture_db(&db)) {
+            HH_CHECK("source-gate fixture builds", false);
+            return failures;
+        }
+
+        const int64_t S = HODL_HISTORY_SAMPLE_STRIDE;
+        char sql[1536];
+        snprintf(sql, sizeof sql,
+            "INSERT INTO blocks(hash,height,time) VALUES"
+            " (x'20',%lld,%lld),(x'21',%lld,%lld);"
+            "INSERT INTO tx_outputs(txid,vout,value,block_height) VALUES"
+            " (x'EE',0,100,%lld);"
+            "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
+            "older_1y_pct,calc_version,source_tip_height) VALUES"
+            " (%lld,%lld,100,0,0.0,%d,%lld);",
+            (long long)S,       (long long)YEAR,
+            (long long)(2 * S), (long long)(YEAR + 100),
+            (long long)S,
+            (long long)S,       (long long)YEAR,
+            HODL_HISTORY_SNAPSHOT_CALC_VERSION, (long long)S);
+        HH_CHECK("source-gate scenario seeds", exec_sql(db, sql));
+        HH_CHECK("source tip set to first sample",
+                 set_projection_tip(db, S));
+
+        HH_CHECK("missing sample waits for source coverage",
+                 hodl_history_fill_pending(db, 2 * S, 1) == 0);
+        HH_CHECK("source tip advances to missing sample",
+                 set_projection_tip(db, 2 * S));
+        HH_CHECK("missing sample fills after source coverage",
+                 hodl_history_fill_pending(db, 2 * S, 1) == 1);
+        HH_CHECK("source-gated sample inserted",
+                 query_total_at_height(db, 2 * S, -1) == 100);
+
+        sqlite3_close(db);
+    }
+
+    /* ---- Chart loader keeps the most recent capped samples, displayed ASC ---- */
+    {
+        sqlite3 *db = NULL;
+        if (!make_fixture_db(&db)) {
+            HH_CHECK("recency fixture builds", false);
+            return failures;
+        }
+
+        HH_CHECK("recency rows seed",
+                 exec_sql(db,
+                     "INSERT INTO hodl_history(height,time,total_zat,"
+                     "older_1y_zat,older_1y_pct) VALUES"
+                     "(1,10,100,10,10.0),"
+                     "(2,20,200,20,10.0),"
+                     "(3,30,300,30,10.0);"));
+
+        struct hodl_history_row rows[2];
+        int n = hodl_history_load_all(db, rows, 2);
+        HH_CHECK("load_all cap keeps newest two",
+                 n == 2 && rows[0].height == 2 && rows[1].height == 3);
+        HH_CHECK("load_all newest two stay ascending",
+                 n == 2 && rows[0].time == 20 && rows[1].time == 30);
 
         sqlite3_close(db);
     }

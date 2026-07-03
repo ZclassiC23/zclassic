@@ -480,13 +480,11 @@ bool read_block_from_disk_index_pread(struct block *b,
 {
     if (!pindex)
         LOG_FAIL("disk_block_io", "read_block_from_disk_index_pread: pindex is NULL");
-    if (!(pindex->nStatus & BLOCK_HAVE_DATA) || pindex->nFile < 0)
-        return false;
 
     struct disk_block_pos pos;
     disk_block_pos_init(&pos);
-    pos.nFile = pindex->nFile;
-    pos.nPos = pindex->nDataPos;
+    if (!block_index_disk_pos_snapshot(pindex, &pos, NULL))
+        return false;
 
     if (!read_block_from_disk_pread(b, &pos, datadir)) {
         /* Throttled per nFile (see g_open_fail_throttle rationale above). */
@@ -519,8 +517,10 @@ bool read_block_from_disk_index_pread(struct block *b,
 bool block_index_have_data_readable(const struct block_index *pindex,
                                     const char *datadir)
 {
-    if (!pindex || !datadir || !(pindex->nStatus & BLOCK_HAVE_DATA) ||
-        pindex->nFile < 0 || !pindex->phashBlock)
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    if (!pindex || !datadir || !pindex->phashBlock ||
+        !block_index_disk_pos_snapshot(pindex, &pos, NULL))
         return false;
 
     struct block blk;
@@ -565,8 +565,7 @@ bool block_index_set_have_data_verified(struct block_index *pindex,
                  pindex->nHeight, got_hex, want_hex);
     }
 
-    pindex->nFile = pos->nFile;
-    pindex->nDataPos = pos->nPos;
-    pindex->nStatus |= BLOCK_HAVE_DATA;
+    block_index_disk_pos_store(pindex, pos->nFile, pos->nPos);
+    block_index_status_fetch_or(pindex, BLOCK_HAVE_DATA);
     return true;
 }

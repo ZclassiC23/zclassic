@@ -30,6 +30,7 @@ static _Atomic int g_tip_finalize_cursor_at_detect = -1;
  * 0 = record absent at detect, 1 = record present at detect. */
 static _Atomic int g_coin_backfill_scan_present_at_detect = -1;
 static _Atomic int g_coin_backfill_scan_next_at_detect = -1;
+static _Atomic int g_coin_backfill_insert_remedy_call_at_detect = -1;
 /* tipfin backfill progress record snapshot, same convention. */
 static _Atomic int g_tipfin_backfill_present_at_detect = -1;
 static _Atomic int g_tipfin_backfill_progress_at_detect = -1;
@@ -182,6 +183,7 @@ static const struct rfrl_rr_field_meta
 
 static _Atomic int g_last_rr_seen = 0;
 static _Atomic int g_last_rr_phase = RFRL_RR_PHASE_NONE;
+static _Atomic int g_last_rr_remedy_call = -1;
 static _Atomic int g_last_rr_values[RFRL_RR_FIELD_N];
 
 const char *rfrl_coin_backfill_status_label(int status)
@@ -343,6 +345,8 @@ void rfrl_snapshot_reconcile_result(
                     rr->lowest_reorg_residue_tipfin);
 
     atomic_store(&g_last_rr_phase, (int)phase);
+    if (phase == RFRL_RR_PHASE_REMEDY)
+        atomic_store(&g_last_rr_remedy_call, rfrl_remedy_calls());
     atomic_store(&g_last_rr_seen, 1);
 }
 
@@ -574,6 +578,22 @@ int rfrl_last_coin_backfill_inserted(void)
     return atomic_load(&g_last_rr_values[RFRL_RR_COIN_BACKFILL_INSERTED]);
 }
 
+int rfrl_last_reconcile_remedy_call(void)
+{
+    return atomic_load(&g_last_rr_remedy_call);
+}
+
+int rfrl_coin_backfill_insert_remedy_call_at_detect(void)
+{
+    return atomic_load(&g_coin_backfill_insert_remedy_call_at_detect);
+}
+
+void rfrl_snapshot_coin_backfill_insert_progress(void)
+{
+    atomic_store(&g_coin_backfill_insert_remedy_call_at_detect,
+                 rfrl_remedy_calls());
+}
+
 void rfrl_increment_remedy_calls(void)
 {
     atomic_fetch_add(&g_remedy_calls, 1);
@@ -648,6 +668,9 @@ bool rfrl_detail_push(struct json_value *out)
         out, "coin_backfill_scan_next_at_detect",
         atomic_load(&g_coin_backfill_scan_next_at_detect));
     ok = ok && json_push_kv_int(
+        out, "coin_backfill_insert_remedy_call_at_detect",
+        atomic_load(&g_coin_backfill_insert_remedy_call_at_detect));
+    ok = ok && json_push_kv_int(
         out, "tipfin_backfill_present_at_detect",
         atomic_load(&g_tipfin_backfill_present_at_detect));
     ok = ok && json_push_kv_int(
@@ -664,6 +687,8 @@ bool rfrl_detail_push(struct json_value *out)
                                  atomic_load(&g_last_rr_seen) != 0);
     ok = ok && json_push_kv_str(out, "last_reconcile_phase",
                                 rfrl_rr_phase_label(phase));
+    ok = ok && json_push_kv_int(out, "last_reconcile_remedy_call",
+                                atomic_load(&g_last_rr_remedy_call));
     for (int i = 0; i < RFRL_RR_FIELD_N; i++) {
         int value = atomic_load(&g_last_rr_values[i]);
         if (k_rfrl_rr_fields[i].is_bool) {
@@ -695,6 +720,7 @@ void rfrl_observe_reset_for_testing(void)
     atomic_store(&g_tip_finalize_cursor_at_detect, -1);
     atomic_store(&g_coin_backfill_scan_present_at_detect, -1);
     atomic_store(&g_coin_backfill_scan_next_at_detect, -1);
+    atomic_store(&g_coin_backfill_insert_remedy_call_at_detect, -1);
     atomic_store(&g_tipfin_backfill_present_at_detect, -1);
     atomic_store(&g_tipfin_backfill_progress_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
@@ -702,6 +728,7 @@ void rfrl_observe_reset_for_testing(void)
     atomic_store(&g_tear_bypass_active, false);
     atomic_store(&g_last_rr_seen, 0);
     atomic_store(&g_last_rr_phase, RFRL_RR_PHASE_NONE);
+    atomic_store(&g_last_rr_remedy_call, -1);
     for (int i = 0; i < RFRL_RR_FIELD_N; i++)
         atomic_store(&g_last_rr_values[i], 0);
 }

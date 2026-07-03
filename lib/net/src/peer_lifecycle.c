@@ -140,7 +140,8 @@ static bool subver_is_magicbean(const char *subver)
 static bool subver_is_zcl23(const char *subver, uint64_t services)
 {
     return peer_supports_fast_sync(services) ||
-           (subver && strstr(subver, "ZClassic-C23") != NULL);
+           (subver && (strstr(subver, "ZClassic23") != NULL ||
+                       strstr(subver, "ZClassic-C23") != NULL));
 }
 
 static int64_t handshake_duration_secs(const struct peer_lifecycle_entry *e)
@@ -422,6 +423,8 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_str(out, "subver", e->subver);
     json_push_kv_bool(out, "magicbean",
                       subver_is_magicbean(e->subver));
+    json_push_kv_bool(out, "zclassic23",
+                      subver_is_zcl23(e->subver, e->services));
     json_push_kv_bool(out, "zclassic_c23",
                       subver_is_zcl23(e->subver, e->services));
     json_push_kv_str(out, "last_reason", e->last_reason);
@@ -443,6 +446,8 @@ bool peer_lifecycle_peer_json(const struct p2p_node *node,
         json_push_kv_int(out, "handshake_duration_secs", 0);
         json_push_kv_bool(out, "magicbean",
                           subver_is_magicbean(node->sub_ver));
+        json_push_kv_bool(out, "zclassic23",
+                          subver_is_zcl23(node->sub_ver, node->services));
         json_push_kv_bool(out, "zclassic_c23",
                           subver_is_zcl23(node->sub_ver, node->services));
     }
@@ -468,6 +473,8 @@ static void summary_to_json(const struct peer_lifecycle_summary *s,
                      s->magicbean_handshakes);
     json_push_kv_int(out, "legacy_compatible_handshakes",
                      s->legacy_compatible_handshakes);
+    json_push_kv_int(out, "zclassic23_handshakes",
+                     s->zcl23_handshakes);
     json_push_kv_int(out, "zclassic_c23_handshakes",
                      s->zcl23_handshakes);
     json_push_kv_int(out, "pre_handshake_disconnects",

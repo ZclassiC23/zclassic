@@ -9,11 +9,13 @@
  * (the node stays unprivileged). See tools/zcl_portfwd.c,
  * deploy/systemd/zcl-portfwd.service, and docs/BLOCK_EXPLORER_HOSTING.md. */
 
+#define _XOPEN_SOURCE 700
 #include "net/https_server.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -26,6 +28,7 @@
 #include <stdatomic.h>
 #include <sys/time.h>
 #include "util/log_macros.h"
+#include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include "mcp/metrics.h"
@@ -230,8 +233,8 @@ static void handle_https_client(SSL *ssl)
      * untrusted ingress, and the API router cannot authenticate (it
      * never sees headers or peer identity — see api_handle_request),
      * so the gate lives here. The onion service exposes no /api;
-     * wallet_gui/zcl-browser call explorer_handle_request in-process
-     * and are unaffected. Deliberately no Access-Control-Allow-Origin
+     * wallet_gui calls explorer_handle_request in-process and is
+     * unaffected. Deliberately no Access-Control-Allow-Origin
      * header on the refusal. */
     if (strncmp(path, "/api", 4) == 0) {
         extern bool api_route_is_operator_private(const char *path);
@@ -365,6 +368,64 @@ static void *https_listen_fn(void *arg)
 
 /* ── HTTP redirect handler (port 80) ─────────────────────── */
 
+#define ACME_CHALLENGE_URL_PREFIX "/.well-known/acme-challenge/"
+#define ACME_CHALLENGE_ROOT "/var/www/html/.well-known/acme-challenge"
+#define ACME_CHALLENGE_URL_MAX 2047
+
+static bool acme_challenge_filepath_under_root(const char *root,
+                                               const char *path,
+                                               char *out,
+                                               size_t out_len)
+{
+    if (!root || !path || !out || out_len == 0)
+        return false;
+    if (!path_check_url_arg(path, ACME_CHALLENGE_URL_MAX))
+        return false;
+
+    const size_t prefix_len = sizeof(ACME_CHALLENGE_URL_PREFIX) - 1;
+    if (strncmp(path, ACME_CHALLENGE_URL_PREFIX, prefix_len) != 0 ||
+        path[prefix_len] == '\0')
+        return false;
+
+    char root_real[PATH_MAX];
+    if (!realpath(root, root_real))
+        return false;
+
+    char filepath[PATH_MAX];
+    int n = snprintf(filepath, sizeof(filepath), "%s/%s", root_real,
+                     path + prefix_len);
+    if (n < 0 || n >= (int)sizeof(filepath))
+        return false;
+
+    char file_real[PATH_MAX];
+    if (!realpath(filepath, file_real))
+        return false;
+
+    size_t root_len = strlen(root_real);
+    if (strncmp(file_real, root_real, root_len) != 0 ||
+        (file_real[root_len] != '/' && file_real[root_len] != '\0'))
+        return false;
+
+    n = snprintf(out, out_len, "%s", file_real);
+    return n >= 0 && n < (int)out_len;
+}
+
+static bool acme_challenge_filepath(const char *path, char *out, size_t out_len)
+{
+    return acme_challenge_filepath_under_root(ACME_CHALLENGE_ROOT, path,
+                                              out, out_len);
+}
+
+#ifdef ZCL_TESTING
+bool https_server_acme_challenge_filepath_for_testing(const char *root,
+                                                      const char *path,
+                                                      char *out,
+                                                      size_t out_len)
+{
+    return acme_challenge_filepath_under_root(root, path, out, out_len);
+}
+#endif
+
 static void handle_http_client_fd(int fd)
 {
     /* Read the request line to get the path */
@@ -393,27 +454,23 @@ static void handle_http_client_fd(int fd)
     }
 
     /* ACME challenge passthrough for cert renewal */
-    if (strncmp(path, "/.well-known/acme-challenge/", 28) == 0) {
-        char filepath[4096];
-        snprintf(filepath, sizeof(filepath), "/var/www/html%s", path);
-        /* Sanitize */
-        if (strstr(filepath, "..") == NULL) {
-            FILE *f = fopen(filepath, "r");
-            if (f) {
-                char body[4096];
-                size_t n = fread(body, 1, sizeof(body), f);
-                fclose(f);
-                char hdr[512];
-                int hlen = snprintf(hdr, sizeof(hdr),
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Content-Length: %zu\r\n"
-                    "Connection: close\r\n\r\n", n);
-                (void)write(fd, hdr, (size_t)hlen);
-                (void)write(fd, body, n);
-                close(fd);
-                return;
-            }
+    char filepath[4096];
+    if (acme_challenge_filepath(path, filepath, sizeof(filepath))) {
+        FILE *f = fopen(filepath, "rb");
+        if (f) {
+            char body[4096];
+            size_t n = fread(body, 1, sizeof(body), f);
+            fclose(f);
+            char hdr[512];
+            int hlen = snprintf(hdr, sizeof(hdr),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: %zu\r\n"
+                "Connection: close\r\n\r\n", n);
+            (void)write(fd, hdr, (size_t)hlen);
+            (void)write(fd, body, n);
+            close(fd);
+            return;
         }
     }
 

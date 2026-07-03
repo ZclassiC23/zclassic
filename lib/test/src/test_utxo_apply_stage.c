@@ -782,6 +782,37 @@ int test_utxo_apply_stage(void)
         uv_teardown(dir, &ms, &sc);
     }
 
+    /* (c2) Same rule with a larger earlier-tx accumulator. This catches
+     * regressions where the fast lookup table is built at the wrong boundary
+     * or misses entries beyond the tiny one-nullifier case above. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        UV_CHECK("nf intra many: setup",
+                 uv_setup("nf_intra_many", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        uint8_t tags[64];
+        for (size_t i = 0; i < 64; i++)
+            tags[i] = (uint8_t)(0x20u + i);
+        UV_CHECK("nf intra many: vtx[1] spends attach",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tags, 64, 0x71));
+        UV_CHECK("nf intra many: bare tx appends",
+                 uv_append_bare_tx(&sc.bodies[1], 1));
+        const uint8_t dup[1] = { tags[37] };
+        UV_CHECK("nf intra many: vtx[2] dup spend attaches",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[2], dup, 1, 0x71));
+        UV_CHECK("nf intra many: drains until dup block",
+                 utxo_apply_stage_drain(100) == 1);
+        UV_CHECK("nf intra many: counter == 1",
+                 uv_dump_has("\"shielded_double_spend_total\":1"));
+        UV_CHECK("nf intra many: cursor held at h=1",
+                 utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf intra many: rejected block left zero rows",
+                 uv_nf_rows_at(progress_store_db(), 1) == 0);
+        blocker_clear("utxo_apply.apply_failed");
+        uv_teardown(dir, &ms, &sc);
+    }
+
     /* (d) CROSS-POOL byte-reuse is LEGAL: the same 32 bytes revealed as a
      * Sapling nullifier at h=1 and a Sprout nullifier at h=2 must BOTH apply
      * (zclassicd keeps separate per-pool maps, coins.cpp:166-180 — a single

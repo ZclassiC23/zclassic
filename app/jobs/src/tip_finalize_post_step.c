@@ -157,7 +157,9 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                     wallet_mark_sapling_nullifiers_spent(
                         wallet, (struct transaction *)&blk.vtx[i]);
             }
+            zcl_mutex_lock(&wallet->cs);
             wallet->best_block_height = pindex_new->nHeight;
+            zcl_mutex_unlock(&wallet->cs);
         }
     }
 

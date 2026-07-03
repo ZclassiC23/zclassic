@@ -97,6 +97,16 @@ bool coins_kv_get(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
                   int64_t *value_out, uint8_t *script_out, size_t script_cap,
                   size_t *script_len_out);
 
+/* Point-read one live output plus the per-coin metadata needed by prevout
+ * resolvers. Same live/absent/script truncation contract as coins_kv_get(),
+ * with height/is_coinbase filled when requested. This avoids reconstructing a
+ * sparse `struct coins` when a caller only needs one vout. */
+bool coins_kv_get_prevout(struct sqlite3 *db, const uint8_t txid[32],
+                          uint32_t vout, int64_t *value_out,
+                          uint8_t *script_out, size_t script_cap,
+                          size_t *script_len_out, int32_t *height_out,
+                          bool *is_coinbase_out);
+
 /* Count of live outputs. Returns -1 on error. */
 int64_t coins_kv_count(struct sqlite3 *db);
 
@@ -113,6 +123,13 @@ bool    coins_kv_get_sqlite(struct sqlite3 *db, const uint8_t txid[32],
                             uint32_t vout, int64_t *value_out,
                             uint8_t *script_out, size_t script_cap,
                             size_t *script_len_out);
+bool    coins_kv_get_prevout_sqlite(struct sqlite3 *db,
+                                    const uint8_t txid[32], uint32_t vout,
+                                    int64_t *value_out, uint8_t *script_out,
+                                    size_t script_cap,
+                                    size_t *script_len_out,
+                                    int32_t *height_out,
+                                    bool *is_coinbase_out);
 bool    coins_kv_exists_sqlite(struct sqlite3 *db, const uint8_t txid[32],
                                uint32_t vout);
 bool    coins_kv_get_coins_sqlite(struct sqlite3 *db, const uint8_t txid[32],

@@ -10,9 +10,12 @@
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
 #include "views/explorer_pages_view.h"
+#include "views/explorer_stats_internal.h"
 #include <string.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 int test_explorer(void)
@@ -144,6 +147,76 @@ int test_explorer(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("explorer: HODL page cache is keyed by block hash... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        sqlite3 *db = NULL;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_hodl_cache_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER);"
+            "CREATE TABLE utxos(height INTEGER, value INTEGER);"
+            "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
+            "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
+            "INSERT INTO blocks(height,hash,time) VALUES"
+            "(10,x'1111111111111111111111111111111111111111111111111111111111111111',1000);"
+            "INSERT INTO utxos(height,value) VALUES(10,100000000);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db)
+            sqlite3_close(db);
+
+        reducer_frontier_provable_tip_set(10);
+        uint8_t out1[65536];
+        uint8_t out2[65536];
+        uint8_t out3[65536];
+        size_t n1 = explorer_view_hodl(dbdir, out1, sizeof(out1) - 1);
+        out1[n1 < sizeof(out1) ? n1 : sizeof(out1) - 1] = '\0';
+
+        ok = ok && sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "DELETE FROM utxos;"
+            "INSERT INTO utxos(height,value) VALUES(10,200000000);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db) {
+            sqlite3_close(db);
+            db = NULL;
+        }
+
+        size_t n2 = explorer_view_hodl(dbdir, out2, sizeof(out2) - 1);
+        out2[n2 < sizeof(out2) ? n2 : sizeof(out2) - 1] = '\0';
+
+        ok = ok && sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "UPDATE blocks SET hash="
+            "x'2222222222222222222222222222222222222222222222222222222222222222'"
+            "WHERE height=10;",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db)
+            sqlite3_close(db);
+
+        size_t n3 = explorer_view_hodl(dbdir, out3, sizeof(out3) - 1);
+        reducer_frontier_provable_tip_reset();
+        out3[n3 < sizeof(out3) ? n3 : sizeof(out3) - 1] = '\0';
+
+        ok = ok && n1 > 0 && n2 > 0 && n3 > 0 &&
+             strstr((char *)out1, "1.00000000") != NULL &&
+             strstr((char *)out2, "1.00000000") != NULL &&
+             strstr((char *)out2, "2.00000000") == NULL &&
+             strstr((char *)out3, "2.00000000") != NULL;
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("explorer: factoids HTML caps to served frontier... ");
     {
         char dbdir[256];
@@ -179,6 +252,121 @@ int test_explorer(void)
         ok = ok && n > 0 &&
              strstr((char *)out, "Current chain height</td><td>7") != NULL &&
              strstr((char *)out, "Current chain height</td><td>8") == NULL;
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: factoids cache is keyed by block hash... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        sqlite3 *db = NULL;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_factoids_cache_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER, "
+            "status INTEGER, num_tx INTEGER, bits INTEGER, chain_work BLOB, "
+            "sapling_value INTEGER, sprout_value INTEGER);"
+            "CREATE TABLE utxos(height INTEGER, value INTEGER, "
+            "is_coinbase INTEGER, script_type INTEGER);"
+            "CREATE TABLE transactions(block_height INTEGER, "
+            "is_coinbase INTEGER, block_hash BLOB, txid BLOB);"
+            "CREATE TABLE tx_outputs(block_height INTEGER, value INTEGER, "
+            "vout INTEGER, script_type INTEGER);"
+            "CREATE TABLE tx_inputs(block_height INTEGER);"
+            "CREATE TABLE joinsplits(block_height INTEGER, vpub_old INTEGER, "
+            "vpub_new INTEGER);"
+            "CREATE TABLE sapling_spends(block_height INTEGER, anchor BLOB);"
+            "CREATE TABLE sapling_outputs(block_height INTEGER);"
+            "CREATE TABLE sprout_nullifiers(nullifier BLOB);"
+            "CREATE TABLE sapling_nullifiers(nullifier BLOB);"
+            "CREATE TABLE op_returns(block_height INTEGER, is_slp INTEGER);"
+            "CREATE TABLE zslp_tokens(genesis_height INTEGER, ticker TEXT, "
+            "name TEXT, decimals INTEGER, token_id BLOB, "
+            "total_minted INTEGER);"
+            "CREATE TABLE zslp_transfers(block_height INTEGER, "
+            "tx_type INTEGER, token_id BLOB);"
+            "CREATE TABLE addresses(address_hash BLOB, balance INTEGER, "
+            "utxo_count INTEGER, first_seen_height INTEGER, "
+            "last_seen_height INTEGER);"
+            "CREATE TABLE hodl_history(height INTEGER, time INTEGER, "
+            "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
+            "CREATE TABLE view_integrity(height INTEGER);"
+            "INSERT INTO blocks(height,hash,time,status,num_tx,bits,chain_work,"
+            "sapling_value,sprout_value) VALUES"
+            "(0,x'0206260143838b5ff52dc2eb7b4b8099d4e4c99dc3ef19794289a2cd4c100700',1478403829,3,1,0,x'00',0,0),"
+            "(8,x'1111111111111111111111111111111111111111111111111111111111111111',1478404429,3,1,0,x'00',0,0);"
+            "INSERT INTO utxos(height,value,is_coinbase,script_type) "
+            "VALUES(8,100000000,0,0);"
+            "INSERT INTO transactions(block_height,is_coinbase,block_hash,txid) "
+            "VALUES(0,1,x'0206260143838b5ff52dc2eb7b4b8099d4e4c99dc3ef19794289a2cd4c100700',x'00');"
+            "INSERT INTO view_integrity(height) VALUES(0),(8);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db) {
+            sqlite3_close(db);
+            db = NULL;
+        }
+
+        uint8_t *out = malloc(262144);
+        ok = ok && out != NULL;
+        if (ok) {
+            reducer_frontier_provable_tip_set(8);
+            explorer_test_set_datadir(dbdir);
+            explorer_test_reset_factoids_cache();
+            ok = ok && explorer_test_compute_factoids_cache_now();
+
+            size_t n1 = explorer_handle_request("GET", "/explorer/factoids",
+                                                NULL, 0, out, 262143);
+            out[n1 < 262144 ? n1 : 262143] = '\0';
+            ok = ok && n1 > 0 &&
+                 strstr((char *)out, "1111111111111111") != NULL;
+
+            ok = ok && sqlite3_open(dbpath, &db) == SQLITE_OK;
+            ok = ok && sqlite3_exec(db,
+                "UPDATE blocks SET hash="
+                "x'2222222222222222222222222222222222222222222222222222222222222222'"
+                "WHERE height=8;",
+                NULL, NULL, NULL) == SQLITE_OK;
+            if (db) {
+                sqlite3_close(db);
+                db = NULL;
+            }
+
+            size_t n2 = explorer_handle_request("GET", "/explorer/factoids",
+                                                NULL, 0, out, 262143);
+            out[n2 < 262144 ? n2 : 262143] = '\0';
+            ok = ok && n2 > 0 &&
+                 strstr((char *)out, "1111111111111111") == NULL;
+            for (int spin = 0;
+                 spin < 200 && explorer_test_factoids_compute_active();
+                 spin++) {
+                struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000L };
+                nanosleep(&ts, NULL);
+            }
+            ok = ok && !explorer_test_factoids_compute_active();
+
+            ok = ok && explorer_test_compute_factoids_cache_now();
+            size_t n3 = explorer_handle_request("GET", "/explorer/factoids",
+                                                NULL, 0, out, 262143);
+            out[n3 < 262144 ? n3 : 262143] = '\0';
+            ok = ok && n3 > 0 &&
+                 strstr((char *)out, "2222222222222222") != NULL &&
+                 strstr((char *)out, "1111111111111111") == NULL;
+
+            explorer_test_reset_factoids_cache();
+            explorer_test_set_datadir(NULL);
+            reducer_frontier_provable_tip_reset();
+        }
+        free(out);
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
@@ -566,6 +754,60 @@ int test_explorer(void)
                   strstr((const char *)out, summary_expected) != NULL &&
                   strstr((const char *)out, records_expected) != NULL;
         sqlite3_close(db);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: stats gather collapses tx_outputs aggregates... ");
+    {
+        sqlite3 *db = NULL;
+        bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, time INTEGER);"
+            "CREATE TABLE transactions(block_height INTEGER, is_coinbase INTEGER);"
+            "CREATE TABLE tx_inputs(block_height INTEGER);"
+            "CREATE TABLE tx_outputs(value INTEGER, script_type INTEGER, "
+            "block_height INTEGER);"
+            "CREATE TABLE joinsplits(block_height INTEGER, vpub_old INTEGER, "
+            "vpub_new INTEGER);"
+            "CREATE TABLE sapling_spends(block_height INTEGER, anchor BLOB);"
+            "CREATE TABLE sapling_outputs(block_height INTEGER);"
+            "CREATE TABLE sprout_nullifiers(nullifier BLOB);"
+            "CREATE TABLE op_returns(block_height INTEGER);"
+            "CREATE TABLE zslp_tokens(genesis_height INTEGER);"
+            "CREATE TABLE view_integrity(height INTEGER, sha3_hash BLOB);"
+            "INSERT INTO blocks(height,time) VALUES(1,1000),(2,1150);"
+            "INSERT INTO transactions(block_height,is_coinbase) VALUES"
+            "(1,1),(2,0);"
+            "INSERT INTO tx_inputs(block_height) VALUES(2),(2);"
+            "INSERT INTO tx_outputs(value,script_type,block_height) VALUES"
+            "(100000000,0,1),"
+            "(300000000,0,1),"
+            "(250000000,1,2),"
+            "(50000000,2,2);"
+            "INSERT INTO joinsplits(block_height,vpub_old,vpub_new) VALUES"
+            "(2,7,11);"
+            "INSERT INTO sapling_spends(block_height,anchor) VALUES(2,x'aa');"
+            "INSERT INTO sapling_outputs(block_height) VALUES(2);"
+            "INSERT INTO sprout_nullifiers(nullifier) VALUES(x'bb');"
+            "INSERT INTO op_returns(block_height) VALUES(2);"
+            "INSERT INTO zslp_tokens(genesis_height) VALUES(2);"
+            "INSERT INTO view_integrity(height,sha3_hash) VALUES(2,zeroblob(32));",
+            NULL, NULL, NULL) == SQLITE_OK;
+
+        struct stats_ctx c = {0};
+        if (ok)
+            gather_deep_chain_data(db, &c);
+        ok = ok &&
+             c.total_outputs == 4 &&
+             c.total_inputs == 2 &&
+             c.p2pkh_outputs == 2 &&
+             c.p2sh_outputs == 1 &&
+             c.max_output_value == 300000000 &&
+             c.total_value_moved == 700000000;
+
+        if (db)
+            sqlite3_close(db);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

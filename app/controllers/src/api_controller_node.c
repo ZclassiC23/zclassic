@@ -12,7 +12,6 @@
 #include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
 #include "api_controller_internal.h"
-#include "chain/mmb.h"
 #include "config/boot.h"
 #include "config/runtime.h"
 #include "encoding/utilstrencodings.h"
@@ -173,6 +172,8 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
                      health.tip_stale_seconds);
     json_push_kv_int(&network, "magicbean_peer_count",
                      (int64_t)health.magicbean_peer_count);
+    json_push_kv_int(&network, "zclassic23_peer_count",
+                     (int64_t)health.zclassic_c23_peer_count);
     json_push_kv_int(&network, "zclassic_c23_peer_count",
                      (int64_t)health.zclassic_c23_peer_count);
     json_push_kv(&body, "network", &network);
@@ -315,9 +316,10 @@ size_t api_serve_node_snapshot(uint8_t *response, size_t response_max)
 /* Route: /api/node/mmb — Merkle Mountain Belt status */
 size_t api_serve_node_mmb(uint8_t *response, size_t response_max)
 {
-    struct mmb *mb = rpc_blockchain_get_mmb();
     uint8_t root[32] = {0};
-    if (mb && mb->num_leaves > 0) mmb_root(mb, root);
+    uint64_t leaves = 0;
+    uint32_t peaks = 0;
+    rpc_blockchain_mmb_snapshot(root, &leaves, &peaks);
     char hex[65];
     HexStr(root, 32, false, hex, sizeof(hex));
     struct json_value body;
@@ -326,9 +328,8 @@ size_t api_serve_node_mmb(uint8_t *response, size_t response_max)
     json_push_kv_str(&body, "schema", "zcl.node_mmb.v1");
     api_json_add_freshness(&body, "mmb_projection", -1);
     json_push_kv_str(&body, "mmb_root", hex);
-    json_push_kv_int(&body, "num_leaves",
-                     (int64_t)(mb ? mb->num_leaves : 0));
-    json_push_kv_int(&body, "num_peaks", mb ? mb->num_mountains : 0);
+    json_push_kv_int(&body, "num_leaves", (int64_t)leaves);
+    json_push_kv_int(&body, "num_peaks", peaks);
 
     size_t n = api_json_ok(response, response_max, &body);
     json_free(&body);
@@ -343,7 +344,9 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
     struct snapshot_sync_service *svc = api_snapshot_sync(&snap_init);
     struct snapsync_status snap_status = {0};
     snap_status.state = SNAPSYNC_IDLE;
-    struct mmb *mb = rpc_blockchain_get_mmb();
+    uint64_t mmb_leaves = 0;
+    uint32_t mmb_peaks = 0;
+    rpc_blockchain_mmb_snapshot(NULL, &mmb_leaves, &mmb_peaks);
     struct error_ring *er = error_ring_global();
     uint64_t snap_received = 0, snap_total = 0;
     double snap_rate = 0;
@@ -509,9 +512,8 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
     struct json_value mmb;
     json_init(&mmb);
     json_set_object(&mmb);
-    json_push_kv_int(&mmb, "leaves",
-                     (int64_t)(mb ? mb->num_leaves : 0));
-    json_push_kv_int(&mmb, "peaks", mb ? mb->num_mountains : 0);
+    json_push_kv_int(&mmb, "leaves", (int64_t)mmb_leaves);
+    json_push_kv_int(&mmb, "peaks", mmb_peaks);
     json_push_kv(&body, "mmb", &mmb);
     json_free(&mmb);
 

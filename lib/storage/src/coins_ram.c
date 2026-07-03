@@ -348,32 +348,10 @@ bool coins_ram_get_prevout(const uint8_t txid[32], uint32_t vout,
         }
         return true;
     }
-    /* cold miss → point read-through to the durable set (value/script/height/
-     * is_coinbase in one indexed SELECT; a row exists iff live, spend=DELETE). */
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(G.db,
-            "SELECT value, script, height, is_coinbase "
-            "FROM coins WHERE txid=? AND vout=?",
-            -1, &s, NULL) != SQLITE_OK)
-        return false;
-    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
-    sqlite3_bind_int (s, 2, (int)vout);
-    bool live = false;
-    if (sqlite3_step(s) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
-        live = true;
-        if (value_out)       *value_out = sqlite3_column_int64(s, 0);
-        int slen = sqlite3_column_bytes(s, 1);
-        const void *sblob = sqlite3_column_blob(s, 1);
-        if (script_len_out)  *script_len_out = (size_t)slen;
-        if (height_out)      *height_out = sqlite3_column_int(s, 2);
-        if (is_coinbase_out) *is_coinbase_out = sqlite3_column_int(s, 3) != 0;
-        if (script_out && script_cap > 0 && sblob && slen > 0) {
-            size_t copy = (size_t)slen < script_cap ? (size_t)slen : script_cap;
-            memcpy(script_out, sblob, copy);
-        }
-    }
-    sqlite3_finalize(s);
-    return live;
+    /* cold miss → point read-through to the durable set */
+    return coins_kv_get_prevout_sqlite(G.db, txid, vout, value_out,
+                                       script_out, script_cap, script_len_out,
+                                       height_out, is_coinbase_out);
 }
 
 bool coins_ram_exists(const uint8_t txid[32], uint32_t vout)

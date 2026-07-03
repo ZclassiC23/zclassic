@@ -91,6 +91,7 @@ static bool fill_one_via_port(struct hodl_history_port *port, int64_t height)
     };
     if (!port->upsert_snapshot(port->self, &row)) {
         /* upsert already logged the failure context. */
+        return false;
     }
 
     if (height > INT32_MAX || block_time > UINT32_MAX ||
@@ -129,7 +130,7 @@ int hodl_history_fill_pending(sqlite3 *db, int64_t chain_tip, int max_rows)
 
     struct hodl_history_port port;
     if (!hodl_history_sqlite_bind(db, &port)) {
-        LOG_FAIL("hodl_history", "failed to bind sqlite port");
+        LOG_RETURN(0, "hodl_history", "failed to bind sqlite port");
     }
 
     /* The most recent useful sample is (chain_tip - 1y_blocks) — beyond

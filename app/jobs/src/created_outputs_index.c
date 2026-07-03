@@ -187,3 +187,50 @@ bool created_outputs_index_prune_below(sqlite3 *db, int floor)
     }
     return true;
 }
+
+bool created_outputs_index_prune_below_limited(sqlite3 *db, int floor,
+                                               int max_heights,
+                                               int *rows_deleted_out)
+{
+    if (rows_deleted_out)
+        *rows_deleted_out = 0;
+    if (!db)
+        LOG_FAIL("created_outputs", "prune_below_limited: NULL db");
+    if (max_heights <= 0)
+        return true;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(
+            db,
+            "DELETE FROM created_outputs "
+            "WHERE height < ? "
+            "  AND height <= COALESCE(("
+            "    SELECT MAX(height) FROM ("
+            "      SELECT DISTINCT height FROM created_outputs "
+            "      WHERE height < ? "
+            "      ORDER BY height "
+            "      LIMIT ?"
+            "    )"
+            "  ), -1)",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("created_outputs",
+                 "[created_outputs] limited prune prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, floor);
+    sqlite3_bind_int(st, 2, floor);
+    sqlite3_bind_int(st, 3, max_heights);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_DONE && rows_deleted_out)
+        *rows_deleted_out = sqlite3_changes(db);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("created_outputs",
+                 "[created_outputs] limited prune floor=%d max_heights=%d "
+                 "rc=%d: %s",
+                 floor, max_heights, rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}

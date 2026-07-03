@@ -188,6 +188,25 @@ int test_coins_kv(void)
     CK_CHECK("exists t1.1", coins_kv_exists(db, t1.data, 1));
     CK_CHECK("not exists t1.2", !coins_kv_exists(db, t1.data, 2));
 
+    /* Point-read via get_prevout: same live row, but no sparse coins vector. */
+    {
+        int64_t value = 0;
+        int32_t height = 0;
+        bool coinbase = false;
+        unsigned char script[2] = {0};
+        size_t slen = 0;
+        bool got = coins_kv_get_prevout(db, t1.data, 1, &value, script,
+                                        sizeof(script), &slen, &height,
+                                        &coinbase);
+        bool ok = got && value == 6000 && height == 100 && coinbase &&
+                  slen == sizeof(sc1) &&
+                  memcmp(script, sc1, sizeof(script)) == 0;
+        CK_CHECK("get_prevout point-read reports metadata", ok);
+        CK_CHECK("get_prevout missing vout -> false",
+                 !coins_kv_get_prevout(db, t1.data, 2, NULL, NULL, 0, NULL,
+                                       NULL, NULL));
+    }
+
     /* Round-trip via get_coins: values, scripts, height, is_coinbase exact. */
     {
         struct coins c;
@@ -206,6 +225,9 @@ int test_coins_kv(void)
     CK_CHECK("spend t1.0", coins_kv_spend(db, t1.data, 0));
     CK_CHECK("count == 1 after spend", coins_kv_count(db) == 1);
     CK_CHECK("not exists t1.0 after spend", !coins_kv_exists(db, t1.data, 0));
+    CK_CHECK("get_prevout spent vout -> false",
+             !coins_kv_get_prevout(db, t1.data, 0, NULL, NULL, 0, NULL,
+                                   NULL, NULL));
     CK_CHECK("exists t1.1 after spend", coins_kv_exists(db, t1.data, 1));
     {
         struct coins c;

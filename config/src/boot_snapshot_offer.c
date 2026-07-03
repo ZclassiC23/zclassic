@@ -25,7 +25,6 @@
 #include "config/boot_snapshot_offer.h"
 #include "services/consensus_snapshot_export_service.h"
 #include "models/mmb_leaf_store.h"
-#include "chain/mmr.h"
 #include "chain/mmb.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
@@ -157,10 +156,9 @@ static void *build_snapshot_offer_thread(void *arg)
     struct snapshot_offer offer = {0};
     if (fast_sync_build_offer(datadir, &offer)) {
         /* Embed MMR root — cryptographically binds UTXO snapshot to PoW chain */
-        struct mmr *m = rpc_blockchain_get_mmr();
-        if (m && m->num_leaves > 0) {
-            mmr_root(m, offer.mmr_root);
-        } else {
+        uint64_t mmr_leaves = 0;
+        if (!rpc_blockchain_mmr_snapshot(offer.mmr_root, &mmr_leaves, NULL) ||
+            mmr_leaves == 0) {
             memset(offer.mmr_root, 0, 32);
         }
 

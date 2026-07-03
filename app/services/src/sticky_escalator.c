@@ -330,6 +330,8 @@ static void clear_episode(int64_t now)
     atomic_store(&g_armed, false);
     atomic_store(&g_rung, STICKY_RUNG_RETRY);
     atomic_store(&g_tip_at_rung, -1);
+    atomic_store(&g_rearm_until_unix, 0);
+    atomic_store(&g_rederive_last_repair_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
     /* Release any operator_needed latch this episode raised: the tip
      * progressed, so the symptom genuinely cleared. note_cycling_page() emits

@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 #include <time.h>
 
 /* ── Shared controller context ──────────────────────────── */
@@ -66,19 +67,35 @@ void rpc_blockchain_set_node_db(struct node_db *ndb)
 
 static struct mmr g_mmr;
 static bool g_mmr_initialized = false;
+static pthread_mutex_t g_mmr_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void rpc_blockchain_mmr_append(const uint8_t block_hash[32])
 {
+    pthread_mutex_lock(&g_mmr_lock);
     if (!g_mmr_initialized) {
         mmr_init(&g_mmr);
         g_mmr_initialized = true;
     }
     mmr_append(&g_mmr, block_hash);
+    pthread_mutex_unlock(&g_mmr_lock);
 }
 
-struct mmr *rpc_blockchain_get_mmr(void) { return &g_mmr; }
-
-bool rpc_blockchain_mmr_initialized(void) { return g_mmr_initialized; }
+bool rpc_blockchain_mmr_snapshot(uint8_t root[32], uint64_t *num_leaves,
+                                 uint32_t *num_peaks)
+{
+    pthread_mutex_lock(&g_mmr_lock);
+    bool initialized = g_mmr_initialized;
+    if (initialized) {
+        if (root)
+            mmr_root(&g_mmr, root);
+        if (num_leaves)
+            *num_leaves = g_mmr.num_leaves;
+        if (num_peaks)
+            *num_peaks = g_mmr.num_peaks;
+    }
+    pthread_mutex_unlock(&g_mmr_lock);
+    return initialized;
+}
 
 void rpc_blockchain_mmr_init_from_state(struct node_db *ndb)
 {
@@ -86,23 +103,39 @@ void rpc_blockchain_mmr_init_from_state(struct node_db *ndb)
 
     uint8_t buf[MMR_SERIALIZED_MAX];
     size_t len = 0;
+    struct mmr loaded;
+    bool have_loaded = false;
     if (node_db_state_get(ndb, "mmr_state", buf, sizeof(buf), &len) &&
-        len >= 12 && mmr_deserialize(&g_mmr, buf, len)) {
+        len >= 12 && mmr_deserialize(&loaded, buf, len)) {
+        have_loaded = true;
+    }
+    pthread_mutex_lock(&g_mmr_lock);
+    if (have_loaded) {
+        g_mmr = loaded;
         g_mmr_initialized = true;
     }
     if (!g_mmr_initialized) {
         mmr_init(&g_mmr);
         g_mmr_initialized = true;
     }
+    pthread_mutex_unlock(&g_mmr_lock);
 }
 
 void rpc_blockchain_mmr_catchup(struct main_state *ms)
 {
-    if (!g_mmr_initialized || !ms) return;
+    if (!ms) return;
+    pthread_mutex_lock(&g_mmr_lock);
+    if (!g_mmr_initialized) {
+        pthread_mutex_unlock(&g_mmr_lock);
+        return;
+    }
     int chain_height = active_chain_height(&ms->chain_active);
     int mmr_height = (int)g_mmr.num_leaves - 1;
 
-    if (mmr_height >= chain_height) return;
+    if (mmr_height >= chain_height) {
+        pthread_mutex_unlock(&g_mmr_lock);
+        return;
+    }
 
     int start = mmr_height + 1;
     int64_t t0 = (int64_t)platform_time_wall_time_t();
@@ -111,16 +144,25 @@ void rpc_blockchain_mmr_catchup(struct main_state *ms)
         if (bi && bi->phashBlock)
             mmr_append(&g_mmr, bi->phashBlock->data);
     }
+    uint64_t leaves = g_mmr.num_leaves;
+    pthread_mutex_unlock(&g_mmr_lock);
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    printf("MMR catchup: %d → %d (%d blocks, %llds)\n",
-           start, chain_height, chain_height - start + 1, (long long)elapsed);
+    printf("MMR catchup: %d → %d (%d blocks, %llds, %llu leaves)\n",
+           start, chain_height, chain_height - start + 1, (long long)elapsed,
+           (unsigned long long)leaves);
 }
 
 void rpc_blockchain_mmr_save(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open || !g_mmr_initialized) return;
+    if (!ndb || !ndb->open) return;
     uint8_t buf[MMR_SERIALIZED_MAX];
+    pthread_mutex_lock(&g_mmr_lock);
+    if (!g_mmr_initialized) {
+        pthread_mutex_unlock(&g_mmr_lock);
+        return;
+    }
     size_t len = mmr_serialize(&g_mmr, buf, sizeof(buf));
+    pthread_mutex_unlock(&g_mmr_lock);
     if (len == 0) return;
     if (!node_db_state_set(ndb, "mmr_state", buf, len))
         LOG_WARN("blockchain", "MMR state save failed");
@@ -130,17 +172,35 @@ void rpc_blockchain_mmr_save(struct node_db *ndb)
 
 static struct mmb g_mmb;
 static bool g_mmb_initialized = false;
+static pthread_mutex_t g_mmb_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void rpc_blockchain_mmb_append(const struct mmb_leaf *leaf)
 {
+    pthread_mutex_lock(&g_mmb_lock);
     if (!g_mmb_initialized) {
         mmb_init(&g_mmb);
         g_mmb_initialized = true;
     }
     mmb_append(&g_mmb, leaf);
+    pthread_mutex_unlock(&g_mmb_lock);
 }
 
-struct mmb *rpc_blockchain_get_mmb(void) { return &g_mmb; }
+bool rpc_blockchain_mmb_snapshot(uint8_t root[32], uint64_t *num_leaves,
+                                 uint32_t *num_mountains)
+{
+    pthread_mutex_lock(&g_mmb_lock);
+    bool initialized = g_mmb_initialized;
+    if (initialized) {
+        if (root)
+            mmb_root(&g_mmb, root);
+        if (num_leaves)
+            *num_leaves = g_mmb.num_leaves;
+        if (num_mountains)
+            *num_mountains = g_mmb.num_mountains;
+    }
+    pthread_mutex_unlock(&g_mmb_lock);
+    return initialized;
+}
 
 void rpc_blockchain_mmb_init_from_state(struct node_db *ndb)
 {
@@ -148,8 +208,15 @@ void rpc_blockchain_mmb_init_from_state(struct node_db *ndb)
 
     uint8_t buf[MMB_SERIALIZED_MAX];
     size_t len = 0;
+    struct mmb loaded;
+    bool have_loaded = false;
     if (node_db_state_get(ndb, "mmb_state", buf, sizeof(buf), &len) &&
-        len >= 13 && mmb_deserialize(&g_mmb, buf, len)) {
+        len >= 13 && mmb_deserialize(&loaded, buf, len)) {
+        have_loaded = true;
+    }
+    pthread_mutex_lock(&g_mmb_lock);
+    if (have_loaded) {
+        g_mmb = loaded;
         g_mmb_initialized = true;
     }
     if (!g_mmb_initialized) {
@@ -158,15 +225,24 @@ void rpc_blockchain_mmb_init_from_state(struct node_db *ndb)
     }
     printf("MMB: loaded %llu leaves, %u peaks\n",
            (unsigned long long)g_mmb.num_leaves, g_mmb.num_mountains);
+    pthread_mutex_unlock(&g_mmb_lock);
 }
 
 void rpc_blockchain_mmb_catchup(struct main_state *ms)
 {
-    if (!g_mmb_initialized || !ms) return;
+    if (!ms) return;
+    pthread_mutex_lock(&g_mmb_lock);
+    if (!g_mmb_initialized) {
+        pthread_mutex_unlock(&g_mmb_lock);
+        return;
+    }
     int chain_height = active_chain_height(&ms->chain_active);
     int mmb_height = (int)g_mmb.num_leaves - 1;
 
-    if (mmb_height >= chain_height) return;
+    if (mmb_height >= chain_height) {
+        pthread_mutex_unlock(&g_mmb_lock);
+        return;
+    }
 
     int start = mmb_height + 1;
     int64_t t0 = (int64_t)platform_time_wall_time_t();
@@ -199,17 +275,25 @@ void rpc_blockchain_mmb_catchup(struct main_state *ms)
             mmb_append(&g_mmb, &leaf);
         }
     }
+    uint32_t mountains = g_mmb.num_mountains;
+    pthread_mutex_unlock(&g_mmb_lock);
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     printf("MMB catchup: %d → %d (%d blocks, %llds, %u peaks)\n",
            start, chain_height, chain_height - start + 1,
-           (long long)elapsed, g_mmb.num_mountains);
+           (long long)elapsed, mountains);
 }
 
 void rpc_blockchain_mmb_save(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open || !g_mmb_initialized) return;
+    if (!ndb || !ndb->open) return;
     uint8_t buf[MMB_SERIALIZED_MAX];
+    pthread_mutex_lock(&g_mmb_lock);
+    if (!g_mmb_initialized) {
+        pthread_mutex_unlock(&g_mmb_lock);
+        return;
+    }
     size_t len = mmb_serialize(&g_mmb, buf, sizeof(buf));
+    pthread_mutex_unlock(&g_mmb_lock);
     if (len == 0) return;
     if (!node_db_state_set(ndb, "mmb_state", buf, len))
         LOG_WARN("blockchain", "MMB state save failed");
@@ -219,14 +303,25 @@ void rpc_blockchain_mmb_save(struct node_db *ndb)
 
 static struct mmr g_commitment_mmr;
 static bool g_commitment_mmr_initialized = false;
+static pthread_mutex_t g_commitment_mmr_lock = PTHREAD_MUTEX_INITIALIZER;
 
-struct mmr *rpc_blockchain_get_commitment_mmr(void)
+bool rpc_blockchain_commitment_mmr_snapshot(uint8_t root[32],
+                                            uint64_t *num_leaves,
+                                            uint32_t *num_peaks)
 {
+    pthread_mutex_lock(&g_commitment_mmr_lock);
     if (!g_commitment_mmr_initialized) {
         mmr_init(&g_commitment_mmr);
         g_commitment_mmr_initialized = true;
     }
-    return &g_commitment_mmr;
+    if (root)
+        mmr_root(&g_commitment_mmr, root);
+    if (num_leaves)
+        *num_leaves = g_commitment_mmr.num_leaves;
+    if (num_peaks)
+        *num_peaks = g_commitment_mmr.num_peaks;
+    pthread_mutex_unlock(&g_commitment_mmr_lock);
+    return true;
 }
 
 void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb)
@@ -235,25 +330,39 @@ void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb)
 
     uint8_t buf[MMR_SERIALIZED_MAX];
     size_t len = 0;
+    struct mmr loaded;
+    bool have_loaded = false;
     if (node_db_state_get(ndb, "commitment_mmr_state", buf, sizeof(buf),
                           &len)) {
-        if (len >= 12 && mmr_deserialize(&g_commitment_mmr, buf, len)) {
-            g_commitment_mmr_initialized = true;
-            printf("Commitment MMR loaded: %llu leaves\n",
-                   (unsigned long long)g_commitment_mmr.num_leaves);
+        if (len >= 12 && mmr_deserialize(&loaded, buf, len)) {
+            have_loaded = true;
         }
+    }
+    pthread_mutex_lock(&g_commitment_mmr_lock);
+    if (have_loaded) {
+        g_commitment_mmr = loaded;
+        g_commitment_mmr_initialized = true;
+        printf("Commitment MMR loaded: %llu leaves\n",
+               (unsigned long long)g_commitment_mmr.num_leaves);
     }
     if (!g_commitment_mmr_initialized) {
         mmr_init(&g_commitment_mmr);
         g_commitment_mmr_initialized = true;
     }
+    pthread_mutex_unlock(&g_commitment_mmr_lock);
 }
 
 void rpc_blockchain_commitment_mmr_save(struct node_db *ndb)
 {
-    if (!ndb || !ndb->open || !g_commitment_mmr_initialized) return;
+    if (!ndb || !ndb->open) return;
     uint8_t buf[MMR_SERIALIZED_MAX];
+    pthread_mutex_lock(&g_commitment_mmr_lock);
+    if (!g_commitment_mmr_initialized) {
+        pthread_mutex_unlock(&g_commitment_mmr_lock);
+        return;
+    }
     size_t len = mmr_serialize(&g_commitment_mmr, buf, sizeof(buf));
+    pthread_mutex_unlock(&g_commitment_mmr_lock);
     if (len == 0) return;
     if (!node_db_state_set(ndb, "commitment_mmr_state", buf, len))
         LOG_WARN("blockchain", "commitment MMR state save failed");
@@ -273,11 +382,6 @@ void rpc_blockchain_maybe_commit(int32_t height,
     if (g_deferred_proof_validation_below_height >= 0 && height <= g_deferred_proof_validation_below_height)
         return;
 
-    if (!g_commitment_mmr_initialized) {
-        mmr_init(&g_commitment_mmr);
-        g_commitment_mmr_initialized = true;
-    }
-
     /* Use the incremental XOR accumulator (O(1)) instead of the O(N)
      * SHA3 full-table scan that was killing sync performance. */
     struct mmr_commitment c = { .height = height };
@@ -285,6 +389,11 @@ void rpc_blockchain_maybe_commit(int32_t height,
     memcpy(c.utxo_root, xor_accumulator, 32);
     memset(c.data_root, 0, 32);
 
+    pthread_mutex_lock(&g_commitment_mmr_lock);
+    if (!g_commitment_mmr_initialized) {
+        mmr_init(&g_commitment_mmr);
+        g_commitment_mmr_initialized = true;
+    }
     mmr_append_commitment(&g_commitment_mmr, &c);
 
     if (height % 10000 == 0) {
@@ -296,6 +405,7 @@ void rpc_blockchain_maybe_commit(int32_t height,
         printf("... (%u leaves)\n",
                (unsigned)g_commitment_mmr.num_leaves);
     }
+    pthread_mutex_unlock(&g_commitment_mmr_lock);
 }
 
 /* ── SHA3 UTXO commitment RPC ──────────────────────────── */

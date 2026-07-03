@@ -121,9 +121,9 @@ bool bg_validation_verify_scripts_parallel(struct script_check_item *items,
              * threads[t] is undefined behavior. Run this range INLINE so it is
              * actually verified, and mark it not-created so the join loop skips
              * the uninitialized handle. */
-            LOG_ERR("bg.validation",
-                    "pthread_create failed (%d) for worker %d/%d; verifying its %zu items inline",
-                    rc, t, nthreads, workers[t].count);
+            LOG_WARN("bg.validation",
+                     "pthread_create failed (%d) for worker %d/%d; verifying its %zu items inline",
+                     rc, t, nthreads, workers[t].count);
             worker_thread(&workers[t]);   /* sets workers[t].result honestly */
         } else {
             created[t] = true;

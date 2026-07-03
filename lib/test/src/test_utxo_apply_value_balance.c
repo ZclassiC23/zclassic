@@ -133,6 +133,27 @@ static bool uavb_build_block(struct block *b, uint8_t tag,
     return true;
 }
 
+/* Build {coinbase, tx1, tx2}, where tx2 spends tx1's transparent output in
+ * the same block. This exercises compute_block_delta's intra-block prevout
+ * resolver directly. */
+static bool uavb_build_intra_spend_block(struct block *b, uint8_t tag,
+                                         const struct uavb_coin *coin)
+{
+    block_init(b);
+    b->num_vtx = 3;
+    b->vtx = zcl_calloc(b->num_vtx, sizeof(struct transaction),
+                        "uavb_vtx_intra");
+    if (!b->vtx) return false;
+    int64_t mid = coin->value - 1000;
+    int64_t final = coin->value - 2000;
+    uavb_make_coinbase(&b->vtx[0], tag);
+    uavb_make_spend(&b->vtx[1], (uint8_t)(tag + 1), coin, mid);
+    uavb_make_spend(&b->vtx[2], (uint8_t)(tag + 2), coin, final);
+    b->vtx[2].vin[0].prevout.hash = b->vtx[1].hash;
+    b->vtx[2].vin[0].prevout.n = 0;
+    return true;
+}
+
 /* Attach one JoinSplit with vpub_new = D to vtx[1] (Sprout->transparent
  * unshield). transaction_free() frees v_joinsplit via plain free(), so a
  * zcl_calloc'd array is released correctly at block_free. */
@@ -353,6 +374,39 @@ int test_utxo_apply_value_balance(void)
                            "(out.ok)", out.ok == true);
                 free_delta(&out);
             }
+        }
+        block_free(&b);
+    }
+
+    /* (c2) INTRA-BLOCK create-then-spend PASSES. tx2 spends tx1's output
+     * before that output exists in the durable UTXO set, so the fold must
+     * resolve it from the current block's added-output index. */
+    {
+        struct block b;
+        bool built = uavb_build_intra_spend_block(&b, 0xC6, &coin);
+        UAVB_CHECK("(c2) intra-block spend block builds", built);
+        if (built) {
+            struct delta_summary out;
+            utxo_apply_compute_block_delta(&b, 1, uavb_lookup, &coin, &out);
+            int64_t mid = coin.value - 1000;
+            UAVB_CHECK("(c2) intra-block spend PASSES (out.ok)",
+                       out.ok == true);
+            UAVB_CHECK("(c2) records all created outputs",
+                       out.added_count == 3);
+            UAVB_CHECK("(c2) records external + intra spends",
+                       out.spent_count == 2);
+            UAVB_CHECK("(c2) second spend uses tx1 output preimage",
+                       out.spent_count == 2 &&
+                       uint256_eq(&out.spent[1].txid, &b.vtx[1].hash) &&
+                       out.spent[1].vout == 0 &&
+                       out.spent[1].value == mid &&
+                       out.spent[1].height == 1 &&
+                       out.spent[1].script_len ==
+                           b.vtx[1].vout[0].script_pub_key.size &&
+                       memcmp(out.spent[1].script,
+                              b.vtx[1].vout[0].script_pub_key.data,
+                              out.spent[1].script_len) == 0);
+            free_delta(&out);
         }
         block_free(&b);
     }

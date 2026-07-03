@@ -737,10 +737,13 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# HELP zcl_magicbean_peer_count Connected peers identifying as /MagicBean:.../ (zclassicd or compatible)\n"
         "# TYPE zcl_magicbean_peer_count gauge\n"
         "zcl_magicbean_peer_count %lld\n"
-        "# HELP zcl_zclassic_c23_peer_count Connected peers identifying as ZClassic-C23 (NODE_ZCL23 services or subver tag)\n"
+        "# HELP zcl_zclassic23_peer_count Connected peers identifying as ZClassic23 (NODE_ZCL23 services or subver tag)\n"
+        "# TYPE zcl_zclassic23_peer_count gauge\n"
+        "zcl_zclassic23_peer_count %lld\n"
+        "# HELP zcl_zclassic_c23_peer_count Compatibility alias for zcl_zclassic23_peer_count\n"
         "# TYPE zcl_zclassic_c23_peer_count gauge\n"
         "zcl_zclassic_c23_peer_count %lld\n",
-        (long long)mb_pc, (long long)z23_pc);
+        (long long)mb_pc, (long long)z23_pc, (long long)z23_pc);
 
     pos = append(buf, cap, pos,
         "# HELP zcl_rss_mb Resident set size in megabytes\n"

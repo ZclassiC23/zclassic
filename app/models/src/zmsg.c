@@ -105,7 +105,8 @@ int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
                  size_t max, bool unread_only)
 {
     if (!ndb || !ndb->open) return 0;
-    if (!out && max > 0) LOG_FAIL("zmsg", "db_zmsg_list: out is NULL");
+    if (!out && max > 0)
+        LOG_RETURN(0, "zmsg", "db_zmsg_list: out is NULL");
 
     const char *sql = unread_only
         ? "SELECT msg_id,direction,channel,sender,recipient,body,"

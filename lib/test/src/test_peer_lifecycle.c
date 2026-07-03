@@ -67,7 +67,7 @@ static int test_peer_lifecycle_user_agent(void)
     {
         const char *ua = msg_version_user_agent();
         ASSERT(strstr(ua, "MagicBean:2.1.2-beta1") != NULL);
-        ASSERT(strstr(ua, "ZClassic-C23:1.0.0") != NULL);
+        ASSERT(strstr(ua, "ZClassic23:0.1.0") != NULL);
     } TEST_END
     return failures;
 }
@@ -85,6 +85,10 @@ static int test_peer_lifecycle_classify(void)
         ASSERT(msg_version_classify_peer("/Satoshi:0.11.2/",
                                          NODE_NETWORK | NODE_ZCL23,
                                          &mb, &z23));
+        ASSERT(!mb);
+        ASSERT(z23);
+        ASSERT(msg_version_classify_peer("/ZClassic23:0.1.0/",
+                                         NODE_NETWORK, &mb, &z23));
         ASSERT(!mb);
         ASSERT(z23);
         ASSERT(msg_version_classify_peer("/ZClassic-C23:1.0.0/",
@@ -229,6 +233,7 @@ static int test_peer_lifecycle_counters(void)
         ASSERT(json_get_int(json_get(addnode, "disconnected")) == 1);
         ASSERT(json_get_int(json_get(addnode, "cache_skipped")) == 1);
         ASSERT(json_get_int(json_get(addnode, "magicbean_handshakes")) == 1);
+        ASSERT(json_get_int(json_get(addnode, "zclassic23_handshakes")) == 1);
         ASSERT(json_get_int(json_get(addnode, "zclassic_c23_handshakes")) == 1);
         json_free(&dump);
     } TEST_END

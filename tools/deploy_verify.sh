@@ -289,7 +289,7 @@ verify_contract() {
     net=$(json_rpc_result "$net")
     for key in advertised_subver advertised_services inbound_connections outbound_connections handshaked_connections \
                inbound_handshake_seen remote_handshake_seen magicbean_peers \
-               zclassic_c23_peers peer_lifecycle; do
+               zclassic23_peers zclassic_c23_peers peer_lifecycle; do
         json_has_key "$net" "$key" ||
             { last_err="getnetworkinfo missing $key: $net"; return 1; }
     done
@@ -303,6 +303,10 @@ verify_contract() {
         { last_err="peer_lifecycle sources missing: $peer"; return 1; }
     json_has_key "$peer" legacy_compatible_handshakes ||
         { last_err="peer_lifecycle missing legacy handshake canary: $peer"; return 1; }
+    json_has_key "$peer" zclassic23_handshakes ||
+        { last_err="peer_lifecycle missing zclassic23 handshake canary: $peer"; return 1; }
+    json_has_key "$peer" zclassic_c23_handshakes ||
+        { last_err="peer_lifecycle missing zclassic_c23 compatibility canary: $peer"; return 1; }
     json_has_key "$peer" pre_handshake_disconnects ||
         { last_err="peer_lifecycle missing pre-handshake disconnect counter: $peer"; return 1; }
     if ! printf '%s\n' "$peer" | grep -q '"legacy_compatible_handshakes"[[:space:]]*:[[:space:]]*[1-9]'; then

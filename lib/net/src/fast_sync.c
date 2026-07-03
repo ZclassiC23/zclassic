@@ -480,10 +480,11 @@ bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count)
 
 int64_t fast_sync_prebuild_snapshot(const char *datadir,
                                     fast_sync_snapshot_serialize_fn serialize,
-                                    void *serialize_ctx)
+    void *serialize_ctx)
 {
     if (!serialize)
-        LOG_FAIL("sync", "prebuild_snapshot: serializer callback is NULL");
+        LOG_RETURN((int64_t)-1, "sync",
+                   "prebuild_snapshot: serializer callback is NULL");
 
     char path[1024];
     fast_sync_snapshot_path(path, sizeof(path), datadir);

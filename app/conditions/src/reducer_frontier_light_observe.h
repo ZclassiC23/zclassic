@@ -45,6 +45,9 @@ int rfrl_tipfin_backfill_progress_at_detect(void);
 void rfrl_set_tipfin_backfill_snapshot(bool present, int progress);
 
 int rfrl_last_coin_backfill_inserted(void);
+int rfrl_last_reconcile_remedy_call(void);
+int rfrl_coin_backfill_insert_remedy_call_at_detect(void);
+void rfrl_snapshot_coin_backfill_insert_progress(void);
 
 void rfrl_increment_remedy_calls(void);
 int rfrl_remedy_calls(void);

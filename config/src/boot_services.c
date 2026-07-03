@@ -106,6 +106,7 @@
 #include "net/onion_service.h"
 #include "net/peer_strategy.h"
 #include "net/tor_integration.h"
+#include "net/version.h"
 #include "util/thread_registry.h"
 #include "validation/mirror_consensus.h"
 #include "validation/process_block.h"
@@ -118,8 +119,6 @@
 #include <netdb.h>
 #include <errno.h>
 
-/* msg_version.c — external IP advertisement to peers */
-extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include <stdatomic.h>
 #include <time.h>
 #include <stdio.h>
@@ -1111,16 +1110,16 @@ bool app_init_services(struct app_context *ctx,
     boot_prepare_mmb_leaf_store(svc, ctx->datadir, legacy_chain_rpc_get_mmb_leaf);
 
     rpc_blockchain_commitment_mmr_init_from_state(boot_node_db(svc));
-
     /* Bootstrap commitment MMR if empty but chain is at height.
      * After legacy import, we have the UTXO set at tip but no
      * commitment history. Compute one commitment at current height
      * as the starting evidence anchor. Full history gets built during
      * reindexchainstate (full block replay). */
     {
-        struct mmr *cm = rpc_blockchain_get_commitment_mmr();
+        uint64_t commitment_leaves = 0;
+        rpc_blockchain_commitment_mmr_snapshot(NULL, &commitment_leaves, NULL);
         int chain_h = active_chain_height(&svc->state->chain_active);
-        if (cm->num_leaves == 0 && chain_h > 1000 &&
+        if (commitment_leaves == 0 && chain_h > 1000 &&
             boot_node_db(svc) && boot_node_db(svc)->open) {
             printf("Commitment MMR empty at height %d — computing "
                    "bootstrap commitment...\n", chain_h);

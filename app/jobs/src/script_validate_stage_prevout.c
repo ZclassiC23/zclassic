@@ -59,25 +59,18 @@ bool script_validate_created_index_prevout(const struct outpoint *prevout,
             return true;
         }
 
-        struct coins c;
-        coins_init(&c);
-        if (coins_kv_get_coins(db, prevout->hash.data, &c)) {
-            bool usable = c.height < view->frontier &&
-                          c.height <= view->height &&
-                          prevout->n < c.num_vout &&
-                          !tx_out_is_null(&c.vout[prevout->n]);
+        int32_t coin_h = 0;
+        if (coins_kv_get_prevout(db, prevout->hash.data, prevout->n,
+                                 &value, script, sizeof(script), &slen,
+                                 &coin_h, NULL)) {
+            bool usable = coin_h < view->frontier && coin_h <= view->height;
             if (usable) {
-                const struct tx_out *src = &c.vout[prevout->n];
-                size_t src_len = src->script_pub_key.size;
-                if (src_len <= MAX_SCRIPT_SIZE) {
-                    out->value = src->value;
-                    script_set(&out->script_pub_key,
-                               src->script_pub_key.data, src_len);
-                    coins_free(&c);
-                    return true;
-                }
+                if (slen > MAX_SCRIPT_SIZE)
+                    return false;
+                out->value = value;
+                script_set(&out->script_pub_key, script, slen);
+                return true;
             }
-            coins_free(&c);
         }
         return false;
     }

@@ -291,6 +291,7 @@ static int test_peer_prometheus_render(void)
         mcp_metrics_record_peer_offence("invalid_block");
         mcp_metrics_record_peer_offence("timeout");
         mcp_metrics_record_peer_ban();
+        mcp_metrics_set_peer_kinds(2, 1);
 
         char buf[8192];
         mcp_metrics_render_prometheus(buf, sizeof(buf));
@@ -302,6 +303,9 @@ static int test_peer_prometheus_render(void)
         ASSERT(contains(buf, "zcl_peer_offences_total{kind=\"all\"} 3"));
         ASSERT(contains(buf, "# HELP zcl_peer_bans_total"));
         ASSERT(contains(buf, "zcl_peer_bans_total 1"));
+        ASSERT(contains(buf, "zcl_magicbean_peer_count 2"));
+        ASSERT(contains(buf, "zcl_zclassic23_peer_count 1"));
+        ASSERT(contains(buf, "zcl_zclassic_c23_peer_count 1"));
         PASS();
     } _test_next:;
     return failures;

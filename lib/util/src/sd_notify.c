@@ -75,7 +75,7 @@ static bool sd_send(const char *msg)
 
     int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        LOG_ERR("sd_notify", "socket failed: %s", strerror(errno));
+        LOG_WARN("sd_notify", "socket failed: %s", strerror(errno));
         return false;
     }
 
@@ -94,7 +94,7 @@ static bool sd_send(const char *msg)
                         (struct sockaddr *)&sa, sa_len);
     close(fd);
     if (rc < 0) {
-        LOG_ERR("sd_notify", "sendto failed: %s", strerror(errno));
+        LOG_WARN("sd_notify", "sendto failed: %s", strerror(errno));
         return false;
     }
     return true;

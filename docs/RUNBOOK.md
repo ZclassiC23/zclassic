@@ -121,13 +121,13 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
 
 ## Public Node Strength
 
-**Symptoms:** synced but public P2P looks weak: peers stay `connecting`, no completed MagicBean or ZClassic-C23 handshakes, or watchdog repeats `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
+**Symptoms:** synced but public P2P looks weak: peers stay `connecting`, no completed MagicBean or ZClassic23 handshakes, or watchdog repeats `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
 
 **Diagnose:** four read-only dumps cover the P2P/advance picture (pipe each
 through `jq` for the fields named in the Fix steps below):
 ```bash
-build/bin/zcl-rpc getnetworkinfo    # connections, *_handshaked_connections, inbound_handshake_seen, magicbean_peers, zclassic_c23_peers, localaddresses, listening
-build/bin/zcl-rpc getpeerinfo       # per-peer state, inbound, magicbean, zclassic_c23, startingheight, lifecycle
+build/bin/zcl-rpc getnetworkinfo    # connections, *_handshaked_connections, inbound_handshake_seen, magicbean_peers, zclassic23_peers, localaddresses, listening
+build/bin/zcl-rpc getpeerinfo       # per-peer state, inbound, magicbean, zclassic23, startingheight, lifecycle
 build/bin/zcl-rpc healthcheck       # .checks.chain_advance
 build/bin/zcl-rpc dumpstate peer_lifecycle              # .state.summary + per-source attempted/connected/handshake_complete/timeout/rejected
 build/bin/zcl-rpc dumpstate chain_advance_coordinator   # initialized, has_*, authority, decision, selected_source, activation_allowed, sources[] trust/score/blocker
@@ -141,7 +141,12 @@ build/bin/zcl-rpc dumpstate legacy_mirror               # process/RPC/oracle fie
    build/bin/zcl-rpc addnode "IP:8033" "onetry"
    # peer_lifecycle: select sources/peers with timeout>0, rejected>0, or handshake_complete==0
    ```
-2. **External IP missing or wrong:** set `-externalip=<public-ip>` in the service environment and verify it appears in `getnetworkinfo.localaddresses`. For public reachability, `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is stronger evidence than outbound-only handshakes.
+2. **External IP missing or wrong:** set `-externalip=<public-ip>[:p2p-port]`
+   in the service environment and verify it appears in
+   `getnetworkinfo.localaddresses`. Include `:p2p-port` when the public port
+   differs from the local listen port. For public reachability,
+   `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is
+   stronger evidence than outbound-only handshakes.
 3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures concentrate in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
 4. **Coordinator blocked or waiting:** use `dumpstate chain_advance_coordinator` first. `initialized=true` plus `has_connman=true`, `has_main_state=true`, `has_node_db=true` confirm the coordinator is wired into live P2P, chainstate, and persistence. `authority` must stay `local_consensus_validation`; `selected_source` shows the best input, `selected_source_trust`/`sources[].trust` explain its trust class, and `sources[].selectable=false` with `selection_blocker` explains why a source was excluded before score ranking. `activation_allowed=false` or a non-empty `blocker` explains why the node refuses to advance.
 5. **Legacy advisory active:** legacy data may be used only as `candidate_source=legacy_advisory`. Read the mirror fields as three separate facts: `mirror_monitor_running` means the zclassic23 monitor loop is alive, `zclassicd_rpc_transport_reachable` means the C++ RPC answered at the HTTP/JSON-RPC layer, and `legacy_oracle_usable` means it supplied a usable height/hash oracle. `rpc error -28: Activating best chain...` should be `zclassicd_rpc_transport_reachable=true` and `legacy_oracle_usable=false`. When `active_source=p2p` or another native source and `candidate_blocker_scope=advisory_only`, the node is not blocked by the legacy oracle. Treat `candidate_blocker_scope=active_or_safety`, `unsafe_overrides_total > 0`, `last_override_safe=false`, or a non-empty `active_blocker` as actionable. Inspect `legacy_advisory_blocker`, `candidate_blocker`, `last_blocker_code`, `stuck_reason`, `stalls_total`, `blockers_total`, `unsafe_overrides_total`, `last_override_scope`, `zclassicd_rpc_error_code`, `zclassicd_rpc_error_message`, and `last_error`. `consensus_authority` must stay `local_consensus_validation`; `candidate_trust` describes candidate data, not a co-authority.

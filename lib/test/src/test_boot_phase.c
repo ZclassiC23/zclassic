@@ -13,6 +13,7 @@
  * tests without polluting their view of the boot stage. */
 
 #include "test/test_helpers.h"
+#include "config/boot.h"
 #include "util/boot_phase.h"
 #include <stdio.h>
 #include <string.h>
@@ -89,6 +90,18 @@ int test_boot_phase(void)
     boot_stage_advance_to(BOOT_STAGE_DB_OPEN);
     BP_CHECK("step through CRYPTO_READY -> DB_OPEN",
         boot_stage_current() == BOOT_STAGE_DB_OPEN);
+
+    /* ZK params are consensus-critical on mainnet. If the background loader
+     * thread cannot even start, boot must name params_missing and park before
+     * CRYPTO_READY rather than silently continuing. */
+    BP_CHECK("mainnet params thread failure is fatal",
+        boot_test_params_thread_failure_is_fatal(true, true, false));
+    BP_CHECK("missing params dir has no thread failure",
+        !boot_test_params_thread_failure_is_fatal(false, true, false));
+    BP_CHECK("mint-anchor-fast keeps params thread failure nonfatal",
+        !boot_test_params_thread_failure_is_fatal(true, true, true));
+    BP_CHECK("non-mainnet params thread failure stays warning-only",
+        !boot_test_params_thread_failure_is_fatal(true, false, false));
 
     /* ── forward-jump (legal, emits WARN) ──────────────────────── */
     boot_stage_reset_for_testing();

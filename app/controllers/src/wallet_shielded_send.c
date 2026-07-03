@@ -248,10 +248,14 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
 
         /* Get OVK from sapling keystore */
         uint8_t ovk[32];
-        if (ctx->wallet->sapling_keys.num_keys > 0)
+        zcl_mutex_lock(&ctx->wallet->sapling_keys.cs);
+        if (ctx->wallet->sapling_keys.num_keys > 0) {
             memcpy(ovk, ctx->wallet->sapling_keys.keys[0].xfvk.fvk.ovk, 32);
-        else
+            zcl_mutex_unlock(&ctx->wallet->sapling_keys.cs);
+        } else {
+            zcl_mutex_unlock(&ctx->wallet->sapling_keys.cs);
             GetRandBytes(ovk, 32);
+        }
 
         /* Use Sapling proving context for output proofs + binding sig */
         extern void *zclassic_sapling_proving_ctx_init(void);

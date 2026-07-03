@@ -32,8 +32,8 @@
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "net/download.h"
-#include "net/msg_internal.h"
 #include "net/tor_integration.h"
+#include "net/version.h"
 #include "adapters/outbound/persistence/node_health_store_sqlite.h"
 #include "ports/node_health_store_port.h"
 #include <stdio.h>

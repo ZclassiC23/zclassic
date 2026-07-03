@@ -272,20 +272,20 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
 
     const char *h = headers ? headers : "";
     size_t hlen = strlen(h);
-    size_t blen = json_write(&body, NULL, 0);
-    size_t total = hlen + blen;
 
     if (hlen >= max) {
         memcpy(r, h, max - 1);
         r[max - 1] = '\0';
         json_free(&body);
-        return total;
+        return max - 1;
     }
 
     memcpy(r, h, hlen);
-    json_write(&body, (char *)r + hlen, max - hlen);
+    size_t avail = max - hlen;
+    size_t need = json_write(&body, (char *)r + hlen, avail);
     json_free(&body);
-    return total;
+    size_t actual_blen = need < avail ? need : (avail ? avail - 1 : 0);
+    return hlen + actual_blen;
 }
 
 size_t api_json_status(uint8_t *r, size_t max, const char *status,
@@ -677,8 +677,8 @@ size_t api_route_factoids(uint8_t *response, size_t response_max)
  * forwards /api traffic here (the clearnet TLS listener, any future
  * ingress) MUST apply the operator-private gate
  * (api_route_is_operator_private) listener-side BEFORE dispatching.
- * The onion service exposes no /api; wallet_gui/zcl-browser call
- * in-process and are trusted. */
+ * The onion service exposes no /api; wallet_gui calls in-process and
+ * is trusted. */
 
 size_t api_handle_request(const char *method, const char *path,
                            const uint8_t *body, size_t body_len,

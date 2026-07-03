@@ -50,7 +50,7 @@ static bool status_is_valid(enum crypto_scheme_status s)
 bool crypto_registry_register(const struct crypto_scheme *scheme)
 {
     if (!scheme) {
-        LOG_NULL("crypto_registry", "scheme");
+        LOG_FAIL("crypto_registry", "register: scheme is NULL");
         return false;
     }
     if ((int)scheme->id <= 0 || (int)scheme->id >= CRYPTO_SCHEME_MAX) {

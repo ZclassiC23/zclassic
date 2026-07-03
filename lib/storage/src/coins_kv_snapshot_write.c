@@ -62,14 +62,14 @@ bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
                                 const uint8_t anchor_block_hash[32],
                                 const uint8_t *frontier, uint32_t frontier_len,
                                 uint8_t out_sha3[32], uint64_t *out_count,
-                                int64_t *out_total_supply)
+    int64_t *out_total_supply)
 {
     if (!db || !out_path || !out_path[0]) {
-        LOG_NULL("coins_kv", "snapshot_write: null db/path");
+        LOG_FAIL("coins_kv", "snapshot_write: null db/path");
         return false;
     }
     if (frontier_len > 0 && !frontier) {
-        LOG_NULL("coins_kv", "snapshot_write: frontier_len>0 with null blob");
+        LOG_FAIL("coins_kv", "snapshot_write: frontier_len>0 with null blob");
         return false;
     }
 

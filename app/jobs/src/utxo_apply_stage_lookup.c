@@ -49,65 +49,25 @@ bool utxo_apply_stage_lookup_live(const struct uint256 *txid, uint32_t vout,
                         * matching the lookup==NULL "all external absent"
                         * contract; never a false-accept. */
 
-    /* Fast path: when the in-RAM overlay is active, resolve the ONE prevout
-     * directly via coins_ram_get_prevout (O(1) probe + point read-through) and
-     * AVOID coins_kv_get_coins -> coins_ram_get_coins, which reconstructs the
-     * ENTIRE struct coins (two O(cap=8M) linear scans) per call. The resolver
-     * only reads one vout, so the reconstruction is pure waste on the per-input
-     * hot path. The four fields returned here (value/script/height/is_coinbase)
-     * are exactly what the inverse-delta restore-ADD needs, matching what
-     * the reconstruction path would yield for the same live coin. */
-    if (coins_ram_active()) {
-        int64_t  value = 0;
-        int32_t  height = 0;
-        bool     is_coinbase = false;
-        size_t   slen = 0;
-        if (!coins_ram_get_prevout(txid->data, vout, &value, out->script,
-                                    UTXO_APPLY_SCRIPT_MAX, &slen,
-                                    &height, &is_coinbase))
-            return true;  /* absent in the effective set -> found stays false */
-        if (slen > UTXO_APPLY_SCRIPT_MAX) {
-            /* Contract violation (script > MAX_SCRIPT_SIZE). Fail the resolver
-             * rather than truncate or over-read a consensus script - same gate
-             * as the reconstruction path below. */
-            return false;
-        }
-        out->found       = true;
-        out->value       = value;
-        out->height      = (uint32_t)(height < 0 ? 0 : height);
-        out->is_coinbase = is_coinbase;
-        out->script_len  = (uint32_t)slen;
-        /* script already copied into out->script by coins_ram_get_prevout. */
-        return true;
-    }
-
-    struct coins c;
-    coins_init(&c);
-    if (!coins_kv_get_coins(db, txid->data, &c)) {
-        coins_free(&c);
+    int64_t value = 0;
+    int32_t height = 0;
+    bool is_coinbase = false;
+    size_t slen = 0;
+    if (!coins_kv_get_prevout(db, txid->data, vout, &value, out->script,
+                              UTXO_APPLY_SCRIPT_MAX, &slen, &height,
+                              &is_coinbase))
         return true;   /* no live output at this txid -> found stays false */
-    }
 
-    bool ok = true;
-    if (vout < c.num_vout && !tx_out_is_null(&c.vout[vout])) {
-        const struct tx_out *o = &c.vout[vout];
-        size_t slen = o->script_pub_key.size;
-        if (slen > UTXO_APPLY_SCRIPT_MAX) {
-            /* Contract violation (a UTXO scriptPubKey is <= MAX_SCRIPT_SIZE ==
-             * UTXO_APPLY_SCRIPT_MAX). Fail the resolver (compute_block_delta
-             * turns this into an internal_error) rather than truncate or
-             * over-read a consensus script. */
-            ok = false;
-        } else {
-            out->found       = true;
-            out->value       = o->value;
-            out->height      = (uint32_t)(c.height < 0 ? 0 : c.height);
-            out->is_coinbase = c.is_coinbase;
-            out->script_len  = (uint32_t)slen;
-            if (slen)
-                memcpy(out->script, o->script_pub_key.data, slen);
-        }
+    if (slen > UTXO_APPLY_SCRIPT_MAX) {
+        /* Contract violation (a UTXO scriptPubKey is <= MAX_SCRIPT_SIZE ==
+         * UTXO_APPLY_SCRIPT_MAX). Fail the resolver (compute_block_delta turns
+         * this into an internal_error) rather than silently truncate. */
+        return false;
     }
-    coins_free(&c);
-    return ok;
+    out->found       = true;
+    out->value       = value;
+    out->height      = (uint32_t)(height < 0 ? 0 : height);
+    out->is_coinbase = is_coinbase;
+    out->script_len  = (uint32_t)slen;
+    return true;
 }

@@ -574,7 +574,7 @@ int spec_100_stories(void)
 
     STORY("Node: version string shown");
     G("/wallet/node");
-    CHECK(H("ZClassic-C23"), "no version");
+    CHECK(H("ZClassic23:0.1.0"), "no version");
     if(!_skip) ok();
 
     STORY("Node: Tor section present");

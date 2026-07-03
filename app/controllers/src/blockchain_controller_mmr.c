@@ -21,7 +21,6 @@
 #include "consensus/upgrades.h"
 #include "consensus/params.h"
 #include "chain/mmr.h"
-#include "chain/mmb.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
@@ -59,14 +58,13 @@ bool rpc_getmmrroot(const struct json_value *params, bool help,
         "\nReturns the Merkle Mountain Range root over all block hashes.\n"
         "Uses SHA3-256 with domain separation for power node sync.\n");
 
-    if (!rpc_blockchain_mmr_initialized()) {
+    uint8_t root[32];
+    uint64_t leaves = 0;
+    uint32_t peaks = 0;
+    if (!rpc_blockchain_mmr_snapshot(root, &leaves, &peaks)) {
         json_set_str(result, "MMR not initialized");
         LOG_FAIL("blockchain", "getmmrroot: MMR not initialized");
     }
-
-    struct mmr *bm = rpc_blockchain_get_mmr();
-    uint8_t root[32];
-    mmr_root(bm, root);
 
     char hex[65];
     for (int i = 0; i < 32; i++)
@@ -74,8 +72,8 @@ bool rpc_getmmrroot(const struct json_value *params, bool help,
 
     json_set_object(result);
     json_push_kv_str(result, "mmr_root", hex);
-    json_push_kv_int(result, "num_leaves", (int64_t)bm->num_leaves);
-    json_push_kv_int(result, "num_peaks", bm->num_peaks);
+    json_push_kv_int(result, "num_leaves", (int64_t)leaves);
+    json_push_kv_int(result, "num_peaks", peaks);
     return true;
 }
 
@@ -89,9 +87,9 @@ bool rpc_getcommitmentmmr(const struct json_value *params, bool help,
         "Each leaf: SHA3(height || block_hash || utxo_root) every 100 blocks.\n"
         "Used to verify imported UTXO snapshots without replaying history.\n");
 
-    struct mmr *cm = rpc_blockchain_get_commitment_mmr();
     uint8_t root[32];
-    mmr_root(cm, root);
+    uint64_t leaves = 0;
+    rpc_blockchain_commitment_mmr_snapshot(root, &leaves, NULL);
 
     char hex[65];
     for (int i = 0; i < 32; i++)
@@ -99,10 +97,10 @@ bool rpc_getcommitmentmmr(const struct json_value *params, bool help,
 
     json_set_object(result);
     json_push_kv_str(result, "commitment_mmr_root", hex);
-    json_push_kv_int(result, "num_commitments", (int64_t)cm->num_leaves);
+    json_push_kv_int(result, "num_commitments", (int64_t)leaves);
     json_push_kv_int(result, "commitment_interval", MMR_COMMITMENT_INTERVAL);
     json_push_kv_int(result, "covers_height",
-        (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL);
+        (int64_t)leaves * MMR_COMMITMENT_INTERVAL);
     return true;
 }
 
@@ -121,26 +119,28 @@ bool rpc_auditchain(const struct json_value *params, bool help,
     json_set_object(result);
 
     /* Block-hash MMR */
-    struct mmr *bm = rpc_blockchain_get_mmr();
-    uint8_t broot[32];
-    mmr_root(bm, broot);
+    uint8_t broot[32] = {0};
+    uint64_t block_leaves = 0;
+    bool block_mmr_initialized =
+        rpc_blockchain_mmr_snapshot(broot, &block_leaves, NULL);
     char bhex[65];
     for (int i = 0; i < 32; i++)
         snprintf(bhex + i * 2, 3, "%02x", broot[i]);
     json_push_kv_str(result, "block_mmr_root", bhex);
-    json_push_kv_int(result, "block_mmr_leaves", (int64_t)bm->num_leaves);
+    json_push_kv_int(result, "block_mmr_leaves", (int64_t)block_leaves);
 
     /* Commitment MMR */
-    struct mmr *cm = rpc_blockchain_get_commitment_mmr();
     uint8_t croot[32];
-    mmr_root(cm, croot);
+    uint64_t commitment_leaves = 0;
+    rpc_blockchain_commitment_mmr_snapshot(croot, &commitment_leaves,
+                                           NULL);
     char chex[65];
     for (int i = 0; i < 32; i++)
         snprintf(chex + i * 2, 3, "%02x", croot[i]);
     json_push_kv_str(result, "commitment_mmr_root", chex);
-    json_push_kv_int(result, "commitment_leaves", (int64_t)cm->num_leaves);
+    json_push_kv_int(result, "commitment_leaves", (int64_t)commitment_leaves);
     json_push_kv_int(result, "commitment_covers_height",
-        (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL);
+        (int64_t)commitment_leaves * MMR_COMMITMENT_INTERVAL);
 
     /* Chain state */
     int chain_h = ctx->main_state ? active_chain_height(
@@ -148,8 +148,9 @@ bool rpc_auditchain(const struct json_value *params, bool help,
     json_push_kv_int(result, "chain_height", chain_h);
 
     /* Consistency check */
-    bool block_mmr_ok = (int64_t)bm->num_leaves >= chain_h;
-    bool commit_ok = (int64_t)cm->num_leaves * MMR_COMMITMENT_INTERVAL >=
+    bool block_mmr_ok = block_mmr_initialized &&
+                        (int64_t)block_leaves >= chain_h;
+    bool commit_ok = (int64_t)commitment_leaves * MMR_COMMITMENT_INTERVAL >=
                      chain_h - MMR_COMMITMENT_INTERVAL;
     json_push_kv_bool(result, "block_mmr_consistent", block_mmr_ok);
     json_push_kv_bool(result, "commitment_mmr_consistent", commit_ok);

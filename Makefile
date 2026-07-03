@@ -175,6 +175,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
+        check-log-macro-return-type \
         check-wallet-raw-prepare-log check-blob-read-bounds \
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
@@ -582,12 +583,6 @@ export_snapshot: $(BIN_DIR)/export_snapshot
 $(BIN_DIR)/export_snapshot: tools/export_snapshot.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libsqlite3.a -lpthread
-
-.PHONY: zcl-browser
-zcl-browser: $(BIN_DIR)/zcl-browser
-$(BIN_DIR)/zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $^ $(TOR_LIBS) $(LIBS) $$(pkg-config --libs webkit2gtk-4.1)
 
 .PHONY: zcl-blog
 zcl-blog: $(BIN_DIR)/zcl-blog
@@ -2033,6 +2028,10 @@ check-silent-errors-bool:
 	@echo "══ LINT: silent call-guard return-false (RATCHET) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_silent_bool_errors.sh
 
+check-log-macro-return-type:
+	@echo "══ LINT: LOG_* macro return type pairing ══"
+	@./tools/lint/check_log_macro_return_type.sh
+
 # Closes the raw sqlite3_prepare_v2() + unlogged NULL-check blind spot (the
 # wallet_tx.c class the other silent-error gates do not see): a BARE prepare
 # followed by `if (!stmt) return ...;` with no LOG_* between them. RATCHET
@@ -2356,7 +2355,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
+lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

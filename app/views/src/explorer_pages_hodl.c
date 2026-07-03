@@ -15,11 +15,14 @@
 #include "jobs/reducer_frontier.h"
 #include "models/hodl_wave.h"
 #include "services/hodl_history_service.h"
+#include "util/safe_alloc.h"
 #include "views/format_helpers.h"
 
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 /* ── HODL Wave Page ────────────────────────────────────────── */
@@ -45,6 +48,73 @@ struct hodl_chart_row {
     int64_t older_1y_zat;
     double  older_1y_pct;
 };
+
+#define HODL_VIEW_CACHE_DATADIR_MAX 1024
+#define HODL_VIEW_CACHE_HASH_MAX 80
+
+struct hodl_view_cache_entry {
+    bool valid;
+    char datadir[HODL_VIEW_CACHE_DATADIR_MAX];
+    int64_t tip_height;
+    char tip_hash[HODL_VIEW_CACHE_HASH_MAX];
+    struct hodl_wave_snapshot snapshot;
+};
+
+static pthread_mutex_t g_hodl_view_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct hodl_view_cache_entry g_hodl_view_cache;
+
+static bool hodl_view_datadir_key(const char *datadir, char out[HODL_VIEW_CACHE_DATADIR_MAX])
+{
+    if (!datadir)
+        return false;
+    int n = snprintf(out, HODL_VIEW_CACHE_DATADIR_MAX, "%s", datadir);
+    return n >= 0 && n < HODL_VIEW_CACHE_DATADIR_MAX;
+}
+
+static void hodl_view_tip_hash(sqlite3 *db, int64_t tip, char out[HODL_VIEW_CACHE_HASH_MAX])
+{
+    char sql[128];
+    out[0] = '\0';
+    if (db && tip >= 0) {
+        snprintf(sql, sizeof(sql),
+                 "SELECT hex(hash) FROM blocks WHERE height=%" PRId64, tip);
+        (void)sql_query_text(db, sql, out, HODL_VIEW_CACHE_HASH_MAX);
+    }
+    if (out[0] == '\0')
+        snprintf(out, HODL_VIEW_CACHE_HASH_MAX, "height:%" PRId64 ":nohash", tip);
+}
+
+static bool hodl_view_cache_get(const char *datadir_key, int64_t tip,
+                                const char *tip_hash,
+                                struct hodl_wave_snapshot *out)
+{
+    bool hit = false;
+    pthread_mutex_lock(&g_hodl_view_cache_lock);
+    if (g_hodl_view_cache.valid &&
+        g_hodl_view_cache.tip_height == tip &&
+        strcmp(g_hodl_view_cache.datadir, datadir_key) == 0 &&
+        strcmp(g_hodl_view_cache.tip_hash, tip_hash) == 0) {
+        *out = g_hodl_view_cache.snapshot;
+        hit = true;
+    }
+    pthread_mutex_unlock(&g_hodl_view_cache_lock);
+    return hit;
+}
+
+static void hodl_view_cache_put(const char *datadir_key, int64_t tip,
+                                const char *tip_hash,
+                                const struct hodl_wave_snapshot *snapshot)
+{
+    pthread_mutex_lock(&g_hodl_view_cache_lock);
+    snprintf(g_hodl_view_cache.datadir, sizeof(g_hodl_view_cache.datadir),
+             "%s", datadir_key);
+    snprintf(g_hodl_view_cache.tip_hash, sizeof(g_hodl_view_cache.tip_hash),
+             "%s", tip_hash);
+    g_hodl_view_cache.tip_height = tip;
+    g_hodl_view_cache.snapshot = *snapshot;
+    g_hodl_view_cache.valid = true;
+    pthread_mutex_unlock(&g_hodl_view_cache_lock);
+}
 
 static bool hodl_chart_rows_have_gap(const struct hodl_chart_row *prev,
                                      const struct hodl_chart_row *next)
@@ -100,7 +170,17 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
     int64_t tip = hodl_view_cap_to_served_tip(index_tip);
 
     struct hodl_wave_snapshot hodl;
-    bool ok = hodl_wave_scan_current_utxos(db, tip, &hodl);
+    char datadir_key[HODL_VIEW_CACHE_DATADIR_MAX];
+    char tip_hash[HODL_VIEW_CACHE_HASH_MAX];
+    bool cacheable = hodl_view_datadir_key(datadir, datadir_key);
+    hodl_view_tip_hash(db, tip, tip_hash);
+    bool ok = cacheable &&
+        hodl_view_cache_get(datadir_key, tip, tip_hash, &hodl);
+    if (!ok) {
+        ok = hodl_wave_scan_current_utxos(db, tip, &hodl);
+        if (ok && cacheable)
+            hodl_view_cache_put(datadir_key, tip, tip_hash, &hodl);
+    }
     sqlite3_close(db);
 
     APPEND(off, r, max,
@@ -152,14 +232,19 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
     {
         sqlite3 *udb = NULL;
         if (explorer_open_readonly_db(datadir, &udb)) {
-            static struct hodl_chart_row rows[2048];
-            static struct hodl_history_row hist[2048];
+            enum { HODL_CHART_MAX_ROWS = 2048 };
+            struct hodl_chart_row *rows =
+                zcl_calloc(HODL_CHART_MAX_ROWS, sizeof(*rows),
+                           "hodl_chart_rows");
+            struct hodl_history_row *hist =
+                zcl_calloc(HODL_CHART_MAX_ROWS, sizeof(*hist),
+                           "hodl_chart_history");
             int n = 0;
 
-            int hist_n = hodl_history_load_all(
-                udb, hist, (int)(sizeof(hist) / sizeof(hist[0])) - 1);
-            for (int i = 0; i < hist_n &&
-                            n < (int)(sizeof(rows) / sizeof(rows[0])) - 1; i++) {
+            int hist_n = (rows && hist)
+                ? hodl_history_load_all(udb, hist, HODL_CHART_MAX_ROWS - 1)
+                : 0;
+            for (int i = 0; i < hist_n && n < HODL_CHART_MAX_ROWS - 1; i++) {
                 if (hist[i].height < 1 || hist[i].height > hodl.tip_height ||
                     hist[i].time <= 0 || hist[i].total_zat <= 0)
                     continue;
@@ -178,7 +263,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
             /* Append an exact live-tip anchor when the daily history filler has
              * not sampled the current tip yet. At tip, the current transparent
              * UTXO scan and the alive-at-H definition are the same set. */
-            if (n < (int)(sizeof(rows)/sizeof(rows[0])) &&
+            if (rows && hist &&
+                n < HODL_CHART_MAX_ROWS &&
                 hodl.total_value > 0 &&
                 (n == 0 || rows[n - 1].height < hodl.tip_height)) {
                 rows[n].height        = hodl.tip_height;
@@ -190,7 +276,16 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
             }
             sqlite3_close(udb);
 
-            if (n < 2) {
+            if (!rows || !hist) {
+                APPEND(off, r, max,
+                    "<div style='max-width:1000px;margin:20px auto;"
+                    "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
+                    "border-radius:8px;color:#888'>"
+                    "<h2 style='color:#bbb;margin-top:0'>"
+                    "%% held &gt; 1 year over time</h2>"
+                    "<p>The HODL chart is temporarily unavailable.</p>"
+                    "</div>");
+            } else if (n < 2) {
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto;"
                     "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
@@ -500,6 +595,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "})();</script>",
                     W, pl, pr, pt, pb, ph, y_min, y_max, t_min, t_max);
             }
+            free(rows);
+            free(hist);
         }
     }
 

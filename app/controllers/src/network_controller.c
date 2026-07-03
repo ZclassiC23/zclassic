@@ -11,10 +11,6 @@
 #include "net/connman.h"
 #include "net/peer_lifecycle.h"
 #include "net/version.h"
-extern bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port);
-extern bool msg_version_classify_peer(const char *subver, uint64_t services,
-                                      bool *is_magicbean, bool *is_zcl23);
-extern const char *msg_version_user_agent(void);
 #include "util/clientversion.h"
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -191,6 +187,7 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "outbound_handshaked_connections",
                      outbound_handshaked);
     json_push_kv_int(result, "magicbean_peers", magicbean);
+    json_push_kv_int(result, "zclassic23_peers", zcl23);
     json_push_kv_int(result, "zclassic_c23_peers", zcl23);
     json_push_kv_int(result, "listen_socket_count",
                      (int64_t)listen_socket_count);
@@ -261,6 +258,7 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
             msg_version_classify_peer(node->sub_ver, node->services,
                                       &is_mb, &is_z23);
             json_push_kv_bool(&entry, "magicbean", is_mb);
+            json_push_kv_bool(&entry, "zclassic23", is_z23);
             json_push_kv_bool(&entry, "zclassic_c23", is_z23);
             peer_lifecycle_peer_json(node, &lifecycle);
             json_push_kv(&entry, "lifecycle", &lifecycle);

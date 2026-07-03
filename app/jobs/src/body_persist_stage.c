@@ -179,7 +179,7 @@ static job_result_t requeue_body_for_refetch(struct block_index *bi,
                                              int height, const char *what,
                                              _Atomic uint64_t *counter)
 {
-    bi->nStatus &= ~BLOCK_HAVE_DATA;
+    block_index_status_clear_bits(bi, BLOCK_HAVE_DATA);
     block_index_emit_header_event(bi, STAGE_NAME, &g_header_event_emit_total,
                                   &g_header_event_emit_fail_total);
     atomic_fetch_add(counter, 1);
@@ -229,7 +229,8 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
-    if (!bi || !bi->phashBlock || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+    if (!bi || !bi->phashBlock ||
+        !(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
@@ -276,7 +277,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
      * HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). nTx rides
      * the same emit: an n_tx=0 row breaks the next boot's nChainTx propagation
      * exactly at this block. */
-    bi->nStatus |= BLOCK_HAVE_DATA;
+    block_index_status_fetch_or(bi, BLOCK_HAVE_DATA);
     if (bi->nTx == 0 && blk.num_vtx > 0)
         bi->nTx = (unsigned int)blk.num_vtx;
     block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);

@@ -836,6 +836,7 @@ static void print_usage(const char *prog)
     printf("  -port=<port>        P2P port (default: 8033)\n");
     printf("  -rpcport=<port>     RPC port (default: 18232; 8232 is legacy zclassicd)\n");
     printf("  -addnode=<ip>       Add peer\n");
+    printf("  -externalip=<ip[:port]>  Advertise this public P2P endpoint\n");
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");

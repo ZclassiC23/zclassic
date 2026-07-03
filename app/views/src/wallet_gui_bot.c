@@ -130,7 +130,7 @@ static const struct bot_action g_bot_script[] = {
       "YES", NULL },
     { "Node: version shown",
       NULL, "document.body.innerText",
-      "ZClassic-C23", NULL },
+      "ZClassic23", NULL },
 
     /* ── Coins ── */
     { "Coins page loads",

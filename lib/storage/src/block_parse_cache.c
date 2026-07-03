@@ -31,6 +31,7 @@
  */
 #include "storage/block_parse_cache.h"
 
+#include "chain/chain.h"
 #include "core/serialize.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
@@ -141,12 +142,10 @@ miss:
      *    does its own hash compare and a reader hash-reject would change its
      *    refetch classification). Then cache a deep clone and hand the
      *    freshly-read body to the caller (no extra parse, no extra clone). ── */
-    if (!(bi->nStatus & BLOCK_HAVE_DATA))
-        return false;
     struct disk_block_pos pos;
     disk_block_pos_init(&pos);
-    pos.nFile = bi->nFile;
-    pos.nPos = bi->nDataPos;
+    if (!block_index_disk_pos_snapshot(bi, &pos, NULL))
+        return false;
     if (!read_block_from_disk_pread(out, &pos, datadir ? datadir : "")) {
         /* out is left free-able by the reader's failure contract. */
         return false;

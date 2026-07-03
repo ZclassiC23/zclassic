@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define NODE_DB_SCHEMA_LATEST 22
+#define NODE_DB_SCHEMA_LATEST 23
 
 struct node_db_status {
     bool open;
@@ -155,7 +155,7 @@ bool node_db_rebuild_indexes(struct node_db *ndb);
  * may use columns this binary doesn't understand, leading to silent
  * data corruption on writes. node_db_migrate() refuses to proceed
  * in that case (Campaign C3: schema-downgrade detection). */
-#define NODE_DB_MAX_SCHEMA 22
+#define NODE_DB_MAX_SCHEMA 23
 
 /* Schema version for future migrations. */
 int node_db_schema_version(struct node_db *ndb);

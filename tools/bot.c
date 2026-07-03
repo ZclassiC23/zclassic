@@ -285,7 +285,7 @@ int main(int argc, char **argv)
     CHECK("sovereignty statement", has("sovereign"));
     CHECK("block height shown", has("Block Height"));
     CHECK("peers shown", has("Connected Peers"));
-    CHECK("version shown", has("ZClassic-C23"));
+    CHECK("version shown", has("ZClassic23:0.1.0"));
     CHECK("Node tab active", has("active'>Node"));
 
     /* ═══ COINS ═══ */

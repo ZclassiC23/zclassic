@@ -23,8 +23,8 @@
  * that direction (tokens always flow).  Localhost + explicitly
  * trusted peers always bypass the quota and are treated as
  * unlimited — this mirrors the peer_scoring contract and keeps the
- * operator's local zcl-rpc / zcl-browser path fast regardless of
- * whatever the env caps say.
+ * operator's local zcl-rpc path fast regardless of whatever the env
+ * caps say.
  *
  * Thread safety: every public function takes the module's internal
  * mutex, safe to call from multiple connman worker threads.
@@ -106,7 +106,7 @@ struct peer_bandwidth *peer_bandwidth_get_global(void);
 
 /* Mark a peer as trusted so it bypasses the quota.  Call this for
  * addnode-configured peers and for the loopback peers connman
- * creates to wire up the local zcl-rpc / zcl-browser path.  NULL-safe. */
+ * creates to wire up the local zcl-rpc path.  NULL-safe. */
 void peer_bandwidth_mark_trusted(struct peer_bandwidth *pb,
                                   uint32_t peer_id, bool trusted);
 

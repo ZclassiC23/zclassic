@@ -140,7 +140,7 @@ struct app_context {
                                  * the legacy flat/SQLite/LevelDB loaders,
                                  * zclassicd-LDB, and UTXO importer. Opt-in;
                                  * default false so the live boot is unchanged. */
-    const char *external_ip;   /* -externalip=IP : advertise this address to peers */
+    const char *external_ip;   /* -externalip=IP[:PORT] : advertise endpoint to peers */
     const char *https_domain;  /* -httpsdomain=DOMAIN : TLS servername / redirect host
                                  * for the clearnet explorer. Optional; with a single
                                  * cert the server presents that cert regardless of SNI,
@@ -407,6 +407,9 @@ void app_stop_metrics(void);
 
 #ifdef ZCL_TESTING
 #include "config/boot_postmortem.h"
+bool boot_test_params_thread_failure_is_fatal(bool has_params_dir,
+                                              bool is_mainnet,
+                                              bool mint_anchor_fast);
 #endif
 
 /* Background UTXO replay status (after fast file sync).

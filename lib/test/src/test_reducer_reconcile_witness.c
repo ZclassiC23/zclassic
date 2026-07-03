@@ -58,6 +58,9 @@
 void reducer_frontier_reconcile_light_test_set_post_remedy_hook(
     void (*fn)(void));
 int reducer_frontier_reconcile_light_test_bypass_warns(void);
+bool reducer_frontier_reconcile_light_test_progressing(void);
+void reducer_frontier_reconcile_light_test_snapshot_insert_baseline(void);
+void reducer_frontier_reconcile_light_test_note_coin_insert_result(int inserted);
 
 #define RRW_CHECK(name, expr) do { \
     printf("reducer_reconcile_witness: %s... ", (name)); \
@@ -701,6 +704,35 @@ int test_reducer_reconcile_witness(void)
         condition_engine_reset_for_testing();
         reducer_frontier_reconcile_light_test_reset();
         net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
+    /* ── T10b3: inserted-coin progress is edge-triggered ───────────── */
+    {
+        struct rrw_fixture fx;
+        RRW_CHECK("T10b3: setup progress callback fixture",
+                  setup_fixture(&fx, "t10_insert_edge"));
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        reducer_frontier_reconcile_light_test_snapshot_insert_baseline();
+
+        reducer_frontier_reconcile_light_test_note_coin_insert_result(7);
+        bool first = reducer_frontier_reconcile_light_test_progressing();
+        bool stale_repeat = reducer_frontier_reconcile_light_test_progressing();
+
+        reducer_frontier_reconcile_light_test_note_coin_insert_result(0);
+        bool no_insert = reducer_frontier_reconcile_light_test_progressing();
+
+        reducer_frontier_reconcile_light_test_note_coin_insert_result(3);
+        bool second_insert = reducer_frontier_reconcile_light_test_progressing();
+
+        RRW_CHECK("T10b3: inserted coins refresh once per remedy result",
+                  first && !stale_repeat && !no_insert && second_insert &&
+                  reducer_frontier_reconcile_light_test_remedy_calls() == 3);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
         teardown_fixture(&fx);
     }
 

@@ -145,17 +145,17 @@ static const char TMPL_NODE_PAGE[] =
     "nnet (Equihash 192,7)</div>\n<div class='lbl'>Protocol</div>\n<div class='val'>NODE_NETWORK | NOD"
     "E_BLOOM | NODE_ZCL23</div>\n<div class='lbl'></div>\n<div class='val' style='color:#555;font-size"
     ":12px'>\nFull relay + validation. Every block verified independently.</div>\n<div class='lbl'>Ver"
-    "sion</div>\n<div class='val' style='color:#34d399'>/ZClassic-C23:0.1.0/</div>\n</div>\n\n{{{tor_s"
-    "ection}}}\n\n<h3>Connected Peers</h3>\n{{{peer_table}}}\n\n<h3>Mempool</h3>\n<div class='detail-g"
-    "rid'>\n<div class='lbl'>Pending</div>\n<div class='val'>{{{mempool}}} transactions</div>\n<div cl"
-    "ass='lbl'>UTXO Set</div>\n<div class='val'>{{{utxo_count}}} outputs</div>\n<div class='lbl'>Suppl"
-    "y</div>\n<div class='val'>{{{supply}}} ZCL</div>\n</div>\n\n<h3>Quick Actions</h3>\n<div style='d"
-    "isplay:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0'>\n<a href='/explorer' class='btn-"
-    "secondary'\n style='text-align:center;padding:12px;font-size:14px'>Block Explorer</a>\n<a href='/"
-    "wallet/coins' class='btn-secondary'\n style='text-align:center;padding:12px;font-size:14px'>Coin "
-    "Audit</a>\n<a href='/explorer/tokens' class='btn-secondary'\n style='text-align:center;padding:12"
-    "px;font-size:14px'>ZSLP Tokens</a>\n<a href='/explorer/stats' class='btn-secondary'\n style='text"
-    "-align:center;padding:12px;font-size:14px'>Network Stats</a>\n</div>\n";
+    "sion</div>\n<div class='val' style='color:#34d399'>{{{version}}}</div>\n</div>\n\n{{{tor_section}"
+    "}}\n\n<h3>Connected Peers</h3>\n{{{peer_table}}}\n\n<h3>Mempool</h3>\n<div class='detail-grid'>\n"
+    "<div class='lbl'>Pending</div>\n<div class='val'>{{{mempool}}} transactions</div>\n<div class='lb"
+    "l'>UTXO Set</div>\n<div class='val'>{{{utxo_count}}} outputs</div>\n<div class='lbl'>Supply</div>"
+    "\n<div class='val'>{{{supply}}} ZCL</div>\n</div>\n\n<h3>Quick Actions</h3>\n<div style='display:"
+    "grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0'>\n<a href='/explorer' class='btn-seconda"
+    "ry'\n style='text-align:center;padding:12px;font-size:14px'>Block Explorer</a>\n<a href='/wallet/"
+    "coins' class='btn-secondary'\n style='text-align:center;padding:12px;font-size:14px'>Coin Audit</"
+    "a>\n<a href='/explorer/tokens' class='btn-secondary'\n style='text-align:center;padding:12px;font"
+    "-size:14px'>ZSLP Tokens</a>\n<a href='/explorer/stats' class='btn-secondary'\n style='text-align:"
+    "center;padding:12px;font-size:14px'>Network Stats</a>\n</div>\n";
 
 static const char TMPL_NODE_STATUS_STRIP[] =
     "<a href='/wallet/node' style='text-decoration:none;color:inherit'>\n<div style='display:flex;alig"

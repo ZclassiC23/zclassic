@@ -135,18 +135,40 @@ int test_created_outputs_index(void)
                  && v == blk.vtx[0].vout[0].value);
     }
 
-    /* Prune below finality: a low-height block is removed, the high one kept. */
+    /* Prune below finality/retention: the limited production helper removes
+     * only the oldest eligible height per bounded pass; the full helper still
+     * removes every eligible old row. */
     struct block low; block_init(&low);
     low.num_vtx = 1;
     low.vtx = zcl_calloc(1, sizeof(struct transaction), "co_low_vtx");
     co_make_tx(&low.vtx[0], 0x33, 1);
     CO_CHECK("put low height=50",
              created_outputs_index_put_block(db, &low, 50));
+    struct block low2; block_init(&low2);
+    low2.num_vtx = 1;
+    low2.vtx = zcl_calloc(1, sizeof(struct transaction), "co_low2_vtx");
+    co_make_tx(&low2.vtx[0], 0x44, 1);
+    CO_CHECK("put low2 height=60",
+             created_outputs_index_put_block(db, &low2, 60));
+    int deleted_rows = -1;
+    CO_CHECK("limited prune removes one old height",
+             created_outputs_index_prune_below_limited(db, 100, 1,
+                                                       &deleted_rows) &&
+             deleted_rows == 1);
+    {
+        int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
+        CO_CHECK("limited prune removed oldest height",
+                 !co_get(db, &low.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl));
+        CO_CHECK("limited prune kept next old height",
+                 co_get(db, &low2.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl));
+        CO_CHECK("limited prune kept retained height",
+                 co_get(db, &blk.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl));
+    }
     CO_CHECK("prune_below(100)", created_outputs_index_prune_below(db, 100));
     {
         int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
-        CO_CHECK("prune removed height<100",
-                 !co_get(db, &low.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl));
+        CO_CHECK("prune removed remaining height<100",
+                 !co_get(db, &low2.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl));
         CO_CHECK("prune kept height>=100",
                  co_get(db, &blk.vtx[0].hash, 0, &v, sc, sizeof(sc), &sl));
     }
@@ -156,6 +178,8 @@ int test_created_outputs_index(void)
     free(blk.vtx);
     transaction_free(&low.vtx[0]);
     free(low.vtx);
+    transaction_free(&low2.vtx[0]);
+    free(low2.vtx);
     progress_store_close();
     test_cleanup_tmpdir(dir);
     return failures;

@@ -33,9 +33,6 @@ struct msg_block_acceptance {
 /* msg_version.c — version/verack handshake */
 void push_version(struct msg_processor *mp, struct p2p_node *node);
 void push_verack(struct msg_processor *mp, struct p2p_node *node);
-const char *msg_version_user_agent(void);
-bool msg_version_classify_peer(const char *subver, uint64_t services,
-                               bool *is_magicbean, bool *is_zcl23);
 void msg_version_build(struct version_message *ver,
                        const struct msg_processor *mp,
                        const struct p2p_node *node,

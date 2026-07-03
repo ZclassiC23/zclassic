@@ -3,6 +3,7 @@
 #include "controllers/wallet_view_internal.h"
 #include "controllers/wallet_controller.h"
 #include "views/wallet_view_node_view.h"
+#include "net/version.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
 
@@ -110,6 +111,7 @@ size_t serve_node(uint8_t *r, size_t max) {
         { "peer_table",  peer_table },
         { "utxo_count",  utxo_s },
         { "supply",      supply_s },
+        { "version",     msg_version_user_agent() },
     };
     off += template_render(TMPL_NODE_PAGE, vars,
         sizeof(vars) / sizeof(vars[0]), (char *)r + off, max - off);
