@@ -2022,6 +2022,14 @@ int main(int argc, char **argv)
         }
     }
 
+    /* The anchor mint is always an offline bulk fold. Default it onto the
+     * in-RAM UTXO hot store so the sovereign producer is tractable even when
+     * the operator does not remember the explicit -fold-inram flag. Preserve an
+     * explicit environment opt-out for constrained machines; the final SHA3 /
+     * count hard-assert is identical on either storage path. */
+    if (ctx.mint_anchor && getenv("ZCL_FOLD_INRAM") == NULL)
+        setenv("ZCL_FOLD_INRAM", "1", 1);
+
     /* OFFLINE-ONLY GUARD (jobs/mint_skip_crypto.h): -mint-anchor-fast (the
      * crypto pass-through) is HONORED ONLY together with -mint-anchor (the
      * one-shot offline mint that never starts P2P/RPC and _exit()s). Refuse the

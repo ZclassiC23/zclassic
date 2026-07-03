@@ -34,10 +34,13 @@ Re-verify every file:line before acting; specifics rot.
   `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and launched from
   a clean `build/bin/zclassic23` built at `16c841ca8`, but that run OOM-killed
   before completion. On a post-2026-07-03 binary, restart the same datadir with
-  `-mint-anchor`; the resume marker logic will adopt the legacy interrupted
-  fold only when `refold_in_progress` is set and `coins_applied_height` is still
-  within the genesis..anchor span. Recreate the datadir only if you intentionally
-  want to discard the partial fold or the resume predicate refuses it:
+  `-mint-anchor`; current binaries make that offline path default to the
+  `coins_ram` in-RAM hot store (`-fold-inram` remains accepted and is shown
+  explicitly below for older binaries / operator clarity). The resume marker
+  logic will adopt the legacy interrupted fold only when `refold_in_progress`
+  is set and `coins_applied_height` is still within the genesis..anchor span.
+  Recreate the datadir only if you intentionally want to discard the partial
+  fold or the resume predicate refuses it:
   ```bash
   rm -rf $HOME/.zclassic-c23-anchor-mint
   cp -a $HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384/. \
@@ -53,7 +56,7 @@ Re-verify every file:line before acting; specifics rot.
     --setenv=ZCL_MINT_ANCHOR_OUT=/home/rhett/.zclassic-c23-anchor-mint/utxo-anchor.snapshot \
     /home/rhett/github/zclassic23/build/bin/zclassic23 \
     -datadir=/home/rhett/.zclassic-c23-anchor-mint \
-    -nolegacyimport -mint-anchor -mint-anchor-fast -nobgvalidation
+    -nolegacyimport -mint-anchor -mint-anchor-fast -fold-inram -nobgvalidation
   ```
   On completion it writes the verified snapshot to
   `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. At 2026-07-01
@@ -67,6 +70,12 @@ Re-verify every file:line before acting; specifics rot.
   `ZClassic C23 node initialized` lines. At 14:05 UTC it was active at PID
   `3160516`, memory was about 6.4 GB, the fold had emitted
   `applied_height=0`, and no snapshot artifact existed yet.
+
+  **2026-07-03 update:** the resumed producer adopted the legacy interrupted
+  fold, advanced to `coins_applied_height=116000`, and was restarted with
+  `-fold-inram`; the journal confirmed `ZCL_FOLD_INRAM active` and the 115000
+  to 115999 UTXO batch committed. No verified anchor snapshot exists yet, so
+  the copy-prove and live cutover sections below remain blocked on the artifact.
 
 ## Restart posture
 

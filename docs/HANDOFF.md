@@ -1,3 +1,30 @@
+## CURRENT STATE (2026-07-03, P0 anchor mint resumed with in-RAM fold)
+
+**2026-07-03 11:55 UTC — P0 sovereign trust-root producer is code-unblocked,
+artifact still pending.** Commit `5272f44d9` made `-mint-anchor` restart-safe
+with a checkpoint-bound `mint_anchor_in_progress_v1` marker. The isolated
+producer at `$HOME/.zclassic-c23-anchor-mint` adopted the legacy interrupted
+fold, resumed instead of resetting to genesis, and advanced to
+`coins_applied_height=116000` / `utxo_apply=116000` (applied-through 115999).
+The transient unit was restarted as:
+
+```bash
+systemd-run --user --unit=zclassic23-anchor-mint \
+  --property=WorkingDirectory=/home/rhett/github/zclassic23 \
+  --setenv=ZCL_MINT_ANCHOR_OUT=/home/rhett/.zclassic-c23-anchor-mint/utxo-anchor.snapshot \
+  /home/rhett/github/zclassic23/build/bin/zclassic23 \
+  -datadir=/home/rhett/.zclassic-c23-anchor-mint \
+  -nolegacyimport -mint-anchor -mint-anchor-fast -fold-inram -nobgvalidation
+```
+
+The journal confirmed `ZCL_FOLD_INRAM active` and the 115000..115999 UTXO
+apply batch committed. `zclassicd` and live `zclassic23` were not stopped. No
+`utxo-anchor.snapshot` exists yet, so the sovereign cutover remains blocked on
+the final verified artifact; do not stage or live-flip until
+`docs/work/sovereign-cutover-runbook.md` copy-prove gates pass. Current
+binaries also default offline `-mint-anchor` to the in-RAM fold unless
+`ZCL_FOLD_INRAM` is explicitly set by the environment.
+
 ## CURRENT STATE (2026-07-02, live: bounded self-recovery in progress)
 
 **2026-07-02 ~08:30 UTC — the fail-safe stack shipped and the live node is
