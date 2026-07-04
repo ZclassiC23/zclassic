@@ -471,6 +471,46 @@ int test_sync_watchdog_conditions(void)
         cleanup_sync_watchdog();
     }
 
+    {
+        struct fake_clock clock;
+        fake_clock_install(&clock, 4700);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        bool ok = true;
+        register_local_header_refill_needed();
+
+        struct block_index tip = {0};
+        tip.nHeight = 10;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        struct p2p_node peer = {0};
+        peer.id = 1;
+        peer.starting_height = 20;
+        peer.state = PEER_ACTIVE;
+        peer.services = NODE_NETWORK;
+        peer.last_getheaders_time = 4699;
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+        ok = ok && local_header_refill_needed_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        struct block_index advanced = {0};
+        advanced.nHeight = 11;
+        peer.starting_height = 11;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &advanced);
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+        SYNC_WATCHDOG_CHECK(
+            "local header refill clears after active tip advances", ok);
+        cleanup_sync_watchdog();
+    }
+
     cleanup_sync_watchdog();
     return failures;
 }

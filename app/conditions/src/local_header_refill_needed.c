@@ -158,7 +158,9 @@ static bool witness_local_header_refill_needed(int64_t target_at_detect)
     bool arrived = false;
     zcl_mutex_lock(&ms->cs_main);
     struct block_index *tip = active_chain_tip(&ms->chain_active);
-    if (tip)
+    if (tip && tip->nHeight >= missing_h)
+        arrived = true;
+    else if (tip)
         arrived = sync_monitor_active_next_child_exists(ms, tip, missing_h);
     zcl_mutex_unlock(&ms->cs_main);
     return arrived; /* the missing header child actually showed up */
