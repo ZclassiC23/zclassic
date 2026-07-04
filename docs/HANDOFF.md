@@ -1073,8 +1073,12 @@ into `-reindex-chainstate`.
 `make lane-health` is the read-only three-lane status check. It reports the
 public live lane, long-uptime soak lane, and fresh-build dev lane with systemd
 state, RPC reachability, listener state, height, lag from the live lane, peer
-count, and any `-reindex-chainstate` flag. It is an observability/failsafe
-check, not an automatic failover mechanism.
+count, restart count, memory pressure, role readiness, soak-evidence
+eligibility, and any `-reindex-chainstate` flag. `role_ready` answers whether a
+lane is serving its assigned purpose (`canonical_ready`, `soak_evidence_ready`,
+or `dev_lane_ready`); `soak_eligible=false` means the soak lane is alive but not
+currently earning clean MVP-C6 evidence. It is an observability/failsafe check,
+not an automatic failover mechanism.
 
 The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and
 folding forward, so each restart is a ~13 min self-healing boot (cold `node.db`

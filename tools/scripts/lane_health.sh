@@ -20,8 +20,9 @@ while [ $# -gt 0 ]; do
             cat <<'USAGE'
 usage: tools/scripts/lane_health.sh [--json] [--strict]
 
-Reports live, soak, and dev lane systemd/RPC/socket health without mutating
-any service. --strict exits non-zero when any lane has status=fail.
+Reports live, soak, and dev lane systemd/RPC/socket health, role readiness,
+memory pressure, and soak-evidence eligibility without mutating any service.
+--strict exits non-zero when any lane has status=fail.
 USAGE
             exit 0
             ;;
@@ -36,6 +37,7 @@ done
 ZCL_CLI="${ZCL_CLI:-$REPO_ROOT/build/bin/zclassic-cli}"
 RPC_TIMEOUT="${ZCL_LANE_RPC_TIMEOUT:-3}"
 LAG_WARN="${ZCL_LANE_LAG_WARN:-10}"
+SOAK_LAG_WARN="${ZCL_SOAK_LAG_WARN:-$LAG_WARN}"
 
 json_escape() {
     printf '%s' "$1" \
@@ -49,6 +51,61 @@ json_bool() {
     else
         printf 'false'
     fi
+}
+
+json_tri_bool() {
+    case "$1" in
+        1) printf 'true' ;;
+        0) printf 'false' ;;
+        *) printf 'null' ;;
+    esac
+}
+
+json_number() {
+    case "${1:-}" in
+        ''|*[!0-9]*) printf 'null' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+is_number() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_safe_arith_number() {
+    is_number "$1" && [ "${#1}" -le 18 ]
+}
+
+memory_pressure_state() {
+    local current="$1" high="$2"
+    if ! is_safe_arith_number "$current" || ! is_safe_arith_number "$high"; then
+        printf unknown
+        return
+    fi
+    if [ "$high" -le 0 ]; then
+        printf unknown
+        return
+    fi
+
+    local pct=$((current * 100 / high))
+    if [ "$pct" -ge 95 ]; then
+        printf warn
+    elif [ "$pct" -ge 85 ]; then
+        printf watch
+    else
+        printf ok
+    fi
+}
+
+state_from_status() {
+    case "$1" in
+        ok) printf ready ;;
+        warn) printf degraded ;;
+        *) printf down ;;
+    esac
 }
 
 systemd_show() {
@@ -75,8 +132,9 @@ peer_count_from_json() {
 
 report_lane() {
     local lane="$1" unit="$2" datadir="$3" rpcport="$4" p2p_port="$5" role="$6"
-    local active mainpid restarts cmdline rpc_up height peers p2p_listening rpc_listening reindex
-    local tip_lag status reason
+    local active mainpid restarts start_ts mem_current mem_high mem_max mem_pressure
+    local cmdline rpc_up height peers p2p_listening rpc_listening reindex
+    local tip_lag status reason role_ready role_reason soak_eligible soak_reason
 
     active="$(systemd_show "$unit" ActiveState)"
     [ -n "$active" ] || active="unknown"
@@ -84,6 +142,12 @@ report_lane() {
     [ -n "$mainpid" ] || mainpid="0"
     restarts="$(systemd_show "$unit" NRestarts)"
     [ -n "$restarts" ] || restarts="null"
+    start_ts="$(systemd_show "$unit" ExecMainStartTimestamp)"
+    [ -n "$start_ts" ] || start_ts="unknown"
+    mem_current="$(systemd_show "$unit" MemoryCurrent)"
+    mem_high="$(systemd_show "$unit" MemoryHigh)"
+    mem_max="$(systemd_show "$unit" MemoryMax)"
+    mem_pressure="$(memory_pressure_state "$mem_current" "$mem_high")"
 
     cmdline=""
     if [ "$mainpid" != "0" ] && [ -r "/proc/$mainpid/cmdline" ]; then
@@ -142,6 +206,9 @@ report_lane() {
             status="fail"
             reason="rpc_down"
         fi
+    elif is_number "$peers" && [ "$peers" -lt 1 ]; then
+        status="warn"
+        reason="no_peers"
     elif [ "$tip_lag" != "null" ] && [ "$tip_lag" -gt "$LAG_WARN" ]; then
         status="warn"
         reason="lag_to_live_${tip_lag}"
@@ -150,6 +217,71 @@ report_lane() {
         reason="listener_missing"
     fi
 
+    soak_eligible="null"
+    soak_reason="not_soak_lane"
+    if [ "$lane" = "soak" ]; then
+        soak_eligible=0
+        if [ "$active" != "active" ]; then
+            soak_reason="unit_not_active"
+        elif [ "$reindex" = "1" ]; then
+            soak_reason="forced_reindex_flag_present"
+        elif [ "$rpc_up" != "1" ]; then
+            soak_reason="rpc_down"
+        elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
+            soak_reason="listener_missing"
+        elif [ -z "$LIVE_REFERENCE_HEIGHT" ]; then
+            soak_reason="live_reference_missing"
+        elif [ "$tip_lag" = "null" ]; then
+            soak_reason="lag_unknown"
+        elif [ "$tip_lag" -gt "$SOAK_LAG_WARN" ]; then
+            soak_reason="lag_to_live_${tip_lag}"
+        elif ! is_number "$peers" || [ "$peers" -lt 1 ]; then
+            soak_reason="no_peers"
+        else
+            soak_eligible=1
+            soak_reason="eligible"
+        fi
+    fi
+
+    role_ready=0
+    role_reason="$reason"
+    case "$lane" in
+        live)
+            if [ "$status" = "ok" ] &&
+               [ "$tip_lag" = "0" ] &&
+               is_number "$peers" && [ "$peers" -gt 0 ]; then
+                role_ready=1
+                role_reason="canonical_ready"
+            else
+                role_reason="canonical_${reason}"
+            fi
+            canonical_state="$(state_from_status "$status")"
+            ;;
+        soak)
+            if [ "$soak_eligible" = "1" ]; then
+                role_ready=1
+                role_reason="soak_evidence_ready"
+                soak_state="ready"
+            else
+                role_reason="soak_${soak_reason}"
+                soak_state="$(state_from_status "$status")"
+            fi
+            ;;
+        dev)
+            if [ "$active" = "active" ] &&
+               [ "$reindex" != "1" ] &&
+               [ "$rpc_up" = "1" ] &&
+               [ "$p2p_listening" = "1" ] &&
+               [ "$rpc_listening" = "1" ]; then
+                role_ready=1
+                role_reason="dev_lane_ready"
+            else
+                role_reason="dev_${reason}"
+            fi
+            dev_state="$(state_from_status "$status")"
+            ;;
+    esac
+
     case "$status" in
         ok) ok_count=$((ok_count + 1)) ;;
         warn) warn_count=$((warn_count + 1)) ;;
@@ -157,7 +289,7 @@ report_lane() {
     esac
 
     if [ "$JSON" = "1" ]; then
-        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"rpc_up":%s,"height":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"status":"%s","reason":"%s"}\n' \
+        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$unit")" \
             "$(json_escape "$datadir")" \
@@ -165,8 +297,13 @@ report_lane() {
             "$p2p_port" \
             "$(json_escape "$role")" \
             "$(json_escape "$active")" \
-            "$mainpid" \
-            "$restarts" \
+            "$(json_number "$mainpid")" \
+            "$(json_number "$restarts")" \
+            "$(json_escape "$start_ts")" \
+            "$(json_number "$mem_current")" \
+            "$(json_number "$mem_high")" \
+            "$(json_number "$mem_max")" \
+            "$(json_escape "$mem_pressure")" \
             "$(json_bool "$rpc_up")" \
             "${height:-null}" \
             "$tip_lag" \
@@ -174,22 +311,35 @@ report_lane() {
             "$(json_bool "$p2p_listening")" \
             "$(json_bool "$rpc_listening")" \
             "$(json_bool "$reindex")" \
+            "$(json_bool "$role_ready")" \
+            "$(json_escape "$role_reason")" \
+            "$(json_tri_bool "$soak_eligible")" \
+            "$(json_escape "$soak_reason")" \
             "$(json_escape "$status")" \
             "$(json_escape "$reason")"
     else
-        printf 'lane-health: %-4s status=%-4s reason=%-28s unit=%-20s active=%-8s pid=%-7s rpc=%-4s height=%-8s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s\n' \
-            "$lane" "$status" "$reason" "$unit" "$active" "$mainpid" \
+        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s soak_eligible=%s soak_reason=%s\n' \
+            "$lane" "$status" "$reason" \
+            "$([ "$role_ready" = "1" ] && printf yes || printf no)" \
+            "$role_reason" \
+            "$unit" "$active" "$mainpid" "$restarts" \
             "$([ "$rpc_up" = "1" ] && printf up || printf down)" \
             "${height:-null}" "$tip_lag" "$peers" \
             "$([ "$p2p_listening" = "1" ] && printf yes || printf no)" \
             "$([ "$rpc_listening" = "1" ] && printf yes || printf no)" \
-            "$([ "$reindex" = "1" ] && printf yes || printf no)"
+            "$([ "$reindex" = "1" ] && printf yes || printf no)" \
+            "$mem_pressure" \
+            "$([ "$soak_eligible" = "1" ] && printf yes || { [ "$soak_eligible" = "0" ] && printf no || printf n/a; })" \
+            "$soak_reason"
     fi
 }
 
 ok_count=0
 warn_count=0
 fail_count=0
+canonical_state="unknown"
+soak_state="unknown"
+dev_state="unknown"
 
 LIVE_REFERENCE_HEIGHT=""
 if live_height="$(rpc_call "$HOME/.zclassic-c23" 18232 getblockcount)"; then
@@ -205,6 +355,7 @@ report_lane dev zcl23-dev "$HOME/.zclassic-c23-dev" 18252 8053 "fresh-build deve
 
 if [ "$JSON" != "1" ]; then
     echo "lane-health: SUMMARY ok=$ok_count warn=$warn_count fail=$fail_count"
+    echo "lane-health: REDUNDANCY canonical=$canonical_state soak=$soak_state dev=$dev_state"
 fi
 
 if [ "$STRICT" = "1" ] && [ "$fail_count" -gt 0 ]; then
