@@ -11,6 +11,30 @@ MVP #6, C7 `--with-peer` = MVP #7), see [`CHAOS_HARNESS.md`](./CHAOS_HARNESS.md)
 
 ---
 
+## High-Availability First Check
+
+For live operators, start with one read-only topology probe before deciding to
+restart anything:
+
+```bash
+tools/z topology --json
+```
+
+The probe checks the intended split: `zclassic23` owns public P2P `8033` and
+RPC `18232`, while the local legacy `zclassicd` oracle stays on P2P `8034` and
+RPC `8232`. It also reports service state, restart counts, peer counts, the
+clean c23 user-agent, reducer `H*`, mirror lag, consensus authority, and any
+drift issues in one JSON object. A healthy live pair has `ok=true`,
+`issue_count=0`, mirror `lag<=1`, `consensus_authority=local_consensus_validation`,
+and zero mirror overrides.
+
+Do not restart on a single stale-looking field if this probe shows active
+services, handshaked peers, and bounded mirror lag. Drill down with `tools/z
+mirror --json`, `tools/z state reducer_frontier`, and `tools/z peerlife` only
+when `issues[]` names a concrete problem.
+
+---
+
 ## Benign log patterns at tip
 
 On a node holding tip and finalizing forward, these patterns look alarming but
@@ -121,12 +145,15 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
 
 ## Public Node Strength
 
-**Symptoms:** synced but public P2P looks weak: peers stay `connecting`, no completed MagicBean or ZClassic23 handshakes, or watchdog repeats `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
+**Symptoms:** synced but public P2P looks weak: peers stay `connecting`, no
+completed legacy-compatible or ZClassic23 handshakes, or watchdog repeats
+`PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
 
 **Diagnose:** four read-only dumps cover the P2P/advance picture (pipe each
 through `jq` for the fields named in the Fix steps below):
 ```bash
-build/bin/zcl-rpc getnetworkinfo    # connections, *_handshaked_connections, inbound_handshake_seen, magicbean_peers, zclassic23_peers, localaddresses, listening
+tools/z topology --json             # one-shot service/port/peer/mirror drift check
+build/bin/zcl-rpc getnetworkinfo    # connections, *_handshaked_connections, inbound_handshake_seen, legacy_compatible_peers, zclassic23_peers, localaddresses, listening
 build/bin/zcl-rpc getpeerinfo       # per-peer state, inbound, magicbean, zclassic23, startingheight, lifecycle
 build/bin/zcl-rpc healthcheck       # .checks.chain_advance
 build/bin/zcl-rpc dumpstate peer_lifecycle              # .state.summary + per-source attempted/connected/handshake_complete/timeout/rejected

@@ -234,6 +234,8 @@ static int test_peer_lifecycle_counters(void)
         ASSERT(json_get_int(json_get(addnode, "cache_skipped")) == 1);
         ASSERT(json_get_int(json_get(addnode, "magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(addnode,
+                                      "legacy_compatible_handshakes")) == 0);
+        ASSERT(json_get_int(json_get(addnode,
                                       "legacy_magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(addnode, "zclassic23_handshakes")) == 1);
         ASSERT(json_get_int(json_get(addnode, "zclassic_c23_handshakes")) == 1);
@@ -284,6 +286,8 @@ static int test_peer_lifecycle_inbound_source_bucket(void)
         ASSERT(json_get_int(json_get(inbound, "handshake_complete")) == 1);
         ASSERT(json_get_int(json_get(inbound, "magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(inbound,
+                                      "legacy_compatible_handshakes")) == 0);
+        ASSERT(json_get_int(json_get(inbound,
                                       "legacy_magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(inbound, "zclassic_c23_handshakes")) == 1);
         json_free(&summary);
@@ -322,6 +326,7 @@ static int test_peer_lifecycle_duplicate_connect_duration(void)
         json_set_object(&peer);
         ASSERT(peer_lifecycle_peer_json(&node, &peer));
         ASSERT(json_get_int(json_get(&peer, "handshake_duration_secs")) >= 0);
+        ASSERT(!json_get_bool(json_get(&peer, "legacy_compatible")));
         ASSERT(json_get_int(json_get(&peer, "handshake_complete_at")) >=
                json_get_int(json_get(&peer, "connected_at")));
         json_free(&peer);
@@ -360,6 +365,7 @@ static int test_peer_lifecycle_inbound_classifies_remote_version(void)
 
         ASSERT(s.handshake_complete == 1);
         ASSERT(s.magicbean_handshakes == 1);
+        ASSERT(s.legacy_compatible_handshakes == 1);
         ASSERT(s.zcl23_handshakes == 0);
     } TEST_END
     return failures;

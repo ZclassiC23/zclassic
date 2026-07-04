@@ -489,6 +489,12 @@ int test_syncdiag_rpc(void)
                                           "inbound_handshake_seen"));
         ok = ok && json_get_bool(json_get(&result,
                                           "remote_handshake_seen"));
+        ok = ok && json_get_int(json_get(&result,
+                                          "legacy_compatible_peers")) ==
+                  json_get_int(json_get(&result, "magicbean_peers"));
+        ok = ok && json_get_int(json_get(&result,
+                                          "legacy_magicbean_peers")) ==
+                  json_get_int(json_get(&result, "magicbean_peers"));
         ok = ok && json_get_int(json_get(&result, "zclassic23_peers")) ==
                   json_get_int(json_get(&result, "zclassic_c23_peers"));
         const struct json_value *addnodes =

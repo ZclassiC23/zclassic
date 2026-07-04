@@ -288,7 +288,7 @@ verify_contract() {
     net=$(rpc_call getnetworkinfo 2>&1 || true)
     net=$(json_rpc_result "$net")
     for key in advertised_subver advertised_services inbound_connections outbound_connections handshaked_connections \
-               inbound_handshake_seen remote_handshake_seen magicbean_peers \
+               inbound_handshake_seen remote_handshake_seen legacy_compatible_peers legacy_magicbean_peers magicbean_peers \
                zclassic23_peers zclassic_c23_peers peer_lifecycle; do
         json_has_key "$net" "$key" ||
             { last_err="getnetworkinfo missing $key: $net"; return 1; }

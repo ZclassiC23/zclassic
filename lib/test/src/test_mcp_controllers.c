@@ -1530,6 +1530,8 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"outbound_handshaked_connections\":1,"
                       "\"inbound_handshake_seen\":true,"
                       "\"remote_handshake_seen\":true,"
+                      "\"legacy_compatible_peers\":2,"
+                      "\"legacy_magicbean_peers\":2,"
                       "\"magicbean_peers\":2,"
                       "\"zclassic23_peers\":1,"
                       "\"zclassic_c23_peers\":1,"
@@ -1545,6 +1547,8 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"timeout\":1,"
                       "\"rejected\":0,"
                       "\"magicbean_handshakes\":2,"
+                      "\"legacy_compatible_handshakes\":2,"
+                      "\"legacy_magicbean_handshakes\":2,"
                       "\"zclassic23_handshakes\":1,"
                       "\"zclassic_c23_handshakes\":1,"
                       "\"sources\":["
@@ -1583,6 +1587,8 @@ static int test_zcl_networkinfo_exposes_reachability_fields(void)
                                      "outbound_handshaked_connections")) == 1);
         ASSERT(json_get_bool(json_get(&root, "inbound_handshake_seen")));
         ASSERT(json_get_bool(json_get(&root, "remote_handshake_seen")));
+        ASSERT(json_get_int(json_get(&root, "legacy_compatible_peers")) == 2);
+        ASSERT(json_get_int(json_get(&root, "legacy_magicbean_peers")) == 2);
         ASSERT(json_get_int(json_get(&root, "zclassic23_peers")) == 1);
         ASSERT(json_get_int(json_get(&root, "zclassic_c23_peers")) == 1);
         const struct json_value *life = json_get(&root, "peer_lifecycle");
@@ -1591,6 +1597,10 @@ static int test_zcl_networkinfo_exposes_reachability_fields(void)
         ASSERT(life && life->type == JSON_OBJ);
         ASSERT(json_get_int(json_get(life, "attempted")) == 4);
         ASSERT(json_get_int(json_get(life, "timeout")) == 1);
+        ASSERT(json_get_int(json_get(life,
+                                      "legacy_compatible_handshakes")) == 2);
+        ASSERT(json_get_int(json_get(life,
+                                      "legacy_magicbean_handshakes")) == 2);
         ASSERT(json_get_int(json_get(life, "zclassic23_handshakes")) == 1);
         ASSERT(json_get_int(json_get(life, "zclassic_c23_handshakes")) == 1);
         ASSERT(sources && sources->type == JSON_ARR);

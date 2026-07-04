@@ -2017,7 +2017,11 @@ static int t_tools_z_mirror_fallback_contract(void)
                       "LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}")
                != NULL);
         ASSERT(strstr(buf, "systemd_exec_arg()") != NULL);
-        ASSERT(strstr(buf, "systemctl --user show zclassic23 -p ExecStart --value")
+        ASSERT(strstr(buf, "systemd_exec_arg_service()") != NULL);
+        ASSERT(strstr(buf, "systemd_show_value()") != NULL);
+        ASSERT(strstr(buf, "systemctl --user show \"$service\" -p \"$prop\" --value")
+               != NULL);
+        ASSERT(strstr(buf, "systemd_exec_arg_service zclassicd port")
                != NULL);
         ASSERT(strstr(buf, "DATADIR=\"${ZCL_DATADIR:-$DEFAULT_DATADIR}\"")
                != NULL);
@@ -2115,6 +2119,11 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "/api/v1/agent") != NULL);
         ASSERT(strstr(buf, "Binary: zclassic23 agent") != NULL);
         ASSERT(strstr(buf, "MCP:  zcl_agent") != NULL);
+        ASSERT(strstr(buf, "topology|availability|uptime)") != NULL);
+        ASSERT(strstr(buf, "topology_status_json") != NULL);
+        ASSERT(strstr(buf, "zcl.operator_topology.v1") != NULL);
+        ASSERT(strstr(buf, "legacy_compatible_peers") != NULL);
+        ASSERT(strstr(buf, "zclassicd P2P port drift") != NULL);
         ASSERT(strstr(buf, "advance|chain-advance)") != NULL);
         ASSERT(strstr(buf, "rpc dumpstate chain_advance_coordinator") != NULL);
         ASSERT(strstr(buf, "peerlife|peer-lifecycle)") != NULL);
@@ -2126,6 +2135,9 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "sql|dbquery)") != NULL);
         ASSERT(strstr(buf, "rpc dbquery \"$2\"") != NULL);
         ASSERT(strstr(buf, "P2P reachability and handshake summary") != NULL);
+        ASSERT(strstr(buf,
+                      "Service ports, peer counts, mirror lag, and drift checks")
+               != NULL);
         ASSERT(strstr(buf,
                       "Chain advance source scoring and selection blockers")
                != NULL);
@@ -2166,6 +2178,8 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "checks.get(\"log_head\")") != NULL);
         ASSERT(strstr(buf, "checks_ca.get(\"local_height\")") != NULL);
         ASSERT(strstr(buf, "handshaked_connections") != NULL);
+        ASSERT(strstr(buf, "legacy_compatible_peers") != NULL);
+        ASSERT(strstr(buf, "legacy_magicbean_peers") != NULL);
         ASSERT(strstr(buf, "peer_lifecycle") != NULL);
         ASSERT(strstr(buf, "legacy_mirror") != NULL);
         ASSERT(strstr(buf, "blockers_total") != NULL);

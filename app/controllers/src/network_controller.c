@@ -127,7 +127,7 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     size_t conns = ctx->connman ? connman_get_node_count(ctx->connman) : 0;
     int inbound = 0, outbound = 0, handshaked = 0;
     int inbound_handshaked = 0, outbound_handshaked = 0;
-    int magicbean = 0, zcl23 = 0;
+    int legacy_compatible = 0, zcl23 = 0;
     size_t listen_socket_count = ctx->connman
         ? ctx->connman->manager.num_listen_sockets
         : 0;
@@ -167,13 +167,13 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
             if (!node || node->disconnect) continue;
             if (node->inbound) inbound++; else outbound++;
             if (node->state >= PEER_HANDSHAKE_COMPLETE) {
-                bool is_mb = false, is_z23 = false;
+                bool is_legacy = false, is_z23 = false;
                 handshaked++;
                 if (node->inbound) inbound_handshaked++;
                 else outbound_handshaked++;
                 msg_version_classify_peer(node->sub_ver, node->services,
-                                          &is_mb, &is_z23);
-                if (is_mb) magicbean++;
+                                          &is_legacy, &is_z23);
+                if (is_legacy) legacy_compatible++;
                 if (is_z23) zcl23++;
             }
         }
@@ -186,7 +186,9 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
                      inbound_handshaked);
     json_push_kv_int(result, "outbound_handshaked_connections",
                      outbound_handshaked);
-    json_push_kv_int(result, "magicbean_peers", magicbean);
+    json_push_kv_int(result, "legacy_compatible_peers", legacy_compatible);
+    json_push_kv_int(result, "legacy_magicbean_peers", legacy_compatible);
+    json_push_kv_int(result, "magicbean_peers", legacy_compatible);
     json_push_kv_int(result, "zclassic23_peers", zcl23);
     json_push_kv_int(result, "zclassic_c23_peers", zcl23);
     json_push_kv_int(result, "listen_socket_count",

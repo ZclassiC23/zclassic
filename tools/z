@@ -45,13 +45,24 @@ CLI="$(dirname "$0")/../build/bin/zclassic-cli"
 [ -x "$CLI" ] || CLI="./build/bin/zclassic-cli"
 [ -x "$CLI" ] || { echo "zclassic-cli not found" >&2; exit 1; }
 
-systemd_exec_arg() {
-    local key="$1"
+systemd_show_value() {
+    local service="$1" prop="$2"
     command -v systemctl >/dev/null 2>&1 || return 1
-    systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null \
+    systemctl --user show "$service" -p "$prop" --value 2>/dev/null
+}
+
+systemd_exec_arg_service() {
+    local service="$1" key="$2"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemd_show_value "$service" ExecStart \
         | tr ' ' '\n' \
         | sed -n "s/^-${key}=//p" \
         | head -1
+}
+
+systemd_exec_arg() {
+    local key="$1"
+    systemd_exec_arg_service zclassic23 "$key"
 }
 
 DEFAULT_DATADIR="$HOME/.zclassic-c23"
@@ -145,6 +156,12 @@ json_put_null() {
     else
         printf '%s\n' "$json" | sed "s/}$/,\"$key\":null}/"
     fi
+}
+
+json_escape() {
+    printf '%s' "$1" \
+        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
+        | tr '\n' ' '
 }
 
 normalize_mirror_status_json() {
@@ -292,6 +309,169 @@ mirror_status_json() {
     fi
 }
 
+topology_status_json() {
+    local expected_c23_p2p expected_zd_p2p expected_c23_rpc expected_zd_rpc
+    local c23_state c23_sub c23_pid c23_restarts c23_p2p c23_rpc c23_dd c23_snapshot
+    local zd_state zd_sub zd_pid zd_restarts zd_p2p zd_rpc zd_dd
+    local c23_net c23_chain c23_rf mirror zd_net zd_chain
+    local c23_height c23_headers c23_hash c23_subver c23_conns c23_in c23_out c23_hs
+    local c23_legacy c23_z23 c23_listening c23_addr_port hstar coins_applied blocker
+    local zd_height zd_headers zd_hash zd_conns zd_addr_port
+    local lag lag_known mirror_running reachable authority overrides
+    local issues issue_count ok
+
+    expected_c23_p2p="${ZCL_TOPOLOGY_C23_P2P:-8033}"
+    expected_zd_p2p="${ZCL_TOPOLOGY_ZD_P2P:-8034}"
+    expected_c23_rpc="${ZCL_TOPOLOGY_C23_RPC:-$RPCPORT}"
+    expected_zd_rpc="${ZCL_TOPOLOGY_ZD_RPC:-8232}"
+
+    c23_state="$(systemd_show_value zclassic23 ActiveState || true)"
+    c23_sub="$(systemd_show_value zclassic23 SubState || true)"
+    c23_pid="$(systemd_show_value zclassic23 MainPID || true)"
+    c23_restarts="$(systemd_show_value zclassic23 NRestarts || true)"
+    c23_p2p="$(systemd_exec_arg_service zclassic23 port || true)"
+    c23_rpc="$(systemd_exec_arg_service zclassic23 rpcport || true)"
+    c23_dd="$(systemd_exec_arg_service zclassic23 datadir || true)"
+    c23_snapshot="$(systemd_exec_arg_service zclassic23 load-snapshot-at-own-height || true)"
+    [ -n "$c23_rpc" ] || c23_rpc="$expected_c23_rpc"
+
+    zd_state="$(systemd_show_value zclassicd ActiveState || true)"
+    zd_sub="$(systemd_show_value zclassicd SubState || true)"
+    zd_pid="$(systemd_show_value zclassicd MainPID || true)"
+    zd_restarts="$(systemd_show_value zclassicd NRestarts || true)"
+    zd_p2p="$(systemd_exec_arg_service zclassicd port || true)"
+    zd_rpc="${LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}}"
+    zd_rpc="${zd_rpc:-$expected_zd_rpc}"
+    zd_dd="$(systemd_exec_arg_service zclassicd datadir || true)"
+
+    c23_net="$(rpc getnetworkinfo 2>/dev/null || true)"
+    c23_chain="$(rpc getblockchaininfo 2>/dev/null || true)"
+    c23_rf="$(rpc dumpstate reducer_frontier 2>/dev/null || true)"
+    mirror="$(mirror_status_json)"
+    zd_net="$(legacy_rpc getnetworkinfo || true)"
+    zd_chain="$(legacy_rpc getblockchaininfo || true)"
+
+    c23_height="$(json_field "$mirror" zclassic23_height)"
+    [ -n "$c23_height" ] || c23_height="$(json_field "$c23_chain" blocks)"
+    c23_headers="$(json_field "$mirror" best_header_height)"
+    [ -n "$c23_headers" ] || c23_headers="$(json_field "$c23_chain" headers)"
+    c23_hash="$(json_field "$mirror" zclassic23_hash)"
+    [ -n "$c23_hash" ] || c23_hash="$(json_field "$c23_chain" bestblockhash)"
+    c23_subver="$(json_field "$c23_net" advertised_subver)"
+    c23_conns="$(json_field "$c23_net" connections)"
+    c23_in="$(json_field "$c23_net" inbound_connections)"
+    c23_out="$(json_field "$c23_net" outbound_connections)"
+    c23_hs="$(json_field "$c23_net" handshaked_connections)"
+    c23_legacy="$(json_field "$c23_net" legacy_compatible_peers)"
+    [ -n "$c23_legacy" ] || c23_legacy="$(json_field "$c23_net" magicbean_peers)"
+    c23_z23="$(json_field "$c23_net" zclassic23_peers)"
+    c23_listening="$(json_field "$c23_net" listening)"
+    c23_addr_port="$(json_field "$c23_net" port)"
+    hstar="$(json_field "$c23_rf" hstar)"
+    coins_applied="$(json_field "$c23_rf" coins_applied_height)"
+    blocker="$(json_field "$c23_rf" first_hstar_blocker_reason)"
+
+    zd_height="$(json_field "$mirror" zclassicd_height)"
+    [ -n "$zd_height" ] || zd_height="$(json_field "$zd_chain" blocks)"
+    zd_headers="$(json_field "$mirror" legacy_headers)"
+    [ -n "$zd_headers" ] || zd_headers="$(json_field "$zd_chain" headers)"
+    zd_hash="$(json_field "$mirror" zclassicd_hash)"
+    [ -n "$zd_hash" ] || zd_hash="$(json_field "$zd_chain" bestblockhash)"
+    zd_conns="$(json_field "$zd_net" connections)"
+    zd_addr_port="$(json_field "$zd_net" port)"
+
+    lag="$(json_field "$mirror" lag)"
+    lag_known="$(json_field "$mirror" lag_known)"
+    mirror_running="$(json_field "$mirror" mirror_running)"
+    reachable="$(json_field "$mirror" reachable)"
+    authority="$(json_field "$mirror" consensus_authority)"
+    overrides="$(json_field "$mirror" overrides_total)"
+
+    issues=""
+    issue_count=0
+    add_issue() {
+        local escaped
+        escaped="$(json_escape "$1")"
+        if [ "$issue_count" -gt 0 ]; then
+            issues="${issues},"
+        fi
+        issues="${issues}\"${escaped}\""
+        issue_count=$((issue_count + 1))
+    }
+
+    [ "$c23_state" = "active" ] || add_issue "zclassic23 service is not active"
+    [ "$c23_sub" = "running" ] || add_issue "zclassic23 service is not running"
+    [ "$zd_state" = "active" ] || add_issue "zclassicd service is not active"
+    [ "$zd_sub" = "running" ] || add_issue "zclassicd service is not running"
+    [ "$c23_p2p" = "$expected_c23_p2p" ] || add_issue "zclassic23 P2P port drift"
+    [ "$zd_p2p" = "$expected_zd_p2p" ] || add_issue "zclassicd P2P port drift"
+    [ "$c23_rpc" = "$expected_c23_rpc" ] || add_issue "zclassic23 RPC port drift"
+    [ "$zd_rpc" = "$expected_zd_rpc" ] || add_issue "zclassicd RPC port drift"
+    [ "$c23_subver" = "/ZClassic23:0.1.0/" ] || add_issue "zclassic23 clean user-agent missing"
+    [ "$c23_listening" = "true" ] || add_issue "zclassic23 is not listening"
+    [ "${c23_hs:-0}" -gt 0 ] 2>/dev/null || add_issue "zclassic23 has no handshaked peers"
+    [ "${zd_conns:-0}" -gt 0 ] 2>/dev/null || add_issue "zclassicd has no peers"
+    [ "$reachable" = "true" ] || add_issue "mirror RPC path is not reachable"
+    [ "$mirror_running" = "true" ] || add_issue "mirror monitor is not running"
+    [ "$lag_known" = "true" ] || add_issue "mirror lag is unknown"
+    [ "${lag:-999999}" -le 1 ] 2>/dev/null || add_issue "zclassic23 is lagging zclassicd"
+    [ "$authority" = "local_consensus_validation" ] || add_issue "consensus authority drift"
+    [ "${overrides:-0}" = "0" ] || add_issue "mirror override was used"
+
+    ok=false
+    [ "$issue_count" -eq 0 ] && ok=true
+
+    printf '{'
+    printf '"schema":"zcl.operator_topology.v1",'
+    printf '"ok":%s,"issue_count":%s,"issues":[%s],' "$ok" "$issue_count" "$issues"
+    printf '"expected":{"zclassic23_p2p":%s,"zclassic23_rpc":%s,"zclassicd_p2p":%s,"zclassicd_rpc":%s},' \
+        "$expected_c23_p2p" "$expected_c23_rpc" "$expected_zd_p2p" "$expected_zd_rpc"
+    printf '"zclassic23":{"service_active":"%s","service_substate":"%s","pid":%s,"restarts":%s,' \
+        "$(json_escape "$c23_state")" "$(json_escape "$c23_sub")" "${c23_pid:-0}" "${c23_restarts:-0}"
+    printf '"datadir":"%s","p2p_port":%s,"rpc_port":%s,"snapshot":"%s",' \
+        "$(json_escape "$c23_dd")" "${c23_p2p:-0}" "${c23_rpc:-0}" "$(json_escape "$c23_snapshot")"
+    printf '"advertised_subver":"%s","height":%s,"headers":%s,"bestblockhash":"%s",' \
+        "$(json_escape "$c23_subver")" "${c23_height:-0}" "${c23_headers:-0}" "$(json_escape "$c23_hash")"
+    printf '"hstar":%s,"coins_applied_height":%s,"hstar_blocker":"%s",' \
+        "${hstar:-0}" "${coins_applied:-0}" "$(json_escape "$blocker")"
+    printf '"connections":%s,"inbound":%s,"outbound":%s,"handshaked":%s,' \
+        "${c23_conns:-0}" "${c23_in:-0}" "${c23_out:-0}" "${c23_hs:-0}"
+    printf '"legacy_compatible_peers":%s,"zclassic23_peers":%s,"listening":%s,"advertised_p2p_port":%s},' \
+        "${c23_legacy:-0}" "${c23_z23:-0}" "${c23_listening:-false}" "${c23_addr_port:-0}"
+    printf '"zclassicd":{"service_active":"%s","service_substate":"%s","pid":%s,"restarts":%s,' \
+        "$(json_escape "$zd_state")" "$(json_escape "$zd_sub")" "${zd_pid:-0}" "${zd_restarts:-0}"
+    printf '"datadir":"%s","p2p_port":%s,"rpc_port":%s,"height":%s,"headers":%s,' \
+        "$(json_escape "$zd_dd")" "${zd_p2p:-0}" "${zd_rpc:-0}" "${zd_height:-0}" "${zd_headers:-0}"
+    printf '"bestblockhash":"%s","connections":%s,"advertised_p2p_port":%s},' \
+        "$(json_escape "$zd_hash")" "${zd_conns:-0}" "${zd_addr_port:-0}"
+    printf '"mirror":{"running":%s,"reachable":%s,"lag_known":%s,"lag":%s,"consensus_authority":"%s","overrides_total":%s}' \
+        "${mirror_running:-false}" "${reachable:-false}" "${lag_known:-false}" "${lag:-0}" "$(json_escape "$authority")" "${overrides:-0}"
+    printf '}\n'
+}
+
+topology_status_text() {
+    local json
+    json="$(topology_status_json)"
+    printf 'ok=%s issues=%s c23=%s/%s@%s peers=%s hs=%s subver=%s zclassicd=%s/%s@%s peers=%s mirror_lag=%s authority=%s\n' \
+        "$(json_field "$json" ok)" \
+        "$(json_field "$json" issue_count)" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassic23":{[^}]*"service_active":"\([^"]*\)".*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassic23":{[^}]*"service_substate":"\([^"]*\)".*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassic23":{[^}]*"height":\([0-9][0-9]*\).*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassic23":{[^}]*"connections":\([0-9][0-9]*\).*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassic23":{[^}]*"handshaked":\([0-9][0-9]*\).*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassic23":{[^}]*"advertised_subver":"\([^"]*\)".*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassicd":{[^}]*"service_active":"\([^"]*\)".*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassicd":{[^}]*"service_substate":"\([^"]*\)".*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassicd":{[^}]*"height":\([0-9][0-9]*\).*/\1/p')" \
+        "$(printf '%s\n' "$json" | sed -n 's/.*"zclassicd":{[^}]*"connections":\([0-9][0-9]*\).*/\1/p')" \
+        "$(json_field "$json" lag)" \
+        "$(json_field "$json" consensus_authority)"
+    if [ "$(json_field "$json" ok)" != "true" ]; then
+        printf '%s\n' "$json"
+    fi
+}
+
 case "${1:-agent}" in
 
 # ── SIMPLE: agent/operator first check ───────────────────────────
@@ -365,6 +545,14 @@ advance|chain-advance)
 
 peerlife|peer-lifecycle)
     rpc dumpstate peer_lifecycle
+    ;;
+
+topology|availability|uptime)
+    if [ "${2:-}" = "--json" ] || [ "${2:-}" = "-j" ]; then
+        topology_status_json
+    else
+        topology_status_text
+    fi
     ;;
 
 state|dumpstate)
@@ -537,6 +725,7 @@ READ:
   z peers               Connected peers
   z network             P2P reachability and handshake summary
   z status              Healthcheck with chain advance diagnostics
+  z topology [--json]   Service ports, peer counts, mirror lag, and drift checks
   z advance             Chain advance source scoring and selection blockers
   z peerlife            Peer lifecycle attempts, handshakes, failures by source
   z state <subsystem>   Generic dumpstate diagnostics

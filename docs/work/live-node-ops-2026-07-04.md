@@ -129,9 +129,10 @@ and `zcl_state subsystem=condition_engine`.
 
 ## Next hardening tasks
 
-- Add one read-only live-topology probe that reports c23 P2P/RPC/datadir,
-  legacy P2P/RPC/datadir, active snapshot path, `H*`, header tip, and zclassicd
-  parity height in one JSON object.
+- **Landed:** `tools/z topology --json` is the read-only live-topology probe. It
+  reports c23 P2P/RPC/datadir, legacy P2P/RPC/datadir, active snapshot path,
+  `H*`, peer counts, mirror lag, consensus authority, and drift issues in one
+  JSON object.
 - Add a guard/test that c23 public service config stays on `8033` and
   `zclassicd` stays on `8034`, including `127.0.0.1:8034` classification as a
   legacy advisory peer.

@@ -423,6 +423,8 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_str(out, "subver", e->subver);
     json_push_kv_bool(out, "magicbean",
                       subver_is_magicbean(e->subver));
+    json_push_kv_bool(out, "legacy_compatible",
+                      subver_is_magicbean(e->subver));
     json_push_kv_bool(out, "zclassic23",
                       subver_is_zcl23(e->subver, e->services));
     json_push_kv_bool(out, "zclassic_c23",
@@ -445,6 +447,8 @@ bool peer_lifecycle_peer_json(const struct p2p_node *node,
                          node->inbound ? "inbound" : "unknown");
         json_push_kv_int(out, "handshake_duration_secs", 0);
         json_push_kv_bool(out, "magicbean",
+                          subver_is_magicbean(node->sub_ver));
+        json_push_kv_bool(out, "legacy_compatible",
                           subver_is_magicbean(node->sub_ver));
         json_push_kv_bool(out, "zclassic23",
                           subver_is_zcl23(node->sub_ver, node->services));
@@ -471,9 +475,9 @@ static void summary_to_json(const struct peer_lifecycle_summary *s,
     json_push_kv_int(out, "cache_skipped", s->cache_skipped);
     json_push_kv_int(out, "magicbean_handshakes",
                      s->magicbean_handshakes);
-    json_push_kv_int(out, "legacy_magicbean_handshakes",
-                     s->legacy_compatible_handshakes);
     json_push_kv_int(out, "legacy_compatible_handshakes",
+                     s->legacy_compatible_handshakes);
+    json_push_kv_int(out, "legacy_magicbean_handshakes",
                      s->legacy_compatible_handshakes);
     json_push_kv_int(out, "zclassic23_handshakes",
                      s->zcl23_handshakes);
