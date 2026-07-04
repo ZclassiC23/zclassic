@@ -38,7 +38,7 @@
 #                    combo FATALs at HEAD — see iso_spawn_mainnet_node.)
 #   --from=genesis : -nolegacyimport (no anchor seed); replay genesis->tip
 #                    with bg-validation ON (~6 h). Dials the co-located
-#                    zclassicd P2P (8033) via -addnode for bodies — the one
+#                    zclassicd P2P (8034) via -addnode for bodies — the one
 #                    real peer, read-only.
 #
 # Usage:
@@ -423,7 +423,7 @@ run_live() {
         # from=genesis: -nolegacyimport so boot does NOT seed to the anchor;
         # dial the co-located zclassicd for bodies. This is the ONE place a
         # real peer is dialed — the read-only co-located zclassicd.
-        iso_spawn_mainnet_node "-nolegacyimport -addnode=127.0.0.1:8033"
+        iso_spawn_mainnet_node "-nolegacyimport -addnode=127.0.0.1:8034"
     fi
 
     # 600 s: a fresh-import boot walks 3.1M-header restore phases before the

@@ -6,7 +6,7 @@ Wants=network-online.target
 # code is actually exercised live, never rotting unrun in git. It runs a copy
 # of the freshly-built binary (%h/.local/bin/zclassic23-dev), redeployed by
 # tools/dev/deploy-dev-lane.sh on every build. It is fully isolated from the
-# operator-gated live node (%h/.zclassic-c23, ports 8023/18232) and from the
+# operator-gated live node (%h/.zclassic-c23, ports 8033/18232) and from the
 # pinned-binary soak lane (%h/.zclassic-c23-soak, 8043/18242): separate datadir
 # (%h/.zclassic-c23-dev) and ports (P2P 8053, RPC 18252). `make deploy` never
 # touches this unit; this unit never touches the live datadir.
@@ -17,7 +17,7 @@ Type=simple
 
 # No -tor: the dev lane wants forward-progress + fresh-code exercise with
 # minimal moving parts; the onion surface is the live node's job.
-# Peers: co-located zclassicd (8033) + live zclassic23 (8023) + soak (8043)
+# Peers: co-located zclassicd oracle (8034) + live zclassic23 (8033) + soak (8043)
 # PLUS external mainnet peers. localhost-only peering CANNOT satisfy the
 # anti-eclipse body-source floor (>=3 healthy distinct peers) — a
 # localhost-only node pins at its seed whenever announce-stream holes need
@@ -29,8 +29,8 @@ ExecStart=%h/.local/bin/zclassic23-dev \
     -rpcport=18252 \
     -listen \
     -txindex \
+    -addnode=127.0.0.1:8034 \
     -addnode=127.0.0.1:8033 \
-    -addnode=127.0.0.1:8023 \
     -addnode=127.0.0.1:8043 \
     -addnode=140.174.189.17 \
     -addnode=140.174.189.3 \

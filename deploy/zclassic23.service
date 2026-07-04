@@ -35,7 +35,7 @@ EnvironmentFile=-%h/.config/zclassic23/env
 
 ExecStart=%h/zclassic23/build/bin/zclassic23 \
     -datadir=%h/.zclassic-c23 \
-    -port=8023 \
+    -port=8033 \
     -rpcport=18232 \
     -listen \
     -txindex \
@@ -43,10 +43,10 @@ ExecStart=%h/zclassic23/build/bin/zclassic23 \
     $ZCL_EXTERNALIP_FLAG \
     $ZCL_ADDNODE_FLAGS \
     -showmetrics=0
-# Local dev/operator port contract: zclassic23 listens on 8023 so a sibling
-# legacy zclassicd/zcashd can own the historical ZClassic/Zcash ports. The
-# node still dials external ZClassic peers on their advertised ports through
-# addrman/addnode; this setting controls only our local listener.
+# Local operator port contract: zclassic23 owns the canonical ZClassic23 P2P
+# listener on 8033. A sibling legacy zclassicd oracle must be moved off the
+# canonical listener (the operator host uses 8034) and added through
+# ZCL_ADDNODE_FLAGS when needed.
 # Restart=always (not on-failure) so the self-recovery escape hatches —
 # process_block.c (g_shutdown_requested=1 after 10 consecutive UTXO
 # failures at the same height) and boot_crashonly's auto-reindex request

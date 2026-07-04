@@ -356,7 +356,7 @@ ZCL_BOOTSTRAP_SRC      ?= $(HOME)/.zclassic-c23-fullhist
 ZCL_BOOTSTRAP_WORK     ?= $(HOME)/.zclassic-c23-bootstrap-work
 ZCL_BOOTSTRAP_OUT      ?= $(BUILD_DIR)/bootstrap
 ZCL_BOOTSTRAP_PROVE    ?= /tmp/zcl-bootstrap-prove
-ZCL_BOOTSTRAP_PEER     ?= 127.0.0.1:8023
+ZCL_BOOTSTRAP_PEER     ?= 127.0.0.1:8033
 ZCL_BOOTSTRAP_DEADLINE ?= 900
 
 .PHONY: bootstrap bootstrap-manifest bootstrap-publish

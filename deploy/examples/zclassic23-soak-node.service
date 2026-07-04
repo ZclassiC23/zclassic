@@ -24,7 +24,7 @@ Type=simple
 
 # No -tor: the soak node's job is forward-progress + RSS-plateau evidence
 # with minimal moving parts; the onion surface is the main node's job.
-# Peers: the co-located zclassicd (8033) + the live zclassic23 (8023) —
+# Peers: the co-located zclassicd oracle (8034) + the live zclassic23 (8033) —
 # which also gives both zcl23 nodes a zcl23 peer — PLUS external mainnet
 # peers (same set as the main unit): localhost-only peering cannot satisfy
 # the anti-eclipse body-source floor (>=3 healthy distinct peers), so a
@@ -36,8 +36,8 @@ ExecStart=%h/.local/bin/zclassic23-soak \
     -rpcport=18242 \
     -listen \
     -txindex \
+    -addnode=127.0.0.1:8034 \
     -addnode=127.0.0.1:8033 \
-    -addnode=127.0.0.1:8023 \
     -addnode=140.174.189.17 \
     -addnode=140.174.189.3 \
     -addnode=37.187.76.79 \

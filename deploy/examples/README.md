@@ -42,7 +42,7 @@ operator-specific peers. Copy and adapt before installing:
 - `zclassic23-replay-canary-weekly.{service,timer}` — weekly from-genesis
   replay (genesis->tip, ~6 h, bg-validation ON). Same asserts plus full
   script coverage. This run dials the co-located zclassicd P2P
-  (127.0.0.1:8033) via `-addnode` for bodies — the one real peer, read-only.
+  (127.0.0.1:8034) via `-addnode` for bodies — the one real peer, read-only.
 - `zclassic23-replay-canary-onfailure@.service` — templated `OnFailure=`
   arm; logs `CANARY FAILED` to the journal (`journalctl -t replay-canary`).
 

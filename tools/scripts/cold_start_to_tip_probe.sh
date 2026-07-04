@@ -12,8 +12,8 @@
 #
 # FULLY ISOLATED + NON-DESTRUCTIVE to the live node:
 #   - /tmp-only datadir, isolated 39xxx ports (never the live 8023/18232 or the
-#     soak 18242 or zclassicd 8033/8232),
-#   - dials the zclassicd reference peer (P2P 8033) as a CLIENT only, so the
+#     soak 18242 or zclassicd 8034/8232),
+#   - dials the zclassicd reference peer (P2P 8034) as a CLIENT only, so the
 #     live soak node's network surface is untouched,
 #   - -nolegacyimport (never reads ~/.zclassic), -nobgvalidation (lean),
 #   - process-group SIGKILL teardown on every exit.
@@ -29,7 +29,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 SNAPSHOT="${ZCL_C3_SNAPSHOT:-$HOME/.zclassic-c23/consensus_snapshot.db}"
-PEER="${ZCL_C3_PEER:-127.0.0.1:8033}"        # zclassicd P2P — DIAL this for sync
+PEER="${ZCL_C3_PEER:-127.0.0.1:8034}"        # zclassicd P2P — DIAL this for sync
 # Read the target tip from a zclassic23 node that answers zcl-rpc cleanly (the
 # live node), rather than zclassicd (whose RPC uses a different cookie). Same
 # chain → same tip. This is one cheap getblockcount, no sync load on it.

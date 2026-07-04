@@ -62,8 +62,9 @@ set -euo pipefail
 
 # ── Live-port refuse-set ───────────────────────────────────────────
 # Every port any live zclassic23 / zclassicd / dev-peer is known to bind.
-# Verified live (ss): 8023 (zcl23 P2P), 8033 (zclassicd P2P), 18232
-# (zcl23 RPC), 8232 (zclassicd RPC), 18034 (zcl23 FS).
+# Verified live (ss): 8033 (zclassic23 P2P), 8034 (zclassicd P2P),
+# 18232 (zclassic23 RPC), 8232 (zclassicd RPC), 18034 (zclassic23 FS).
+# Historical 8023 remains reserved so old lanes cannot be accidentally reused.
 ISO_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
 
@@ -198,7 +199,7 @@ iso_init() {
 # Read-only justification: `--importblockindex` copies blocks/index to a
 # temp dir next to ISO_DD's node.db and strips the COPIED LOCK; it never
 # opens the source LevelDB for write and never touches the source LOCK
-# (src/main.c:1473-1509). zclassicd keeps running on 8033/8232 untouched.
+# (src/main.c:1473-1509). zclassicd keeps running on 8034/8232 untouched.
 # This is the proven cold-sync recipe step 1 the operator runs by hand.
 iso_import_blockindex() {
     local src="${1:-}"
@@ -235,7 +236,7 @@ iso_import_blockindex() {
 #   - anchor: -connect=127.0.0.1:39999 — a dead sink that sets
 #     g_connect_only, skipping DNS/fixed seeds AND the auto-addnode-to-
 #     127.0.0.1:8034 path, so peer_count stays 0.
-#   - genesis: -addnode=127.0.0.1:8033 (the co-located zclassicd P2P)
+#   - genesis: -addnode=127.0.0.1:8034 (the co-located zclassicd P2P)
 #     because it must fetch bodies; the ONE place a real peer is dialed,
 #     and it is the read-only co-located zclassicd, never a public peer.
 #

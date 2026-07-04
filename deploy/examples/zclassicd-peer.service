@@ -20,7 +20,8 @@ StartLimitBurst=3
 Type=simple
 # Fail fast when a manual zclassicd is holding the datadir lock.
 ExecStartPre=/bin/sh -c '! /usr/bin/pgrep -x zclassicd'
-ExecStart=%h/bin/zclassicd -datadir=%h/.zclassic -nofastsync -showmetrics=0
+# Keep the legacy oracle off canonical 8033; zclassic23 owns that public port.
+ExecStart=%h/bin/zclassicd -datadir=%h/.zclassic -port=8034 -nofastsync -showmetrics=0
 Restart=on-failure
 RestartSec=30
 

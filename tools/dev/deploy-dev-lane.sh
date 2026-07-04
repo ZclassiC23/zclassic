@@ -4,7 +4,7 @@
 # The dev lane is where code-in-progress actually RUNS, so it is exercised live
 # instead of rotting unrun in git. It is fully isolated from the operator-gated
 # live node and the pinned soak lane:
-#   live node : ~/.zclassic-c23      ports 8023 / 18232   (make deploy; owner-gated)
+#   live node : ~/.zclassic-c23      ports 8033 / 18232   (make deploy; owner-gated)
 #   soak lane : ~/.zclassic-c23-soak ports 8043 / 18242   (pinned binary)
 #   DEV lane  : ~/.zclassic-c23-dev  ports 8053 / 18252   (THIS — fresh build)
 #

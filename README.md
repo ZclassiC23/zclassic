@@ -99,9 +99,10 @@ has a **long** initial sync.
 > `zcl_status`).
 
 Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
-`18232`. To run alongside a local `zclassicd` (which holds `8033`), use
-`-port=8023` — the shipped service does. The authoritative lane/port table is in
-[`docs/HANDOFF.md`](docs/HANDOFF.md).
+`18232`. On the operator host, `zclassic23` owns the canonical public P2P port
+`8033`; the co-located legacy `zclassicd` oracle is isolated on P2P `8034` and
+RPC `8232`. The authoritative lane/port table is in [`docs/HANDOFF.md`](docs/HANDOFF.md)
+and the live incident runbook is in [`docs/work/live-node-ops-2026-07-04.md`](docs/work/live-node-ops-2026-07-04.md).
 
 ## First boot — what a fresh node looks like
 
@@ -111,7 +112,7 @@ A brand-new datadir is honestly empty. It does **not** report a fake height:
   tip. `getblockchaininfo` returns `blocks: 0, headers: 0,
   initialblockdownload: true` (best-block resolves to genesis).
 - **Peer discovery has no DNS seeders** — the historical ZCL DNS names no longer
-  resolve. The node bootstraps from hardcoded MagicBean IP seeds (10 addresses)
+  resolve. The node bootstraps from hardcoded legacy ZClassic IP seeds (10 addresses)
   and a Tor `.onion` directory seed, harvesting clearnet peers from each onion's
   `/directory.json`. You can add your own onion seeds (one `.onion` per line,
   `#` comments allowed) in `~/.config/zclassic23/onion-seeds`.

@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 # Type=notify + WatchdogSec=120 is SAFE on the test instance because
-# it has no public peers (-addnode=127.0.0.1:8033 only, no externalip).
+# it has no public peers (-addnode=127.0.0.1:8034 only, no externalip).
 # A watchdog-triggered restart costs zero peer reputation and lets us
 # fault-inject lag-SLO breaches without manual recovery.
 #
@@ -31,7 +31,7 @@ ExecStart=%h/zclassic23/build/bin/zclassic23 \
     -tor \
     -nobgvalidation \
     -nolegacyimport \
-    -addnode=127.0.0.1:8033 \
+    -addnode=127.0.0.1:8034 \
     -showmetrics=0
 Restart=on-failure
 RestartSec=10

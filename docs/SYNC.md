@@ -95,7 +95,8 @@ local activation/evidence path (see Canonical Authority Model above). It goes
 away once the native peer network is healthy.
 
 Requirements: a local synced legacy `zclassicd` with `~/.zclassic/` (leave it
-running — P2P 8033 / RPC 8232).
+running — on the operator host it is isolated on P2P 8034 / RPC 8232 while
+`zclassic23` owns canonical P2P 8033).
 
 This is the canonical home for the recipe — **two steps, in this order**:
 

@@ -33,6 +33,25 @@ Captured with read-only commands at `2026-07-04 00:15 UTC`.
   `3162825`, both nodes returned block hash
   `0000087c8efbd35e51453654e39f0377306e629c6ff2c31efd13cf780f67d6f8`.
 
+## Post-fix state
+
+Captured after the clean-identity deploy at `2026-07-04 01:10 UTC`.
+
+- Commit `28e97e217` was pushed to `origin/main` after `make lint`,
+  `make build-only`, focused identity/finality tests, and the pre-push
+  `make ci` hook passed.
+- The CI-built `build/bin/zclassic23` was installed as
+  `$HOME/.local/bin/zclassic23-live`, then only `zclassic23` was restarted.
+  `zclassicd` was left running.
+- `zclassic23 getnetworkinfo` advertised exact BIP14 user-agent
+  `/ZClassic23:0.1.0/`, listened publicly on `74.50.74.102:8033`, and kept
+  `127.0.0.1:8034` as the local legacy addnode.
+- `./tools/z mirror --json` reported `state=healthy`, `mirror_running=true`,
+  `zclassic23_height=zclassicd_height=3169281`, matching hash
+  `0000069bfa190d563e8c098e2a4112955b80f636770b1b827fa0ebeaae57f4dc`,
+  `lag=0`, `consensus_authority=local_consensus_validation`, and
+  `overrides_total=0`.
+
 ## Rules
 
 - Never stop, restart, reconfigure, or kill `zclassicd` during c23 recovery.

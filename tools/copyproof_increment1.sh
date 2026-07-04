@@ -6,7 +6,7 @@
 #
 # Runs ENTIRELY on a throwaway COPY of the live datadir, isolated ports, setsid
 # so a parent/harness reap can never SIGTERM the node. It NEVER writes the live
-# datadir and NEVER touches the live ports (18232/8033). The real zclassicd
+# datadir and NEVER touches the live ports (18232/8232/8033/8034). The real zclassicd
 # oracle is read-only (rebuild_recent pulls bodies from it); we never stop it.
 #
 # What it proves, in one run:
@@ -33,7 +33,7 @@ RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 SRC="$HOME/.zclassic-c23"
 RPCPORT=18299
 P2PPORT=18933
-ORACLE_P2P="127.0.0.1:8033"   # zclassicd P2P (verified via ss: pid=zclassicd listens 0.0.0.0:8033)
+ORACLE_P2P="127.0.0.1:8034"   # zclassicd P2P; zclassic23 owns canonical 8033
 CLIMB_ROUNDS=15
 WATCH=180
 
@@ -53,8 +53,9 @@ done
 [ -d "$SRC" ] || { echo "src datadir not found: $SRC" >&2; exit 1; }
 [ -x "$NODE_BIN" ] || { echo "$NODE_BIN not built" >&2; exit 1; }
 [ -x "$RPC_BIN" ] || { echo "$RPC_BIN not built (make zcl-rpc)" >&2; exit 1; }
-if [ "$RPCPORT" = "18232" ] || [ "$P2PPORT" = "8033" ]; then
-  echo "refusing to use the live port (18232/8033)" >&2; exit 1
+if [ "$RPCPORT" = "18232" ] || [ "$RPCPORT" = "8232" ] ||
+   [ "$P2PPORT" = "8033" ] || [ "$P2PPORT" = "8034" ]; then
+  echo "refusing to use a live port (18232/8232/8033/8034)" >&2; exit 1
 fi
 
 TS="$(date +%Y%m%d-%H%M%S)"

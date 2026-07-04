@@ -2,7 +2,7 @@
 Description=ZClassic23 Replay Canary — weekly from-genesis
 # Same independence as the nightly: own isolated /tmp node, reads zclassicd
 # (RPC 8232) for the cross-node assert. The weekly run additionally dials
-# the co-located zclassicd P2P (127.0.0.1:8033) via -addnode to fetch bodies
+# the co-located zclassicd P2P (127.0.0.1:8034) via -addnode to fetch bodies
 # for the genesis->tip replay — the ONE place a real peer is dialed, and it
 # is the read-only co-located zclassicd, never a public peer.
 After=zclassicd-peer.service

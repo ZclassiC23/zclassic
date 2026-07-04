@@ -18,10 +18,10 @@
 #   4. it still holds after a real restart re-opens the multi-GB progress.kv.
 #
 # Runs ENTIRELY on a throwaway COPY, isolated ports, setsid. NEVER writes the
-# live datadir, NEVER touches the live ports (18232/8033), NEVER stops zclassicd.
+# live datadir, NEVER touches the live ports (18232/8232/8033/8034), NEVER stops zclassicd.
 #
 # Usage: tools/copyproof_p2_frontier.sh [--src=DIR] [--rpcport=N] [--p2pport=N]
-#                                       [--oracle-p2p=127.0.0.1:8033]
+#                                       [--oracle-p2p=127.0.0.1:8034]
 #                                       [--climb=90] [--settle=20]
 set -u
 
@@ -34,7 +34,7 @@ P2_CHECK_BIN="${ZCL_P2_CHECK_BIN:-$REPO_ROOT/build/bin/p2_invariant_check}"
 SRC="$HOME/.zclassic-c23"
 RPCPORT=18299
 P2PPORT=18933
-ORACLE_P2P="127.0.0.1:8033"
+ORACLE_P2P="127.0.0.1:8034"
 CLIMB=90       # seconds to let the reducer commit some txns before kill -9
 SETTLE=20      # seconds after RPC-up before first invariant read (let boot backfill run)
 
@@ -55,8 +55,9 @@ done
 [ -x "$NODE_BIN" ] || { echo "$NODE_BIN not built" >&2; exit 1; }
 [ -x "$P2_CHECK_BIN" ] || { echo "$P2_CHECK_BIN not built (make p2_invariant_check)" >&2; exit 1; }
 [ -x "$RPC_BIN" ] || { echo "$RPC_BIN not built (make zcl-rpc)" >&2; exit 1; }
-if [ "$RPCPORT" = "18232" ] || [ "$P2PPORT" = "8033" ]; then
-  echo "refusing to use the live port (18232/8033)" >&2; exit 1
+if [ "$RPCPORT" = "18232" ] || [ "$RPCPORT" = "8232" ] ||
+   [ "$P2PPORT" = "8033" ] || [ "$P2PPORT" = "8034" ]; then
+  echo "refusing to use a live port (18232/8232/8033/8034)" >&2; exit 1
 fi
 
 TS="$(date +%Y%m%d-%H%M%S)"

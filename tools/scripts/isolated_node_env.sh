@@ -47,8 +47,9 @@ set -euo pipefail
 
 # ── Live-port refuse-set ───────────────────────────────────────────
 # Every port any live zclassic23 / zclassicd / dev-peer is known to bind.
-# Verified live (ss): 8023 (zcl23 P2P), 8033 (zclassicd P2P), 18232
-# (zcl23 RPC), 8232 (zclassicd RPC), 18034 (zcl23 FS). The 80xx/180xx
+# Verified live (ss): 8033 (zclassic23 P2P), 8034 (zclassicd P2P),
+# 18232 (zclassic23 RPC), 8232 (zclassicd RPC), 18034 (zclassic23 FS).
+# Historical 8023 remains reserved; the 80xx/180xx
 # dev-peer siblings are included defensively even when not currently up.
 ISO_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
