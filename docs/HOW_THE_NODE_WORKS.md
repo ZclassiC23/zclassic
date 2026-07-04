@@ -136,10 +136,12 @@ sovereign is its coin-set starting point. (Verify whether the cure has shipped v
    architecture; this page is its plain-language summary. **`docs/AGENT_TRAPS.md`**
    lists things that look broken but are not (don't re-chase them);
    **`docs/CODEBASE_MAP.md`** is where-things-live + how-to-do-each-thing.
-3. Look at the live node before trusting any doc: start with `zclassic23 api`
-   for interface discovery, then `zclassic23 agent` or `zcl_agent` for compact
-   live state, and `zclassic23 milestone` or `zcl_milestone` for v1 progress
-   bars. Drill down with `zcl_status` and
+3. Look at the live node before trusting any doc: start with
+   `zclassic23 agentmap` or `zcl_agent_map` for the code/docs/test map,
+   `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop, and
+   `zclassic23 api` for interface discovery. Then use `zclassic23 agent` or
+   `zcl_agent` for compact live state, and `zclassic23 milestone` or
+   `zcl_milestone` for v1 progress bars. Drill down with `zcl_status` and
    `zcl_state subsystem=reducer_frontier` only if needed. A doc can be stale;
    the node cannot.
 4. To understand one stage, open its file — `app/jobs/src/<stage>_stage.c`. Each is

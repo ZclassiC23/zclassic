@@ -8,6 +8,7 @@
  * new blocker source. */
 
 #include "controllers/event_controller.h"
+#include "controllers/agent_controller.h"
 #include "controllers/strong_params.h"
 #include "api_controller_internal.h"
 #include "config/boot.h"
@@ -741,6 +742,10 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "agent",             rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },
         { "control", "operatorsummary",   rpc_agent_summary,     true },
+        { "control", "agentmap",          rpc_agent_map,         true },
+        { "control", "agentimpact",       rpc_agent_impact,      true },
+        { "control", "agentcontracts",    rpc_agent_contracts,   true },
+        { "control", "agentbuild",        rpc_agent_build,       true },
         { "control", "milestone",         rpc_milestone_status,  true },
         { "control", "mvpstatus",         rpc_milestone_status,  true },
         { "control", "refold",            rpc_refold_status,     true },

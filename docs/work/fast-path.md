@@ -61,6 +61,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + `build-only` + focused tests inferred from changed files + native linger-service probe |
 | `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
+| `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
 `make fast-ci` is the default edit-loop command for agents and operators. It
 auto-selects `sccache cc` or `ccache cc` when present; override with
@@ -79,14 +80,20 @@ binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 changes fail closed until you either add a focused-test mapping or pass
 `ZCL_FAST_TESTS=...`.
 
+The native build contract is discoverable with `build/bin/zclassic23 agentbuild`
+or MCP `zcl_agent_build`.
+
 Canonical operator APIs, in priority order:
 
-1. `build/bin/zclassic23 agent`, `healthcheck`, and raw RPC methods — native C
-   binary client to the running linger service.
-2. MCP tools (`zcl_agent`, `zcl_status`, `zcl_state`, `zcl_node_log`,
+1. `build/bin/zclassic23 agentmap`, `agentimpact`, `agentbuild`, `agent`,
+   `healthcheck`, and raw RPC methods — native C binary client to the running
+   linger service.
+2. MCP tools (`zcl_agent_map`, `zcl_agent_impact`, `zcl_agent_build`,
+   `zcl_agent`, `zcl_status`, `zcl_state`, `zcl_node_log`,
    `zcl_sql`) — typed agent interface over the same node RPC truth.
 3. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
-4. `tools/z` — thin shell compatibility/fallback for terminals and scripts.
+4. `tools/z` — deprecated shell compatibility/fallback for terminals and
+   scripts. Keep it working; do not add new operator logic there.
 
 `make fast-ci` is not the release gate. Before pushing `main`, the manual
 preflight remains `make lint`, `make build-only`, and the relevant strict

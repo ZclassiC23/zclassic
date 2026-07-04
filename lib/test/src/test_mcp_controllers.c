@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     105  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     109  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -57,8 +57,10 @@
                                  * +3 wait tools: zcl_waitforheight,
                                  *   zcl_waitforhalt, zcl_waitforblocker
                                  * +1 native milestone status: zcl_milestone
-                                 * +1 native refold readiness: zcl_refold_status */
-#define EXPECTED_OPS        41  /* + zcl_rebuild_recent (bounded recovery);
+                                 * +1 native refold readiness: zcl_refold_status
+                                 * +4 agent API tools: map, impact, contracts,
+                                 *   build */
+#define EXPECTED_OPS        45  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -75,7 +77,8 @@
                                  * + zcl_postmortem_list/replay (Phase 6b)
                                  * + zcl_operator_summary + zcl_agent
                                  *   (simple MCP status)
-                                 * + zcl_refold_status */
+                                 * + zcl_refold_status
+                                 * +4 zcl_agent_* development tools */
 #define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
@@ -385,6 +388,8 @@ static int test_specific_flagship_tools_registered(void)
          * the compat contract is broken. */
         const char *k[] = {
             "zcl_agent", "zcl_status", "zcl_operator_summary",
+            "zcl_agent_map", "zcl_agent_impact", "zcl_agent_contracts",
+            "zcl_agent_build",
             "zcl_milestone", "zcl_refold_status", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
             "zcl_peers", "zcl_networkinfo", "zcl_onion_status",
@@ -497,6 +502,42 @@ static int test_zcl_status_no_params(void)
         ASSERT(r->num_params == 0);
         ASSERT(strcmp(r->domain, "ops") == 0);
         ASSERT(contains(r->description, "chain advance source scoring"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_agent_dev_tools_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_agent_* development tools have stable shapes") {
+        register_all();
+        const struct mcp_tool_route *map =
+            mcp_router_find("zcl_agent_map");
+        const struct mcp_tool_route *impact =
+            mcp_router_find("zcl_agent_impact");
+        const struct mcp_tool_route *contracts =
+            mcp_router_find("zcl_agent_contracts");
+        const struct mcp_tool_route *build =
+            mcp_router_find("zcl_agent_build");
+        ASSERT(map != NULL);
+        ASSERT(impact != NULL);
+        ASSERT(contracts != NULL);
+        ASSERT(build != NULL);
+        ASSERT(strcmp(map->domain, "ops") == 0);
+        ASSERT(strcmp(impact->domain, "ops") == 0);
+        ASSERT(strcmp(contracts->domain, "ops") == 0);
+        ASSERT(strcmp(build->domain, "ops") == 0);
+        ASSERT(map->num_params == 0);
+        ASSERT(contracts->num_params == 0);
+        ASSERT(build->num_params == 0);
+        ASSERT(impact->num_params == 1);
+        ASSERT(strcmp(impact->params[0].name, "files") == 0);
+        ASSERT(impact->params[0].type == MCP_PARAM_ARRAY);
+        ASSERT(impact->params[0].required == false);
+        ASSERT(impact->params[0].default_json != NULL);
+        ASSERT(impact->self_test_args != NULL);
+        ASSERT(contains(impact->description, "recommended focused tests"));
         PASS();
     } _test_next:;
     return failures;
@@ -844,6 +885,40 @@ static char *mock_operator_needed_rpc(const char *method,
     return strdup("null");
 }
 
+static bool g_agent_impact_params_seen;
+
+static char *mock_agent_dev_rpc(const char *method, const char *params_json)
+{
+    if (strcmp(method, "agentmap") == 0)
+        return strdup("{\"schema\":\"zcl.agent_map.v1\","
+                      "\"commands\":[{\"name\":\"build\"}],"
+                      "\"deprecated_shim\":{\"primary\":false}}");
+    if (strcmp(method, "agentimpact") == 0) {
+        g_agent_impact_params_seen =
+            params_json &&
+            contains(params_json,
+                     "\"app/controllers/src/agent_controller.c\"") &&
+            contains(params_json,
+                     "\"tools/mcp/controllers/ops_controller.c\"");
+        return strdup("{\"schema\":\"zcl.agent_impact.v1\","
+                      "\"files_count\":2,"
+                      "\"mcp_changed\":true,"
+                      "\"relevant_test_groups\":[\"mcp_controllers\"],"
+                      "\"recommended_commands\":[\"make fast-ci\"]}");
+    }
+    if (strcmp(method, "agentcontracts") == 0)
+        return strdup("{\"schema\":\"zcl.agent_contracts.v1\","
+                      "\"schemas\":[{\"schema\":\"zcl.agent_build.v1\"}],"
+                      "\"transports\":[\"mcp: zcl_agent_build\"]}");
+    if (strcmp(method, "agentbuild") == 0)
+        return strdup("{\"schema\":\"zcl.agent_build.v1\","
+                      "\"incremental_compile\":{\"header_depfiles\":true},"
+                      "\"commands\":[{\"name\":\"compile_check\"}],"
+                      "\"reproducible_release\":{\"command\":\"make ci-reproducible\"}}");
+    (void)params_json;
+    return strdup("null");
+}
+
 static int test_zcl_operator_summary_degraded_shape(void)
 {
     int failures = 0;
@@ -965,6 +1040,72 @@ static int test_zcl_agent_alias_shape(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
                       "none");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_agent_dev_tools_dispatch(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_agent_* development tools dispatch") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_agent_dev_rpc);
+
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+
+        char *body = mcp_router_dispatch("zcl_agent_map", &args);
+        ASSERT(body != NULL);
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_map.v1");
+        ASSERT(json_get(&root, "commands") != NULL);
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        const char *impact_args =
+            "{\"files\":[\"app/controllers/src/agent_controller.c\","
+            "\"tools/mcp/controllers/ops_controller.c\"]}";
+        ASSERT(json_read(&args, impact_args, strlen(impact_args)));
+        g_agent_impact_params_seen = false;
+        body = mcp_router_dispatch("zcl_agent_impact", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_agent_impact_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_impact.v1");
+        ASSERT(json_get_bool(json_get(&root, "mcp_changed")));
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        json_init(&args);
+        json_set_object(&args);
+        body = mcp_router_dispatch("zcl_agent_contracts", &args);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_contracts.v1");
+        ASSERT(json_get(&root, "schemas") != NULL);
+        json_free(&root);
+        free(body);
+
+        body = mcp_router_dispatch("zcl_agent_build", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_build.v1");
+        ASSERT(json_get(&root, "reproducible_release") != NULL);
 
         json_free(&root);
         json_free(&args);
@@ -2338,11 +2479,13 @@ int test_mcp_controllers(void)
     failures += test_specific_flagship_tools_registered();
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
+    failures += test_zcl_agent_dev_tools_shape();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();
     failures += test_zcl_operator_summary_degraded_shape();
     failures += test_zcl_operator_summary_healthy_shape();
     failures += test_zcl_agent_alias_shape();
+    failures += test_zcl_agent_dev_tools_dispatch();
     failures += test_zcl_operator_summary_names_operator_needed_detail();
     failures += test_zcl_milestone_shape();
     failures += test_zcl_refold_status_shape();

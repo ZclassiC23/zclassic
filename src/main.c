@@ -825,6 +825,10 @@ static void print_usage(const char *prog)
     printf("  %s [node options]          Run full node\n", prog);
     printf("  %s api                     API discovery from running node\n", prog);
     printf("  %s agent                   Compact status from running node\n", prog);
+    printf("  %s agentmap                AI-coder code/docs/test map\n", prog);
+    printf("  %s agentimpact <files...>  Changed files to tests/risk\n", prog);
+    printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
+    printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
     printf("  %s milestone               ASCII milestone status from running node\n", prog);
     printf("  %s refold                  Refold anchor readiness from running node\n", prog);
     printf("  %s --agent                 Same compact status\n", prog);

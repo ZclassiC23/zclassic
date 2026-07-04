@@ -696,7 +696,10 @@ rpc)
 # ── HELP ─────────────────────────────────────────────────────────
 help|--help|-h)
     cat <<'HELP'
-z — tiny operator entry point for zclassic23
+z — deprecated compatibility shim for zclassic23 operator terminals
+
+Primary API: use zclassic23 agent*, MCP zcl_agent_*, or REST /api/v1/agent for
+new automation. Keep this wrapper compatible; do not add new operator logic here.
 
 SIMPLE:
   z                     Compact agent/operator summary (recommended first call)

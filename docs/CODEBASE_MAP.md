@@ -145,6 +145,14 @@ actually fires.
 controller `k_routes[]` arrays.
 
 ### Start here
+- `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
+  operator surface: where code lives, which docs apply, and which tests cover
+  each subsystem. The full contract guide is `docs/AGENT_API.md`.
+- `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
+  to risk flags and focused test groups before choosing the verification set.
+- `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
+  `make build-only`, `make t-fast`, `make fast-ci`, cache knobs, strict gates,
+  and `make ci-reproducible`.
 - `zclassic23 api` — native API discovery from the running node. It returns the
   same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the
@@ -162,6 +170,10 @@ controller `k_routes[]` arrays.
   reducer frontier, tip-finalize, condition engine, and chain source scoring.
 - `zcl_kpi` — aggregated KPIs (height, peer_count, sync, validation, mempool,
   wallet, chain, network).
+
+`tools/z` is a deprecated compatibility shim for terminal scripts. Keep it
+working, but do not add new operator logic there; add native C JSON contracts
+and expose them through MCP/REST instead.
 
 ### The three primitives (prefer these over a new bespoke tool)
 - `zcl_state(subsystem=X)` — generic state dump. Subsystem CSV is

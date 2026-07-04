@@ -2119,6 +2119,8 @@ static int t_tools_z_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "/api/v1/agent") != NULL);
         ASSERT(strstr(buf, "Binary: zclassic23 agent") != NULL);
         ASSERT(strstr(buf, "MCP:  zcl_agent") != NULL);
+        ASSERT(strstr(buf, "deprecated compatibility shim") != NULL);
+        ASSERT(strstr(buf, "do not add new operator logic here") != NULL);
         ASSERT(strstr(buf, "topology|availability|uptime)") != NULL);
         ASSERT(strstr(buf, "topology_status_json") != NULL);
         ASSERT(strstr(buf, "zcl.operator_topology.v1") != NULL);
@@ -2223,6 +2225,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
         ASSERT(strstr(buf, "no focused test mapping for code changes")
                != NULL);
+        ASSERT(strstr(buf, "src/main.c") != NULL);
+        ASSERT(strstr(buf, "app/controllers/src/agent_controller.c") != NULL);
+        ASSERT(strstr(buf, "docs/AGENT_API.md") != NULL);
+        ASSERT(strstr(buf, "lib/test/src/test_syncdiag_rpc.c") != NULL);
         ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS") != NULL);
         ASSERT(strstr(buf, "make_fast \"$target\" ONLY") != NULL);
@@ -2247,6 +2253,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "`make fast-ci`") != NULL);
         ASSERT(strstr(buf, "`make t-fast ONLY=<group>`") != NULL);
+        ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
         ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CC") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
@@ -2254,8 +2261,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 agent") != NULL);
+        ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
+        ASSERT(strstr(buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(buf, "MCP tools") != NULL);
         ASSERT(strstr(buf, "`tools/z`") != NULL);
+        ASSERT(strstr(buf, "deprecated shell compatibility") != NULL);
         ASSERT(strstr(buf, "tracked pre-push hook runs full `make ci`")
                != NULL);
         ASSERT(strstr(buf, "`bench-regress`, `zclassic23`, `test_parallel`")
@@ -2279,21 +2289,35 @@ static int t_native_agent_api_contract(void)
     int failures = 0;
     char *main_buf = NULL;
     char *event_buf = NULL;
+    char *agent_ctrl_buf = NULL;
     char *api_buf = NULL;
+    char *agent_doc_buf = NULL;
     TEST("zclassic23 binary exposes native API and agent commands") {
         char main_path[PATH_MAX];
         char event_path[PATH_MAX];
+        char agent_ctrl_path[PATH_MAX];
         char api_path[PATH_MAX];
+        char agent_doc_path[PATH_MAX];
         ASSERT(repo_path(main_path, sizeof(main_path), "src/main.c") == 0);
         ASSERT(repo_path(event_path, sizeof(event_path),
                          "app/controllers/src/event_controller.c") == 0);
+        ASSERT(repo_path(agent_ctrl_path, sizeof(agent_ctrl_path),
+                         "app/controllers/src/agent_controller.c") == 0);
         ASSERT(repo_path(api_path, sizeof(api_path),
                          "app/controllers/src/api_controller_index.c") == 0);
+        ASSERT(repo_path(agent_doc_path, sizeof(agent_doc_path),
+                         "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
+        ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
+        ASSERT(read_entire_file(agent_doc_path, &agent_doc_buf) == 0);
         ASSERT(strstr(main_buf, "%s api") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
+        ASSERT(strstr(main_buf, "%s agentmap") != NULL);
+        ASSERT(strstr(main_buf, "%s agentimpact") != NULL);
+        ASSERT(strstr(main_buf, "%s agentcontracts") != NULL);
+        ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
@@ -2304,10 +2328,21 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"api\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"apiindex\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentmap\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentimpact\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentcontracts\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentbuild\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"milestone\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"refold\"") != NULL);
         ASSERT(strstr(event_buf, "api_version\", \"v1\"") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "app/controllers/src/agent_controller.c")
+               != NULL);
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"api_command\", "
                       "\"zclassic23 api\")") != NULL);
@@ -2317,12 +2352,33 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"refold_command\", "
                       "\"zclassic23 refold\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"map_command\", "
+                      "\"zclassic23 agentmap\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"impact_command\", "
+                      "\"zclassic23 agentimpact <files...>\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"build_command\", "
+                      "\"zclassic23 agentbuild\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"build_tool\", "
+                      "\"zcl_agent_build\")") != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make t-fast ONLY=<group>") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make ci-reproducible") != NULL);
+        ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
+               != NULL);
         PASS();
     } _test_next:;
     free(main_buf);
     free(event_buf);
+    free(agent_ctrl_buf);
     free(api_buf);
+    free(agent_doc_buf);
     return failures;
 }
 

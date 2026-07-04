@@ -123,7 +123,7 @@ select_test_groups() {
         [ -n "$file" ] || continue
         matched=0
         case "$file" in
-            Makefile|tools/*|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
+            Makefile|src/main.c|tools/*|docs/AGENT_API.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
                 add_group "make_lint_gates"
                 matched=1
                 ;;
@@ -153,7 +153,8 @@ select_test_groups() {
                 add_group "api"
                 matched=1
                 ;;
-            app/controllers/src/event_controller.c)
+            app/controllers/src/agent_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
+                add_group "make_lint_gates"
                 add_group "node_health_service"
                 add_group "mcp_controllers"
                 add_group "syncdiag_rpc"

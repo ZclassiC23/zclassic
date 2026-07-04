@@ -81,6 +81,47 @@ static const struct json_value *find_source_json(const struct json_value *arr,
     return NULL;
 }
 
+static const struct json_value *find_object_with_str(const struct json_value *arr,
+                                                     const char *key,
+                                                     const char *value)
+{
+    if (!arr || arr->type != JSON_ARR || !key || !value)
+        return NULL;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *child = json_at(arr, i);
+        const struct json_value *field = json_get(child, key);
+        if (field && strcmp(json_get_str(field), value) == 0)
+            return child;
+    }
+    return NULL;
+}
+
+static bool json_array_has_str(const struct json_value *arr, const char *value)
+{
+    if (!arr || arr->type != JSON_ARR || !value)
+        return false;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *child = json_at(arr, i);
+        if (child && strcmp(json_get_str(child), value) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool json_array_has_substr(const struct json_value *arr,
+                                  const char *needle)
+{
+    if (!arr || arr->type != JSON_ARR || !needle)
+        return false;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *child = json_at(arr, i);
+        const char *s = json_get_str(child);
+        if (s && strstr(s, needle))
+            return true;
+    }
+    return false;
+}
+
 static void syncdiag_set_ipv4(struct net_address *addr,
                               uint8_t a, uint8_t b,
                               uint8_t c, uint8_t d,
@@ -999,6 +1040,14 @@ int test_syncdiag_rpc(void)
         ok = ok && mcp && mcp->type == JSON_OBJ &&
             strcmp(json_get_str(json_get(mcp, "first_tool")),
                    "zcl_agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "map_tool")),
+                          "zcl_agent_map") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "impact_tool")),
+                          "zcl_agent_impact") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "contracts_tool")),
+                          "zcl_agent_contracts") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "build_tool")),
+                          "zcl_agent_build") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
@@ -1008,6 +1057,14 @@ int test_syncdiag_rpc(void)
                    "zclassic23 api") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "first_command")),
                           "zclassic23 agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "map_command")),
+                          "zclassic23 agentmap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "impact_command")),
+                          "zclassic23 agentimpact <files...>") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "contracts_command")),
+                          "zclassic23 agentcontracts") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "build_command")),
+                          "zclassic23 agentbuild") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "milestone_command")),
                           "zclassic23 milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "refold_command")),
@@ -1071,6 +1128,161 @@ int test_syncdiag_rpc(void)
         json_free(&params);
         json_free(&result);
         alerts_shutdown();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC returns agent code map... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool ok = rpc_table_execute(&tbl, "agentmap", &params, &result);
+        const struct json_value *commands = json_get(&result, "commands");
+        const struct json_value *subsystems = json_get(&result, "subsystems");
+        const struct json_value *shim = json_get(&result, "deprecated_shim");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_map.v1") == 0;
+        ok = ok && commands && commands->type == JSON_ARR;
+        ok = ok && find_object_with_str(commands, "name", "impact") != NULL;
+        ok = ok && find_object_with_str(commands, "name", "build") != NULL;
+        ok = ok && subsystems && subsystems->type == JSON_ARR;
+        ok = ok && find_object_with_str(subsystems, "name", "fast_ci") != NULL;
+        ok = ok && shim && shim->type == JSON_OBJ;
+        ok = ok && !json_get_bool(json_get(shim, "primary"));
+        ok = ok && strcmp(json_get_str(json_get(shim, "status")),
+                          "deprecated_compatibility_shim") == 0;
+
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC maps changed files to tests... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        const char *files[] = {
+            "app/controllers/src/agent_controller.c",
+            "tools/mcp/controllers/ops_controller.c",
+            "docs/AGENT_API.md",
+        };
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            struct json_value v;
+            json_init(&v);
+            json_set_str(&v, files[i]);
+            json_push_back(&params, &v);
+            json_free(&v);
+        }
+
+        struct json_value result;
+        json_init(&result);
+
+        bool ok = rpc_table_execute(&tbl, "agentimpact", &params, &result);
+        const struct json_value *groups =
+            json_get(&result, "relevant_test_groups");
+        const struct json_value *commands =
+            json_get(&result, "recommended_commands");
+        const struct json_value *out_files = json_get(&result, "files");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_impact.v1") == 0;
+        ok = ok && json_get_int(json_get(&result, "files_count")) == 3;
+        ok = ok && json_get_bool(json_get(&result, "code_changed"));
+        ok = ok && !json_get_bool(json_get(&result, "docs_only"));
+        ok = ok && json_get_bool(json_get(&result, "agent_api_changed"));
+        ok = ok && json_get_bool(json_get(&result, "mcp_changed"));
+        ok = ok && out_files && json_size(out_files) == 3;
+        ok = ok && json_array_has_str(groups, "syncdiag_rpc");
+        ok = ok && json_array_has_str(groups, "mcp_controllers");
+        ok = ok && json_array_has_str(groups, "make_lint_gates");
+        ok = ok && json_array_has_substr(commands,
+                                         "ZCL_FAST_TESTS=syncdiag_rpc");
+        ok = ok && json_array_has_substr(commands, "make fast-ci");
+
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC returns agent contracts and build contract... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value contracts;
+        json_init(&contracts);
+        bool ok = rpc_table_execute(&tbl, "agentcontracts",
+                                    &params, &contracts);
+        const struct json_value *schemas = json_get(&contracts, "schemas");
+        const struct json_value *transports =
+            json_get(&contracts, "transports");
+        ok = ok && contracts.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
+                          "zcl.agent_contracts.v1") == 0;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_build.v1") != NULL;
+        ok = ok && json_array_has_substr(transports, "zcl_agent_build");
+
+        struct json_value build;
+        json_init(&build);
+        ok = ok && rpc_table_execute(&tbl, "agentbuild", &params, &build);
+        const struct json_value *incremental =
+            json_get(&build, "incremental_compile");
+        const struct json_value *cache = json_get(&build, "cache");
+        const struct json_value *commands = json_get(&build, "commands");
+        const struct json_value *repro =
+            json_get(&build, "reproducible_release");
+        ok = ok && build.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&build, "schema")),
+                          "zcl.agent_build.v1") == 0;
+        ok = ok && incremental && json_get_bool(json_get(incremental,
+                                                         "header_depfiles"));
+        ok = ok && cache && strstr(json_get_str(json_get(cache,
+                                                         "auto_select_order")),
+                                   "sccache cc") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "compile_check") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "byte_identity") != NULL;
+        ok = ok && repro && strcmp(json_get_str(json_get(repro, "command")),
+                                   "make ci-reproducible") == 0;
+        ok = ok && strcmp(json_get_str(json_get(repro, "portable_isa")),
+                          "x86-64-v3") == 0;
+
+        json_free(&params);
+        json_free(&contracts);
+        json_free(&build);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

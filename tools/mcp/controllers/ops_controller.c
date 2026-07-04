@@ -41,6 +41,9 @@ DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
 DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
 DEFINE_PT(h_zcl_milestone,      "milestone",      "mcp.ops")
 DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
+DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
+DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
+DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -841,6 +844,28 @@ static int h_zcl_health(const struct mcp_request *req, struct mcp_response *res)
                                 "healthcheck", "mcp.ops");
 }
 
+static int h_zcl_agent_impact(const struct mcp_request *req,
+                              struct mcp_response *res)
+{
+    const struct json_value *files = json_get(req->args, "files");
+    char *params = NULL;
+    if (files && files->type == JSON_ARR) {
+        params = json_value_to_body((struct json_value *)files,
+                                    "agent_impact_params");
+        if (!params) {
+            res->error = MCP_ERR_INTERNAL;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "malloc failed for agent impact params");
+            LOG_ERR("mcp.ops", "malloc failed for agent impact params");
+            return -1; // raw-return-ok:logged-oom
+        }
+    }
+
+    char *body = mcp_node_rpc("agentimpact", params ? params : "[]");
+    free(params);
+    return mcp_return_rpc_body(res, body, "agentimpact", "mcp.ops");
+}
+
 DEFINE_PT(h_zcl_mirror_status, "getmirrorstatus",       "mcp.ops")
 DEFINE_PT(h_zcl_filemanifest,  "getfilemanifeststatus", "mcp.ops")
 
@@ -1285,6 +1310,10 @@ static const struct mcp_param_spec p_rpc[] = {
     { "params", MCP_PARAM_STR, false, "JSON params array",
       0, 0, 0, 0, NULL, "\"[]\"" },
 };
+static const struct mcp_param_spec p_agent_impact[] = {
+    { "files", MCP_PARAM_ARRAY, false, "Changed repository file paths",
+      0, 0, 0, 0, NULL, "[]" },
+};
 static const struct mcp_param_spec p_postmortem_list[] = {
     { "dir", MCP_PARAM_STR, false, "Capsule directory",
       0, 0, 0, 512, NULL, NULL },
@@ -1319,6 +1348,23 @@ static const struct mcp_tool_route k_routes[] = {
       "and recommended next tools, with raw diagnostics attached under "
       "`raw` for drill-down.",
       NULL, 0, h_zcl_operator_summary, 0, NULL },
+    { "zcl_agent_map", "ops",
+      "AI-coder map: primary native/MCP commands, code ownership, docs, "
+      "and focused tests. Prefer this over searching shell wrappers.",
+      NULL, 0, h_zcl_agent_map, 0, NULL },
+    { "zcl_agent_impact", "ops",
+      "Map changed repository file paths to subsystem, risk, docs, "
+      "recommended focused tests, and pre-push gates.",
+      p_agent_impact, PARAM_COUNT(p_agent_impact), h_zcl_agent_impact,
+      0, "{\"files\":[\"app/controllers/src/event_controller.c\",\"tools/mcp/controllers/ops_controller.c\"]}" },
+    { "zcl_agent_contracts", "ops",
+      "Versioned AI/operator API contracts across native, MCP, REST, "
+      "and deprecated compatibility transports.",
+      NULL, 0, h_zcl_agent_contracts, 0, NULL },
+    { "zcl_agent_build", "ops",
+      "Fast C build contract: incremental object builds, cache knobs, "
+      "focused tests, strict gates, and byte-identity reproducibility.",
+      NULL, 0, h_zcl_agent_build, 0, NULL },
     { "zcl_milestone", "ops",
       "Node-computed ASCII and JSON progress toward the next version "
       "milestone, including systems/goals/subgoals bars and MVP criteria.",
