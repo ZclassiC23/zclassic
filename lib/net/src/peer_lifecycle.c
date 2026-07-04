@@ -471,6 +471,8 @@ static void summary_to_json(const struct peer_lifecycle_summary *s,
     json_push_kv_int(out, "cache_skipped", s->cache_skipped);
     json_push_kv_int(out, "magicbean_handshakes",
                      s->magicbean_handshakes);
+    json_push_kv_int(out, "legacy_magicbean_handshakes",
+                     s->legacy_compatible_handshakes);
     json_push_kv_int(out, "legacy_compatible_handshakes",
                      s->legacy_compatible_handshakes);
     json_push_kv_int(out, "zclassic23_handshakes",

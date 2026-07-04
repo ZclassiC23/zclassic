@@ -118,7 +118,7 @@ static struct p2p_node *syncdiag_add_peer(struct connman *cm,
     node->state = state;
     node->services = NODE_NETWORK | NODE_ZCL23;
     snprintf(node->sub_ver, sizeof(node->sub_ver),
-             "%s", "/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/");
+             "%s", "/ZClassic23:0.1.0/");
     snprintf(node->clean_sub_ver, sizeof(node->clean_sub_ver),
              "%s", node->sub_ver);
     node->starting_height = 3117074;

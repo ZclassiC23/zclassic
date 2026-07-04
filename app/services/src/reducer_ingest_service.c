@@ -351,8 +351,15 @@ static bool reducer_persist_ingested_body_locked(
 
     struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
                                             block_hash);
-    if (!bi)
-        return true;
+    if (!bi) {
+        char hex[65];
+        uint256_get_hex(block_hash, hex);
+        LOG_WARN("reducer",
+                 "body persist missing block_index entry for hash=%s; "
+                 "header admission did not create a selectable candidate",
+                 hex);
+        return validation_state_error(out, "reducer-body-header-missing");
+    }
 
     /* Stamp nTx from the body in hand (defect #10): without it the
      * emitted EV_BLOCK_HEADER carries n_tx=0, the projection persists

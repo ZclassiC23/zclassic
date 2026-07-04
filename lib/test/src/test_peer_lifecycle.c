@@ -63,11 +63,11 @@ static const struct json_value *find_lifecycle_source(
 static int test_peer_lifecycle_user_agent(void)
 {
     int failures = 0;
-    TEST_CASE("peer_lifecycle: version user agent advertises MagicBean and C23")
+    TEST_CASE("peer_lifecycle: version user agent advertises ZClassic23")
     {
         const char *ua = msg_version_user_agent();
-        ASSERT(strstr(ua, "MagicBean:2.1.2-beta1") != NULL);
-        ASSERT(strstr(ua, "ZClassic23:0.1.0") != NULL);
+        ASSERT(strcmp(ua, "/ZClassic23:0.1.0/") == 0);
+        ASSERT(strstr(ua, "MagicBean") == NULL);
     } TEST_END
     return failures;
 }
@@ -78,7 +78,7 @@ static int test_peer_lifecycle_classify(void)
     TEST_CASE("peer_lifecycle: subver/service classification")
     {
         bool mb = false, z23 = false;
-        ASSERT(msg_version_classify_peer("/MagicBean:2.1.2-beta1/",
+        ASSERT(msg_version_classify_peer("/MagicBean:2.1.2/",
                                          NODE_NETWORK, &mb, &z23));
         ASSERT(mb);
         ASSERT(!z23);
@@ -209,7 +209,7 @@ static int test_peer_lifecycle_counters(void)
         ASSERT(s.active == 1);
         ASSERT(s.disconnected == 1);
         ASSERT(s.cache_skipped == 1);
-        ASSERT(s.magicbean_handshakes == 1);
+        ASSERT(s.magicbean_handshakes == 0);
         ASSERT(s.zcl23_handshakes == 1);
         ASSERT(g_lifecycle_disconnect_events == 1);
         ASSERT(strstr(g_lifecycle_disconnect_payload,
@@ -232,7 +232,9 @@ static int test_peer_lifecycle_counters(void)
         ASSERT(json_get_int(json_get(addnode, "active")) == 1);
         ASSERT(json_get_int(json_get(addnode, "disconnected")) == 1);
         ASSERT(json_get_int(json_get(addnode, "cache_skipped")) == 1);
-        ASSERT(json_get_int(json_get(addnode, "magicbean_handshakes")) == 1);
+        ASSERT(json_get_int(json_get(addnode, "magicbean_handshakes")) == 0);
+        ASSERT(json_get_int(json_get(addnode,
+                                      "legacy_magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(addnode, "zclassic23_handshakes")) == 1);
         ASSERT(json_get_int(json_get(addnode, "zclassic_c23_handshakes")) == 1);
         json_free(&dump);
@@ -280,7 +282,9 @@ static int test_peer_lifecycle_inbound_source_bucket(void)
         ASSERT(json_get_int(json_get(inbound, "version_sent")) == 1);
         ASSERT(json_get_int(json_get(inbound, "version_received")) == 1);
         ASSERT(json_get_int(json_get(inbound, "handshake_complete")) == 1);
-        ASSERT(json_get_int(json_get(inbound, "magicbean_handshakes")) == 1);
+        ASSERT(json_get_int(json_get(inbound, "magicbean_handshakes")) == 0);
+        ASSERT(json_get_int(json_get(inbound,
+                                      "legacy_magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(inbound, "zclassic_c23_handshakes")) == 1);
         json_free(&summary);
     } TEST_END
@@ -343,7 +347,7 @@ static int test_peer_lifecycle_inbound_classifies_remote_version(void)
         node.state = PEER_HANDSHAKE_COMPLETE;
         snprintf(node.addr_name, sizeof(node.addr_name), "203.0.113.10:8033");
         snprintf(node.sub_ver, sizeof(node.sub_ver),
-                 "%s", "/MagicBean:2.1.2-beta1/");
+                 "%s", "/MagicBean:2.1.2-beta6/");
         node.services = NODE_NETWORK;
 
         peer_lifecycle_note_connected(&node, PEER_LIFECYCLE_SOURCE_INBOUND);

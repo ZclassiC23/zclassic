@@ -366,6 +366,39 @@ static bool log_tip_hash_at(sqlite3 *db, int height, struct uint256 *out)
     return found;
 }
 
+static bool seed_tip_anchor_tf(sqlite3 *db, int height,
+                               const struct uint256 *hash)
+{
+    if (!hash)
+        return false;
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "  height           INTEGER PRIMARY KEY,"
+        "  status           TEXT    NOT NULL,"
+        "  ok               INTEGER NOT NULL,"
+        "  work_delta_high  INTEGER NOT NULL,"
+        "  work_delta_low   INTEGER NOT NULL,"
+        "  utxo_size_after  INTEGER NOT NULL,"
+        "  reorg_depth      INTEGER NOT NULL,"
+        "  finalized_at     INTEGER NOT NULL,"
+        "  tip_hash         BLOB"
+        ")"))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO tip_finalize_log "
+        "(height, status, ok, work_delta_high, work_delta_low, "
+        " utxo_size_after, reorg_depth, finalized_at, tip_hash) "
+        "VALUES(?, 'anchor', 1, 0, 0, -1, 0, 1, ?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static uint64_t cursor_at(sqlite3 *db, const char *name)
 {
     sqlite3_stmt *st = NULL;
@@ -486,17 +519,20 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
         ok_setup = ok_setup &&
             seed_coins_applied_height(progress_store_db(), 3);
+        ok_setup = ok_setup &&
+            seed_tip_anchor_tf(progress_store_db(), 2, &sc.hashes[2]);
         ok_setup = ok_setup && exec_sql(progress_store_db(),
             "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
             "VALUES('tip_finalize', 2, 1)");
         ok_setup = ok_setup && tip_finalize_stage_init(&ms);
         tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
         TF_CHECK("stale_cursor: setup", ok_setup);
-        /* The anchor floor is the restored tip's OWN height (5), never
-         * tip+1: stamping 6 would claim the unfinalized 5→6 transition and
-         * skip it forever (the served-tip-trails-by-one defect). */
-        TF_CHECK("stale_cursor: cursor anchored at restored tip",
-                 tip_finalize_stage_cursor() == 5);
+        /* The raw active-chain window is at 5, but coins_applied_height=3
+         * means coins are applied only through 2. Startup must keep the
+         * served authority at the durable coin-backed tip and must not turn
+         * the overextended window into a new anchor. */
+        TF_CHECK("stale_cursor: cursor remains durable coin-backed tip",
+                 tip_finalize_stage_cursor() == 2);
         TF_CHECK("stale_cursor: header_admit not anchored from active tip",
                  cursor_at(progress_store_db(), "header_admit") == 0);
         TF_CHECK("stale_cursor: validate_headers not anchored from active tip",
@@ -511,22 +547,16 @@ int test_tip_finalize_stage(void)
                  cursor_at(progress_store_db(), "proof_validate") == 0);
         TF_CHECK("stale_cursor: utxo_apply remains at coins frontier",
                  cursor_at(progress_store_db(), "utxo_apply") == 3);
-        TF_CHECK("stale_cursor: public height remains restored tip",
-                 active_chain_height(&ms.chain_active) == 5);
+        TF_CHECK("stale_cursor: public height remains coin-backed tip",
+                 active_chain_height(&ms.chain_active) == 2);
+        TF_CHECK("stale_cursor: public tip resolves to coin-backed block",
+                 active_chain_tip(&ms.chain_active) == &sc.blocks[2]);
+        TF_CHECK("stale_cursor: raw window remains overextended",
+                 active_chain_cached_tip(&ms.chain_active) == &sc.blocks[5]);
         int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];
-        TF_CHECK("stale_cursor: anchor row written",
-                 log_row_at(progress_store_db(), 5, &row_ok, status,
-                            sizeof(status), &depth, &utxos));
-        TF_CHECK("stale_cursor: anchor row ok",
-                 row_ok == 1 && strcmp(status, "anchor") == 0);
-        TF_CHECK("stale_cursor: stale lower rows do not replay",
-                 tip_finalize_stage_step_once() == JOB_IDLE);
-        /* CS-F3: the repeated cursor_in>utxo_apply gap step still idles —
-         * the per-tick WARN is throttled but the verdict is unchanged. */
-        TF_CHECK("stale_cursor: repeat gap step stays IDLE",
-                 tip_finalize_stage_step_once() == JOB_IDLE);
-        TF_CHECK("stale_cursor: public height still restored tip",
-                 active_chain_height(&ms.chain_active) == 5);
+        TF_CHECK("stale_cursor: high anchor not written",
+                 !log_row_at(progress_store_db(), 5, &row_ok, status,
+                             sizeof(status), &depth, &utxos));
         tf_teardown(dir, &ms, &sc);
     }
 
@@ -702,6 +732,52 @@ int test_tip_finalize_stage(void)
                  active_chain_height(&ms.chain_active) == tip->nHeight);
         TF_CHECK("authority_pair: published authority did not regress",
                  tip_finalize_stage_last_height() == 3);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* A boot-time active-chain window may sit ahead of the coins frontier
+         * after a torn/overextended restore. The generic active-tip re-anchor
+         * must not turn that window into served finality: only a height whose
+         * coins are applied through H may become the tip_finalize authority. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize",
+                        "authority_coin_cap");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 5);
+        for (int i = 0; ok_setup && i <= 4; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[4]);
+        ok_setup = ok_setup &&
+            seed_tip_anchor_tf(progress_store_db(), 2, &sc.hashes[2]) &&
+            seed_cursor_tf(progress_store_db(), "tip_finalize", 2) &&
+            seed_coins_applied_height(progress_store_db(), 3);
+        ok_setup = ok_setup && tip_finalize_stage_init(&ms);
+        TF_CHECK("authority_coin_cap: setup", ok_setup);
+        TF_CHECK("authority_coin_cap: boot publishes durable coin-backed tip",
+                 tip_finalize_stage_last_height() == 2);
+        int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        TF_CHECK("authority_coin_cap: high anchor absent after init",
+                 !log_row_at(progress_store_db(), 4, &row_ok, status,
+                             sizeof(status), &depth, &utxos));
+
+        tip_finalize_stage_set_authoritative_tip(4, sc.hashes[4].data);
+        TF_CHECK("authority_coin_cap: high re-anchor does not publish",
+                 tip_finalize_stage_last_height() == 2);
+        TF_CHECK("authority_coin_cap: high re-anchor writes no anchor",
+                 !log_row_at(progress_store_db(), 4, &row_ok, status,
+                             sizeof(status), &depth, &utxos));
+        TF_CHECK("authority_coin_cap: cursor remains durable tip",
+                 tip_finalize_stage_cursor() == 2);
         tf_teardown(dir, &ms, &sc);
     }
 

@@ -133,7 +133,7 @@ void msg_version_clear_external_ip_for_test(void)
 
 const char *msg_version_user_agent(void)
 {
-    return "/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/";
+    return "/ZClassic23:0.1.0/";
 }
 
 static bool msg_version_subver_is_zcl23(const char *subver)
@@ -207,13 +207,9 @@ void msg_version_build(struct version_message *ver,
         ver->addr_from.svc.port = g_external_port;
     }
     ver->nonce = mp->net_mgr->local_host_nonce;
-    /* User-agent: lead with /MagicBean:.../ so existing zclassicd peers
-     * recognize us as a same-network client (some peer filters check
-     * this prefix when picking outbound slots). Append our own
-     * ZClassic23 identifier so operators can tell us apart from the
-     * legacy C++ daemon in `getpeerinfo` output. The MagicBean version
-     * stays in sync with the running zclassicd reference so the
-     * protocol version signaling matches what peers expect. */
+    /* User-agent: advertise the native ZClassic23 identity. Legacy
+     * /MagicBean:.../ peers remain accepted by the classifier; this string is
+     * only our public product identity, not consensus or network magic. */
     snprintf(ver->sub_version, sizeof(ver->sub_version), "%s",
              msg_version_user_agent());
     ver->start_height = start_height;

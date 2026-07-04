@@ -293,25 +293,27 @@ verify_contract() {
         json_has_key "$net" "$key" ||
             { last_err="getnetworkinfo missing $key: $net"; return 1; }
     done
-    printf '%s\n' "$net" | grep -q '"advertised_subver"[[:space:]]*:[[:space:]]*"/MagicBean:' ||
-        { last_err="node is not advertising MagicBean-compatible subver: $net"; return 1; }
+    printf '%s\n' "$net" | grep -q '"advertised_subver"[[:space:]]*:[[:space:]]*"/ZClassic23:0\.1\.0/"' ||
+        { last_err="node is not advertising native ZClassic23 subver: $net"; return 1; }
 
     peer=$(rpc_dumpstate peer_lifecycle summary)
     json_has_key "$peer" summary ||
         { last_err="peer_lifecycle summary missing: $peer"; return 1; }
     json_has_key "$peer" sources ||
         { last_err="peer_lifecycle sources missing: $peer"; return 1; }
-    json_has_key "$peer" legacy_compatible_handshakes ||
+    json_has_key "$peer" legacy_magicbean_handshakes ||
         { last_err="peer_lifecycle missing legacy handshake canary: $peer"; return 1; }
+    json_has_key "$peer" legacy_compatible_handshakes ||
+        { last_err="peer_lifecycle missing legacy handshake alias: $peer"; return 1; }
     json_has_key "$peer" zclassic23_handshakes ||
         { last_err="peer_lifecycle missing zclassic23 handshake canary: $peer"; return 1; }
     json_has_key "$peer" zclassic_c23_handshakes ||
         { last_err="peer_lifecycle missing zclassic_c23 compatibility canary: $peer"; return 1; }
     json_has_key "$peer" pre_handshake_disconnects ||
         { last_err="peer_lifecycle missing pre-handshake disconnect counter: $peer"; return 1; }
-    if ! printf '%s\n' "$peer" | grep -q '"legacy_compatible_handshakes"[[:space:]]*:[[:space:]]*[1-9]'; then
+    if ! printf '%s\n' "$peer" | grep -q '"legacy_magicbean_handshakes"[[:space:]]*:[[:space:]]*[1-9]'; then
         printf '%s\n' "$peer" | grep -q '"attempted"[[:space:]]*:[[:space:]]*0' ||
-            { last_err="no legacy-compatible handshake observed and peers were reachable: $peer"; return 1; }
+            { last_err="no legacy MagicBean handshake observed and peers were reachable: $peer"; return 1; }
     fi
 
     mirror=$(rpc_dumpstate legacy_mirror consensus_authority)

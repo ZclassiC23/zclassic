@@ -702,7 +702,7 @@ int test_block_index_loader(void)
      * INSTALL the tip at N (rooted at the canonical genesis) yet REFUSE every
      * unsafe variant: an oversized walk (mainnet floor cap), a link missing
      * HAVE_DATA/VALID_SCRIPTS, a non-canonical genesis terminus, and
-     * coins_applied < tip_height. It also must still cleanly extend an
+     * coins_applied_height <= tip_height. It also must still cleanly extend an
      * existing live tip (cur_tip != NULL, the unchanged branch). */
     {
         chain_params_select(CHAIN_REGTEST);
@@ -782,8 +782,9 @@ int test_block_index_loader(void)
             tip_finalize_stage_seed_anchor(N, hashes[N].data, true);
         BIL_CHECK("bil/seedfin: durable anchor seeded at N", anchor_ok);
 
-        /* Helper: set coins_kv applied_height directly (utxo_apply convention
-         * stores applied-through height; the gate compares applied >= N). */
+        /* Helper: set coins_kv applied_height directly. The utxo_apply cursor
+         * convention stores the NEXT height to apply, so tip N is coin-backed
+         * only when coins_applied_height >= N+1. */
         #define BIL_SET_APPLIED(H) do {                                       \
             if (db) {                                                         \
                 sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);        \
@@ -798,15 +799,24 @@ int test_block_index_loader(void)
         BIL_CHECK("bil/seedfin: REFUSE when coins_applied absent (<N)",
                   r_no_coins == 0 && active_chain_tip(&ms.chain_active) == NULL);
 
-        /* (iv) coins_applied = N-1 (< N) → refuse (finalized>coins). */
+        /* (iv-a) coins_applied = N-1 (< N) → refuse (finalized>coins). */
         BIL_SET_APPLIED(N - 1);
         int r_low_coins = db ? block_index_loader_seed_tip_from_finalized(
                                    &ms, cp, db) : 1;
         BIL_CHECK("bil/seedfin: REFUSE when coins_applied < tip_height",
                   r_low_coins == 0 && active_chain_tip(&ms.chain_active) == NULL);
 
-        /* Raise coins to N for the install + remaining structural cases. */
+        /* (iv-b) coins_applied = N still means coins are applied through N-1,
+         * so publishing tip N must refuse too. */
         BIL_SET_APPLIED(N);
+        int r_equal_coins = db ? block_index_loader_seed_tip_from_finalized(
+                                     &ms, cp, db) : 1;
+        BIL_CHECK("bil/seedfin: REFUSE when coins_applied == tip_height",
+                  r_equal_coins == 0 &&
+                  active_chain_tip(&ms.chain_active) == NULL);
+
+        /* Raise coins to N+1 for the install + remaining structural cases. */
+        BIL_SET_APPLIED(N + 1);
 
         /* (ii) a mid-chain link missing HAVE_DATA → refuse. Clear it, test,
          * restore it. */
@@ -854,7 +864,7 @@ int test_block_index_loader(void)
                                                       &hashes[N - 2]);
             (void)chain_set_active_tip(&ms, live, TIP_FROM_RESTORE,
                                        "bil_seedfin_extend_setup");
-            BIL_SET_APPLIED(N);
+            BIL_SET_APPLIED(N + 1);
             int r_ext = (db && live)
                 ? block_index_loader_seed_tip_from_finalized(&ms, cp, db) : 0;
             BIL_CHECK("bil/seedfin: extend-live-chain branch installs h=N",
@@ -902,11 +912,11 @@ int test_block_index_loader(void)
                 bn->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
                 bn->hashBlock = bh; bn->phashBlock = &bn->hashBlock;
             }
-            /* coins_applied = big_h so ONLY the MAX_GAP cap can be the refuser
-             * (the precondition would otherwise also refuse). */
+            /* coins_applied = big_h+1 so ONLY the MAX_GAP cap can be the
+             * refuser (the precondition would otherwise also refuse). */
             if (db2) {
                 sqlite3_exec(db2, "BEGIN IMMEDIATE", NULL, NULL, NULL);
-                coins_kv_set_applied_height_in_tx(db2, big_h);
+                coins_kv_set_applied_height_in_tx(db2, big_h + 1);
                 sqlite3_exec(db2, "COMMIT", NULL, NULL, NULL);
             }
             bool anchor2 = db2 && tf2 &&

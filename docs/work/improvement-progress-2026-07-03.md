@@ -29,7 +29,7 @@ Live baseline checked before edits:
   aggregate scan.
 - [x] C: replace single-prevout `coins_kv_get_coins()` reconstruction on stage
   hot paths with a point-read that returns value/script/height/coinbase.
-- [x] V1: canonicalize the advertised MagicBean/ZClassic23 user-agent while
+- [x] V1: canonicalize the advertised ZClassic23 user-agent while
   keeping old `ZClassic-C23` peer classification compatible.
 - [x] V1: accept `-externalip=IPv4:port` so public P2P address advertisement
   matches operator service flags.
@@ -179,7 +179,7 @@ Live baseline checked before edits:
     service lookup and RPC environment threading for both reporters.
 - V1 protocol identity patch:
   - The advertised P2P user-agent is now the canonical
-    `/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/` string.
+    `/ZClassic23:0.1.0/` string.
   - `connman_init()` now sources its default subver from
     `msg_version_user_agent()` instead of a duplicated literal.
   - Peer classification accepts both the new `ZClassic23` token and the legacy
@@ -321,7 +321,7 @@ Live baseline checked before edits:
     fields.
   - The older `zclassic_c23*` keys and metric remain as compatibility aliases,
     so existing scripts keep working while new operator surfaces match the
-    advertised `/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/` subver.
+    advertised `/ZClassic23:0.1.0/` subver.
   - The public-node runbook now points operators at the canonical keys.
 - V1 canonical-identity cleanup pass:
   - `zcl_status` now counts peers advertising the canonical `ZClassic23` token

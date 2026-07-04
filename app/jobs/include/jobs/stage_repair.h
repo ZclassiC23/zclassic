@@ -111,7 +111,7 @@ bool stage_repair_body_fetch_observed(struct sqlite3 *db, int height);
 
 struct stage_reconcile_result {
     bool clamped;   /* the tip_finalize cursor was strictly above floor and moved */
-    int  floor;     /* coins_best + 1 */
+    int  floor;     /* coins_best: highest durably applied block height */
 };
 
 struct stage_reducer_frontier_reconcile_result {
@@ -294,18 +294,18 @@ static inline bool stage_reducer_frontier_result_is_memo_clean(
  * idles ("cursor says done") and never re-finalizes, so the connect gate
  * rejects every block at coins_best+1 with "block-not-finalized-by-reducer".
  *
- * This reconciles ONLY the tip_finalize cursor to the stronger of
- * `coins_best + 1` and durable served finality
- * (`MAX(tip_finalize_log.ok=1) + 1`). The second guard is mandatory because a
- * stale coins_best scan can lag rows already served to RPC; boot must never
- * lower the public tip below those finalized rows. Upstream logs/cursors are
- * left untouched, so any re-finalize pass still has its evidence.
+ * This reconciles ONLY the tip_finalize cursor to `coins_best`, the highest
+ * durably applied block height. Durable tip_finalize_log rows above that
+ * frontier are preserved as forensic/public-floor evidence, but they are not
+ * executable authority: raising the cursor above coins_best recreates the
+ * uv_cursor_gap wedge where tip_finalize waits ahead of utxo_apply forever.
+ * Upstream logs/cursors are left untouched, so any re-finalize pass still has
+ * its evidence.
  *
  * SAFETY (proven in test_stage_reducer_unwedge):
  *   - It NEVER deletes any *_log row, and it never writes the tip_finalize
- *     cursor below the Tier-2 public-tip authority
- *     (`SELECT MAX(height) FROM tip_finalize_log WHERE ok=1`) plus one. The
- *     public tip must not regress below served finality.
+ *     cursor above the durably applied coins frontier. The public served-floor
+ *     evidence is preserved by keeping tip_finalize_log rows intact.
  *   - It touches ONLY the tip_finalize cursor — no upstream cursor or log — so
  *     the re-finalize cannot self-stall.
  *   - No-op (clamped=false) when the tip_finalize cursor already equals the

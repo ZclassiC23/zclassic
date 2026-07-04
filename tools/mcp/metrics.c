@@ -734,7 +734,7 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
     int64_t mb_pc = atomic_load(&g_node_magicbean_peer_count);
     int64_t z23_pc = atomic_load(&g_node_zcl23_peer_count);
     pos = append(buf, cap, pos,
-        "# HELP zcl_magicbean_peer_count Connected peers identifying as /MagicBean:.../ (zclassicd or compatible)\n"
+        "# HELP zcl_magicbean_peer_count Connected peers identifying as zclassicd-era /MagicBean:.../ clients\n"
         "# TYPE zcl_magicbean_peer_count gauge\n"
         "zcl_magicbean_peer_count %lld\n"
         "# HELP zcl_zclassic23_peer_count Connected peers identifying as ZClassic23 (NODE_ZCL23 services or subver tag)\n"

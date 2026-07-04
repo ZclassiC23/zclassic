@@ -24,6 +24,7 @@
 #include "core/uint256.h"
 #include "services/invariant_sentinel.h"
 #include "services/seed_integrity_gate.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
@@ -59,6 +60,45 @@ static bool ensure_authority_anchor_row(sqlite3 *db, int height,
     return log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash);
 }
 
+static bool authority_coin_frontier_allows(sqlite3 *db, int height,
+                                           const char *reason, bool *allowed)
+{
+    if (!allowed) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] authority anchor coin-frontier guard missing "
+                 "out param h=%d reason=%s",
+                 height, reason ? reason : "");
+        return false;
+    }
+    *allowed = true;
+    if (!db || height < 0)
+        return true;
+
+    int32_t applied = -1;
+    bool found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &found)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] authority anchor coin-frontier read failed "
+                 "h=%d reason=%s",
+                 height, reason ? reason : "");
+        return false;
+    }
+    if (!found)
+        return true;  /* legacy/pre-coins-kv datadir: do not change behavior */
+
+    /* coins_applied_height is the NEXT height to apply. A served tip at H
+     * requires coins applied through H, i.e. applied >= H+1. */
+    if (applied > height)
+        return true;
+
+    LOG_WARN("tip_finalize",
+             "[tip_finalize] authority anchor skipped h=%d "
+             "coins_applied_height=%d reason=%s (finalized>coins)",
+             height, applied, reason ? reason : "");
+    *allowed = false;
+    return true;
+}
+
 bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
                                              const uint8_t hash[32],
                                              bool anchor_upstream,
@@ -81,6 +121,16 @@ bool tip_finalize_anchor_cursor_to_authority(sqlite3 *db, int height,
                  "(pair self-check)", height, reason ? reason : "");
         return false;
     }
+    bool coin_allowed = true;
+    if (!authority_coin_frontier_allows(db, height, reason, &coin_allowed)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] authority anchor coin-frontier guard failed "
+                 "h=%d reason=%s",
+                 height, reason ? reason : "");
+        return false;
+    }
+    if (!coin_allowed)
+        return true;
 
     /* The cursor floor is the authority tip's OWN height — never height+1.
      * Cursor C means "transitions through C-1→C are finalized; C→C+1 is

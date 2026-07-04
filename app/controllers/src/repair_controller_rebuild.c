@@ -134,16 +134,32 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
 {
     *accepted = false;
 
+    char canonical_hex[65] = {0};
+    struct uint256 canonical_hash;
+    memset(&canonical_hash, 0, sizeof(canonical_hash));
+    if (!legacy_chain_rpc_get_block_hash_hex(height, canonical_hex)) {
+        snprintf(err, err_sz, "fetch block hash %d from zclassicd failed",
+                 height);
+        return false;
+    }
+    uint256_set_hex(&canonical_hash, canonical_hex);
+
     /* Skip blocks already present on the active chain: they connected, and
      * their finalization just awaits a later body we will still fetch. This
      * avoids re-fetching + re-ingesting the whole already-present prefix on
      * every run (the rebuild window starts a margin below the tip), so the
-     * loop jumps straight to the genuinely-missing frontier body. */
+     * loop jumps straight to the genuinely-missing frontier body.
+     *
+     * Same-height stale forks must NOT be skipped. A local active slot at H
+     * with HAVE_DATA is only sufficient if its hash equals zclassicd's
+     * canonical getblockhash(H); otherwise rebuild_recent is specifically here
+     * to replace that stale sibling. */
     if (ctx && ctx->main_state) {
         struct block_index *have =
             active_chain_at(&ctx->main_state->chain_active, height);
         if (have && (have->nStatus & BLOCK_HAVE_DATA) &&
-            !block_has_any_failure(have))
+            !block_has_any_failure(have) && have->phashBlock &&
+            uint256_cmp(have->phashBlock, &canonical_hash) == 0)
             return true; /* present; advance to the next height */
     }
 
@@ -183,6 +199,18 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
     }
     stream_free(&s);
     free(bin);
+
+    struct uint256 body_hash;
+    block_header_get_hash(&blk.header, &body_hash);
+    if (uint256_cmp(&body_hash, &canonical_hash) != 0) {
+        char got_hex[65];
+        uint256_get_hex(&body_hash, got_hex);
+        block_free(&blk);
+        snprintf(err, err_sz,
+                 "zclassicd block %d hash mismatch: got %s want %s",
+                 height, got_hex, canonical_hex);
+        return false;
+    }
 
     struct validation_state state;
     validation_state_init(&state);

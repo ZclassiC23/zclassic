@@ -11,6 +11,7 @@
 #include "tip_finalize_stage_observe.h"
 
 #include "chain/chain.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
@@ -41,6 +42,32 @@ static bool has_no_durable_tip_history(sqlite3 *db)
            stage_log_row_count(db, STAGE_NAME, "tip_finalize_log") <= 0;
 }
 
+static bool fresh_tip_coin_frontier_allows(sqlite3 *db,
+                                           const struct block_index *tip,
+                                           const char *reason)
+{
+    if (!db || !tip || tip->nHeight < 0)
+        return true;
+    int32_t applied = -1;
+    bool found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &found)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] fresh authority coin-frontier read failed "
+                 "h=%d reason=%s",
+                 tip->nHeight, reason ? reason : "");
+        return false;
+    }
+    if (!found)
+        return true;  /* legacy/pre-coins-kv datadir: do not change behavior */
+    if (applied > tip->nHeight)
+        return true;
+    LOG_WARN("tip_finalize",
+             "[tip_finalize] fresh authority publish skipped h=%d "
+             "coins_applied_height=%d reason=%s (finalized>coins)",
+             tip->nHeight, applied, reason ? reason : "");
+    return false;
+}
+
 bool tip_finalize_stage_hydrate_cursor_from_store(sqlite3 *db,
                                                   stage_t *stage,
                                                   const char *reason)
@@ -65,7 +92,8 @@ void tip_finalize_stage_publish_resolved_or_fresh_tip(
     if (publish_resolved_durable_tip(db, reason))
         return;
     if (existing_tip && existing_tip->phashBlock &&
-        has_no_durable_tip_history(db)) {
+        has_no_durable_tip_history(db) &&
+        fresh_tip_coin_frontier_allows(db, existing_tip, reason)) {
         tip_finalize_observe_update_last_advance(
             existing_tip->nHeight, existing_tip->phashBlock->data);
         LOG_INFO("tip_finalize",

@@ -6,12 +6,13 @@
  * Mechanism reuse (no reinvention of reducer reorg machinery):
  *   - mark failed         : process_block_propagate_failed_child (the
  *                           same descendant-CHILD walk used by chain advance).
- *   - roll the chain back : active-chain cursor move + reducer kick.
+ *   - persist status flip : block_tree_db_write_block_index against the shared
+ *                           block-index LevelDB handle.
+ *   - roll the chain back : active-chain cursor move + reducer kick after
+ *                           FAILED is already visible.
  *   - reconnect best chain: reducer stage drain via the activation controller
  *                           and find_most_work_chain (which already skips
  *                           BLOCK_FAILED entries).
- *   - persist status flips: block_tree_db_write_block_index against the shared
- *                           block-index LevelDB handle.
  */
 
 #include "validation/process_block_invalidate.h"
@@ -252,10 +253,30 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
      * the single owner of coins_tip/params/datadir. */
     struct chain_activation_controller *ctl = boot_activation_controller();
 
-    /* Roll the active chain back below the target FIRST. find_most_work_chain
-     * refuses to return a candidate below the active tip, so the chain
-     * must be disconnected to target's parent before activation can pick
-     * the next-best fork. (Bitcoin Core's InvalidateBlock does the same.) */
+    /* Mark FAILED_VALID before any reducer kick. The disconnect helper moves
+     * the active-chain cursor down and kicks the reducer so the staged unwind
+     * observes the retreat. If the target is still selectable during that kick,
+     * find_most_work_chain can immediately reselect the same stale block and
+     * the live recovery becomes a no-op (tip h -> same h, no UTXO unwind). */
+    size_t marked_children = 0;
+    process_block_mark_invalid(ms, target, &marked_children);
+
+    /* Persist the target's flip before the kick as well. The in-memory mark is
+     * enough for the selector in this process; the LevelDB write makes the
+     * operator action restart-stable before reducer recovery begins. Descendant
+     * CHILD marks are derived from the persisted target on boot. */
+    bool persisted = invalidate_persist_pindex(target);
+    if (!persisted) {
+        LOG_RETURN(INVALIDATE_PERSIST_FAILED, "validation",
+                    "invalidate: failed to persist FAILED_VALID for h=%d "
+                    "(in-memory mark holds until restart)", target->nHeight);
+    }
+
+    /* Roll the active chain back below the failed target. find_most_work_chain
+     * refuses to return a candidate below the active tip, so the chain must be
+     * disconnected to target's parent before activation can pick the next-best
+     * fork. With the FAILED mark already visible, the reducer kick cannot
+     * reselect the invalidated block. */
     if (ctl && ctl->coins_tip &&
         active_chain_contains(&ms->chain_active, target)) {
         struct validation_state vs;
@@ -263,25 +284,10 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
         if (!process_block_disconnect_to_parent(&vs, ms, ctl->coins_tip,
                                                  ctl->params, target,
                                                  ctl->datadir)) {
-            /* Leave the FAILED mark off — we did not mutate status yet —
-             * so the operator can retry. */
             LOG_RETURN(INVALIDATE_DISCONNECT_FAIL, "validation",
                         "invalidate: could not disconnect active chain "
                         "below h=%d", target->nHeight);
         }
-    }
-
-    /* Mark FAILED_VALID + propagate FAILED_CHILD. */
-    size_t marked_children = 0;
-    process_block_mark_invalid(ms, target, &marked_children);
-
-    /* Persist the target's flip (descendants are CHILD-derived and will
-     * be re-derived on boot from the persisted target). */
-    bool persisted = invalidate_persist_pindex(target);
-    if (!persisted) {
-        LOG_RETURN(INVALIDATE_PERSIST_FAILED, "validation",
-                    "invalidate: failed to persist FAILED_VALID for h=%d "
-                    "(in-memory mark holds until restart)", target->nHeight);
     }
 
     /* Kick the engine so the next-best fully-valid chain is reconnected.

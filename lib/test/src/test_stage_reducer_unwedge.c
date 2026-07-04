@@ -11,12 +11,15 @@
  * cursor; on restart the Tier-2 public-tip authority
  * (SELECT MAX(height) FROM tip_finalize_log WHERE ok=1) lost its evidence base
  * and the public tip COLLAPSED to an ancient surviving row (~47279) — a chain
- * reset. This test pins the corrected, reset-safe behavior:
+ * reset. A later variant used MAX(ok=1) as executable cursor authority and
+ * recreated the live uv_cursor_gap wedge when stale served-floor rows sat above
+ * coins_best. This test pins the corrected, reset-safe behavior:
  *   - reconciles ONLY the tip_finalize cursor (upstream cursors untouched),
  *   - deletes NO log rows (so MAX(ok=1) can never drop below coins_best),
- *   - never writes the cursor below MAX(ok=1) — the served tip's OWN height
- *     (the served-tip convention, task #31: cursor C == served tip at C, NOT
- *     C+1), and no-ops when coins_best < 0. */
+ *   - never writes the executable cursor above coins_best just because stale
+ *     served-floor evidence exists,
+ *   - uses the served tip's OWN height convention (cursor C == served tip at C,
+ *     NOT C+1), and no-ops when coins_best < 0. */
 
 #include "test/test_helpers.h"
 #include "jobs/stage_repair.h"
@@ -127,18 +130,14 @@ int test_stage_reducer_unwedge(void)
        stage_reconcile_clamp_tip_finalize_to_floor(db, APPLIED, &rr));
     UW("reconciled (cursor was off target)", rr.clamped == true);
     /* TASK #31: the served-tip cursor floor is the served tip's OWN height,
-     * NEVER +1. The prior pins (STALE+1) encoded the +1 bug — a tip_finalize
-     * cursor C means "served tip at C; the C→C+1 transition is pending", so a
-     * deepest finalized row at STALE means the served tip IS at STALE and the
-     * cursor floor is STALE. Stamping STALE+1 claimed the unfinalized
-     * STALE→STALE+1 transition and skipped it forever (one late block per
-     * restart). The floor is the stronger of the served floor (STALE, since
-     * STALE > APPLIED here) and the applied coins tip (APPLIED). */
-    UW("floor preserves served finality", rr.floor == STALE);
+     * NEVER +1. The live regression pinned here is distinct: stale
+     * served-floor evidence at STALE must not raise the executable cursor above
+     * APPLIED, because utxo_apply has not applied APPLIED+1..STALE. */
+    UW("floor stays at applied coins frontier", rr.floor == APPLIED);
 
-    /* reconciles ONLY tip_finalize, to the served-finality target */
-    UW("tip_finalize cursor reconciled to floor",
-       uw_cursor(db, "tip_finalize") == STALE);
+    /* reconciles ONLY tip_finalize, to the applied-frontier target */
+    UW("tip_finalize cursor reconciled to coins frontier",
+       uw_cursor(db, "tip_finalize") == APPLIED);
     /* upstream cursors UNCHANGED (this is what lets re-finalize replay forward) */
     UW("utxo_apply cursor UNCHANGED", uw_cursor(db, "utxo_apply") == CURSOR);
     UW("body_fetch cursor UNCHANGED", uw_cursor(db, "body_fetch") == CURSOR);
@@ -152,26 +151,23 @@ int test_stage_reducer_unwedge(void)
     UW("Tier-2 MAX(ok=1) unchanged by reconcile",
        uw_query_int(db, SQL_TIP_FINALIZE_MAX_OK) == max_before);
 
-    /* ── no-op: cursor already at the served-finality floor (STALE, not
-     * STALE+1 — task #31 served-tip convention) ── */
-    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',6,1)");
+    /* ── no-op: cursor already at the applied-frontier floor. ── */
+    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',3,1)");
     struct stage_reconcile_result rr2;
     memset(&rr2, 0, sizeof(rr2));
     UW("no-op when cursor at floor (not ahead)",
        stage_reconcile_clamp_tip_finalize_to_floor(db, APPLIED, &rr2) &&
        rr2.clamped == false);
-    UW("cursor unchanged on no-op", uw_cursor(db, "tip_finalize") == STALE);
+    UW("cursor unchanged on no-op", uw_cursor(db, "tip_finalize") == APPLIED);
 
-    /* ── behind served finality: raise to MAX(ok=1) == served tip's own
-     * height (NOT +1), never leave a lower cursor that would let public
-     * height regress. ── */
+    /* ── behind the applied frontier: raise to coins_best. ── */
     uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',2,1)");
     struct stage_reconcile_result rr3;
     memset(&rr3, 0, sizeof(rr3));
-    UW("raises when cursor is behind served floor",
+    UW("raises when cursor is behind coins frontier",
        stage_reconcile_clamp_tip_finalize_to_floor(db, APPLIED, &rr3) &&
        rr3.clamped == true);
-    UW("cursor raised to served floor", uw_cursor(db, "tip_finalize") == STALE);
+    UW("cursor raised to coins frontier", uw_cursor(db, "tip_finalize") == APPLIED);
 
     /* ── refuse when no durable anchor (coins_best < 0) ── */
     struct stage_reconcile_result rr4;

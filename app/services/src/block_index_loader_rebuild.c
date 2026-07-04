@@ -259,7 +259,7 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     int32_t applied = -1; bool found = false;
     if (!coins_kv_get_applied_height(progress_db, &applied, &found))
         return 0;
-    if (!found || applied < tip_height) {
+    if (!found || applied <= tip_height) {
         LOG_WARN("block_index",
                  "seed_tip_from_finalized: refuse install h=%d coins_applied=%d "
                  "found=%d (finalized>coins)", tip_height,

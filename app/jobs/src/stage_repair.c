@@ -6,8 +6,8 @@
  *   - stage_repair_body_fetch.c      — body-fetch candidacy detection,
  *   - stage_repair_rewind.c          — the destructive poison rewind.
  * This TU owns the boot-time tip-finalize cursor reconcile (the SAFE,
- * non-destructive repair that never writes the cursor below durable
- * tip_finalize_log finality). It reuses the shared progress.kv accessors from
+ * non-destructive repair that never deletes durable tip_finalize_log finality).
+ * It reuses the shared progress.kv accessors from
  * jobs/stage_repair_internal.h. */
 
 #include "jobs/stage_repair.h"
@@ -75,7 +75,7 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
         return false;
     }
 
-    /* The tip_finalize cursor floor is the served/applied tip's OWN height —
+    /* The tip_finalize cursor floor is the applied tip's OWN height —
      * never +1 (task #31, unifying the last two +1 conventions with the
      * task-#30 authority-anchor fix). `coins_best` here IS the served tip
      * height: boot_derive_coins_best returns coins_applied_height-1, and the
@@ -85,12 +85,14 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
      * coins_best+1 claims the coins_best→coins_best+1 transition that nothing
      * finalized and SKIPS it forever (the cursor is monotonic) — one late
      * block per restart through this repair path (block coins_best+1 could
-     * only publish when coins_best+2 arrived). served_floor (the deepest
-     * finalized ok=1 height) is itself a served tip height under the same
-     * convention, so the stronger floor is served_floor, not served_floor+1. */
+     * only publish when coins_best+2 arrived).
+     *
+     * A durable tip_finalize_log row above coins_best is not enough authority
+     * to raise the cursor: if the upstream reducer/UTXO frontier is lower,
+     * that row is stale served-floor evidence and raising to it recreates the
+     * uv_cursor_gap wedge. Keep the rows for forensics/reset-safety, but
+     * clamp the cursor to the applied coins frontier only. */
     int floor = coins_best;
-    if (served_floor >= 0 && served_floor > floor)
-        floor = served_floor;
     if (out)
         out->floor = floor;
 
@@ -100,12 +102,9 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
         return false;
     }
 
-    /* Cursor target is the stronger of the coins frontier and already-served
-     * finality (both served-tip heights). Never lowering below served_floor
-     * prevents a boot-time public tip regression when stale coins_best metadata
-     * lags durable finalized rows. If the cursor is behind served finality,
-     * advancing it to the target only skips rows that tip_finalize_log already
-     * proved ok=1. */
+    /* Cursor target is the applied coins frontier. Do not delete log rows:
+     * stale served-floor evidence remains inspectable, but it cannot pull the
+     * executable stage cursor above the reducer frontier. */
     if (cur == floor) {
         progress_store_tx_unlock();
         return true;   /* no-op, clamped=false */
@@ -146,7 +145,7 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     LOG_WARN("stage_repair",
              "[stage_repair] reducer cursor reconcile: tip_finalize cursor "
              "%d -> %d (coins_best=%d served_floor=%d); no logs deleted, "
-             "public tip remains floored at served finality",
+             "served-floor evidence preserved",
              cur, floor, coins_best, served_floor);
     return true;
 }

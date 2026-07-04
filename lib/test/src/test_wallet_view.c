@@ -2327,8 +2327,7 @@ int test_wallet_view(void)
     printf("NODE: page has ZClassic23 advertised version string... ");
     {
         wv_get("/wallet/node");
-        bool ok = wv_has("MagicBean:2.1.2-beta1") &&
-                  wv_has("ZClassic23:0.1.0");
+        bool ok = !wv_has("MagicBean:") && wv_has("ZClassic23:0.1.0");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

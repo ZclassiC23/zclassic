@@ -633,7 +633,7 @@ static char *mock_status_rpc(const char *method, const char *params_json)
     if (strcmp(method, "getblockcount") == 0)
         return strdup("3117073");
     if (strcmp(method, "getpeerinfo") == 0)
-        return strdup("[{\"inbound\":false,\"subver\":\"/MagicBean:2.1.2-beta1/ZClassic23:0.1.0/\",\"startingheight\":3117074}]");
+        return strdup("[{\"inbound\":false,\"subver\":\"/ZClassic23:0.1.0/\",\"startingheight\":3117074}]");
     if (strcmp(method, "syncstate") == 0)
         return strdup("{\"state\":\"at_tip\"}");
     if (strcmp(method, "validationstatus") == 0)

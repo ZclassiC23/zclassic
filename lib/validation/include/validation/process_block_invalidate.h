@@ -21,9 +21,9 @@
  * invalidateblock NEVER connects a block. It only:
  *   1. marks the target pindex BLOCK_FAILED_VALID,
  *   2. propagates BLOCK_FAILED_CHILD to its descendants,
- *   3. moves the active-chain cursor back below the target (if the target
- *      is on the active chain) through the reducer stage-unwind path,
- *   4. persists the status flips, and
+ *   3. persists the status flip before any reducer kick,
+ *   4. moves the active-chain cursor back below the target (if the target
+ *      is on the active chain) through the reducer stage-unwind path, and
  *   5. kicks the reducer so the next-best chain drains through the
  *      stage pipeline — every applied block runs the FULL `connect_block`
  *      validator (Equihash + scripts + Sapling). No consensus rule changes,
