@@ -163,6 +163,7 @@ bool node_health_chain_advance_synced(const struct cac_decision *decision);
 void node_health_test_set_log_head_override(int log_head);
 void node_health_test_set_chain_advance_decision_override(
     const struct cac_decision *decision);
+void node_health_test_set_memory_rss_mb_override(int64_t memory_rss_mb);
 #endif
 
 #endif

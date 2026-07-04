@@ -2194,6 +2194,86 @@ static int t_tools_z_operator_diagnostics_contract(void)
     return failures;
 }
 
+static int t_agent_fast_ci_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("agent fast CI stays cache-aware and native-service first") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "fast-ci agent-fast-ci dev-ci") != NULL);
+        ASSERT(strstr(buf, "t-fast") != NULL);
+        ASSERT(strstr(buf, "test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "tools/agent_fast_ci.sh") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "zcl.agent_fast_ci.v1") != NULL);
+        ASSERT(strstr(buf, "sccache cc") != NULL);
+        ASSERT(strstr(buf, "ccache cc") != NULL);
+        ASSERT(strstr(buf, "git diff --check") != NULL);
+        ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
+        ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
+        ASSERT(strstr(buf, "make_fast build-only") != NULL);
+        ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
+        ASSERT(strstr(buf, "no focused test mapping for code changes")
+               != NULL);
+        ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS") != NULL);
+        ASSERT(strstr(buf, "make_fast \"$target\" ONLY") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
+        ASSERT(strstr(buf, "node_health_service") != NULL);
+        ASSERT(strstr(buf, "mcp_controllers") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_NODE_BIN") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23") != NULL);
+        ASSERT(strstr(buf, "zcl.public_status.v1") != NULL);
+        ASSERT(strstr(buf, ".status == \"healthy\"") != NULL);
+        ASSERT(strstr(buf, ".healthy == true") != NULL);
+        ASSERT(strstr(buf, "healthcheck") != NULL);
+        ASSERT(strstr(buf, ".checks.has_peers == true") != NULL);
+        ASSERT(strstr(buf, "tools/z topology --json") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_LIVE") != NULL);
+        ASSERT(strstr(buf, "not full release CI") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "docs/work/fast-path.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "`make fast-ci`") != NULL);
+        ASSERT(strstr(buf, "`make t-fast ONLY=<group>`") != NULL);
+        ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CC") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS=1") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23 agent") != NULL);
+        ASSERT(strstr(buf, "MCP tools") != NULL);
+        ASSERT(strstr(buf, "`tools/z`") != NULL);
+        ASSERT(strstr(buf, "tracked pre-push hook runs full `make ci`")
+               != NULL);
+        ASSERT(strstr(buf, "`bench-regress`, `zclassic23`, `test_parallel`")
+               != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "tools/githooks/pre-push") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "Fast local edit-loop before commit:  make fast-ci")
+               != NULL);
+        ASSERT(strstr(buf, "default pre-push remains full make ci") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_native_agent_api_contract(void)
 {
     int failures = 0;
@@ -3916,6 +3996,7 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_agent_fast_ci_contract();
     failures += t_native_agent_api_contract();
     failures += t_mvp_reporters_resolve_live_service_rpc_contract();
     failures += t_soak_assert_requires_known_mirror_lag();

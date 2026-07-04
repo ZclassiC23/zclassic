@@ -439,9 +439,12 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
 
     if (!health.serving) {
         status = "blocked";
-        primary = "not_serving";
+        primary = health.blocking_reason[0] ? health.blocking_reason
+                                            : "not_serving";
         next_endpoint = "/api/v1/health";
-        summary = "node is not serving";
+        summary = health.blocking_reason[0]
+            ? "node has an active health blocker"
+            : "node is not serving";
         operator_needed = true;
     } else if (!health.has_peers) {
         status = "blocked";

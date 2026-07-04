@@ -110,6 +110,7 @@ static int64_t get_rss_kb(void)
 }
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
+static const int64_t HEALTH_RSS_WARNING_MB = 4096;
 
 static int health_tip_finalize_log_head(void)
 {
@@ -131,6 +132,7 @@ static int health_tip_finalize_log_head(void)
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_log_head_override = -2;
+static _Atomic int64_t g_test_memory_rss_mb_override = -1;
 static bool g_test_chain_advance_decision_override_enabled;
 static struct cac_decision g_test_chain_advance_decision_override;
 
@@ -150,6 +152,11 @@ void node_health_test_set_chain_advance_decision_override(
     memset(&g_test_chain_advance_decision_override, 0,
            sizeof(g_test_chain_advance_decision_override));
     g_test_chain_advance_decision_override_enabled = false;
+}
+
+void node_health_test_set_memory_rss_mb_override(int64_t memory_rss_mb)
+{
+    atomic_store(&g_test_memory_rss_mb_override, memory_rss_mb);
 }
 #endif
 
@@ -258,6 +265,8 @@ static void health_finalize_serving_status(struct node_health_snapshot *snapshot
         health_add_warning(snapshot, "tip_stale");
     if (snapshot->last_error_recent)
         health_add_warning(snapshot, "recent_error");
+    if (snapshot->memory_rss_mb > HEALTH_RSS_WARNING_MB)
+        health_add_warning(snapshot, "high_memory_usage");
     if (strcmp(snapshot->mirror_lag_breach_severity, "warn") == 0)
         health_add_warning(snapshot, "mirror_lag_warn");
     else if (strcmp(snapshot->mirror_lag_breach_severity, "critical") == 0)
@@ -536,6 +545,12 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     {
         int64_t rss_kb = get_rss_kb();
         snapshot->memory_rss_mb = (rss_kb > 0) ? rss_kb / 1024 : -1;
+#ifdef ZCL_TESTING
+        int64_t rss_override =
+            atomic_load(&g_test_memory_rss_mb_override);
+        if (rss_override >= 0)
+            snapshot->memory_rss_mb = rss_override;
+#endif
     }
 
     if (!snapshot->has_peers) {
@@ -581,9 +596,6 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "db_tx_open_%llds",
                  (long long)snapshot->db_last_activity_age_seconds);
-    } else if (snapshot->memory_rss_mb > 4096) {
-        snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
-                 "high_memory_usage");
     } else if (snapshot->tip_height < 0) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "active_tip_unknown");

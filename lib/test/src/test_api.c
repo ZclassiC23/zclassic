@@ -20,11 +20,13 @@
 #include "services/node_health_service.h"
 #include "storage/progress_store.h"
 #include "sync/sync_state.h"
+#include "util/alerts.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -1426,6 +1428,64 @@ int test_api(void)
                           "served_tip") == 0;
         json_free(&root);
 
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: public status names health blocking reason... ");
+    {
+        test_reset_shared_globals();
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        alerts_reset();
+        event_emitf(EV_OPERATOR_NEEDED, 0, "chain_integrity_failed");
+
+        struct main_state ms;
+        struct block_index *blocks[3] = {0};
+        bool ok = api_test_build_chain(&ms, blocks, 3);
+        reducer_frontier_provable_tip_set(2);
+        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+        size_t n = api_handle_request("GET", "/api/status", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                          "blocked") == 0;
+        ok = ok && !json_get_bool(json_get(&root, "healthy"));
+        ok = ok && !json_get_bool(json_get(&root, "serving"));
+        ok = ok && json_get_bool(json_get(&root, "operator_needed"));
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "primary_blocker")),
+                          "operator_needed:chain_integrity_failed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "summary")),
+                          "node has an active health blocker") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "next_endpoint")),
+                          "/api/v1/health") == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "primary_blocker")),
+                          "operator_needed:chain_integrity_failed") == 0;
+        json_free(&root);
+
+        alerts_shutdown();
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);

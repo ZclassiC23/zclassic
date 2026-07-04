@@ -194,11 +194,21 @@ all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
+CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
 # test.c and test_parallel.c each own their own main() — never both in
 # one binary. test_parallel_zcl uses the latter + the same test/spec
 # helpers as sequential test_zcl.
 TEST_SRCS_NO_MAIN = $(filter-out lib/test/src/test.c lib/test/src/test_parallel.c, $(TEST_SRCS))
+TEST_FAST_OBJ_DIR = $(BUILD_DIR)/test-obj
+TEST_PARALLEL_FAST_BIN = $(BIN_DIR)/test_parallel_fast
+TEST_PARALLEL_FAST_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
+TEST_PARALLEL_FAST_OBJS = $(patsubst %.c,$(TEST_FAST_OBJ_DIR)/%.o,$(TEST_PARALLEL_FAST_SRCS))
+TEST_FAST_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CFLAGS)) -O1 -g -DZCL_TESTING \
+	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
+TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
+
+-include $(TEST_PARALLEL_FAST_OBJS:.o=.d)
 
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
@@ -239,10 +249,15 @@ $$(BIN_DIR)/$(1): $$(TMPL_GEN) $$(BUILD_COMMIT_STAMP) $(2) $$(ALL_SRCS)
 	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN) $$(BUILD_COMMIT_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
 endef
 
-CHAOS_SIM_SRCS = tools/sim/sim_peer.c
-
 $(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
 $(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
+
+.PHONY: test_parallel_fast
+test_parallel_fast: $(TEST_PARALLEL_FAST_BIN)
+
+$(TEST_PARALLEL_FAST_BIN): $(TMPL_GEN) $(TEST_PARALLEL_FAST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_FAST_CFLAGS) $(TEST_FAST_LDFLAGS) -o $@ $(TEST_PARALLEL_FAST_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 .PHONY: test-parallel
 test-parallel: test_parallel
@@ -256,7 +271,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t syntax-check build-only lint-fast
+.PHONY: t t-fast syntax-check build-only lint-fast fast-ci agent-fast-ci dev-ci
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -265,6 +280,15 @@ t: test_parallel
 	  echo "usage: make t ONLY=<group-substr>   (e.g. make t ONLY=stage_reducer_unwedge)"; \
 	  exit 2; fi
 	ulimit -s unlimited && $(TEST_PARALLEL_BIN) --only=$(ONLY)
+
+# Hot-path variant for edit loops. It compiles changed files into cached
+# per-file test objects and links a non-LTO harness; use strict `make t`
+# before push/release or when chasing optimizer-dependent behavior.
+t-fast: test_parallel_fast
+	@if [ -z "$(ONLY)" ]; then \
+	  echo "usage: make t-fast ONLY=<group-substr>   (e.g. make t-fast ONLY=node_health_service)"; \
+	  exit 2; fi
+	ulimit -s unlimited && $(TEST_PARALLEL_FAST_BIN) --only=$(ONLY)
 
 # Incremental compile-check of the whole node (no link). Only changed TUs
 # recompile — the fastest "does my change still build" signal. The
@@ -282,6 +306,14 @@ syntax-check: $(TMPL_GEN)
 # sub-wave boundaries / before commit.
 lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validation check-one-write-path
 	@echo "lint-fast: OK"
+
+# Cache-aware agent/operator loop:
+#   make fast-ci
+#   ZCL_FAST_CC='ccache cc' make fast-ci
+#   ZCL_FAST_TESTS=make_lint_gates,mcp_controllers make fast-ci
+#   ZCL_FAST_LIVE=0 make fast-ci   # skip live linger-service probe
+fast-ci agent-fast-ci dev-ci:
+	@tools/agent_fast_ci.sh
 
 # ── Live-truth diagnosis + safe reproduction ─────────────────────────────
 # diagnose-gap: one-shot three-orthogonal-views dump + root-cause verdict over
@@ -1577,6 +1609,14 @@ $(OBJ_DIR)/%.o: %.c $(TMPL_GEN)
 
 # The one TU that bakes in ZCL_BUILD_COMMIT — see the stamp comment up top.
 $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+
+$(TEST_FAST_OBJ_DIR)/%.o: %.c $(TMPL_GEN)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_FAST_CFLAGS) -MMD -MP -c -o $@ $<
+
+# The fast test harness has its own object tree and also needs the commit TU
+# refreshed when HEAD changes.
+$(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 
 # Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
 #

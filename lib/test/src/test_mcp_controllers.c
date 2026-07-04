@@ -815,6 +815,35 @@ static char *mock_operator_healthy_rpc(const char *method,
     return strdup("null");
 }
 
+static char *mock_operator_needed_rpc(const char *method,
+                                      const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"blocks\":112,\"best_header_height\":112}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,\"state\":\"handshake_complete\","
+                      "\"startingheight\":112}]");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"at_tip\",\"chain_height\":112,"
+                      "\"best_header_height\":112,"
+                      "\"watchdog\":{\"active_conditions\":2}}");
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{\"in_flight\":0,\"queued\":0,"
+                      "\"sync_state\":\"at_tip\"}");
+    if (strcmp(method, "getmirrorstatus") == 0)
+        return strdup("{\"mirror_enabled\":true,\"mirror_running\":true,"
+                      "\"reachable\":true}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":false,\"serving\":false,"
+                      "\"checks\":{\"operator_needed\":true,"
+                      "\"operator_needed_detail\":\"chain_integrity_failed\","
+                      "\"blocking_reason\":\"operator_needed:chain_integrity_failed\","
+                      "\"condition_engine\":{\"active_count\":2,"
+                      "\"unresolved_count\":2}}}");
+    return strdup("null");
+}
+
 static int test_zcl_operator_summary_degraded_shape(void)
 {
     int failures = 0;
@@ -936,6 +965,42 @@ static int test_zcl_agent_alias_shape(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
                       "none");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_operator_summary_names_operator_needed_detail(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_operator_summary names operator-needed detail") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_needed_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")),
+                      "operator_needed");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "operator_needed:chain_integrity_failed");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "blocking_reason")),
+                      "operator_needed:chain_integrity_failed");
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "operator_needed_detail")),
+                      "chain_integrity_failed");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
+                      "zcl_conditions");
 
         json_free(&root);
         json_free(&args);
@@ -2278,6 +2343,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_operator_summary_degraded_shape();
     failures += test_zcl_operator_summary_healthy_shape();
     failures += test_zcl_agent_alias_shape();
+    failures += test_zcl_operator_summary_names_operator_needed_detail();
     failures += test_zcl_milestone_shape();
     failures += test_zcl_refold_status_shape();
     failures += test_zcl_status_includes_chain_advance_dump();

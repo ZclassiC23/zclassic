@@ -523,9 +523,12 @@ static bool rpc_agent_summary(const struct json_value *params, bool help,
 
     if (!health.serving) {
         status = "blocked";
-        primary = "not_serving";
+        primary = health.blocking_reason[0] ? health.blocking_reason
+                                            : "not_serving";
         next = "zclassic23 healthcheck";
-        summary = "node is not serving";
+        summary = health.blocking_reason[0]
+            ? "node has an active health blocker"
+            : "node is not serving";
         operator_needed = true;
     } else if (!health.has_peers) {
         status = "blocked";

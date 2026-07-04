@@ -55,10 +55,44 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | command | what |
 |---|---|
 | `make t ONLY=<group>` | run ONE test group, rebuilding the harness first (closes the stale-`test_parallel` rebuild trap) |
+| `make t-fast ONLY=<group>` | hot-path ONE test group via cached per-file test objects and a non-LTO harness |
 | `make build-only` | incremental compile-check of the whole node (no link) |
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
+| `make fast-ci` | cache-aware agent loop: `lint-fast` + `build-only` + focused tests inferred from changed files + native linger-service probe |
 | `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
+
+`make fast-ci` is the default edit-loop command for agents and operators. It
+auto-selects `sccache cc` or `ccache cc` when present; override with
+`ZCL_FAST_CC='ccache cc'`. It runs focused tests through `make t-fast`, which
+uses `build/bin/test_parallel_fast`: a cached per-file, non-LTO test harness
+that rebuilds only changed test/node objects after the first warm-up. It is
+non-`-Werror`; compile warning enforcement stays in `make build-only`, strict
+`make t`, and full CI. Force focused test groups with
+`ZCL_FAST_TESTS=make_lint_gates,mcp_controllers`; use `ZCL_FAST_STRICT_TESTS=1`
+to pay the strict `make t` whole-harness rebuild. Set parallelism with
+`ZCL_FAST_JOBS=N` (default caps at 16). The live check uses the C binary first
+(`build/bin/zclassic23 agent` +
+`build/bin/zclassic23 healthcheck`) against the linger service; override the
+binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
+`ZCL_FAST_LIVE=0` for isolated/offline work. Unmapped C/header/source-tree
+changes fail closed until you either add a focused-test mapping or pass
+`ZCL_FAST_TESTS=...`.
+
+Canonical operator APIs, in priority order:
+
+1. `build/bin/zclassic23 agent`, `healthcheck`, and raw RPC methods — native C
+   binary client to the running linger service.
+2. MCP tools (`zcl_agent`, `zcl_status`, `zcl_state`, `zcl_node_log`,
+   `zcl_sql`) — typed agent interface over the same node RPC truth.
+3. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
+4. `tools/z` — thin shell compatibility/fallback for terminals and scripts.
+
+`make fast-ci` is not the release gate. Before pushing `main`, the manual
+preflight remains `make lint`, `make build-only`, and the relevant strict
+`make t ONLY=<group>` tests; the tracked pre-push hook runs full `make ci`
+(`lint`, `bench-regress`, `zclassic23`, `test_parallel`, symbol floor, and
+MVP gates).
 
 ## Invariants that hold across every stage
 

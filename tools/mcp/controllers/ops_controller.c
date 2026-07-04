@@ -625,6 +625,10 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
                    status_json_bool(&health_j, "serving", false);
     bool operator_needed =
         checks && status_json_bool(checks, "operator_needed", false);
+    const char *health_blocking_reason =
+        checks ? status_json_str(checks, "blocking_reason", "") : "";
+    const char *operator_needed_detail =
+        checks ? status_json_str(checks, "operator_needed_detail", "") : "";
     long long active_conditions =
         condition_engine ? status_json_int(condition_engine, "active_count", 0)
                          : 0;
@@ -671,6 +675,7 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     const char *next_action = "zcl_status";
     const char *next_tool = "zcl_status";
     const char *next_tool2 = "";
+    char primary_blocker_buf[192] = {0};
     if (!chain_ok && !health_ok) {
         status = "rpc_unavailable";
         primary_blocker = "rpc_unavailable";
@@ -679,12 +684,20 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     } else if (operator_needed) {
         status = "operator_needed";
         primary_blocker = "operator_needed";
+        if (operator_needed_detail[0]) {
+            snprintf(primary_blocker_buf, sizeof(primary_blocker_buf),
+                     "operator_needed:%s", operator_needed_detail);
+            primary_blocker = primary_blocker_buf;
+        } else if (health_blocking_reason[0]) {
+            primary_blocker = health_blocking_reason;
+        }
         next_action = "inspect active conditions and operator-needed detail";
         next_tool = "zcl_conditions";
         next_tool2 = "zcl_node_log";
     } else if (health_ok && !serving) {
         status = "blocked";
-        primary_blocker = "not_serving";
+        primary_blocker = health_blocking_reason[0]
+            ? health_blocking_reason : "not_serving";
         next_action = "inspect health and typed blockers";
         next_tool = "zcl_health";
         next_tool2 = "zcl_blockers";
@@ -747,6 +760,10 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_push_kv_int(&root, "served_gap", served_gap);
     json_push_kv_str(&root, "sync_state", sync_state);
     json_push_kv_str(&root, "primary_blocker", primary_blocker);
+    json_push_kv_str(&root, "blocking_reason", health_blocking_reason);
+    if (operator_needed_detail[0])
+        json_push_kv_str(&root, "operator_needed_detail",
+                         operator_needed_detail);
     json_push_kv_str(&root, "next_action", next_action);
     json_push_kv_str(&root, "next_tool", next_tool);
     status_push_string_array(&root, "recommended_tools", next_tool,

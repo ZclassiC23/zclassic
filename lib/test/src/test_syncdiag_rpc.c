@@ -26,16 +26,19 @@
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
 #include "validation/mirror_consensus.h"
+#include "event/event.h"
 #include "net/connman.h"
 #include "net/fast_sync.h"
 #include "net/version.h"
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "json/json.h"
+#include "util/alerts.h"
 #include "util/clientversion.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* Push a 64 KiB frame filled with 0xCC onto the stack, then return.
  * The frame is freed on return but the bytes persist in memory — any
@@ -1021,6 +1024,53 @@ int test_syncdiag_rpc(void)
         json_free(&alias);
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC agent names health blocking reason... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        alerts_reset();
+        event_emitf(EV_OPERATOR_NEEDED, 0, "chain_integrity_failed");
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "agent", &params, &result);
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "blocked") == 0;
+        ok = ok && !json_get_bool(json_get(&result, "healthy"));
+        ok = ok && !json_get_bool(json_get(&result, "serving"));
+        ok = ok && json_get_bool(json_get(&result, "operator_needed"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_blocker")),
+                          "operator_needed:chain_integrity_failed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "summary")),
+                          "node has an active health blocker") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "next")),
+                          "zclassic23 healthcheck") == 0;
+
+        json_free(&params);
+        json_free(&result);
+        alerts_shutdown();
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

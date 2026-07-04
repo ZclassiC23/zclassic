@@ -9,6 +9,8 @@
 # nothing unverified reaches origin, instead of relying on a human to remember.
 #
 # Activate:  make install-hooks   (sets core.hooksPath=tools/githooks)
+# Fast local edit-loop before commit:  make fast-ci
+# The default pre-push remains full make ci.
 # Bypass once:  git push --no-verify     OR     ZCL_SKIP_PREPUSH=1 git push
 # Override the command (e.g. a faster subset):  ZCL_PREPUSH_CMD='make lint'
 #
