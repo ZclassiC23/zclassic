@@ -1058,11 +1058,17 @@ embedded Tor, MCP/RPC, P2P ping/latency.
 
 ## 6. Live ops state & lanes
 
-| Lane | Datadir | Deploy |
-|---|---|---|
-| **live** | `$HOME/.zclassic-c23` | `make deploy` (owner-gated) |
-| **dev** | `$HOME/.zclassic-c23-dev` | `make deploy-dev` |
-| **soak** | `$HOME/.zclassic-c23-soak` | deliberate re-baseline |
+| Lane | Datadir | Deploy | Purpose |
+|---|---|---|---|
+| **live** | `$HOME/.zclassic-c23` | `make deploy` (owner-gated) | Public daily-driver node. Restart only for vetted live deploys. |
+| **dev** | `$HOME/.zclassic-c23-dev` | `make deploy-dev` | Fresh-build lane for frequent development restarts. Never use live for hourly iteration. |
+| **soak** | `$HOME/.zclassic-c23-soak` | deliberate re-baseline | Long-uptime / weekly evidence lane. Do not churn during development. |
+
+`make deploy-dev` owns the dev service file and self-cleans a stale temporary
+`zcl23-dev.service.d/reindex.conf` override unless
+`ZCL_DEV_ALLOW_REINDEX_DROPIN=1` is set for an intentional one-off rebuild.
+That prevents an old recovery override from silently turning every dev restart
+into `-reindex-chainstate`.
 
 The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and
 folding forward, so each restart is a ~13 min self-healing boot (cold `node.db`

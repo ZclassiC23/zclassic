@@ -23,12 +23,22 @@ DEV_BIN="$HOME/.local/bin/zclassic23-dev"
 DEV_DATADIR="$HOME/.zclassic-c23-dev"
 LEGACY_SRC="$HOME/.zclassic"          # running zclassicd datadir (read-only import source)
 UNIT="zcl23-dev.service"
+STALE_REINDEX_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/reindex.conf"
 
 echo "[dev-lane] building fresh binary (stamp = $(git rev-parse --short HEAD))..."
 make build/bin/zclassic23 -j"$(nproc)" >/dev/null
 
 mkdir -p "$(dirname "$DEV_BIN")" "$DEV_DATADIR"
 install -m 644 "$REPO/deploy/$UNIT" "$HOME/.config/systemd/user/$UNIT"
+if [ -f "$STALE_REINDEX_DROPIN" ]; then
+    if [ "${ZCL_DEV_ALLOW_REINDEX_DROPIN:-0}" = "1" ]; then
+        echo "[dev-lane] preserving explicit reindex drop-in: $STALE_REINDEX_DROPIN"
+    else
+        echo "[dev-lane] removing stale reindex drop-in: $STALE_REINDEX_DROPIN"
+        echo "[dev-lane]   set ZCL_DEV_ALLOW_REINDEX_DROPIN=1 to keep a deliberate reindex override"
+        rm -f "$STALE_REINDEX_DROPIN"
+    fi
+fi
 systemctl --user daemon-reload
 
 # Stop before swapping the binary file (avoids ETXTBSY on a running text file).

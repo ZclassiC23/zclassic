@@ -2196,6 +2196,39 @@ static int t_tools_z_operator_diagnostics_contract(void)
     return failures;
 }
 
+static int t_dev_lane_deploy_contract(void)
+{
+    int failures = 0;
+    char *script = NULL;
+    char *handoff = NULL;
+    TEST("dev lane deploy self-cleans stale reindex override") {
+        char script_path[PATH_MAX];
+        char handoff_path[PATH_MAX];
+        ASSERT(repo_path(script_path, sizeof(script_path),
+                         "tools/dev/deploy-dev-lane.sh") == 0);
+        ASSERT(repo_path(handoff_path, sizeof(handoff_path),
+                         "docs/HANDOFF.md") == 0);
+        ASSERT(read_entire_file(script_path, &script) == 0);
+        ASSERT(read_entire_file(handoff_path, &handoff) == 0);
+
+        ASSERT(strstr(script, "STALE_REINDEX_DROPIN=") != NULL);
+        ASSERT(strstr(script, "zcl23-dev.service.d/reindex.conf") != NULL);
+        ASSERT(strstr(script, "ZCL_DEV_ALLOW_REINDEX_DROPIN") != NULL);
+        ASSERT(strstr(script, "removing stale reindex drop-in") != NULL);
+        ASSERT(strstr(script, "rm -f \"$STALE_REINDEX_DROPIN\"") != NULL);
+        ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
+        ASSERT(strstr(handoff, "Public daily-driver node") != NULL);
+        ASSERT(strstr(handoff, "Fresh-build lane for frequent development restarts")
+               != NULL);
+        ASSERT(strstr(handoff, "Long-uptime / weekly evidence lane") != NULL);
+        ASSERT(strstr(handoff, "ZCL_DEV_ALLOW_REINDEX_DROPIN=1") != NULL);
+        PASS();
+    } _test_next:;
+    free(script);
+    free(handoff);
+    return failures;
+}
+
 static int t_agent_fast_ci_contract(void)
 {
     int failures = 0;
@@ -4052,6 +4085,7 @@ int test_make_lint_gates(void)
     failures += t_legacy_candidate_source_has_no_override_scope();
     failures += t_tools_z_mirror_fallback_contract();
     failures += t_tools_z_operator_diagnostics_contract();
+    failures += t_dev_lane_deploy_contract();
     failures += t_agent_fast_ci_contract();
     failures += t_native_agent_api_contract();
     failures += t_mvp_reporters_resolve_live_service_rpc_contract();
