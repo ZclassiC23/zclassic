@@ -64,7 +64,8 @@ struct zcl_result {
 } while (0)
 
 /* Build a zcl_result from a format string. Defined in result.c.
- * fmt must not be NULL; use "" for an empty message. */
+ * NULL fmt is accepted defensively and becomes an explicit diagnostic
+ * marker; use "" for an intentionally empty message. */
 struct zcl_result zcl_result_make(int code, const char *file, int line,
                                    const char *fmt, ...)
     __attribute__((format(printf, 4, 5)));

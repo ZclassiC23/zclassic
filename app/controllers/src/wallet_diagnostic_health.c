@@ -115,8 +115,6 @@ bool rpc_getwalletaccounting(const struct json_value *params,
         /* Fee and input analysis (only for our sends) */
         int64_t tx_fee = 0;
         int64_t total_in = 0;
-        int64_t in_from_mine = 0;
-        int64_t in_from_other = 0;
 
         int missing_inputs = 0;
         if (wtx->from_me) {
@@ -128,10 +126,6 @@ bool rpc_getwalletaccounting(const struct json_value *params,
                     if (n < prev->tx.num_vout) {
                         int64_t v = prev->tx.vout[n].value;
                         total_in += v;
-                        if (wallet_is_mine(ctx->wallet, &prev->tx.vout[n]))
-                            in_from_mine += v;
-                        else
-                            in_from_other += v;
                     }
                 } else {
                     missing_inputs++;

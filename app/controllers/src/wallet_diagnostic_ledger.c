@@ -163,41 +163,31 @@ bool rpc_walletledger(const struct json_value *params, bool help,
         /* For this tx, find: T credits, T debits, Z credits, Z debits */
         int64_t t_credit = 0, t_debit = 0;
         int64_t z_credit = 0, z_debit = 0;
-        int t_credit_count = 0, t_debit_count = 0;
-        int z_credit_count = 0, z_debit_count = 0;
 
         /* T credits: UTXOs created by this tx */
         for (int u = 0; u < nutxos; u++) {
-            if (memcmp(all_utxos[u].txid, events[e].txid, 32) == 0) {
+            if (memcmp(all_utxos[u].txid, events[e].txid, 32) == 0)
                 t_credit += all_utxos[u].value;
-                t_credit_count++;
-            }
         }
 
         /* T debits: UTXOs spent by this tx */
         for (int u = 0; u < nutxos; u++) {
             if (all_utxos[u].is_spent &&
-                memcmp(all_utxos[u].spent_txid, events[e].txid, 32) == 0) {
+                memcmp(all_utxos[u].spent_txid, events[e].txid, 32) == 0)
                 t_debit += all_utxos[u].value;
-                t_debit_count++;
-            }
         }
 
         /* Z credits: notes created by this tx (received into wallet) */
         for (int n = 0; n < nnotes; n++) {
-            if (memcmp(all_notes[n].txid, events[e].txid, 32) == 0) {
+            if (memcmp(all_notes[n].txid, events[e].txid, 32) == 0)
                 z_credit += all_notes[n].value;
-                z_credit_count++;
-            }
         }
 
         /* Z debits: notes spent by this tx */
         for (int n = 0; n < nnotes; n++) {
             if (all_notes[n].is_spent &&
-                memcmp(all_notes[n].spent_txid, events[e].txid, 32) == 0) {
+                memcmp(all_notes[n].spent_txid, events[e].txid, 32) == 0)
                 z_debit += all_notes[n].value;
-                z_debit_count++;
-            }
         }
 
         /* Fee */

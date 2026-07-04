@@ -5,6 +5,15 @@
 #include <stdio.h>
 #include <string.h>
 
+static void zcl_result_set_literal(struct zcl_result *r, const char *message)
+{
+    size_t len = strlen(message);
+    if (len >= sizeof(r->message))
+        len = sizeof(r->message) - 1;
+    memcpy(r->message, message, len);
+    r->message[len] = '\0';
+}
+
 struct zcl_result zcl_result_make(int code, const char *file, int line,
                                    const char *fmt, ...)
 {
@@ -16,19 +25,20 @@ struct zcl_result zcl_result_make(int code, const char *file, int line,
     };
     r.message[0] = '\0';
 
+    if (!fmt) {
+        zcl_result_set_literal(&r, "<zcl_result: missing format>");
+        return r;
+    }
+
     va_list ap;
     va_start(ap, fmt);
-    int n = vsnprintf(r.message, sizeof(r.message), fmt ? fmt : "", ap);
+    int n = vsnprintf(r.message, sizeof(r.message), fmt, ap);
     va_end(ap);
 
     if (n < 0) {
         /* Formatting failure: degrade to a safe marker so callers
          * still see a non-empty message. */
-        const char *fallback = "<zcl_result: vsnprintf failed>";
-        size_t flen = strlen(fallback);
-        if (flen >= sizeof(r.message)) flen = sizeof(r.message) - 1;
-        memcpy(r.message, fallback, flen);
-        r.message[flen] = '\0';
+        zcl_result_set_literal(&r, "<zcl_result: vsnprintf failed>");
     } else if ((size_t)n >= sizeof(r.message)) {
         /* Truncation: keep the leading bytes vsnprintf wrote but make
          * the truncation visible so operators aren't misled by a

@@ -98,6 +98,19 @@ static int test_zcl_empty_message(void)
     return failures;
 }
 
+static int test_zcl_null_format_is_explicit(void)
+{
+    int failures = 0;
+    TEST("zcl_result: NULL format produces an explicit diagnostic") {
+        struct zcl_result r = zcl_result_make(-7, __FILE__, __LINE__, NULL);
+        ASSERT(!r.ok);
+        ASSERT(r.code == -7);
+        ASSERT(strstr(r.message, "missing format") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcl_result(void)
 {
     int failures = 0;
@@ -106,5 +119,6 @@ int test_zcl_result(void)
     failures += test_zcl_check_propagates();
     failures += test_zcl_truncation_visible();
     failures += test_zcl_empty_message();
+    failures += test_zcl_null_format_is_explicit();
     return failures;
 }

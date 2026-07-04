@@ -710,7 +710,6 @@ int addrman_consistency_check(const struct addr_man *am,
 
     /* 1. Verify new table: every non-(-1) slot points to a valid, used,
      *    non-tried entry with ref_count > 0. */
-    int new_refs = 0;
     for (int b = 0; b < ADDRMAN_NEW_BUCKET_COUNT; b++) {
         for (int p = 0; p < ADDRMAN_BUCKET_SIZE; p++) {
             int id = am->vvNew[b][p];
@@ -726,7 +725,6 @@ int addrman_consistency_check(const struct addr_man *am,
             if (info->ref_count <= 0)
                 CC_ERR("new[%d][%d]: id=%d ref_count=%d <= 0",
                        b, p, id, info->ref_count);
-            new_refs++;
         }
     }
 
