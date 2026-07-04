@@ -2200,16 +2200,26 @@ static int t_dev_lane_deploy_contract(void)
 {
     int failures = 0;
     char *script = NULL;
+    char *lane_health = NULL;
     char *handoff = NULL;
+    char *makefile = NULL;
     TEST("dev lane deploy self-cleans stale reindex override") {
         char script_path[PATH_MAX];
+        char lane_health_path[PATH_MAX];
         char handoff_path[PATH_MAX];
+        char makefile_path[PATH_MAX];
         ASSERT(repo_path(script_path, sizeof(script_path),
                          "tools/dev/deploy-dev-lane.sh") == 0);
+        ASSERT(repo_path(lane_health_path, sizeof(lane_health_path),
+                         "tools/scripts/lane_health.sh") == 0);
         ASSERT(repo_path(handoff_path, sizeof(handoff_path),
                          "docs/HANDOFF.md") == 0);
+        ASSERT(repo_path(makefile_path, sizeof(makefile_path),
+                         "Makefile") == 0);
         ASSERT(read_entire_file(script_path, &script) == 0);
+        ASSERT(read_entire_file(lane_health_path, &lane_health) == 0);
         ASSERT(read_entire_file(handoff_path, &handoff) == 0);
+        ASSERT(read_entire_file(makefile_path, &makefile) == 0);
 
         ASSERT(strstr(script, "STALE_REINDEX_DROPIN=") != NULL);
         ASSERT(strstr(script, "zcl23-dev.service.d/reindex.conf") != NULL);
@@ -2222,10 +2232,26 @@ static int t_dev_lane_deploy_contract(void)
                != NULL);
         ASSERT(strstr(handoff, "Long-uptime / weekly evidence lane") != NULL);
         ASSERT(strstr(handoff, "ZCL_DEV_ALLOW_REINDEX_DROPIN=1") != NULL);
+        ASSERT(strstr(lane_health, "report_lane live zclassic23") != NULL);
+        ASSERT(strstr(lane_health, "report_lane soak zclassic23-soak") != NULL);
+        ASSERT(strstr(lane_health, "report_lane dev zcl23-dev") != NULL);
+        ASSERT(strstr(lane_health, "forced_reindex_flag_present") != NULL);
+        ASSERT(strstr(lane_health, "dev_booting_rpc_down") != NULL);
+        ASSERT(strstr(lane_health, "ZCL_LANE_LAG_WARN") != NULL);
+        ASSERT(strstr(lane_health, "tip_lag_to_live") != NULL);
+        ASSERT(strstr(lane_health, "lag_to_live_") != NULL);
+        ASSERT(strstr(lane_health, "--strict") != NULL);
+        ASSERT(strstr(makefile, "lane-health:") != NULL);
+        ASSERT(strstr(makefile, "tools/scripts/lane_health.sh") != NULL);
+        ASSERT(strstr(handoff, "make lane-health") != NULL);
+        ASSERT(strstr(handoff, "read-only three-lane status check") != NULL);
+        ASSERT(strstr(handoff, "lag from the live lane") != NULL);
         PASS();
     } _test_next:;
     free(script);
+    free(lane_health);
     free(handoff);
+    free(makefile);
     return failures;
 }
 

@@ -168,7 +168,7 @@ vendor-force:
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
-.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev lane-health check-restart-follow \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
         lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
@@ -1711,6 +1711,9 @@ seed-anchor-snapshot:
 # First run bootstraps via two-step cold import; later runs hot-swap the binary.
 deploy-dev:
 	@./tools/dev/deploy-dev-lane.sh
+
+lane-health:
+	@./tools/scripts/lane_health.sh
 
 release:
 	@./tools/release.sh

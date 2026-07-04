@@ -1070,6 +1070,12 @@ embedded Tor, MCP/RPC, P2P ping/latency.
 That prevents an old recovery override from silently turning every dev restart
 into `-reindex-chainstate`.
 
+`make lane-health` is the read-only three-lane status check. It reports the
+public live lane, long-uptime soak lane, and fresh-build dev lane with systemd
+state, RPC reachability, listener state, height, lag from the live lane, peer
+count, and any `-reindex-chainstate` flag. It is an observability/failsafe
+check, not an automatic failover mechanism.
+
 The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and
 folding forward, so each restart is a ~13 min self-healing boot (cold `node.db`
 read + Sapling tree rebuild + fold); a plain boot serving the persisted
