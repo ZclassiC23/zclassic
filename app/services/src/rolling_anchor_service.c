@@ -73,7 +73,7 @@ static struct {
     int    capacity;
     _Atomic int64_t total_extended;
     _Atomic int64_t total_skipped_policy;
-    _Atomic int64_t total_skipped_depth;
+    _Atomic int64_t total_skipped_depth, total_skipped_missing_body;
     _Atomic int64_t total_read_failures;
     /* CONSECUTIVE read failures: reset to 0 on any successful window commit.
      * Distinct from the monotonic total — this counts a genuinely-stuck
@@ -81,7 +81,7 @@ static struct {
     _Atomic int64_t consecutive_read_failures;
     /* The height the most recent read failure stopped at (the unreadable
      * block frame). Decides page-vs-warn against the sealed prefix. */
-    _Atomic int32_t last_read_fail_height;
+    _Atomic int32_t last_read_fail_height, last_missing_body_height;
     /* Page-once latch: set when the row-8 page fires, cleared when the
      * consecutive counter returns to 0 (a successful extend re-arms it). */
     _Atomic bool    read_fail_paged;
@@ -394,6 +394,34 @@ static bool ra_quorum_allows_commit(int height)
            qr.agreeing_sources >= 2;
 }
 
+static bool ra_note_window_read_failure(int sealed_end,
+                                        int next_start,
+                                        int fail_h)
+{
+    if (fail_h < 0 || fail_h <= sealed_end) {
+        atomic_fetch_add(&g_ra.total_read_failures, 1);
+        atomic_fetch_add(&g_ra.consecutive_read_failures, 1);
+        atomic_store(&g_ra.last_read_fail_height, (int32_t)fail_h);
+        LOG_WARN("rolling_anchor",
+                 "[rolling_anchor] extend: sealed read failed at h=%d "
+                 "(window start=%d prefix_end=%d) — stopping",
+                 fail_h, next_start, sealed_end);
+        return true;
+    }
+
+    int64_t skipped =
+        atomic_fetch_add(&g_ra.total_skipped_missing_body, 1) + 1;
+    atomic_store(&g_ra.last_missing_body_height, (int32_t)fail_h);
+    atomic_store(&g_ra.consecutive_read_failures, 0);
+    if (skipped == 1 || skipped % 60 == 0) {
+        LOG_INFO("rolling_anchor",
+                 "[rolling_anchor] extend: missing unsealed block body h=%d "
+                 "(window start=%d prefix_end=%d) — extension deferred",
+                 fail_h, next_start, sealed_end);
+    }
+    return false;
+}
+
 int rolling_anchor_extend_if_due(struct main_state *ms,
                                   const char *datadir)
 {
@@ -414,6 +442,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
     pthread_mutex_unlock(&g_ra.lock);
 
     if (current_end < 0) return 0;  /* no compile-time anchors */
+    int sealed_end = current_end;
 
     int next_start = ((current_end + 1) / (int)SHA3_WINDOW_SIZE) *
                      (int)SHA3_WINDOW_SIZE;
@@ -447,10 +476,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         uint8_t hash[32];
         int fail_h = -1;
         if (!ra_compute_window_hash(ms, datadir, next_start, hash, &fail_h)) {
-            atomic_fetch_add(&g_ra.total_read_failures, 1);
-            atomic_fetch_add(&g_ra.consecutive_read_failures, 1);
-            atomic_store(&g_ra.last_read_fail_height, (int32_t)fail_h);
-            LOG_WARN("rolling_anchor", "[rolling_anchor] extend: read failed at h=%d " "(window start=%d) — stopping", fail_h, next_start);
+            (void)ra_note_window_read_failure(sealed_end, next_start, fail_h);
             break;
         }
 
@@ -494,6 +520,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
         atomic_store(&g_ra.read_fail_paged, false);
         atomic_store(&g_ra.last_extend_unix, (int64_t)platform_time_wall_time_t());
 
+        sealed_end = last_h_in_win;
         next_start += (int)SHA3_WINDOW_SIZE;
         extended++;
     }
@@ -689,12 +716,16 @@ bool rolling_anchor_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_ra.total_skipped_policy));
     json_push_kv_int (out, "total_skipped_depth",
                       atomic_load(&g_ra.total_skipped_depth));
+    json_push_kv_int (out, "total_skipped_missing_body",
+                      atomic_load(&g_ra.total_skipped_missing_body));
     json_push_kv_int (out, "total_read_failures",
                       atomic_load(&g_ra.total_read_failures));
     json_push_kv_int (out, "consecutive_read_failures",
                       atomic_load(&g_ra.consecutive_read_failures));
     json_push_kv_int (out, "last_read_fail_height",
                       atomic_load(&g_ra.last_read_fail_height));
+    json_push_kv_int (out, "last_missing_body_height",
+                      atomic_load(&g_ra.last_missing_body_height));
     json_push_kv_bool(out, "read_fail_paged",
                       atomic_load(&g_ra.read_fail_paged));
     json_push_kv_int (out, "last_extend_unix",
@@ -724,30 +755,42 @@ void rolling_anchor_reset_for_test(void)
     atomic_store(&g_ra.total_extended, 0);
     atomic_store(&g_ra.total_skipped_policy, 0);
     atomic_store(&g_ra.total_skipped_depth, 0);
+    atomic_store(&g_ra.total_skipped_missing_body, 0);
     atomic_store(&g_ra.total_read_failures, 0);
     atomic_store(&g_ra.consecutive_read_failures, 0);
     atomic_store(&g_ra.last_read_fail_height, -1);
+    atomic_store(&g_ra.last_missing_body_height, -1);
     atomic_store(&g_ra.read_fail_paged, false);
     atomic_store(&g_ra.last_extend_unix, 0);
 }
 
 #ifdef ZCL_TESTING
 void rolling_anchor_test_inject_read_failure(int32_t failing_height)
-{
-    atomic_fetch_add(&g_ra.total_read_failures, 1);
-    atomic_fetch_add(&g_ra.consecutive_read_failures, 1);
-    atomic_store(&g_ra.last_read_fail_height, failing_height);
-}
+{ atomic_fetch_add(&g_ra.total_read_failures, 1); atomic_fetch_add(&g_ra.consecutive_read_failures, 1); atomic_store(&g_ra.last_read_fail_height, failing_height); }
+
+void rolling_anchor_test_note_window_read_failure(int32_t sealed_end,
+        int32_t next_start, int32_t failing_height)
+{ (void)ra_note_window_read_failure(sealed_end, next_start, failing_height); }
+
+int64_t rolling_anchor_test_total_read_failures(void)
+{ return atomic_load(&g_ra.total_read_failures); }
+
+int64_t rolling_anchor_test_total_skipped_missing_body(void)
+{ return atomic_load(&g_ra.total_skipped_missing_body); }
+
+int64_t rolling_anchor_test_consecutive_read_failures(void)
+{ return atomic_load(&g_ra.consecutive_read_failures); }
 
 void rolling_anchor_test_reset_read_failures(void)
 {
     atomic_store(&g_ra.consecutive_read_failures, 0);
+    atomic_store(&g_ra.total_read_failures, 0);
+    atomic_store(&g_ra.total_skipped_missing_body, 0);
     atomic_store(&g_ra.last_read_fail_height, -1);
+    atomic_store(&g_ra.last_missing_body_height, -1);
     atomic_store(&g_ra.read_fail_paged, false);
 }
 
 void rolling_anchor_test_run_stall_escalation(void)
-{
-    rolling_anchor_on_stall(NULL);
-}
+{ rolling_anchor_on_stall(NULL); }
 #endif

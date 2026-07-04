@@ -34,11 +34,15 @@ struct dump_frontier {
 
 struct hstar_blocker {
     bool found;
+    bool pending_edge;
     const char *stage;
     const char *log_table;
+    const char *pending_stage;
+    const char *pending_log_table;
     int32_t height;
     const char *kind;
     char reason[128];
+    char pending_reason[128];
 };
 
 static const struct dump_log k_logs[] = {
@@ -286,6 +290,20 @@ static bool hash_split_at(sqlite3 *db, int32_t height, bool *split)
     return true;
 }
 
+static bool tip_finalize_pending_edge(const struct dump_log *log,
+                                      const struct dump_frontier *fr,
+                                      int64_t block_height)
+{
+    /* tip_finalize's raw cursor is the served tip. A finalized row at H proves
+     * H, then the cursor advances to H+1 while the H+1 -> H+2 transition is
+     * still pending. That expected frontier edge has no row at the raw cursor
+     * yet and is not a repairable log hole. Older holes below the raw cursor
+     * still report as blockers. */
+    return log && fr && log->served_tip_cursor &&
+           fr->raw_cursor == block_height &&
+           fr->contiguous_frontier + 1 == block_height;
+}
+
 static bool first_hstar_blocker(sqlite3 *db,
                                 int32_t hstar,
                                 const struct dump_frontier *frontiers,
@@ -299,6 +317,8 @@ static bool first_hstar_blocker(sqlite3 *db,
     out->kind = "";
     out->stage = "";
     out->log_table = "";
+    out->pending_stage = "";
+    out->pending_log_table = "";
 
     int64_t block_height = (int64_t)hstar + 1;
     if (block_height < 0 || block_height > INT32_MAX)
@@ -324,6 +344,14 @@ static bool first_hstar_blocker(sqlite3 *db,
                             reason, sizeof(reason)))
             return false;
         if (!row_found) {
+            if (tip_finalize_pending_edge(&k_logs[i], fr, block_height)) {
+                out->pending_edge = true;
+                out->pending_stage = k_logs[i].stage;
+                out->pending_log_table = k_logs[i].log_table;
+                snprintf(out->pending_reason, sizeof(out->pending_reason),
+                         "%s", "tip-finalize-edge-pending");
+                continue;
+            }
             out->found = true;
             out->stage = k_logs[i].stage;
             out->log_table = k_logs[i].log_table;
@@ -507,6 +535,14 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                          ? diagnostic_repair_hint(blocker.kind,
                                                   blocker.reason)
                          : "");
+    json_push_kv_bool(out, "hstar_next_pending_edge",
+                      blocker.pending_edge);
+    json_push_kv_str(out, "hstar_next_pending_stage",
+                     blocker.pending_edge ? blocker.pending_stage : "");
+    json_push_kv_str(out, "hstar_next_pending_log_table",
+                     blocker.pending_edge ? blocker.pending_log_table : "");
+    json_push_kv_str(out, "hstar_next_pending_detail",
+                     blocker.pending_edge ? blocker.pending_reason : "");
     json_push_kv_int(out, "hstar_next_blocker_count",
                      blocker.found ? 1 : 0);
     json_push_kv_bool(out, "first_hstar_blocker_found", blocker.found);

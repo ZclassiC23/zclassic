@@ -36,8 +36,18 @@ static void peer_floor_tick(struct liveness_contract *c)
     /* When ≥ floor, also tick so the deadline timer doesn't drift; when
      * below floor, intentionally do NOT tick so the progress_quiet
      * window can advance and eventually fire on_stall. */
-    if (healthy >= PEER_FLOOR_TARGET)
+    if (healthy >= PEER_FLOOR_TARGET) {
+        /* Stable-good connectivity is healthy, not "no progress." Disable
+         * the frozen-marker gate while the floor is satisfied and force a
+         * same-count NO_PROGRESS latch to clear on recovery. */
+        supervisor_set_progress_max_quiet(g_peer_floor_id, 0);
+        supervisor_progress(g_peer_floor_id, -1);
+        supervisor_progress(g_peer_floor_id, (int64_t)healthy);
         supervisor_tick(g_peer_floor_id);
+    } else {
+        supervisor_set_progress_max_quiet(g_peer_floor_id,
+                                          PEER_FLOOR_QUIET_US);
+    }
 }
 
 static void peer_floor_stall(struct liveness_contract *c)
@@ -76,3 +86,23 @@ void net_supervisor_register(struct connman *cm)
         LOG_WARN("supervisor", "[supervisor] WARN net.outbound_floor register failed");
     }
 }
+
+#ifdef ZCL_TESTING
+void net_supervisor_test_tick_peer_floor(void)
+{
+    peer_floor_tick(&g_peer_floor_contract);
+}
+
+long long net_supervisor_test_peer_floor_quiet_us(void)
+{
+    return (long long)
+        atomic_load(&g_peer_floor_contract.progress_max_quiet_us);
+}
+
+void net_supervisor_test_reset_runtime(void)
+{
+    g_peer_floor_cm = NULL;
+    g_peer_floor_id = SUPERVISOR_INVALID_ID;
+    liveness_contract_init(&g_peer_floor_contract, "net.outbound_floor");
+}
+#endif

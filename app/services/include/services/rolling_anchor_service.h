@@ -95,6 +95,12 @@ void rolling_anchor_reset_for_test(void);
  * compiled under ZCL_TESTING. */
 #ifdef ZCL_TESTING
 void rolling_anchor_test_inject_read_failure(int32_t failing_height);
+void rolling_anchor_test_note_window_read_failure(int32_t sealed_end,
+                                                  int32_t next_start,
+                                                  int32_t failing_height);
+int64_t rolling_anchor_test_total_read_failures(void);
+int64_t rolling_anchor_test_total_skipped_missing_body(void);
+int64_t rolling_anchor_test_consecutive_read_failures(void);
 void rolling_anchor_test_reset_read_failures(void);
 void rolling_anchor_test_run_stall_escalation(void);
 #endif

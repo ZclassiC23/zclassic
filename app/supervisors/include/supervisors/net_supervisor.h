@@ -17,4 +17,10 @@ struct connman;
  * call is a no-op. `cm` is the live connman the peer-floor child reads. */
 void net_supervisor_register(struct connman *cm);
 
+#ifdef ZCL_TESTING
+void net_supervisor_test_tick_peer_floor(void);
+long long net_supervisor_test_peer_floor_quiet_us(void);
+void net_supervisor_test_reset_runtime(void);
+#endif
+
 #endif /* ZCL_NET_SUPERVISOR_H */

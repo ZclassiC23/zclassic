@@ -5,6 +5,7 @@
  * repair decisions separate from restore-plan execution. */
 
 #include "services/chain_restore_repair.h"
+#include "chain_restore_repair_internal.h"
 #include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_restore_disk_repair.h"
 #include "services/chain_restore_executor.h"
@@ -372,6 +373,8 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
         if (cur->pskip == NULL && cur->pprev)
             block_index_build_skip(cur);
     }
+
+    populated += chain_restore_repair_active_projection(c, tip_h);
 
     return populated;
 }

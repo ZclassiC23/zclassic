@@ -112,6 +112,20 @@ int test_rolling_anchor_service(void)
         /* effective prefix end = compile-time prefix end. */
         int prefix_end = rolling_anchor_effective_prefix_end();
 
+        /* The first block after the prefix is unsealed window territory.
+         * A sparse/snapshot datadir may not have that old body; that must
+         * defer extension without becoming a sealed-read failure. */
+        rolling_anchor_test_reset_read_failures();
+        rolling_anchor_test_note_window_read_failure(
+            prefix_end, prefix_end + 1, prefix_end + 1);
+        RA_CHECK("missing next-window body is a skip, not read failure",
+                 rolling_anchor_test_total_read_failures() == 0 &&
+                 rolling_anchor_test_total_skipped_missing_body() == 1 &&
+                 rolling_anchor_test_consecutive_read_failures() == 0);
+        rolling_anchor_test_run_stall_escalation();
+        RA_CHECK("missing next-window body does not page",
+                 atomic_load(&g_ra_pages) == 0);
+
         /* Below prefix, 4 consecutive failures: NOT enough (threshold is 5). */
         rolling_anchor_test_reset_read_failures();
         for (int i = 0; i < 4; i++)

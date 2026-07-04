@@ -30,6 +30,7 @@
 #include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "services/node_db_catchup_service.h"
+#include "node_db_catchup_internal.h"
 #include "util/boot_progress.h"
 #include "models/db_txn.h"
 #include "models/wallet_key.h"
@@ -74,6 +75,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
+#include <errno.h>
 
 extern volatile sig_atomic_t g_shutdown_requested;
 
@@ -108,10 +110,6 @@ bool advance_wallet_witnesses(struct node_db *ndb,
                               const struct block *blk,
                               struct incremental_merkle_tree *tree,
                               int height);
-
-uint8_t *sync_controller_mmap_block_file(const char *datadir,
-                                         int file_num,
-                                         size_t *out_size);
 
 /* Lean index: block header + txid index + the full explorer projections.
  *
@@ -469,6 +467,10 @@ int node_db_catchup_service_run(struct node_db *ndb,
     int first_hole_h = -1;
     int missing_index_holes = 0;
     int missing_data_holes = 0;
+    int missing_file_holes = 0;
+    int first_missing_file_h = -1;
+    int first_missing_file_num = -1;
+    int suspicious_lean_holes = 0;
     int skip_file = -1;
 
     /* Integrity-receipt chain carry. Seed from the receipt at start-1
@@ -513,12 +515,24 @@ int node_db_catchup_service_run(struct node_db *ndb,
         /* mmap new file if needed */
         if (pindex->nFile != cached_file) {
             if (cached_data) munmap(cached_data, cached_size);
-            cached_data = sync_controller_mmap_block_file(
-                datadir, pindex->nFile, &cached_size);
+            int mmap_errno = 0;
+            cached_data = node_db_catchup_mmap_block_file_quiet(
+                datadir, pindex->nFile, &cached_size, &mmap_errno);
             cached_file = cached_data ? pindex->nFile : -1;
             if (!cached_data) {
-                LOG_WARN("catchup", "catchup: failed to mmap file blk%05d.dat"
-                         " — skipping its blocks (lean holes)", pindex->nFile);
+                missing_file_holes++;
+                if (first_missing_file_h < 0) {
+                    first_missing_file_h = h;
+                    first_missing_file_num = pindex->nFile;
+                }
+                if (mmap_errno != ENOENT && mmap_errno != ENOTDIR) {
+                    suspicious_lean_holes++;
+                    if (suspicious_lean_holes <= 3)
+                        LOG_WARN("catchup",
+                                 "catchup: mmap failed for blk%05d.dat "
+                                 "(errno=%d) — skipping its blocks",
+                                 pindex->nFile, mmap_errno);
+                }
                 skip_file = pindex->nFile;
                 if (++lean_holes == 1) first_hole_h = h;
                 continue;
@@ -527,6 +541,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
 
         if (pindex->nDataPos >= cached_size) {
             if (++lean_holes == 1) first_hole_h = h;
+            suspicious_lean_holes++;
             if (lean_holes <= 3)
                 LOG_INFO("catchup", "catchup: malformed block data offset at "
                          "height %d — recording lean hole", h);
@@ -543,6 +558,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
         if (!block_deserialize(&blk, &s)) {
             block_free(&blk);
             if (++lean_holes == 1) first_hole_h = h;
+            suspicious_lean_holes++;
             if (lean_holes <= 3)
                 LOG_INFO("catchup", "catchup: undecodable block frame at "
                          "height %d — recording lean hole", h);
@@ -561,6 +577,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
             if (!uint256_eq(&got, pindex->phashBlock)) {
                 block_free(&blk);
                 if (++lean_holes == 1) first_hole_h = h;
+                suspicious_lean_holes++;
                 if (lean_holes <= 3)
                     LOG_INFO("catchup", "catchup: frame hash mismatch at "
                              "height %d — recording lean hole", h);
@@ -730,11 +747,24 @@ int node_db_catchup_service_run(struct node_db *ndb,
            last_committed_height);
     fflush(stdout);
     if (lean_holes > 0) {
-        LOG_WARN("catchup",
-                 "catchup: %d lean-index hole(s) recorded (first at h=%d) — "
-                 "unreadable/garbage frames skipped, not aborted; those "
-                 "heights stay unindexed until their bodies are refetched",
-                 lean_holes, first_hole_h);
+        if (suspicious_lean_holes > 0) {
+            LOG_WARN("catchup",
+                     "catchup: %d lean-index hole(s) recorded (first h=%d, "
+                     "missing_file_holes=%d first_file=blk%05d.dat@h=%d, "
+                     "suspicious=%d) — unreadable/garbage frames skipped, "
+                     "not aborted; those heights stay unindexed until their "
+                     "bodies are refetched",
+                     lean_holes, first_hole_h, missing_file_holes,
+                     first_missing_file_num, first_missing_file_h,
+                     suspicious_lean_holes);
+        } else {
+            LOG_INFO("catchup",
+                     "catchup: %d lean-index hole(s) recorded (first h=%d, "
+                     "missing_file_holes=%d first_file=blk%05d.dat@h=%d) — "
+                     "expected sparse/snapshot block bodies skipped",
+                     lean_holes, first_hole_h, missing_file_holes,
+                     first_missing_file_num, first_missing_file_h);
+        }
         event_emitf(EV_RECOVERY_ACTION, 0,
                     "action=lean_catchup_holes count=%d first_h=%d",
                     lean_holes, first_hole_h);

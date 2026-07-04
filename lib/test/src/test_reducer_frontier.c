@@ -958,6 +958,191 @@ static int case_dump_reports_hstar_hash_split(void)
     return failures;
 }
 
+static int case_dump_ignores_tip_finalize_pending_edge(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier", "dump_tipfin_edge");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("dump-tipfin-edge: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("dump-tipfin-edge: schema", db && build_schema(db));
+    RF_CHECK("dump-tipfin-edge: proven authority",
+             db && stamp_proven_authority(db, A + 4));
+
+    const int32_t pending_h = A + 3;
+    bool built = put_consistent_height(db, A + 1)
+              && put_consistent_height(db, A + 2);
+    uint8_t hh[32];
+    synth_hash(hh, pending_h, 0);
+    built = built
+        && put_log_row(db, "validate_headers_log", "hash", pending_h, 1,
+                       hh, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", pending_h, 1,
+                       hh, "ok")
+        && put_log_row(db, "body_persist_log", NULL, pending_h, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, pending_h, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, pending_h, 1, NULL, NULL);
+    RF_CHECK("dump-tipfin-edge: rows built", built);
+    RF_CHECK("dump-tipfin-edge: upstream cursors",
+             set_cursor(db, "validate_headers", pending_h + 1) &&
+             set_cursor(db, "body_fetch", pending_h + 1) &&
+             set_cursor(db, "body_persist", pending_h + 1) &&
+             set_cursor(db, "script_validate", pending_h + 1) &&
+             set_cursor(db, "proof_validate", pending_h + 1) &&
+             set_cursor(db, "utxo_apply", pending_h + 1));
+    RF_CHECK("dump-tipfin-edge: tip_finalize cursor",
+             set_cursor(db, "tip_finalize", pending_h));
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("dump-tipfin-edge: returns true", dumped);
+    if (dumped) {
+        RF_CHECK("dump-tipfin-edge: hstar is finalized row frontier",
+                 json_get_int(json_get(&out, "hstar")) == pending_h - 1);
+        RF_CHECK("dump-tipfin-edge: next height is served tip edge",
+                 json_get_int(json_get(&out, "hstar_next_height")) ==
+                     pending_h);
+        RF_CHECK("dump-tipfin-edge: no false blocker",
+                 !json_get_bool(json_get(&out, "hstar_next_blocked")));
+        RF_CHECK("dump-tipfin-edge: no false repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_repair_owner")), "") == 0);
+        RF_CHECK("dump-tipfin-edge: pending edge named",
+                 json_get_bool(json_get(&out,
+                           "hstar_next_pending_edge")));
+        RF_CHECK("dump-tipfin-edge: pending edge stage",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_pending_stage")),
+                        "tip_finalize") == 0);
+        RF_CHECK("dump-tipfin-edge: pending edge table",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_pending_log_table")),
+                        "tip_finalize_log") == 0);
+        RF_CHECK("dump-tipfin-edge: pending edge detail",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_pending_detail")),
+                        "tip-finalize-edge-pending") == 0);
+        RF_CHECK("dump-tipfin-edge: first blocker absent",
+                 !json_get_bool(json_get(&out,
+                           "first_hstar_blocker_found")));
+    }
+    json_free(&out);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int case_dump_reports_tip_finalize_real_hole(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "reducer_frontier",
+                     "dump_tipfin_hole");
+
+    progress_store_close();
+    bool opened = progress_store_open(dir);
+    RF_CHECK("dump-tipfin-hole: progress_store opens", opened);
+    if (!opened) {
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    sqlite3 *db = progress_store_db();
+    RF_CHECK("dump-tipfin-hole: schema", db && build_schema(db));
+    RF_CHECK("dump-tipfin-hole: proven authority",
+             db && stamp_proven_authority(db, A + 4));
+
+    const int32_t hole_h = A + 3;
+    bool built = put_consistent_height(db, A + 1)
+              && put_consistent_height(db, A + 2);
+    uint8_t hh[32];
+    synth_hash(hh, hole_h, 0);
+    built = built
+        && put_log_row(db, "validate_headers_log", "hash", hole_h, 1,
+                       hh, NULL)
+        && put_log_row(db, "script_validate_log", "block_hash", hole_h, 1,
+                       hh, "ok")
+        && put_log_row(db, "body_persist_log", NULL, hole_h, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", NULL, hole_h, 1, NULL, NULL)
+        && put_log_row(db, "utxo_apply_log", NULL, hole_h, 1, NULL, NULL);
+    RF_CHECK("dump-tipfin-hole: rows built", built);
+    RF_CHECK("dump-tipfin-hole: upstream cursors",
+             set_cursor(db, "validate_headers", hole_h + 1) &&
+             set_cursor(db, "body_fetch", hole_h + 1) &&
+             set_cursor(db, "body_persist", hole_h + 1) &&
+             set_cursor(db, "script_validate", hole_h + 1) &&
+             set_cursor(db, "proof_validate", hole_h + 1) &&
+             set_cursor(db, "utxo_apply", hole_h + 1));
+    RF_CHECK("dump-tipfin-hole: tip_finalize cursor beyond hole",
+             set_cursor(db, "tip_finalize", hole_h + 1));
+
+    struct json_value out;
+    json_init(&out);
+    bool dumped = reducer_frontier_dump_state_json(&out, NULL);
+    RF_CHECK("dump-tipfin-hole: returns true", dumped);
+    if (dumped) {
+        RF_CHECK("dump-tipfin-hole: hstar before hole",
+                 json_get_int(json_get(&out, "hstar")) == hole_h - 1);
+        RF_CHECK("dump-tipfin-hole: next height is hole",
+                 json_get_int(json_get(&out, "hstar_next_height")) ==
+                     hole_h);
+        RF_CHECK("dump-tipfin-hole: not a pending edge",
+                 !json_get_bool(json_get(&out,
+                           "hstar_next_pending_edge")));
+        RF_CHECK("dump-tipfin-hole: blocker found",
+                 json_get_bool(json_get(&out,
+                           "first_hstar_blocker_found")));
+        RF_CHECK("dump-tipfin-hole: blocker stage",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_stage")),
+                        "tip_finalize") == 0);
+        RF_CHECK("dump-tipfin-hole: blocker table",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_log_table")),
+                        "tip_finalize_log") == 0);
+        RF_CHECK("dump-tipfin-hole: blocker height",
+                 json_get_int(json_get(&out,
+                           "first_hstar_blocker_height")) == hole_h);
+        RF_CHECK("dump-tipfin-hole: blocker kind",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_kind")),
+                        "log_hole") == 0);
+        RF_CHECK("dump-tipfin-hole: blocker reason",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_reason")),
+                        "missing-success-row") == 0);
+        RF_CHECK("dump-tipfin-hole: blocker repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "first_hstar_blocker_repair_owner")),
+                        "reducer_frontier_reconcile_light") == 0);
+        RF_CHECK("dump-tipfin-hole: hstar next blocked",
+                 json_get_bool(json_get(&out, "hstar_next_blocked")));
+        RF_CHECK("dump-tipfin-hole: hstar next primary table",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_log_table")),
+                        "tip_finalize_log") == 0);
+        RF_CHECK("dump-tipfin-hole: hstar next repair owner",
+                 strcmp(json_get_str(json_get(&out,
+                           "hstar_next_primary_repair_owner")),
+                        "reducer_frontier_reconcile_light") == 0);
+    }
+    json_free(&out);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int case_log_frontier_above_tip_finalize_cursor(void)
 {
     int failures = 0;
@@ -1000,6 +1185,8 @@ int test_reducer_frontier(void)
     failures += case_dump_reports_unavailable_store();
     failures += case_dump_reports_hstar_log_hole();
     failures += case_dump_reports_hstar_hash_split();
+    failures += case_dump_ignores_tip_finalize_pending_edge();
+    failures += case_dump_reports_tip_finalize_real_hole();
     failures += case_log_frontier_above_tip_finalize_cursor();
     if (failures == 0)
         printf("reducer_frontier: all cases passed\n");

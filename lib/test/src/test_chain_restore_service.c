@@ -642,6 +642,135 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
     return failures;
 }
 
+static int test_rebuild_active_chain_relabels_wrong_height_parent(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: relabels wrong-height pprev parent") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int H = 1026;
+        struct uint256 hashes[1027];
+        struct block_index *idx[1027] = {0};
+        for (int h = 0; h <= H; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[1] = (uint8_t)((h >> 8) & 0xFF);
+            hashes[h].data[3] = 0xA5;
+            idx[h] = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(idx[h] != NULL);
+            idx[h]->nHeight = h;
+            idx[h]->nBits = 0x1f07ffff;
+            idx[h]->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[h]->nTx = 1;
+            idx[h]->nChainTx = (uint32_t)(h + 1);
+            if (h > 0)
+                idx[h]->pprev = idx[h - 1];
+            arith_uint256_set_u64(&idx[h]->nChainWork,
+                                  (uint64_t)(h + 1));
+        }
+
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, idx[H]));
+        idx[H - 1]->nHeight = 3159429;
+        ms.chain_active.chain[H - 1] = NULL;
+
+        struct chain_integrity_result before;
+        chain_integrity_check_post_restore(&before, &ms);
+        ASSERT(before.first_hole_height == H - 1);
+        ASSERT(before.first_mismatch_height == H);
+        ASSERT(before.ok == false);
+
+        int populated = chain_restore_rebuild_active_chain(&ms, idx[H], NULL);
+        ASSERT(populated > 0);
+        ASSERT(idx[H - 1]->nHeight == H - 1);
+        ASSERT(active_chain_at(&ms.chain_active, H - 1) == idx[H - 1]);
+
+        struct chain_integrity_result after;
+        chain_integrity_check_post_restore(&after, &ms);
+        ASSERT(after.active_chain_holes == 0);
+        ASSERT(after.active_chain_mismatches == 0);
+        ASSERT(after.first_hole_height == -1);
+        ASSERT(after.first_mismatch_height == -1);
+        ASSERT(after.ok == true);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_rebuild_active_chain_relinks_wrong_active_parent(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: relinks wrong active-slot pprev parent") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int H = 1026;
+        struct uint256 hashes[1027];
+        struct block_index *idx[1027] = {0};
+        for (int h = 0; h <= H; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[1] = (uint8_t)((h >> 8) & 0xFF);
+            hashes[h].data[3] = 0xB6;
+            idx[h] = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(idx[h] != NULL);
+            idx[h]->nHeight = h;
+            idx[h]->nBits = 0x1f07ffff;
+            idx[h]->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[h]->nTx = 1;
+            idx[h]->nChainTx = (uint32_t)(h + 1);
+            if (h > 0)
+                idx[h]->pprev = idx[h - 1];
+            arith_uint256_set_u64(&idx[h]->nChainWork,
+                                  (uint64_t)(h + 1));
+        }
+
+        struct uint256 wrong_hash;
+        memset(&wrong_hash, 0, sizeof(wrong_hash));
+        wrong_hash.data[0] = 0x19;
+        wrong_hash.data[3] = 0x7C;
+        struct block_index *wrong_parent = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &wrong_hash);
+        ASSERT(wrong_parent != NULL);
+        wrong_parent->nHeight = 3159428;
+        wrong_parent->nBits = 0x1f07ffff;
+        wrong_parent->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        wrong_parent->nTx = 1;
+        wrong_parent->nChainTx = 1;
+        arith_uint256_set_u64(&wrong_parent->nChainWork, 1);
+
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, idx[H]));
+        idx[H - 1]->pprev = wrong_parent;
+
+        struct chain_integrity_result before;
+        chain_integrity_check_post_restore(&before, &ms);
+        ASSERT(before.active_chain_holes == 0);
+        ASSERT(before.first_mismatch_height == H - 1);
+        ASSERT(before.ok == false);
+
+        int populated = chain_restore_rebuild_active_chain(&ms, idx[H], NULL);
+        ASSERT(populated > 0);
+        ASSERT(idx[H - 1]->pprev == idx[H - 2]);
+        ASSERT(active_chain_at(&ms.chain_active, H - 1) == idx[H - 1]);
+
+        struct chain_integrity_result after;
+        chain_integrity_check_post_restore(&after, &ms);
+        ASSERT(after.active_chain_holes == 0);
+        ASSERT(after.active_chain_mismatches == 0);
+        ASSERT(after.first_hole_height == -1);
+        ASSERT(after.first_mismatch_height == -1);
+        ASSERT(after.ok == true);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Regression test: rebuild_active_chain must be O(N), not O(N²).
  *
  * Live shape: post-anchor restore installs a tip at ~h=3M with pprev=NULL.
@@ -1487,6 +1616,8 @@ int test_chain_restore_service(void) {
     failures += test_integrity_detects_isolated_nbits_zero();
     /* — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();
+    failures += test_rebuild_active_chain_relabels_wrong_height_parent();
+    failures += test_rebuild_active_chain_relinks_wrong_active_parent();
     failures += test_rebuild_active_chain_scales_at_100k();
     failures += test_rebuild_high_tip_prefers_pprev_lineage_over_height_guess();
     failures += test_rebuild_populates_skiplist_for_log_n_ancestor();

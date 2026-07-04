@@ -401,7 +401,7 @@ Progress via: `zcl_validationstatus`
 ### Build
 ```bash
 make -j$(nproc)     # Builds build/bin/zclassic23, build/bin/test_zcl, build/bin/zclassic-cli
-make test           # Run 487 test groups (~9k check sites)
+make test           # Run 488 test groups (~9k check sites)
 make deploy         # Build + setcap + restart service
 ```
 

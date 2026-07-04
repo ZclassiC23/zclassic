@@ -25,6 +25,15 @@ struct node_db;
 struct active_chain;
 struct wallet;
 
+#ifdef ZCL_TESTING
+#include <stddef.h>
+#include <stdint.h>
+uint8_t *node_db_catchup_test_mmap_block_file_quiet(const char *datadir,
+                                                    int file_num,
+                                                    size_t *out_size,
+                                                    int *out_errno);
+#endif
+
 /* Indexes blocks from (sqlite_tip+1) to chain_tip into SQLite. Also scans
  * for wallet transactions if a wallet is provided. Returns the number of
  * blocks indexed, or -1 on a setup failure (turbo enter / BEGIN / COMMIT).

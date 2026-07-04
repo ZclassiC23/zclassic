@@ -56,7 +56,7 @@ repository ports are reserved-empty.
 <!--   test_groups          = parallel test groups in lib/test/src/test_parallel.c   -->
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
-test_groups: 487
+test_groups: 488
 port_interfaces: 12
 persistence_adapters: 13
 <!-- DOC-COUNTS-END -->
