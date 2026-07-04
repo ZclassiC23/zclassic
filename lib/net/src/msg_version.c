@@ -14,6 +14,7 @@
 #include "net/p2p_message.h"
 #include "net/file_service.h"
 #include "net/peer_lifecycle.h"
+#include "net/port_policy.h"
 #include "net/peer_scoring.h"
 #include "net/fast_sync.h"
 #include "core/serialize.h"
@@ -88,6 +89,10 @@ static void msg_version_save_peer(struct msg_processor *mp,
 {
     if (!mp || !node)
         return;
+    if (!msg_version_should_save_peer(node)) {
+        peer_lifecycle_note_cache_skipped(node, "inbound_ephemeral_port");
+        return;
+    }
     if (mp->peer_save)
         mp->peer_save(node, mp->peer_save_ctx);
 }
@@ -120,6 +125,20 @@ bool msg_version_get_external_ip(char *buf, size_t buflen, uint16_t *port)
     if (!inet_ntop(AF_INET, &addr, buf, (socklen_t)buflen)) return false;
     if (port) *port = g_external_port;
     return true;
+}
+
+bool msg_version_should_save_peer(const struct p2p_node *node)
+{
+    if (!node)
+        return false;
+    if (!node->inbound)
+        return true;
+
+    /* Inbound sockets usually carry the remote node's ephemeral source port.
+     * Persisting that tuple turns every reconnect into a separate peer-cache
+     * row. The reachable listen address is learned from version.addr_from and
+     * stored in addrman instead. */
+    return zcl_net_port_is_reachable_candidate(node->addr.svc.port);
 }
 
 #ifdef ZCL_TESTING

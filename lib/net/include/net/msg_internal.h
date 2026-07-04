@@ -40,6 +40,7 @@ void msg_version_build(struct version_message *ver,
 bool msg_version_learn_advertised_addr(struct net_manager *nm,
                                        const struct p2p_node *node,
                                        const struct version_message *ver);
+bool msg_version_should_save_peer(const struct p2p_node *node);
 bool process_version(struct msg_processor *mp, struct p2p_node *node,
                      struct byte_stream *s);
 bool process_verack(struct msg_processor *mp, struct p2p_node *node);

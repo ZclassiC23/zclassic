@@ -353,11 +353,14 @@ int test_model_app(void)
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
         if (ok) {
-            struct db_peer a, b, listed[2];
+            struct db_peer a, b, c, d, listed[2], fast[4];
 
             memset(&a, 0, sizeof(a));
             memset(&b, 0, sizeof(b));
+            memset(&c, 0, sizeof(c));
+            memset(&d, 0, sizeof(d));
             memset(listed, 0, sizeof(listed));
+            memset(fast, 0, sizeof(fast));
             memset(a.ip, 0x31, sizeof(a.ip));
             a.port = 8333;
             a.services = 9;
@@ -383,6 +386,24 @@ int test_model_app(void)
             ok = ok && (listed[0].port == 8334);
             ok = ok && listed[0].has_source;
             ok = ok && (listed[1].port == 8333);
+
+            memset(c.ip, 0x33, sizeof(c.ip));
+            c.port = 53100;
+            c.services = 1;
+            c.last_seen = a.last_seen + 10;
+            c.bandwidth_score = 255;
+            c.is_zcl23 = true;
+            ok = ok && db_peer_save(&ndb, &c);
+
+            memset(d.ip, 0x34, sizeof(d.ip));
+            d.port = 8033;
+            d.services = 1;
+            d.last_seen = a.last_seen + 11;
+            d.bandwidth_score = 1;
+            d.is_zcl23 = true;
+            ok = ok && db_peer_save(&ndb, &d);
+            ok = ok && (db_peer_fast_zcl23(&ndb, fast, 4) == 1);
+            ok = ok && (fast[0].port == 8033);
             node_db_close(&ndb);
         }
         char cmd[384];

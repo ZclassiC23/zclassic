@@ -12,6 +12,7 @@
 #include "util/log_macros.h"
 #include "models/peer.h"
 #include "event/event.h"
+#include "net/port_policy.h"
 #include "storage/peers_projection.h"
 #include "util/ar_step_readonly.h"
 #include <stdio.h>
@@ -316,6 +317,7 @@ int db_peer_fast_zcl23(struct node_db *ndb, struct db_peer *out, size_t max)
         "SELECT id,ip,port,services,last_seen,last_try,attempts,"
         "source,bandwidth_score,is_zcl23"
         " FROM peers WHERE is_zcl23=1"
+        " AND port IN (" ZCL_NET_REACHABLE_PORTS_SQL ")"
         " ORDER BY bandwidth_score DESC, last_seen DESC LIMIT ?",
         -1, &s, NULL);
     if (!s) LOG_RETURN(0, "peer", "prepare failed: %s", sqlite3_errmsg(ndb->db));

@@ -13,6 +13,7 @@
 #include "event/event.h"
 #include "net/peer_bandwidth.h"
 #include "net/peer_lifecycle.h"
+#include "net/port_policy.h"
 #include "net/peer_scoring.h"
 #include "net/addrman_integrity.h"
 #include "net/download.h"
@@ -565,12 +566,6 @@ static void connman_release_connect_node_ref(struct connman *cm,
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 }
 
-static bool connman_addrman_port_allowed(uint16_t port)
-{
-    return port == 8033 || port == 18033 || port == 8034 ||
-           port == 9033 || port == 20022;
-}
-
 static bool connman_addr_is_advertised_external(
     const struct net_address *addr)
 {
@@ -614,7 +609,7 @@ static bool connman_addrman_candidate_usable(struct connman *cm,
     if (!cm || !info)
         return false;
 
-    if (!connman_addrman_port_allowed(info->addr.svc.port))
+    if (!zcl_net_port_is_reachable_candidate(info->addr.svc.port))
         return false;
 
     if (connman_addr_is_advertised_external(&info->addr))
@@ -1005,8 +1000,7 @@ static void *thread_open_connections(void *arg)
                 /* Skip non-ZClassic ports (16125 etc from corrupted addrman).
                  * ZClassic mainnet uses port 8033. */
                 uint16_t port = info.addr.svc.port;
-                if (port != 8033 && port != 18033 && port != 8034 &&
-                    port != 9033 && port != 20022)
+                if (!zcl_net_port_is_reachable_candidate(port))
                     continue;
             }
 

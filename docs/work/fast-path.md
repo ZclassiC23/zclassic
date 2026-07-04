@@ -59,7 +59,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make build-only` | incremental compile-check of the whole node (no link) |
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
-| `make fast-ci` | cache-aware agent loop: `lint-fast` + `build-only` + focused tests inferred from changed files + native linger-service probe |
+| `make fast-ci` | cache-aware agent loop: `lint-fast` + `build-only` + focused tests inferred from changed files + native linger-service probe; identical green inputs skip repeated lint/build/focused tests |
 | `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
 | `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
@@ -72,8 +72,15 @@ non-`-Werror`; compile warning enforcement stays in `make build-only`, strict
 `make t`, and full CI. Force focused test groups with
 `ZCL_FAST_TESTS=make_lint_gates,mcp_controllers`; use `ZCL_FAST_STRICT_TESTS=1`
 to pay the strict `make t` whole-harness rebuild. Set parallelism with
-`ZCL_FAST_JOBS=N` (default caps at 16). The live check uses the C binary first
-(`build/bin/zclassic23 agent` +
+`ZCL_FAST_JOBS=N` (default caps at 16). Successful runs write a content
+fingerprint under `.cache/zcl-agent-fast-ci/` covering changed-file contents,
+selected test groups, compiler/cache choice, strict/live knobs, core scripts,
+the Makefile, and the native probe binary mtime. A repeat with the same
+fingerprint logs `fast result cache hit` and skips `lint-fast`, `build-only`,
+and focused tests; it still refreshes the live service probe unless
+`ZCL_FAST_LIVE=0` is set. Disable this with `ZCL_FAST_CACHE=0`, reset it with
+`ZCL_FAST_CACHE_RESET=1`, or move it with `ZCL_FAST_CACHE_DIR=...`. The live
+check uses the C binary first (`build/bin/zclassic23 agent` +
 `build/bin/zclassic23 healthcheck`) against the linger service; override the
 binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 `ZCL_FAST_LIVE=0` for isolated/offline work. Unmapped C/header/source-tree

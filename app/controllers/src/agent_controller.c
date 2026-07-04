@@ -569,6 +569,9 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&cache, "auto_select_order", "sccache cc, ccache cc, cc");
     json_push_kv_str(&cache, "script", "tools/agent_fast_ci.sh");
     json_push_kv_str(&cache, "default_loop", "make fast-ci");
+    json_push_kv_str(&cache, "success_fingerprint_dir",
+                     ".cache/zcl-agent-fast-ci");
+    json_push_kv_bool(&cache, "cache_hit_refreshes_live_probe", true);
     json_push_kv_bool(&cache, "safe_for_edit_loop", true);
 
     json_init(&knobs);
@@ -584,6 +587,13 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                           "set to 1 to use strict make t");
     agent_push_build_knob(&knobs, "ZCL_FAST_LIVE", "auto",
                           "set to 0 to skip live linger-service probe");
+    agent_push_build_knob(&knobs, "ZCL_FAST_CACHE", "1",
+                          "set to 0 to force lint/build/focused tests");
+    agent_push_build_knob(&knobs, "ZCL_FAST_CACHE_RESET", "0",
+                          "set to 1 to clear the fast-ci green-input cache");
+    agent_push_build_knob(&knobs, "ZCL_FAST_CACHE_DIR",
+                          ".cache/zcl-agent-fast-ci",
+                          "override green-input cache directory");
     json_push_kv(&cache, "knobs", &knobs);
     json_free(&knobs);
     json_push_kv(result, "cache", &cache);

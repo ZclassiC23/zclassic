@@ -58,5 +58,8 @@ TAGS
 .gemini/
 .aider*
 
+# Local developer/tool caches
+.cache/
+
 # Claude Code scratch space — never track
 .claude/tmp/

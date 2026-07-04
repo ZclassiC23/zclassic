@@ -311,6 +311,8 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   make fast-ci
 #   ZCL_FAST_CC='ccache cc' make fast-ci
 #   ZCL_FAST_TESTS=make_lint_gates,mcp_controllers make fast-ci
+#   ZCL_FAST_CACHE=0 make fast-ci      # force rerun even on identical input
+#   ZCL_FAST_CACHE_RESET=1 make fast-ci
 #   ZCL_FAST_LIVE=0 make fast-ci   # skip live linger-service probe
 fast-ci agent-fast-ci dev-ci:
 	@tools/agent_fast_ci.sh

@@ -2285,15 +2285,20 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/agent_fast_ci.sh") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE=0") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
         free(buf);
         buf = NULL;
 
         ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "zcl.agent_fast_ci.v1") != NULL);
+        ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v1") != NULL);
         ASSERT(strstr(buf, "sccache cc") != NULL);
         ASSERT(strstr(buf, "ccache cc") != NULL);
         ASSERT(strstr(buf, "git diff --check") != NULL);
+        ASSERT(strstr(buf, "git ls-files --others --exclude-standard")
+               != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
         ASSERT(strstr(buf, "make_fast build-only") != NULL);
@@ -2302,7 +2307,12 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "src/main.c") != NULL);
         ASSERT(strstr(buf, "app/controllers/src/agent_controller.c") != NULL);
+        ASSERT(strstr(buf, "app/models/src/peer.c") != NULL);
+        ASSERT(strstr(buf, "lib/net/src/connman.c") != NULL);
         ASSERT(strstr(buf, "docs/AGENT_API.md") != NULL);
+        ASSERT(strstr(buf, "lib/net/include/net/msg_internal.h") != NULL);
+        ASSERT(strstr(buf, "lib/net/include/net/port_policy.h") != NULL);
+        ASSERT(strstr(buf, "models") != NULL);
         ASSERT(strstr(buf, "lib/test/src/test_syncdiag_rpc.c") != NULL);
         ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS") != NULL);
@@ -2320,6 +2330,13 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/z topology --json") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE_DIR") != NULL);
+        ASSERT(strstr(buf, "fast result cache hit") != NULL);
+        ASSERT(strstr(buf,
+                      "skipping lint-fast/build-only/focused tests") != NULL);
+        ASSERT(strstr(buf, "record_fast_cache_pass") != NULL);
         ASSERT(strstr(buf, "not full release CI") != NULL);
         free(buf);
         buf = NULL;
@@ -2335,6 +2352,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS=1") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE=0") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CACHE_DIR") != NULL);
+        ASSERT(strstr(buf, ".cache/zcl-agent-fast-ci") != NULL);
+        ASSERT(strstr(buf, "fast result cache hit") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 agent") != NULL);
         ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(buf, "zcl_agent_build") != NULL);
@@ -2416,6 +2438,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "ZCL_FAST_CACHE") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, ".cache/zcl-agent-fast-ci") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "app/controllers/src/agent_controller.c")
                != NULL);
         ASSERT(strstr(api_buf,
@@ -2444,6 +2468,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
         ASSERT(strstr(agent_doc_buf, "make t-fast ONLY=<group>") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE=0") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
         ASSERT(strstr(agent_doc_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
                != NULL);

@@ -7,6 +7,7 @@
 #include "net/fast_sync.h"
 #include "net/msg_internal.h"
 #include "net/peer_lifecycle.h"
+#include "net/port_policy.h"
 #include "net/version.h"
 
 #include <time.h>
@@ -157,6 +158,38 @@ static int test_peer_lifecycle_learns_inbound_advertised_addr(void)
         ASSERT(net_service_eq(&selected.addr.svc, &ver.addr_from.svc));
 
         net_manager_free(&nm);
+    } TEST_END
+    return failures;
+}
+
+static int test_peer_lifecycle_skips_inbound_ephemeral_cache(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: inbound ephemeral source ports are not cached")
+    {
+        struct p2p_node inbound;
+        struct p2p_node outbound;
+
+        memset(&inbound, 0, sizeof(inbound));
+        test_addr_ipv4(&inbound.addr, 40, 160, 53, 56, 53100);
+        inbound.inbound = true;
+        snprintf(inbound.addr_name, sizeof(inbound.addr_name),
+                 "40.160.53.56:53100");
+
+        memset(&outbound, 0, sizeof(outbound));
+        test_addr_ipv4(&outbound.addr, 40, 160, 53, 56, 8033);
+        outbound.inbound = false;
+        snprintf(outbound.addr_name, sizeof(outbound.addr_name),
+                 "40.160.53.56:8033");
+
+        ASSERT(!msg_version_should_save_peer(&inbound));
+        ASSERT(msg_version_should_save_peer(&outbound));
+        ASSERT(!zcl_net_port_is_reachable_candidate(53100));
+        ASSERT(zcl_net_port_is_reachable_candidate(8033));
+        ASSERT(zcl_net_port_is_reachable_candidate(20022));
+
+        inbound.addr.svc.port = 8033;
+        ASSERT(msg_version_should_save_peer(&inbound));
     } TEST_END
     return failures;
 }
@@ -378,6 +411,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_classify();
     failures += test_peer_lifecycle_version_build();
     failures += test_peer_lifecycle_learns_inbound_advertised_addr();
+    failures += test_peer_lifecycle_skips_inbound_ephemeral_cache();
     failures += test_peer_lifecycle_counters();
     failures += test_peer_lifecycle_inbound_source_bucket();
     failures += test_peer_lifecycle_duplicate_connect_duration();

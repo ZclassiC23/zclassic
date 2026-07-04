@@ -10,7 +10,12 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 SCHEMA="zcl.agent_fast_ci.v1"
+CACHE_SCHEMA="zcl.agent_fast_ci.cache.v1"
 FAST_CC="${ZCL_FAST_CC:-}"
+CACHE_ROOT="${ZCL_FAST_CACHE_DIR:-$ROOT/.cache/zcl-agent-fast-ci}"
+CACHE_KEY=""
+CACHE_RECORD=""
+CACHE_AVAILABLE=0
 CACHE_TOOL="none"
 TEST_GROUPS=""
 UNMAPPED_CODE_CHANGES=""
@@ -48,6 +53,23 @@ select_compiler() {
     fi
 }
 
+resolve_fast_jobs() {
+    if [ -z "$FAST_JOBS" ]; then
+        FAST_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
+        case "$FAST_JOBS" in
+            ''|*[!0-9]*) FAST_JOBS=8 ;;
+        esac
+        if [ "$FAST_JOBS" -gt 16 ] 2>/dev/null; then
+            FAST_JOBS=16
+        fi
+    fi
+    case "$FAST_JOBS" in
+        ''|*[!0-9]*|0)
+            fail "ZCL_FAST_JOBS must be a positive integer (got ${FAST_JOBS:-empty})"
+            ;;
+    esac
+}
+
 show_cache_stats() {
     case "$CACHE_TOOL" in
         sccache)
@@ -62,12 +84,7 @@ show_cache_stats() {
 }
 
 make_fast() {
-    if [ -z "$FAST_JOBS" ]; then
-        FAST_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
-        if [ "$FAST_JOBS" -gt 16 ] 2>/dev/null; then
-            FAST_JOBS=16
-        fi
-    fi
+    resolve_fast_jobs
     make -j"$FAST_JOBS" CC="$FAST_CC" "$@"
 }
 
@@ -77,6 +94,7 @@ changed_files() {
     fi
     git diff --name-only HEAD --
     git diff --cached --name-only --
+    git ls-files --others --exclude-standard
 }
 
 add_group() {
@@ -112,6 +130,8 @@ is_code_like_change() {
 
 select_test_groups() {
     local file matched
+    TEST_GROUPS=""
+    UNMAPPED_CODE_CHANGES=""
     if [ -n "${ZCL_FAST_TESTS:-}" ]; then
         for file in $(printf '%s\n' "$ZCL_FAST_TESTS" | tr ',:' '  '); do
             [ -n "$file" ] && add_group "$file"
@@ -139,6 +159,19 @@ select_test_groups() {
                 ;;
             lib/net/src/peer_lifecycle.c|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c)
                 add_group "peer_lifecycle"
+                matched=1
+                ;;
+            lib/net/src/connman.c)
+                add_group "connman_addnode_fallback"
+                add_group "net"
+                matched=1
+                ;;
+            lib/net/include/net/msg_internal.h|lib/net/include/net/peer_lifecycle.h|lib/net/include/net/port_policy.h|lib/net/include/net/version.h)
+                add_group "peer_lifecycle"
+                matched=1
+                ;;
+            app/models/src/peer.c|app/models/include/models/peer.h|lib/test/src/test_models_app.c)
+                add_group "models"
                 matched=1
                 ;;
             app/controllers/src/network_controller.c|app/controllers/src/sync_controller.c|lib/test/src/test_syncdiag_rpc.c)
@@ -169,6 +202,153 @@ $(changed_files | sort -u)
 EOF
 }
 
+fail_on_unmapped_code_changes() {
+    if [ -n "$UNMAPPED_CODE_CHANGES" ]; then
+        fail "no focused test mapping for code changes: $UNMAPPED_CODE_CHANGES; set ZCL_FAST_TESTS=<group[,group]> or extend tools/agent_fast_ci.sh"
+    fi
+}
+
+fast_cache_enabled() {
+    case "${ZCL_FAST_CACHE:-1}" in
+        1|true|yes|on|"") return 0 ;;
+        0|false|no|off|skip) return 1 ;;
+        *) fail "unknown ZCL_FAST_CACHE=${ZCL_FAST_CACHE}" ;;
+    esac
+}
+
+maybe_reset_fast_cache() {
+    case "${ZCL_FAST_CACHE_RESET:-0}" in
+        1|true|yes|reset)
+            rm -rf "$CACHE_ROOT"
+            log "fast result cache reset at $CACHE_ROOT"
+            ;;
+        0|false|no|"") ;;
+        *) fail "unknown ZCL_FAST_CACHE_RESET=${ZCL_FAST_CACHE_RESET}" ;;
+    esac
+}
+
+hash_file() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+cache_manifest_file() {
+    local label="$1" path="$2"
+    if [ -f "$path" ]; then
+        printf 'file\t%s\t%s\t%s\n' "$label" "$path" "$(hash_file "$path")"
+    elif [ -e "$path" ]; then
+        printf 'file\t%s\t%s\tpresent-nonregular\n' "$label" "$path"
+    else
+        printf 'file\t%s\t%s\tabsent\n' "$label" "$path"
+    fi
+}
+
+cache_manifest() {
+    local file status_line node_stat cc_version
+    printf 'cache_schema\t%s\n' "$CACHE_SCHEMA"
+    printf 'fast_schema\t%s\n' "$SCHEMA"
+    printf 'git_head\t%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'fast_base\t%s\n' "${ZCL_FAST_BASE:-}"
+    printf 'fast_cc\t%s\n' "$FAST_CC"
+    printf 'cache_tool\t%s\n' "$CACHE_TOOL"
+    printf 'fast_jobs\t%s\n' "$FAST_JOBS"
+    printf 'fast_tests_env\t%s\n' "${ZCL_FAST_TESTS:-}"
+    printf 'fast_strict_tests\t%s\n' "${ZCL_FAST_STRICT_TESTS:-0}"
+    printf 'fast_live\t%s\n' "${ZCL_FAST_LIVE:-auto}"
+    printf 'node_bin\t%s\n' "$NODE_BIN"
+    printf 'test_groups\t%s\n' "$TEST_GROUPS"
+    printf 'make_version\t%s\n' "$(make --version 2>/dev/null | sed -n '1p' || echo unknown)"
+    cc_version="$($FAST_CC --version 2>/dev/null | sed -n '1p' || true)"
+    printf 'cc_version\t%s\n' "${cc_version:-unknown}"
+
+    if [ -e "$NODE_BIN" ]; then
+        node_stat="$(stat -c '%s:%Y' "$NODE_BIN" 2>/dev/null || echo unknown)"
+    else
+        node_stat="absent"
+    fi
+    printf 'node_bin_stat\t%s\n' "$node_stat"
+
+    git status --porcelain=v1 --untracked-files=normal |
+        while IFS= read -r status_line; do
+            printf 'git_status\t%s\n' "$status_line"
+        done
+
+    for file in Makefile tools/agent_fast_ci.sh tools/z \
+        tools/githooks/pre-push tools/deploy_verify.sh \
+        lib/test/src/test_make_lint_gates.c docs/work/fast-path.md \
+        docs/AGENT_API.md app/controllers/src/agent_controller.c; do
+        cache_manifest_file "$file" "$file"
+    done
+
+    changed_files | sort -u |
+        while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            cache_manifest_file "changed:$file" "$file"
+        done
+}
+
+compute_cache_key() {
+    local manifest key
+    CACHE_AVAILABLE=0
+    CACHE_KEY=""
+    CACHE_RECORD=""
+
+    if ! fast_cache_enabled; then
+        log "fast result cache disabled by ZCL_FAST_CACHE=${ZCL_FAST_CACHE:-0}"
+        return 1
+    fi
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        log "fast result cache unavailable: sha256sum not found"
+        return 1
+    fi
+    mkdir -p "$CACHE_ROOT"
+    manifest="$(mktemp "$CACHE_ROOT/manifest.XXXXXX")" || return 1
+    if ! cache_manifest >"$manifest"; then
+        rm -f "$manifest"
+        log "fast result cache unavailable: could not write manifest"
+        return 1
+    fi
+    key="$(sha256sum "$manifest" | awk '{print $1}')"
+    rm -f "$manifest"
+    [ -n "$key" ] || return 1
+    CACHE_KEY="$key"
+    CACHE_RECORD="$CACHE_ROOT/$CACHE_KEY.ok"
+    CACHE_AVAILABLE=1
+    return 0
+}
+
+maybe_fast_cache_hit() {
+    compute_cache_key || return 1
+    [ -f "$CACHE_RECORD" ] || return 1
+    if ! grep -q "^schema=$CACHE_SCHEMA$" "$CACHE_RECORD"; then
+        rm -f "$CACHE_RECORD"
+        return 1
+    fi
+    log "fast result cache hit key=$CACHE_KEY; skipping lint-fast/build-only/focused tests"
+    return 0
+}
+
+record_fast_cache_pass() {
+    local old_key tmp
+    [ "$CACHE_AVAILABLE" = "1" ] || return 0
+    old_key="$CACHE_KEY"
+    compute_cache_key || return 0
+    if [ "$CACHE_KEY" != "$old_key" ]; then
+        log "fast result cache not stored; inputs changed during run"
+        return 0
+    fi
+
+    tmp="$(mktemp "$CACHE_ROOT/pass.XXXXXX")" || return 0
+    {
+        printf 'schema=%s\n' "$CACHE_SCHEMA"
+        printf 'key=%s\n' "$CACHE_KEY"
+        printf 'stored_at=%s\n' "$(date -u +%FT%TZ)"
+        printf 'groups=%s\n' "$TEST_GROUPS"
+        printf 'node_bin=%s\n' "$NODE_BIN"
+    } >"$tmp"
+    mv "$tmp" "$CACHE_RECORD"
+    log "fast result cache stored key=$CACHE_KEY"
+}
+
 run_shell_checks() {
     local script
     log "shell checks"
@@ -180,10 +360,6 @@ run_shell_checks() {
 
 run_focused_tests() {
     local group target
-    select_test_groups
-    if [ -n "$UNMAPPED_CODE_CHANGES" ]; then
-        fail "no focused test mapping for code changes: $UNMAPPED_CODE_CHANGES; set ZCL_FAST_TESTS=<group[,group]> or extend tools/agent_fast_ci.sh"
-    fi
     if [ -z "$TEST_GROUPS" ]; then
         log "focused tests: none selected from changed files; set ZCL_FAST_TESTS=<group[,group]> to force"
         return
@@ -315,7 +491,19 @@ maybe_live_probe() {
 main() {
     log "schema=$SCHEMA"
     select_compiler
-    log "compiler=$FAST_CC cache=$CACHE_TOOL"
+    resolve_fast_jobs
+    log "compiler=$FAST_CC cache=$CACHE_TOOL jobs=$FAST_JOBS"
+    maybe_reset_fast_cache
+    select_test_groups
+    fail_on_unmapped_code_changes
+
+    if maybe_fast_cache_hit; then
+        maybe_live_probe
+        log "PASS: fast lane cache hit; not full release CI"
+        log "Before pushing main, keep the full gate: make lint && make build-only && relevant tests; default pre-push remains full make ci."
+        return
+    fi
+
     show_cache_stats
 
     run_shell_checks
@@ -326,6 +514,7 @@ main() {
     run_focused_tests
     maybe_live_probe
 
+    record_fast_cache_pass
     log "PASS: fast lane complete; not full release CI"
     log "Before pushing main, keep the full gate: make lint && make build-only && relevant tests; default pre-push remains full make ci."
 }
