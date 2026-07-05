@@ -276,7 +276,11 @@ deliberate canonical restart window. Development builds should normally use
 lane-safety fields (`operator_lane_name`, `automation_restart_ok`,
 `automation_deploy_ok`, `requires_operator_confirmation`,
 `preferred_deploy_target`, and `safe_default_action`) so a refusal can be
-handled without scraping nested JSON.
+handled without scraping nested JSON. The native no-RPC form is intentionally
+safe by default: `zclassic23 agentdeployguard deploy` refuses until a lane is
+declared. Use `ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard deploy` or
+`zclassic23 agentdeployguard -operator-lane=dev deploy` when checking the
+restartable development lane from automation.
 
 `make lane-health` is the read-only redundancy check for the canonical, soak,
 and dev lanes. `make lane-recover LANE=dev` or `LANE=soak` plans a bounded

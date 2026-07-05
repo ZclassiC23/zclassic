@@ -213,10 +213,12 @@ selftest() {
         ZCL_DEPLOY_ALLOW_CANONICAL=1
     selftest_case_fail "active canonical systemd fallback blocks" \
         ZCL_DEPLOY_GUARD_NATIVE_JSON= \
+        ZCL_DEPLOY_GUARD_RPC_TOOL=/nonexistent-zclassic23 \
         ZCL_DEPLOY_GUARD_SYSTEMD_ACTIVE=active \
         ZCL_DEPLOY_GUARD_SYSTEMD_EXECSTART='path=/x/zclassic23 ; argv[]=/x/zclassic23 -datadir=/tmp/z -operator-lane=canonical -rpcport=18232'
     selftest_case_pass "inactive canonical systemd fallback allows" \
         ZCL_DEPLOY_GUARD_NATIVE_JSON= \
+        ZCL_DEPLOY_GUARD_RPC_TOOL=/nonexistent-zclassic23 \
         ZCL_DEPLOY_GUARD_SYSTEMD_ACTIVE=inactive \
         ZCL_DEPLOY_GUARD_SYSTEMD_EXECSTART='path=/x/zclassic23 ; argv[]=/x/zclassic23 -datadir=/tmp/z -operator-lane=canonical -rpcport=18232'
 

@@ -2340,6 +2340,9 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(guard, "zcl.agent_deploy_guard.v1") != NULL);
         ASSERT(strstr(guard, "agentdeployguard") != NULL);
         ASSERT(strstr(guard, "ZCL_DEPLOY_GUARD_NATIVE_JSON") != NULL);
+        ASSERT(strstr(guard,
+                      "ZCL_DEPLOY_GUARD_RPC_TOOL=/nonexistent-zclassic23")
+               != NULL);
         ASSERT(strstr(guard, "python") == NULL);
         ASSERT(strstr(guard, "systemctl --user show") != NULL);
         ASSERT(strstr(guard, "-operator-lane") != NULL);
@@ -2798,7 +2801,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
         ASSERT(strstr(main_buf, "-operator-lane=<name>") != NULL);
+        ASSERT(strstr(main_buf, "ZCL_OPERATOR_LANE") != NULL);
+        ASSERT(strstr(main_buf, "strncmp(argv[i], \"-operator-lane=\", 15)")
+               != NULL);
         ASSERT(strstr(main_buf, "app_operator_lane_parse") != NULL);
+        ASSERT(strstr(main_buf, "app_operator_lane_name(operator_lane)")
+               != NULL);
         ASSERT(strstr(main_buf, "rpc_agent_set_boot_context") != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
@@ -2811,11 +2819,16 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "cli_run_static_agent_method") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentinterface\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentlanes\")") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"agentdeployguard\")")
+               != NULL);
         ASSERT(strstr(main_buf,
                       "rpc_agent_interface(&params, false, &result)")
                != NULL);
         ASSERT(strstr(main_buf,
                       "rpc_agent_lanes(&params, false, &result)")
+               != NULL);
+        ASSERT(strstr(main_buf,
+                      "rpc_agent_deploy_guard(&params, false, &result)")
                != NULL);
         char *static_agent_dispatch =
             strstr(main_buf, "if (cli_static_agent_method(method))");
@@ -3066,6 +3079,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard deploy")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "zclassic23 agentdeployguard -operator-lane=dev deploy")
+               != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
         ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);

@@ -656,7 +656,8 @@ static bool cli_static_agent_method(const char *method)
            strcmp(method, "agentimpact") == 0 ||
            strcmp(method, "agentcontracts") == 0 ||
            strcmp(method, "agentbuild") == 0 ||
-           strcmp(method, "agentinterface") == 0;
+           strcmp(method, "agentinterface") == 0 ||
+           strcmp(method, "agentdeployguard") == 0;
 }
 
 static bool cli_run_static_agent_method(const char *method,
@@ -684,6 +685,8 @@ static bool cli_run_static_agent_method(const char *method,
         ok = rpc_agent_build(&params, false, &result);
     } else if (strcmp(method, "agentinterface") == 0) {
         ok = rpc_agent_interface(&params, false, &result);
+    } else if (strcmp(method, "agentdeployguard") == 0) {
+        ok = rpc_agent_deploy_guard(&params, false, &result);
     }
 
     char out[131072];
@@ -713,9 +716,17 @@ static int cli_main(int argc, char **argv)
 
     bool datadir_set = false;
     bool rpcport_set = false;
+    enum zcl_operator_lane operator_lane = ZCL_OPERATOR_LANE_UNKNOWN;
+    enum zcl_runtime_profile runtime_profile = ZCL_RUNTIME_FULL;
     const char *method = NULL;
     const char *params_storage[CLI_MAX_PARAMS];
     int nparams = 0;
+
+    const char *env_lane = getenv("ZCL_OPERATOR_LANE");
+    if (env_lane && env_lane[0] &&
+        !app_operator_lane_parse(env_lane, &operator_lane)) {
+        fprintf(stderr, "Ignoring unknown ZCL_OPERATOR_LANE=%s\n", env_lane);
+    }
 
     /* Operator target flags are accepted before or after the method so
      * `zclassic23 agent -datadir=... -rpcport=...` cannot accidentally query
@@ -727,6 +738,16 @@ static int cli_main(int argc, char **argv)
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             cli_port = atoi(argv[i] + 9);
             rpcport_set = true;
+        } else if (strncmp(argv[i], "-operator-lane=", 15) == 0) {
+            if (!app_operator_lane_parse(argv[i] + 15, &operator_lane)) {
+                fprintf(stderr, "Unknown operator lane: %s\n", argv[i] + 15);
+                return 1;
+            }
+        } else if (strncmp(argv[i], "-profile=", 9) == 0) {
+            if (!app_runtime_profile_parse(argv[i] + 9, &runtime_profile)) {
+                fprintf(stderr, "Unknown runtime profile: %s\n", argv[i] + 9);
+                return 1;
+            }
         } else if (!method) {
             method = argv[i];
         } else {
@@ -768,9 +789,13 @@ static int cli_main(int argc, char **argv)
              strcmp(method, "-summary") == 0)
         method = "summary";
 
-    if (cli_static_agent_method(method))
+    if (cli_static_agent_method(method)) {
+        rpc_agent_set_boot_context(app_operator_lane_name(operator_lane),
+                                   app_runtime_profile_name(runtime_profile),
+                                   datadir, cli_port, 0, 0, 0);
         return cli_run_static_agent_method(method, params_storage, nparams) ?
             0 : 1;
+    }
 
     if (!cli_read_cookie(datadir)) {
         fprintf(stderr, "Node not running (no cookie at %s/.cookie)\n", datadir);
@@ -946,7 +971,9 @@ static bool is_cli_mode(int argc, char **argv)
             return true;
         /* Skip known node options with values */
         if (strncmp(argv[i], "-datadir=", 9) == 0 ||
-            strncmp(argv[i], "-rpcport=", 9) == 0)
+            strncmp(argv[i], "-rpcport=", 9) == 0 ||
+            strncmp(argv[i], "-operator-lane=", 15) == 0 ||
+            strncmp(argv[i], "-profile=", 9) == 0)
             continue;
         /* Any other -flag is a node option */
         return false;
