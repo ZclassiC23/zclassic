@@ -19,6 +19,15 @@ enum zcl_runtime_profile {
     ZCL_RUNTIME_LEGACY_COMPAT
 };
 
+enum zcl_operator_lane {
+    ZCL_OPERATOR_LANE_UNKNOWN = 0,
+    ZCL_OPERATOR_LANE_CANONICAL,
+    ZCL_OPERATOR_LANE_SOAK,
+    ZCL_OPERATOR_LANE_DEV,
+    ZCL_OPERATOR_LANE_TEST,
+    ZCL_OPERATOR_LANE_COPY
+};
+
 struct app_context {
     const char *datadir;
     const char *params_dir;
@@ -38,6 +47,7 @@ struct app_context {
     bool tx_index;
     bool checkpoints_enabled;
     enum zcl_runtime_profile runtime_profile;
+    enum zcl_operator_lane operator_lane;
     bool sapling_scan;
     const char *snapshot_dir;
     bool reindex_chainstate;
@@ -197,6 +207,9 @@ bool app_runtime_profile_has_store(enum zcl_runtime_profile profile);
 bool app_runtime_profile_has_onion(enum zcl_runtime_profile profile,
                                    bool tor_flag);
 bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile);
+const char *app_operator_lane_name(enum zcl_operator_lane lane);
+bool app_operator_lane_parse(const char *name,
+                             enum zcl_operator_lane *out);
 
 bool app_init(struct app_context *ctx);
 void app_shutdown(void);

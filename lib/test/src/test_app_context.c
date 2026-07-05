@@ -33,6 +33,7 @@ int test_app_context(void)
                      ctx.listen &&
                      ctx.checkpoints_enabled &&
                      ctx.runtime_profile == ZCL_RUNTIME_FULL &&
+                     ctx.operator_lane == ZCL_OPERATOR_LANE_UNKNOWN &&
                      ctx.par_workers == 0 &&
                      !ctx.no_services &&
                      !ctx.no_legacy_auto_import &&
@@ -78,6 +79,55 @@ int test_app_context(void)
                  strcmp(app_runtime_profile_name(ZCL_RUNTIME_LEGACY_COMPAT),
                         "legacy-compat") == 0 &&
                  strcmp(app_runtime_profile_name((enum zcl_runtime_profile)999),
+                        "unknown") == 0);
+
+    {
+        enum zcl_operator_lane lane = ZCL_OPERATOR_LANE_UNKNOWN;
+        bool ok = true;
+
+        ok = ok && app_operator_lane_parse("canonical", &lane) &&
+             lane == ZCL_OPERATOR_LANE_CANONICAL;
+        ok = ok && app_operator_lane_parse("live", &lane) &&
+             lane == ZCL_OPERATOR_LANE_CANONICAL;
+        ok = ok && app_operator_lane_parse("main", &lane) &&
+             lane == ZCL_OPERATOR_LANE_CANONICAL;
+        ok = ok && app_operator_lane_parse("soak", &lane) &&
+             lane == ZCL_OPERATOR_LANE_SOAK;
+        ok = ok && app_operator_lane_parse("dev", &lane) &&
+             lane == ZCL_OPERATOR_LANE_DEV;
+        ok = ok && app_operator_lane_parse("development", &lane) &&
+             lane == ZCL_OPERATOR_LANE_DEV;
+        ok = ok && app_operator_lane_parse("test", &lane) &&
+             lane == ZCL_OPERATOR_LANE_TEST;
+        ok = ok && app_operator_lane_parse("ci", &lane) &&
+             lane == ZCL_OPERATOR_LANE_TEST;
+        ok = ok && app_operator_lane_parse("copy", &lane) &&
+             lane == ZCL_OPERATOR_LANE_COPY;
+        ok = ok && app_operator_lane_parse("repro", &lane) &&
+             lane == ZCL_OPERATOR_LANE_COPY;
+        ok = ok && app_operator_lane_parse("unknown", &lane) &&
+             lane == ZCL_OPERATOR_LANE_UNKNOWN;
+        ok = ok && !app_operator_lane_parse("prod", &lane);
+        ok = ok && !app_operator_lane_parse(NULL, &lane);
+        ok = ok && !app_operator_lane_parse("canonical", NULL);
+
+        APPCTX_CHECK("operator lane names and aliases parse", ok);
+    }
+
+    APPCTX_CHECK("operator lane names are stable",
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_UNKNOWN),
+                        "unknown") == 0 &&
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_CANONICAL),
+                        "canonical") == 0 &&
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_SOAK),
+                        "soak") == 0 &&
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_DEV),
+                        "dev") == 0 &&
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_TEST),
+                        "test") == 0 &&
+                 strcmp(app_operator_lane_name(ZCL_OPERATOR_LANE_COPY),
+                        "copy") == 0 &&
+                 strcmp(app_operator_lane_name((enum zcl_operator_lane)999),
                         "unknown") == 0);
 
     APPCTX_CHECK("zclassic-only profile stays lean",

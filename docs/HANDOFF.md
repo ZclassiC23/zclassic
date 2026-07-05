@@ -1064,6 +1064,13 @@ embedded Tor, MCP/RPC, P2P ping/latency.
 | **dev** | `$HOME/.zclassic-c23-dev` | `make deploy-dev` | Fresh-build lane for frequent development restarts. Never use live for hourly iteration. |
 | **soak** | `$HOME/.zclassic-c23-soak` | deliberate re-baseline | Long-uptime / weekly evidence lane. Do not churn during development. |
 
+The committed units declare the same intent to the binary with
+`-operator-lane=canonical`, `-operator-lane=dev`, and `-operator-lane=soak`.
+`zclassic23 agent`, REST `/api/v1/agent`, and MCP `zcl_operator_summary`
+surface that as `operator_lane` (`zcl.operator_lane.v1`) with the lane's
+restart policy. Prefer that native contract over parsing systemd names when a
+lane's RPC is reachable.
+
 `make deploy-dev` owns the dev service file and self-cleans a stale temporary
 `zcl23-dev.service.d/reindex.conf` override unless
 `ZCL_DEV_ALLOW_REINDEX_DROPIN=1` is set for an intentional one-off rebuild.

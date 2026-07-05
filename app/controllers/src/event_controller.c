@@ -566,6 +566,7 @@ static bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "summary", summary);
     json_push_kv_str(result, "primary_blocker", primary);
     json_push_kv_str(result, "next", next);
+    agent_push_operator_lane_json(result, "operator_lane");
     json_push_kv_int(result, "height", height);
     json_push_kv_int(result, "served_height", height);
     json_push_kv_int(result, "indexed_height", indexed_height);

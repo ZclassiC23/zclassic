@@ -153,6 +153,7 @@ static const char *agent_classify_path(const char *path,
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (strcmp(path, "app/controllers/src/agent_controller.c") == 0 ||
+               strcmp(path, "app/controllers/src/agent_runtime_controller.c") == 0 ||
                strcmp(path,
                       "app/controllers/include/controllers/agent_controller.h") == 0) {
         subsystem = "native_agent_api";
@@ -160,6 +161,7 @@ static const char *agent_classify_path(const char *path,
         docs = "docs/AGENT_API.md";
         agent_add_group(acc, "syncdiag_rpc");
         agent_add_group(acc, "mcp_controllers");
+        agent_add_group(acc, "api");
         agent_add_group(acc, "make_lint_gates");
         acc->agent_api_changed = true;
         acc->code_changed = true;
@@ -546,6 +548,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.operator_summary.v1",
                       "zcl_operator_summary",
                       "long MCP operator summary with raw drill-down");
+    agent_push_schema(&schemas, "zcl.operator_lane.v1",
+                      "zclassic23 agent / GET /api/v1/agent",
+                      "declared canonical/soak/dev lane and restart policy");
     json_push_kv(result, "schemas", &schemas);
     json_free(&schemas);
 

@@ -540,8 +540,10 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     char *dl     = mcp_node_rpc("downloadstats", NULL);
     char *mirror = mcp_node_rpc("getmirrorstatus", NULL);
     char *health = mcp_node_rpc("healthcheck", NULL);
+    char *agent  = mcp_node_rpc("agent", NULL);
 
-    struct json_value chain_j, peers_j, diag_j, dl_j, mirror_j, health_j;
+    struct json_value chain_j, peers_j, diag_j, dl_j, mirror_j, health_j,
+                      agent_j;
     bool chain_ok  = status_parse_json(&chain_j, chain) &&
                      chain_j.type == JSON_OBJ;
     bool peers_ok  = status_parse_json(&peers_j, peers) &&
@@ -554,6 +556,8 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
                      mirror_j.type == JSON_OBJ;
     bool health_ok = status_parse_json(&health_j, health) &&
                      health_j.type == JSON_OBJ;
+    bool agent_ok  = status_parse_json(&agent_j, agent) &&
+                     agent_j.type == JSON_OBJ;
 
     int peer_total = 0, peer_inbound = 0, peer_outbound = 0, peer_ready = 0;
     long long peer_max_height = 0;
@@ -774,6 +778,10 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_push_kv_bool(&root, "operator_needed", operator_needed);
     json_push_kv_int(&root, "active_conditions", active_conditions);
     json_push_kv_int(&root, "unresolved_conditions", unresolved_conditions);
+    const struct json_value *operator_lane =
+        agent_ok ? json_get(&agent_j, "operator_lane") : NULL;
+    if (operator_lane && operator_lane->type == JSON_OBJ)
+        json_push_kv(&root, "operator_lane", operator_lane);
 
     json_init(&peer_obj);
     json_set_object(&peer_obj);
@@ -814,6 +822,7 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     status_push_rpc_json(&raw, "downloadstats", dl, "downloadstats");
     status_push_rpc_json(&raw, "mirror", mirror, "getmirrorstatus");
     status_push_rpc_json(&raw, "health", health, "healthcheck");
+    status_push_rpc_json(&raw, "agent", agent, "agent");
     json_push_kv(&root, "raw", &raw);
     json_free(&raw);
 
@@ -825,7 +834,9 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_free(&dl_j);
     json_free(&mirror_j);
     json_free(&health_j);
+    json_free(&agent_j);
     free(chain); free(peers); free(diag); free(dl); free(mirror); free(health);
+    free(agent);
     if (!out) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),

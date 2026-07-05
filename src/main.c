@@ -19,6 +19,7 @@
 #include "json/json.h"
 #include "views/wallet_gui.h"
 #include "models/database.h"
+#include "controllers/agent_controller.h"
 #include "controllers/sync_controller.h"
 #include "controllers/snapshot_controller.h"
 #include "storage/coins_db.h"
@@ -851,6 +852,7 @@ static void print_usage(const char *prog)
     printf("                      clearnet explorer (optional; defaults to the\n");
     printf("                      request Host header with a single cert)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
+    printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -enforce-sapling-root  Reject ANY hashFinalSaplingRoot mismatch\n");
     printf("                      (default OFF: only all-zeros is rejected).\n");
@@ -1879,6 +1881,11 @@ int main(int argc, char **argv)
     }
     ctx.datadir = default_datadir;
     ctx.params_dir = default_paramsdir;
+    const char *env_lane = getenv("ZCL_OPERATOR_LANE");
+    if (env_lane && env_lane[0] &&
+        !app_operator_lane_parse(env_lane, &ctx.operator_lane)) {
+        fprintf(stderr, "Ignoring unknown ZCL_OPERATOR_LANE=%s\n", env_lane);
+    }
 
     bool show_metrics = true;
 
@@ -1939,6 +1946,13 @@ int main(int argc, char **argv)
             if (!app_runtime_profile_parse(argv[i] + 9,
                                            &ctx.runtime_profile)) {
                 fprintf(stderr, "Unknown runtime profile: %s\n", argv[i] + 9);
+                return 1;
+            }
+        }
+        else if (strncmp(argv[i], "-operator-lane=", 15) == 0) {
+            if (!app_operator_lane_parse(argv[i] + 15,
+                                         &ctx.operator_lane)) {
+                fprintf(stderr, "Unknown operator lane: %s\n", argv[i] + 15);
                 return 1;
             }
         }
@@ -2087,6 +2101,10 @@ int main(int argc, char **argv)
     }
 
     printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
+    rpc_agent_set_boot_context(app_operator_lane_name(ctx.operator_lane),
+                               app_runtime_profile_name(ctx.runtime_profile),
+                               ctx.datadir, ctx.rpc_port, ctx.p2p_port,
+                               ctx.https_port, ctx.fs_port);
 
     /* #8 — capture argv for a possible in-process self-respawn (the watchdog
      * sets the respawn flag for a genuine-liveness stall when off-systemd). */

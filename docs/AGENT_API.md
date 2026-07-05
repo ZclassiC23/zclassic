@@ -33,6 +33,20 @@ diagnostics registry and become reachable through `zcl_state`. Expensive
 development proof state belongs in a named background quality lane with a JSON
 verdict, not in an untracked terminal scrollback.
 
+## Operator Lane
+
+`zclassic23 agent`, REST `GET /api/v1/agent`, and MCP
+`zcl_operator_summary` include `operator_lane`
+(`zcl.operator_lane.v1`). The lane is declared by the node's own boot context
+(`-operator-lane=canonical|soak|dev|test|copy`, or `ZCL_OPERATOR_LANE`) and
+reports the lane name, runtime profile, datadir, ports, and machine-readable
+restart policy.
+
+Use it to distinguish the long-running canonical node from the pinned soak lane
+and the restartable development lane. Tooling should branch on the booleans
+`canonical`, `soak_evidence`, `development`, and `ephemeral`, not on systemd
+unit names or comments.
+
 ## Bootstrap Service Status
 
 Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a

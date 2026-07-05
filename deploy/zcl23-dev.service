@@ -25,6 +25,7 @@ Type=simple
 # set as the soak unit.
 ExecStart=%h/.local/bin/zclassic23-dev \
     -datadir=%h/.zclassic-c23-dev \
+    -operator-lane=dev \
     -port=8053 \
     -rpcport=18252 \
     -listen \

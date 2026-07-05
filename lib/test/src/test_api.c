@@ -3,6 +3,7 @@
  * and supply calculation correctness. */
 
 #include "test/test_helpers.h"
+#include "controllers/agent_controller.h"
 #include "controllers/api_controller.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/file_controller.h"
@@ -1355,6 +1356,9 @@ int test_api(void)
         struct block_index *blocks[3] = {0};
         bool ok = api_test_build_chain(&ms, blocks, 3);
         reducer_frontier_provable_tip_set(2);
+        rpc_agent_set_boot_context("canonical", "full",
+                                   "/tmp/zcl-canonical", 18232, 8033,
+                                   8443, 18034);
         api_set_state(&ms, NULL, NULL, NULL, "/tmp");
 
         size_t n = api_handle_request("GET", "/api/status", NULL, 0,
@@ -1402,6 +1406,18 @@ int test_api(void)
                           "v1") == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
+        const struct json_value *lane =
+            json_get(&root, "operator_lane");
+        ok = ok && lane && lane->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(lane, "schema")),
+                          "zcl.operator_lane.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(lane, "lane")),
+                          "canonical") == 0;
+        ok = ok && json_get_bool(json_get(lane, "canonical"));
+        ok = ok && !json_get_bool(json_get(lane, "development"));
+        ok = ok && strcmp(json_get_str(json_get(lane,
+                                                "restart_policy")),
+                          "operator_gated") == 0;
         json_free(&root);
 
         n = api_handle_request("GET", "/api/v1/node", NULL, 0,
@@ -1429,6 +1445,7 @@ int test_api(void)
         json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
+        rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();

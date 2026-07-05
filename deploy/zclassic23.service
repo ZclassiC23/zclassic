@@ -35,6 +35,7 @@ EnvironmentFile=-%h/.config/zclassic23/env
 
 ExecStart=%h/zclassic23/build/bin/zclassic23 \
     -datadir=%h/.zclassic-c23 \
+    -operator-lane=canonical \
     -port=8033 \
     -rpcport=18232 \
     -listen \

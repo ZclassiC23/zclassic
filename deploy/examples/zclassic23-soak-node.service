@@ -32,6 +32,7 @@ Type=simple
 # body_fetch backfill (observed live 2026-06-12, soak stuck at 3145394).
 ExecStart=%h/.local/bin/zclassic23-soak \
     -datadir=%h/.zclassic-c23-soak \
+    -operator-lane=soak \
     -port=8043 \
     -rpcport=18242 \
     -listen \

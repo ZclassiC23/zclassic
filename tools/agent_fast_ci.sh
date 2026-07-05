@@ -151,7 +151,7 @@ select_test_groups() {
         [ -n "$file" ] || continue
         matched=0
         case "$file" in
-            Makefile|src/main.c|tools/*|tools/scripts/*|deploy/*.service|deploy/*.timer|docs/AGENT_API.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
+            Makefile|src/main.c|tools/*|tools/scripts/*|deploy/*.service|deploy/*.timer|deploy/examples/*.service|deploy/examples/*.timer|docs/AGENT_API.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
                 add_group "make_lint_gates"
                 matched=1
                 ;;
@@ -199,6 +199,11 @@ select_test_groups() {
                 add_group "syncdiag_rpc"
                 matched=1
                 ;;
+            config/src/app_context.c|config/include/config/boot.h|lib/test/src/test_app_context.c)
+                add_group "app_context"
+                add_group "make_lint_gates"
+                matched=1
+                ;;
             app/services/src/node_health_service.c|app/services/include/services/node_health_service.h|lib/test/src/test_node_health_service.c)
                 add_group "node_health_service"
                 matched=1
@@ -207,11 +212,12 @@ select_test_groups() {
                 add_group "api"
                 matched=1
                 ;;
-            app/controllers/src/agent_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
+            app/controllers/src/agent_controller.c|app/controllers/src/agent_runtime_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
                 add_group "make_lint_gates"
                 add_group "node_health_service"
                 add_group "mcp_controllers"
                 add_group "syncdiag_rpc"
+                add_group "api"
                 matched=1
                 ;;
         esac
@@ -302,7 +308,8 @@ cache_manifest() {
         deploy/zclassic23-coverage.service deploy/zclassic23-coverage.timer \
         deploy/zclassic23-test-suite.service deploy/zclassic23-test-suite.timer \
         lib/test/src/test_make_lint_gates.c docs/work/fast-path.md \
-        docs/AGENT_API.md app/controllers/src/agent_controller.c; do
+        docs/AGENT_API.md app/controllers/src/agent_controller.c \
+        app/controllers/src/agent_runtime_controller.c; do
         cache_manifest_file "$file" "$file"
     done
 

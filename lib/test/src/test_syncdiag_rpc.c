@@ -18,6 +18,7 @@
  * containing non-empty `watchdog` and `headers` sub-objects. */
 
 #include "test/test_helpers.h"
+#include "controllers/agent_controller.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
@@ -1297,6 +1298,8 @@ int test_syncdiag_rpc(void)
         alerts_init();
         alerts_reset();
         event_emitf(EV_OPERATOR_NEEDED, 0, "chain_integrity_failed");
+        rpc_agent_set_boot_context("dev", "full", "/tmp/zcl-agent-dev",
+                                   18252, 8053, 8443, 18034);
 
         struct json_value params;
         json_init(&params);
@@ -1321,9 +1324,23 @@ int test_syncdiag_rpc(void)
                           "node has an active health blocker") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
                           "zclassic23 healthcheck") == 0;
+        const struct json_value *lane =
+            json_get(&result, "operator_lane");
+        ok = ok && lane && lane->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(lane, "schema")),
+                          "zcl.operator_lane.v1") == 0;
+        ok = ok && json_get_int(json_get(lane, "schema_version")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(lane, "lane")),
+                          "dev") == 0;
+        ok = ok && json_get_bool(json_get(lane, "development"));
+        ok = ok && !json_get_bool(json_get(lane, "canonical"));
+        ok = ok && strcmp(json_get_str(json_get(lane,
+                                                "restart_policy")),
+                          "frequent_deploy_ok") == 0;
 
         json_free(&params);
         json_free(&result);
+        rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         alerts_shutdown();
 
         if (ok) printf("OK\n");
@@ -1449,6 +1466,8 @@ int test_syncdiag_rpc(void)
                           "zcl.agent_contracts.v1") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.operator_lane.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
 
         struct json_value build;

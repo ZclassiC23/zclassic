@@ -824,6 +824,18 @@ static char *mock_operator_degraded_rpc(const char *method,
                       "\"checks\":{\"operator_needed\":false,"
                       "\"condition_engine\":{\"active_count\":1,"
                       "\"unresolved_count\":0}}}");
+    if (strcmp(method, "agent") == 0)
+        return strdup("{\"schema\":\"zcl.public_status.v1\","
+                      "\"operator_lane\":{"
+                      "\"schema\":\"zcl.operator_lane.v1\","
+                      "\"schema_version\":1,"
+                      "\"lane\":\"dev\","
+                      "\"runtime_profile\":\"full\","
+                      "\"datadir\":\"/tmp/zcl-dev\","
+                      "\"canonical\":false,"
+                      "\"soak_evidence\":false,"
+                      "\"development\":true,"
+                      "\"restart_policy\":\"frequent_deploy_ok\"}}");
     return strdup("null");
 }
 
@@ -852,6 +864,18 @@ static char *mock_operator_healthy_rpc(const char *method,
                       "\"checks\":{\"operator_needed\":false,"
                       "\"condition_engine\":{\"active_count\":0,"
                       "\"unresolved_count\":0}}}");
+    if (strcmp(method, "agent") == 0)
+        return strdup("{\"schema\":\"zcl.public_status.v1\","
+                      "\"operator_lane\":{"
+                      "\"schema\":\"zcl.operator_lane.v1\","
+                      "\"schema_version\":1,"
+                      "\"lane\":\"canonical\","
+                      "\"runtime_profile\":\"full\","
+                      "\"datadir\":\"/tmp/zcl-canonical\","
+                      "\"canonical\":true,"
+                      "\"soak_evidence\":false,"
+                      "\"development\":false,"
+                      "\"restart_policy\":\"operator_gated\"}}");
     if (strcmp(method, "milestone") == 0)
         return strdup("{\"schema\":\"zcl.milestone_status.v1\","
                       "\"api_version\":\"v1\","
@@ -898,6 +922,15 @@ static char *mock_operator_needed_rpc(const char *method,
                       "\"blocking_reason\":\"operator_needed:chain_integrity_failed\","
                       "\"condition_engine\":{\"active_count\":2,"
                       "\"unresolved_count\":2}}}");
+    if (strcmp(method, "agent") == 0)
+        return strdup("{\"schema\":\"zcl.public_status.v1\","
+                      "\"operator_lane\":{"
+                      "\"schema\":\"zcl.operator_lane.v1\","
+                      "\"schema_version\":1,"
+                      "\"lane\":\"canonical\","
+                      "\"canonical\":true,"
+                      "\"development\":false,"
+                      "\"restart_policy\":\"operator_gated\"}}");
     return strdup("null");
 }
 
@@ -963,6 +996,15 @@ static int test_zcl_operator_summary_degraded_shape(void)
                       "download_queue_idle");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
                       "zcl_syncdiag");
+        const struct json_value *lane =
+            json_get(&root, "operator_lane");
+        ASSERT(lane && lane->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "schema")),
+                      "zcl.operator_lane.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "lane")), "dev");
+        ASSERT(json_get_bool(json_get(lane, "development")));
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "restart_policy")),
+                      "frequent_deploy_ok");
 
         const struct json_value *tools =
             json_get(&root, "recommended_tools");
@@ -1018,6 +1060,16 @@ static int test_zcl_operator_summary_healthy_shape(void)
                       "none");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")), "none");
         ASSERT(json_size(json_get(&root, "recommended_tools")) == 0);
+        const struct json_value *lane =
+            json_get(&root, "operator_lane");
+        ASSERT(lane && lane->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "schema")),
+                      "zcl.operator_lane.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "lane")),
+                      "canonical");
+        ASSERT(json_get_bool(json_get(lane, "canonical")));
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "restart_policy")),
+                      "operator_gated");
 
         const struct json_value *mirror = json_get(&root, "mirror");
         ASSERT(mirror != NULL);

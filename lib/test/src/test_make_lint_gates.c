@@ -2248,11 +2248,17 @@ static int t_dev_lane_deploy_contract(void)
     char *lane_health = NULL;
     char *handoff = NULL;
     char *makefile = NULL;
+    char *live_unit = NULL;
+    char *soak_unit = NULL;
+    char *dev_unit = NULL;
     TEST("dev lane deploy self-cleans stale reindex override") {
         char script_path[PATH_MAX];
         char lane_health_path[PATH_MAX];
         char handoff_path[PATH_MAX];
         char makefile_path[PATH_MAX];
+        char live_unit_path[PATH_MAX];
+        char soak_unit_path[PATH_MAX];
+        char dev_unit_path[PATH_MAX];
         ASSERT(repo_path(script_path, sizeof(script_path),
                          "tools/dev/deploy-dev-lane.sh") == 0);
         ASSERT(repo_path(lane_health_path, sizeof(lane_health_path),
@@ -2261,10 +2267,19 @@ static int t_dev_lane_deploy_contract(void)
                          "docs/HANDOFF.md") == 0);
         ASSERT(repo_path(makefile_path, sizeof(makefile_path),
                          "Makefile") == 0);
+        ASSERT(repo_path(live_unit_path, sizeof(live_unit_path),
+                         "deploy/zclassic23.service") == 0);
+        ASSERT(repo_path(soak_unit_path, sizeof(soak_unit_path),
+                         "deploy/examples/zclassic23-soak-node.service") == 0);
+        ASSERT(repo_path(dev_unit_path, sizeof(dev_unit_path),
+                         "deploy/zcl23-dev.service") == 0);
         ASSERT(read_entire_file(script_path, &script) == 0);
         ASSERT(read_entire_file(lane_health_path, &lane_health) == 0);
         ASSERT(read_entire_file(handoff_path, &handoff) == 0);
         ASSERT(read_entire_file(makefile_path, &makefile) == 0);
+        ASSERT(read_entire_file(live_unit_path, &live_unit) == 0);
+        ASSERT(read_entire_file(soak_unit_path, &soak_unit) == 0);
+        ASSERT(read_entire_file(dev_unit_path, &dev_unit) == 0);
 
         ASSERT(strstr(script, "STALE_REINDEX_DROPIN=") != NULL);
         ASSERT(strstr(script, "zcl23-dev.service.d/reindex.conf") != NULL);
@@ -2272,10 +2287,14 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "removing stale reindex drop-in") != NULL);
         ASSERT(strstr(script, "rm -f \"$STALE_REINDEX_DROPIN\"") != NULL);
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
+        ASSERT(strstr(live_unit, "-operator-lane=canonical") != NULL);
+        ASSERT(strstr(soak_unit, "-operator-lane=soak") != NULL);
+        ASSERT(strstr(dev_unit, "-operator-lane=dev") != NULL);
         ASSERT(strstr(handoff, "Public daily-driver node") != NULL);
         ASSERT(strstr(handoff, "Fresh-build lane for frequent development restarts")
                != NULL);
         ASSERT(strstr(handoff, "Long-uptime / weekly evidence lane") != NULL);
+        ASSERT(strstr(handoff, "zcl.operator_lane.v1") != NULL);
         ASSERT(strstr(handoff, "ZCL_DEV_ALLOW_REINDEX_DROPIN=1") != NULL);
         ASSERT(strstr(lane_health, "report_lane live zclassic23") != NULL);
         ASSERT(strstr(lane_health, "report_lane soak zclassic23-soak") != NULL);
@@ -2325,6 +2344,9 @@ static int t_dev_lane_deploy_contract(void)
     free(lane_health);
     free(handoff);
     free(makefile);
+    free(live_unit);
+    free(soak_unit);
+    free(dev_unit);
     return failures;
 }
 
@@ -2375,6 +2397,8 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "src/main.c") != NULL);
         ASSERT(strstr(buf, "app/controllers/src/agent_controller.c") != NULL);
+        ASSERT(strstr(buf, "app/controllers/src/agent_runtime_controller.c")
+               != NULL);
         ASSERT(strstr(buf, "app/models/src/peer.c") != NULL);
         ASSERT(strstr(buf, "lib/net/src/connman.c") != NULL);
         ASSERT(strstr(buf, "docs/AGENT_API.md") != NULL);
@@ -2385,6 +2409,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "app/controllers/include/controllers/network_controller.h")
                != NULL);
         ASSERT(strstr(buf, "config/src/boot_services.c") != NULL);
+        ASSERT(strstr(buf, "config/src/app_context.c") != NULL);
+        ASSERT(strstr(buf, "config/include/config/boot.h") != NULL);
+        ASSERT(strstr(buf, "app_context") != NULL);
         ASSERT(strstr(buf, "models") != NULL);
         ASSERT(strstr(buf, "lib/test/src/test_syncdiag_rpc.c") != NULL);
         ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);
@@ -2470,12 +2497,14 @@ static int t_native_agent_api_contract(void)
     char *main_buf = NULL;
     char *event_buf = NULL;
     char *agent_ctrl_buf = NULL;
+    char *agent_runtime_buf = NULL;
     char *api_buf = NULL;
     char *agent_doc_buf = NULL;
     TEST("zclassic23 binary exposes native API and agent commands") {
         char main_path[PATH_MAX];
         char event_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
+        char agent_runtime_path[PATH_MAX];
         char api_path[PATH_MAX];
         char agent_doc_path[PATH_MAX];
         ASSERT(repo_path(main_path, sizeof(main_path), "src/main.c") == 0);
@@ -2483,6 +2512,8 @@ static int t_native_agent_api_contract(void)
                          "app/controllers/src/event_controller.c") == 0);
         ASSERT(repo_path(agent_ctrl_path, sizeof(agent_ctrl_path),
                          "app/controllers/src/agent_controller.c") == 0);
+        ASSERT(repo_path(agent_runtime_path, sizeof(agent_runtime_path),
+                         "app/controllers/src/agent_runtime_controller.c") == 0);
         ASSERT(repo_path(api_path, sizeof(api_path),
                          "app/controllers/src/api_controller_index.c") == 0);
         ASSERT(repo_path(agent_doc_path, sizeof(agent_doc_path),
@@ -2490,6 +2521,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
+        ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
         ASSERT(read_entire_file(agent_doc_path, &agent_doc_buf) == 0);
         ASSERT(strstr(main_buf, "%s api") != NULL);
@@ -2500,6 +2532,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
+        ASSERT(strstr(main_buf, "-operator-lane=<name>") != NULL);
+        ASSERT(strstr(main_buf, "app_operator_lane_parse") != NULL);
+        ASSERT(strstr(main_buf, "rpc_agent_set_boot_context") != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
@@ -2520,6 +2555,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.operator_lane.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "zcl.operator_lane.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "restart_policy") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "safety_contract") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_FAST_CACHE") != NULL);
         ASSERT(strstr(agent_ctrl_buf, ".cache/zcl-agent-fast-ci") != NULL);
@@ -2583,6 +2622,7 @@ static int t_native_agent_api_contract(void)
     free(main_buf);
     free(event_buf);
     free(agent_ctrl_buf);
+    free(agent_runtime_buf);
     free(api_buf);
     free(agent_doc_buf);
     return failures;

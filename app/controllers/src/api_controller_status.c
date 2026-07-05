@@ -6,6 +6,7 @@
  * MCP-friendly clients that do not need the full diagnostic tree. */
 
 #include "controllers/api_controller.h"
+#include "controllers/agent_controller.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
 #include "json/json.h"
@@ -483,6 +484,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_str(&body, "summary", summary);
     json_push_kv_str(&body, "primary_blocker", primary);
     json_push_kv_str(&body, "next_endpoint", next_endpoint);
+    agent_push_operator_lane_json(&body, "operator_lane");
     json_push_kv_int(&body, "height", height);
     api_freshness_push_json(&body, &freshness);
     json_push_kv_int(&body, "header_height", health.header_height);

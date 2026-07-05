@@ -7,6 +7,16 @@
 
 struct json_value;
 
+/* Set once from node-mode main after CLI/env parsing and before app_init()
+ * starts RPC-serving threads. Tests may reset the context directly. */
+void rpc_agent_set_boot_context(const char *operator_lane,
+                                const char *runtime_profile,
+                                const char *datadir,
+                                int rpc_port, int p2p_port,
+                                int https_port, int fs_port);
+void agent_push_operator_lane_json(struct json_value *out,
+                                   const char *key);
+
 bool rpc_agent_map(const struct json_value *params, bool help,
                    struct json_value *result);
 bool rpc_agent_impact(const struct json_value *params, bool help,
