@@ -646,36 +646,6 @@ static char *cli_rpc_call(const char *body, size_t body_len)
     return buf;
 }
 
-static void cli_print(const char *json_str)
-{
-    struct json_value v;
-    if (!json_read(&v, json_str, strlen(json_str))) {
-        printf("%s\n", json_str);
-        return;
-    }
-    const struct json_value *err = json_get(&v, "error");
-    const struct json_value *res = json_get(&v, "result");
-    char out[65536];
-
-    if (err && err->type != JSON_NULL) {
-        const struct json_value *msg = json_get(err, "message");
-        if (msg && msg->type == JSON_STR)
-            fprintf(stderr, "Error: %s\n", json_get_str(msg));
-        else { json_write(err, out, sizeof(out)); fprintf(stderr, "Error: %s\n", out); }
-        json_free(&v);
-        return;
-    }
-    if (res) {
-        if (res->type == JSON_STR) printf("%s\n", json_get_str(res));
-        else if (res->type == JSON_INT) printf("%lld\n", (long long)json_get_int(res));
-        else if (res->type == JSON_REAL) printf("%.8f\n", json_get_real(res));
-        else if (res->type == JSON_BOOL) printf("%s\n", json_get_bool(res) ? "true" : "false");
-        else if (res->type == JSON_NULL) printf("null\n");
-        else { json_write(res, out, sizeof(out)); printf("%s\n", out); }
-    }
-    json_free(&v);
-}
-
 static void print_usage(const char *prog);
 
 static bool cli_static_agent_method(const char *method)
@@ -820,9 +790,9 @@ static int cli_main(int argc, char **argv)
 
     char *resp = cli_rpc_call(body, (size_t)blen);
     if (!resp) { fprintf(stderr, "RPC failed\n"); return 1; }
-    cli_print(resp);
+    int rc = rpc_cli_print_json_result(resp, stdout, stderr);
     free(resp);
-    return 0;
+    return rc;
 }
 
 /* ════════════════════════════════════════════════════════════════

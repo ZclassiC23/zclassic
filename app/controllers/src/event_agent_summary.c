@@ -10,6 +10,7 @@
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
 #include "controllers/sync_controller.h"
+#include "event_agent_peers.h"
 #include "event/event.h"
 #include "jobs/tip_finalize_stage.h"
 #include "json/json.h"
@@ -18,7 +19,6 @@
 #include "net/msgprocessor.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
-#include "net/version.h"
 #include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "services/block_source_policy.h"
@@ -54,6 +54,9 @@ struct agent_fast_snapshot {
     size_t peer_count;
     size_t magicbean_peer_count;
     size_t zclassic_c23_peer_count;
+    int64_t peer_snapshot_age_seconds;
+    bool peer_snapshot_available;
+    bool peer_snapshot_stale;
     bool has_peers;
     bool healthy;
     bool serving;
@@ -184,34 +187,6 @@ static int agent_fast_clamp_nonnegative_i64(int64_t value)
     return (int)value;
 }
 
-static void agent_fast_collect_peer_counts(struct agent_fast_snapshot *s,
-                                           struct connman *cm)
-{
-    if (!s || !cm)
-        return;
-
-    s->peer_count = connman_get_node_count(cm);
-    s->has_peers = s->peer_count > 0;
-    s->peer_best_height = connman_max_peer_height(cm);
-
-    zcl_mutex_lock(&cm->manager.cs_nodes);
-    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
-        struct p2p_node *node = cm->manager.nodes[i];
-        if (!node || node->disconnect)
-            continue;
-        if (node->state < PEER_HANDSHAKE_COMPLETE)
-            continue;
-        bool is_mb = false, is_z23 = false;
-        msg_version_classify_peer(node->sub_ver, node->services,
-                                  &is_mb, &is_z23);
-        if (is_mb)
-            s->magicbean_peer_count++;
-        if (is_z23)
-            s->zclassic_c23_peer_count++;
-    }
-    zcl_mutex_unlock(&cm->manager.cs_nodes);
-}
-
 static void agent_fast_collect_errors(struct agent_fast_snapshot *s)
 {
     if (!s)
@@ -299,6 +274,7 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     s->last_error_age_seconds = -1;
     s->oldest_in_flight_age_seconds = -1;
     s->oldest_in_flight_height = -1;
+    s->peer_snapshot_age_seconds = -1;
     s->validation_pack_ok = true;
 
     s->sync_state = sync_get_state();
@@ -319,7 +295,20 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         s->header_height = s->tip_height;
     snprintf(s->projection_state, sizeof(s->projection_state), "unknown");
 
-    agent_fast_collect_peer_counts(s, rpc_net_get_connman());
+    {
+        struct agent_peer_snapshot peers;
+        agent_peer_snapshot_collect(&peers, rpc_net_get_connman());
+        s->peer_count = peers.peer_count;
+        s->has_peers = peers.peer_count > 0;
+        s->peer_best_height = peers.peer_best_height;
+        s->magicbean_peer_count = peers.magicbean_peer_count;
+        s->zclassic_c23_peer_count = peers.zclassic_c23_peer_count;
+        s->peer_snapshot_available = peers.available;
+        s->peer_snapshot_stale = peers.stale;
+        s->peer_snapshot_age_seconds = peers.age_seconds;
+        if (peers.warning_reason)
+            agent_fast_add_warning(s, peers.warning_reason);
+    }
 
     s->log_head = agent_fast_tip_finalize_log_head();
     if (s->peer_best_height >= 0 && s->log_head >= 0)
@@ -526,6 +515,11 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         next = "zclassic23 healthcheck";
         summary = "node has an active health blocker";
         operator_needed = true;
+    } else if (!health.peer_snapshot_available) {
+        status = "degraded";
+        primary = "peer_snapshot_unavailable";
+        next = "zclassic23 getpeerinfo";
+        summary = "node peer telemetry is temporarily busy";
     } else if (!health.has_peers) {
         status = "blocked";
         primary = "no_peers";
@@ -659,6 +653,12 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_set_object(&peers);
     json_push_kv_int(&peers, "total", (int64_t)health.peer_count);
     json_push_kv_bool(&peers, "has_peers", health.has_peers);
+    json_push_kv_bool(&peers, "snapshot_available",
+                      health.peer_snapshot_available);
+    json_push_kv_bool(&peers, "snapshot_stale",
+                      health.peer_snapshot_stale);
+    json_push_kv_int(&peers, "snapshot_age_seconds",
+                     health.peer_snapshot_age_seconds);
     json_push_kv_int(&peers, "magicbean",
                      (int64_t)health.magicbean_peer_count);
     json_push_kv_int(&peers, "zclassic23",

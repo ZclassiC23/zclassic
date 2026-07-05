@@ -10,6 +10,7 @@
 #include "json/json.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
 /* Decide whether positional CLI argument param_idx of `method` must be parsed
  * as JSON rather than passed through as a string. Backed by a static
@@ -31,6 +32,11 @@ bool rpc_should_convert_param(const char *method, int param_idx);
  * left partially built and must still be json_free'd by the caller. */
 bool rpc_convert_values(const char *method, const char **str_params,
                         size_t num_params, struct json_value *result);
+
+/* Print a JSON-RPC response body using Bitcoin-style CLI output semantics.
+ * Returns 0 for a valid, non-error result; nonzero for empty, malformed,
+ * missing-result, or JSON-RPC error bodies. */
+int rpc_cli_print_json_result(const char *json_str, FILE *out, FILE *err);
 
 /* JSON-RPC call to a local node (e.g., zclassicd on port 8232).
  * creds must be a literal "user:pass" string (base64-encoded internally

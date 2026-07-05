@@ -4,6 +4,7 @@
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 #include "platform/clock.h"
+#include "rpc/client.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_rpc_client.h"
 #include <openssl/err.h>
@@ -48,6 +49,38 @@ static int64_t rpc_fake_now_wall(void *self)
 {
     struct rpc_fake_clock *c = (struct rpc_fake_clock *)self;
     return c ? c->wall_ms : 0;
+}
+
+static bool rpc_test_file_contains(FILE *f, const char *needle)
+{
+    if (!needle)
+        return true;
+    if (!f || fflush(f) != 0 || fseek(f, 0, SEEK_SET) != 0)
+        return false;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    return strstr(buf, needle) != NULL;
+}
+
+static bool rpc_test_cli_print_case(const char *body, bool want_ok,
+                                    const char *out_needle,
+                                    const char *err_needle)
+{
+    FILE *out = tmpfile();
+    FILE *err = tmpfile();
+    if (!out || !err) {
+        if (out) fclose(out);
+        if (err) fclose(err);
+        return false;
+    }
+    int rc = rpc_cli_print_json_result(body, out, err);
+    bool ok = want_ok ? rc == 0 : rc != 0;
+    ok = ok && rpc_test_file_contains(out, out_needle);
+    ok = ok && rpc_test_file_contains(err, err_needle);
+    fclose(out);
+    fclose(err);
+    return ok;
 }
 
 int test_rpc(void) {
@@ -597,6 +630,25 @@ int test_rpc(void) {
         ok = ok && !rpc_should_convert_param("estimatefee", 1);
         ok = ok && rpc_should_convert_param("sendtoaddress", 1);
         ok = ok && !rpc_should_convert_param("sendtoaddress", 0);
+
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_cli_print_json_result... ");
+    {
+        bool ok = rpc_test_cli_print_case(
+            "{\"result\":42,\"error\":null,\"id\":\"cli\"}",
+            true, "42\n", NULL);
+        ok = ok && rpc_test_cli_print_case(
+            "{\"result\":null,\"error\":{\"code\":-32601,"
+            "\"message\":\"Method not found\"},\"id\":\"cli\"}",
+            false, NULL, "Method not found");
+        ok = ok && rpc_test_cli_print_case("", false, NULL,
+                                           "empty RPC response");
+        ok = ok && rpc_test_cli_print_case("not-json", false, NULL,
+                                           "invalid JSON-RPC response");
+        ok = ok && rpc_test_cli_print_case("{\"error\":null,\"id\":\"cli\"}",
+                                           false, NULL, "missing result");
 
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }

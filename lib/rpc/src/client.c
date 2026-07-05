@@ -166,6 +166,102 @@ bool rpc_convert_values(const char *method, const char **str_params,
     return true;
 }
 
+static int rpc_cli_print_json_value(const struct json_value *value,
+                                    FILE *out, FILE *err)
+{
+    size_t cap = 4096;
+    char *buf = zcl_malloc(cap, "rpc_cli_json_result");
+    if (!buf) {
+        fprintf(err, "Error: failed to allocate RPC result buffer\n");
+        return 1;
+    }
+
+    size_t n = json_write(value, buf, cap);
+    if (n >= cap) {
+        if (n == (size_t)-1) {
+            free(buf);
+            fprintf(err, "Error: failed to serialize RPC result\n");
+            return 1;
+        }
+        cap = n + 1;
+        char *wide = zcl_malloc(cap, "rpc_cli_json_result_wide");
+        if (!wide) {
+            free(buf);
+            fprintf(err, "Error: failed to allocate RPC result buffer\n");
+            return 1;
+        }
+        free(buf);
+        buf = wide;
+        n = json_write(value, buf, cap);
+        if (n >= cap) {
+            free(buf);
+            fprintf(err, "Error: failed to serialize RPC result\n");
+            return 1;
+        }
+    }
+
+    fprintf(out, "%s\n", buf);
+    free(buf);
+    return 0;
+}
+
+int rpc_cli_print_json_result(const char *json_str, FILE *out, FILE *err)
+{
+    if (!out)
+        out = stdout;
+    if (!err)
+        err = stderr;
+    if (!json_str || json_str[0] == '\0') {
+        fprintf(err, "Error: empty RPC response\n");
+        return 1;
+    }
+
+    struct json_value v;
+    if (!json_read(&v, json_str, strlen(json_str))) {
+        fprintf(err, "Error: invalid JSON-RPC response: %.200s\n",
+                json_str);
+        return 1;
+    }
+
+    const struct json_value *rpc_err = json_get(&v, "error");
+    const struct json_value *res = json_get(&v, "result");
+
+    if (rpc_err && rpc_err->type != JSON_NULL) {
+        const struct json_value *msg = json_get(rpc_err, "message");
+        if (msg && msg->type == JSON_STR) {
+            fprintf(err, "Error: %s\n", json_get_str(msg));
+        } else {
+            fprintf(err, "Error: ");
+            rpc_cli_print_json_value(rpc_err, err, err);
+        }
+        json_free(&v);
+        return 1;
+    }
+
+    if (!res) {
+        fprintf(err, "Error: missing result in JSON-RPC response\n");
+        json_free(&v);
+        return 1;
+    }
+
+    int rc = 0;
+    if (res->type == JSON_STR) {
+        fprintf(out, "%s\n", json_get_str(res));
+    } else if (res->type == JSON_INT) {
+        fprintf(out, "%lld\n", (long long)json_get_int(res));
+    } else if (res->type == JSON_REAL) {
+        fprintf(out, "%.8f\n", json_get_real(res));
+    } else if (res->type == JSON_BOOL) {
+        fprintf(out, "%s\n", json_get_bool(res) ? "true" : "false");
+    } else if (res->type == JSON_NULL) {
+        fprintf(out, "null\n");
+    } else {
+        rc = rpc_cli_print_json_value(res, out, err);
+    }
+    json_free(&v);
+    return rc;
+}
+
 /* ── Shared RPC caller for local node communication ────────────── */
 
 #include <sys/socket.h>
