@@ -1851,7 +1851,6 @@ int test_syncdiag_rpc(void)
         struct json_value result;
         const int served_height = ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 10;
         const int projection_height = 5;
-        const int projection_lag = served_height - projection_height;
 
         chain_params_select(CHAIN_MAIN);
         memset(&cm, 0, sizeof(cm));
@@ -2258,6 +2257,8 @@ int test_syncdiag_rpc(void)
             json_get(&interface, "capabilities");
         const struct json_value *runtime_status =
             find_object_with_str(capabilities, "name", "runtime_status");
+        const struct json_value *mirror_status =
+            find_object_with_str(capabilities, "name", "mirror_status");
         const struct json_value *lane_topology =
             find_object_with_str(capabilities, "name", "lane_topology");
         const struct json_value *deploy_cap =
@@ -2296,6 +2297,15 @@ int test_syncdiag_rpc(void)
         ok = ok && runtime_status &&
             strcmp(json_get_str(json_get(runtime_status, "schema")),
                    "zcl.public_status.v1") == 0;
+        ok = ok && mirror_status &&
+            strcmp(json_get_str(json_get(mirror_status, "schema")),
+                   "zcl.mirror_status.v1") == 0;
+        ok = ok && mirror_status &&
+            strcmp(json_get_str(json_get(mirror_status, "native")),
+                   "zclassic23 getmirrorstatus") == 0;
+        ok = ok && mirror_status &&
+            strcmp(json_get_str(json_get(mirror_status, "mcp")),
+                   "zcl_mirror_status") == 0;
         ok = ok && deploy_cap &&
             strcmp(json_get_str(json_get(deploy_cap, "schema")),
                    "zcl.agent_deploy_guard.v1") == 0;

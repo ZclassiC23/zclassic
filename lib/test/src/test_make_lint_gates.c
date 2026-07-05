@@ -2787,6 +2787,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
         ASSERT(strstr(main_buf, "%s agentinterface") != NULL);
         ASSERT(strstr(main_buf, "%s agentdeployguard") != NULL);
+        ASSERT(strstr(main_buf, "%s getmirrorstatus") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
         ASSERT(strstr(main_buf, "-operator-lane=<name>") != NULL);
@@ -2994,6 +2995,9 @@ static int t_native_agent_api_contract(void)
                       "json_push_kv_str(cli, \"deploy_guard_command\"")
                != NULL);
         ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"mirror_command\", "
+                      "\"zclassic23 getmirrorstatus\")") != NULL);
+        ASSERT(strstr(api_buf,
                       "json_push_kv_str(mcp, \"build_tool\", "
                       "\"zcl_agent_build\")") != NULL);
         ASSERT(strstr(api_buf,
@@ -3005,12 +3009,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(mcp, \"deploy_guard_tool\", "
                       "\"zcl_agent_deploy_guard\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"mirror_tool\", "
+                      "\"zcl_mirror_status\")") != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 getmirrorstatus") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_mirror_status") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_runtime_services.v1")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "configured boot intent") != NULL);

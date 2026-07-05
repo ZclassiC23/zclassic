@@ -19,6 +19,7 @@ void api_rest_index_mcp_json(struct json_value *mcp)
     json_push_kv_str(mcp, "build_tool", "zcl_agent_build");
     json_push_kv_str(mcp, "interface_tool", "zcl_agent_interface");
     json_push_kv_str(mcp, "deploy_guard_tool", "zcl_agent_deploy_guard");
+    json_push_kv_str(mcp, "mirror_tool", "zcl_mirror_status");
     json_push_kv_str(mcp, "milestone_tool", "zcl_milestone");
     json_push_kv_str(mcp, "refold_tool", "zcl_refold_status");
     json_push_kv_str(mcp, "drilldown_tool", "zcl_status");
@@ -37,6 +38,7 @@ void api_rest_index_cli_json(struct json_value *cli)
     json_push_kv_str(cli, "interface_command", "zclassic23 agentinterface");
     json_push_kv_str(cli, "deploy_guard_command",
                      "zclassic23 agentdeployguard [action]");
+    json_push_kv_str(cli, "mirror_command", "zclassic23 getmirrorstatus");
     json_push_kv_str(cli, "milestone_command", "zclassic23 milestone");
     json_push_kv_str(cli, "refold_command", "zclassic23 refold");
     json_push_kv_str(cli, "drilldown_command", "zclassic23 healthcheck");

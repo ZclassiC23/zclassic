@@ -15,6 +15,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
+| Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
 The native RPC contracts are implemented in
 `app/controllers/src/agent_controller.c`. MCP routes in
@@ -25,8 +26,8 @@ currently exposes the public status contract at `GET /api/v1/agent`.
 
 The best interface for an AI coding operator is MCP with typed JSON tools:
 start with `zcl_agent_interface`, then use `zcl_agent`, `zcl_agent_lanes`,
-`zcl_agent_impact`, `zcl_agent_build`, `zcl_state`, `zcl_node_log`, and
-`zcl_sql` as needed. The
+`zcl_mirror_status`, `zcl_agent_impact`, `zcl_agent_build`, `zcl_state`,
+`zcl_node_log`, and `zcl_sql` as needed. The
 native binary commands (`zclassic23 agentinterface`, `zclassic23 agent`, etc.)
 are the second-best interface for terminal work and scripts. REST is the
 public read-only mirror.
@@ -54,7 +55,8 @@ blocker only when the payload itself proves equal height and equal hash.
 entry point for that rule. In addition to the human summary, it emits a
 top-level `build_commit`, a `runtime_identity` block for the binary that
 produced the interface contract, a `capabilities[]` matrix that names each
-first-class agent operation, its schema, and its native/MCP/REST transport, plus
+first-class agent operation, its schema, and its native/MCP/REST transport,
+including the `zcl.mirror_status.v1` mirror lag/blocker contract, plus
 a `machine_contract` block declaring that payloads are JSON objects with
 required `schema`, `api_version`, and `status` fields. Those nested shapes are
 versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and

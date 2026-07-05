@@ -881,6 +881,7 @@ static void print_usage(const char *prog)
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
     printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
     printf("  %s agentdeployguard [act]  C-native deploy/restart guard JSON\n", prog);
+    printf("  %s getmirrorstatus         Mirror lag/blocker contract JSON\n", prog);
     printf("  %s milestone               ASCII milestone status from running node\n", prog);
     printf("  %s refold                  Refold anchor readiness from running node\n", prog);
     printf("  %s --agent                 Same compact status\n", prog);

@@ -620,9 +620,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     agent_push_str(&transports,
-                   "native: zclassic23 agent|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard");
+                   "native: zclassic23 agent|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard|getmirrorstatus");
     agent_push_str(&transports,
-                   "mcp: zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard");
+                   "mcp: zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard, zcl_mirror_status");
     agent_push_str(&transports,
                    "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
     agent_push_str(&transports,
