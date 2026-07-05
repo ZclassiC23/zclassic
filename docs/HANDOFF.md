@@ -1076,6 +1076,10 @@ lane's RPC is reachable.
 `ZCL_DEV_ALLOW_REINDEX_DROPIN=1` is set for an intentional one-off rebuild.
 That prevents an old recovery override from silently turning every dev restart
 into `-reindex-chainstate`.
+It also self-cleans the old dev-only `zz-oom-budget.conf` memory cap drop-in
+unless `ZCL_DEV_ALLOW_OOM_BUDGET_DROPIN=1` is set; the committed
+`deploy/zcl23-dev.service` is the source of truth for the dev lane's
+`MemoryHigh` / `MemoryMax` budget.
 
 `make lane-health` is the read-only three-lane status check. It reports the
 public live lane, long-uptime soak lane, and fresh-build dev lane with systemd

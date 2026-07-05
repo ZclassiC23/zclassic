@@ -2301,6 +2301,12 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "ZCL_DEV_ALLOW_REINDEX_DROPIN") != NULL);
         ASSERT(strstr(script, "removing stale reindex drop-in") != NULL);
         ASSERT(strstr(script, "rm -f \"$STALE_REINDEX_DROPIN\"") != NULL);
+        ASSERT(strstr(script, "STALE_OOM_BUDGET_DROPIN=") != NULL);
+        ASSERT(strstr(script, "zcl23-dev.service.d/zz-oom-budget.conf") != NULL);
+        ASSERT(strstr(script, "ZCL_DEV_ALLOW_OOM_BUDGET_DROPIN") != NULL);
+        ASSERT(strstr(script, "removing stale memory-budget drop-in") != NULL);
+        ASSERT(strstr(script, "deploy/zcl23-dev.service owns the dev lane memory budget") != NULL);
+        ASSERT(strstr(script, "rm -f \"$STALE_OOM_BUDGET_DROPIN\"") != NULL);
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
         ASSERT(strstr(makefile,
                       "./tools/deploy_guard.sh canonical-deploy") != NULL);

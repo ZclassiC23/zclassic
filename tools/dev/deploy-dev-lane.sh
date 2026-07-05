@@ -24,6 +24,7 @@ DEV_DATADIR="$HOME/.zclassic-c23-dev"
 LEGACY_SRC="$HOME/.zclassic"          # running zclassicd datadir (read-only import source)
 UNIT="zcl23-dev.service"
 STALE_REINDEX_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/reindex.conf"
+STALE_OOM_BUDGET_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/zz-oom-budget.conf"
 
 echo "[dev-lane] building fresh binary (stamp = $(git rev-parse --short HEAD))..."
 make build/bin/zclassic23 -j"$(nproc)" >/dev/null
@@ -37,6 +38,16 @@ if [ -f "$STALE_REINDEX_DROPIN" ]; then
         echo "[dev-lane] removing stale reindex drop-in: $STALE_REINDEX_DROPIN"
         echo "[dev-lane]   set ZCL_DEV_ALLOW_REINDEX_DROPIN=1 to keep a deliberate reindex override"
         rm -f "$STALE_REINDEX_DROPIN"
+    fi
+fi
+if [ -f "$STALE_OOM_BUDGET_DROPIN" ]; then
+    if [ "${ZCL_DEV_ALLOW_OOM_BUDGET_DROPIN:-0}" = "1" ]; then
+        echo "[dev-lane] preserving explicit memory-budget drop-in: $STALE_OOM_BUDGET_DROPIN"
+    else
+        echo "[dev-lane] removing stale memory-budget drop-in: $STALE_OOM_BUDGET_DROPIN"
+        echo "[dev-lane]   deploy/zcl23-dev.service owns the dev lane memory budget"
+        echo "[dev-lane]   set ZCL_DEV_ALLOW_OOM_BUDGET_DROPIN=1 to keep a deliberate override"
+        rm -f "$STALE_OOM_BUDGET_DROPIN"
     fi
 fi
 systemctl --user daemon-reload
