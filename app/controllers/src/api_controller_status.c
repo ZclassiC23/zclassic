@@ -17,6 +17,7 @@
 #include "services/node_health_service.h"
 #include "storage/progress_store.h"
 #include "sync/sync_state.h"
+#include "util/clientversion.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -477,6 +478,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_set_object(&body);
     json_push_kv_str(&body, "schema", ZCL_PUBLIC_STATUS_SCHEMA);
     json_push_kv_str(&body, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(&body, "build_commit", zcl_build_commit());
     json_push_kv_str(&body, "status", status);
     json_push_kv_bool(&body, "healthy", health.healthy);
     json_push_kv_bool(&body, "serving", health.serving);

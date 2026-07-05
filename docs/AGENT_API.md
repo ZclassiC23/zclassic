@@ -39,10 +39,10 @@ MCP/native/REST.
 
 The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
-height/gap, peer summary, active blockers, next action, and recommended
-drill-down tools. The compact packet also includes reducer frontier telemetry,
-download queue/in-flight/throughput counters, recent error state, and precise
-download age fields:
+the running binary `build_commit`, height/gap, peer summary, active blockers,
+next action, and recommended drill-down tools. The compact packet also includes
+reducer frontier telemetry, download queue/in-flight/throughput counters,
+recent error state, and precise download age fields:
 `download.oldest_in_flight_age_seconds`,
 `download.oldest_in_flight_height`,
 `download.oldest_in_flight_peer_id`,

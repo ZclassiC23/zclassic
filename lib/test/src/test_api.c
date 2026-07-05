@@ -1382,6 +1382,8 @@ int test_api(void)
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
         ok = ok && json_get(&root, "status") != NULL;
@@ -1417,6 +1419,8 @@ int test_api(void)
                           "zcl.public_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
         const struct json_value *lane =
@@ -1458,6 +1462,8 @@ int test_api(void)
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
                                                 "source_projection")),
                           "served_tip") == 0;
@@ -1470,6 +1476,8 @@ int test_api(void)
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&root,
                                                 "source_projection")),
                           "served_tip") == 0;

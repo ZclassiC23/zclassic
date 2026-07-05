@@ -27,6 +27,7 @@
 #include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "util/alerts.h"
+#include "util/clientversion.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -501,7 +502,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         "/api/v1/agent and MCP zcl_agent.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.public_status.v1\", \"status\":\"healthy\", "
-        "\"height\":N, \"gap\":0, \"primary_blocker\":\"none\" }\n");
+        "\"build_commit\":\"...\", \"height\":N, \"gap\":0, "
+        "\"primary_blocker\":\"none\" }\n");
 
     struct agent_fast_snapshot health;
     agent_fast_collect(&health);
@@ -568,6 +570,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.public_status.v1");
     json_push_kv_str(result, "api_version", "v1");
+    json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "status", status);
     json_push_kv_bool(result, "healthy", strcmp(status, "healthy") == 0);
     json_push_kv_bool(result, "serving", health.serving);

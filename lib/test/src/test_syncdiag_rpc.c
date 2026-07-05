@@ -1335,6 +1335,8 @@ int test_syncdiag_rpc(void)
         bool ok = executed && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "status")),
                           "blocked") == 0;
         ok = ok && !json_get_bool(json_get(&result, "healthy"));
