@@ -90,7 +90,10 @@ binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 the agent fast path; if the native binary JSON interface is unavailable, rebuild
 the binary or skip the live probe explicitly. Unmapped C/header/source-tree
 changes fail closed until you either add a focused-test mapping or pass
-`ZCL_FAST_TESTS=...`.
+`ZCL_FAST_TESTS=...`. The focused-test map is shared with native
+`zclassic23 agentimpact` in
+`app/controllers/include/controllers/agent_impact_rules.def`; keep new mappings
+there so the CLI, MCP tool, and fast-CI shell lane do not drift.
 
 The native build contract is discoverable with `build/bin/zclassic23 agentbuild`
 or MCP `zcl_agent_build`.

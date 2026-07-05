@@ -7,6 +7,7 @@
 #include "framework/condition.h"
 #include "jobs/stage_repair.h"
 #include "net/download.h"
+#include "net/msgprocessor.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
@@ -179,6 +180,7 @@ static bool setup_fixture(struct bfmhd_fixture *fx, const char *tag)
     main_state_init(&fx->ms);
     dl_init(&fx->dm);
     sync_monitor_init();
+    msgprocessor_test_reset_recent_blocks();
 
     struct block_index *genesis =
         insert_index(&fx->ms, &fx->hashes[0], 0, NULL,
@@ -240,6 +242,9 @@ int test_body_fetch_missing_have_data_condition(void)
         ok = ok && gap.ready && gap.target_height == fx.target;
         ok = ok && !row_exists(progress_store_db(), "body_fetch_log",
                                fx.target);
+        msgprocessor_test_block_mark_seen(fx.child->phashBlock);
+        ok = ok && msgprocessor_test_block_already_seen(
+            fx.child->phashBlock);
 
         condition_engine_tick();
 
@@ -252,8 +257,12 @@ int test_body_fetch_missing_have_data_condition(void)
         ok = ok && condition_engine_get_active_count() == 1;
         ok = ok && got && snap.last_outcome == COND_REMEDY_UNWITNESSED;
         ok = ok && queue_has_target(&fx);
+        ok = ok && !msgprocessor_test_block_already_seen(
+            fx.child->phashBlock);
         ok = ok && wd.last_recovery == WATCHDOG_BODY_FRONTIER_MISSING;
-        BFMHD_CHECK("detect queues missing active-frontier body", ok);
+        BFMHD_CHECK("detect queues missing active-frontier body and clears "
+                    "dedup",
+                    ok);
 
         bool ok2 = seed_body_row(progress_store_db(), fx.target,
                                  fx.child->phashBlock);

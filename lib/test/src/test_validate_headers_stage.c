@@ -259,6 +259,7 @@ static bool stub_pass(const struct block_index *bi, const char *datadir,
 /* Stub validator that fails at a configurable height. */
 struct fail_at_ctx {
     int fail_height;
+    const char *reason;
     _Atomic int call_count;
 };
 
@@ -270,7 +271,8 @@ static bool stub_fail_at(const struct block_index *bi, const char *datadir,
     struct fail_at_ctx *c = (struct fail_at_ctx *)user;
     atomic_fetch_add(&c->call_count, 1);
     if (bi && bi->nHeight == c->fail_height) {
-        snprintf(out_reason, out_reason_size, "stub-injected-failure");
+        snprintf(out_reason, out_reason_size, "%s",
+                 c->reason ? c->reason : "stub-injected-failure");
         return false;
     }
     if (out_reason && out_reason_size) out_reason[0] = 0;
@@ -1310,19 +1312,22 @@ int test_validate_headers_stage(void)
         struct fail_at_ctx ctx;
         memset(&ctx, 0, sizeof(ctx));
         ctx.fail_height = 1;
+        ctx.reason = "no-header-solution-backfill-required";
         VH_CHECK("recheck: setup with failing validator",
                  vh_setup("recheck", 3, stub_fail_at, &ctx,
                           dir, sizeof(dir), &ms, &sc) == 0);
         header_admit_stage_drain(100);
         VH_CHECK("recheck: initial validate advances",
-                 validate_headers_stage_drain(10) == 1);
+                 validate_headers_stage_drain(10) >= 1);
         int ok = -1;
         char reason[64] = {0};
         VH_CHECK("recheck: failed row exists",
                  log_row_at(progress_store_db(), 1, &ok,
                             reason, sizeof(reason)));
         VH_CHECK("recheck: initial row failed",
-                 ok == 0 && strcmp(reason, "stub-injected-failure") == 0);
+                 ok == 0 &&
+                 strcmp(reason,
+                        "no-header-solution-backfill-required") == 0);
 
         validate_headers_stage_shutdown();
         header_admit_stage_shutdown();
@@ -1346,6 +1351,43 @@ int test_validate_headers_stage(void)
                  validate_headers_stage_cursor() == 3);
         VH_CHECK("recheck: next step idle",
                  validate_headers_stage_step_once() == JOB_IDLE);
+
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── terminal persisted failures are not retried after restart ───── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct fail_at_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.fail_height = 1;
+        ctx.reason = "stub-injected-failure";
+        VH_CHECK("terminal-recheck: setup with terminal failure",
+                 vh_setup("terminal_recheck", 3, stub_fail_at, &ctx,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        VH_CHECK("terminal-recheck: initial validate advances",
+                 validate_headers_stage_drain(10) == 1);
+
+        validate_headers_stage_shutdown();
+        header_admit_stage_shutdown();
+        progress_store_close();
+
+        VH_CHECK("terminal-recheck: reopen store", progress_store_open(dir));
+        VH_CHECK("terminal-recheck: re-init admit",
+                 header_admit_stage_init(&ms));
+        VH_CHECK("terminal-recheck: re-init validate",
+                 validate_headers_stage_init(&ms));
+        validate_headers_stage_set_validator(stub_pass, NULL);
+
+        VH_CHECK("terminal-recheck: terminal row is not retried",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+        int ok = -1;
+        char reason[64] = {0};
+        VH_CHECK("terminal-recheck: terminal row remains failed",
+                 log_row_at(progress_store_db(), 1, &ok,
+                            reason, sizeof(reason)) &&
+                 ok == 0 && strcmp(reason, "stub-injected-failure") == 0);
 
         vh_teardown(dir, &ms, &sc);
     }
@@ -1517,6 +1559,15 @@ int test_validate_headers_stage(void)
         int ok = -1;
         VH_CHECK("clamp: frontier h=4 now ok=1",
                  log_row_at(db, 4, &ok, NULL, 0) && ok == 1);
+        ok = -1;
+        VH_CHECK("clamp: hash-mismatch h=5 waits for repair header",
+                 log_row_at(db, 5, &ok, NULL, 0) && ok == 0);
+
+        VH_CHECK("clamp: seed hash-mismatch repair header",
+                 seed_repair_header_for_block(db, &sc.blocks[5],
+                                              &sc.hashes[5]));
+        VH_CHECK("clamp: hash-mismatch recheck fires after repair header",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
         ok = -1;
         VH_CHECK("clamp: hash-mismatch frontier h=5 now ok=1",
                  log_row_at(db, 5, &ok, NULL, 0) && ok == 1);

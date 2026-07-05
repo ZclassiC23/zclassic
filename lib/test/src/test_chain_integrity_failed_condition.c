@@ -215,9 +215,9 @@ int test_chain_integrity_failed_condition(void)
         chain_integrity_failed_test_set_async(true);
         chain_integrity_failed_test_disable_spawn(true);
         condition_engine_tick();
-        ok = ok && chain_integrity_failed_test_remedy_calls() == 0;
-        ok = ok && chain_integrity_failed_test_queue_calls() == 0;
-        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && chain_integrity_failed_test_remedy_calls() == 1;
+        ok = ok && chain_integrity_failed_test_queue_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
 
         struct json_value out;
         json_init(&out);
@@ -237,7 +237,7 @@ int test_chain_integrity_failed_condition(void)
         ok = ok && !json_get_bool(json_get(detail,
                                            "restore_last_used_datadir"));
         json_free(&out);
-        CIF_CHECK("detail exposes reconcilable integrity state", ok);
+        CIF_CHECK("reconcilable integrity queues memory repair and stays active", ok);
         cleanup_cif(&ms);
     }
 

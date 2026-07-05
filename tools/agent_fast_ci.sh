@@ -21,6 +21,7 @@ TEST_GROUPS=""
 UNMAPPED_CODE_CHANGES=""
 NODE_BIN="${ZCL_FAST_NODE_BIN:-build/bin/zclassic23}"
 FAST_JOBS="${ZCL_FAST_JOBS:-}"
+IMPACT_RULES_FILE="${ZCL_FAST_IMPACT_RULES_FILE:-app/controllers/include/controllers/agent_impact_rules.def}"
 
 log() {
     printf '[agent-fast-ci] %s\n' "$*"
@@ -136,6 +137,33 @@ is_code_like_change() {
     esac
 }
 
+match_shared_impact_rules() {
+    local file="$1" line patterns groups pattern group matched rule_re
+    [ -f "$IMPACT_RULES_FILE" ] ||
+        fail "agent impact rule file missing: $IMPACT_RULES_FILE"
+
+    matched=1
+    rule_re='^[[:space:]]*AGENT_IMPACT_RULE\("([^"]*)",[[:space:]]*"([^"]*)"\)'
+    while IFS= read -r line; do
+        [[ "$line" =~ $rule_re ]] || continue
+        patterns="${BASH_REMATCH[1]}"
+        groups="${BASH_REMATCH[2]}"
+        IFS='|' read -r -a rule_patterns <<< "$patterns"
+        for pattern in "${rule_patterns[@]}"; do
+            case "$file" in
+                $pattern)
+                    for group in $groups; do
+                        add_group "$group"
+                    done
+                    matched=0
+                    break
+                    ;;
+            esac
+        done
+    done < "$IMPACT_RULES_FILE"
+    return "$matched"
+}
+
 select_test_groups() {
     local file matched
     TEST_GROUPS=""
@@ -150,112 +178,9 @@ select_test_groups() {
     while IFS= read -r file; do
         [ -n "$file" ] || continue
         matched=0
-        case "$file" in
-            Makefile|src/main.c|tools/*|tools/scripts/*|deploy/*.service|deploy/*.timer|deploy/examples/*.service|deploy/examples/*.timer|docs/AGENT_API.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-        esac
-        case "$file" in
-            tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/test/src/test_mcp_controllers.c)
-                add_group "mcp_controllers"
-                matched=1
-                ;;
-            lib/mcp/*|lib/util/src/mcp_*|lib/test/src/test_mcp_*|app/controllers/src/diagnostics_registry.c)
-                add_group "mcp_controllers"
-                matched=1
-                ;;
-            lib/net/src/peer_lifecycle.c|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c)
-                add_group "peer_lifecycle"
-                matched=1
-                ;;
-            lib/net/src/connman.c)
-                add_group "connman_addnode_fallback"
-                add_group "net"
-                matched=1
-                ;;
-            lib/net/include/net/msg_internal.h|lib/net/include/net/peer_lifecycle.h|lib/net/include/net/port_policy.h|lib/net/include/net/version.h)
-                add_group "peer_lifecycle"
-                matched=1
-                ;;
-            lib/net/include/net/protocol.h)
-                add_group "net"
-                matched=1
-                ;;
-            lib/test/src/test_net.c)
-                add_group "net"
-                matched=1
-                ;;
-            app/models/src/peer.c|app/models/include/models/peer.h|lib/test/src/test_models_app.c)
-                add_group "models"
-                matched=1
-                ;;
-            app/controllers/src/network_controller.c|app/controllers/include/controllers/network_controller.h|app/controllers/src/sync_controller.c|lib/test/src/test_syncdiag_rpc.c)
-                add_group "syncdiag_rpc"
-                matched=1
-                ;;
-            app/jobs/src/tip_finalize_stage*.c|app/jobs/include/jobs/tip_finalize_stage.h|app/jobs/src/reducer_frontier*.c|app/jobs/include/jobs/reducer_frontier.h|lib/test/src/test_tip_finalize_stage.c|lib/test/src/test_reducer_frontier.c)
-                add_group "tip_finalize_stage"
-                add_group "reducer_frontier"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            app/jobs/src/validate_headers_stage.c|app/jobs/src/validate_headers_validator.c|app/jobs/src/validate_headers_report.c|app/jobs/src/validate_headers_internal.h|app/jobs/include/jobs/validate_headers_stage.h|lib/test/src/test_validate_headers_stage.c)
-                add_group "validate_headers_stage"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            app/conditions/src/stale_validate_headers_repair.c|lib/test/src/test_stale_validate_headers_repair_condition.c)
-                add_group "stale_validate_headers_repair_condition"
-                add_group "validate_headers_stage"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            app/conditions/src/chain_integrity_failed.c|app/services/include/services/chain_restore_integrity.h|lib/test/src/test_chain_integrity_failed_condition.c|lib/test/src/test_service_state.c)
-                add_group "chain_integrity_failed_condition"
-                add_group "service_state"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            config/src/boot_services.c)
-                add_group "make_lint_gates"
-                add_group "syncdiag_rpc"
-                matched=1
-                ;;
-            config/src/boot.c|config/src/boot_index.c|config/src/boot_refold*.c|config/include/config/boot_internal.h|lib/test/src/test_load_verify_boot.c)
-                add_group "boot_refold_window_extend"
-                add_group "chain_state_repo"
-                add_group "load_verify_boot"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            config/src/app_context.c|config/include/config/boot.h|lib/test/src/test_app_context.c)
-                add_group "app_context"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            app/services/src/node_health_service.c|app/services/include/services/node_health_service.h|lib/test/src/test_node_health_service.c)
-                add_group "node_health_service"
-                matched=1
-                ;;
-            app/controllers/src/api_controller*.c|app/controllers/src/api_controller_internal.h|lib/test/src/test_api.c)
-                add_group "api"
-                matched=1
-                ;;
-            app/controllers/src/blockchain_controller*.c|app/controllers/include/controllers/blockchain_controller.h|lib/test/src/test_rpc_safety.c)
-                add_group "rpc_safety"
-                add_group "make_lint_gates"
-                matched=1
-                ;;
-            app/controllers/src/agent_controller.c|app/controllers/src/agent_interface_controller.c|app/controllers/src/agent_runtime_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
-                add_group "make_lint_gates"
-                add_group "node_health_service"
-                add_group "mcp_controllers"
-                add_group "syncdiag_rpc"
-                add_group "api"
-                matched=1
-                ;;
-        esac
+        if match_shared_impact_rules "$file"; then
+            matched=1
+        fi
         if [ "$matched" -eq 0 ] && is_code_like_change "$file"; then
             add_unmapped_code_change "$file"
         fi
@@ -266,7 +191,7 @@ EOF
 
 fail_on_unmapped_code_changes() {
     if [ -n "$UNMAPPED_CODE_CHANGES" ]; then
-        fail "no focused test mapping for code changes: $UNMAPPED_CODE_CHANGES; set ZCL_FAST_TESTS=<group[,group]> or extend tools/agent_fast_ci.sh"
+        fail "no focused test mapping for code changes: $UNMAPPED_CODE_CHANGES; set ZCL_FAST_TESTS=<group[,group]> or extend $IMPACT_RULES_FILE"
     fi
 }
 
@@ -319,6 +244,7 @@ cache_manifest() {
     printf 'fast_strict_tests\t%s\n' "${ZCL_FAST_STRICT_TESTS:-0}"
     printf 'fast_live\t%s\n' "${ZCL_FAST_LIVE:-auto}"
     printf 'node_bin\t%s\n' "$NODE_BIN"
+    printf 'impact_rules_file\t%s\n' "$IMPACT_RULES_FILE"
     printf 'test_groups\t%s\n' "$TEST_GROUPS"
     printf 'make_version\t%s\n' "$(make --version 2>/dev/null | sed -n '1p' || echo unknown)"
     cc_version="$($FAST_CC --version 2>/dev/null | sed -n '1p' || true)"
@@ -336,7 +262,7 @@ cache_manifest() {
             printf 'git_status\t%s\n' "$status_line"
         done
 
-    for file in Makefile tools/agent_fast_ci.sh tools/z \
+    for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh tools/z \
         tools/githooks/pre-push tools/deploy_guard.sh tools/deploy_verify.sh \
         tools/scripts/background_quality_lane.sh \
         deploy/zclassic23-fuzz.service deploy/zclassic23-fuzz.timer \

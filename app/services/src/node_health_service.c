@@ -483,6 +483,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                  &snapshot->blocks_timed_out,
                  &snapshot->in_flight,
                  &snapshot->queued);
+    dl_get_throughput(msg_get_download_mgr(),
+                      &snapshot->download_bytes_received,
+                      &snapshot->download_mbps_avg);
     snapshot->queue_backed_up =
         (snapshot->queued > 256 || snapshot->in_flight > 128);
 

@@ -1334,6 +1334,29 @@ int test_syncdiag_rpc(void)
                           "node has an active health blocker") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
                           "zclassic23 healthcheck") == 0;
+        const struct json_value *reducer = json_get(&result, "reducer");
+        ok = ok && reducer && reducer->type == JSON_OBJ;
+        ok = ok && json_get(reducer, "log_head") != NULL;
+        ok = ok && json_get(reducer, "log_head_gap") != NULL;
+        ok = ok && json_get(reducer, "tip_advance_age_seconds") != NULL;
+        ok = ok && json_get(reducer, "validation_pack_ok") != NULL;
+        ok = ok && json_get(reducer, "validation_pack_detail") != NULL;
+        const struct json_value *health = json_get(&result, "health");
+        ok = ok && health && health->type == JSON_OBJ;
+        ok = ok && json_get(health, "warning_count") != NULL;
+        ok = ok && json_get(health, "warning_reasons") != NULL;
+        ok = ok && json_get(health, "last_error_age_seconds") != NULL;
+        ok = ok && json_get(health, "last_error_type") != NULL;
+        ok = ok && json_get(health, "blocking_reason") != NULL;
+        const struct json_value *download = json_get(&result, "download");
+        ok = ok && download && download->type == JSON_OBJ;
+        ok = ok && json_get(download, "requested") != NULL;
+        ok = ok && json_get(download, "received") != NULL;
+        ok = ok && json_get(download, "timed_out") != NULL;
+        ok = ok && json_get(download, "in_flight") != NULL;
+        ok = ok && json_get(download, "queued") != NULL;
+        ok = ok && json_get(download, "bytes_received") != NULL;
+        ok = ok && json_get(download, "mbps_avg") != NULL;
         const struct json_value *lane =
             json_get(&result, "operator_lane");
         ok = ok && lane && lane->type == JSON_OBJ;
@@ -1454,6 +1477,12 @@ int test_syncdiag_rpc(void)
         ok = ok && !json_get_bool(json_get(&result, "docs_only"));
         ok = ok && json_get_bool(json_get(&result, "agent_api_changed"));
         ok = ok && json_get_bool(json_get(&result, "mcp_changed"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "mapping_source")),
+                          "app/controllers/include/controllers/agent_impact_rules.def") == 0;
+        ok = ok && json_get_int(json_get(&result, "shared_rule_count")) > 0;
+        ok = ok && json_get_int(json_get(&result, "shared_rule_hits")) >= 3;
+        ok = ok && json_get_int(json_get(
+                     &result, "relevant_test_groups_count")) >= 3;
         ok = ok && out_files && json_size(out_files) == 3;
         ok = ok && json_array_has_str(groups, "syncdiag_rpc");
         ok = ok && json_array_has_str(groups, "mcp_controllers");
@@ -1462,11 +1491,17 @@ int test_syncdiag_rpc(void)
                                          "ZCL_FAST_TESTS=syncdiag_rpc");
         ok = ok && json_array_has_substr(commands, "make fast-ci");
 
+        if (ok) {
+            printf("OK\n");
+        } else {
+            char dbg[4096];
+            json_write(&result, dbg, sizeof(dbg));
+            printf("FAIL result=%s\n", dbg);
+            failures++;
+        }
+
         json_free(&params);
         json_free(&result);
-
-        if (ok) printf("OK\n");
-        else    { printf("FAIL\n"); failures++; }
     }
 
     printf("api: native RPC returns agent contracts and build contract... ");

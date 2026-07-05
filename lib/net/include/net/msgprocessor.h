@@ -285,6 +285,10 @@ uint64_t msg_processor_block_manifest_cache_version(void);
 
 #include "core/uint256.h"
 
+/* Clear one block from the recent-block relay dedup ring so recovery refetches
+ * can re-enter the reducer after an earlier non-finalized delivery. */
+void msg_processor_clear_seen_block(const struct uint256 *hash);
+
 /* per-peer FlyClient challenge rate-limit tuning. See
  * msgprocessor.c for the full rationale — short version: each
  * zfcchallenge is expensive (50 MMB proofs), so we cap per-peer

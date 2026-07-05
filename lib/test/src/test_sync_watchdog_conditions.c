@@ -120,6 +120,9 @@ int test_sync_watchdog_conditions(void)
         ok = ok && json_get(&state, "last_block_connected_height") != NULL;
         ok = ok && json_get(&state, "last_block_connected_time") != NULL;
         ok = ok && json_get(&state, "tip_advance_age_seconds") != NULL;
+        ok = ok && json_get(&state, "download_queued") != NULL;
+        ok = ok && json_get(&state, "download_in_flight") != NULL;
+        ok = ok && json_get(&state, "download_timed_out") != NULL;
         ok = ok && json_get_int(json_get(
             &state, "last_block_connected_height")) == -1;
         ok = ok && json_get_int(json_get(

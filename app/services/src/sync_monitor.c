@@ -12,6 +12,7 @@
 #include "json/json.h"
 #include "framework/condition.h"
 #include "net/connman.h"
+#include "net/msgprocessor.h"
 #include "net/netaddr.h"
 #include "platform/time_compat.h"
 #include "sync/sync_planner.h"
@@ -369,8 +370,10 @@ static struct zcl_result queue_body_target(
         local_h = active_chain_height(&ms->chain_active);
     zcl_mutex_unlock(&ms->cs_main);
 
-    if (!already_have_data)
+    if (!already_have_data) {
+        msg_processor_clear_seen_block(&target_hash);
         dl_queue_priority(dm, &target_hash, target_height);
+    }
 
     struct connman *cm = sync_monitor_connman();
     reset_local_addnode_backoff(cm);
@@ -600,6 +603,27 @@ bool sync_monitor_dump_state_json(struct json_value *out, const char *key)
                       wd.last_recovery_manifest_height);
     json_push_kv_str (out, "last_recovery_reason", wd.last_recovery_reason);
     json_push_kv_str (out, "last_recovery_trigger", wd.last_recovery_trigger);
+
+    uint64_t dl_requested = 0;
+    uint64_t dl_received = 0;
+    uint64_t dl_timed_out = 0;
+    uint64_t dl_in_flight = 0;
+    uint64_t dl_queued = 0;
+    uint64_t dl_bytes = 0;
+    double dl_mbps_avg = 0.0;
+    struct download_manager *dm = sync_monitor_download_manager();
+    if (dm) {
+        dl_get_stats(dm, &dl_requested, &dl_received, &dl_timed_out,
+                     &dl_in_flight, &dl_queued);
+        dl_get_throughput(dm, &dl_bytes, &dl_mbps_avg);
+    }
+    json_push_kv_int(out, "download_requested", (int64_t)dl_requested);
+    json_push_kv_int(out, "download_received", (int64_t)dl_received);
+    json_push_kv_int(out, "download_timed_out", (int64_t)dl_timed_out);
+    json_push_kv_int(out, "download_in_flight", (int64_t)dl_in_flight);
+    json_push_kv_int(out, "download_queued", (int64_t)dl_queued);
+    json_push_kv_int(out, "download_bytes_received", (int64_t)dl_bytes);
+    json_push_kv_real(out, "download_mbps_avg", dl_mbps_avg);
 
     struct watchdog_local_recovery_stats lr;
     sync_monitor_get_local_recovery_stats(&lr);

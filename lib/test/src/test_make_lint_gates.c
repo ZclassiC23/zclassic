@@ -2418,6 +2418,7 @@ static int t_agent_fast_ci_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
+    char *rules = NULL;
     TEST("agent fast CI stays cache-aware and native-service first") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
@@ -2454,6 +2455,7 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
         ASSERT(strstr(buf, "fast_changed_files_file") != NULL);
+        ASSERT(strstr(buf, "impact_rules_file") != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
@@ -2461,76 +2463,14 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
         ASSERT(strstr(buf, "no focused test mapping for code changes")
                != NULL);
-        ASSERT(strstr(buf, "src/main.c") != NULL);
-        ASSERT(strstr(buf, "app/controllers/src/agent_controller.c") != NULL);
-        ASSERT(strstr(buf, "app/controllers/src/agent_interface_controller.c")
-               != NULL);
-        ASSERT(strstr(buf, "app/controllers/src/agent_runtime_controller.c")
-               != NULL);
-        ASSERT(strstr(buf, "app/controllers/src/api_controller*.c") != NULL);
-        ASSERT(strstr(buf, "app/controllers/src/api_controller_internal.h")
-               != NULL);
-        ASSERT(strstr(buf, "app/controllers/src/blockchain_controller*.c")
-               != NULL);
-        ASSERT(strstr(buf, "app/controllers/include/controllers/blockchain_controller.h")
-               != NULL);
-        ASSERT(strstr(buf, "lib/test/src/test_rpc_safety.c") != NULL);
-        ASSERT(strstr(buf, "rpc_safety") != NULL);
-        ASSERT(strstr(buf, "app/models/src/peer.c") != NULL);
-        ASSERT(strstr(buf, "lib/net/src/connman.c") != NULL);
-        ASSERT(strstr(buf, "docs/AGENT_API.md") != NULL);
-        ASSERT(strstr(buf, "deploy/*.service") != NULL);
-        ASSERT(strstr(buf, "deploy/zclassic23-test-suite.service") != NULL);
-        ASSERT(strstr(buf, "lib/net/include/net/msg_internal.h") != NULL);
-        ASSERT(strstr(buf, "lib/net/include/net/port_policy.h") != NULL);
-        ASSERT(strstr(buf, "app/controllers/include/controllers/network_controller.h")
-               != NULL);
-        ASSERT(strstr(buf, "app/jobs/src/tip_finalize_stage*.c") != NULL);
-        ASSERT(strstr(buf, "app/jobs/include/jobs/tip_finalize_stage.h")
-               != NULL);
-        ASSERT(strstr(buf, "app/jobs/include/jobs/reducer_frontier.h")
-               != NULL);
-        ASSERT(strstr(buf, "tip_finalize_stage") != NULL);
-        ASSERT(strstr(buf, "reducer_frontier") != NULL);
-        ASSERT(strstr(buf, "app/jobs/src/validate_headers_stage.c")
-               != NULL);
-        ASSERT(strstr(buf, "app/jobs/include/jobs/validate_headers_stage.h")
-               != NULL);
-        ASSERT(strstr(buf, "app/conditions/src/stale_validate_headers_repair.c")
-               != NULL);
-        ASSERT(strstr(buf, "lib/test/src/test_stale_validate_headers_repair_condition.c")
-               != NULL);
-        ASSERT(strstr(buf, "validate_headers_stage") != NULL);
-        ASSERT(strstr(buf, "stale_validate_headers_repair_condition")
-               != NULL);
-        ASSERT(strstr(buf, "app/conditions/src/chain_integrity_failed.c")
-               != NULL);
-        ASSERT(strstr(buf, "app/services/include/services/chain_restore_integrity.h")
-               != NULL);
-        ASSERT(strstr(buf, "lib/test/src/test_chain_integrity_failed_condition.c")
-               != NULL);
-        ASSERT(strstr(buf, "lib/test/src/test_service_state.c") != NULL);
-        ASSERT(strstr(buf, "chain_integrity_failed_condition") != NULL);
-        ASSERT(strstr(buf, "service_state") != NULL);
-        ASSERT(strstr(buf, "config/src/boot_services.c") != NULL);
-        ASSERT(strstr(buf, "config/src/boot.c") != NULL);
-        ASSERT(strstr(buf, "config/src/boot_index.c") != NULL);
-        ASSERT(strstr(buf, "lib/test/src/test_load_verify_boot.c") != NULL);
-        ASSERT(strstr(buf, "config/include/config/boot_internal.h") != NULL);
-        ASSERT(strstr(buf, "boot_refold_window_extend") != NULL);
-        ASSERT(strstr(buf, "chain_state_repo") != NULL);
-        ASSERT(strstr(buf, "load_verify_boot") != NULL);
-        ASSERT(strstr(buf, "config/src/app_context.c") != NULL);
-        ASSERT(strstr(buf, "config/include/config/boot.h") != NULL);
-        ASSERT(strstr(buf, "app_context") != NULL);
-        ASSERT(strstr(buf, "models") != NULL);
-        ASSERT(strstr(buf, "lib/test/src/test_syncdiag_rpc.c") != NULL);
+        ASSERT(strstr(buf, "IMPACT_RULES_FILE") != NULL);
+        ASSERT(strstr(buf, "agent_impact_rules.def") != NULL);
+        ASSERT(strstr(buf, "match_shared_impact_rules") != NULL);
+        ASSERT(strstr(buf, "extend $IMPACT_RULES_FILE") != NULL);
         ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS") != NULL);
         ASSERT(strstr(buf, "make_fast \"$target\" ONLY") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
-        ASSERT(strstr(buf, "node_health_service") != NULL);
-        ASSERT(strstr(buf, "mcp_controllers") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_NODE_BIN") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23") != NULL);
         ASSERT(strstr(buf, "zcl.public_status.v1") != NULL);
@@ -2556,6 +2496,78 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "make install-quality-linger") != NULL);
         free(buf);
         buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/include/controllers/agent_impact_rules.def") == 0);
+        ASSERT(read_entire_file(path, &rules) == 0);
+        ASSERT(strstr(rules, "AGENT_IMPACT_RULE") != NULL);
+        ASSERT(strstr(rules, "node_health_service") != NULL);
+        ASSERT(strstr(rules, "mcp_controllers") != NULL);
+        ASSERT(strstr(rules, "src/main.c") != NULL);
+        ASSERT(strstr(rules, "app/controllers/src/agent_controller.c") != NULL);
+        ASSERT(strstr(rules, "app/controllers/src/agent_interface_controller.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/controllers/src/agent_runtime_controller.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/controllers/src/api_controller*.c") != NULL);
+        ASSERT(strstr(rules, "app/controllers/src/api_controller_internal.h")
+               != NULL);
+        ASSERT(strstr(rules, "app/controllers/src/blockchain_controller*.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/controllers/include/controllers/blockchain_controller.h")
+               != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_rpc_safety.c") != NULL);
+        ASSERT(strstr(rules, "rpc_safety") != NULL);
+        ASSERT(strstr(rules, "app/models/src/peer.c") != NULL);
+        ASSERT(strstr(rules, "lib/net/src/connman.c") != NULL);
+        ASSERT(strstr(rules, "docs/AGENT_API.md") != NULL);
+        ASSERT(strstr(rules, "deploy/*.service") != NULL);
+        ASSERT(strstr(rules, "lib/net/include/net/msg_internal.h") != NULL);
+        ASSERT(strstr(rules, "lib/net/include/net/port_policy.h") != NULL);
+        ASSERT(strstr(rules, "app/controllers/include/controllers/network_controller.h")
+               != NULL);
+        ASSERT(strstr(rules, "app/jobs/src/tip_finalize_stage*.c") != NULL);
+        ASSERT(strstr(rules, "app/jobs/include/jobs/tip_finalize_stage.h")
+               != NULL);
+        ASSERT(strstr(rules, "app/jobs/include/jobs/reducer_frontier.h")
+               != NULL);
+        ASSERT(strstr(rules, "tip_finalize_stage") != NULL);
+        ASSERT(strstr(rules, "reducer_frontier") != NULL);
+        ASSERT(strstr(rules, "app/jobs/src/validate_headers_stage.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/jobs/include/jobs/validate_headers_stage.h")
+               != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/stale_validate_headers_repair.c")
+               != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_stale_validate_headers_repair_condition.c")
+               != NULL);
+        ASSERT(strstr(rules, "validate_headers_stage") != NULL);
+        ASSERT(strstr(rules, "stale_validate_headers_repair_condition")
+               != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/chain_integrity_failed.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/services/include/services/chain_restore_integrity.h")
+               != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_chain_integrity_failed_condition.c")
+               != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_service_state.c") != NULL);
+        ASSERT(strstr(rules, "chain_integrity_failed_condition") != NULL);
+        ASSERT(strstr(rules, "service_state") != NULL);
+        ASSERT(strstr(rules, "config/src/boot_services.c") != NULL);
+        ASSERT(strstr(rules, "config/src/boot.c") != NULL);
+        ASSERT(strstr(rules, "config/src/boot_index.c") != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_load_verify_boot.c") != NULL);
+        ASSERT(strstr(rules, "config/include/config/boot_internal.h") != NULL);
+        ASSERT(strstr(rules, "boot_refold_window_extend") != NULL);
+        ASSERT(strstr(rules, "chain_state_repo") != NULL);
+        ASSERT(strstr(rules, "load_verify_boot") != NULL);
+        ASSERT(strstr(rules, "config/src/app_context.c") != NULL);
+        ASSERT(strstr(rules, "config/include/config/boot.h") != NULL);
+        ASSERT(strstr(rules, "app_context") != NULL);
+        ASSERT(strstr(rules, "models") != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_syncdiag_rpc.c") != NULL);
+        free(rules);
+        rules = NULL;
 
         ASSERT(repo_path(path, sizeof(path), "docs/work/fast-path.md") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
@@ -2603,6 +2615,7 @@ static int t_agent_fast_ci_contract(void)
         PASS();
     } _test_next:;
     free(buf);
+    free(rules);
     return failures;
 }
 
@@ -2662,6 +2675,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
+        ASSERT(strstr(main_buf, "cannot accidentally query") != NULL);
+        ASSERT(strstr(main_buf, "params_storage") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"api\"") != NULL);
@@ -2711,6 +2726,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_FAST_CACHE") != NULL);
         ASSERT(strstr(agent_ctrl_buf, ".cache/zcl-agent-fast-ci") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "agent_impact_rules.def") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "shared_rule_hits") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "command_center") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") != NULL);

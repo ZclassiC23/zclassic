@@ -676,6 +676,10 @@ static void cli_print(const char *json_str)
     json_free(&v);
 }
 
+static void print_usage(const char *prog);
+
+enum { CLI_MAX_PARAMS = 128 };
+
 static int cli_main(int argc, char **argv)
 {
     const char *home = getenv("HOME");
@@ -683,19 +687,37 @@ static int cli_main(int argc, char **argv)
     if (home) snprintf(datadir, sizeof(datadir), "%s/.zclassic-c23", home);
     else      snprintf(datadir, sizeof(datadir), ".zclassic-c23");
 
-    int arg_start = 1;
     bool datadir_set = false;
     bool rpcport_set = false;
+    const char *method = NULL;
+    const char *params_storage[CLI_MAX_PARAMS];
+    int nparams = 0;
+
+    /* Operator target flags are accepted before or after the method so
+     * `zclassic23 agent -datadir=... -rpcport=...` cannot accidentally query
+     * the default service while an agent is trying to inspect a lane. */
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) {
             snprintf(datadir, sizeof(datadir), "%s", argv[i] + 9);
             datadir_set = true;
-            arg_start = i + 1;
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             cli_port = atoi(argv[i] + 9);
             rpcport_set = true;
-            arg_start = i + 1;
-        } else break;
+        } else if (!method) {
+            method = argv[i];
+        } else {
+            if (nparams >= CLI_MAX_PARAMS) {
+                fprintf(stderr, "Too many RPC parameters (max %d)\n",
+                        CLI_MAX_PARAMS);
+                return 1;
+            }
+            params_storage[nparams++] = argv[i];
+        }
+    }
+
+    if (!method) {
+        print_usage(argv[0]);
+        return 1;
     }
 
     if (!datadir_set && !cli_cookie_exists(datadir)) {
@@ -721,17 +743,14 @@ static int cli_main(int argc, char **argv)
         return 1;
     }
 
-    const char *method = argv[arg_start];
     if (strcmp(method, "--agent") == 0 || strcmp(method, "-agent") == 0)
         method = "agent";
     else if (strcmp(method, "--summary") == 0 ||
              strcmp(method, "-summary") == 0)
         method = "summary";
-    const char **params = (const char **)&argv[arg_start + 1];
-    int nparams = argc - arg_start - 1;
 
     struct json_value jp;
-    if (!rpc_convert_values(method, params, (size_t)nparams, &jp)) {
+    if (!rpc_convert_values(method, params_storage, (size_t)nparams, &jp)) {
         fprintf(stderr, "Bad parameters\n");
         return 1;
     }

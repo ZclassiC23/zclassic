@@ -577,6 +577,34 @@ static bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_int(result, "index_gap", index_gap);
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
 
+    struct json_value reducer = {0};
+    json_set_object(&reducer);
+    json_push_kv_int(&reducer, "log_head", health.log_head);
+    json_push_kv_int(&reducer, "log_head_gap", health.log_head_gap);
+    json_push_kv_int(&reducer, "tip_advance_age_seconds",
+                     health.tip_advance_age_seconds);
+    json_push_kv_bool(&reducer, "validation_pack_ok",
+                      health.validation_pack_ok);
+    json_push_kv_str(&reducer, "validation_pack_detail",
+                     health.validation_pack_detail);
+    json_push_kv(result, "reducer", &reducer);
+    json_free(&reducer);
+
+    struct json_value health_obj = {0};
+    json_set_object(&health_obj);
+    json_push_kv_int(&health_obj, "warning_count",
+                     (int64_t)health.warning_count);
+    json_push_kv_str(&health_obj, "warning_reasons",
+                     health.warning_reasons);
+    json_push_kv_int(&health_obj, "last_error_age_seconds",
+                     health.last_error_age_seconds);
+    json_push_kv_str(&health_obj, "last_error_type",
+                     health.last_error_type);
+    json_push_kv_str(&health_obj, "blocking_reason",
+                     health.blocking_reason);
+    json_push_kv(result, "health", &health_obj);
+    json_free(&health_obj);
+
     struct json_value peers = {0};
     json_set_object(&peers);
     json_push_kv_int(&peers, "total", (int64_t)health.peer_count);
@@ -598,6 +626,9 @@ static bool rpc_agent_summary(const struct json_value *params, bool help,
                      (int64_t)health.blocks_timed_out);
     json_push_kv_int(&download, "in_flight", (int64_t)health.in_flight);
     json_push_kv_int(&download, "queued", (int64_t)health.queued);
+    json_push_kv_int(&download, "bytes_received",
+                     (int64_t)health.download_bytes_received);
+    json_push_kv_real(&download, "mbps_avg", health.download_mbps_avg);
     json_push_kv(result, "download", &download);
     json_free(&download);
 

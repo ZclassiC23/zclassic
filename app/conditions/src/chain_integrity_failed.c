@@ -97,7 +97,7 @@ static bool detect_chain_integrity_failed(void)
     struct chain_integrity_result r;
     if (!check_integrity(&r))
         return false;
-    return chain_integrity_classify(&r) == CHAIN_INTEGRITY_UNRECOVERABLE;
+    return chain_integrity_classify(&r) != CHAIN_INTEGRITY_CLEAN;
 }
 
 static void *chain_integrity_restore_worker(void *arg)
@@ -283,12 +283,12 @@ static bool witness_chain_integrity_failed(int64_t target_at_detect)
     // (chain_integrity_check_post_restore) and recomputes holes / mismatches /
     // zero-nbits from scratch. The remedy (chain_restore_finalize) repairs the
     // chain but sets NO flag this witness reads, so it cannot self-certify.
-    // This condition owns the UNRECOVERABLE class only; live-tip-only holes are
-    // RECONCILABLE and remain visible in detail/service_state without paging as
-    // corruption.
+    // This condition owns every non-clean class. UNRECOVERABLE uses the disk
+    // repair path and stays loud; RECONCILABLE uses memory-mode window repair
+    // so boot's "condition engine reconciles forward" contract actually fires.
     struct chain_integrity_result r;
     return check_integrity(&r) &&
-           chain_integrity_classify(&r) != CHAIN_INTEGRITY_UNRECOVERABLE;
+           chain_integrity_classify(&r) == CHAIN_INTEGRITY_CLEAN;
 }
 
 static struct condition c_chain_integrity_failed = {

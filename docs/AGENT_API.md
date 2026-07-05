@@ -150,6 +150,10 @@ This is a C23 project, so the edit loop should compile only what changed.
   linger-service probe when the service is available. Repeated identical green
   inputs hit `.cache/zcl-agent-fast-ci/` and skip repeated lint/build/focused
   tests while still refreshing the live probe.
+- Focused test routing is DRY: both native `zclassic23 agentimpact` and
+  `tools/agent_fast_ci.sh` read
+  `app/controllers/include/controllers/agent_impact_rules.def`. Add a rule
+  there first, then verify `agentimpact` reports `shared_rule_hits > 0`.
 - `make fast-ci` auto-selects `sccache cc`, then `ccache cc`, then `cc`.
   Override with `ZCL_FAST_CC='ccache cc'`. Use `ZCL_FAST_JOBS=N`,
   `ZCL_FAST_TESTS=group[,group]`, `ZCL_FAST_STRICT_TESTS=1`, and

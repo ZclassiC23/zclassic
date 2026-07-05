@@ -115,8 +115,25 @@ static job_result_t vh_db_fault(int rc, int height, const char *ctx)
 static inline bool vh_failure_is_repairable(const char *reason)
 {
     return reason &&
+           strcmp(reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0;
+}
+
+static inline bool vh_failure_is_recheck_candidate(const char *reason)
+{
+    return reason &&
            (strcmp(reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0 ||
             strcmp(reason, "header-source-hash-mismatch") == 0);
+}
+
+static bool vh_hash_mismatch_recheck_ready(sqlite3 *db, int height,
+                                           const struct block_index *bi)
+{
+    if (!db || height < 0 || !bi || !bi->phashBlock)
+        return false;
+
+    struct block_header repaired;
+    return stage_repair_header_solution_load(db, height, bi->phashBlock,
+                                             &repaired);
 }
 
 /* ── Worker pool ──────────────────────────────────────────────────── */
@@ -261,8 +278,9 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     progress_store_tx_lock();
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
-        "SELECT height FROM validate_headers_log"
+        "SELECT height, COALESCE(fail_reason,'') FROM validate_headers_log"
         " WHERE ok=0 AND height>=? AND height<?"
+        " AND fail_reason IN (?, ?)"
         " ORDER BY height ASC LIMIT ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
@@ -273,7 +291,11 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)start);
     sqlite3_bind_int64(stmt, 2, (sqlite3_int64)validated_cursor);
-    sqlite3_bind_int(stmt, 3, VH_BATCH_SIZE);
+    sqlite3_bind_text(stmt, 3, STAGE_REPAIR_SOLUTIONLESS_REASON, -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, "header-source-hash-mismatch", -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 5, VH_BATCH_SIZE * 64);
 
     struct vh_job jobs[VH_BATCH_SIZE];
     memset(jobs, 0, sizeof(jobs));
@@ -283,6 +305,8 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     while (n < VH_BATCH_SIZE &&
            (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         int64_t h64 = sqlite3_column_int64(stmt, 0);
+        const unsigned char *reason_txt = sqlite3_column_text(stmt, 1);
+        const char *reason = reason_txt ? (const char *)reason_txt : "";
         last_seen = h64;
         if (h64 < 0 || h64 > INT32_MAX) {
             sqlite3_finalize(stmt);
@@ -301,6 +325,16 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             if (first_unresolved < 0)
                 first_unresolved = h64;
+            continue;
+        }
+        if (!vh_failure_is_recheck_candidate(reason))
+            continue;
+        if (strcmp(reason, "header-source-hash-mismatch") == 0 &&
+            !vh_hash_mismatch_recheck_ready(db, (int)h64, bi)) {
+            /* Hash-source disagreement is only actionable once the repair
+             * table holds a hash-bound header for the canonical candidate.
+             * Until then the condition engine owns backfill/refetch; re-running
+             * the full validator just recreates the same warn storm. */
             continue;
         }
         vh_job_bind_block(db, &jobs[n], bi, (int)h64);

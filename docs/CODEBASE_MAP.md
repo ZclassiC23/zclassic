@@ -154,6 +154,9 @@ controller `k_routes[]` arrays.
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
+  The shared routing table lives at
+  `app/controllers/include/controllers/agent_impact_rules.def` and is consumed
+  by both native `agentimpact` and `make fast-ci`.
 - `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
   `make build-only`, `make t-fast`, `make fast-ci`, cache knobs, strict gates,
   and `make ci-reproducible`.

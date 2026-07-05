@@ -133,6 +133,13 @@ void block_clear_seen(const struct uint256 *hash) {
     }
 }
 
+void msg_processor_clear_seen_block(const struct uint256 *hash)
+{
+    if (!hash)
+        return;
+    block_clear_seen(hash);
+}
+
 bool tx_already_seen(const struct uint256 *hash) {
     int limit = g_recent_tx_count < MAX_RECENT_TXS
                 ? g_recent_tx_count : MAX_RECENT_TXS;

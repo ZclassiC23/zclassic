@@ -93,6 +93,8 @@ struct node_health_snapshot {
     uint64_t blocks_timed_out;
     uint64_t in_flight;
     uint64_t queued;
+    uint64_t download_bytes_received;
+    double   download_mbps_avg;
 
     /* Memory */
     int64_t memory_rss_mb;

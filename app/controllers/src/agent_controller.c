@@ -5,6 +5,7 @@
  * consensus state. */
 
 #include "controllers/agent_controller.h"
+#include "controllers/agent_impact_rules.h"
 #include "controllers/strong_params.h"
 
 #include "json/json.h"
@@ -91,28 +92,6 @@ static bool agent_str_starts(const char *s, const char *prefix)
     return s && prefix && strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
-struct agent_impact_acc {
-    const char *groups[32];
-    size_t groups_len;
-    bool code_changed;
-    bool docs_only;
-    bool consensus_risk;
-    bool agent_api_changed;
-    bool mcp_changed;
-};
-
-static void agent_add_group(struct agent_impact_acc *acc, const char *group)
-{
-    if (!acc || !group || !group[0])
-        return;
-    for (size_t i = 0; i < acc->groups_len; i++) {
-        if (strcmp(acc->groups[i], group) == 0)
-            return;
-    }
-    if (acc->groups_len < sizeof(acc->groups) / sizeof(acc->groups[0]))
-        acc->groups[acc->groups_len++] = group;
-}
-
 static const char *agent_classify_path(const char *path,
                                        struct agent_impact_acc *acc,
                                        const char **risk_out,
@@ -121,6 +100,10 @@ static const char *agent_classify_path(const char *path,
     const char *subsystem = "general";
     const char *risk = "normal";
     const char *docs = "docs/CODEBASE_MAP.md";
+    bool shared_match = agent_impact_apply_shared_rules(path, acc);
+
+    if (shared_match && path && !agent_str_starts(path, "docs/"))
+        acc->code_changed = true;
 
     if (!path || !path[0]) {
         risk = "invalid";
@@ -134,21 +117,17 @@ static const char *agent_classify_path(const char *path,
                agent_str_starts(path, "tools/githooks/")) {
         subsystem = "fast_ci_and_gates";
         docs = "docs/work/fast-path.md";
-        agent_add_group(acc, "make_lint_gates");
         acc->code_changed = true;
     } else if (strcmp(path, "tools/z") == 0) {
         subsystem = "deprecated_tools_z_shim";
         risk = "operator_api";
         docs = "docs/AGENT_API.md";
-        agent_add_group(acc, "make_lint_gates");
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (agent_str_starts(path, "tools/mcp/")) {
         subsystem = "mcp_agent_api";
         risk = "operator_api";
         docs = "docs/AGENT_API.md";
-        agent_add_group(acc, "mcp_controllers");
-        agent_add_group(acc, "make_lint_gates");
         acc->mcp_changed = true;
         acc->agent_api_changed = true;
         acc->code_changed = true;
@@ -157,38 +136,30 @@ static const char *agent_classify_path(const char *path,
                       "app/controllers/src/agent_interface_controller.c") == 0 ||
                strcmp(path, "app/controllers/src/agent_runtime_controller.c") == 0 ||
                strcmp(path,
-                      "app/controllers/include/controllers/agent_controller.h") == 0) {
+                      "app/controllers/include/controllers/agent_controller.h") == 0 ||
+               strcmp(path,
+                      "app/controllers/include/controllers/agent_impact_rules.def") == 0) {
         subsystem = "native_agent_api";
         risk = "operator_api";
         docs = "docs/AGENT_API.md";
-        agent_add_group(acc, "syncdiag_rpc");
-        agent_add_group(acc, "mcp_controllers");
-        agent_add_group(acc, "api");
-        agent_add_group(acc, "make_lint_gates");
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (strcmp(path, "app/controllers/src/event_controller.c") == 0) {
         subsystem = "native_status_api";
         risk = "operator_api";
         docs = "docs/AGENT_API.md";
-        agent_add_group(acc, "syncdiag_rpc");
-        agent_add_group(acc, "mcp_controllers");
-        agent_add_group(acc, "api");
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (strcmp(path, "src/main.c") == 0) {
         subsystem = "native_cli_api";
         risk = "operator_api";
         docs = "docs/AGENT_API.md";
-        agent_add_group(acc, "make_lint_gates");
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (agent_str_starts(path, "app/controllers/src/api_controller")) {
         subsystem = "rest_agent_api";
         risk = "operator_api";
         docs = "docs/CODEBASE_MAP.md";
-        agent_add_group(acc, "api");
-        agent_add_group(acc, "syncdiag_rpc");
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (strcmp(path, "app/services/src/node_health_service.c") == 0 ||
@@ -197,10 +168,6 @@ static const char *agent_classify_path(const char *path,
         subsystem = "node_health";
         risk = "operator_health";
         docs = "docs/RUNBOOK.md";
-        agent_add_group(acc, "node_health_service");
-        agent_add_group(acc, "syncdiag_rpc");
-        agent_add_group(acc, "api");
-        agent_add_group(acc, "mcp_controllers");
         acc->code_changed = true;
     } else if (agent_str_starts(path, "domain/consensus/") ||
                agent_str_starts(path, "lib/consensus/") ||
@@ -211,27 +178,29 @@ static const char *agent_classify_path(const char *path,
         subsystem = "consensus_or_validation";
         risk = "consensus_parity";
         docs = "docs/CONSENSUS_PARITY_DOCTRINE.md";
-        agent_add_group(acc, "consensus_parity");
-        agent_add_group(acc, "chain");
         acc->consensus_risk = true;
         acc->code_changed = true;
     } else if (agent_str_starts(path, "app/jobs/")) {
         subsystem = "reducer_stage";
         risk = "reducer_liveness";
         docs = "docs/HOW_THE_NODE_WORKS.md";
-        agent_add_group(acc, "stage_repair");
-        agent_add_group(acc, "reducer_frontier");
+        if (!shared_match) {
+            agent_impact_add_group(acc, "stage_repair");
+            agent_impact_add_group(acc, "reducer_frontier");
+        }
         acc->code_changed = true;
     } else if (agent_str_starts(path, "app/services/")) {
         subsystem = "service_layer";
         risk = "operator_liveness";
         docs = "docs/CODEBASE_MAP.md";
-        agent_add_group(acc, "make_lint_gates");
+        if (!shared_match)
+            agent_impact_add_group(acc, "make_lint_gates");
         acc->code_changed = true;
     } else if (agent_str_starts(path, "lib/test/")) {
         subsystem = "test_harness";
         docs = "docs/work/fast-path.md";
-        agent_add_group(acc, "make_lint_gates");
+        if (!shared_match)
+            agent_impact_add_group(acc, "make_lint_gates");
         acc->code_changed = true;
     } else if (agent_str_starts(path, "app/") ||
                agent_str_starts(path, "lib/") ||
@@ -239,7 +208,8 @@ static const char *agent_classify_path(const char *path,
                agent_str_starts(path, "src/")) {
         subsystem = "code";
         docs = "docs/CODEBASE_MAP.md";
-        agent_add_group(acc, "make_lint_gates");
+        if (!shared_match)
+            agent_impact_add_group(acc, "make_lint_gates");
         acc->code_changed = true;
     }
 
@@ -367,7 +337,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                          "zcl_health, zcl_conditions");
     agent_push_subsystem(&subsystems, "fast_ci",
                          "cache-aware edit loop and focused test routing",
-                         "tools/agent_fast_ci.sh, Makefile",
+                         "app/controllers/include/controllers/agent_impact_rules.def, tools/agent_fast_ci.sh, Makefile",
                          "docs/work/fast-path.md",
                          "make_lint_gates",
                          "zcl_agent_impact, zcl_agent_build");
@@ -487,6 +457,14 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
     json_push_kv_bool(result, "consensus_risk", acc.consensus_risk);
     json_push_kv_bool(result, "agent_api_changed", acc.agent_api_changed);
     json_push_kv_bool(result, "mcp_changed", acc.mcp_changed);
+    json_push_kv_str(result, "mapping_source",
+                     "app/controllers/include/controllers/agent_impact_rules.def");
+    json_push_kv_int(result, "shared_rule_count",
+                     (int64_t)agent_impact_rule_count());
+    json_push_kv_int(result, "shared_rule_hits",
+                     (int64_t)acc.shared_rule_hits);
+    json_push_kv_int(result, "relevant_test_groups_count",
+                     (int64_t)acc.groups_len);
     json_push_kv_str(result, "source",
                      file_count > 0 ? "explicit_file_args"
                                     : "no_files_supplied");
