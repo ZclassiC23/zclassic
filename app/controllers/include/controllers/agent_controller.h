@@ -25,5 +25,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
                          struct json_value *result);
 bool rpc_agent_build(const struct json_value *params, bool help,
                      struct json_value *result);
+bool rpc_agent_interface(const struct json_value *params, bool help,
+                         struct json_value *result);
+bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
+                            struct json_value *result);
 
 #endif

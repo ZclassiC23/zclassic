@@ -105,6 +105,8 @@ size_t api_json_status(uint8_t *r, size_t max, const char *status,
                        const struct json_value *body);
 size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body);
 const char *api_rest_index_body_json(void);
+void api_rest_index_mcp_json(struct json_value *mcp);
+void api_rest_index_cli_json(struct json_value *cli);
 int64_t api_served_tip_height(void);
 void api_freshness_prepare(struct api_freshness_meta *out,
                            const char *source_projection,

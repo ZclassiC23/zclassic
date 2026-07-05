@@ -208,11 +208,11 @@ select_test_groups() {
                 add_group "node_health_service"
                 matched=1
                 ;;
-            app/controllers/src/api_controller_status.c|app/controllers/src/api_controller_index.c|app/controllers/src/api_controller_routes.c|lib/test/src/test_api.c)
+            app/controllers/src/api_controller*.c|app/controllers/src/api_controller_internal.h|lib/test/src/test_api.c)
                 add_group "api"
                 matched=1
                 ;;
-            app/controllers/src/agent_controller.c|app/controllers/src/agent_runtime_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
+            app/controllers/src/agent_controller.c|app/controllers/src/agent_interface_controller.c|app/controllers/src/agent_runtime_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
                 add_group "make_lint_gates"
                 add_group "node_health_service"
                 add_group "mcp_controllers"

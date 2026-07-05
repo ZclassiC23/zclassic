@@ -2,15 +2,14 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
 # Guard the long-running canonical node from accidental deploy restarts.
-# Prefer the native zcl.operator_deployment_safety.v1 contract exposed by the
-# running daemon; fall back to the systemd ExecStart lane flag for older
-# binaries that do not expose the nested safety contract yet.
+# Prefer the C-native zcl.agent_deploy_guard.v1 contract exposed by the
+# running daemon; fall back to the systemd ExecStart lane flag only for older
+# binaries that do not expose the native guard yet.
 
 set -euo pipefail
 
 ACTION="${1:-canonical-deploy}"
 UNIT="${ZCL_DEPLOY_GUARD_UNIT:-zclassic23}"
-RPC_TOOL="${ZCL_DEPLOY_GUARD_RPC_TOOL:-./build/bin/zclassic-cli}"
 RPC_TIMEOUT="${ZCL_DEPLOY_GUARD_RPC_TIMEOUT:-5}"
 DEFAULT_DATADIR="${ZCL_DATADIR:-$HOME/.zclassic-c23}"
 DEFAULT_RPCPORT="${ZCL_RPCPORT:-18232}"
@@ -23,6 +22,11 @@ fail() {
     printf 'deploy_guard: REFUSE: %s\n' "$*" >&2
     printf 'deploy_guard: set ZCL_DEPLOY_ALLOW_CANONICAL=1 only for an intentional canonical restart window\n' >&2
     exit 1
+}
+
+allow() {
+    log "allow: $*"
+    exit 0
 }
 
 is_true() {
@@ -63,53 +67,24 @@ lane_is_canonical() {
     esac
 }
 
-json_rpc_result() {
-    command -v python3 >/dev/null 2>&1 || {
-        printf '%s\n' "$1"
+select_rpc_tool() {
+    if [ -n "${ZCL_DEPLOY_GUARD_RPC_TOOL:-}" ]; then
+        printf '%s\n' "$ZCL_DEPLOY_GUARD_RPC_TOOL"
         return 0
-    }
-    printf '%s\n' "$1" | python3 -c '
-import json
-import sys
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except Exception:
-    sys.stdout.write(raw)
-    sys.exit(0)
-if isinstance(d, dict) and "result" in d and d.get("error") in (None, {}) and d.get("result") is not None:
-    result = d.get("result")
-    if isinstance(result, str):
-        sys.stdout.write(result)
-    else:
-        sys.stdout.write(json.dumps(result, separators=(",", ":")))
-else:
-    sys.stdout.write(raw)
-' 2>/dev/null
-}
-
-json_get() {
-    local body="$1" path="$2"
-    command -v python3 >/dev/null 2>&1 || return 1
-    printf '%s\n' "$body" | python3 -c '
-import json
-import sys
-try:
-    cur = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-for part in sys.argv[1].split("."):
-    if isinstance(cur, dict) and part in cur:
-        cur = cur[part]
-    else:
-        sys.exit(1)
-if isinstance(cur, bool):
-    print("true" if cur else "false")
-elif cur is None:
-    sys.exit(1)
-else:
-    print(cur)
-' "$path" 2>/dev/null
+    fi
+    if [ -x ./build/bin/zclassic23 ]; then
+        printf '%s\n' ./build/bin/zclassic23
+        return 0
+    fi
+    if command -v zclassic23 >/dev/null 2>&1; then
+        command -v zclassic23
+        return 0
+    fi
+    if [ -x ./build/bin/zclassic-cli ]; then
+        printf '%s\n' ./build/bin/zclassic-cli
+        return 0
+    fi
+    return 1
 }
 
 service_exec_start() {
@@ -132,68 +107,59 @@ service_exec_rpcport() {
     printf '%s\n' "${rpcport:-$DEFAULT_RPCPORT}"
 }
 
-read_agent_json() {
-    if [ -n "${ZCL_DEPLOY_GUARD_AGENT_JSON:-}" ]; then
-        printf '%s\n' "$ZCL_DEPLOY_GUARD_AGENT_JSON"
+json_string_field() {
+    local body="$1" key="$2"
+    printf '%s\n' "$body" |
+        sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" |
+        head -1
+}
+
+json_bool_true() {
+    local body="$1" key="$2"
+    printf '%s\n' "$body" |
+        grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*true"
+}
+
+read_native_guard_json() {
+    if [ -n "${ZCL_DEPLOY_GUARD_NATIVE_JSON:-}" ]; then
+        printf '%s\n' "$ZCL_DEPLOY_GUARD_NATIVE_JSON"
         return 0
     fi
 
-    [ -x "$RPC_TOOL" ] || return 1
-    local execstart datadir rpcport raw
+    local tool execstart datadir rpcport raw
+    tool="$(select_rpc_tool)" || return 1
+    [ -x "$tool" ] || command -v "$tool" >/dev/null 2>&1 || return 1
     execstart="$(service_exec_start)"
     datadir="$(service_exec_datadir "$execstart")"
     rpcport="$(service_exec_rpcport "$execstart")"
     if command -v timeout >/dev/null 2>&1; then
-        raw="$(timeout "${RPC_TIMEOUT}s" "$RPC_TOOL" \
-            "-datadir=$datadir" "-rpcport=$rpcport" agent 2>/dev/null || true)"
+        raw="$(timeout "${RPC_TIMEOUT}s" "$tool" \
+            "-datadir=$datadir" "-rpcport=$rpcport" \
+            agentdeployguard "$ACTION" 2>/dev/null || true)"
     else
-        raw="$("$RPC_TOOL" "-datadir=$datadir" "-rpcport=$rpcport" agent 2>/dev/null || true)"
+        raw="$("$tool" "-datadir=$datadir" "-rpcport=$rpcport" \
+            agentdeployguard "$ACTION" 2>/dev/null || true)"
     fi
     [ -n "$raw" ] || return 1
-    json_rpc_result "$raw"
+    printf '%s\n' "$raw"
 }
 
-allow() {
-    log "allow: $*"
-    exit 0
-}
-
-guard_from_agent_json() {
+guard_from_native_json() {
     local body="$1"
-    local lane schema deploy_ok restart_ok requires canonical safe_action guard_env
+    printf '%s\n' "$body" | grep -q '"zcl.agent_deploy_guard.v1"' ||
+        return 2
 
-    lane="$(json_get "$body" "operator_lane.lane" || true)"
-    schema="$(json_get "$body" "operator_lane.deployment_safety.schema" || true)"
-    deploy_ok="$(json_get "$body" "operator_lane.deployment_safety.automation_deploy_ok" || true)"
-    restart_ok="$(json_get "$body" "operator_lane.deployment_safety.automation_restart_ok" || true)"
-    requires="$(json_get "$body" "operator_lane.deployment_safety.requires_operator_confirmation" || true)"
-    canonical="$(json_get "$body" "operator_lane.canonical" || true)"
-    safe_action="$(json_get "$body" "operator_lane.deployment_safety.safe_default_action" || true)"
-    guard_env="$(json_get "$body" "operator_lane.deployment_safety.guard_env" || true)"
+    local lane reason safe_action guard_env
+    lane="$(json_string_field "$body" "lane")"
+    reason="$(json_string_field "$body" "reason")"
+    safe_action="$(json_string_field "$body" "safe_default_action")"
+    guard_env="$(json_string_field "$body" "guard_env")"
 
-    [ -n "$lane$schema$deploy_ok$restart_ok$requires$canonical" ] || return 2
-
-    if [ "$schema" = "zcl.operator_deployment_safety.v1" ]; then
-        if [ "$deploy_ok" = "true" ] &&
-           [ "$restart_ok" = "true" ] &&
-           [ "$requires" != "true" ]; then
-            allow "native deployment_safety permits action=$ACTION lane=${lane:-unknown}"
-        fi
-        fail "native deployment_safety blocks action=$ACTION lane=${lane:-unknown} deploy_ok=${deploy_ok:-unknown} restart_ok=${restart_ok:-unknown} requires_operator_confirmation=${requires:-unknown} guard_env=${guard_env:-unknown} safe_default_action=${safe_action:-unknown}"
+    if json_bool_true "$body" "allowed"; then
+        allow "native agentdeployguard permits action=$ACTION lane=${lane:-unknown}"
     fi
 
-    if [ "$canonical" = "true" ] || lane_is_canonical "$lane"; then
-        fail "legacy operator_lane reports canonical lane without deployment_safety"
-    fi
-
-    local development ephemeral
-    development="$(json_get "$body" "operator_lane.development" || true)"
-    ephemeral="$(json_get "$body" "operator_lane.ephemeral" || true)"
-    if [ "$development" = "true" ] || [ "$ephemeral" = "true" ]; then
-        allow "legacy operator_lane permits noncanonical lane=${lane:-unknown}"
-    fi
-
-    return 2
+    fail "native agentdeployguard blocks action=$ACTION lane=${lane:-unknown} reason=${reason:-unknown} guard_env=${guard_env:-unknown} safe_default_action=${safe_action:-unknown}"
 }
 
 guard_from_systemd() {
@@ -235,22 +201,22 @@ selftest_case_fail() {
 
 selftest() {
     local canonical_json dev_json
-    canonical_json='{"schema":"zcl.public_status.v1","operator_lane":{"schema":"zcl.operator_lane.v1","lane":"canonical","canonical":true,"deployment_safety":{"schema":"zcl.operator_deployment_safety.v1","automation_restart_ok":false,"automation_deploy_ok":false,"requires_operator_confirmation":true,"guard_env":"ZCL_DEPLOY_ALLOW_CANONICAL","safe_default_action":"observe_only_or_use_dev_lane"}}}'
-    dev_json='{"schema":"zcl.public_status.v1","operator_lane":{"schema":"zcl.operator_lane.v1","lane":"dev","development":true,"deployment_safety":{"schema":"zcl.operator_deployment_safety.v1","automation_restart_ok":true,"automation_deploy_ok":true,"requires_operator_confirmation":false,"safe_default_action":"deploy_dev_lane"}}}'
+    canonical_json='{"schema":"zcl.agent_deploy_guard.v1","action":"canonical-deploy","allowed":false,"decision":"refuse","reason":"operator_confirmation_required","lane":"canonical","guard_env":"ZCL_DEPLOY_ALLOW_CANONICAL","safe_default_action":"observe_only_or_use_dev_lane"}'
+    dev_json='{"schema":"zcl.agent_deploy_guard.v1","action":"canonical-deploy","allowed":true,"decision":"allow","reason":"deployment_safety_allows_action","lane":"dev","guard_env":"","safe_default_action":"deploy_dev_lane"}'
 
     selftest_case_fail "native canonical blocks" \
-        ZCL_DEPLOY_GUARD_AGENT_JSON="$canonical_json"
+        ZCL_DEPLOY_GUARD_NATIVE_JSON="$canonical_json"
     selftest_case_pass "native dev allows" \
-        ZCL_DEPLOY_GUARD_AGENT_JSON="$dev_json"
+        ZCL_DEPLOY_GUARD_NATIVE_JSON="$dev_json"
     selftest_case_pass "explicit canonical override allows" \
-        ZCL_DEPLOY_GUARD_AGENT_JSON="$canonical_json" \
+        ZCL_DEPLOY_GUARD_NATIVE_JSON="$canonical_json" \
         ZCL_DEPLOY_ALLOW_CANONICAL=1
     selftest_case_fail "active canonical systemd fallback blocks" \
-        ZCL_DEPLOY_GUARD_AGENT_JSON= \
+        ZCL_DEPLOY_GUARD_NATIVE_JSON= \
         ZCL_DEPLOY_GUARD_SYSTEMD_ACTIVE=active \
         ZCL_DEPLOY_GUARD_SYSTEMD_EXECSTART='path=/x/zclassic23 ; argv[]=/x/zclassic23 -datadir=/tmp/z -operator-lane=canonical -rpcport=18232'
     selftest_case_pass "inactive canonical systemd fallback allows" \
-        ZCL_DEPLOY_GUARD_AGENT_JSON= \
+        ZCL_DEPLOY_GUARD_NATIVE_JSON= \
         ZCL_DEPLOY_GUARD_SYSTEMD_ACTIVE=inactive \
         ZCL_DEPLOY_GUARD_SYSTEMD_EXECSTART='path=/x/zclassic23 ; argv[]=/x/zclassic23 -datadir=/tmp/z -operator-lane=canonical -rpcport=18232'
 
@@ -259,13 +225,14 @@ selftest() {
 
 main() {
     case "$ACTION" in
-        canonical-deploy|canonical-restart) ;;
+        canonical-deploy|canonical-restart|deploy|restart) ;;
         -h|--help)
             cat <<'USAGE'
-usage: tools/deploy_guard.sh [canonical-deploy]
+usage: tools/deploy_guard.sh [canonical-deploy|canonical-restart|deploy|restart]
 
 Blocks accidental restarts of an active canonical zclassic23 lane unless
 ZCL_DEPLOY_ALLOW_CANONICAL=1 is set for an intentional restart window.
+Uses native C JSON contract zcl.agent_deploy_guard.v1 when available.
 USAGE
             exit 0
             ;;
@@ -283,10 +250,10 @@ USAGE
         allow "ZCL_DEPLOY_ALLOW_CANONICAL=1 explicitly permits action=$ACTION"
     fi
 
-    local agent_json
-    agent_json="$(read_agent_json || true)"
-    if [ -n "$agent_json" ]; then
-        guard_from_agent_json "$agent_json" || true
+    local guard_json
+    guard_json="$(read_native_guard_json || true)"
+    if [ -n "$guard_json" ]; then
+        guard_from_native_json "$guard_json" || true
     fi
 
     guard_from_systemd

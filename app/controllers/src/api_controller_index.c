@@ -132,32 +132,6 @@ static void api_rest_index_drilldown_json(struct json_value *drilldown)
                      "/api/v1/node/status");
 }
 
-static void api_rest_index_mcp_json(struct json_value *mcp)
-{
-    json_set_object(mcp);
-    json_push_kv_str(mcp, "first_tool", "zcl_agent");
-    json_push_kv_str(mcp, "map_tool", "zcl_agent_map");
-    json_push_kv_str(mcp, "impact_tool", "zcl_agent_impact");
-    json_push_kv_str(mcp, "contracts_tool", "zcl_agent_contracts");
-    json_push_kv_str(mcp, "build_tool", "zcl_agent_build");
-    json_push_kv_str(mcp, "milestone_tool", "zcl_milestone");
-    json_push_kv_str(mcp, "refold_tool", "zcl_refold_status");
-    json_push_kv_str(mcp, "drilldown_tool", "zcl_status");
-}
-static void api_rest_index_cli_json(struct json_value *cli)
-{
-    json_set_object(cli);
-    json_push_kv_str(cli, "api_command", "zclassic23 api");
-    json_push_kv_str(cli, "first_command", "zclassic23 agent");
-    json_push_kv_str(cli, "map_command", "zclassic23 agentmap");
-    json_push_kv_str(cli, "impact_command", "zclassic23 agentimpact <files...>");
-    json_push_kv_str(cli, "contracts_command", "zclassic23 agentcontracts");
-    json_push_kv_str(cli, "build_command", "zclassic23 agentbuild");
-    json_push_kv_str(cli, "milestone_command", "zclassic23 milestone");
-    json_push_kv_str(cli, "refold_command", "zclassic23 refold");
-    json_push_kv_str(cli, "drilldown_command", "zclassic23 healthcheck");
-}
-
 static const char *api_openapi_method_key(const char *method, char *buf,
                                           size_t buf_len)
 {

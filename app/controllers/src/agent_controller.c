@@ -153,6 +153,8 @@ static const char *agent_classify_path(const char *path,
         acc->agent_api_changed = true;
         acc->code_changed = true;
     } else if (strcmp(path, "app/controllers/src/agent_controller.c") == 0 ||
+               strcmp(path,
+                      "app/controllers/src/agent_interface_controller.c") == 0 ||
                strcmp(path, "app/controllers/src/agent_runtime_controller.c") == 0 ||
                strcmp(path,
                       "app/controllers/include/controllers/agent_controller.h") == 0) {
@@ -282,6 +284,13 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     agent_push_command(&commands, "build", "zclassic23 agentbuild",
                        "zcl_agent_build",
                        "incremental/cache/reproducible build contract");
+    agent_push_command(&commands, "interface", "zclassic23 agentinterface",
+                       "zcl_agent_interface",
+                       "preferred AI/operator transport and JSON rules");
+    agent_push_command(&commands, "deploy_guard",
+                       "zclassic23 agentdeployguard [action]",
+                       "zcl_agent_deploy_guard",
+                       "C-native deploy/restart allow-refuse decision");
     agent_push_command(&commands, "command_center",
                        "zclassic23 agent",
                        "zcl_operator_summary",
@@ -336,8 +345,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                          "first-call binary JSON contracts",
                          "app/controllers/src/agent_controller.c, src/main.c",
                          "docs/AGENT_API.md",
-                         "syncdiag_rpc, make_lint_gates",
-                         "zcl_agent, zcl_agent_map");
+                         "syncdiag_rpc, mcp_controllers, make_lint_gates",
+                         "zcl_agent, zcl_agent_interface, zcl_agent_map");
     agent_push_subsystem(&subsystems, "mcp_agent_api",
                          "typed AI tool routes over the same native RPC truth",
                          "tools/mcp/controllers/ops_controller.c",
@@ -545,6 +554,12 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_build.v1",
                       "zclassic23 agentbuild / zcl_agent_build",
                       "cached incremental and reproducible build contract");
+    agent_push_schema(&schemas, "zcl.agent_interface.v1",
+                      "zclassic23 agentinterface / zcl_agent_interface",
+                      "preferred AI development interface and transport ranking");
+    agent_push_schema(&schemas, "zcl.agent_deploy_guard.v1",
+                      "zclassic23 agentdeployguard / zcl_agent_deploy_guard",
+                      "C-native deploy/restart allow/refuse decision");
     agent_push_schema(&schemas, "zcl.operator_summary.v1",
                       "zcl_operator_summary",
                       "long MCP operator summary with raw drill-down");
@@ -560,9 +575,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     agent_push_str(&transports,
-                   "native: zclassic23 agent|agentmap|agentimpact|agentcontracts|agentbuild");
+                   "native: zclassic23 agent|agentinterface|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard");
     agent_push_str(&transports,
-                   "mcp: zcl_agent, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build");
+                   "mcp: zcl_agent, zcl_agent_interface, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard");
     agent_push_str(&transports,
                    "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
     agent_push_str(&transports,
@@ -575,6 +590,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_str(&rules, "Do not put new logic in shell wrappers.");
     agent_push_str(&rules, "Build JSON once in native services/controllers, then expose through MCP/REST.");
     agent_push_str(&rules, "Every new contract needs schema, docs, and focused tests.");
+    agent_push_str(&rules, "No Python is required to consume the preferred agent API.");
     agent_push_str(&rules, "Automation must read deployment_safety before restarting a lane.");
     agent_push_str(&rules, "Consensus-risk paths require parity review and strict relevant tests.");
     json_push_kv(result, "design_rules", &rules);

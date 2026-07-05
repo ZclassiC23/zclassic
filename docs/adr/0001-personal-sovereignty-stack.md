@@ -29,7 +29,7 @@ Concretely:
 
 **Positive:**
 
-- Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), 99 MCP tools — stays as bedrock. Months of work retain their value.
+- Recent shipped work — hexagonal skeleton (`ports/`, `adapters/`, `application/`, `domain/`), shadow feeder, supervisor primitive (Round 5), typed blocker (Round 6), 112 MCP tools — stays as bedrock. Months of work retain their value.
 - The wedge stops being a recurring crisis; it becomes the first regression scenario for the Wave T simulator.
 
 **Negative / Risk:**

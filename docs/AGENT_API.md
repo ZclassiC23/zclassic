@@ -12,11 +12,28 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
+| Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
+| Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
 
 The native RPC contracts are implemented in
 `app/controllers/src/agent_controller.c`. MCP routes in
 `tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
 currently exposes the public status contract at `GET /api/v1/agent`.
+
+## Preferred Interface
+
+The best interface for an AI coding operator is MCP with typed JSON tools:
+start with `zcl_agent_interface`, then use `zcl_agent`, `zcl_agent_impact`,
+`zcl_agent_build`, `zcl_state`, `zcl_node_log`, and `zcl_sql` as needed. The
+native binary commands (`zclassic23 agentinterface`, `zclassic23 agent`, etc.)
+are the second-best interface for terminal work and scripts. REST is the
+public read-only mirror.
+
+No Python is required to consume the preferred agent API. Contract assembly,
+status interpretation, changed-file test mapping, and deploy safety decisions
+belong in C under `app/controllers/src/agent_controller.c` and
+`app/controllers/src/agent_interface_controller.c`, then get exposed through
+MCP/native/REST.
 
 ## Command Center
 
@@ -64,11 +81,12 @@ Canonical defaults to observe-only, soak defaults to preserving the evidence
 window, and dev defaults to `deploy_dev_lane`.
 
 `make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
-queries the running node's native `deployment_safety` object when RPC is
-reachable and falls back to the systemd `-operator-lane=` flag for older
-running binaries. An active canonical lane is refused by default; set
-`ZCL_DEPLOY_ALLOW_CANONICAL=1` only for a deliberate canonical restart window.
-Development builds should normally use `make deploy-dev`.
+calls the running node's C-native `agentdeployguard` RPC
+(`zcl.agent_deploy_guard.v1`) when available and falls back to the systemd
+`-operator-lane=` flag only for older running binaries. An active canonical
+lane is refused by default; set `ZCL_DEPLOY_ALLOW_CANONICAL=1` only for a
+deliberate canonical restart window. Development builds should normally use
+`make deploy-dev`.
 
 ## Bootstrap Service Status
 
@@ -167,3 +185,4 @@ build id with `-Wl,--build-id=none`.
 
 Do not add new operator logic to `tools/z`. Add native JSON once, expose it via
 MCP or REST if needed, document the schema, and cover it with focused tests.
+Do not require Python for the preferred operator API path.

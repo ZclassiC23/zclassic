@@ -6,6 +6,7 @@
  *   zclassic23 -mcp                   — MCP stdio server for agents
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 agent                  — compact status from running node
+ *   zclassic23 agentinterface         — preferred AI/operator interface
  *   zclassic23 milestone              — ASCII milestone status from node
  *   zclassic23 refold                 — refold anchor readiness from node
  *   zclassic23 <method> [params...]   — RPC client to running node */
@@ -830,6 +831,8 @@ static void print_usage(const char *prog)
     printf("  %s agentimpact <files...>  Changed files to tests/risk\n", prog);
     printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
+    printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
+    printf("  %s agentdeployguard [act]  C-native deploy/restart guard JSON\n", prog);
     printf("  %s milestone               ASCII milestone status from running node\n", prog);
     printf("  %s refold                  Refold anchor readiness from running node\n", prog);
     printf("  %s --agent                 Same compact status\n", prog);

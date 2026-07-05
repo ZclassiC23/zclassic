@@ -2295,15 +2295,14 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(makefile,
                       "./tools/deploy_guard.sh canonical-deploy") != NULL);
         ASSERT(strstr(guard, "ZCL_DEPLOY_ALLOW_CANONICAL") != NULL);
-        ASSERT(strstr(guard, "zcl.operator_deployment_safety.v1") != NULL);
-        ASSERT(strstr(guard, "automation_restart_ok") != NULL);
-        ASSERT(strstr(guard, "automation_deploy_ok") != NULL);
-        ASSERT(strstr(guard, "requires_operator_confirmation") != NULL);
+        ASSERT(strstr(guard, "zcl.agent_deploy_guard.v1") != NULL);
+        ASSERT(strstr(guard, "agentdeployguard") != NULL);
+        ASSERT(strstr(guard, "ZCL_DEPLOY_GUARD_NATIVE_JSON") != NULL);
+        ASSERT(strstr(guard, "python") == NULL);
         ASSERT(strstr(guard, "systemctl --user show") != NULL);
         ASSERT(strstr(guard, "-operator-lane") != NULL);
-        ASSERT(strstr(guard, "native deployment_safety blocks") != NULL);
-        ASSERT(strstr(guard, "legacy operator_lane reports canonical")
-               != NULL);
+        ASSERT(strstr(guard, "native agentdeployguard blocks") != NULL);
+        ASSERT(strstr(guard, "allowed") != NULL);
         ASSERT(run_gate_script_with_env("tools/deploy_guard.sh",
                                         "ZCL_DEPLOY_GUARD_SELFTEST",
                                         "1") == 0);
@@ -2420,7 +2419,12 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "src/main.c") != NULL);
         ASSERT(strstr(buf, "app/controllers/src/agent_controller.c") != NULL);
+        ASSERT(strstr(buf, "app/controllers/src/agent_interface_controller.c")
+               != NULL);
         ASSERT(strstr(buf, "app/controllers/src/agent_runtime_controller.c")
+               != NULL);
+        ASSERT(strstr(buf, "app/controllers/src/api_controller*.c") != NULL);
+        ASSERT(strstr(buf, "app/controllers/src/api_controller_internal.h")
                != NULL);
         ASSERT(strstr(buf, "app/models/src/peer.c") != NULL);
         ASSERT(strstr(buf, "lib/net/src/connman.c") != NULL);
@@ -2520,6 +2524,7 @@ static int t_native_agent_api_contract(void)
     char *main_buf = NULL;
     char *event_buf = NULL;
     char *agent_ctrl_buf = NULL;
+    char *agent_iface_buf = NULL;
     char *agent_runtime_buf = NULL;
     char *api_buf = NULL;
     char *agent_doc_buf = NULL;
@@ -2527,6 +2532,7 @@ static int t_native_agent_api_contract(void)
         char main_path[PATH_MAX];
         char event_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
+        char agent_iface_path[PATH_MAX];
         char agent_runtime_path[PATH_MAX];
         char api_path[PATH_MAX];
         char agent_doc_path[PATH_MAX];
@@ -2535,15 +2541,20 @@ static int t_native_agent_api_contract(void)
                          "app/controllers/src/event_controller.c") == 0);
         ASSERT(repo_path(agent_ctrl_path, sizeof(agent_ctrl_path),
                          "app/controllers/src/agent_controller.c") == 0);
+        ASSERT(repo_path(agent_iface_path, sizeof(agent_iface_path),
+                         "app/controllers/src/agent_interface_controller.c")
+               == 0);
         ASSERT(repo_path(agent_runtime_path, sizeof(agent_runtime_path),
                          "app/controllers/src/agent_runtime_controller.c") == 0);
         ASSERT(repo_path(api_path, sizeof(api_path),
-                         "app/controllers/src/api_controller_index.c") == 0);
+                         "app/controllers/src/api_controller_agent_index.c")
+               == 0);
         ASSERT(repo_path(agent_doc_path, sizeof(agent_doc_path),
                          "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
+        ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
         ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
         ASSERT(read_entire_file(agent_doc_path, &agent_doc_buf) == 0);
@@ -2553,6 +2564,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "%s agentimpact") != NULL);
         ASSERT(strstr(main_buf, "%s agentcontracts") != NULL);
         ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
+        ASSERT(strstr(main_buf, "%s agentinterface") != NULL);
+        ASSERT(strstr(main_buf, "%s agentdeployguard") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
         ASSERT(strstr(main_buf, "-operator-lane=<name>") != NULL);
@@ -2570,6 +2583,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"agentimpact\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentcontracts\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentbuild\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentinterface\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentdeployguard\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"milestone\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"refold\"") != NULL);
@@ -2578,6 +2593,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_interface.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_deploy_guard.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "No Python is required") != NULL);
+        ASSERT(strstr(agent_iface_buf, "preferred_transport") != NULL);
+        ASSERT(strstr(agent_iface_buf, "must_live_in_c") != NULL);
+        ASSERT(strstr(agent_iface_buf,
+                      "app/controllers/src/agent_interface_controller.c")
+               != NULL);
+        ASSERT(strstr(agent_iface_buf,
+                      "do not require Python to parse agent API JSON")
+               != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.operator_lane.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "zcl.operator_deployment_safety.v1") != NULL);
@@ -2632,11 +2658,28 @@ static int t_native_agent_api_contract(void)
                       "json_push_kv_str(cli, \"build_command\", "
                       "\"zclassic23 agentbuild\")") != NULL);
         ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"interface_command\", "
+                      "\"zclassic23 agentinterface\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"deploy_guard_command\"")
+               != NULL);
+        ASSERT(strstr(api_buf,
                       "json_push_kv_str(mcp, \"build_tool\", "
                       "\"zcl_agent_build\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"interface_tool\", "
+                      "\"zcl_agent_interface\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"deploy_guard_tool\", "
+                      "\"zcl_agent_deploy_guard\")") != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
+        ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
         ASSERT(strstr(agent_doc_buf, "make t-fast ONLY=<group>") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE=0") != NULL);
@@ -2669,6 +2712,7 @@ static int t_native_agent_api_contract(void)
     free(main_buf);
     free(event_buf);
     free(agent_ctrl_buf);
+    free(agent_iface_buf);
     free(agent_runtime_buf);
     free(api_buf);
     free(agent_doc_buf);

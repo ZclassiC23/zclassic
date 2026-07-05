@@ -145,6 +145,10 @@ actually fires.
 controller `k_routes[]` arrays.
 
 ### Start here
+- `zclassic23 agentinterface` / `zcl_agent_interface` — preferred AI operator
+  interface contract. MCP is the primary interactive API, native CLI JSON is
+  the script/human fallback, REST is public read-only, and no Python or
+  `tools/z` logic is required.
 - `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.

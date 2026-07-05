@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     110  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     112  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -58,10 +58,10 @@
                                  *   zcl_waitforhalt, zcl_waitforblocker
                                  * +1 native milestone status: zcl_milestone
                                  * +1 native refold readiness: zcl_refold_status
-                                 * +4 agent API tools: map, impact, contracts,
-                                 *   build
+                                 * +6 agent API tools: map, impact, contracts,
+                                 *   build, interface, deploy_guard
                                  * +1 net bootstrapstatus */
-#define EXPECTED_OPS        45  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        47  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -79,7 +79,7 @@
                                  * + zcl_operator_summary + zcl_agent
                                  *   (simple MCP status)
                                  * + zcl_refold_status
-                                 * +4 zcl_agent_* development tools */
+                                 * +6 zcl_agent_* development tools */
 #define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
@@ -404,7 +404,8 @@ static int test_specific_flagship_tools_registered(void)
         const char *k[] = {
             "zcl_agent", "zcl_status", "zcl_operator_summary",
             "zcl_agent_map", "zcl_agent_impact", "zcl_agent_contracts",
-            "zcl_agent_build",
+            "zcl_agent_build", "zcl_agent_interface",
+            "zcl_agent_deploy_guard",
             "zcl_milestone", "zcl_refold_status", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
             "zcl_peers", "zcl_networkinfo", "zcl_bootstrapstatus",
@@ -536,17 +537,26 @@ static int test_zcl_agent_dev_tools_shape(void)
             mcp_router_find("zcl_agent_contracts");
         const struct mcp_tool_route *build =
             mcp_router_find("zcl_agent_build");
+        const struct mcp_tool_route *interface =
+            mcp_router_find("zcl_agent_interface");
+        const struct mcp_tool_route *deploy_guard =
+            mcp_router_find("zcl_agent_deploy_guard");
         ASSERT(map != NULL);
         ASSERT(impact != NULL);
         ASSERT(contracts != NULL);
         ASSERT(build != NULL);
+        ASSERT(interface != NULL);
+        ASSERT(deploy_guard != NULL);
         ASSERT(strcmp(map->domain, "ops") == 0);
         ASSERT(strcmp(impact->domain, "ops") == 0);
         ASSERT(strcmp(contracts->domain, "ops") == 0);
         ASSERT(strcmp(build->domain, "ops") == 0);
+        ASSERT(strcmp(interface->domain, "ops") == 0);
+        ASSERT(strcmp(deploy_guard->domain, "ops") == 0);
         ASSERT(map->num_params == 0);
         ASSERT(contracts->num_params == 0);
         ASSERT(build->num_params == 0);
+        ASSERT(interface->num_params == 0);
         ASSERT(impact->num_params == 1);
         ASSERT(strcmp(impact->params[0].name, "files") == 0);
         ASSERT(impact->params[0].type == MCP_PARAM_ARRAY);
@@ -554,6 +564,12 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(impact->params[0].default_json != NULL);
         ASSERT(impact->self_test_args != NULL);
         ASSERT(contains(impact->description, "recommended focused tests"));
+        ASSERT(deploy_guard->num_params == 1);
+        ASSERT(strcmp(deploy_guard->params[0].name, "action") == 0);
+        ASSERT(deploy_guard->params[0].type == MCP_PARAM_STR);
+        ASSERT(deploy_guard->params[0].required == false);
+        ASSERT(deploy_guard->params[0].default_json != NULL);
+        ASSERT(contains(deploy_guard->description, "C-native"));
         PASS();
     } _test_next:;
     return failures;
@@ -971,6 +987,7 @@ static char *mock_operator_needed_rpc(const char *method,
 }
 
 static bool g_agent_impact_params_seen;
+static bool g_agent_deploy_guard_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1000,6 +1017,22 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"incremental_compile\":{\"header_depfiles\":true},"
                       "\"commands\":[{\"name\":\"compile_check\"}],"
                       "\"reproducible_release\":{\"command\":\"make ci-reproducible\"}}");
+    if (strcmp(method, "agentinterface") == 0)
+        return strdup("{\"schema\":\"zcl.agent_interface.v1\","
+                      "\"preferred_transport\":\"mcp\","
+                      "\"preferred_payload\":\"json\","
+                      "\"must_live_in_c\":[\"deploy/restart safety decisions\"],"
+                      "\"avoid\":[\"do not add new operator logic to tools/z\"]}");
+    if (strcmp(method, "agentdeployguard") == 0) {
+        g_agent_deploy_guard_params_seen =
+            params_json && contains(params_json, "canonical-deploy");
+        return strdup("{\"schema\":\"zcl.agent_deploy_guard.v1\","
+                      "\"allowed\":false,"
+                      "\"decision\":\"refuse\","
+                      "\"reason\":\"operator_confirmation_required\","
+                      "\"lane\":\"canonical\","
+                      "\"exit_code\":1}");
+    }
     (void)params_json;
     return strdup("null");
 }
@@ -1227,12 +1260,36 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         free(body);
 
         body = mcp_router_dispatch("zcl_agent_build", &args);
-        mcp_rpc_client_set_test_hook(NULL);
         ASSERT(body != NULL);
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_build.v1");
         ASSERT(json_get(&root, "reproducible_release") != NULL);
+        json_free(&root);
+        free(body);
+
+        body = mcp_router_dispatch("zcl_agent_interface", &args);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_interface.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "preferred_transport")),
+                      "mcp");
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        const char *guard_args = "{\"action\":\"canonical-deploy\"}";
+        ASSERT(json_read(&args, guard_args, strlen(guard_args)));
+        g_agent_deploy_guard_params_seen = false;
+        body = mcp_router_dispatch("zcl_agent_deploy_guard", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(g_agent_deploy_guard_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_deploy_guard.v1");
+        ASSERT(!json_get_bool(json_get(&root, "allowed")));
 
         json_free(&root);
         json_free(&args);
@@ -2125,7 +2182,7 @@ static int test_tools_list_json_well_formed(void)
     int failures = 0;
     TEST("controllers: mcp_router_tools_list_json produces parseable array") {
         register_all();
-        size_t cap = 131072;
+        size_t cap = 262144;
         char *buf = zcl_malloc(cap, "test_json_buf");
         ASSERT(buf != NULL);
         size_t wrote = mcp_router_tools_list_json(buf, cap);

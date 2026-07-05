@@ -1246,6 +1246,10 @@ int test_syncdiag_rpc(void)
                           "zcl_agent_contracts") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "build_tool")),
                           "zcl_agent_build") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "interface_tool")),
+                          "zcl_agent_interface") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "deploy_guard_tool")),
+                          "zcl_agent_deploy_guard") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
@@ -1263,6 +1267,12 @@ int test_syncdiag_rpc(void)
                           "zclassic23 agentcontracts") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "build_command")),
                           "zclassic23 agentbuild") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli,
+                                                "interface_command")),
+                          "zclassic23 agentinterface") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli,
+                                                "deploy_guard_command")),
+                          "zclassic23 agentdeployguard [action]") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "milestone_command")),
                           "zclassic23 milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "refold_command")),
@@ -1484,6 +1494,10 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_interface.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_deploy_guard.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.operator_lane.v1") != NULL;
         ok = ok &&
             find_object_with_str(schemas, "schema",
@@ -1516,9 +1530,75 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(repro, "portable_isa")),
                           "x86-64-v3") == 0;
 
+        struct json_value interface;
+        json_init(&interface);
+        ok = ok && rpc_table_execute(&tbl, "agentinterface",
+                                     &params, &interface);
+        const struct json_value *interface_transports =
+            json_get(&interface, "transports");
+        const struct json_value *must_live_in_c =
+            json_get(&interface, "must_live_in_c");
+        const struct json_value *avoid = json_get(&interface, "avoid");
+        ok = ok && interface.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&interface, "schema")),
+                          "zcl.agent_interface.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&interface,
+                                                "preferred_transport")),
+                          "mcp") == 0;
+        ok = ok && interface_transports &&
+            json_size(interface_transports) >= 3;
+        ok = ok && json_array_has_substr(must_live_in_c,
+                                         "deploy/restart safety decisions");
+        ok = ok && json_array_has_substr(avoid,
+                                         "do not require Python");
+
+        rpc_agent_set_boot_context("canonical", "full",
+                                   "/tmp/zcl-agent-canonical",
+                                   18232, 8033, 8443, 18033);
+        struct json_value guard;
+        json_init(&guard);
+        struct json_value guard_params;
+        json_init(&guard_params);
+        json_set_array(&guard_params);
+        struct json_value action;
+        json_init(&action);
+        json_set_str(&action, "canonical-deploy");
+        json_push_back(&guard_params, &action);
+        json_free(&action);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &guard_params, &guard);
+        ok = ok && guard.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&guard, "schema")),
+                          "zcl.agent_deploy_guard.v1") == 0;
+        ok = ok && !json_get_bool(json_get(&guard, "allowed"));
+        ok = ok && strcmp(json_get_str(json_get(&guard, "decision")),
+                          "refuse") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&guard, "reason")),
+                          "operator_confirmation_required") == 0;
+        ok = ok && json_get_int(json_get(&guard, "exit_code")) == 1;
+
+        struct json_value guard_object_params;
+        json_init(&guard_object_params);
+        json_set_object(&guard_object_params);
+        json_push_kv_str(&guard_object_params, "action",
+                         "canonical-restart");
+        struct json_value guard_object;
+        json_init(&guard_object);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &guard_object_params, &guard_object);
+        ok = ok && strcmp(json_get_str(json_get(&guard_object, "action")),
+                          "canonical-restart") == 0;
+        ok = ok && !json_get_bool(json_get(&guard_object, "allowed"));
+
         json_free(&params);
         json_free(&contracts);
         json_free(&build);
+        json_free(&interface);
+        json_free(&guard_params);
+        json_free(&guard);
+        json_free(&guard_object_params);
+        json_free(&guard_object);
+        rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

@@ -69,6 +69,7 @@ answer.
 
 | Call | Shows |
 |------|-------|
+| `zclassic23 agentinterface` | Preferred AI/operator interface contract. Same contract as MCP `zcl_agent_interface`: MCP first, native CLI JSON second, REST read-only, no Python or `tools/z` logic required. |
 | `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, and first native/MCP/REST calls. Start here when choosing an interface. |
 | `zcl_agent` | The simple first MCP check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `zcl_operator_summary` is the longer compatible alias. Start here when checking live state. |
 | `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone` and MCP `zcl_milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |

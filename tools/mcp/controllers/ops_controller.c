@@ -44,6 +44,7 @@ DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
 DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
 DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
 DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
+DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -877,6 +878,19 @@ static int h_zcl_agent_impact(const struct mcp_request *req,
     return mcp_return_rpc_body(res, body, "agentimpact", "mcp.ops");
 }
 
+static int h_zcl_agent_deploy_guard(const struct mcp_request *req,
+                                    struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p,
+        json_get_str_or(req->args, "action", "canonical-deploy"));
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("agentdeployguard", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, body, "agentdeployguard", "mcp.ops");
+}
+
 DEFINE_PT(h_zcl_mirror_status, "getmirrorstatus",       "mcp.ops")
 DEFINE_PT(h_zcl_filemanifest,  "getfilemanifeststatus", "mcp.ops")
 
@@ -1325,6 +1339,11 @@ static const struct mcp_param_spec p_agent_impact[] = {
     { "files", MCP_PARAM_ARRAY, false, "Changed repository file paths",
       0, 0, 0, 0, NULL, "[]" },
 };
+static const struct mcp_param_spec p_agent_deploy_guard[] = {
+    { "action", MCP_PARAM_STR, false,
+      "Action to evaluate: canonical-deploy, canonical-restart, deploy, or restart",
+      0, 0, 0, 64, NULL, "\"canonical-deploy\"" },
+};
 static const struct mcp_param_spec p_postmortem_list[] = {
     { "dir", MCP_PARAM_STR, false, "Capsule directory",
       0, 0, 0, 512, NULL, NULL },
@@ -1376,6 +1395,15 @@ static const struct mcp_tool_route k_routes[] = {
       "Fast C build contract: incremental object builds, cache knobs, "
       "focused tests, strict gates, and byte-identity reproducibility.",
       NULL, 0, h_zcl_agent_build, 0, NULL },
+    { "zcl_agent_interface", "ops",
+      "Preferred AI development interface: MCP vs native CLI vs REST, "
+      "versioned JSON rules, C ownership, and anti-patterns to avoid.",
+      NULL, 0, h_zcl_agent_interface, 0, NULL },
+    { "zcl_agent_deploy_guard", "ops",
+      "C-native deploy/restart guard decision based on "
+      "zcl.operator_deployment_safety.v1.",
+      p_agent_deploy_guard, PARAM_COUNT(p_agent_deploy_guard),
+      h_zcl_agent_deploy_guard, 0, "{\"action\":\"canonical-deploy\"}" },
     { "zcl_milestone", "ops",
       "Node-computed ASCII and JSON progress toward the next version "
       "milestone, including systems/goals/subgoals bars and MVP criteria.",
