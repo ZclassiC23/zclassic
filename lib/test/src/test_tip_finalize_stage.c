@@ -170,6 +170,28 @@ static bool seed_coins_applied_height(sqlite3 *db, int32_t height)
     return ok;
 }
 
+static bool stamp_proven_authority_tf(sqlite3 *db, int32_t applied_height)
+{
+    if (!seed_coins_applied_height(db, applied_height))
+        return false;
+    if (!exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
+            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');"))
+        return false;
+    uint8_t one = 1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, 1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* Seed a script_validate_log row (the reducer's authoritative script verdict)
  * with an explicit ok and block_hash, so the tip_finalize hash-guarded fallback
  * can be exercised: a matching hash + ok=1 heals a drifted block_index bit; a
@@ -840,6 +862,51 @@ int test_tip_finalize_stage(void)
                  log_tip_hash_at(progress_store_db(), 1, &logged) &&
                  uint256_eq(&logged, sc.blocks[2].phashBlock));
         tf_teardown(dir, &ms, &sc);
+    }
+
+    /* A snapshot/refold boot can already have a durable, coherent tip_finalize
+     * frontier before the first coordinator step. Public RPC must not serve the
+     * unpublished H* sentinel (0) while waiting for a later stage tick. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        reducer_frontier_test_set_compiled_anchor(0);
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "provable_tip_init");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 4);
+        for (int i = 0; ok_setup && i <= 3; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]);
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
+        ok_setup = ok_setup &&
+            seed_upstream_logs_tf(progress_store_db(), &sc, 3);
+        ok_setup = ok_setup &&
+            stamp_proven_authority_tf(progress_store_db(), 3);
+        ok_setup = ok_setup &&
+            seed_tip_anchor_tf(progress_store_db(), 2, &sc.hashes[2]);
+        ok_setup = ok_setup &&
+            seed_cursor_tf(progress_store_db(), "tip_finalize", 2);
+        reducer_frontier_provable_tip_reset();
+        TF_CHECK("provable_tip_init: setup", ok_setup);
+        TF_CHECK("provable_tip_init: cache starts unpublished",
+                 reducer_frontier_provable_tip_cached() == 0);
+        TF_CHECK("provable_tip_init: init warms from durable frontier",
+                 ok_setup && tip_finalize_stage_init(&ms));
+        TF_CHECK("provable_tip_init: durable H* published without step",
+                 reducer_frontier_provable_tip_cached() == 2);
+        TF_CHECK("provable_tip_init: cache mirrors compute_hstar",
+                 reducer_frontier_provable_tip_cached() ==
+                    compute_hstar_now(progress_store_db()));
+        tf_teardown(dir, &ms, &sc);
+        reducer_frontier_test_set_compiled_anchor(-1);
     }
 
     /* Phase 0.2 — the EXTERNAL provable-tip cache (H*) MIRRORS compute_hstar at

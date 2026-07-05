@@ -1090,6 +1090,21 @@ threshold, even if RPC/listeners are up. `soak_eligible=false` means the soak
 lane is alive but not currently earning clean MVP-C6 evidence. It is an
 observability/failsafe check, not an automatic failover mechanism.
 
+`make lane-recover LANE=dev` / `LANE=soak` is the bounded noncanonical recovery
+planner. It emits `zcl.lane_recovery_plan.v1`; with
+`ZCL_LANE_RECOVERY_APPLY=1` it may install the tracked dev/soak unit, copy the
+canonical seed snapshot into a noncanonical datadir, write the unit's optional
+`ZCL_LANE_SNAPSHOT_LOADER_FLAG` drop-in, and restart only that noncanonical
+service. It refuses `live`, `canonical`, and `main`; use it after
+`make lane-health` reports `restart_with_load_snapshot_at_own_height` or
+`install_tip_seed_snapshot` on dev/soak. When the selected snapshot is ahead of
+the lane's served height, the recovery plan runs the documented
+`--importblockindex $HOME/.zclassic` header import before restart; use
+`--import-headers` / `ZCL_LANE_RECOVERY_IMPORT_HEADERS=1` to force that step for
+a pre-RPC noncanonical lane whose log says the snapshot loader skipped because
+headers were not synced yet. The import is bounded by
+`ZCL_LANE_RECOVERY_IMPORT_TIMEOUT` (default 1200 seconds).
+
 The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and
 folding forward, so each restart is a ~13 min self-healing boot (cold `node.db`
 read + Sapling tree rebuild + fold); a plain boot serving the persisted

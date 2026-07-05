@@ -16,6 +16,7 @@
 #include "controllers/wallet_rescan_controller.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "models/block.h"
 #include "models/database.h"
 #include "rpc/server.h"
 #include "storage/coins_kv.h"
@@ -207,6 +208,36 @@ static bool rpc_safety_seed_coin_frontier(sqlite3 *db,
     return ok;
 }
 
+static bool rpc_safety_save_projected_block(struct node_db *ndb,
+                                            const struct block_index *bi)
+{
+    if (!ndb || !bi || !bi->phashBlock)
+        return false;
+
+    uint8_t solution[1] = {0x51};
+    struct db_block b;
+    memset(&b, 0, sizeof(b));
+    memcpy(b.hash, bi->phashBlock->data, sizeof(b.hash));
+    if (bi->pprev && bi->pprev->phashBlock)
+        memcpy(b.prev_hash, bi->pprev->phashBlock->data, sizeof(b.prev_hash));
+    b.height = bi->nHeight;
+    b.version = bi->nVersion;
+    memcpy(b.merkle_root, bi->hashMerkleRoot.data, sizeof(b.merkle_root));
+    if (memcmp(b.merkle_root, (uint8_t[32]){0}, sizeof(b.merkle_root)) == 0)
+        b.merkle_root[0] = 0x4d;
+    b.time = bi->nTime;
+    b.bits = bi->nBits;
+    memcpy(b.nonce, bi->nNonce.data, sizeof(b.nonce));
+    if (memcmp(b.nonce, (uint8_t[32]){0}, sizeof(b.nonce)) == 0)
+        b.nonce[0] = 0x4e;
+    b.solution = solution;
+    b.solution_len = sizeof(solution);
+    b.chain_work[0] = (uint8_t)(bi->nHeight + 1);
+    b.status = (int)bi->nStatus;
+    b.num_tx = (int)bi->nTx;
+    return db_block_save(ndb, &b);
+}
+
 int test_rpc_safety(void)
 {
     int failures = 0;
@@ -373,6 +404,82 @@ int test_rpc_safety(void)
         reducer_frontier_provable_tip_reset();
         rpc_health_set_state(NULL, NULL, NULL, NULL);
         rpc_blockchain_set_state(NULL, NULL, NULL);
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: getblockhash resolves sparse H* from node db... ");
+    {
+        test_reset_shared_globals();
+        ensure_rpc_warmup_finished_once();
+
+        struct main_state ms;
+        struct block_index *blocks[3] = {0};
+        struct node_db ndb;
+        bool ndb_open = false;
+        bool ok = rpc_safety_build_chain(&ms, blocks, 3);
+        if (ok)
+            ms.chain_active.chain[1] = NULL;
+        ok = ok && node_db_open(&ndb, ":memory:");
+        ndb_open = ok;
+        ok = ok && rpc_safety_save_projected_block(&ndb, blocks[1]);
+
+        rpc_blockchain_set_state(&ms, NULL, "/tmp");
+        rpc_blockchain_set_node_db(&ndb);
+        reducer_frontier_provable_tip_set(1);
+
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_blockchain_rpc_commands(&tbl);
+
+        char hstar_hex[65] = {0};
+        char active_hex[65] = {0};
+        if (blocks[1] && blocks[1]->phashBlock)
+            uint256_get_hex(blocks[1]->phashBlock, hstar_hex);
+        if (blocks[2] && blocks[2]->phashBlock)
+            uint256_get_hex(blocks[2]->phashBlock, active_hex);
+
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+
+        ok = ok && rpc_table_execute(&tbl, "getbestblockhash", &params,
+                                     &result);
+        ok = ok && result.type == JSON_STR &&
+             strcmp(json_get_str(&result), hstar_hex) == 0 &&
+             strcmp(json_get_str(&result), active_hex) != 0;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_int_param(&params, 1);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "getblockhash", &params,
+                                     &result) &&
+             result.type == JSON_STR &&
+             strcmp(json_get_str(&result), hstar_hex) == 0 &&
+             strcmp(json_get_str(&result), active_hex) != 0;
+        json_free(&result);
+        json_free(&params);
+
+        init_single_int_param(&params, 2);
+        json_init(&result);
+        ok = ok && !rpc_table_execute(&tbl, "getblockhash", &params,
+                                      &result);
+        ok = ok && result.type == JSON_STR &&
+             strstr(json_get_str(&result), "out of range") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+        rpc_blockchain_set_state(NULL, NULL, NULL);
+        rpc_blockchain_set_node_db(NULL);
+        reducer_frontier_provable_tip_reset();
+        if (ndb_open)
+            node_db_close(&ndb);
         main_state_free(&ms);
         test_reset_shared_globals();
 

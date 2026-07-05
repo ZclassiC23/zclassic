@@ -508,9 +508,10 @@ static void boot_step_finalize_chain_state(void)
     }
 }
 
-bool boot_promote_tip_via_csr(struct block_index *tip,
-                              const char *reason,
-                              bool persist_coins_best)
+static bool boot_promote_tip_via_csr_internal(struct block_index *tip,
+                                              const char *reason,
+                                              bool persist_coins_best,
+                                              bool update_header_tip)
 {
     if (!tip || !tip->phashBlock)
         return false;
@@ -528,7 +529,7 @@ bool boot_promote_tip_via_csr(struct block_index *tip,
         .new_tip = tip,
         .new_coins_best = *tip->phashBlock,
         .expected_utxo_count = 0,
-        .update_header_tip = true,
+        .update_header_tip = update_header_tip,
         .persist_coins_best = persist_coins_best,
         .rollback_auth = &rollback_auth,
         .wallet_scan_height = -1,
@@ -545,6 +546,23 @@ bool boot_promote_tip_via_csr(struct block_index *tip,
     }
 
     return true;
+}
+
+bool boot_promote_tip_via_csr(struct block_index *tip,
+                              const char *reason,
+                              bool persist_coins_best)
+{
+    return boot_promote_tip_via_csr_internal(
+        tip, reason, persist_coins_best, true);
+}
+
+bool boot_promote_tip_preserving_header_via_csr(
+    struct block_index *tip,
+    const char *reason,
+    bool persist_coins_best)
+{
+    return boot_promote_tip_via_csr_internal(
+        tip, reason, persist_coins_best, false);
 }
 
 static bool boot_promote_header_via_csr(struct block_index *header,

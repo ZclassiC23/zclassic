@@ -2247,26 +2247,32 @@ static int t_dev_lane_deploy_contract(void)
     char *script = NULL;
     char *guard = NULL;
     char *lane_health = NULL;
+    char *lane_recover = NULL;
     char *handoff = NULL;
     char *makefile = NULL;
     char *live_unit = NULL;
     char *soak_unit = NULL;
     char *dev_unit = NULL;
+    char *boot_index = NULL;
     TEST("dev lane deploy self-cleans stale reindex override") {
         char script_path[PATH_MAX];
         char guard_path[PATH_MAX];
         char lane_health_path[PATH_MAX];
+        char lane_recover_path[PATH_MAX];
         char handoff_path[PATH_MAX];
         char makefile_path[PATH_MAX];
         char live_unit_path[PATH_MAX];
         char soak_unit_path[PATH_MAX];
         char dev_unit_path[PATH_MAX];
+        char boot_index_path[PATH_MAX];
         ASSERT(repo_path(script_path, sizeof(script_path),
                          "tools/dev/deploy-dev-lane.sh") == 0);
         ASSERT(repo_path(guard_path, sizeof(guard_path),
                          "tools/deploy_guard.sh") == 0);
         ASSERT(repo_path(lane_health_path, sizeof(lane_health_path),
                          "tools/scripts/lane_health.sh") == 0);
+        ASSERT(repo_path(lane_recover_path, sizeof(lane_recover_path),
+                         "tools/scripts/lane_recover.sh") == 0);
         ASSERT(repo_path(handoff_path, sizeof(handoff_path),
                          "docs/HANDOFF.md") == 0);
         ASSERT(repo_path(makefile_path, sizeof(makefile_path),
@@ -2277,14 +2283,18 @@ static int t_dev_lane_deploy_contract(void)
                          "deploy/examples/zclassic23-soak-node.service") == 0);
         ASSERT(repo_path(dev_unit_path, sizeof(dev_unit_path),
                          "deploy/zcl23-dev.service") == 0);
+        ASSERT(repo_path(boot_index_path, sizeof(boot_index_path),
+                         "config/src/boot_index.c") == 0);
         ASSERT(read_entire_file(script_path, &script) == 0);
         ASSERT(read_entire_file(guard_path, &guard) == 0);
         ASSERT(read_entire_file(lane_health_path, &lane_health) == 0);
+        ASSERT(read_entire_file(lane_recover_path, &lane_recover) == 0);
         ASSERT(read_entire_file(handoff_path, &handoff) == 0);
         ASSERT(read_entire_file(makefile_path, &makefile) == 0);
         ASSERT(read_entire_file(live_unit_path, &live_unit) == 0);
         ASSERT(read_entire_file(soak_unit_path, &soak_unit) == 0);
         ASSERT(read_entire_file(dev_unit_path, &dev_unit) == 0);
+        ASSERT(read_entire_file(boot_index_path, &boot_index) == 0);
 
         ASSERT(strstr(script, "STALE_REINDEX_DROPIN=") != NULL);
         ASSERT(strstr(script, "zcl23-dev.service.d/reindex.conf") != NULL);
@@ -2294,6 +2304,8 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
         ASSERT(strstr(makefile,
                       "./tools/deploy_guard.sh canonical-deploy") != NULL);
+        ASSERT(strstr(makefile, "lane-recover:") != NULL);
+        ASSERT(strstr(makefile, "tools/scripts/lane_recover.sh") != NULL);
         ASSERT(strstr(guard, "ZCL_DEPLOY_ALLOW_CANONICAL") != NULL);
         ASSERT(strstr(guard, "zcl.agent_deploy_guard.v1") != NULL);
         ASSERT(strstr(guard, "agentdeployguard") != NULL);
@@ -2306,9 +2318,38 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(run_gate_script_with_env("tools/deploy_guard.sh",
                                         "ZCL_DEPLOY_GUARD_SELFTEST",
                                         "1") == 0);
+        ASSERT(strstr(lane_recover, "zcl.lane_recovery_plan.v1") != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_SELFTEST") != NULL);
+        ASSERT(strstr(lane_recover, "canonical/live/main recovery is not supported")
+               != NULL);
+        ASSERT(strstr(lane_recover, "copy_seed_install_loader_restart") != NULL);
+        ASSERT(strstr(lane_recover, "install_loader_dropin_restart") != NULL);
+        ASSERT(strstr(lane_recover, "import_headers_install_loader_restart")
+               != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_IMPORT_HEADERS")
+               != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_IMPORT_TIMEOUT")
+               != NULL);
+        ASSERT(strstr(lane_recover, "--importblockindex") != NULL);
+        ASSERT(strstr(lane_recover, "\"$bin\" --importblockindex \"$legacy\" \"$target_db\"")
+               != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);
+        ASSERT(strstr(lane_recover, "systemctl --user restart \"$unit\"")
+               != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_SEED_SOURCE") != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_LEGACY_SRC") != NULL);
+        ASSERT(strstr(lane_recover, "python") == NULL);
+        ASSERT(run_gate_script_with_env("tools/scripts/lane_recover.sh",
+                                        "ZCL_LANE_RECOVERY_SELFTEST",
+                                        "1") == 0);
         ASSERT(strstr(live_unit, "-operator-lane=canonical") != NULL);
         ASSERT(strstr(soak_unit, "-operator-lane=soak") != NULL);
         ASSERT(strstr(dev_unit, "-operator-lane=dev") != NULL);
+        ASSERT(strstr(soak_unit, "$ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);
+        ASSERT(strstr(dev_unit, "$ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);
+        ASSERT(strstr(boot_index,
+                      "boot_promote_tip_preserving_header_via_csr") != NULL);
+        ASSERT(strstr(boot_index, "\"utxo_chain_mismatch\"") != NULL);
         ASSERT(strstr(handoff, "Public daily-driver node") != NULL);
         ASSERT(strstr(handoff, "Fresh-build lane for frequent development restarts")
                != NULL);
@@ -2348,6 +2389,7 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(makefile, "lane-health:") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/lane_health.sh") != NULL);
         ASSERT(strstr(handoff, "make lane-health") != NULL);
+        ASSERT(strstr(handoff, "make lane-recover") != NULL);
         ASSERT(strstr(handoff, "read-only three-lane status check") != NULL);
         ASSERT(strstr(handoff, "lag from the live lane") != NULL);
         ASSERT(strstr(handoff, "memory pressure") != NULL);
@@ -2362,11 +2404,13 @@ static int t_dev_lane_deploy_contract(void)
     free(script);
     free(guard);
     free(lane_health);
+    free(lane_recover);
     free(handoff);
     free(makefile);
     free(live_unit);
     free(soak_unit);
     free(dev_unit);
+    free(boot_index);
     return failures;
 }
 
@@ -2426,6 +2470,12 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "app/controllers/src/api_controller*.c") != NULL);
         ASSERT(strstr(buf, "app/controllers/src/api_controller_internal.h")
                != NULL);
+        ASSERT(strstr(buf, "app/controllers/src/blockchain_controller*.c")
+               != NULL);
+        ASSERT(strstr(buf, "app/controllers/include/controllers/blockchain_controller.h")
+               != NULL);
+        ASSERT(strstr(buf, "lib/test/src/test_rpc_safety.c") != NULL);
+        ASSERT(strstr(buf, "rpc_safety") != NULL);
         ASSERT(strstr(buf, "app/models/src/peer.c") != NULL);
         ASSERT(strstr(buf, "lib/net/src/connman.c") != NULL);
         ASSERT(strstr(buf, "docs/AGENT_API.md") != NULL);
@@ -2435,7 +2485,41 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "lib/net/include/net/port_policy.h") != NULL);
         ASSERT(strstr(buf, "app/controllers/include/controllers/network_controller.h")
                != NULL);
+        ASSERT(strstr(buf, "app/jobs/src/tip_finalize_stage*.c") != NULL);
+        ASSERT(strstr(buf, "app/jobs/include/jobs/tip_finalize_stage.h")
+               != NULL);
+        ASSERT(strstr(buf, "app/jobs/include/jobs/reducer_frontier.h")
+               != NULL);
+        ASSERT(strstr(buf, "tip_finalize_stage") != NULL);
+        ASSERT(strstr(buf, "reducer_frontier") != NULL);
+        ASSERT(strstr(buf, "app/jobs/src/validate_headers_stage.c")
+               != NULL);
+        ASSERT(strstr(buf, "app/jobs/include/jobs/validate_headers_stage.h")
+               != NULL);
+        ASSERT(strstr(buf, "app/conditions/src/stale_validate_headers_repair.c")
+               != NULL);
+        ASSERT(strstr(buf, "lib/test/src/test_stale_validate_headers_repair_condition.c")
+               != NULL);
+        ASSERT(strstr(buf, "validate_headers_stage") != NULL);
+        ASSERT(strstr(buf, "stale_validate_headers_repair_condition")
+               != NULL);
+        ASSERT(strstr(buf, "app/conditions/src/chain_integrity_failed.c")
+               != NULL);
+        ASSERT(strstr(buf, "app/services/include/services/chain_restore_integrity.h")
+               != NULL);
+        ASSERT(strstr(buf, "lib/test/src/test_chain_integrity_failed_condition.c")
+               != NULL);
+        ASSERT(strstr(buf, "lib/test/src/test_service_state.c") != NULL);
+        ASSERT(strstr(buf, "chain_integrity_failed_condition") != NULL);
+        ASSERT(strstr(buf, "service_state") != NULL);
         ASSERT(strstr(buf, "config/src/boot_services.c") != NULL);
+        ASSERT(strstr(buf, "config/src/boot.c") != NULL);
+        ASSERT(strstr(buf, "config/src/boot_index.c") != NULL);
+        ASSERT(strstr(buf, "lib/test/src/test_load_verify_boot.c") != NULL);
+        ASSERT(strstr(buf, "config/include/config/boot_internal.h") != NULL);
+        ASSERT(strstr(buf, "boot_refold_window_extend") != NULL);
+        ASSERT(strstr(buf, "chain_state_repo") != NULL);
+        ASSERT(strstr(buf, "load_verify_boot") != NULL);
         ASSERT(strstr(buf, "config/src/app_context.c") != NULL);
         ASSERT(strstr(buf, "config/include/config/boot.h") != NULL);
         ASSERT(strstr(buf, "app_context") != NULL);
@@ -2454,7 +2538,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, ".healthy == true") != NULL);
         ASSERT(strstr(buf, "healthcheck") != NULL);
         ASSERT(strstr(buf, ".checks.has_peers == true") != NULL);
-        ASSERT(strstr(buf, "tools/z topology --json") != NULL);
+        ASSERT(strstr(buf, "tools/z topology --json") == NULL);
+        ASSERT(strstr(buf, "native service binary") != NULL);
+        ASSERT(strstr(buf, "run make build-only or set ZCL_FAST_LIVE=0")
+               != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE") != NULL);
@@ -2487,11 +2574,12 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, ".cache/zcl-agent-fast-ci") != NULL);
         ASSERT(strstr(buf, "fast result cache hit") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 agent") != NULL);
+        ASSERT(strstr(buf, "There is no `tools/z` fallback") != NULL);
         ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(buf, "MCP tools") != NULL);
         ASSERT(strstr(buf, "`tools/z`") != NULL);
-        ASSERT(strstr(buf, "deprecated shell compatibility") != NULL);
+        ASSERT(strstr(buf, "not an agent interface") != NULL);
         ASSERT(strstr(buf, "origin/main..HEAD") != NULL);
         ASSERT(strstr(buf, "cached focused fast-ci") != NULL);
         ASSERT(strstr(buf, "live node condition remains") != NULL);

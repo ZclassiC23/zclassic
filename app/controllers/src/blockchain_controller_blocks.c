@@ -19,12 +19,14 @@
 #include "core/uint256.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
+#include "models/block.h"
 #include "primitives/block.h"
 #include "util/log_macros.h"
 #include "validation/main_state.h"
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 static struct block_index *rpc_provable_tip(struct blockchain_context *ctx,
@@ -45,6 +47,33 @@ static bool rpc_block_within_provable_range(const struct block_index *bi,
     if (out_hstar)
         *out_hstar = hstar;
     return bi && bi->nHeight >= 0 && bi->nHeight <= hstar;
+}
+
+static bool rpc_provable_hash_by_height(struct blockchain_context *ctx,
+                                        int height, char out_hex[65])
+{
+    if (!ctx || !ctx->main_state || !out_hex)
+        return false;
+
+    struct block_index *bi = active_chain_at(&ctx->main_state->chain_active,
+                                             height);
+    if (bi && bi->phashBlock) {
+        uint256_get_hex(bi->phashBlock, out_hex);
+        return true;
+    }
+
+    if (ctx->node_db && ctx->node_db->open) {
+        struct db_block b;
+        memset(&b, 0, sizeof(b));
+        if (db_block_find_by_height(ctx->node_db, height, &b)) {
+            struct uint256 hash;
+            memcpy(hash.data, b.hash, sizeof(hash.data));
+            uint256_get_hex(&hash, out_hex);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool rpc_getblockcount(const struct json_value *params, bool help,
@@ -78,16 +107,14 @@ bool rpc_getbestblockhash(const struct json_value *params, bool help,
     }
     /* Match getblockcount/getblockchaininfo: the public "best block" is H*,
      * not the active sync-window tip that can run ahead mid-fold. */
-    int32_t hstar = -1;
-    struct block_index *tip = rpc_provable_tip(ctx, &hstar);
-    if (!tip || !tip->phashBlock) {
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    char hex[65];
+    if (hstar < 0 || !rpc_provable_hash_by_height(ctx, hstar, hex)) {
         json_set_str(result, "No provable tip");
         LOG_FAIL("blockchain",
                  "getbestblockhash: provable tip hstar=%d unresolved",
                  hstar);
     }
-    char hex[65];
-    uint256_get_hex(tip->phashBlock, hex);
     json_set_str(result, hex);
     return true;
 }
@@ -180,13 +207,13 @@ bool rpc_getblockhash(const struct json_value *params, bool help,
                  "getblockhash: height %d outside provable range hstar=%d",
                  height, hstar);
     }
-    struct block_index *bi = active_chain_at(&ctx->main_state->chain_active, height);
-    if (!bi || !bi->phashBlock) {
-        json_set_str(result, "Block height out of range");
-        LOG_FAIL("blockchain", "getblockhash: height %d out of range", height);
-    }
     char hex[65];
-    uint256_get_hex(bi->phashBlock, hex);
+    if (!rpc_provable_hash_by_height(ctx, height, hex)) {
+        json_set_str(result, "Block height out of range");
+        LOG_FAIL("blockchain",
+                 "getblockhash: height %d unresolved in active chain/node db",
+                 height);
+    }
     json_set_str(result, hex);
     return true;
 }

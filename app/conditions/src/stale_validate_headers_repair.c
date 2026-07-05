@@ -158,11 +158,13 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
             int added = 0;
             struct zcl_result r = header_probe_pull_range(target, 128, &added);
             if (!r.ok) {
+                cure_request_peer_refetch(target);
                 LOG_WARN("condition",
                          "[condition:stale_validate_headers_repair] "
-                         "header probe failed h=%d code=%d msg=%s",
+                         "header probe failed h=%d code=%d msg=%s — "
+                         "requested P2P re-fetch, deferring",
                          target, r.code, r.message);
-                return COND_REMEDY_FAILED;
+                return COND_REMEDY_SKIP;
             }
             LOG_WARN("condition",
                      "[condition:stale_validate_headers_repair] "

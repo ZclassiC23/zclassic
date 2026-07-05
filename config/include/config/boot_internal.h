@@ -81,6 +81,10 @@ bool boot_backfill_zslp(struct node_db *ndb);
 bool boot_promote_tip_via_csr(struct block_index *tip,
                               const char *reason,
                               bool persist_coins_best);
+bool boot_promote_tip_preserving_header_via_csr(
+    struct block_index *tip,
+    const char *reason,
+    bool persist_coins_best);
 
 /* The legacy coins/tip consistency safety check (post-restore): promote a
  * durable UTXO anchor when the coins cursor proves a higher snapshot, and

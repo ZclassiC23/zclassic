@@ -399,6 +399,37 @@ int test_stale_validate_headers_repair_condition(void)
         struct main_state ms;
         struct block_index blocks[2];
         struct uint256 hashes[2];
+        bool ok = setup_condition_case("solutionless_probe_fail_refetch",
+                                       dir, sizeof(dir),
+                                       &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+        blocks[1].nStatus |= BLOCK_HAVE_DATA;
+        ok = ok && seed_cursors(db, 5, 5);
+        stale_validate_headers_repair_test_set_hstar_override(0);
+        ok = ok && seed_poison_rows(
+            db, 1, "'no-header-solution-backfill-required'", 0);
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "stale_validate_headers_repair", &snap);
+
+        ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
+        ok = ok && got && snap.last_outcome == COND_REMEDY_SKIP;
+        ok = ok && (blocks[1].nStatus & BLOCK_HAVE_DATA) == 0;
+        ok = ok && condition_engine_get_active_count() == 1;
+        SVHR_CHECK("header-probe failure falls back to P2P refetch instead "
+                   "of failed remedy",
+                   ok);
+        teardown_condition_case(dir, &ms);
+    }
+
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[2];
+        struct uint256 hashes[2];
         bool ok = setup_condition_case("solutionless_with_header", dir,
                                        sizeof(dir),
                                        &ms, blocks, hashes);

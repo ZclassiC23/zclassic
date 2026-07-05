@@ -168,7 +168,7 @@ vendor-force:
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
-.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev lane-health check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev lane-health lane-recover check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
@@ -1721,6 +1721,9 @@ deploy-dev:
 
 lane-health:
 	@./tools/scripts/lane_health.sh
+
+lane-recover:
+	@./tools/scripts/lane_recover.sh $(LANE)
 
 background-fuzz:
 	@./tools/scripts/background_quality_lane.sh fuzz

@@ -22,12 +22,20 @@
 #include "test/test_helpers.h"
 
 #include "config/boot.h"
+#include "chain/chain.h"
 #include "models/database.h"
+#include "models/block.h"
+#include "jobs/reducer_frontier.h"
+#include "services/seed_integrity_gate.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"
+#include "core/uint256.h"
 #include "crypto/sha3.h"
+#include "util/safe_alloc.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <dirent.h>
 #include <sqlite3.h>
@@ -191,6 +199,156 @@ static bool lv_has_quarantined_progress_store(const char *dir)
     }
     closedir(d);
     return found;
+}
+
+static void lv_hash_for_height(int height, uint8_t out[32])
+{
+    memset(out, 0, 32);
+    out[0] = 0xa5;
+    out[1] = (uint8_t)(height & 0xff);
+    out[2] = (uint8_t)((height >> 8) & 0xff);
+    out[3] = (uint8_t)((height >> 16) & 0xff);
+    out[4] = (uint8_t)((height >> 24) & 0xff);
+}
+
+static bool lv_save_block_row(struct node_db *ndb,
+                              const struct block_index *bi)
+{
+    if (!ndb || !bi || !bi->phashBlock)
+        return false;
+    struct db_block row;
+    memset(&row, 0, sizeof(row));
+    memcpy(row.hash, bi->phashBlock->data, 32);
+    row.height = bi->nHeight;
+    if (bi->pprev && bi->pprev->phashBlock)
+        memcpy(row.prev_hash, bi->pprev->phashBlock->data, 32);
+    row.version = 4;
+    row.merkle_root[0] = 0x11;
+    row.time = 1700000000u + (uint32_t)bi->nHeight;
+    row.bits = 0x1f0fffffu;
+    row.nonce[0] = 0x22;
+    uint8_t solution[1] = {0};
+    row.solution = solution;
+    row.solution_len = sizeof(solution);
+    row.chain_work[0] = (uint8_t)(bi->nHeight & 0xff);
+    row.status = BLOCK_VALID_CHAIN;
+    row.file_num = 0;
+    row.data_pos = bi->nHeight + 1;
+    row.undo_pos = bi->nHeight + 2;
+    row.num_tx = 1;
+    row.sapling_root[0] = 0x33;
+    row.sprout_root[0] = 0x44;
+    return db_block_save(ndb, &row);
+}
+
+static bool lv_ensure_reducer_log_tables(sqlite3 *db)
+{
+    if (!db)
+        return false;
+    char *err = NULL;
+    bool ok = sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "height INTEGER PRIMARY KEY, hash BLOB, ok INTEGER, fail_reason TEXT);"
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "height INTEGER PRIMARY KEY, hash BLOB, ok INTEGER, fail_reason TEXT);"
+        "CREATE TABLE IF NOT EXISTS body_persist_log ("
+        "height INTEGER PRIMARY KEY, ok INTEGER, fail_reason TEXT);"
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+        "height INTEGER PRIMARY KEY, ok INTEGER, fail_reason TEXT);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+        "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER,"
+        "spent_count INTEGER, added_count INTEGER, total_value_delta INTEGER,"
+        "applied_at INTEGER);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER,"
+        "work_delta BLOB, utxo_size_after INTEGER, finalized_at INTEGER,"
+        "tip_hash BLOB);",
+        NULL, NULL, &err) == SQLITE_OK;
+    if (err)
+        sqlite3_free(err);
+    return ok;
+}
+
+static bool lv_seed_active_chain(struct main_state *ms,
+                                 struct node_db *ndb,
+                                 int tip_h,
+                                 struct block_index **owned_blocks)
+{
+    if (!ms || !ndb || tip_h < 0 || !owned_blocks)
+        return false;
+    *owned_blocks = NULL;
+    struct block_index *blocks =
+        zcl_calloc((size_t)tip_h + 1u, sizeof(struct block_index),
+                   "lv_active_chain_blocks");
+    if (!blocks)
+        return false;
+    for (int h = 0; h <= tip_h; h++) {
+        block_index_init(&blocks[h]);
+        blocks[h].nHeight = h;
+        lv_hash_for_height(h, blocks[h].hashBlock.data);
+        blocks[h].phashBlock = &blocks[h].hashBlock;
+        blocks[h].nTime = 1700000000u + (uint32_t)h;
+        blocks[h].nBits = 0x1f0fffffu;
+        blocks[h].nStatus = BLOCK_VALID_CHAIN | BLOCK_HAVE_DATA;
+        if (h > 0)
+            blocks[h].pprev = &blocks[h - 1];
+        if (!lv_save_block_row(ndb, &blocks[h])) {
+            free(blocks);
+            return false;
+        }
+    }
+    if (!active_chain_move_window_tip(&ms->chain_active, &blocks[tip_h])) {
+        free(blocks);
+        return false;
+    }
+    ms->pindex_best_header = &blocks[tip_h];
+    *owned_blocks = blocks;
+    return true;
+}
+
+static int32_t lv_compute_hstar(sqlite3 *db)
+{
+    int32_t hstar = -1;
+    int32_t served = -1;
+    progress_store_tx_lock();
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    progress_store_tx_unlock();
+    return ok ? hstar : -1;
+}
+
+static bool lv_force_stage_cursor(sqlite3 *db, const char *name, int cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (!db || !name)
+        return false;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES(?,?,0) ON CONFLICT(name) DO UPDATE SET "
+            "cursor=excluded.cursor, updated_at=excluded.updated_at",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, cursor);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+static int lv_stage_cursor(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    int out = -1;
+    if (!db || !name)
+        return out;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return out;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW)
+        out = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return out;
 }
 
 /* File-scope seed callback (mirrors config/src/boot_refold_staged.c
@@ -381,6 +539,66 @@ int test_load_verify_boot(void)
                  pdb && coins_kv_count(pdb) == (int64_t)ok_snap.count &&
                  coins_kv_get_applied_height(pdb, &applied, &found) &&
                  found && applied == 1235);
+    }
+
+    /* (f) RESUME-FAST repair: if the persisted coins_kv authority has already
+     * advanced beyond the snapshot seed, the explicit loader must not merely
+     * skip re-seeding. It also has to seed the trusted reducer base at the
+     * applied coins frontier, or H* falls back to the old checkpoint/log hole
+     * and the public API reports a stale height after boot. */
+    {
+        LV_CHECK("(f) rewrite matching snapshot for resume repair",
+                 lv_write(snap_path, &ok_snap));
+
+        pdb = progress_store_db();
+        char *terr = NULL;
+        bool ok = pdb &&
+            sqlite3_exec(pdb, "BEGIN IMMEDIATE", NULL, NULL, &terr) == SQLITE_OK;
+        uint8_t one = 1;
+        ok = ok &&
+             progress_meta_set_in_tx(pdb, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                     &one, 1) &&
+             coins_kv_set_applied_height_in_tx(pdb, 1240) &&
+             sqlite3_exec(pdb, "COMMIT", NULL, NULL, &terr) == SQLITE_OK;
+        if (!ok && pdb)
+            sqlite3_exec(pdb, "ROLLBACK", NULL, NULL, NULL);
+        if (terr)
+            sqlite3_free(terr);
+        LV_CHECK("(f) setup proven coins authority above snapshot seed", ok);
+        LV_CHECK("(f) reducer log schemas exist",
+                 pdb && lv_ensure_reducer_log_tables(pdb));
+        LV_CHECK("(f) stale high header cursor fixture",
+                 pdb && lv_force_stage_cursor(pdb, "validate_headers", 1250));
+        LV_CHECK("(f) H* starts at checkpoint before resume repair",
+                 pdb && lv_compute_hstar(pdb) == 1234);
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *owned_blocks = NULL;
+        ok = lv_seed_active_chain(&ms, &ndb, 1239, &owned_blocks);
+        LV_CHECK("(f) active chain fixture reaches applied frontier", ok);
+
+        seed_integrity_gate_reset_for_testing();
+        seed_integrity_gate_set_node_db_for_testing(&ndb);
+        if (ok)
+            boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, &ms);
+        seed_integrity_gate_reset_for_testing();
+
+        int32_t hstar_after = pdb ? lv_compute_hstar(pdb) : -1;
+        int32_t applied = -1;
+        bool found = false;
+        LV_CHECK("(f) resume repair raises H* to proven coins frontier",
+                 hstar_after == 1239);
+        LV_CHECK("(f) resume repair rewinds high header cursor to boundary",
+                 pdb && lv_stage_cursor(pdb, "validate_headers") == 1240);
+        LV_CHECK("(f) resume repair stamps tip_finalize to served boundary",
+                 pdb && lv_stage_cursor(pdb, "tip_finalize") == 1239);
+        LV_CHECK("(f) resume repair preserves applied frontier",
+                 pdb && coins_kv_get_applied_height(pdb, &applied, &found) &&
+                 found && applied == 1240);
+
+        main_state_free(&ms);
+        free(owned_blocks);
     }
 
     /* Teardown. */

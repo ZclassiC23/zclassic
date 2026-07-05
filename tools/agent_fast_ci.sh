@@ -194,9 +194,39 @@ select_test_groups() {
                 add_group "syncdiag_rpc"
                 matched=1
                 ;;
+            app/jobs/src/tip_finalize_stage*.c|app/jobs/include/jobs/tip_finalize_stage.h|app/jobs/src/reducer_frontier*.c|app/jobs/include/jobs/reducer_frontier.h|lib/test/src/test_tip_finalize_stage.c|lib/test/src/test_reducer_frontier.c)
+                add_group "tip_finalize_stage"
+                add_group "reducer_frontier"
+                add_group "make_lint_gates"
+                matched=1
+                ;;
+            app/jobs/src/validate_headers_stage.c|app/jobs/src/validate_headers_validator.c|app/jobs/src/validate_headers_report.c|app/jobs/src/validate_headers_internal.h|app/jobs/include/jobs/validate_headers_stage.h|lib/test/src/test_validate_headers_stage.c)
+                add_group "validate_headers_stage"
+                add_group "make_lint_gates"
+                matched=1
+                ;;
+            app/conditions/src/stale_validate_headers_repair.c|lib/test/src/test_stale_validate_headers_repair_condition.c)
+                add_group "stale_validate_headers_repair_condition"
+                add_group "validate_headers_stage"
+                add_group "make_lint_gates"
+                matched=1
+                ;;
+            app/conditions/src/chain_integrity_failed.c|app/services/include/services/chain_restore_integrity.h|lib/test/src/test_chain_integrity_failed_condition.c|lib/test/src/test_service_state.c)
+                add_group "chain_integrity_failed_condition"
+                add_group "service_state"
+                add_group "make_lint_gates"
+                matched=1
+                ;;
             config/src/boot_services.c)
                 add_group "make_lint_gates"
                 add_group "syncdiag_rpc"
+                matched=1
+                ;;
+            config/src/boot.c|config/src/boot_index.c|config/src/boot_refold*.c|config/include/config/boot_internal.h|lib/test/src/test_load_verify_boot.c)
+                add_group "boot_refold_window_extend"
+                add_group "chain_state_repo"
+                add_group "load_verify_boot"
+                add_group "make_lint_gates"
                 matched=1
                 ;;
             config/src/app_context.c|config/include/config/boot.h|lib/test/src/test_app_context.c)
@@ -210,6 +240,11 @@ select_test_groups() {
                 ;;
             app/controllers/src/api_controller*.c|app/controllers/src/api_controller_internal.h|lib/test/src/test_api.c)
                 add_group "api"
+                matched=1
+                ;;
+            app/controllers/src/blockchain_controller*.c|app/controllers/include/controllers/blockchain_controller.h|lib/test/src/test_rpc_safety.c)
+                add_group "rpc_safety"
+                add_group "make_lint_gates"
                 matched=1
                 ;;
             app/controllers/src/agent_controller.c|app/controllers/src/agent_interface_controller.c|app/controllers/src/agent_runtime_controller.c|app/controllers/include/controllers/agent_controller.h|app/controllers/src/event_controller.c)
@@ -479,28 +514,10 @@ run_native_service_probe() {
     validate_health_json "$health"
 }
 
-run_tools_z_fallback_probe() {
-    local json
-    [ -x ./tools/z ] || return 1
-    log "fallback live topology probe via tools/z topology --json"
-    json="$(./tools/z topology --json)"
-    if command -v jq >/dev/null 2>&1; then
-        printf '%s\n' "$json" |
-            jq -e '.schema == "zcl.operator_topology.v1" and .ok == true' >/dev/null
-    else
-        printf '%s\n' "$json" |
-            grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.operator_topology.v1"'
-        printf '%s\n' "$json" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'
-    fi
-}
-
 run_live_probe() {
-    if [ -x "$NODE_BIN" ]; then
-        run_native_service_probe
-        return
-    fi
-    log "native service binary $NODE_BIN unavailable; trying shell fallback"
-    run_tools_z_fallback_probe
+    [ -x "$NODE_BIN" ] ||
+        fail "native service binary $NODE_BIN unavailable; run make build-only or set ZCL_FAST_LIVE=0"
+    run_native_service_probe
 }
 
 maybe_live_probe() {

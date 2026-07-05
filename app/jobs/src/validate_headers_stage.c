@@ -70,6 +70,9 @@ static _Atomic uint64_t g_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_failure_recheck_cursor = 0;
+static _Atomic int64_t  g_last_recheck_frontier = -1;
+static _Atomic int64_t  g_last_recheck_start = -1;
+static _Atomic int64_t  g_last_recheck_selected = 0;
 
 /* Infra-db fault ladder (R5). A momentary sqlite glitch (busy/locked/transient
  * IO) must NOT be a dead JOB_FATAL: a transient fault holds the cursor and
@@ -218,16 +221,19 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
 
     /* Anchor the scan at the live pipeline frontier so stale reindex-artifact
      * ok=0 rows (cold-imported solutionless headers far below the tip) can
-     * never pin the in-process floor and starve the bounded (LIMIT
-     * VH_BATCH_SIZE) batch before it reaches the real frontier — the live
-     * tip-wedge. The frontier is the LOWER of two durable cursors: tip_finalize
-     * (= finalized_tip+1) and body_fetch (which JOB_BLOCKs on a live
-     * solutionless ok=0 row, so its cursor is the height that must not be
-     * skipped even if a torn WAL restart leaves the finalized seed above it).
-     * Taking the lower can only widen the scan toward an earlier live row,
-     * never skip one; being persisted, it is independent of the never-persisted
-     * floor's boot value (converges identically after kill-9). Verdict-
-     * preserving: only narrows WHICH heights reach the unchanged validator. */
+     * never pin the bounded (LIMIT VH_BATCH_SIZE) batch before it reaches the
+     * real frontier — the live tip-wedge. The frontier is the LOWER of two
+     * durable cursors: tip_finalize (= finalized_tip+1) and body_fetch (which
+     * JOB_BLOCKs on a live solutionless ok=0 row, so its cursor is the height
+     * that must not be skipped even if a torn WAL restart leaves the finalized
+     * seed above it).
+     *
+     * The durable executable frontier is authoritative in BOTH directions.
+     * Raising a low in-process floor excludes ancient rows; lowering a stale
+     * high in-process floor re-arms a frontier row that was stranded after the
+     * floor advanced past it before the repair header landed. Verdict-
+     * preserving: this only controls WHICH heights reach the unchanged
+     * PoW+Equihash validator. */
     {
         uint64_t fin_cursor = 0;
         uint64_t bf_cursor = 0;
@@ -242,9 +248,12 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         int64_t frontier = fin_cur;
         if (bf_cur > 0 && (frontier <= 0 || bf_cur < frontier))
             frontier = bf_cur;
-        if (frontier > start)
+        atomic_store(&g_last_recheck_frontier, frontier);
+        if (frontier > 0)
             start = frontier;
     }
+    atomic_store(&g_last_recheck_start, start);
+    atomic_store(&g_last_recheck_selected, 0);
 
     if ((uint64_t)start >= validated_cursor)
         return JOB_IDLE;
@@ -303,6 +312,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         LOG_ERR("validate_headers", "failed-row recheck query failed");
         return vh_db_fault(rc, (int)last_seen, "recheck query step");
     }
+    atomic_store(&g_last_recheck_selected, n);
     sqlite3_finalize(stmt);
     progress_store_tx_unlock();
 
@@ -637,6 +647,9 @@ void validate_headers_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_failure_recheck_cursor, (int64_t)0);
+    atomic_store(&g_last_recheck_frontier, (int64_t)-1);
+    atomic_store(&g_last_recheck_start, (int64_t)-1);
+    atomic_store(&g_last_recheck_selected, (int64_t)0);
     stage_db_fault_clear(&g_vh_db_fault);
     pthread_mutex_unlock(&g_lock);
 }
@@ -710,6 +723,12 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_blocked_unix));
     json_push_kv_int (out, "failure_recheck_cursor",
                       atomic_load(&g_failure_recheck_cursor));
+    json_push_kv_int (out, "last_recheck_frontier",
+                      atomic_load(&g_last_recheck_frontier));
+    json_push_kv_int (out, "last_recheck_start",
+                      atomic_load(&g_last_recheck_start));
+    json_push_kv_int (out, "last_recheck_selected",
+                      atomic_load(&g_last_recheck_selected));
     struct validate_headers_failure_summary failures;
     validate_headers_failure_summary_load(&failures);
     json_push_kv_int(out, "failure_log_count", failures.count);

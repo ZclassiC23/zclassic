@@ -1531,6 +1531,56 @@ int test_validate_headers_stage(void)
 
         vh_teardown(dir, &ms, &sc);
     }
+
+    /* ── stale high recheck floor: live frontier wins downward too ───────
+     * Regression for the soak-lane wedge at 3169601: the in-process
+     * failure_recheck_cursor had advanced to the validate_headers cursor while
+     * body_fetch/tip_finalize were still pinned at the live frontier. Once a
+     * repairable ok=0 row appeared at that frontier, the recheck used to keep
+     * start=validated_cursor and never looked back. The durable executable
+     * frontier must lower that stale in-memory floor as well as raise ancient
+     * floors. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        VH_CHECK("stale-high-floor: setup",
+                 vh_setup("stale_high_floor", 6, stub_pass, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+
+        VH_CHECK("stale-high-floor: set validate cursor",
+                 set_stage_cursor(db, "validate_headers", 6));
+        VH_CHECK("stale-high-floor: set header_admit cursor",
+                 set_stage_cursor(db, "header_admit", 6));
+        VH_CHECK("stale-high-floor: set tip_finalize frontier",
+                 set_stage_cursor(db, "tip_finalize", 4));
+        VH_CHECK("stale-high-floor: set body_fetch frontier",
+                 set_stage_cursor(db, "body_fetch", 4));
+
+        validate_headers_stage_shutdown();
+        header_admit_stage_shutdown();
+        progress_store_close();
+        VH_CHECK("stale-high-floor: reopen", progress_store_open(dir));
+        VH_CHECK("stale-high-floor: re-init admit",
+                 header_admit_stage_init(&ms));
+        VH_CHECK("stale-high-floor: re-init validate",
+                 validate_headers_stage_init(&ms));
+        validate_headers_stage_set_validator(stub_pass, NULL);
+        db = progress_store_db();
+
+        VH_CHECK("stale-high-floor: empty recheck advances memory floor",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+        VH_CHECK("stale-high-floor: seed stranded frontier row",
+                 seed_failed_vh_row(db, 4, sc.blocks[4].phashBlock,
+                                    "no-header-solution-backfill-required"));
+
+        VH_CHECK("stale-high-floor: lowered floor reaches stranded row",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
+        int ok = -1;
+        VH_CHECK("stale-high-floor: frontier h=4 now ok=1",
+                 log_row_at(db, 4, &ok, NULL, 0) && ok == 1);
+
+        vh_teardown(dir, &ms, &sc);
+    }
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;
 }

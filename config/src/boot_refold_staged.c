@@ -682,6 +682,149 @@ static bool snapshot_headers_equal(const struct uss_header *a,
            memcmp(a->sha3_hash, b->sha3_hash, 32) == 0;
 }
 
+static bool boot_load_snapshot_resume_seed_from_authority(
+    const struct uss_header *hdr,
+    sqlite3 *rpdb,
+    struct main_state *ms,
+    int32_t applied)
+{
+    if (!hdr || !rpdb || applied <= 0)
+        return false;
+
+    int32_t seed_h = (int32_t)hdr->height;
+    int32_t authority_h = applied - 1;
+    if (authority_h < seed_h)
+        return false;
+
+    int32_t hstar = 0;
+    int32_t served = 0;
+    progress_store_tx_lock();
+    bool hstar_ok = reducer_frontier_compute_hstar(rpdb, &hstar, &served);
+    progress_store_tx_unlock();
+    if (!hstar_ok) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair skipped "
+                 "because H* read failed (applied=%d seed_h=%d)",
+                 applied, seed_h);
+        return false;
+    }
+    if (hstar >= authority_h)
+        return true;
+
+    if (!ms) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair needed "
+                 "H*=%d authority_h=%d but main_state is unavailable",
+                 hstar, authority_h);
+        return false;
+    }
+
+    struct block_index *anchor =
+        active_chain_at(&ms->chain_active, authority_h);
+    if ((!anchor || anchor->nHeight != authority_h) &&
+        ms->pindex_best_header &&
+        ms->pindex_best_header->nHeight >= authority_h) {
+        anchor = block_index_get_ancestor(ms->pindex_best_header,
+                                          authority_h);
+    }
+    if (!anchor || anchor->nHeight != authority_h || !anchor->phashBlock) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair skipped "
+                 "because authority block h=%d is not resolved (H*=%d seed_h=%d)",
+                 authority_h, hstar, seed_h);
+        return false;
+    }
+
+    if (!tip_finalize_stage_seed_anchor(authority_h,
+                                        anchor->phashBlock->data,
+                                        true)) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair seed "
+                 "failed h=%d H*=%d seed_h=%d",
+                 authority_h, hstar, seed_h);
+        return false;
+    }
+
+    char *cerr = NULL;
+    bool cursor_ok = true;
+    progress_store_tx_lock();
+    if (sqlite3_exec(rpdb, "BEGIN IMMEDIATE", NULL, NULL, &cerr)
+        != SQLITE_OK) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair cursor "
+                 "BEGIN failed h=%d: %s",
+                 authority_h, cerr ? cerr : "(no msg)");
+        cursor_ok = false;
+    }
+    if (cursor_ok) {
+        static const char *const k_upstream_stages[] = {
+            "header_admit", "validate_headers", "body_fetch", "body_persist",
+            "script_validate", "proof_validate", "utxo_apply",
+        };
+        int next_h = authority_h + 1;
+        for (size_t i = 0;
+             cursor_ok &&
+             i < sizeof(k_upstream_stages) / sizeof(k_upstream_stages[0]);
+             i++) {
+            if (!stage_repair_force_stage_cursor(rpdb, k_upstream_stages[i],
+                                                 next_h)) {
+                LOG_WARN("boot",
+                         "[boot] -load-snapshot-at-own-height: resume repair "
+                         "cursor stamp failed stage=%s h=%d",
+                         k_upstream_stages[i], next_h);
+                cursor_ok = false;
+            }
+        }
+    }
+    if (cursor_ok &&
+        !stage_repair_force_stage_cursor(rpdb, "tip_finalize",
+                                         authority_h)) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair cursor "
+                 "stamp failed stage=tip_finalize h=%d", authority_h);
+        cursor_ok = false;
+    }
+    if (cursor_ok &&
+        sqlite3_exec(rpdb, "COMMIT", NULL, NULL, &cerr) != SQLITE_OK) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair cursor "
+                 "COMMIT failed h=%d: %s",
+                 authority_h, cerr ? cerr : "(no msg)");
+        cursor_ok = false;
+    }
+    if (!cursor_ok)
+        sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
+    if (cerr)
+        sqlite3_free(cerr);
+    progress_store_tx_unlock();
+    if (!cursor_ok)
+        return false;
+
+    int32_t after = 0;
+    int32_t after_served = 0;
+    progress_store_tx_lock();
+    bool after_ok =
+        reducer_frontier_compute_hstar(rpdb, &after, &after_served);
+    progress_store_tx_unlock();
+    if (!after_ok || after < authority_h) {
+        LOG_WARN("boot",
+                 "[boot] -load-snapshot-at-own-height: resume repair incomplete "
+                 "H*=%d want=%d before=%d seed_h=%d",
+                 after_ok ? after : -1, authority_h, hstar, seed_h);
+        return false;
+    }
+
+    LOG_INFO("boot",
+             "[boot] -load-snapshot-at-own-height: resume repair seeded "
+             "trusted reducer base h=%d (H* %d -> %d, snapshot seed h=%d)",
+             authority_h, hstar, after, seed_h);
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "load_snapshot_at_own_height resume_repair h=%d hstar_before=%d "
+                "hstar_after=%d seed_h=%d",
+                authority_h, hstar, after, seed_h);
+    return true;
+}
+
 static bool quarantine_progress_file(const char *datadir, const char *suffix,
                                      int64_t stamp, unsigned seq,
                                      bool *moved_any)
@@ -934,15 +1077,20 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                 applied >= peek_seed_h + 1;
             uss_close(peek);
             if (resume) {
+                bool repaired = boot_load_snapshot_resume_seed_from_authority(
+                    &peek_hdr, progress_store_db(), ms, applied);
                 LOG_INFO("boot",
                          "[boot] -load-snapshot-at-own-height: coins_kv is the "
                          "proven authority at h=%d (>= snapshot seed h=%d) — "
                          "RESUMING from the persisted coin set; skipping the "
-                         "re-seed + ~%d-block re-fold.",
-                         applied - 1, peek_seed_h, applied - 1 - peek_seed_h);
+                         "re-seed + ~%d-block re-fold (stage_resume_repair=%s).",
+                         applied - 1, peek_seed_h, applied - 1 - peek_seed_h,
+                         repaired ? "ok_or_unneeded" : "not_applied");
                 event_emitf(EV_RECOVERY_ACTION, 0,
                             "load_snapshot_at_own_height resume_skip applied=%d "
-                            "seed_h=%d", applied, peek_seed_h);
+                            "seed_h=%d stage_resume_repair=%s", applied,
+                            peek_seed_h,
+                            repaired ? "ok_or_unneeded" : "not_applied");
                 return;
             }
         }

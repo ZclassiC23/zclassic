@@ -41,15 +41,15 @@ static void *g_utxo_counter_user = NULL;
 /* Recompute H* (the deepest provably-consistent height) from the durable
  * progress.kv state and publish it into the external provable-tip cache.
  *
- * Called at exactly two chokepoints — the finalize ADVANCE (step_finalize,
- * once per finalized block) and the reorg REWIND
- * (rewind_cursor_if_active_chain_reorged, once per detected reorg) — both of
- * which already hold progress_store_tx_lock() (acquired by
- * tip_finalize_stage_step_once). reducer_frontier_compute_hstar is PURE
- * SELECT-only and REQUIRES the caller hold that lock, so this must never run
- * off those two paths. Cost is one O(cursor-anchor) fold per RARE event, never
- * per RPC. On a read error it leaves the cache unchanged (logs, does not crash)
- * — a stale-but-bounded H* is strictly better than serving -1 or a wrong tip.
+ * Called at the finalize ADVANCE (step_finalize, once per finalized block),
+ * the reorg REWIND (rewind_cursor_if_active_chain_reorged, once per detected
+ * reorg), and the one-time boot warm after init resolves a durable tip. All
+ * callers hold progress_store_tx_lock(). reducer_frontier_compute_hstar is
+ * PURE SELECT-only and REQUIRES the caller hold that lock, so this must never
+ * run without that lock. Cost is one O(cursor-anchor) fold per RARE event,
+ * never per RPC. On a read error it leaves the cache unchanged (logs, does not
+ * crash) — a stale-but-bounded H* is strictly better than serving -1 or a wrong
+ * tip.
  *
  * CALLER MUST hold progress_store_tx_lock(). */
 static void tf_refresh_provable_tip(sqlite3 *db)
@@ -64,6 +64,23 @@ static void tf_refresh_provable_tip(sqlite3 *db)
         return;
     }
     reducer_frontier_provable_tip_set(hs);
+}
+
+static void tf_warm_provable_tip_once(sqlite3 *db, const char *reason)
+{
+    if (!db || reducer_frontier_provable_tip_is_published())
+        return;
+    progress_store_tx_lock();
+    if (!reducer_frontier_provable_tip_is_published()) {
+        tf_refresh_provable_tip(db);
+        if (reducer_frontier_provable_tip_is_published()) {
+            LOG_INFO("tip_finalize",
+                     "[tip_finalize] provable-tip cache warmed h=%d reason=%s",
+                     reducer_frontier_provable_tip_cached(),
+                     reason ? reason : "");
+        }
+    }
+    progress_store_tx_unlock();
 }
 
 /* Cross-TU seam for tip_finalize_anchor.c (tip_finalize_anchor_internal.h):
@@ -655,6 +672,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
         }
         tip_finalize_stage_publish_resolved_or_fresh_tip(
             db, existing_tip, "init_existing_tip_reanchor");
+        tf_warm_provable_tip_once(db, "init_existing_tip_reanchor");
         chain_evidence_note_finalized_tip(existing_tip);
         pthread_mutex_unlock(&g_lock);
         return true;
@@ -695,6 +713,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
     }
     tip_finalize_stage_publish_resolved_or_fresh_tip(
         db, existing_tip, "init_existing_tip");
+    tf_warm_provable_tip_once(db, "init_existing_tip");
     chain_evidence_note_finalized_tip(existing_tip);
     pthread_mutex_unlock(&g_lock);
 

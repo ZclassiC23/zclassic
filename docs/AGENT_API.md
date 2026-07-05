@@ -88,6 +88,20 @@ lane is refused by default; set `ZCL_DEPLOY_ALLOW_CANONICAL=1` only for a
 deliberate canonical restart window. Development builds should normally use
 `make deploy-dev`.
 
+`make lane-health` is the read-only redundancy check for the canonical, soak,
+and dev lanes. `make lane-recover LANE=dev` or `LANE=soak` plans a bounded
+noncanonical repair as `zcl.lane_recovery_plan.v1`; add
+`ZCL_LANE_RECOVERY_APPLY=1` only when it is acceptable to restart that
+noncanonical unit. The recovery tool refuses `live`, `canonical`, and `main`,
+never writes the canonical datadir, and uses the optional
+`ZCL_LANE_SNAPSHOT_LOADER_FLAG` systemd hook in the dev/soak units instead of
+rewriting long command lines. If the snapshot is ahead of the lane's served
+height, the plan imports headers first with the documented
+`--importblockindex $HOME/.zclassic` step; `--import-headers` /
+`ZCL_LANE_RECOVERY_IMPORT_HEADERS=1` forces that step for a loader-equipped
+noncanonical lane that is still pre-RPC. The import is bounded by
+`ZCL_LANE_RECOVERY_IMPORT_TIMEOUT` (default 1200 seconds).
+
 ## Bootstrap Service Status
 
 Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a

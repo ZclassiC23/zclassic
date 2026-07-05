@@ -645,7 +645,7 @@ void boot_index_verify_coins_tip_consistency(struct main_state *ms,
             printf("[boot] UTXO/chain mismatch: coins at h=%d, "
                    "chain tip at h=%d — correcting\n",
                    coins_bi->nHeight, chain_h);
-            if (boot_promote_tip_via_csr(
+            if (boot_promote_tip_preserving_header_via_csr(
                     coins_bi, "utxo_chain_mismatch", false)) {
                 printf("[boot] Chain tip corrected to h=%d\n",
                        coins_bi->nHeight);

@@ -86,7 +86,9 @@ and focused tests; it still refreshes the live service probe unless
 check uses the C binary first (`build/bin/zclassic23 agent` +
 `build/bin/zclassic23 healthcheck`) against the linger service; override the
 binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
-`ZCL_FAST_LIVE=0` for isolated/offline work. Unmapped C/header/source-tree
+`ZCL_FAST_LIVE=0` for isolated/offline work. There is no `tools/z` fallback in
+the agent fast path; if the native binary JSON interface is unavailable, rebuild
+the binary or skip the live probe explicitly. Unmapped C/header/source-tree
 changes fail closed until you either add a focused-test mapping or pass
 `ZCL_FAST_TESTS=...`.
 
@@ -102,8 +104,8 @@ Canonical operator APIs, in priority order:
    `zcl_agent`, `zcl_status`, `zcl_state`, `zcl_node_log`,
    `zcl_sql`) — typed agent interface over the same node RPC truth.
 3. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
-4. `tools/z` — deprecated shell compatibility/fallback for terminals and
-   scripts. Keep it working; do not add new operator logic there.
+4. `tools/z` — deprecated shell compatibility for older terminals and scripts,
+   not an agent interface. Keep it working; do not add new operator logic there.
 
 `make fast-ci` is the normal AI/operator edit gate. Before pushing `main`, the
 tracked pre-push hook computes the exact `origin/main..HEAD` changed-file set,

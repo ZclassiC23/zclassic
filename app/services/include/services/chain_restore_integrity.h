@@ -65,8 +65,8 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
  *   RECONCILABLE  — active_chain window holes only (no zero-nbits, no
  *                   height/pprev mismatch). Normal coins-application
  *                   lag: headers/bodies are ahead of the applied tip.
- *                   NEVER fatal — the node serves DEGRADED and the
- *                   condition engine reconciles it forward.
+ *                   NEVER fatal — the node serves DEGRADED while the
+ *                   normal reducer/frontier path reconciles it forward.
  *   UNRECOVERABLE — zero nbits in the tip window, or active_chain
  *                   height/pprev mismatches. True structural
  *                   corruption: stays fatal (LOUD) unless -allow-degraded.

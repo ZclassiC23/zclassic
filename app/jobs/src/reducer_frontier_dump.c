@@ -232,6 +232,32 @@ static const char *blocker_row_sql(const struct dump_log *log)
     return NULL;
 }
 
+static bool trusted_base_height_for_dump(sqlite3 *db, int32_t *out,
+                                         bool *found)
+{
+    *out = -1;
+    *found = false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    bool present = false;
+    if (!progress_meta_get(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                           blob, sizeof(blob), &n, &present))
+        return false;
+    if (!present)
+        return true;
+    if (n != sizeof(blob)) {
+        LOG_WARN("reducer",
+                 "dump trusted_base blob malformed (len=%zu)", n);
+        return false;
+    }
+    int64_t v = 0;
+    for (int i = 7; i >= 0; i--)
+        v = (v << 8) | blob[i];
+    *out = (int32_t)v;
+    *found = true;
+    return true;
+}
+
 static bool blocker_row_at(sqlite3 *db,
                            const struct dump_log *log,
                            int32_t height,
@@ -433,6 +459,25 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "served_gap",
                      served_floor > hstar ? (int64_t)served_floor - hstar : 0);
     json_push_kv_bool(out, "served_above_hstar", served_floor > hstar);
+
+    int32_t trusted_base_height = -1;
+    bool trusted_base_found = false;
+    bool trusted_base_ok =
+        trusted_base_height_for_dump(db, &trusted_base_height,
+                                     &trusted_base_found);
+    json_push_kv_bool(out, "trusted_base_read_ok", trusted_base_ok);
+    json_push_kv_bool(out, "trusted_base_found",
+                      trusted_base_ok && trusted_base_found);
+    json_push_kv_int(out, "trusted_base_height",
+                     (trusted_base_ok && trusted_base_found)
+                         ? trusted_base_height
+                         : -1);
+    json_push_kv_bool(out, "trusted_base_above_hstar",
+                      trusted_base_ok && trusted_base_found &&
+                      trusted_base_height > hstar);
+    json_push_kv_bool(out, "trusted_base_accepted",
+                      trusted_base_ok && trusted_base_found &&
+                      trusted_base_height <= hstar);
 
     int32_t coins_applied = -1;
     bool coins_found = false;

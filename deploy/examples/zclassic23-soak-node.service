@@ -45,6 +45,7 @@ ExecStart=%h/.local/bin/zclassic23-soak \
     -addnode=162.55.92.62 \
     -addnode=157.90.223.151 \
     -addnode=85.239.232.93 \
+    $ZCL_LANE_SNAPSHOT_LOADER_FLAG \
     -showmetrics=0
 
 Restart=always

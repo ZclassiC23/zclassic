@@ -93,9 +93,10 @@ bool reducer_frontier_provable_tip_is_published(void);
  * already clamps to the finality floor), so this never re-clamps and faithfully
  * mirrors a reorg-LOWERED H*. Called under progress_store_tx_lock at three
  * sites (all in tip_finalize_stage.c): the finalize advance, the reorg-rewind
- * (rewind_cursor_if_active_chain_reorged), and a one-time boot warm in
- * tip_finalize_stage_step_once (gated on is_published) so a node that comes up
- * already at tip serves the true H* without waiting for the next advance.
+ * (rewind_cursor_if_active_chain_reorged), and a one-time boot warm during
+ * tip_finalize_stage_init / step_once (gated on is_published) so a node that
+ * comes up already at tip serves the true H* without waiting for the next
+ * advance.
  * Cross-thread-safe (atomic store); the getter is the matching atomic load. */
 void reducer_frontier_provable_tip_set(int32_t hstar);
 
