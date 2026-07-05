@@ -91,6 +91,8 @@ void bsp_source_to_json(const struct cac_source_status *s,
     json_push_kv_int(out, "score_health", s->score_health);
     json_push_kv_int(out, "score_height", s->score_height);
     json_push_kv_int(out, "score_authorized", s->score_authorized);
+    json_push_kv_int(out, "score_redundancy_bonus",
+                     s->score_redundancy_bonus);
     json_push_kv_int(out, "score_target_lag_penalty",
                      s->score_target_lag_penalty);
     json_push_kv_int(out, "score_failure_penalty",
@@ -204,6 +206,8 @@ void bsp_decision_to_json(const struct cac_decision *d,
                          s->score_height);
         json_push_kv_int(out, "selected_source_score_authorized",
                          s->score_authorized);
+        json_push_kv_int(out, "selected_source_score_redundancy_bonus",
+                         s->score_redundancy_bonus);
         json_push_kv_int(out, "selected_source_score_target_lag_penalty",
                          s->score_target_lag_penalty);
         json_push_kv_int(out, "selected_source_score_failure_penalty",

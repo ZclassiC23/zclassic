@@ -163,6 +163,19 @@ static bool api_test_contract_has_id_param(const struct json_value *contract,
     return false;
 }
 
+static bool api_test_array_has_str(const struct json_value *arr,
+                                   const char *needle)
+{
+    if (!arr || !needle)
+        return false;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const char *value = json_get_str(json_at(arr, i));
+        if (value && strcmp(value, needle) == 0)
+            return true;
+    }
+    return false;
+}
+
 static const struct json_value *api_test_openapi_get(
     const struct json_value *root,
     const char *path)
@@ -1467,6 +1480,40 @@ int test_api(void)
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: agentimpact maps block source policy to focused gates... ");
+    {
+        const char *params_json =
+            "[\"app/services/src/block_source_policy.c\","
+            "\"app/services/include/services/block_source_policy.h\"]";
+        struct json_value params, result;
+        json_init(&params);
+        json_init(&result);
+        bool ok = json_read(&params, params_json, strlen(params_json));
+        ok = ok && rpc_agent_impact(&params, false, &result);
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_impact.v1") == 0;
+        ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
+        ok = ok && json_get_int(json_get(&result,
+                                         "relevant_test_groups_count")) == 3;
+        const struct json_value *groups =
+            json_get(&result, "relevant_test_groups");
+        ok = ok && api_test_array_has_str(groups,
+                                          "chain_advance_coordinator");
+        ok = ok && api_test_array_has_str(groups, "mcp_controllers");
+        ok = ok && api_test_array_has_str(groups, "make_lint_gates");
+        const struct json_value *commands =
+            json_get(&result, "recommended_commands");
+        ok = ok && api_test_array_has_str(
+            commands, "make t ONLY=chain_advance_coordinator");
+        ok = ok && api_test_array_has_str(commands,
+                                          "make t ONLY=mcp_controllers");
+        json_free(&params);
+        json_free(&result);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

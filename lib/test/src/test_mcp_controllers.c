@@ -770,6 +770,7 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"selected_source_score_health\":20,"
                       "\"selected_source_score_height\":10,"
                       "\"selected_source_score_authorized\":0,"
+                      "\"selected_source_score_redundancy_bonus\":0,"
                       "\"selected_source_score_target_lag_penalty\":0,"
                       "\"selected_source_score_failure_penalty\":0,"
                       "\"selected_source_score_mirror_gate_penalty\":0,"
@@ -784,6 +785,7 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"selected_source_score_health\":20,"
                       "\"selected_source_score_height\":10,"
                       "\"selected_source_score_authorized\":0,"
+                      "\"selected_source_score_redundancy_bonus\":0,"
                       "\"selected_source_score_target_lag_penalty\":0,"
                       "\"selected_source_score_failure_penalty\":0,"
                       "\"selected_source_score_mirror_gate_penalty\":0,"
@@ -795,6 +797,7 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"selectable\":true,"
                       "\"selection_blocker\":\"\","
                       "\"score_base\":100,"
+                      "\"score_redundancy_bonus\":0,"
                       "\"score_target_lag_penalty\":0,"
                       "\"score_failure_penalty\":0,"
                       "\"reason\":\"healthy=3 connecting=0 groups=3 backoff=0/0 tcp_fail=0 proto_fail=0\","
@@ -806,6 +809,7 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"selectable\":true,"
                       "\"selection_blocker\":\"\","
                       "\"score_base\":100,"
+                      "\"score_redundancy_bonus\":0,"
                       "\"score_target_lag_penalty\":0,"
                       "\"score_failure_penalty\":0,"
                       "\"healthy_peers\":3}]}}");
@@ -1517,6 +1521,9 @@ static int test_zcl_status_includes_chain_advance_dump(void)
                                      "selected_source_score_authorized")) == 0);
         ASSERT(json_get_int(json_get(
                    chain_advance,
+                   "selected_source_score_redundancy_bonus")) == 0);
+        ASSERT(json_get_int(json_get(
+                   chain_advance,
                    "selected_source_score_target_lag_penalty")) == 0);
         ASSERT(json_get_int(json_get(
                    chain_advance,
@@ -1543,6 +1550,8 @@ static int test_zcl_status_includes_chain_advance_dump(void)
                                      "selected_source_score_height")) == 10);
         ASSERT(json_get_int(json_get(
                    last, "selected_source_score_authorized")) == 0);
+        ASSERT(json_get_int(json_get(
+                   last, "selected_source_score_redundancy_bonus")) == 0);
         ASSERT(json_get_int(json_get(
                    last, "selected_source_score_target_lag_penalty")) == 0);
         ASSERT(json_get_int(json_get(

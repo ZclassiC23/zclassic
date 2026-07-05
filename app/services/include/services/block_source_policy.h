@@ -49,6 +49,7 @@ struct cac_source_status {
     int score_health;
     int score_height;
     int score_authorized;
+    int score_redundancy_bonus;
     int score_target_lag_penalty;
     int score_failure_penalty;
     int score_mirror_gate_penalty;

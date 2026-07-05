@@ -120,6 +120,25 @@ static int failure_penalty(const struct cac_source_status *s)
     return (int)penalty;
 }
 
+static int redundancy_bonus(const struct cac_plan_input *in,
+                            const struct cac_source_status *s)
+{
+    if (!in || !s || s->source != CAC_SOURCE_ZCLASSICD_MIRROR)
+        return 0;
+    if (!mirror_fallback_allowed(in))
+        return 0;
+    if (in->mirror_lag_sla_breach_blocks <= 0)
+        return 0;
+    if (s->lag < in->mirror_lag_sla_breach_blocks)
+        return 0;
+    if (in->target_height <= in->local_height)
+        return 0;
+    if (s->height < in->target_height)
+        return 0;
+
+    return 30;
+}
+
 static void score_source(const struct cac_plan_input *in,
                          struct cac_source_status *s)
 {
@@ -138,6 +157,7 @@ static void score_source(const struct cac_plan_input *in,
     s->score_health = s->healthy ? 20 : -35;
     s->score_height = bounded_height_bonus(in->local_height, s->height);
     s->score_authorized = s->authorized ? 5 : 0;
+    s->score_redundancy_bonus = redundancy_bonus(in, s);
     s->score_target_lag_penalty = target_lag_penalty(in, s);
     s->score_failure_penalty = failure_penalty(s);
     s->score_mirror_gate_penalty =
@@ -147,7 +167,8 @@ static void score_source(const struct cac_plan_input *in,
     s->score = s->score_base +
                s->score_health +
                s->score_height +
-               s->score_authorized -
+               s->score_authorized +
+               s->score_redundancy_bonus -
                s->score_target_lag_penalty -
                s->score_failure_penalty -
                s->score_mirror_gate_penalty;

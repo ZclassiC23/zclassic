@@ -202,6 +202,39 @@ static int test_cac_lag_slo_overrides_local_gate(void)
     return failures;
 }
 
+static int test_cac_lag_slo_mirror_outranks_near_target_p2p(void)
+{
+    int failures = 0;
+    TEST_CASE("chain_advance_coordinator: lag SLO mirror outranks near-target P2P")
+    {
+        struct cac_plan_input in = base_input();
+        struct cac_decision out;
+        in.local_height = 3170742;
+        in.best_header_height = 3170879;
+        in.target_height = 3170900;
+        in.mirror_lag_sla_breach_blocks = 10;
+        init_source(&in, CAC_SOURCE_P2P, true, true, 3170898);
+        in.sources[CAC_SOURCE_P2P].timeouts = 4;
+        init_source(&in, CAC_SOURCE_ZCLASSICD_MIRROR,
+                    true, true, 3170900);
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].authorized = true;
+        in.sources[CAC_SOURCE_ZCLASSICD_MIRROR].lag = 158;
+
+        block_source_policy_plan(&in, &out);
+        ASSERT(out.mirror_fallback_allowed);
+        ASSERT(out.result == CAC_DECISION_USE_SOURCE);
+        ASSERT(out.selected_source == CAC_SOURCE_ZCLASSICD_MIRROR);
+        ASSERT(out.sources[CAC_SOURCE_P2P].selectable);
+        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].selectable);
+        ASSERT(out.sources[CAC_SOURCE_P2P].score == 81);
+        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].
+               score_redundancy_bonus == 30);
+        ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].score >
+               out.sources[CAC_SOURCE_P2P].score);
+    } TEST_END
+    return failures;
+}
+
 /* Negative case: when lag is BELOW the breach threshold and local
  * recovery is in progress, the original gate still applies — the mirror
  * stays advisory until either retries exhaust or lag crosses breach. */
@@ -582,6 +615,7 @@ static int test_cac_dump_json_contract(void)
         ASSERT(json_get(p2p, "score_health") != NULL);
         ASSERT(json_get(p2p, "score_height") != NULL);
         ASSERT(json_get(p2p, "score_authorized") != NULL);
+        ASSERT(json_get(p2p, "score_redundancy_bonus") != NULL);
         ASSERT(json_get(p2p, "score_target_lag_penalty") != NULL);
         ASSERT(json_get(p2p, "score_failure_penalty") != NULL);
         ASSERT(json_get(p2p, "score_mirror_gate_penalty") != NULL);
@@ -1662,6 +1696,7 @@ static int test_cac_restores_last_decision_from_node_state(void)
         const struct json_value *source_selectable;
         const struct json_value *source_selection_blocker;
         const struct json_value *source_score_base;
+        const struct json_value *source_score_redundancy_bonus;
         const struct json_value *source_score_target_lag_penalty;
         const struct json_value *source_score_failure_penalty;
         const struct json_value *source_healthy;
@@ -1698,6 +1733,8 @@ static int test_cac_restores_last_decision_from_node_state(void)
         source_selection_blocker =
             json_get(last, "selected_source_selection_blocker");
         source_score_base = json_get(last, "selected_source_score_base");
+        source_score_redundancy_bonus =
+            json_get(last, "selected_source_score_redundancy_bonus");
         source_score_target_lag_penalty =
             json_get(last, "selected_source_score_target_lag_penalty");
         source_score_failure_penalty =
@@ -1717,6 +1754,7 @@ static int test_cac_restores_last_decision_from_node_state(void)
         ASSERT(source_selectable != NULL);
         ASSERT(source_selection_blocker != NULL);
         ASSERT(source_score_base != NULL);
+        ASSERT(source_score_redundancy_bonus != NULL);
         ASSERT(source_score_target_lag_penalty != NULL);
         ASSERT(source_score_failure_penalty != NULL);
         ASSERT(source_healthy != NULL);
@@ -1738,6 +1776,7 @@ static int test_cac_restores_last_decision_from_node_state(void)
         ASSERT(json_get_bool(source_selectable));
         ASSERT_STR_EQ(json_get_str(source_selection_blocker), "");
         ASSERT(json_get_int(source_score_base) == 85);
+        ASSERT(json_get_int(source_score_redundancy_bonus) == 0);
         ASSERT(json_get_int(source_score_target_lag_penalty) == 25);
         ASSERT(json_get_int(source_score_failure_penalty) == 0);
         ASSERT(json_get_bool(source_healthy));
@@ -1876,6 +1915,7 @@ int test_chain_advance_coordinator(void)
     failures += test_cac_gates_mirror_during_local_retries();
     failures += test_cac_allows_bounded_mirror_after_retries();
     failures += test_cac_lag_slo_overrides_local_gate();
+    failures += test_cac_lag_slo_mirror_outranks_near_target_p2p();
     failures += test_cac_below_breach_still_gates_mirror();
     failures += test_cac_peer_floor_helper_classifies_recovery();
     failures += test_cac_peer_floor_helper_accepts_healthy_p2p();
