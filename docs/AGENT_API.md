@@ -135,7 +135,10 @@ window, and dev defaults to `deploy_dev_lane`.
 
 The same public status contract includes `resources`
 (`zcl.node_resources.v1`) with cheap process-level RSS, RSS warning threshold,
-memory pressure (`ok`, `warn`, or `unknown`), uptime, and source. This is the
+Linux cgroup memory usage/limits when available, memory pressure (`ok`, `warn`,
+or `unknown`), pressure basis, uptime, and source. Cgroup/systemd pressure is
+preferred over raw RSS because canonical can have a large steady RSS while
+still running comfortably below its service memory guardrails. This is the
 first-call place to notice a lane that is still serving but approaching memory
 pressure, before reaching for shell-only systemd probes.
 

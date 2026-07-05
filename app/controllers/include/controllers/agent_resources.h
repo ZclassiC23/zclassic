@@ -12,6 +12,13 @@ struct agent_resource_snapshot {
     int64_t rss_mb;
     int64_t rss_warn_threshold_mb;
     bool rss_warning;
+    bool cgroup_memory_available;
+    int64_t cgroup_memory_current_mb;
+    int64_t cgroup_memory_high_mb;
+    int64_t cgroup_memory_max_mb;
+    int64_t cgroup_memory_high_pct;
+    int64_t cgroup_memory_max_pct;
+    bool cgroup_memory_warning;
     int64_t uptime_seconds;
 };
 

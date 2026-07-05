@@ -1384,7 +1384,13 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(resources, "rss_mb") != NULL;
         ok = ok && json_get(resources, "rss_warn_threshold_mb") != NULL;
         ok = ok && json_get(resources, "rss_warning") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_available") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_current_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_high_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_max_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_warning") != NULL;
         ok = ok && json_get(resources, "memory_pressure") != NULL;
+        ok = ok && json_get(resources, "pressure_basis") != NULL;
         ok = ok && json_get(resources, "uptime_seconds") != NULL;
         const struct json_value *download = json_get(&result, "download");
         ok = ok && download && download->type == JSON_OBJ;
@@ -2063,6 +2069,13 @@ int test_syncdiag_rpc(void)
             .rss_mb = 5000,
             .rss_warn_threshold_mb = 4096,
             .rss_warning = true,
+            .cgroup_memory_available = false,
+            .cgroup_memory_current_mb = -1,
+            .cgroup_memory_high_mb = -1,
+            .cgroup_memory_max_mb = -1,
+            .cgroup_memory_high_pct = -1,
+            .cgroup_memory_max_pct = -1,
+            .cgroup_memory_warning = false,
             .uptime_seconds = 123,
         };
         struct json_value resources_body;
@@ -2078,6 +2091,57 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(fixed, "schema_version")) == 1;
         ok = ok && json_get_int(json_get(fixed, "rss_mb")) == 5000;
         ok = ok && json_get_bool(json_get(fixed, "rss_warning"));
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure")),
+                          "warn") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "pressure_basis")),
+                          "rss") == 0;
+        json_free(&resources_body);
+
+        struct agent_resource_snapshot cgroup_resources = {
+            .rss_mb = 9000,
+            .rss_warn_threshold_mb = 4096,
+            .rss_warning = true,
+            .cgroup_memory_available = true,
+            .cgroup_memory_current_mb = 9000,
+            .cgroup_memory_high_mb = 12000,
+            .cgroup_memory_max_mb = 16000,
+            .cgroup_memory_high_pct = 75,
+            .cgroup_memory_max_pct = 56,
+            .cgroup_memory_warning = false,
+            .uptime_seconds = 456,
+        };
+        json_init(&resources_body);
+        json_set_object(&resources_body);
+        agent_push_resources_json(&resources_body, "resources",
+                                  &cgroup_resources);
+        fixed = json_get(&resources_body, "resources");
+        ok = ok && fixed && fixed->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(fixed,
+                                          "cgroup_memory_available"));
+        ok = ok && json_get_int(json_get(fixed,
+                                         "cgroup_memory_current_mb")) == 9000;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure")),
+                          "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "pressure_basis")),
+                          "cgroup_high") == 0;
+        json_free(&resources_body);
+
+        cgroup_resources.cgroup_memory_current_mb = 12100;
+        cgroup_resources.cgroup_memory_high_pct = 100;
+        cgroup_resources.cgroup_memory_max_pct = 75;
+        cgroup_resources.cgroup_memory_warning = true;
+        json_init(&resources_body);
+        json_set_object(&resources_body);
+        agent_push_resources_json(&resources_body, "resources",
+                                  &cgroup_resources);
+        fixed = json_get(&resources_body, "resources");
+        ok = ok && fixed && fixed->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(fixed,
+                                          "cgroup_memory_warning"));
         ok = ok && strcmp(json_get_str(json_get(fixed,
                                                 "memory_pressure")),
                           "warn") == 0;

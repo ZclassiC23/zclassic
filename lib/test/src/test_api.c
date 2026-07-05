@@ -1429,7 +1429,12 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(resources, "schema")),
                           "zcl.node_resources.v1") == 0;
         ok = ok && json_get(resources, "rss_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_available") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_current_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_high_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_max_mb") != NULL;
         ok = ok && json_get(resources, "memory_pressure") != NULL;
+        ok = ok && json_get(resources, "pressure_basis") != NULL;
         ok = ok && json_get(resources, "uptime_seconds") != NULL;
         const struct json_value *lane =
             json_get(&root, "operator_lane");
