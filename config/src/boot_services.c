@@ -138,6 +138,7 @@
 #include "services/ibd_throttle.h"
 #include "services/sync_monitor.h"
 #include "net/download.h"
+#include "net/msgprocessor.h"
 #include "services/db_maintenance.h"
 #include "mcp/metrics.h"
 
@@ -709,6 +710,7 @@ bool app_init_services(struct app_context *ctx,
     msg_processor_init(svc->msg_processor, svc->state, svc->mempool,
                        svc->coins_tip, params, ctx->datadir,
                        &svc->connman->manager, &svc->runtime);
+    rpc_net_set_msg_processor(svc->msg_processor);
     msg_processor_set_block_submit(svc->msg_processor,
                                    boot_submit_p2p_block, svc);
     msg_processor_set_compact_block_submit(svc->msg_processor,
@@ -1476,18 +1478,16 @@ static bool shutdown_flush_coins_to_sqlite(struct boot_svc_ctx *svc,
 
 static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 {
-    /* Signal P2P threads to stop, then flush coins while threads wind down.
-     * The message thread checks g_stop each iteration (~100ms). Any in-flight
-     * reducer activation sees g_shutdown_requested and returns. After
-     * signal_stop, no new block processing starts. */
+    /* Stop P2P entrypoints before flush; any in-flight reducer sees
+     * g_shutdown_requested and returns before mutating coins further. */
     printf("[shutdown] stopping network services\n");
     zcl_service_kernel_stop_all(&svc->network_kernel);
     printf("[shutdown] joining replay service\n");
     boot_join_replay_service(svc);
+    msg_processor_stop_block_intake(svc->msg_processor);
 
-    /* Flush coins to SQLite. The message thread is finishing its current
-     * iteration. If it was mid-connect_block, it already flushed via the
-     * g_shutdown_requested handler in the reducer activation path. */
+    /* The message thread is finishing its current iteration; reducer
+     * activation already handles shutdown persistence. */
     printf("Flushing coins cache to SQLite...\n");
     if (shutdown_flush_coins_to_sqlite(svc, "network-quiesce")) {
         printf("Coins cache flushed.\n");
@@ -1503,8 +1503,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
     connman_free(svc->connman);
     printf("[shutdown] connman stopped\n");
 
-    /* Final flush in case message thread connected blocks between
-     * our flush and its exit */
+    /* Final flush in case message thread connected blocks before exit. */
     (void)shutdown_flush_coins_to_sqlite(svc, "final");
     coins_view_cache_free(svc->coins_tip);
     coins_view_sqlite_close(svc->coins_sqlite);

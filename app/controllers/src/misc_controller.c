@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
+#include "controllers/block_intake_json.h"
 #include "controllers/misc_controller.h"
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
@@ -305,6 +306,7 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
     json_push_kv_str(result, "gb_downloaded", gb_str);
 
     json_push_kv_str(result, "sync_state", sync_state_name(sync_get_state()));
+    controller_json_push_block_intake_stats(result);
     json_push_kv_int(result, "defer_proof_validation_below_height",
                       (int64_t)g_deferred_proof_validation_below_height);
     return true;

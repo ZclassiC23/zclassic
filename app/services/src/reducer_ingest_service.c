@@ -340,7 +340,8 @@ static bool reducer_persist_ingested_body_locked(
         struct chain_activation_controller *ctl,
         const struct uint256 *block_hash,
         struct block *pblock,
-        struct validation_state *out)
+        struct validation_state *out,
+        bool honor_header_reject)
 {
     if (!ctl || !ctl->ms || !block_hash || !pblock) {
         LOG_WARN("reducer", "body persist invalid args ctl=%p ms=%p hash=%p block=%p",
@@ -373,7 +374,12 @@ static bool reducer_persist_ingested_body_locked(
     if (bi->nStatus & BLOCK_HAVE_DATA)
         return true;
 
-    if (reducer_header_rejected_at(ctl->ms, bi->nHeight, out))
+    /* Synchronous ingest needs the immediate prior verdict. Catch-up staging
+     * deliberately skips this height-keyed gate after check_block(): stale
+     * hash-mismatch rows must not prevent persisting the body that lets the
+     * reducer re-fold the actual hash. */
+    if (honor_header_reject &&
+        reducer_header_rejected_at(ctl->ms, bi->nHeight, out))
         return false;
 
     if (!ctl->datadir || !ctl->datadir[0] || !ctl->params) {
@@ -415,6 +421,115 @@ static bool reducer_persist_ingested_body_locked(
     LOG_INFO("reducer", "persisted ingested block body h=%d file=%d pos=%u",
              bi->nHeight, pos.nFile, pos.nPos);
     return true;
+}
+
+static void reducer_cache_ingested_solution(
+        struct chain_activation_controller *ctl,
+        struct block *pblock,
+        const struct uint256 *block_hash)
+{
+    if (!ctl || !pblock || !block_hash ||
+        pblock->header.nSolutionSize == 0 || !ctl->ms)
+        return;
+
+    int sol_h = -1;
+    struct block_index *self =
+        block_map_find(&ctl->ms->map_block_index, block_hash);
+    if (self) {
+        sol_h = self->nHeight;
+    } else {
+        struct block_index *prev =
+            block_map_find(&ctl->ms->map_block_index,
+                           &pblock->header.hashPrevBlock);
+        if (prev)
+            sol_h = prev->nHeight + 1;
+    }
+    sqlite3 *rdb = progress_store_db();
+    if (sol_h >= 0 && rdb)
+        (void)stage_repair_header_solution_save(rdb, sol_h, block_hash,
+                                                &pblock->header);
+}
+
+static bool reducer_push_header_admit(struct block *pblock,
+                                      const struct uint256 *block_hash,
+                                      struct validation_state *out)
+{
+    struct header_admit_msg msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.hash = *block_hash;
+    msg.observed_unix = (int64_t)GetTime();
+    msg.has_header = true;
+    msg.header = pblock->header;
+    msg.height = -1;
+    if (mailbox_header_admit_push(&msg))
+        return true;
+
+    /* Inbox full: cannot admit this block right now. Not a consensus
+     * reject — report a transient error so the caller can retry. */
+    LOG_WARN("reducer", "header admit inbox full while staging block");
+    return validation_state_error(out, "header-admit-inbox-full");
+}
+
+bool reducer_stage_p2p_block_for_catchup(
+    struct chain_activation_controller *ctl,
+    struct block *pblock,
+    struct validation_state *out)
+{
+    if (!out)
+        return false;
+    validation_state_init(out);
+    if (!ctl || !pblock)
+        return validation_state_error(out, "reducer-null-arg");
+    if (!ctl->ms)
+        return validation_state_error(out, "reducer-main-state-unwired");
+
+    if (!check_block(pblock, out, ctl->params, true, true, true)) {
+        LOG_FAIL("reducer", "check_block failed: %s",
+                 out->reject_reason[0] ? out->reject_reason : "unknown");
+        return false;
+    }
+
+    struct uint256 block_hash;
+    block_get_hash(pblock, &block_hash);
+    reducer_cache_ingested_solution(ctl, pblock, &block_hash);
+    bool header_pushed = reducer_push_header_admit(pblock, &block_hash, out);
+    if (!header_pushed)
+        return false;
+
+    zcl_mutex_lock(&ctl->mutex);
+    reducer_drive_enter();
+
+    struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
+                                            &block_hash);
+    if (!bi) {
+        reducer_drive_exit();
+        zcl_mutex_unlock(&ctl->mutex);
+        validation_state_invalid(out, false, REJECT_INVALID,
+                                 "p2p-block-header-missing",
+                                 "header not admitted yet");
+        return false;
+    }
+
+    bool persisted = reducer_persist_ingested_body_locked(
+        ctl, &block_hash, pblock, out, false);
+    if (persisted && ctl->ms->pindex_best_header)
+        (void)active_chain_extend_window_have_data(
+            &ctl->ms->chain_active, &ctl->ms->map_block_index,
+            ctl->ms->pindex_best_header, ctl->ms->pindex_best_header->nHeight);
+
+    int staged_height = bi->nHeight;
+    reducer_drive_exit();
+    zcl_mutex_unlock(&ctl->mutex);
+
+    if (!persisted)
+        return false;
+
+    char debug[MAX_REJECT_REASON];
+    snprintf(debug, sizeof(debug), "h=%d body persisted for staged reducer",
+             staged_height);
+    validation_state_invalid(out, false, REJECT_INVALID,
+                             "p2p-block-staged-for-reducer", debug);
+    return false;
 }
 
 bool reducer_ingest_block(struct chain_activation_controller *ctl,
@@ -462,38 +577,10 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * from the co-located zclassicd, submitblock, P2P block) self-supply its
      * solution. The save is hash-bound (recomputes hash(header)==block_hash)
      * and keyed by canonical height, so it cannot poison a different block. */
-    if (pblock->header.nSolutionSize > 0 && ctl->ms) {
-        int sol_h = -1;
-        struct block_index *self =
-            block_map_find(&ctl->ms->map_block_index, &block_hash);
-        if (self) {
-            sol_h = self->nHeight;
-        } else {
-            struct block_index *prev =
-                block_map_find(&ctl->ms->map_block_index,
-                               &pblock->header.hashPrevBlock);
-            if (prev) sol_h = prev->nHeight + 1;
-        }
-        sqlite3 *rdb = progress_store_db();
-        if (sol_h >= 0 && rdb)
-            (void)stage_repair_header_solution_save(rdb, sol_h, &block_hash,
-                                                    &pblock->header);
-    }
-
-    struct header_admit_msg msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.hash = block_hash;
-    msg.observed_unix = (int64_t)GetTime();
-    msg.has_header = true;
-    msg.header = pblock->header;
-    /* height hint: one past the prev block's height when known, else -1
-     * (admit verifies against the active chain regardless of the hint). */
-    msg.height = -1;
-    if (!mailbox_header_admit_push(&msg)) {
-        /* Inbox full: cannot admit this block right now. Not a consensus
-         * reject — report a transient error so the caller can retry. */
-        return validation_state_error(out, "header-admit-inbox-full");
-    }
+    reducer_cache_ingested_solution(ctl, pblock, &block_hash);
+    bool header_pushed = reducer_push_header_admit(pblock, &block_hash, out);
+    if (!header_pushed)
+        return false;
 
     /* (3) Drain the eight stage step bodies synchronously under the SAME
      * mutex reducer activation serializes on, ahead of the 2s supervisor
@@ -563,7 +650,8 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
         if (_adv == 0)
             break;
     }
-    if (!reducer_persist_ingested_body_locked(ctl, &block_hash, pblock, out)) {
+    if (!reducer_persist_ingested_body_locked(ctl, &block_hash, pblock, out,
+                                              true)) {
         reducer_drive_exit();
         zcl_mutex_unlock(&ctl->mutex);
         return false;

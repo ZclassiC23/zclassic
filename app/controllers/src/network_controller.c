@@ -26,6 +26,7 @@
 
 struct network_context {
     struct connman *connman;
+    struct msg_processor *msg_processor;
     const char *datadir;
     const char *load_snapshot_at_own_height;
 };
@@ -64,6 +65,16 @@ void rpc_net_set_connman(struct connman *cm)
 struct connman *rpc_net_get_connman(void)
 {
     return network_ctx()->connman;
+}
+
+void rpc_net_set_msg_processor(struct msg_processor *mp)
+{
+    network_ctx()->msg_processor = mp;
+}
+
+struct msg_processor *rpc_net_get_msg_processor(void)
+{
+    return network_ctx()->msg_processor;
 }
 
 void rpc_net_set_boot_context(const char *datadir,

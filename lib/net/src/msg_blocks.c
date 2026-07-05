@@ -22,6 +22,7 @@
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
 #include <pthread.h>
@@ -32,6 +33,9 @@
 
 /* Rebuild manifest when chain grows this many blocks beyond the cached one. */
 #define MANIFEST_REFRESH_BLOCKS 1000
+#define MSG_BLOCK_RETRYABLE_LOG_KEEPALIVE_SECS 15
+
+static struct log_throttle g_msg_block_retryable_log = LOG_THROTTLE_INIT;
 
 bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
                        struct byte_stream *s)
@@ -233,7 +237,87 @@ bool msg_block_validation_is_retryable(const struct validation_state *state)
 {
     if (!state || validation_state_is_valid(state))
         return false;
-    return strcmp(state->reject_reason, "block-not-finalized-by-reducer") == 0;
+    static const char *const retryable_reasons[] = {
+        "block-not-finalized-by-reducer",
+        "p2p-block-queued-for-reducer",
+        "p2p-block-staged-for-reducer",
+        "p2p-block-header-missing",
+        "header-admit-inbox-full",
+        "reducer-body-header-missing",
+        "reducer-body-runtime-unwired",
+        "reducer-body-write-failed",
+        "reducer-body-verify-failed",
+        "p2p-block-intake-unavailable",
+        "p2p-block-intake-stopped",
+        "p2p-block-intake-full",
+        "p2p-block-clone-failed",
+    };
+    for (size_t i = 0; i < sizeof(retryable_reasons) /
+                           sizeof(retryable_reasons[0]); i++) {
+        if (strcmp(state->reject_reason, retryable_reasons[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool msg_block_retryable_needs_redownload(
+        const struct validation_state *state)
+{
+    if (!state)
+        return false;
+    return strcmp(state->reject_reason, "p2p-block-intake-unavailable") == 0 ||
+           strcmp(state->reject_reason, "p2p-block-intake-stopped") == 0 ||
+           strcmp(state->reject_reason, "p2p-block-intake-full") == 0 ||
+           strcmp(state->reject_reason, "p2p-block-clone-failed") == 0;
+}
+
+static uint64_t msg_block_retryable_log_key(
+        const struct validation_state *state)
+{
+    if (!state)
+        return 0;
+    if (strcmp(state->reject_reason, "p2p-block-intake-full") == 0)
+        return 1;
+    if (strcmp(state->reject_reason, "p2p-block-queued-for-reducer") == 0)
+        return 2;
+    return 3;
+}
+
+static void msg_block_log_retryable(const struct uint256 *hash,
+                                    const struct validation_state *state)
+{
+    if (!hash || !state)
+        return;
+    uint64_t suppressed = 0;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    uint64_t key = msg_block_retryable_log_key(state);
+    if (!log_throttle_should_emit(&g_msg_block_retryable_log, key, now,
+                                  MSG_BLOCK_RETRYABLE_LOG_KEEPALIVE_SECS,
+                                  &suppressed))
+        return;
+
+    char hex[65];
+    uint256_get_hex(hash, hex);
+    const char *detail = state->debug_message[0]
+        ? state->debug_message
+        : state->reject_reason;
+    LOG_INFO("net",
+             "block pending reducer/intake finalization "
+             "(latest=%s detail=%s suppressed=%llu)",
+             hex, detail[0] ? detail : "retryable",
+             (unsigned long long)suppressed);
+}
+
+static void msg_block_requeue_after_intake_backpressure(
+        struct msg_processor *mp,
+        const struct uint256 *hash)
+{
+    if (!mp || !mp->main_state || !hash)
+        return;
+    struct block_index *bi = block_map_find(
+        &mp->main_state->map_block_index, hash);
+    int32_t height = bi ? bi->nHeight : -1;
+    dl_queue_priority(get_download_mgr(), hash, height);
 }
 
 /* ── Self-suspicion gate for the block-reject ban path ──────────────────
@@ -478,7 +562,10 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         block_free(&blk);
         LOG_FAIL("net", "block submit callback not configured");
     }
-    (void)mp->block_submit(&blk, &state, mp->block_submit_ctx);
+    if (!msg_processor_enqueue_p2p_block(mp, &blk, &hash,
+                                         (uint32_t)node->id, &state)) {
+        (void)mp->block_submit(&blk, &state, mp->block_submit_ctx);
+    }
 
     /* Decide ONCE whether a non-retryable reject is OUR fault (a local
      * state/context defect against a body-valid, more-work block at/above
@@ -528,12 +615,9 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * which will include the valid block at the failed height. */
         msg_processor_request_invalid_block_headers(mp, node);
     } else if (msg_block_validation_is_retryable(&state)) {
-        char hex[65];
-        uint256_get_hex(&hash, hex);
-        LOG_INFO("net",
-                 "block %s pending reducer finalization; leaving retryable%s%s",
-                 hex, state.debug_message[0] ? " " : "",
-                 state.debug_message);
+        if (msg_block_retryable_needs_redownload(&state))
+            msg_block_requeue_after_intake_backpressure(mp, &hash);
+        msg_block_log_retryable(&hash, &state);
     }
 
     if (validation_state_is_valid(&state)) {

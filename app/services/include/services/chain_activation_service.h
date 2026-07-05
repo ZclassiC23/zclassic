@@ -219,6 +219,22 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
                           bool force,
                           struct validation_state *out);
 
+/* reducer_stage_p2p_block_for_catchup — fast P2P catch-up intake.
+ *
+ * During IBD/catch-up this validates the block body statelessly, stages the
+ * header/solution/body for the reducer, extends the in-memory have-data
+ * window, and returns a retryable "pending reducer" verdict in `out` instead
+ * of synchronously draining all reducer stages. At-tip delivery must still use
+ * reducer_ingest_block() so submit/relay callers get an immediate final
+ * accept/reject verdict.
+ *
+ * Returns false by design when staging succeeds: the block is not final until
+ * the reducer stages fold it and publish the tip. */
+bool reducer_stage_p2p_block_for_catchup(
+    struct chain_activation_controller *ctl,
+    struct block *pblock,
+    struct validation_state *out);
+
 /* reducer_kick — wake the reducer to walk the best chain with no new block
  * (the Group-2 NULL-block "connect to best tip now" path). Drains the eight
  * stage step bodies once under ctl->mutex so cursor-driven catch-up makes

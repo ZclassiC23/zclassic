@@ -14,6 +14,7 @@
 #include "json/json.h"
 #include "net/connman.h"
 #include "net/download.h"
+#include "net/msgprocessor.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
 #include "net/version.h"
@@ -79,6 +80,19 @@ struct agent_fast_snapshot {
     uint64_t message_recv_ready;
     uint64_t message_idle_waits;
     uint64_t message_wakes;
+    uint64_t block_intake_enqueued;
+    uint64_t block_intake_processed;
+    uint64_t block_intake_accepted;
+    uint64_t block_intake_retryable;
+    uint64_t block_intake_rejected;
+    uint64_t block_intake_dropped;
+    uint64_t block_intake_clone_failed;
+    uint64_t block_intake_spawn_failed;
+    uint64_t block_intake_current_depth;
+    uint64_t block_intake_capacity;
+    uint64_t block_intake_max_depth;
+    bool block_intake_running;
+    bool block_intake_stopping;
     uint32_t last_assign_peer_id;
     uint64_t last_assign_max_requested;
     uint64_t last_assign_available;
@@ -272,6 +286,29 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         s->message_recv_ready = msg_stats.recv_ready;
         s->message_idle_waits = msg_stats.idle_waits;
         s->message_wakes = msg_stats.wakes;
+    }
+    {
+        struct msg_block_intake_stats intake;
+        msg_processor_get_block_intake_stats(rpc_net_get_msg_processor(),
+                                             &intake);
+        s->block_intake_running = intake.running;
+        s->block_intake_stopping = intake.stopping;
+        s->block_intake_current_depth = intake.current_depth;
+        s->block_intake_capacity = intake.capacity;
+        s->block_intake_max_depth = intake.max_depth;
+        s->block_intake_enqueued = intake.enqueued;
+        s->block_intake_processed = intake.processed;
+        s->block_intake_accepted = intake.accepted;
+        s->block_intake_retryable = intake.retryable;
+        s->block_intake_rejected = intake.rejected;
+        s->block_intake_dropped = intake.dropped;
+        s->block_intake_clone_failed = intake.clone_failed;
+        s->block_intake_spawn_failed = intake.spawn_failed;
+        if (intake.running && !intake.stopping && intake.capacity > 0 &&
+            intake.current_depth >= intake.capacity)
+            agent_fast_add_warning(s, "block_intake_saturated");
+        if (intake.clone_failed > 0 || intake.spawn_failed > 0)
+            agent_fast_add_warning(s, "block_intake_fault");
     }
 
     s->tip_advance_age_seconds = sync_monitor_tip_advance_age();
@@ -538,6 +575,44 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                      (int64_t)health.message_idle_waits);
     json_push_kv_int(&download, "message_wakes",
                      (int64_t)health.message_wakes);
+    {
+        struct json_value intake = {0};
+        json_set_object(&intake);
+        json_push_kv_bool(&intake, "running",
+                          health.block_intake_running);
+        json_push_kv_bool(&intake, "stopping",
+                          health.block_intake_stopping);
+        json_push_kv_int(&intake, "current_depth",
+                         (int64_t)health.block_intake_current_depth);
+        json_push_kv_int(&intake, "capacity",
+                         (int64_t)health.block_intake_capacity);
+        json_push_kv_bool(&intake, "saturated",
+                          health.block_intake_running &&
+                          !health.block_intake_stopping &&
+                          health.block_intake_capacity > 0 &&
+                          health.block_intake_current_depth >=
+                              health.block_intake_capacity);
+        json_push_kv_int(&intake, "max_depth",
+                         (int64_t)health.block_intake_max_depth);
+        json_push_kv_int(&intake, "enqueued",
+                         (int64_t)health.block_intake_enqueued);
+        json_push_kv_int(&intake, "processed",
+                         (int64_t)health.block_intake_processed);
+        json_push_kv_int(&intake, "accepted",
+                         (int64_t)health.block_intake_accepted);
+        json_push_kv_int(&intake, "retryable",
+                         (int64_t)health.block_intake_retryable);
+        json_push_kv_int(&intake, "rejected",
+                         (int64_t)health.block_intake_rejected);
+        json_push_kv_int(&intake, "dropped",
+                         (int64_t)health.block_intake_dropped);
+        json_push_kv_int(&intake, "clone_failed",
+                         (int64_t)health.block_intake_clone_failed);
+        json_push_kv_int(&intake, "spawn_failed",
+                         (int64_t)health.block_intake_spawn_failed);
+        json_push_kv(&download, "block_intake", &intake);
+        json_free(&intake);
+    }
     json_push_kv_int(&download, "last_assign_peer_id",
                      (int64_t)health.last_assign_peer_id);
     json_push_kv_int(&download, "last_assign_max_requested",

@@ -26,6 +26,7 @@
 #include "net/snapshot_sync_contract.h"
 #include "net/peer_lifecycle.h"
 #include "net/fast_sync.h"
+#include "sync/sync_state.h"
 #include "validation/process_block.h"
 #include "wallet/wallet.h"
 #include "platform/time_compat.h"
@@ -54,6 +55,9 @@ bool boot_submit_p2p_block(struct block *block,
     if (!block || !state)
         LOG_FAIL("boot", "p2p block submit missing block=%p state=%p",
                  (void *)block, (void *)state);
+    if (sync_get_state() != SYNC_AT_TIP)
+        return reducer_stage_p2p_block_for_catchup(
+            boot_activation_controller(), block, state);
     return reducer_ingest_block(boot_activation_controller(), block,
                                 REDUCER_SRC_P2P, false, state);
 }

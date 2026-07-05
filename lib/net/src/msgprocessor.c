@@ -34,6 +34,7 @@
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
 #include "net/zmsg.h"
+#include "primitives/block.h"
 #include "sync/sync_planner.h"
 /* lib/net still reaches the controller-owned manifest cache for P2P file
  * challenge responses. The manifest protocol types live in net/file_manifest.h;
@@ -48,11 +49,14 @@
 #include "core/random.h"
 #include "core/serialize.h"
 #include "crypto/sha3.h"
+#include "consensus/validation.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
+#include "util/thread_registry.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -184,6 +188,415 @@ bool msgprocessor_test_tx_already_seen(const struct uint256 *hash) {
 }
 void msgprocessor_test_tx_mark_seen(const struct uint256 *hash) {
     tx_mark_seen(hash);
+}
+
+/* ── Catch-up block intake worker ────────────────────────────────
+ *
+ * During IBD/catch-up, reducer_ingest_block can block for seconds inside
+ * header validation and SQLite-backed stage drains. Calling it inline from
+ * process_block_msg stalls the P2P message cycle, which in turn stops getdata
+ * dispatch and looks like a peer/download wedge. At the live tip we still use
+ * the synchronous path so peer scoring, relay, and tip transition semantics
+ * remain unchanged; only historical catch-up block bodies are deep-cloned into
+ * this bounded worker queue. */
+#define MSG_BLOCK_INTAKE_CAP 128
+#define MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS 15
+
+struct msg_block_intake_item {
+    struct block block;
+    struct uint256 hash;
+    uint32_t peer_id;
+    int64_t enqueued_unix;
+};
+
+struct msg_block_intake {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    pthread_t thread;
+    bool thread_started;
+    bool running;
+    bool stopping;
+    size_t head;
+    size_t tail;
+    size_t depth;
+    struct msg_block_intake_item queue[MSG_BLOCK_INTAKE_CAP];
+    struct msg_processor *mp;
+    _Atomic uint64_t enqueued;
+    _Atomic uint64_t dropped;
+    _Atomic uint64_t processed;
+    _Atomic uint64_t accepted;
+    _Atomic uint64_t rejected;
+    _Atomic uint64_t retryable;
+    _Atomic uint64_t clone_failed;
+    _Atomic uint64_t spawn_failed;
+    _Atomic uint64_t max_depth;
+    _Atomic int64_t last_enqueue_unix;
+    _Atomic int64_t last_process_unix;
+};
+
+static pthread_mutex_t g_block_intake_create_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct log_throttle g_block_intake_worker_log = LOG_THROTTLE_INIT;
+static struct log_throttle g_block_intake_dispatch_log = LOG_THROTTLE_INIT;
+
+static void msg_block_intake_item_init(struct msg_block_intake_item *item)
+{
+    if (!item)
+        return;
+    block_init(&item->block);
+    memset(&item->hash, 0, sizeof(item->hash));
+    item->peer_id = 0;
+    item->enqueued_unix = 0;
+}
+
+static void msg_block_intake_item_free(struct msg_block_intake_item *item)
+{
+    if (!item)
+        return;
+    block_free(&item->block);
+    msg_block_intake_item_init(item);
+}
+
+static void msg_block_intake_stats_bump_max(struct msg_block_intake *in,
+                                            uint64_t depth)
+{
+    uint64_t prev = atomic_load_explicit(&in->max_depth,
+                                         memory_order_relaxed);
+    while (depth > prev &&
+           !atomic_compare_exchange_weak_explicit(&in->max_depth, &prev,
+                                                  depth,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+        /* retry with the observed value */
+    }
+}
+
+static void msg_block_intake_handle_accept(struct msg_processor *mp,
+                                           const struct uint256 *hash,
+                                           uint32_t peer_id)
+{
+    if (!mp || !mp->main_state || !hash)
+        return;
+
+    struct block_index *landed = block_map_find(
+        &mp->main_state->map_block_index, hash);
+    if (msg_blocks_should_mark_seen(&mp->main_state->chain_active, landed))
+        block_mark_seen(hash);
+
+    struct block_index *new_tip = active_chain_tip(
+        &mp->main_state->chain_active);
+    if (new_tip) {
+        event_emitf(EV_BLOCK_CONNECTED, peer_id,
+                    "h=%d async_p2p", new_tip->nHeight);
+        msg_processor_note_block_connected(mp, new_tip->nHeight);
+    }
+}
+
+static void msg_block_intake_process_one(struct msg_block_intake *in,
+                                         struct msg_block_intake_item *item)
+{
+    if (!in || !item)
+        return;
+
+    struct msg_processor *mp = in->mp;
+    struct validation_state state;
+    validation_state_init(&state);
+
+    if (!mp || !mp->block_submit) {
+        validation_state_error(&state, "p2p-block-submit-unavailable");
+    } else {
+        (void)mp->block_submit(&item->block, &state, mp->block_submit_ctx);
+    }
+
+    atomic_fetch_add_explicit(&in->processed, 1, memory_order_relaxed);
+    atomic_store_explicit(&in->last_process_unix,
+                          (int64_t)platform_time_wall_time_t(),
+                          memory_order_relaxed);
+
+    if (validation_state_is_valid(&state)) {
+        atomic_fetch_add_explicit(&in->accepted, 1, memory_order_relaxed);
+        msg_block_intake_handle_accept(mp, &item->hash, item->peer_id);
+    } else if (msg_block_validation_is_retryable(&state)) {
+        char hex[65];
+        uint256_get_hex(&item->hash, hex);
+        atomic_fetch_add_explicit(&in->retryable, 1, memory_order_relaxed);
+        uint64_t suppressed = 0;
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (log_throttle_should_emit(&g_block_intake_worker_log, 1, now,
+                                     MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS,
+                                     &suppressed)) {
+            const char *detail = state.debug_message[0]
+                ? state.debug_message
+                : state.reject_reason;
+            LOG_INFO("net",
+                     "async block intake pending reducer finalization "
+                     "(latest=%s detail=%s suppressed=%llu)",
+                     hex, detail[0] ? detail : "retryable",
+                     (unsigned long long)suppressed);
+        }
+    } else {
+        char hex[65];
+        uint256_get_hex(&item->hash, hex);
+        atomic_fetch_add_explicit(&in->rejected, 1, memory_order_relaxed);
+        block_mark_seen(&item->hash);
+        event_emitf(EV_BLOCK_REJECTED, item->peer_id,
+                    "hash=%s async_reason=%s", hex,
+                    state.reject_reason[0] ? state.reject_reason : "unknown");
+    }
+}
+
+static void msg_block_intake_drain_locked(struct msg_block_intake *in)
+{
+    while (in && in->depth > 0) {
+        msg_block_intake_item_free(&in->queue[in->head]);
+        in->head = (in->head + 1) % MSG_BLOCK_INTAKE_CAP;
+        in->depth--;
+    }
+    if (in) {
+        in->head = 0;
+        in->tail = 0;
+    }
+}
+
+static void *msg_block_intake_worker(void *arg)
+{
+    struct msg_block_intake *in = arg;
+    if (!in)
+        return NULL;
+
+    for (;;) {
+        struct msg_block_intake_item item;
+        msg_block_intake_item_init(&item);
+
+        pthread_mutex_lock(&in->mu);
+        while (in->depth == 0 && !in->stopping &&
+               !thread_registry_shutdown_requested()) {
+            pthread_cond_wait(&in->cv, &in->mu);
+        }
+        if (in->stopping || thread_registry_shutdown_requested()) {
+            in->running = false;
+            pthread_mutex_unlock(&in->mu);
+            break;
+        }
+
+        item = in->queue[in->head];
+        msg_block_intake_item_init(&in->queue[in->head]);
+        in->head = (in->head + 1) % MSG_BLOCK_INTAKE_CAP;
+        in->depth--;
+        pthread_mutex_unlock(&in->mu);
+
+        msg_block_intake_process_one(in, &item);
+        msg_block_intake_item_free(&item);
+    }
+
+    return NULL;
+}
+
+static struct msg_block_intake *msg_block_intake_start(struct msg_processor *mp)
+{
+    if (!mp)
+        return NULL;
+
+    pthread_mutex_lock(&g_block_intake_create_lock);
+    if (mp->block_intake) {
+        pthread_mutex_unlock(&g_block_intake_create_lock);
+        return mp->block_intake;
+    }
+
+    struct msg_block_intake *in = zcl_calloc(1, sizeof(*in),
+                                             "msg_block_intake");
+    if (!in) {
+        pthread_mutex_unlock(&g_block_intake_create_lock);
+        LOG_NULL("net", "block intake allocation failed");
+    }
+    pthread_mutex_init(&in->mu, NULL);
+    pthread_cond_init(&in->cv, NULL);
+    in->running = true;
+    in->mp = mp;
+    for (size_t i = 0; i < MSG_BLOCK_INTAKE_CAP; i++)
+        msg_block_intake_item_init(&in->queue[i]);
+
+    mp->block_intake = in;
+    int rc = thread_registry_spawn_ex("zcl_p2p_ingest",
+                                      msg_block_intake_worker, in,
+                                      &in->thread);
+    if (rc != 0) {
+        atomic_fetch_add_explicit(&in->spawn_failed, 1,
+                                  memory_order_relaxed);
+        mp->block_intake = NULL;
+        pthread_cond_destroy(&in->cv);
+        pthread_mutex_destroy(&in->mu);
+        free(in);
+        pthread_mutex_unlock(&g_block_intake_create_lock);
+        LOG_NULL("net", "block intake worker spawn failed rc=%d", rc);
+    }
+    in->thread_started = true;
+    pthread_mutex_unlock(&g_block_intake_create_lock);
+    return in;
+}
+
+bool msg_processor_enqueue_p2p_block(struct msg_processor *mp,
+                                     const struct block *blk,
+                                     const struct uint256 *hash,
+                                     uint32_t peer_id,
+                                     struct validation_state *out)
+{
+    if (!mp || !blk || !hash || !out)
+        return false;
+    if (!mp->main_state || !mp->params)
+        return false;
+    if (sync_get_state() == SYNC_AT_TIP)
+        return false;
+
+    struct msg_block_intake *in = msg_block_intake_start(mp);
+    if (!in) {
+        validation_state_error(out, "p2p-block-intake-unavailable");
+        return true;
+    }
+
+    struct msg_block_intake_item item;
+    msg_block_intake_item_init(&item);
+    if (!block_clone(&item.block, blk)) {
+        atomic_fetch_add_explicit(&in->clone_failed, 1,
+                                  memory_order_relaxed);
+        validation_state_error(out, "p2p-block-clone-failed");
+        return true;
+    }
+    item.hash = *hash;
+    item.peer_id = peer_id;
+    item.enqueued_unix = (int64_t)platform_time_wall_time_t();
+
+    pthread_mutex_lock(&in->mu);
+    if (in->stopping) {
+        pthread_mutex_unlock(&in->mu);
+        msg_block_intake_item_free(&item);
+        atomic_fetch_add_explicit(&in->dropped, 1, memory_order_relaxed);
+        validation_state_error(out, "p2p-block-intake-stopped");
+        return true;
+    }
+    if (in->depth >= MSG_BLOCK_INTAKE_CAP) {
+        pthread_mutex_unlock(&in->mu);
+        msg_block_intake_item_free(&item);
+        atomic_fetch_add_explicit(&in->dropped, 1, memory_order_relaxed);
+        validation_state_error(out, "p2p-block-intake-full");
+        return true;
+    }
+
+    in->queue[in->tail] = item;
+    in->tail = (in->tail + 1) % MSG_BLOCK_INTAKE_CAP;
+    in->depth++;
+    size_t depth = in->depth;
+    pthread_cond_signal(&in->cv);
+    pthread_mutex_unlock(&in->mu);
+
+    atomic_fetch_add_explicit(&in->enqueued, 1, memory_order_relaxed);
+    atomic_store_explicit(&in->last_enqueue_unix, item.enqueued_unix,
+                          memory_order_relaxed);
+    msg_block_intake_stats_bump_max(in, (uint64_t)depth);
+    validation_state_error(out, "p2p-block-queued-for-reducer");
+    return true;
+}
+
+void msg_processor_stop_block_intake(struct msg_processor *mp)
+{
+    if (!mp)
+        return;
+
+    pthread_mutex_lock(&g_block_intake_create_lock);
+    struct msg_block_intake *in = mp->block_intake;
+    mp->block_intake = NULL;
+    pthread_mutex_unlock(&g_block_intake_create_lock);
+    if (!in)
+        return;
+
+    pthread_mutex_lock(&in->mu);
+    in->stopping = true;
+    pthread_cond_broadcast(&in->cv);
+    pthread_mutex_unlock(&in->mu);
+
+    if (in->thread_started)
+        pthread_join(in->thread, NULL);
+
+    pthread_mutex_lock(&in->mu);
+    msg_block_intake_drain_locked(in);
+    in->running = false;
+    pthread_mutex_unlock(&in->mu);
+
+    pthread_cond_destroy(&in->cv);
+    pthread_mutex_destroy(&in->mu);
+    free(in);
+}
+
+void msg_processor_get_block_intake_stats(
+    const struct msg_processor *mp,
+    struct msg_block_intake_stats *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!mp)
+        return;
+
+    pthread_mutex_lock(&g_block_intake_create_lock);
+    struct msg_block_intake *in = mp->block_intake;
+    if (!in) {
+        pthread_mutex_unlock(&g_block_intake_create_lock);
+        return;
+    }
+    pthread_mutex_lock(&in->mu);
+    out->current_depth = (uint64_t)in->depth;
+    out->capacity = MSG_BLOCK_INTAKE_CAP;
+    out->running = in->running;
+    out->stopping = in->stopping;
+    pthread_mutex_unlock(&in->mu);
+
+    out->enqueued = atomic_load_explicit(&in->enqueued,
+                                         memory_order_relaxed);
+    out->dropped = atomic_load_explicit(&in->dropped,
+                                        memory_order_relaxed);
+    out->processed = atomic_load_explicit(&in->processed,
+                                          memory_order_relaxed);
+    out->accepted = atomic_load_explicit(&in->accepted,
+                                         memory_order_relaxed);
+    out->rejected = atomic_load_explicit(&in->rejected,
+                                         memory_order_relaxed);
+    out->retryable = atomic_load_explicit(&in->retryable,
+                                          memory_order_relaxed);
+    out->clone_failed = atomic_load_explicit(&in->clone_failed,
+                                             memory_order_relaxed);
+    out->spawn_failed = atomic_load_explicit(&in->spawn_failed,
+                                             memory_order_relaxed);
+    out->max_depth = atomic_load_explicit(&in->max_depth,
+                                          memory_order_relaxed);
+    out->last_enqueue_unix = atomic_load_explicit(&in->last_enqueue_unix,
+                                                  memory_order_relaxed);
+    out->last_process_unix = atomic_load_explicit(&in->last_process_unix,
+                                                  memory_order_relaxed);
+    pthread_mutex_unlock(&g_block_intake_create_lock);
+}
+
+static bool msg_processor_block_intake_saturated(struct msg_processor *mp)
+{
+    struct msg_block_intake_stats st;
+    msg_processor_get_block_intake_stats(mp, &st);
+    return st.running && !st.stopping && st.capacity > 0 &&
+           st.current_depth >= st.capacity;
+}
+
+static void msg_processor_log_block_intake_backpressure(
+        const struct p2p_node *node)
+{
+    uint64_t suppressed = 0;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    if (!log_throttle_should_emit(&g_block_intake_dispatch_log, 1, now,
+                                  MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS,
+                                  &suppressed))
+        return;
+    LOG_INFO("net",
+             "block intake queue saturated; pausing getdata assignment%s%s "
+             "(suppressed=%llu)",
+             node ? " for " : "",
+             node ? node->addr_name : "",
+             (unsigned long long)suppressed);
 }
 
 /* ── Tip-stall watchdog observers ──────────────────────────── */
@@ -759,6 +1172,7 @@ void msg_processor_init(struct msg_processor *mp,
     mp->block_hashes_range_ctx = NULL;
     mp->utxo_sha3_compute = NULL;
     mp->utxo_sha3_compute_ctx = NULL;
+    mp->block_intake = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -1574,8 +1988,13 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
             /* our_height for the behind-peer gate (sibling scope; recompute
              * the same way as the sync block above, msgprocessor.c:1330). */
             int our_height = msg_get_height(mp);
-            syncsvc_assign_peer_blocks(&batch, dm, node, assign_hashes,
-                                       DL_WINDOW_SIZE, our_height);
+            if (msg_processor_block_intake_saturated(mp)) {
+                memset(&batch, 0, sizeof(batch));
+                msg_processor_log_block_intake_backpressure(node);
+            } else {
+                syncsvc_assign_peer_blocks(&batch, dm, node, assign_hashes,
+                                           DL_WINDOW_SIZE, our_height);
+            }
             if (batch.assigned > 0) {
                 struct byte_stream getdata_msg;
                 stream_init(&getdata_msg, batch.assigned * 36 + 8);

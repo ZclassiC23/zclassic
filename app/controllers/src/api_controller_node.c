@@ -9,6 +9,7 @@
  * caller's response buffer. */
 #include "platform/time_compat.h"
 #include "controllers/api_controller.h"
+#include "controllers/block_intake_json.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
 #include "controllers/network_controller.h"
@@ -45,6 +46,7 @@
 #include <unistd.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
 static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
 {
     struct snapshot_sync_service *svc = app_runtime_snapshot_sync();
@@ -183,6 +185,7 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
                      (int64_t)diag.last_assign_global_limit);
     json_push_kv_str(&body, "last_assign_result",
                      dl_assign_result_name(diag.last_assign_result));
+    controller_json_push_block_intake_stats(&body);
     json_push_kv_int(&body, "defer_proof_validation_below_height",
                      g_deferred_proof_validation_below_height);
     size_t n = api_json_ok(response, response_max, &body);

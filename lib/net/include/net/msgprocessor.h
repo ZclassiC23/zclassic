@@ -29,6 +29,7 @@ struct active_chain;
 struct block_index;
 struct fc_challenge;
 struct fc_response;
+struct msg_block_intake;
 
 typedef bool (*msg_compact_block_submit_fn)(struct block *block,
                                             struct validation_state *out,
@@ -88,6 +89,24 @@ typedef bool (*msg_utxo_sha3_compute_fn)(uint8_t out[32],
                                          uint64_t *utxo_count,
                                          void *ctx);
 
+struct msg_block_intake_stats {
+    uint64_t enqueued;
+    uint64_t dropped;
+    uint64_t processed;
+    uint64_t accepted;
+    uint64_t rejected;
+    uint64_t retryable;
+    uint64_t clone_failed;
+    uint64_t spawn_failed;
+    uint64_t max_depth;
+    uint64_t current_depth;
+    uint64_t capacity;
+    int64_t last_enqueue_unix;
+    int64_t last_process_unix;
+    bool running;
+    bool stopping;
+};
+
 struct msg_processor {
     struct main_state *main_state;
     struct tx_mempool *mempool;
@@ -140,6 +159,7 @@ struct msg_processor {
     void *block_hashes_range_ctx;
     msg_utxo_sha3_compute_fn utxo_sha3_compute;
     void *utxo_sha3_compute_ctx;
+    struct msg_block_intake *block_intake;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -172,6 +192,10 @@ void msg_processor_init(struct msg_processor *mp,
                          const char *datadir,
                          struct net_manager *net_mgr,
                          const struct app_runtime_context *runtime);
+void msg_processor_stop_block_intake(struct msg_processor *mp);
+void msg_processor_get_block_intake_stats(
+    const struct msg_processor *mp,
+    struct msg_block_intake_stats *out);
 
 void msg_processor_set_compact_block_submit(
     struct msg_processor *mp,
