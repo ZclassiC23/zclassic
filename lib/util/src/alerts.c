@@ -44,7 +44,8 @@ static pthread_mutex_t   g_lock = PTHREAD_MUTEX_INITIALIZER;
  * event-observer thread, read from the health/heartbeat thread → atomic. */
 static _Atomic bool      g_operator_needed;
 static _Atomic int64_t   g_operator_needed_since_unix;
-static char              g_operator_needed_detail[128];  /* guarded by g_lock */
+static char              g_operator_needed_detail[
+    ALERT_OPERATOR_NEEDED_DETAIL_LEN];
 
 /* ── Sinks ───────────────────────────────────────────────────── */
 
@@ -443,7 +444,7 @@ bool alerts_operator_needed_clear_if_chain_advance_recovered(
     size_t detail_cap,
     int64_t *since_unix_out)
 {
-    char detail[128] = {0};
+    char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
     int64_t since = 0;
 
     if (!alerts_operator_needed(detail, sizeof(detail), &since))

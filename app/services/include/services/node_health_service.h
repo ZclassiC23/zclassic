@@ -12,6 +12,8 @@
 #include <stdint.h>
 
 #define ZCL_NODE_HEALTH_LAG_WARN_BLOCKS 10
+#define ZCL_NODE_HEALTH_OPERATOR_DETAIL_LEN (EVENT_PAYLOAD_SIZE + 1)
+#define ZCL_NODE_HEALTH_REASON_LEN (EVENT_PAYLOAD_SIZE + 64)
 
 struct node_db;
 struct main_state;
@@ -68,8 +70,8 @@ struct node_health_snapshot {
     bool last_error_recent;
     char last_error[EVENT_PAYLOAD_SIZE + 1];
     char last_error_type[64];
-    char degraded_reason[128];
-    char blocking_reason[128];
+    char degraded_reason[ZCL_NODE_HEALTH_REASON_LEN];
+    char blocking_reason[ZCL_NODE_HEALTH_REASON_LEN];
     char warning_reasons[256];
     char onion_address[128];
     char db_last_op[64];
@@ -149,7 +151,7 @@ struct node_health_snapshot {
      * automatically when the underlying condition clears. */
     bool     operator_needed;
     bool     operator_latch_recovered;
-    char     operator_needed_detail[128];
+    char     operator_needed_detail[ZCL_NODE_HEALTH_OPERATOR_DETAIL_LEN];
 
     /* Fail-loud validation pack rollup (services/invariant_sentinel.h):
      * false while any pack blocker or the chain HOLD latch is active.

@@ -1336,7 +1336,11 @@ int test_syncdiag_rpc(void)
         unsetenv("ZCL_ALERT_WEBHOOK_URL");
         alerts_init();
         alerts_reset();
-        event_emitf(EV_OPERATOR_NEEDED, 0, "chain_integrity_failed");
+        const char *long_blocker =
+            "check=window.consistency I4.3 utxo_apply log hole: contiguous "
+            "ok=1 prefix h=3056758 but cursor=3171120 first_hole_h=3056759 "
+            "repair_owner=reducer_frontier_reconcile_light";
+        event_emitf(EV_OPERATOR_NEEDED, 0, "%s", long_blocker);
         rpc_agent_set_boot_context("dev", "full", "/tmp/zcl-agent-dev",
                                    18252, 8053, 8443, 18034);
 
@@ -1358,9 +1362,14 @@ int test_syncdiag_rpc(void)
         ok = ok && !json_get_bool(json_get(&result, "healthy"));
         ok = ok && !json_get_bool(json_get(&result, "serving"));
         ok = ok && json_get_bool(json_get(&result, "operator_needed"));
-        ok = ok && strcmp(json_get_str(json_get(&result,
-                                                "primary_blocker")),
-                          "operator_needed:chain_integrity_failed") == 0;
+        const char *primary =
+            json_get_str(json_get(&result, "primary_blocker"));
+        ok = ok && primary &&
+             strstr(primary, "operator_needed:check=window.consistency") != NULL;
+        ok = ok && primary &&
+             strstr(primary, "first_hole_h=3056759") != NULL;
+        ok = ok && primary &&
+             strstr(primary, "reducer_frontier_reconcile_light") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "summary")),
                           "node has an active health blocker") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),

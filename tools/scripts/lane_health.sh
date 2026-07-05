@@ -86,6 +86,16 @@ json_string_field() {
         | head -1
 }
 
+json_first_string_field() {
+    local body="$1" key="$2" token
+    token="$(printf '%s\n' "$body" \
+        | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" 2>/dev/null \
+        | head -1 || true)"
+    [ -n "$token" ] || return 0
+    printf '%s\n' "$token" \
+        | sed -n "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"$/\1/p"
+}
+
 json_int_field() {
     local body="$1" key="$2"
     printf '%s\n' "$body" \
@@ -104,6 +114,44 @@ json_bool_field() {
         *) printf null ;;
     esac
 }
+
+json_first_bool_field() {
+    local body="$1" key="$2" token
+    token="$(printf '%s\n' "$body" \
+        | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\\(true\\|false\\)" 2>/dev/null \
+        | head -1 || true)"
+    case "$token" in
+        *true) printf 1 ;;
+        *false) printf 0 ;;
+        *) printf null ;;
+    esac
+}
+
+lane_health_selftest() {
+    local sample op blocked detail
+    sample='{"schema":"zcl.public_status.v1","status":"blocked","operator_needed":true,"primary_blocker":"operator_needed:window.consistency","restart_watchdog":{"operator_needed":false},"reducer":{"validation_pack_ok":false,"validation_pack_detail":"window.consistency"}}'
+    op="$(json_first_bool_field "$sample" "operator_needed")"
+    blocked="$(json_first_string_field "$sample" "status")"
+    detail="$(json_first_string_field "$sample" "validation_pack_detail")"
+    [ "$op" = "1" ] || {
+        echo "lane-health selftest: expected first operator_needed=true" >&2
+        return 1
+    }
+    [ "$blocked" = "blocked" ] || {
+        echo "lane-health selftest: expected status=blocked" >&2
+        return 1
+    }
+    [ "$detail" = "window.consistency" ] || {
+        echo "lane-health selftest: expected validation detail" >&2
+        return 1
+    }
+    return 0
+}
+
+if [ "${ZCL_LANE_HEALTH_SELFTEST:-0}" = "1" ]; then
+    lane_health_selftest
+    exit $?
+fi
 
 highest_snapshot() {
     local datadir="$1" file base stem best_h best_path
@@ -197,6 +245,9 @@ report_lane() {
     local active mainpid restarts start_ts mem_current mem_high mem_max mem_pressure
     local cmdline rpc_up height peers p2p_listening rpc_listening reindex
     local tip_lag status reason role_ready role_reason soak_eligible soak_reason
+    local agent_json agent_build_commit agent_contract_trusted
+    local agent_status agent_operator_needed agent_primary_blocker
+    local agent_next agent_validation_pack_ok agent_validation_pack_detail
     local bootstrap_json snapshot_info snapshot_seed_height snapshot_path
     local snapshot_present loader_path loader_configured recovery_hint
     local chaininfo_json chain_headers initialblockdownload
@@ -239,6 +290,8 @@ report_lane() {
     recovery_hint=""
     chain_headers=""
     initialblockdownload="null"
+    reducer_json=""
+    condition_json=""
     reducer_hstar=""
     reducer_pending_stage=""
     reducer_pending_detail=""
@@ -253,6 +306,14 @@ report_lane() {
     projection_deferred="null"
     projection_state=""
     projection_deferred_reason=""
+    agent_build_commit=""
+    agent_contract_trusted=0
+    agent_status=""
+    agent_operator_needed="null"
+    agent_primary_blocker=""
+    agent_next=""
+    agent_validation_pack_ok="null"
+    agent_validation_pack_detail=""
 
     p2p_listening=0
     rpc_listening=0
@@ -277,6 +338,25 @@ report_lane() {
         if [ -n "$chaininfo_json" ]; then
             chain_headers="$(json_int_field "$chaininfo_json" "headers")"
             initialblockdownload="$(json_bool_field "$chaininfo_json" "initialblockdownload")"
+        fi
+        agent_json="$(rpc_call "$datadir" "$rpcport" agent || true)"
+        if [ -n "$agent_json" ]; then
+            agent_build_commit="$(json_first_string_field "$agent_json" "build_commit")"
+            [ -n "$agent_build_commit" ] && agent_contract_trusted=1
+            agent_status="$(json_first_string_field "$agent_json" "status")"
+            agent_operator_needed="$(json_first_bool_field "$agent_json" "operator_needed")"
+            agent_primary_blocker="$(json_first_string_field "$agent_json" "primary_blocker")"
+            agent_next="$(json_first_string_field "$agent_json" "next")"
+            agent_validation_pack_ok="$(json_first_bool_field "$agent_json" "validation_pack_ok")"
+            agent_validation_pack_detail="$(json_first_string_field "$agent_json" "validation_pack_detail")"
+        fi
+        if [ "$agent_contract_trusted" != "1" ]; then
+            condition_json="$(rpc_call "$datadir" "$rpcport" dumpstate condition_engine || true)"
+            if [ -n "$condition_json" ]; then
+                condition_active_count="$(json_int_field "$condition_json" "active_count")"
+                condition_unresolved_count="$(json_int_field "$condition_json" "unresolved_count")"
+                condition_operator_needed_count="$(json_true_count "$condition_json" "operator_needed_emitted")"
+            fi
         fi
         bootstrap_json="$(rpc_call "$datadir" "$rpcport" bootstrapstatus || true)"
         if [ -n "$bootstrap_json" ]; then
@@ -343,6 +423,22 @@ report_lane() {
             status="fail"
             reason="rpc_down"
         fi
+    elif [ "$agent_contract_trusted" = "1" ] &&
+         [ "$agent_operator_needed" = "1" ]; then
+        status="fail"
+        reason="agent_operator_needed"
+    elif [ "$agent_contract_trusted" = "1" ] &&
+         [ "$agent_status" = "blocked" ]; then
+        status="fail"
+        reason="agent_blocked"
+    elif [ "$agent_contract_trusted" = "1" ] &&
+         [ "$agent_validation_pack_ok" = "0" ]; then
+        status="fail"
+        reason="validation_pack_failed"
+    elif is_number "$condition_operator_needed_count" &&
+         [ "$condition_operator_needed_count" -gt 0 ]; then
+        status="fail"
+        reason="condition_operator_needed"
     elif is_number "$peers" && [ "$peers" -lt 1 ]; then
         status="warn"
         reason="no_peers"
@@ -357,6 +453,18 @@ report_lane() {
         reason="listener_missing"
     fi
 
+    if [ "$agent_contract_trusted" = "1" ] &&
+       { [ "$agent_operator_needed" = "1" ] ||
+         [ "$agent_status" = "blocked" ]; }; then
+        recovery_hint="inspect_agent_primary_blocker"
+    elif [ "$agent_contract_trusted" = "1" ] &&
+         [ "$agent_validation_pack_ok" = "0" ]; then
+        recovery_hint="inspect_validation_pack"
+    elif is_number "$condition_operator_needed_count" &&
+         [ "$condition_operator_needed_count" -gt 0 ]; then
+        recovery_hint="inspect_condition_engine"
+    fi
+
     if [ -z "$recovery_hint" ]; then
         if [ "$active" != "active" ]; then
             recovery_hint="start_or_inspect_${unit}"
@@ -364,6 +472,11 @@ report_lane() {
             recovery_hint="remove_forced_reindex_override"
         elif [ "$rpc_up" != "1" ]; then
             recovery_hint="wait_or_tail_node_log"
+        elif [ "$agent_operator_needed" = "1" ] ||
+             [ "$agent_status" = "blocked" ]; then
+            recovery_hint="inspect_agent_primary_blocker"
+        elif [ "$agent_validation_pack_ok" = "0" ]; then
+            recovery_hint="inspect_validation_pack"
         elif [ "$tip_lag" != "null" ] && [ "$tip_lag" -gt "$LAG_WARN" ]; then
             if [ "$snapshot_present" = "1" ] && [ "$loader_configured" != "1" ]; then
                 recovery_hint="restart_with_load_snapshot_at_own_height"
@@ -393,6 +506,18 @@ report_lane() {
             soak_reason="forced_reindex_flag_present"
         elif [ "$rpc_up" != "1" ]; then
             soak_reason="rpc_down"
+        elif [ "$agent_contract_trusted" = "1" ] &&
+             [ "$agent_operator_needed" = "1" ]; then
+            soak_reason="agent_operator_needed"
+        elif [ "$agent_contract_trusted" = "1" ] &&
+             [ "$agent_status" = "blocked" ]; then
+            soak_reason="agent_blocked"
+        elif [ "$agent_contract_trusted" = "1" ] &&
+             [ "$agent_validation_pack_ok" = "0" ]; then
+            soak_reason="validation_pack_failed"
+        elif is_number "$condition_operator_needed_count" &&
+             [ "$condition_operator_needed_count" -gt 0 ]; then
+            soak_reason="condition_operator_needed"
         elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
             soak_reason="listener_missing"
         elif [ -z "$LIVE_REFERENCE_HEIGHT" ]; then
@@ -436,7 +561,8 @@ report_lane() {
             fi
             ;;
         dev)
-            if [ "$active" = "active" ] &&
+            if [ "$status" = "ok" ] &&
+               [ "$active" = "active" ] &&
                [ "$reindex" != "1" ] &&
                [ "$rpc_up" = "1" ] &&
                [ "$p2p_listening" = "1" ] &&
@@ -463,7 +589,9 @@ report_lane() {
             reducer_primary_detail="$(json_string_field "$reducer_json" "hstar_next_primary_detail")"
             reducer_blocker_count="$(json_int_field "$reducer_json" "hstar_next_blocker_count")"
         fi
-        condition_json="$(rpc_call "$datadir" "$rpcport" dumpstate condition_engine || true)"
+        if [ -z "$condition_json" ]; then
+            condition_json="$(rpc_call "$datadir" "$rpcport" dumpstate condition_engine || true)"
+        fi
         if [ -n "$condition_json" ]; then
             condition_active_count="$(json_int_field "$condition_json" "active_count")"
             condition_unresolved_count="$(json_int_field "$condition_json" "unresolved_count")"
@@ -478,7 +606,7 @@ report_lane() {
     esac
 
     if [ "$JSON" = "1" ]; then
-        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","projection_height":%s,"projection_lag":%s,"projection_deferred":%s,"projection_state":"%s","projection_deferred_reason":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
+        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"agent_build_commit":"%s","agent_contract_trusted":%s,"agent_status":"%s","agent_operator_needed":%s,"agent_primary_blocker":"%s","agent_next":"%s","agent_validation_pack_ok":%s,"agent_validation_pack_detail":"%s","height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","projection_height":%s,"projection_lag":%s,"projection_deferred":%s,"projection_state":"%s","projection_deferred_reason":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$unit")" \
             "$(json_escape "$datadir")" \
@@ -494,6 +622,14 @@ report_lane() {
             "$(json_number "$mem_max")" \
             "$(json_escape "$mem_pressure")" \
             "$(json_bool "$rpc_up")" \
+            "$(json_escape "$agent_build_commit")" \
+            "$(json_bool "$agent_contract_trusted")" \
+            "$(json_escape "$agent_status")" \
+            "$(json_tri_bool "$agent_operator_needed")" \
+            "$(json_escape "$agent_primary_blocker")" \
+            "$(json_escape "$agent_next")" \
+            "$(json_tri_bool "$agent_validation_pack_ok")" \
+            "$(json_escape "$agent_validation_pack_detail")" \
             "${height:-null}" \
             "$(json_number "$chain_headers")" \
             "$(json_tri_bool "$initialblockdownload")" \
@@ -529,12 +665,16 @@ report_lane() {
             "$(json_escape "$status")" \
             "$(json_escape "$reason")"
     else
-        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s projection_h=%-8s projection_lag=%-8s projection_deferred=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
+        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s agent=%-8s agent_trusted=%s agent_op=%s agent_blocker=%s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s projection_h=%-8s projection_lag=%-8s projection_deferred=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
             "$lane" "$status" "$reason" \
             "$([ "$role_ready" = "1" ] && printf yes || printf no)" \
             "$role_reason" \
             "$unit" "$active" "$mainpid" "$restarts" \
             "$([ "$rpc_up" = "1" ] && printf up || printf down)" \
+            "${agent_status:-unknown}" \
+            "$([ "$agent_contract_trusted" = "1" ] && printf yes || printf no)" \
+            "$([ "$agent_operator_needed" = "1" ] && printf yes || { [ "$agent_operator_needed" = "0" ] && printf no || printf n/a; })" \
+            "${agent_primary_blocker:-none}" \
             "${height:-null}" \
             "${chain_headers:-null}" \
             "$([ "$initialblockdownload" = "1" ] && printf yes || { [ "$initialblockdownload" = "0" ] && printf no || printf n/a; })" \

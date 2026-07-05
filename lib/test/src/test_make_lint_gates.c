@@ -2378,6 +2378,20 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_health, "dumpstate condition_engine") != NULL);
         ASSERT(strstr(lane_health,
                       "dumpstate chain_advance_coordinator") != NULL);
+        ASSERT(strstr(lane_health, "ZCL_LANE_HEALTH_SELFTEST") != NULL);
+        ASSERT(strstr(lane_health, "json_first_bool_field") != NULL);
+        ASSERT(strstr(lane_health, "agent_build_commit") != NULL);
+        ASSERT(strstr(lane_health, "agent_contract_trusted") != NULL);
+        ASSERT(strstr(lane_health, "agent_operator_needed") != NULL);
+        ASSERT(strstr(lane_health, "agent_primary_blocker") != NULL);
+        ASSERT(strstr(lane_health, "agent_validation_pack_ok") != NULL);
+        ASSERT(strstr(lane_health, "agent_blocked") != NULL);
+        ASSERT(strstr(lane_health, "inspect_agent_primary_blocker") != NULL);
+        ASSERT(strstr(lane_health, "condition_operator_needed") != NULL);
+        ASSERT(strstr(lane_health, "inspect_condition_engine") != NULL);
+        ASSERT(run_gate_script_with_env("tools/scripts/lane_health.sh",
+                                        "ZCL_LANE_HEALTH_SELFTEST",
+                                        "1") == 0);
         ASSERT(strstr(lane_health, "chain_advance_current_json") != NULL);
         ASSERT(strstr(lane_health, "\\\"last_decision\\\"") != NULL);
         ASSERT(strstr(lane_health, "reducer_hstar") != NULL);

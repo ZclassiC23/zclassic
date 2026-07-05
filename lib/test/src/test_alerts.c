@@ -254,7 +254,7 @@ static int test_operator_needed_latch(void)
          * This is THE silent-halt signal; it must now be observable. */
         event_emitf(EV_OPERATOR_NEEDED, 0,
                     "condition=tip_not_advancing attempts=5");
-        char detail[128] = {0};
+        char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
         int64_t since = 0;
         ASSERT(alerts_operator_needed(detail, sizeof(detail), &since));
         ASSERT(contains(detail, "tip_not_advancing"));
@@ -264,6 +264,17 @@ static int test_operator_needed_latch(void)
         event_emitf(EV_CONDITION_CLEARED, 0,
                     "name=tip_not_advancing cleared_count=1");
         ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+
+        const char *long_payload =
+            "check=window.consistency I4.3 utxo_apply log hole: contiguous "
+            "ok=1 prefix h=3056758 but cursor=3171120 first_hole_h=3056759 "
+            "repair_owner=reducer_frontier_reconcile_light";
+        event_emitf(EV_OPERATOR_NEEDED, 0, "%s", long_payload);
+        char long_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
+        ASSERT(alerts_operator_needed(long_detail, sizeof(long_detail), NULL));
+        ASSERT(strlen(long_detail) > 128);
+        ASSERT(contains(long_detail, "first_hole_h=3056759"));
+        ASSERT(contains(long_detail, "reducer_frontier_reconcile_light"));
 
         alerts_shutdown();
         PASS();
@@ -283,7 +294,7 @@ static int test_operator_needed_chain_advance_recovery_clear(void)
 
         event_emitf(EV_OPERATOR_NEEDED, 0,
                     "condition=chain_advance_local_recovery_gate attempts=5");
-        char detail[128] = {0};
+        char detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
         ASSERT(alerts_operator_needed(detail, sizeof(detail), NULL));
         ASSERT(contains(detail, "chain_advance_local_recovery_gate"));
 

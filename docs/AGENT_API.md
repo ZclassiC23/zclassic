@@ -192,6 +192,20 @@ selected snapshot is not newer than the lane height, unless
 `ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT=1` is set. The import is bounded by
 `ZCL_LANE_RECOVERY_IMPORT_TIMEOUT` (default 1200 seconds).
 
+When lane RPC is reachable, `make lane-health --json` also consumes the native
+`agent` contract and exposes `agent_build_commit`,
+`agent_contract_trusted`, `agent_status`, `agent_operator_needed`,
+`agent_primary_blocker`, `agent_next`, `agent_validation_pack_ok`, and
+`agent_validation_pack_detail`. A current native `agent` contract
+(`agent_contract_trusted=true`, which requires `build_commit`) with `blocked`
+or `operator_needed=true` makes the lane `status=fail` and clears role
+readiness, even if basic peer/height/listener checks still look fine. Older
+compact agent responses are still printed but do not override lane status by
+themselves; lane health falls back to `condition_engine` operator-needed pages
+for those runtimes. This keeps the shell lane summary subordinate to the
+C-native API without letting stale wrapper-era responses hide or invent a
+validation-pack hold.
+
 ## Bootstrap Service Status
 
 Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a

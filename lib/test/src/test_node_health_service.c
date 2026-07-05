@@ -766,6 +766,19 @@ int test_node_health_service(void)
             ok = ok && health.warning;
             ok = ok && strstr(health.warning_reasons,
                               "high_memory_usage") != NULL;
+
+            alerts_operator_needed_clear();
+            const char *long_blocker =
+                "check=window.consistency I4.3 utxo_apply log hole: "
+                "contiguous ok=1 prefix h=3056758 but cursor=3171120 "
+                "first_hole_h=3056759 "
+                "repair_owner=reducer_frontier_reconcile_light";
+            event_emitf(EV_OPERATOR_NEEDED, 0, "%s", long_blocker);
+            node_health_collect(&health, NULL, &ms);
+            ok = ok && strstr(health.operator_needed_detail,
+                              "first_hole_h=3056759") != NULL;
+            ok = ok && strstr(health.blocking_reason,
+                              "reducer_frontier_reconcile_light") != NULL;
         }
 
         alerts_shutdown();

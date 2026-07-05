@@ -137,7 +137,7 @@ struct agent_fast_snapshot {
     struct agent_resource_snapshot resources;
     int warning_count;
     char warning_reasons[256];
-    char blocking_reason[128];
+    char blocking_reason[ZCL_NODE_HEALTH_REASON_LEN];
     char last_error_type[64];
     char projection_state[32];
     char last_projection_deferred_reason[64];
@@ -422,7 +422,7 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     }
     s->serving = s->served_height > 0;
 
-    char operator_detail[96] = {0};
+    char operator_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
     bool frontier_recovered =
         s->serving && s->has_peers && s->gap <= 1 &&
         s->index_gap <= 1 &&

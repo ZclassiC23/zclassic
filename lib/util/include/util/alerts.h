@@ -33,6 +33,7 @@ extern "C" {
 #define ALERT_MAX_RULES     16
 #define ALERT_NAME_LEN      32
 #define ALERT_WEBHOOK_LEN   512
+#define ALERT_OPERATOR_NEEDED_DETAIL_LEN (EVENT_PAYLOAD_SIZE + 1)
 
 struct alert_rule {
     char             name[ALERT_NAME_LEN];
