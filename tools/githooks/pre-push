@@ -3,19 +3,20 @@
 #
 # Pre-push LOCAL CI gate.
 #
-# This project runs CI ONLY locally on the maintainer's own server — never
-# GitHub Actions (Actions cost money). `make ci` (lint + test_zcl + the MVP
-# slice-gates + bench-regress) is the gate; this hook makes it AUTOMATIC so
-# nothing unverified reaches origin, instead of relying on a human to remember.
+# This project runs CI ONLY locally on the maintainer's own server - never
+# GitHub Actions (Actions cost money). `make pre-push-ci` is the synchronous
+# gate; long fuzz and coverage proof work runs through linger timers so pushes
+# are blocked by correctness regressions, not by background evidence jobs.
 #
 # Activate:  make install-hooks   (sets core.hooksPath=tools/githooks)
 # Fast local edit-loop before commit:  make fast-ci
-# The default pre-push remains full make ci.
+# The default pre-push is make pre-push-ci (make ci with fuzz/coverage skipped).
+# Background proof lanes:  make install-quality-linger
 # Bypass once:  git push --no-verify     OR     ZCL_SKIP_PREPUSH=1 git push
 # Override the command (e.g. a faster subset):  ZCL_PREPUSH_CMD='make lint'
 #
-# Pushes are infrequent in this repo, so a full `make ci` per push is cheap
-# relative to the cost of shipping a regression to origin.
+# Full `make ci` remains available for release-grade manual runs. The default
+# push path keeps long-running fuzz/coverage evidence off the critical path.
 set -euo pipefail
 
 if [ "${ZCL_SKIP_PREPUSH:-0}" = "1" ]; then
@@ -39,8 +40,9 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-CMD="${ZCL_PREPUSH_CMD:-make ci}"
+CMD="${ZCL_PREPUSH_CMD:-make pre-push-ci}"
 echo "pre-push: running local CI gate ($CMD) before push to origin…" >&2
+echo "pre-push: long fuzz/coverage lanes run via 'make install-quality-linger'." >&2
 echo "pre-push: bypass one push with 'git push --no-verify' if you must." >&2
 if ! $CMD; then
     echo "" >&2

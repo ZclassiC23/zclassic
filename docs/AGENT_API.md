@@ -18,6 +18,20 @@ The native RPC contracts are implemented in
 `tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
 currently exposes the public status contract at `GET /api/v1/agent`.
 
+## Command Center
+
+The first-call operator view is `zcl_operator_summary` through MCP, or
+`zclassic23 agent` through the native binary. It returns the stable status,
+height/gap, peer summary, active blockers, next action, and recommended
+drill-down tools. Use `zcl_status` for the larger health packet, `zcl_state`
+for subsystem internals, `zcl_node_log` for bounded log search, and `zcl_sql`
+for SELECT-only database inspection.
+
+Every new subsystem that has runtime state should expose it through the
+diagnostics registry and become reachable through `zcl_state`. Expensive
+development proof state belongs in a named background quality lane with a JSON
+verdict, not in an untracked terminal scrollback.
+
 ## Build loop
 
 This is a C23 project, so the edit loop should compile only what changed.
@@ -43,7 +57,24 @@ This is a C23 project, so the edit loop should compile only what changed.
 
 Before pushing `main`, the strict gate remains `make lint`, `make build-only`,
 and the relevant strict `make t ONLY=<group>` tests. The tracked pre-push hook
-runs full `make ci`.
+runs `make pre-push-ci`, which is `make ci` with fuzz and coverage skipped.
+Long-running fuzz and coverage evidence belongs to the background quality
+lanes: install them with `make install-quality-linger` and inspect them with
+`make quality-linger-status`. Status JSON is written under
+`~/.local/state/zclassic23-quality`.
+
+## Background proof lanes
+
+The background lanes keep expensive proof work running without blocking every
+push.
+
+- `zclassic23-fuzz.timer` runs `tools/scripts/background_quality_lane.sh fuzz`
+  hourly. Default duration is 900 seconds per fuzzer; override with
+  `ZCL_FUZZ_DURATION`.
+- `zclassic23-coverage.timer` runs
+  `tools/scripts/background_quality_lane.sh coverage` weekly.
+- `make quality-linger-status` prints timer status plus the latest
+  `zcl.background_quality_status.v1` JSON verdict.
 
 ## Reproducible build proof
 

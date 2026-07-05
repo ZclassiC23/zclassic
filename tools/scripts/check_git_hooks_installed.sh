@@ -20,7 +20,7 @@ fi
 if [[ "$actual" != "$want" ]]; then
     echo "check_git_hooks_installed: FAIL — core.hooksPath='$actual' (want '$want')" >&2
     echo "  Run: make install-hooks" >&2
-    echo "  This arms tools/githooks/pre-push so local make ci runs before push." >&2
+    echo "  This arms tools/githooks/pre-push so local make pre-push-ci runs before push." >&2
     exit 1
 fi
 
@@ -33,11 +33,11 @@ fi
 
 if ! awk '
     /^[[:space:]]*#/ { next }
-    /^[[:space:]]*CMD="\$\{ZCL_PREPUSH_CMD:-make ci\}"[[:space:]]*$/ { default_cmd=1 }
+    /^[[:space:]]*CMD="\$\{ZCL_PREPUSH_CMD:-make pre-push-ci\}"[[:space:]]*$/ { default_cmd=1 }
     /^[[:space:]]*if[[:space:]]+![[:space:]]+\$CMD;[[:space:]]*then[[:space:]]*$/ { invokes_cmd=1 }
     END { exit !(default_cmd && invokes_cmd) }
 ' "$hook"; then
-    echo "check_git_hooks_installed: FAIL — $hook does not run the local make ci gate" >&2
+    echo "check_git_hooks_installed: FAIL — $hook does not run the local make pre-push-ci gate" >&2
     echo "  Restore the tracked pre-push hook or run: git checkout -- $hook" >&2
     exit 1
 fi

@@ -2287,6 +2287,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE=0") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
+        ASSERT(strstr(buf, "pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "install-quality-linger") != NULL);
+        ASSERT(strstr(buf, "quality-linger-status") != NULL);
+        ASSERT(strstr(buf, "tools/scripts/background_quality_lane.sh") != NULL);
         free(buf);
         buf = NULL;
 
@@ -2338,6 +2342,8 @@ static int t_agent_fast_ci_contract(void)
                       "skipping lint-fast/build-only/focused tests") != NULL);
         ASSERT(strstr(buf, "record_fast_cache_pass") != NULL);
         ASSERT(strstr(buf, "not full release CI") != NULL);
+        ASSERT(strstr(buf, "make pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "make install-quality-linger") != NULL);
         free(buf);
         buf = NULL;
 
@@ -2363,10 +2369,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "MCP tools") != NULL);
         ASSERT(strstr(buf, "`tools/z`") != NULL);
         ASSERT(strstr(buf, "deprecated shell compatibility") != NULL);
-        ASSERT(strstr(buf, "tracked pre-push hook runs full `make ci`")
+        ASSERT(strstr(buf, "tracked pre-push hook runs `make pre-push-ci`")
                != NULL);
-        ASSERT(strstr(buf, "`bench-regress`, `zclassic23`, `test_parallel`")
-               != NULL);
+        ASSERT(strstr(buf, "zclassic23-fuzz.timer") != NULL);
+        ASSERT(strstr(buf, "zclassic23-coverage.timer") != NULL);
+        ASSERT(strstr(buf, "zcl.background_quality_status.v1") != NULL);
         free(buf);
         buf = NULL;
 
@@ -2374,7 +2381,8 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "Fast local edit-loop before commit:  make fast-ci")
                != NULL);
-        ASSERT(strstr(buf, "default pre-push remains full make ci") != NULL);
+        ASSERT(strstr(buf, "default pre-push is make pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "make install-quality-linger") != NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -2440,6 +2448,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_FAST_CACHE") != NULL);
         ASSERT(strstr(agent_ctrl_buf, ".cache/zcl-agent-fast-ci") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "command_center") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "background_quality") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "background_quality_lanes") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make quality-linger-status") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23-fuzz.timer") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23-coverage.timer") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "app/controllers/src/agent_controller.c")
                != NULL);
         ASSERT(strstr(api_buf,
@@ -2471,6 +2486,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE=0") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
         ASSERT(strstr(agent_doc_buf, "make ci-reproducible") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_state") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_node_log") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make pre-push-ci") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make install-quality-linger") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make quality-linger-status") != NULL);
         ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
                != NULL);
         PASS();

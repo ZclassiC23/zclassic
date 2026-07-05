@@ -274,6 +274,9 @@ cache_manifest() {
 
     for file in Makefile tools/agent_fast_ci.sh tools/z \
         tools/githooks/pre-push tools/deploy_verify.sh \
+        tools/scripts/background_quality_lane.sh \
+        deploy/zclassic23-fuzz.service deploy/zclassic23-fuzz.timer \
+        deploy/zclassic23-coverage.service deploy/zclassic23-coverage.timer \
         lib/test/src/test_make_lint_gates.c docs/work/fast-path.md \
         docs/AGENT_API.md app/controllers/src/agent_controller.c; do
         cache_manifest_file "$file" "$file"
@@ -353,7 +356,7 @@ run_shell_checks() {
     local script
     log "shell checks"
     git diff --check
-    for script in tools/agent_fast_ci.sh tools/z tools/githooks/pre-push tools/deploy_verify.sh; do
+    for script in tools/agent_fast_ci.sh tools/z tools/githooks/pre-push tools/deploy_verify.sh tools/scripts/background_quality_lane.sh; do
         bash -n "$script"
     done
 }
@@ -500,7 +503,7 @@ main() {
     if maybe_fast_cache_hit; then
         maybe_live_probe
         log "PASS: fast lane cache hit; not full release CI"
-        log "Before pushing main, keep the full gate: make lint && make build-only && relevant tests; default pre-push remains full make ci."
+        log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Long fuzz/coverage run through make install-quality-linger."
         return
     fi
 
@@ -516,7 +519,7 @@ main() {
 
     record_fast_cache_pass
     log "PASS: fast lane complete; not full release CI"
-    log "Before pushing main, keep the full gate: make lint && make build-only && relevant tests; default pre-push remains full make ci."
+    log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Long fuzz/coverage run through make install-quality-linger."
 }
 
 main "$@"

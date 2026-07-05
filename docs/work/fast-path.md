@@ -60,6 +60,9 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + `build-only` + focused tests inferred from changed files + native linger-service probe; identical green inputs skip repeated lint/build/focused tests |
+| `make pre-push-ci` | bounded push gate: `make ci` with fuzz and coverage skipped |
+| `make install-quality-linger` | install hourly fuzz and weekly coverage user timers |
+| `make quality-linger-status` | show latest background fuzz/coverage JSON verdicts |
 | `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
 | `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
@@ -104,9 +107,12 @@ Canonical operator APIs, in priority order:
 
 `make fast-ci` is not the release gate. Before pushing `main`, the manual
 preflight remains `make lint`, `make build-only`, and the relevant strict
-`make t ONLY=<group>` tests; the tracked pre-push hook runs full `make ci`
-(`lint`, `bench-regress`, `zclassic23`, `test_parallel`, symbol floor, and
-MVP gates).
+`make t ONLY=<group>` tests; the tracked pre-push hook runs `make pre-push-ci`
+(`make ci SKIP_FUZZ=1 SKIP_COV=1`). Full `make ci` still runs fuzz and
+coverage when called explicitly, but those expensive lanes are normally kept
+fresh by `zclassic23-fuzz.timer` and `zclassic23-coverage.timer`. Install them
+with `make install-quality-linger`; inspect their latest
+`zcl.background_quality_status.v1` verdict with `make quality-linger-status`.
 
 ## Invariants that hold across every stage
 

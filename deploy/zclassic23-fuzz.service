@@ -1,0 +1,20 @@
+[Unit]
+Description=ZClassic23 Background Fuzz Lane
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/github/zclassic23
+ExecStart=%h/github/zclassic23/tools/scripts/background_quality_lane.sh fuzz
+TimeoutStartSec=7200
+
+# The lane is evidence, not serving traffic. Keep it polite to the live node.
+Environment=ZCL_FUZZ_DURATION=900
+Nice=15
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+MemoryHigh=8G
+TasksMax=512
+
+StandardOutput=journal
+StandardError=journal

@@ -169,6 +169,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev lane-health check-restart-follow \
+        background-fuzz background-coverage install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
         lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
@@ -1717,19 +1718,42 @@ deploy-dev:
 lane-health:
 	@./tools/scripts/lane_health.sh
 
+background-fuzz:
+	@./tools/scripts/background_quality_lane.sh fuzz
+
+background-coverage:
+	@./tools/scripts/background_quality_lane.sh coverage
+
+install-quality-linger:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-fuzz.service "$(HOME)/.config/systemd/user/zclassic23-fuzz.service"
+	@install -m 644 deploy/zclassic23-fuzz.timer "$(HOME)/.config/systemd/user/zclassic23-fuzz.timer"
+	@install -m 644 deploy/zclassic23-coverage.service "$(HOME)/.config/systemd/user/zclassic23-coverage.service"
+	@install -m 644 deploy/zclassic23-coverage.timer "$(HOME)/.config/systemd/user/zclassic23-coverage.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-fuzz.timer zclassic23-coverage.timer
+	@echo "installed background quality lanes: zclassic23-fuzz.timer zclassic23-coverage.timer"
+	@echo "status: make quality-linger-status"
+
+quality-linger-status:
+	@systemctl --user list-timers zclassic23-fuzz.timer zclassic23-coverage.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service --no-pager -n 12 2>/dev/null || true
+	@./tools/scripts/background_quality_lane.sh status
+
 release:
 	@./tools/release.sh
 
 # Install the tracked git hooks (shared across all worktrees via core.hooksPath).
-# pre-push runs the LOCAL CI gate (`make ci`) so nothing unverified reaches
-# origin — this project runs CI locally, never on GitHub Actions. Opt-in:
-# nothing changes until you run this. Bypass one push with `git push --no-verify`.
+# pre-push runs the bounded LOCAL CI gate (`make pre-push-ci`) so nothing
+# unverified reaches origin. Long fuzz/coverage proof work runs through the
+# linger timers installed by `make install-quality-linger`.
 .PHONY: install-hooks
 install-hooks:
 	@git config core.hooksPath tools/githooks
 	@chmod +x tools/githooks/* 2>/dev/null || true
 	@echo "Installed git hooks: core.hooksPath=tools/githooks"
-	@echo "  pre-push → runs 'make ci' before every push to origin"
+	@echo "  pre-push -> runs 'make pre-push-ci' before every push to origin"
+	@echo "  long fuzz/coverage -> make install-quality-linger"
 	@echo "  bypass one push: git push --no-verify   (or ZCL_SKIP_PREPUSH=1)"
 
 .PHONY: check-git-hooks-installed
@@ -1923,6 +1947,9 @@ docs-mcp-check: zclassic23
 #   make ci                 # full pipeline
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
+pre-push-ci:
+	@$(MAKE) ci SKIP_FUZZ=1 SKIP_COV=1
+
 check-malloc:
 	@echo "══ LINT: bare malloc/calloc/realloc in app/tools code ══"
 	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' --include='*.h' \

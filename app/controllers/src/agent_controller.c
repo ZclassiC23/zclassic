@@ -280,6 +280,14 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     agent_push_command(&commands, "build", "zclassic23 agentbuild",
                        "zcl_agent_build",
                        "incremental/cache/reproducible build contract");
+    agent_push_command(&commands, "command_center",
+                       "zclassic23 agent",
+                       "zcl_operator_summary",
+                       "one-shot live node status, blockers, next action, and drill-down tools");
+    agent_push_command(&commands, "background_quality",
+                       "make quality-linger-status",
+                       "zcl_agent_build",
+                       "latest background fuzz/coverage lane verdicts");
     agent_push_command(&commands, "health", "zclassic23 healthcheck",
                        "zcl_health", "strict health drill-down");
     agent_push_command(&commands, "logs", "zclassic23 getnodelog <regex>",
@@ -321,6 +329,12 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                          "docs/work/fast-path.md",
                          "make_lint_gates",
                          "zcl_agent_impact, zcl_agent_build");
+    agent_push_subsystem(&subsystems, "background_quality_lanes",
+                         "long fuzz and coverage proof work outside the push path",
+                         "tools/scripts/background_quality_lane.sh, deploy/zclassic23-fuzz.service, deploy/zclassic23-coverage.service",
+                         "docs/work/fast-path.md",
+                         "make_lint_gates",
+                         "zcl_agent_build");
     json_push_kv(result, "subsystems", &subsystems);
     json_free(&subsystems);
 
@@ -417,7 +431,9 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
     agent_push_str(&gates, "make lint");
     agent_push_str(&gates, "make build-only");
     agent_push_str(&gates, "relevant strict make t ONLY=<group>");
-    agent_push_str(&gates, "tracked pre-push hook runs full make ci");
+    agent_push_str(&gates, "tracked pre-push hook runs make pre-push-ci");
+    agent_push_str(&gates,
+                   "long fuzz/coverage evidence runs in background quality lanes");
 
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_impact.v1");
@@ -539,7 +555,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_build.v1\", "
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
-    struct json_value incremental, cache, knobs, commands, repro, gates;
+    struct json_value incremental, cache, knobs, commands, repro, background,
+                      lanes, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -616,6 +633,9 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_command(&commands, "byte_identity",
                              "make ci-reproducible",
                              "build twice in isolated dirs and cmp binaries");
+    agent_push_build_command(&commands, "background_quality_status",
+                             "make quality-linger-status",
+                             "show latest background fuzz/coverage JSON verdicts");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
 
@@ -635,12 +655,38 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv(result, "reproducible_release", &repro);
     json_free(&repro);
 
+    json_init(&background);
+    json_set_object(&background);
+    json_push_kv_str(&background, "install", "make install-quality-linger");
+    json_push_kv_str(&background, "status", "make quality-linger-status");
+    json_push_kv_str(&background, "script",
+                     "tools/scripts/background_quality_lane.sh");
+    json_push_kv_str(&background, "state_dir",
+                     "~/.local/state/zclassic23-quality");
+    json_push_kv_bool(&background, "pre_push_blocks_on_long_lanes", false);
+
+    json_init(&lanes);
+    json_set_array(&lanes);
+    agent_push_build_command(&lanes, "fuzz",
+                             "zclassic23-fuzz.timer",
+                             "hourly libFuzzer background lane with JSON verdict");
+    agent_push_build_command(&lanes, "coverage",
+                             "zclassic23-coverage.timer",
+                             "weekly coverage lane with JSON verdict");
+    json_push_kv(&background, "lanes", &lanes);
+    json_free(&lanes);
+    json_push_kv(result, "background_quality_lanes", &background);
+    json_free(&background);
+
     json_init(&gates);
     json_set_array(&gates);
     agent_push_str(&gates, "make lint");
     agent_push_str(&gates, "make build-only");
     agent_push_str(&gates, "relevant strict make t ONLY=<group>");
-    agent_push_str(&gates, "tracked pre-push hook runs full make ci");
+    agent_push_str(&gates,
+                   "tracked pre-push hook runs make pre-push-ci");
+    agent_push_str(&gates,
+                   "long fuzz/coverage lanes run via make install-quality-linger");
     json_push_kv(result, "pre_push_gates", &gates);
     json_free(&gates);
     return true;
