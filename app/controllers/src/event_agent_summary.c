@@ -11,6 +11,7 @@
 #include "controllers/strong_params.h"
 #include "controllers/sync_controller.h"
 #include "event_agent_peers.h"
+#include "event_agent_readiness.h"
 #include "event/event.h"
 #include "jobs/tip_finalize_stage.h"
 #include "json/json.h"
@@ -392,9 +393,7 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     if (s->tip_advance_age_seconds > 600 &&
         s->sync_state != SYNC_AT_TIP)
         agent_fast_add_warning(s, "tip_advance_stale");
-
     agent_fast_collect_errors(s);
-
     s->validation_pack_ok =
         invariant_sentinel_healthy(s->validation_pack_detail,
                                    (int)sizeof(s->validation_pack_detail));
@@ -402,7 +401,6 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         agent_fast_add_warning(s, s->validation_pack_detail[0]
                                   ? s->validation_pack_detail
                                   : "validation_pack");
-
     s->target_height = s->tip_height > s->served_height
         ? s->tip_height : s->served_height;
     if (s->header_height > s->target_height)
@@ -581,6 +579,9 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "primary_blocker", primary);
     json_push_kv_str(result, "next", next);
     agent_push_operator_lane_json(result, "operator_lane");
+    agent_push_readiness_json(result, "readiness", health.serving,
+                              health.has_peers, health.operator_needed,
+                              health.validation_pack_ok, health.gap, health.index_gap, health.log_head_gap);
     json_push_kv_int(result, "height", health.served_height);
     json_push_kv_int(result, "served_height", health.served_height);
     json_push_kv_int(result, "indexed_height", health.indexed_height);
@@ -786,7 +787,6 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_real(&download, "mbps_avg", health.download_mbps_avg);
     json_push_kv(result, "download", &download);
     json_free(&download);
-
     struct json_value services = {0};
     json_set_object(&services);
     json_push_kv_bool(&services, "tor_enabled", health.tor_enabled);

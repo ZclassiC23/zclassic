@@ -850,6 +850,11 @@ static char *mock_operator_degraded_rpc(const char *method,
                       "\"unresolved_count\":0}}}");
     if (strcmp(method, "agent") == 0)
         return strdup("{\"schema\":\"zcl.public_status.v1\","
+                      "\"readiness\":{"
+                      "\"schema\":\"zcl.agent_readiness.v1\","
+                      "\"chain_serving_ready\":true,"
+                      "\"index_projection_ready\":false,"
+                      "\"agent_work_ready\":true},"
                       "\"operator_lane\":{"
                       "\"schema\":\"zcl.operator_lane.v1\","
                       "\"schema_version\":1,"
@@ -901,6 +906,11 @@ static char *mock_operator_healthy_rpc(const char *method,
                       "\"unresolved_count\":0}}}");
     if (strcmp(method, "agent") == 0)
         return strdup("{\"schema\":\"zcl.public_status.v1\","
+                      "\"readiness\":{"
+                      "\"schema\":\"zcl.agent_readiness.v1\","
+                      "\"chain_serving_ready\":true,"
+                      "\"index_projection_ready\":true,"
+                      "\"agent_work_ready\":true},"
                       "\"operator_lane\":{"
                       "\"schema\":\"zcl.operator_lane.v1\","
                       "\"schema_version\":1,"
@@ -1036,7 +1046,8 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
     }
     if (strcmp(method, "agentcontracts") == 0)
         return strdup("{\"schema\":\"zcl.agent_contracts.v1\","
-                      "\"schemas\":[{\"schema\":\"zcl.agent_build.v1\"}],"
+                      "\"schemas\":[{\"schema\":\"zcl.agent_build.v1\"},"
+                      "{\"schema\":\"zcl.agent_readiness.v1\"}],"
                       "\"transports\":[\"mcp: zcl_agent_build\"]}");
     if (strcmp(method, "agentbuild") == 0)
         return strdup("{\"schema\":\"zcl.agent_build.v1\","

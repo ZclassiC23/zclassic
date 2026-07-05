@@ -176,6 +176,27 @@ static bool api_test_array_has_str(const struct json_value *arr,
     return false;
 }
 
+static bool api_test_expect_readiness_shape(const struct json_value *root)
+{
+    const struct json_value *readiness = json_get(root, "readiness");
+    if (!readiness || readiness->type != JSON_OBJ)
+        return false;
+
+    return strcmp(json_get_str(json_get(readiness, "schema")),
+                  "zcl.agent_readiness.v1") == 0 &&
+           json_get_int(json_get(readiness, "schema_version")) == 1 &&
+           json_get(readiness, "status") != NULL &&
+           json_get(readiness, "chain_serving_ready") != NULL &&
+           json_get(readiness, "index_projection_ready") != NULL &&
+           json_get(readiness, "agent_work_ready") != NULL &&
+           json_get(readiness, "operator_action_required") != NULL &&
+           json_get(readiness, "tip_gap_blocks") != NULL &&
+           json_get(readiness, "index_gap_blocks") != NULL &&
+           json_get(readiness, "reducer_log_gap_blocks") != NULL &&
+           json_get(readiness, "next_action") != NULL &&
+           json_get(readiness, "semantics") != NULL;
+}
+
 static const struct json_value *api_test_openapi_get(
     const struct json_value *root,
     const char *path)
@@ -1389,6 +1410,7 @@ int test_api(void)
         ok = ok && json_get(&root, "status") != NULL;
         ok = ok && json_get(&root, "height") != NULL;
         ok = ok && json_get(&root, "recommended_endpoints") != NULL;
+        ok = ok && api_test_expect_readiness_shape(&root);
         json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
@@ -1423,6 +1445,7 @@ int test_api(void)
                           zcl_build_commit()) == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
+        ok = ok && api_test_expect_readiness_shape(&root);
         const struct json_value *resources =
             json_get(&root, "resources");
         ok = ok && resources && resources->type == JSON_OBJ;

@@ -128,11 +128,12 @@ json_first_bool_field() {
 }
 
 lane_health_selftest() {
-    local sample op blocked detail
-    sample='{"schema":"zcl.public_status.v1","status":"blocked","operator_needed":true,"primary_blocker":"operator_needed:window.consistency","restart_watchdog":{"operator_needed":false},"reducer":{"validation_pack_ok":false,"validation_pack_detail":"window.consistency"}}'
+    local sample op blocked detail ready
+    sample='{"schema":"zcl.public_status.v1","status":"blocked","operator_needed":true,"primary_blocker":"operator_needed:window.consistency","restart_watchdog":{"operator_needed":false},"readiness":{"chain_serving_ready":true},"reducer":{"validation_pack_ok":false,"validation_pack_detail":"window.consistency"}}'
     op="$(json_first_bool_field "$sample" "operator_needed")"
     blocked="$(json_first_string_field "$sample" "status")"
     detail="$(json_first_string_field "$sample" "validation_pack_detail")"
+    ready="$(json_first_bool_field "$sample" "chain_serving_ready")"
     [ "$op" = "1" ] || {
         echo "lane-health selftest: expected first operator_needed=true" >&2
         return 1
@@ -143,6 +144,10 @@ lane_health_selftest() {
     }
     [ "$detail" = "window.consistency" ] || {
         echo "lane-health selftest: expected validation detail" >&2
+        return 1
+    }
+    [ "$ready" = "1" ] || {
+        echo "lane-health selftest: expected nested readiness=true" >&2
         return 1
     }
     return 0
@@ -248,6 +253,7 @@ report_lane() {
     local agent_json agent_build_commit agent_contract_trusted
     local agent_status agent_operator_needed agent_primary_blocker
     local agent_next agent_validation_pack_ok agent_validation_pack_detail
+    local agent_chain_serving_ready agent_work_ready
     local bootstrap_json snapshot_info snapshot_seed_height snapshot_path
     local snapshot_present loader_path loader_configured recovery_hint
     local chaininfo_json chain_headers initialblockdownload
@@ -314,6 +320,8 @@ report_lane() {
     agent_next=""
     agent_validation_pack_ok="null"
     agent_validation_pack_detail=""
+    agent_chain_serving_ready="null"
+    agent_work_ready="null"
 
     p2p_listening=0
     rpc_listening=0
@@ -349,6 +357,8 @@ report_lane() {
             agent_next="$(json_first_string_field "$agent_json" "next")"
             agent_validation_pack_ok="$(json_first_bool_field "$agent_json" "validation_pack_ok")"
             agent_validation_pack_detail="$(json_first_string_field "$agent_json" "validation_pack_detail")"
+            agent_chain_serving_ready="$(json_first_bool_field "$agent_json" "chain_serving_ready")"
+            agent_work_ready="$(json_first_bool_field "$agent_json" "agent_work_ready")"
         fi
         if [ "$agent_contract_trusted" != "1" ]; then
             condition_json="$(rpc_call "$datadir" "$rpcport" dumpstate condition_engine || true)"
@@ -446,8 +456,15 @@ report_lane() {
         status="warn"
         reason="lag_to_live_${tip_lag}"
     elif is_number "$projection_lag" && [ "$projection_lag" -gt "$LAG_WARN" ]; then
-        status="warn"
-        reason="projection_lag_${projection_lag}"
+        if [ "$lane" = "dev" ] &&
+           [ "$agent_chain_serving_ready" = "1" ] &&
+           [ "$agent_work_ready" = "1" ]; then
+            status="ok"
+            reason="serving_projection_deferred"
+        else
+            status="warn"
+            reason="projection_lag_${projection_lag}"
+        fi
     elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
         status="warn"
         reason="listener_missing"
@@ -486,7 +503,13 @@ report_lane() {
                 recovery_hint="inspect_reducer_frontier"
             fi
         elif is_number "$projection_lag" && [ "$projection_lag" -gt "$LAG_WARN" ]; then
-            recovery_hint="inspect_chain_advance_coordinator"
+            if [ "$lane" = "dev" ] &&
+               [ "$agent_chain_serving_ready" = "1" ] &&
+               [ "$agent_work_ready" = "1" ]; then
+                recovery_hint="none"
+            else
+                recovery_hint="inspect_chain_advance_coordinator"
+            fi
         elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
             recovery_hint="inspect_listeners"
         elif is_number "$peers" && [ "$peers" -lt 1 ]; then

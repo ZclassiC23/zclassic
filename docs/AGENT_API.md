@@ -185,6 +185,17 @@ The top-level status always reports exact `gap`, `index_gap`, and
 serving-health-compatible. Larger gaps still become `chain_gap` /
 `download_queue_idle` and can set `operator_needed`.
 
+The same response includes `readiness` (`zcl.agent_readiness.v1`) so agents do
+not have to infer operational safety from the top-level status string alone.
+`chain_serving_ready=true` means the chain surface is serving with peers, no
+operator-needed latch, no material tip gap, and no material reducer log-head
+gap. `index_projection_ready=false` means explorer/projection reads may be
+stale even though the chain is still serving. In that case the top-level status
+can remain `degraded` with `primary_blocker="projection_lag"`, while
+`readiness.status="serving_projection_deferred"` and
+`agent_work_ready=true` tell automation that development and diagnostics can
+continue without treating the node as down.
+
 `make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
 calls the running node's C-native `agentdeployguard` RPC
 (`zcl.agent_deploy_guard.v1`) when available and falls back to the systemd

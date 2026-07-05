@@ -2668,7 +2668,9 @@ static int t_native_agent_api_contract(void)
     char *agent_lanes_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_runtime_buf = NULL;
+    char *agent_readiness_buf = NULL;
     char *api_buf = NULL;
+    char *api_status_buf = NULL;
     char *agent_doc_buf = NULL;
     TEST("zclassic23 binary exposes native API and agent commands") {
         char main_path[PATH_MAX];
@@ -2678,7 +2680,9 @@ static int t_native_agent_api_contract(void)
         char agent_lanes_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_runtime_path[PATH_MAX];
+        char agent_readiness_path[PATH_MAX];
         char api_path[PATH_MAX];
+        char api_status_path[PATH_MAX];
         char agent_doc_path[PATH_MAX];
         ASSERT(repo_path(main_path, sizeof(main_path), "src/main.c") == 0);
         ASSERT(repo_path(event_path, sizeof(event_path),
@@ -2694,9 +2698,13 @@ static int t_native_agent_api_contract(void)
                == 0);
         ASSERT(repo_path(agent_runtime_path, sizeof(agent_runtime_path),
                          "app/controllers/src/agent_runtime_controller.c") == 0);
+        ASSERT(repo_path(agent_readiness_path, sizeof(agent_readiness_path),
+                         "app/controllers/src/event_agent_readiness.c") == 0);
         ASSERT(repo_path(api_path, sizeof(api_path),
                          "app/controllers/src/api_controller_agent_index.c")
                == 0);
+        ASSERT(repo_path(api_status_path, sizeof(api_status_path),
+                         "app/controllers/src/api_controller_status.c") == 0);
         ASSERT(repo_path(agent_doc_path, sizeof(agent_doc_path),
                          "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
@@ -2706,7 +2714,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(agent_lanes_path, &agent_lanes_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
         ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
+        ASSERT(read_entire_file(agent_readiness_path,
+                                &agent_readiness_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
+        ASSERT(read_entire_file(api_status_path, &api_status_buf) == 0);
         ASSERT(read_entire_file(agent_doc_path, &agent_doc_buf) == 0);
         ASSERT(strstr(main_buf, "%s api") != NULL);
         ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
@@ -2786,6 +2797,16 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "node_db_sync_get_job_status")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "\"indexer\"") != NULL);
+        ASSERT(strstr(agent_summary_buf, "agent_push_readiness_json")
+               != NULL);
+        ASSERT(strstr(api_status_buf, "agent_push_readiness_json")
+               != NULL);
+        ASSERT(strstr(agent_readiness_buf, "zcl.agent_readiness.v1") != NULL);
+        ASSERT(strstr(agent_readiness_buf, "chain_serving_ready") != NULL);
+        ASSERT(strstr(agent_readiness_buf, "index_projection_ready") != NULL);
+        ASSERT(strstr(agent_readiness_buf, "agent_work_ready") != NULL);
+        ASSERT(strstr(agent_readiness_buf, "serving_projection_deferred")
+               != NULL);
         ASSERT(strstr(agent_summary_buf, "projection_lag") != NULL);
         ASSERT(strstr(agent_summary_buf, "projection_deferred") != NULL);
         ASSERT(strstr(agent_summary_buf, "projection_catchup_active")
@@ -2796,6 +2817,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_interface.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_runtime_identity.v1")
                != NULL);
@@ -2914,6 +2936,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl.agent_runtime_services.v1")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "configured boot intent") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_readiness.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "chain_serving_ready") != NULL);
+        ASSERT(strstr(agent_doc_buf, "index_projection_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);
@@ -2955,7 +2980,9 @@ static int t_native_agent_api_contract(void)
     free(agent_lanes_buf);
     free(agent_iface_buf);
     free(agent_runtime_buf);
+    free(agent_readiness_buf);
     free(api_buf);
+    free(api_status_buf);
     free(agent_doc_buf);
     return failures;
 }
