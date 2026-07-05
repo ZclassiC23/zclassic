@@ -954,6 +954,35 @@ static char *mock_operator_healthy_rpc(const char *method,
     return strdup("null");
 }
 
+static char *mock_operator_recovered_mirror_rpc(const char *method,
+                                                const char *params_json)
+{
+    if (strcmp(method, "getmirrorstatus") == 0)
+        return strdup("{\"mirror_enabled\":true,\"mirror_running\":true,"
+                      "\"reachable\":true,"
+                      "\"active_error_code\":\"hash-disagreement\","
+                      "\"activation_blocker\":\"hash-disagreement\","
+                      "\"active_error_detail\":\"stale mismatch\","
+                      "\"mirror_contract\":{"
+                      "\"schema\":\"zcl.mirror_status.v1\","
+                      "\"schema_version\":1,"
+                      "\"advisory_only\":true,"
+                      "\"consensus_authority\":\"local_consensus_validation\","
+                      "\"status\":\"healthy\","
+                      "\"mirror_running\":true,"
+                      "\"reachable\":true,"
+                      "\"legacy_oracle_usable\":true,"
+                      "\"lag_known\":true,"
+                      "\"lag_blocks\":0,"
+                      "\"same_height\":true,"
+                      "\"tip_hashes_agree\":true,"
+                      "\"blocker_active\":false,"
+                      "\"blocker_code\":\"\","
+                      "\"blocker_recovered_by_tip_agreement\":true,"
+                      "\"operator_action_required\":false}}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
 static char *mock_operator_needed_rpc(const char *method,
                                       const char *params_json)
 {
@@ -1241,6 +1270,45 @@ static int test_zcl_operator_summary_healthy_shape(void)
         ASSERT(!json_get_bool(json_get(mirror, "reachable")));
         ASSERT_STR_EQ(json_get_str(json_get(mirror, "blocker")),
                       "rpc-unreachable");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_operator_summary_honors_mirror_contract(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_operator_summary honors mirror contract blocker state") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_recovered_mirror_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "none");
+
+        const struct json_value *mirror = json_get(&root, "mirror");
+        ASSERT(mirror && mirror->type == JSON_OBJ);
+        ASSERT(json_get_bool(json_get(mirror, "enabled")));
+        ASSERT(json_get_bool(json_get(mirror, "reachable")));
+        ASSERT(json_get_bool(json_get(mirror, "contract_trusted")));
+        ASSERT(!json_get_bool(json_get(mirror, "blocker_active")));
+        ASSERT(!json_get_bool(json_get(mirror,
+                                       "operator_action_required")));
+        ASSERT_STR_EQ(json_get_str(json_get(mirror, "blocker")), "");
+        ASSERT_STR_EQ(json_get_str(json_get(mirror, "detail")), "");
 
         json_free(&root);
         json_free(&args);
@@ -2874,6 +2942,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();
     failures += test_zcl_operator_summary_degraded_shape();
     failures += test_zcl_operator_summary_healthy_shape();
+    failures += test_zcl_operator_summary_honors_mirror_contract();
     failures += test_zcl_agent_alias_shape();
     failures += test_zcl_agent_dev_tools_dispatch();
     failures += test_zcl_operator_summary_names_operator_needed_detail();

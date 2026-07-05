@@ -682,19 +682,53 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     const char *mirror_blocker = "";
     const char *mirror_detail = "";
     bool mirror_enabled = false, mirror_running = false, mirror_reachable = false;
+    bool mirror_contract_trusted = false;
+    bool mirror_blocker_active = false;
+    bool mirror_operator_action_required = false;
     if (mirror_ok) {
         mirror_enabled = status_json_bool(&mirror_j, "mirror_enabled", false);
         mirror_running = status_json_bool(&mirror_j, "mirror_running", false);
         mirror_reachable = status_json_bool(&mirror_j, "reachable", false) ||
                            status_json_bool(&mirror_j, "mirror_reachable",
                                             false);
-        mirror_blocker = status_json_str(&mirror_j, "active_error_code", "");
-        if (!mirror_blocker[0])
-            mirror_blocker = status_json_str(&mirror_j, "activation_blocker",
-                                             "");
-        mirror_detail = status_json_str(&mirror_j, "active_error_detail", "");
-        if (!mirror_detail[0])
-            mirror_detail = status_json_str(&mirror_j, "last_error", "");
+        const struct json_value *contract =
+            json_get(&mirror_j, "mirror_contract");
+        if (contract && contract->type == JSON_OBJ) {
+            mirror_contract_trusted = true;
+            mirror_blocker_active =
+                status_json_bool(contract, "blocker_active", false);
+            mirror_operator_action_required =
+                status_json_bool(contract, "operator_action_required",
+                                 mirror_blocker_active);
+            if (mirror_blocker_active) {
+                mirror_blocker =
+                    status_json_str(contract, "blocker_code", "");
+                if (!mirror_blocker[0])
+                    mirror_blocker =
+                        status_json_str(&mirror_j, "active_error_code", "");
+                if (!mirror_blocker[0])
+                    mirror_blocker =
+                        status_json_str(&mirror_j, "activation_blocker", "");
+                mirror_detail =
+                    status_json_str(&mirror_j, "active_error_detail", "");
+                if (!mirror_detail[0])
+                    mirror_detail =
+                        status_json_str(&mirror_j, "last_error", "");
+            }
+        } else {
+            mirror_blocker =
+                status_json_str(&mirror_j, "active_error_code", "");
+            if (!mirror_blocker[0])
+                mirror_blocker =
+                    status_json_str(&mirror_j, "activation_blocker", "");
+            mirror_detail =
+                status_json_str(&mirror_j, "active_error_detail", "");
+            if (!mirror_detail[0])
+                mirror_detail =
+                    status_json_str(&mirror_j, "last_error", "");
+            mirror_blocker_active = mirror_blocker[0] != '\0';
+            mirror_operator_action_required = mirror_blocker_active;
+        }
     } else if (health_ok) {
         mirror_enabled = status_json_bool(&health_j,
                                           "mirror_monitor_running", false);
@@ -705,6 +739,8 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
                                          "mirror_active_error_code", "");
         mirror_detail = status_json_str(&health_j,
                                         "mirror_active_error_detail", "");
+        mirror_blocker_active = mirror_blocker[0] != '\0';
+        mirror_operator_action_required = mirror_blocker_active;
     }
 
     const char *status = "unknown";
@@ -840,6 +876,12 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_push_kv_bool(&mirror_obj, "enabled", mirror_enabled);
     json_push_kv_bool(&mirror_obj, "running", mirror_running);
     json_push_kv_bool(&mirror_obj, "reachable", mirror_reachable);
+    json_push_kv_bool(&mirror_obj, "contract_trusted",
+                      mirror_contract_trusted);
+    json_push_kv_bool(&mirror_obj, "blocker_active",
+                      mirror_blocker_active);
+    json_push_kv_bool(&mirror_obj, "operator_action_required",
+                      mirror_operator_action_required);
     json_push_kv_str(&mirror_obj, "blocker", mirror_blocker);
     json_push_kv_str(&mirror_obj, "detail", mirror_detail);
     json_push_kv(&root, "mirror", &mirror_obj);

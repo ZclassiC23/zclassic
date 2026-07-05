@@ -76,6 +76,11 @@ next action, and recommended drill-down tools. The compact packet also includes
 `runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
 commit against the deploy-installed expected commit
 (`ZCL_AGENT_EXPECT_BUILD_COMMIT`, written by `make deploy` / `make deploy-dev`).
+Its `mirror` object exposes `contract_trusted`, `blocker_active`, and
+`operator_action_required`; agents should key on those booleans before any
+legacy `blocker` string. When `getmirrorstatus` includes
+`mirror_contract.blocker_active=false`, `zcl_operator_summary` suppresses
+stale top-level mirror blocker strings.
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract
 before deciding whether to deploy dev or request an operator-gated canonical
