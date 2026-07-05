@@ -571,6 +571,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "schema", "zcl.public_status.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
+    agent_push_runtime_build_json(result, "runtime_build");
     json_push_kv_str(result, "status", status);
     json_push_kv_bool(result, "healthy", strcmp(status, "healthy") == 0);
     json_push_kv_bool(result, "serving", health.serving);

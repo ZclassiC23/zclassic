@@ -1345,6 +1345,8 @@ int test_syncdiag_rpc(void)
             "ok=1 prefix h=3056758 but cursor=3171120 first_hole_h=3056759 "
             "repair_owner=reducer_frontier_reconcile_light";
         event_emitf(EV_OPERATOR_NEEDED, 0, "%s", long_blocker);
+        setenv("ZCL_AGENT_EXPECT_BUILD_COMMIT", "expected-agent-test", 1);
+        setenv("ZCL_AGENT_EXPECT_BUILD_SOURCE", "unit-test", 1);
         rpc_agent_set_boot_context("dev", "full", "/tmp/zcl-agent-dev",
                                    18252, 8053, 8443, 18034);
 
@@ -1361,6 +1363,32 @@ int test_syncdiag_rpc(void)
                           "zcl.public_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
                           zcl_build_commit()) == 0;
+        const struct json_value *runtime_build =
+            json_get(&result, "runtime_build");
+        ok = ok && runtime_build && runtime_build->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build, "schema")),
+                          "zcl.runtime_build.v1") == 0;
+        ok = ok && json_get_int(json_get(runtime_build,
+                                         "schema_version")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "running_build_commit")),
+                          zcl_build_commit()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "expected_build_commit")),
+                          "expected-agent-test") == 0;
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "expected_source")),
+                          "unit-test") == 0;
+        ok = ok && json_get_bool(json_get(runtime_build,
+                                          "expected_present"));
+        ok = ok && !json_get_bool(json_get(runtime_build,
+                                           "matches_expected"));
+        ok = ok && json_get_bool(json_get(runtime_build, "stale"));
+        ok = ok && strcmp(json_get_str(json_get(runtime_build,
+                                                "freshness")),
+                          "stale") == 0;
+        ok = ok && json_get(runtime_build, "dirty_build") != NULL;
+        ok = ok && json_get(runtime_build, "semantics") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "status")),
                           "blocked") == 0;
         ok = ok && !json_get_bool(json_get(&result, "healthy"));
@@ -1518,6 +1546,8 @@ int test_syncdiag_rpc(void)
 
         json_free(&params);
         json_free(&result);
+        unsetenv("ZCL_AGENT_EXPECT_BUILD_COMMIT");
+        unsetenv("ZCL_AGENT_EXPECT_BUILD_SOURCE");
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         alerts_shutdown();
 
@@ -2057,6 +2087,8 @@ int test_syncdiag_rpc(void)
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_readiness.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.runtime_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_interface.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",

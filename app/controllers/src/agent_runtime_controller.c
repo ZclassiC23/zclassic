@@ -10,8 +10,10 @@
 #include "net/file_service.h"
 #include "net/https_server.h"
 #include "rpc/httpserver.h"
+#include "util/clientversion.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 struct agent_runtime_context {
@@ -249,6 +251,49 @@ void agent_push_operator_lane_json(struct json_value *out,
                                            g_agent_runtime.fs_port);
     json_push_kv(out, out_key, &lane_obj);
     json_free(&lane_obj);
+}
+
+static const char *agent_env_or_empty(const char *name)
+{
+    const char *value = getenv(name);
+    return value && value[0] ? value : "";
+}
+
+void agent_push_runtime_build_json(struct json_value *out,
+                                   const char *key)
+{
+    if (!out)
+        return;
+
+    const char *running = zcl_build_commit();
+    const char *expected =
+        agent_env_or_empty("ZCL_AGENT_EXPECT_BUILD_COMMIT");
+    const char *source =
+        agent_env_or_empty("ZCL_AGENT_EXPECT_BUILD_SOURCE");
+    bool expected_present = expected[0] != '\0';
+    bool matches = expected_present && strcmp(running, expected) == 0;
+    const char *freshness = expected_present
+        ? (matches ? "current" : "stale") : "unknown";
+    struct json_value obj;
+
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "schema", "zcl.runtime_build.v1");
+    json_push_kv_int(&obj, "schema_version", 1);
+    json_push_kv_str(&obj, "running_build_commit", running);
+    json_push_kv_str(&obj, "expected_build_commit", expected);
+    json_push_kv_str(&obj, "expected_source",
+                     source[0] ? source : "unset");
+    json_push_kv_bool(&obj, "expected_present", expected_present);
+    json_push_kv_bool(&obj, "matches_expected", matches);
+    json_push_kv_bool(&obj, "stale", expected_present && !matches);
+    json_push_kv_bool(&obj, "dirty_build",
+                      strstr(running, "-dirty") != NULL);
+    json_push_kv_str(&obj, "freshness", freshness);
+    json_push_kv_str(&obj, "semantics",
+                     "expected_build_commit is deploy-installed runtime intent; stale=true means this process is not the expected deployed binary");
+    json_push_kv(out, key && key[0] ? key : "runtime_build", &obj);
+    json_free(&obj);
 }
 
 void agent_push_runtime_services_json(struct json_value *out,

@@ -2307,9 +2307,17 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "removing stale memory-budget drop-in") != NULL);
         ASSERT(strstr(script, "deploy/zcl23-dev.service owns the dev lane memory budget") != NULL);
         ASSERT(strstr(script, "rm -f \"$STALE_OOM_BUDGET_DROPIN\"") != NULL);
+        ASSERT(strstr(script, "BUILD_ID_DROPIN=") != NULL);
+        ASSERT(strstr(script, "zcl23-dev.service.d/90-build-identity.conf") != NULL);
+        ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_COMMIT") != NULL);
+        ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev") != NULL);
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
         ASSERT(strstr(makefile,
                       "./tools/deploy_guard.sh canonical-deploy") != NULL);
+        ASSERT(strstr(makefile,
+                      "zclassic23.service.d/90-build-identity.conf") != NULL);
+        ASSERT(strstr(makefile,
+                      "ZCL_AGENT_EXPECT_BUILD_SOURCE=make-deploy") != NULL);
         ASSERT(strstr(makefile, "lane-recover:") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/lane_recover.sh") != NULL);
         ASSERT(strstr(guard, "ZCL_DEPLOY_ALLOW_CANONICAL") != NULL);

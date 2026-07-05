@@ -61,6 +61,14 @@ The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
 the running binary `build_commit`, height/gap, peer summary, active blockers,
 next action, and recommended drill-down tools. The compact packet also includes
+`runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
+commit against the deploy-installed expected commit
+(`ZCL_AGENT_EXPECT_BUILD_COMMIT`, written by `make deploy` / `make deploy-dev`).
+When `runtime_build.stale=true`, the node is still useful to observe but its
+behavior predates the expected deployed source; use the lane safety contract
+before deciding whether to deploy dev or request an operator-gated canonical
+restart. If no expected commit is installed, `runtime_build.freshness` is
+`unknown`, not a proof that the binary is current. The same packet includes
 reducer frontier telemetry, download queue/in-flight/throughput counters,
 recent error state, and precise download age fields:
 `download.oldest_in_flight_age_seconds`,

@@ -1698,6 +1698,12 @@ deploy: lint zclassic-cli tools/wal_checkpoint
 	@# a missing source does NOT fail deploy; the node SHA3-verifies before trust.
 	$(MAKE) seed-anchor-snapshot
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
+	@install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"
+	@{ \
+	    printf '[Service]\n'; \
+	    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_COMMIT=%s"\n' "$(BUILD_COMMIT)"; \
+	    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_SOURCE=make-deploy"\n'; \
+	} > "$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"
 	@systemctl --user daemon-reload
 	systemctl --user restart zclassic23
 	@ZCL_DEPLOY_EXPECT_COMMIT="$(BUILD_COMMIT)" ./tools/deploy_verify.sh

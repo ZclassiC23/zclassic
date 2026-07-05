@@ -25,12 +25,25 @@ LEGACY_SRC="$HOME/.zclassic"          # running zclassicd datadir (read-only imp
 UNIT="zcl23-dev.service"
 STALE_REINDEX_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/reindex.conf"
 STALE_OOM_BUDGET_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/zz-oom-budget.conf"
+BUILD_ID_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/90-build-identity.conf"
 
-echo "[dev-lane] building fresh binary (stamp = $(git rev-parse --short HEAD))..."
+git update-index -q --refresh >/dev/null 2>&1 || true
+BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    BUILD_COMMIT="${BUILD_COMMIT}-dirty"
+fi
+
+echo "[dev-lane] building fresh binary (stamp = $BUILD_COMMIT)..."
 make build/bin/zclassic23 -j"$(nproc)" >/dev/null
 
 mkdir -p "$(dirname "$DEV_BIN")" "$DEV_DATADIR"
 install -m 644 "$REPO/deploy/$UNIT" "$HOME/.config/systemd/user/$UNIT"
+mkdir -p "$(dirname "$BUILD_ID_DROPIN")"
+{
+    printf '[Service]\n'
+    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_COMMIT=%s"\n' "$BUILD_COMMIT"
+    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev"\n'
+} > "$BUILD_ID_DROPIN"
 if [ -f "$STALE_REINDEX_DROPIN" ]; then
     if [ "${ZCL_DEV_ALLOW_REINDEX_DROPIN:-0}" = "1" ]; then
         echo "[dev-lane] preserving explicit reindex drop-in: $STALE_REINDEX_DROPIN"
@@ -74,7 +87,7 @@ fi
 # Poll RPC, then confirm the height ADVANCES across two samples (or is already
 # at a peer's tip). A lane that never advances is a genuinely stuck bootstrap.
 CLI=(build/bin/zclassic-cli -datadir="$DEV_DATADIR" -rpcport=18252)
-echo "[dev-lane] deployed $(git rev-parse --short HEAD); verifying sync health..."
+echo "[dev-lane] deployed $BUILD_COMMIT; verifying sync health..."
 h0=""; for i in $(seq 1 40); do
     h0="$("${CLI[@]}" getblockcount 2>/dev/null || true)"
     [ -n "$h0" ] && [[ "$h0" =~ ^[0-9]+$ ]] && break
