@@ -248,7 +248,11 @@ calls the running node's C-native `agentdeployguard` RPC
 `-operator-lane=` flag only for older running binaries. An active canonical
 lane is refused by default; set `ZCL_DEPLOY_ALLOW_CANONICAL=1` only for a
 deliberate canonical restart window. Development builds should normally use
-`make deploy-dev`.
+`make deploy-dev`. The deploy-guard response also carries the same compact
+lane-safety fields (`operator_lane_name`, `automation_restart_ok`,
+`automation_deploy_ok`, `requires_operator_confirmation`,
+`preferred_deploy_target`, and `safe_default_action`) so a refusal can be
+handled without scraping nested JSON.
 
 `make lane-health` is the read-only redundancy check for the canonical, soak,
 and dev lanes. `make lane-recover LANE=dev` or `LANE=soak` plans a bounded

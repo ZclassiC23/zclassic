@@ -2588,6 +2588,21 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&guard, "reason")),
                           "operator_confirmation_required") == 0;
         ok = ok && json_get_int(json_get(&guard, "exit_code")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(&guard,
+                                                "operator_lane_name")),
+                          "canonical") == 0;
+        ok = ok && !json_get_bool(json_get(&guard,
+                                           "automation_restart_ok"));
+        ok = ok && !json_get_bool(json_get(&guard,
+                                           "automation_deploy_ok"));
+        ok = ok && json_get_bool(json_get(&guard,
+                                          "requires_operator_confirmation"));
+        ok = ok && strcmp(json_get_str(json_get(&guard,
+                                                "preferred_deploy_target")),
+                          "dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&guard,
+                                                "safe_default_action")),
+                          "observe_only_or_use_dev_lane") == 0;
 
         struct json_value guard_object_params;
         json_init(&guard_object_params);

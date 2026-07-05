@@ -289,6 +289,7 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "action", action);
     agent_push_operator_lane_json(result, "operator_lane");
+    agent_push_operator_lane_fields_json(result);
 
     const struct json_value *lane = json_get(result, "operator_lane");
     const struct json_value *safety =
