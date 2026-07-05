@@ -5,6 +5,7 @@
  * consensus state. */
 
 #include "controllers/agent_controller.h"
+#include "controllers/agent_background_quality.h"
 #include "controllers/agent_impact_rules.h"
 #include "controllers/strong_params.h"
 
@@ -68,11 +69,8 @@ static void agent_push_build_knob(struct json_value *arr, const char *name,
 }
 
 static void agent_push_subsystem(struct json_value *arr, const char *name,
-                                 const char *purpose,
-                                 const char *files,
-                                 const char *docs,
-                                 const char *tests,
-                                 const char *mcp_tool)
+                                 const char *purpose, const char *files, const char *docs,
+                                 const char *tests, const char *mcp_tool)
 {
     struct json_value obj;
     json_init(&obj);
@@ -95,15 +93,11 @@ static bool agent_str_starts(const char *s, const char *prefix)
 static bool agent_path_is_native_agent_api(const char *path)
 {
     static const char *const paths[] = {
-        "app/controllers/src/agent_controller.c", "app/controllers/src/agent_impact_rules.c",
-        "app/controllers/src/agent_interface_controller.c", "app/controllers/src/agent_lanes_controller.c",
-        "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_resources.c",
-        "app/controllers/src/agent_restart_watchdog.c", "app/controllers/src/agent_runtime_controller.c",
-        "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h",
-        "app/controllers/src/event_agent_summary.c", "app/controllers/src/event_agent_summary.h",
-        "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_impact_rules.def",
-        "app/controllers/include/controllers/agent_impact_rules.h", "app/controllers/include/controllers/agent_operator_contracts.h",
-        "app/controllers/include/controllers/agent_resources.h", "app/controllers/include/controllers/agent_restart_watchdog.h",
+        "app/controllers/src/agent_controller.c", "app/controllers/src/agent_background_quality.c", "app/controllers/src/agent_impact_rules.c", "app/controllers/src/agent_interface_controller.c",
+        "app/controllers/src/agent_lanes_controller.c", "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_resources.c", "app/controllers/src/agent_restart_watchdog.c",
+        "app/controllers/src/agent_runtime_controller.c", "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h", "app/controllers/src/event_agent_summary.c",
+        "app/controllers/src/event_agent_summary.h", "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_background_quality.h", "app/controllers/include/controllers/agent_impact_rules.def",
+        "app/controllers/include/controllers/agent_impact_rules.h", "app/controllers/include/controllers/agent_operator_contracts.h", "app/controllers/include/controllers/agent_resources.h", "app/controllers/include/controllers/agent_restart_watchdog.h",
     };
 
     if (!path || !path[0])
@@ -340,7 +334,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_set_array(&subsystems);
     agent_push_subsystem(&subsystems, "native_agent_api",
                          "first-call binary JSON contracts",
-                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_runtime_controller.c, src/main.c",
+                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_runtime_controller.c, src/main.c",
                          "docs/AGENT_API.md",
                          "syncdiag_rpc, mcp_controllers, make_lint_gates",
                          "zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map");
@@ -370,7 +364,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                          "zcl_agent_impact, zcl_agent_build");
     agent_push_subsystem(&subsystems, "background_quality_lanes",
                          "long fuzz and coverage proof work outside the push path",
-                         "tools/scripts/background_quality_lane.sh, deploy/zclassic23-fuzz.service, deploy/zclassic23-coverage.service",
+                         "app/controllers/src/agent_background_quality.c, tools/scripts/background_quality_lane.sh, deploy/zclassic23-fuzz.service, deploy/zclassic23-coverage.service",
                          "docs/work/fast-path.md",
                          "make_lint_gates",
                          "zcl_agent_build");
@@ -577,6 +571,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_build.v1",
                       "zclassic23 agentbuild / zcl_agent_build",
                       "cached incremental and reproducible build contract");
+    agent_push_schema(&schemas, "zcl.background_quality_runtime.v1",
+                      "nested in zcl.agent_build.v1 background_quality_status",
+                      "native status-file reader for background tests/fuzz/coverage verdicts");
     agent_push_schema(&schemas, "zcl.agent_interface.v1",
                       "zclassic23 agentinterface / zcl_agent_interface",
                       "preferred AI development interface and transport ranking");
@@ -656,7 +653,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
     struct json_value incremental, cache, knobs, commands, repro, background,
-                      lanes, gates;
+                      quality_status, lanes, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -780,6 +777,11 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_free(&lanes);
     json_push_kv(result, "background_quality_lanes", &background);
     json_free(&background);
+
+    json_init(&quality_status);
+    agent_build_background_quality_status(&quality_status);
+    json_push_kv(result, "background_quality_status", &quality_status);
+    json_free(&quality_status);
 
     json_init(&gates);
     json_set_array(&gates);

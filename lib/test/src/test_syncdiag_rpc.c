@@ -2253,6 +2253,9 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.background_quality_runtime.v1")
+            != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_readiness.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.runtime_build.v1") != NULL;
@@ -2344,6 +2347,56 @@ int test_syncdiag_rpc(void)
                                                 "safe_default_action")),
                           "deploy_dev_lane") == 0;
 
+        const char *old_quality_env = getenv("ZCL_QUALITY_STATE_DIR");
+        char old_quality_env_buf[4096];
+        bool old_quality_env_set = old_quality_env != NULL;
+        bool old_quality_env_saved = true;
+        char quality_tmp[] = "/tmp/zcl_quality_rpc_XXXXXX";
+        char quality_status_dir[4096];
+        char quality_fuzz_file[4096];
+        char *quality_root = mkdtemp(quality_tmp);
+        bool quality_fixture_ok = quality_root != NULL;
+        if (old_quality_env_set) {
+            int n = snprintf(old_quality_env_buf,
+                             sizeof(old_quality_env_buf), "%s",
+                             old_quality_env);
+            old_quality_env_saved = n >= 0 &&
+                (size_t)n < sizeof(old_quality_env_buf);
+        }
+        if (quality_fixture_ok) {
+            int n = snprintf(quality_status_dir,
+                             sizeof(quality_status_dir), "%s/status",
+                             quality_root);
+            quality_fixture_ok = n >= 0 &&
+                (size_t)n < sizeof(quality_status_dir) &&
+                mkdir(quality_status_dir, 0700) == 0;
+        }
+        if (quality_fixture_ok) {
+            int n = snprintf(quality_fuzz_file, sizeof(quality_fuzz_file),
+                             "%s/fuzz.json", quality_status_dir);
+            quality_fixture_ok = n >= 0 &&
+                (size_t)n < sizeof(quality_fuzz_file);
+        }
+        if (quality_fixture_ok) {
+            FILE *f = fopen(quality_fuzz_file, "wb");
+            quality_fixture_ok = f != NULL;
+            if (f) {
+                fputs("{\"schema\":\"zcl.background_quality_lane.v1\","
+                      "\"lane\":\"fuzz\",\"status\":\"passed\","
+                      "\"started_at\":\"2026-07-05T00:00:00Z\","
+                      "\"finished_at\":\"2026-07-05T00:01:00Z\","
+                      "\"elapsed_seconds\":60,\"exit_code\":0,"
+                      "\"commit\":\"deadbeef1234\",\"log\":\"/tmp/fuzz.log\","
+                      "\"artifacts\":\"/tmp/artifacts\","
+                      "\"detail\":\"fixture\"}\n", f);
+                quality_fixture_ok = fclose(f) == 0;
+            }
+        }
+        if (quality_fixture_ok)
+            quality_fixture_ok =
+                setenv("ZCL_QUALITY_STATE_DIR", quality_root, 1) == 0;
+        ok = ok && old_quality_env_saved && quality_fixture_ok;
+
         struct json_value build;
         json_init(&build);
         ok = ok && rpc_table_execute(&tbl, "agentbuild", &params, &build);
@@ -2353,6 +2406,16 @@ int test_syncdiag_rpc(void)
         const struct json_value *commands = json_get(&build, "commands");
         const struct json_value *repro =
             json_get(&build, "reproducible_release");
+        const struct json_value *quality_status =
+            json_get(&build, "background_quality_status");
+        const struct json_value *quality_lanes =
+            quality_status ? json_get(quality_status, "lanes") : NULL;
+        const struct json_value *fuzz_lane =
+            find_object_with_str(quality_lanes, "lane", "fuzz");
+        const struct json_value *coverage_lane =
+            find_object_with_str(quality_lanes, "lane", "coverage");
+        const struct json_value *latest_fuzz =
+            fuzz_lane ? json_get(fuzz_lane, "latest") : NULL;
         ok = ok && build.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&build, "schema")),
                           "zcl.agent_build.v1") == 0;
@@ -2369,6 +2432,40 @@ int test_syncdiag_rpc(void)
                                    "make ci-reproducible") == 0;
         ok = ok && strcmp(json_get_str(json_get(repro, "portable_isa")),
                           "x86-64-v3") == 0;
+        ok = ok && quality_status && quality_status->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(quality_status, "schema")),
+                          "zcl.background_quality_runtime.v1") == 0;
+        ok = ok && json_get_bool(json_get(quality_status,
+                                          "native_status_reader"));
+        ok = ok && !json_get_bool(json_get(quality_status,
+                                           "requires_python"));
+        ok = ok && strcmp(json_get_str(json_get(quality_status,
+                                                "state_dir")),
+                          quality_root ? quality_root : "") == 0;
+        ok = ok && strcmp(json_get_str(json_get(quality_status,
+                                                "summary")),
+                          "background_quality_incomplete") == 0;
+        ok = ok && json_get_int(json_get(quality_status,
+                                         "status_files_present")) == 1;
+        ok = ok && json_get_int(json_get(quality_status,
+                                         "status_files_valid")) == 1;
+        ok = ok && json_get_int(json_get(quality_status,
+                                         "passed_count")) == 1;
+        ok = ok && quality_lanes && quality_lanes->type == JSON_ARR &&
+            json_size(quality_lanes) == 3;
+        ok = ok && fuzz_lane &&
+            json_get_bool(json_get(fuzz_lane, "status_file_present"));
+        ok = ok && fuzz_lane &&
+            json_get_bool(json_get(fuzz_lane, "latest_json_valid"));
+        ok = ok && fuzz_lane &&
+            strcmp(json_get_str(json_get(fuzz_lane, "latest_status")),
+                   "passed") == 0;
+        ok = ok && latest_fuzz && latest_fuzz->type == JSON_OBJ;
+        ok = ok && latest_fuzz &&
+            strcmp(json_get_str(json_get(latest_fuzz, "commit")),
+                   "deadbeef1234") == 0;
+        ok = ok && coverage_lane &&
+            !json_get_bool(json_get(coverage_lane, "status_file_present"));
 
         struct json_value interface;
         json_init(&interface);
@@ -2760,6 +2857,15 @@ int test_syncdiag_rpc(void)
         json_free(&guard_object_params);
         json_free(&guard_object);
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
+        if (old_quality_env_set)
+            setenv("ZCL_QUALITY_STATE_DIR", old_quality_env_buf, 1);
+        else
+            unsetenv("ZCL_QUALITY_STATE_DIR");
+        if (quality_fixture_ok) {
+            unlink(quality_fuzz_file);
+            rmdir(quality_status_dir);
+            rmdir(quality_tmp);
+        }
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

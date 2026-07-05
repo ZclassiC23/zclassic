@@ -2728,6 +2728,7 @@ static int t_native_agent_api_contract(void)
     char *agent_summary_buf = NULL;
     char *agent_operator_buf = NULL;
     char *agent_ctrl_buf = NULL;
+    char *agent_bg_quality_buf = NULL;
     char *agent_lanes_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_runtime_buf = NULL;
@@ -2741,6 +2742,7 @@ static int t_native_agent_api_contract(void)
         char agent_summary_path[PATH_MAX];
         char agent_operator_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
+        char agent_bg_quality_path[PATH_MAX];
         char agent_lanes_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_runtime_path[PATH_MAX];
@@ -2758,6 +2760,10 @@ static int t_native_agent_api_contract(void)
                == 0);
         ASSERT(repo_path(agent_ctrl_path, sizeof(agent_ctrl_path),
                          "app/controllers/src/agent_controller.c") == 0);
+        ASSERT(repo_path(agent_bg_quality_path,
+                         sizeof(agent_bg_quality_path),
+                         "app/controllers/src/agent_background_quality.c")
+               == 0);
         ASSERT(repo_path(agent_lanes_path, sizeof(agent_lanes_path),
                          "app/controllers/src/agent_lanes_controller.c") == 0);
         ASSERT(repo_path(agent_iface_path, sizeof(agent_iface_path),
@@ -2780,6 +2786,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(agent_operator_path, &agent_operator_buf)
                == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
+        ASSERT(read_entire_file(agent_bg_quality_path,
+                                &agent_bg_quality_buf) == 0);
         ASSERT(read_entire_file(agent_lanes_path, &agent_lanes_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
         ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
@@ -2926,6 +2934,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "zcl.background_quality_runtime.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.height_contract.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.mirror_status.v1") != NULL);
@@ -2995,6 +3005,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl_events") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 dbquery <select>") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality_lanes") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "background_quality_status") != NULL);
+        ASSERT(strstr(agent_bg_quality_buf, "native_status_reader") != NULL);
+        ASSERT(strstr(agent_bg_quality_buf, "requires_python") != NULL);
+        ASSERT(strstr(agent_bg_quality_buf, "ZCL_QUALITY_STATE_DIR") != NULL);
+        ASSERT(strstr(agent_bg_quality_buf,
+                      "agent_quality_read_json_file") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make quality-linger-status") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23-fuzz.timer") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23-coverage.timer") != NULL);
@@ -3002,6 +3018,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "pre-push-ci skips live service probe")
                != NULL);
         ASSERT(strstr(agent_ctrl_buf, "app/controllers/src/agent_controller.c")
+               != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "app/controllers/src/agent_background_quality.c")
                != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "app/controllers/src/agent_lanes_controller.c")
@@ -3114,6 +3133,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(agent_doc_buf, "make install-quality-linger") != NULL);
         ASSERT(strstr(agent_doc_buf, "make quality-linger-status") != NULL);
+        ASSERT(strstr(agent_doc_buf, "background_quality_status") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "zcl.background_quality_runtime.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.background_quality_lane.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
                != NULL);
         PASS();
@@ -3123,6 +3146,7 @@ static int t_native_agent_api_contract(void)
     free(agent_summary_buf);
     free(agent_operator_buf);
     free(agent_ctrl_buf);
+    free(agent_bg_quality_buf);
     free(agent_lanes_buf);
     free(agent_iface_buf);
     free(agent_runtime_buf);

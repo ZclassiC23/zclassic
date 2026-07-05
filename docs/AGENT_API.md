@@ -394,7 +394,15 @@ node condition is visible through telemetry but does not block a code push. Set
 `ZCL_FAST_STRICT_TESTS=1` when a change needs strict whole-harness focused
 tests. Full-suite, fuzz, and coverage evidence belongs to the background quality lanes: install them with
 `make install-quality-linger` and inspect them with `make quality-linger-status`.
-Status JSON is written under `~/.local/state/zclassic23-quality`.
+Status JSON is written under `~/.local/state/zclassic23-quality`. The native
+`zclassic23 agentbuild` / `zcl_agent_build` response also embeds
+`background_quality_status` (`zcl.background_quality_runtime.v1`), a C-native
+reader for those status files. It reports the resolved state/status directory,
+one entry each for `fuzz`, `coverage`, and `tests`, whether each lane verdict
+file exists, whether it parsed as JSON, and the latest parsed
+`zcl.background_quality_lane.v1` payload when present. Agents should read that
+field first and use `make quality-linger-status` when they need systemd timer
+logs or human-formatted service output.
 
 ## Background proof lanes
 
@@ -410,6 +418,9 @@ push or AI edit loop.
   `tools/scripts/background_quality_lane.sh tests` hourly.
 - `make quality-linger-status` prints timer status plus the latest
   `zcl.background_quality_status.v1` JSON verdict.
+- `zclassic23 agentbuild` exposes the same lane verdict files through
+  `background_quality_status` (`zcl.background_quality_runtime.v1`) without
+  invoking shell wrappers or Python.
 
 ## Reproducible build proof
 
