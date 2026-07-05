@@ -229,6 +229,8 @@ The same readiness booleans are also duplicated as compact top-level fields:
 `readiness_next_action`. They are computed by the same C helper that builds the
 nested readiness object, so shell deploy guards and MCP callers can read one
 flat key without re-parsing nested JSON.
+The dev-lane deploy probe declares `AGENT READY` from `agent_work_ready=true`,
+so projection lag stays visible without blocking unrelated development work.
 
 `make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
 calls the running node's C-native `agentdeployguard` RPC

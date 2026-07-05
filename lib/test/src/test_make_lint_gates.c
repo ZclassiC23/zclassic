@@ -2313,6 +2313,8 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev") != NULL);
         ASSERT(strstr(script, "probe_agent_contract") != NULL);
         ASSERT(strstr(script, "ZCL_DEV_AGENT_TIMEOUT") != NULL);
+        ASSERT(strstr(script, "agent_work_ready") != NULL);
+        ASSERT(strstr(script, "chain_serving_ready") != NULL);
         ASSERT(strstr(script, "AGENT READY") != NULL);
         ASSERT(strstr(script, "BLOCKED: agent status=") != NULL);
         ASSERT(strstr(script, "SYNC OK") != NULL);

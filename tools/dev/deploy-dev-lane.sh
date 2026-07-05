@@ -113,7 +113,8 @@ json_first_bool_field() {
 probe_agent_contract() {
     local timeout_s="${ZCL_DEV_AGENT_TIMEOUT:-10}"
     local agent_json rc build status healthy serving operator_needed
-    local validation_pack_ok blocker next readiness
+    local validation_pack_ok blocker next readiness agent_work_ready
+    local chain_serving_ready agent_ready
 
     agent_json=""
     if agent_json="$(timeout "$timeout_s" "${CLI[@]}" agent 2>/dev/null)"; then
@@ -140,6 +141,8 @@ probe_agent_contract() {
     blocker="$(json_first_string_field "$agent_json" "primary_blocker")"
     next="$(json_first_string_field "$agent_json" "next")"
     readiness="$(json_first_string_field "$agent_json" "readiness_status")"
+    chain_serving_ready="$(json_first_bool_field "$agent_json" "chain_serving_ready")"
+    agent_work_ready="$(json_first_bool_field "$agent_json" "agent_work_ready")"
 
     if [ "$operator_needed" = "1" ] ||
        [ "$status" = "blocked" ] ||
@@ -150,10 +153,18 @@ probe_agent_contract() {
         exit 1
     fi
 
-    if [ "$healthy" = "1" ] && [ "$serving" = "1" ]; then
-        echo "[dev-lane] AGENT READY: status=${status:-unknown} build=${build:-unknown} readiness=${readiness:-unknown}"
+    agent_ready=0
+    if [ "$agent_work_ready" = "1" ]; then
+        agent_ready=1
+    elif [ "$agent_work_ready" = "null" ] &&
+         [ "$healthy" = "1" ] && [ "$serving" = "1" ]; then
+        agent_ready=1
+    fi
+
+    if [ "$agent_ready" = "1" ]; then
+        echo "[dev-lane] AGENT READY: status=${status:-unknown} build=${build:-unknown} readiness=${readiness:-unknown} agent_work_ready=${agent_work_ready:-null}"
     else
-        echo "[dev-lane] NOTE: agent status=${status:-unknown} healthy=$healthy serving=$serving; not declaring agent-ready yet"
+        echo "[dev-lane] NOTE: agent status=${status:-unknown} healthy=$healthy serving=$serving chain_serving_ready=$chain_serving_ready agent_work_ready=$agent_work_ready; not declaring agent-ready yet"
         [ -n "$blocker" ] && echo "[dev-lane] NOTE: primary_blocker=$blocker"
         [ -n "$next" ] && echo "[dev-lane] NOTE: next=$next"
     fi
