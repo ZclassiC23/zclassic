@@ -2836,6 +2836,10 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(api_status_buf, "agent_push_readiness_json")
                != NULL);
+        ASSERT(strstr(agent_summary_buf, "agent_push_height_contract_fields_json")
+               != NULL);
+        ASSERT(strstr(api_status_buf, "agent_push_height_contract_fields_json")
+               != NULL);
         ASSERT(strstr(agent_readiness_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_readiness_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_readiness_buf, "index_projection_ready") != NULL);
@@ -2853,6 +2857,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_readiness.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.height_contract.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_interface.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_runtime_identity.v1")
                != NULL);
@@ -2972,6 +2977,7 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_doc_buf, "configured boot intent") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_readiness.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.height_contract.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "index_projection_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);

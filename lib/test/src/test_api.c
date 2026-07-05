@@ -1427,7 +1427,15 @@ int test_api(void)
         test_reset_shared_globals();
         struct main_state ms;
         struct block_index *blocks[3] = {0};
+        struct cac_decision decision;
         bool ok = api_test_build_chain(&ms, blocks, 3);
+        memset(&decision, 0, sizeof(decision));
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = 2;
+        decision.target_height = 2;
+        decision.projection_height = 2;
+        node_health_test_set_chain_advance_decision_override(&decision);
         reducer_frontier_provable_tip_set(2);
         api_set_state(&ms, NULL, NULL, NULL, "/tmp");
 
@@ -1446,6 +1454,26 @@ int test_api(void)
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
         ok = ok && api_test_expect_readiness_shape(&root);
+        const struct json_value *height_contract =
+            json_get(&root, "height_contract");
+        ok = ok && height_contract && height_contract->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(height_contract,
+                                                "schema")),
+                          "zcl.height_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(height_contract,
+                                                "status")),
+                          "current") == 0;
+        ok = ok && !json_get_bool(json_get(height_contract,
+                                           "normal_lookahead"));
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "served_tip_height")) == 2;
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "active_tip_height")) == 2;
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "header_tip_height")) == 2;
+        ok = ok && strcmp(json_get_str(json_get(height_contract,
+                                                "external_height_is")),
+                          "served_tip_height") == 0;
         const struct json_value *resources =
             json_get(&root, "resources");
         ok = ok && resources && resources->type == JSON_OBJ;
@@ -1514,6 +1542,34 @@ int test_api(void)
                             "no_progress_restarts") != NULL;
         json_free(&root);
 
+        reducer_frontier_provable_tip_set(1);
+        n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
+                               resp, sizeof(resp));
+        body = api_test_body(resp, n, sizeof(resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        height_contract = json_get(&root, "height_contract");
+        ok = ok && height_contract && height_contract->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(height_contract,
+                                                "status")),
+                          "normal_lookahead") == 0;
+        ok = ok && json_get_bool(json_get(height_contract,
+                                          "normal_lookahead"));
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "served_tip_height")) == 1;
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "active_tip_height")) == 2;
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "target_height")) == 2;
+        ok = ok && json_get_int(json_get(height_contract,
+                                         "served_gap_blocks")) == 1;
+        ok = ok && json_get(height_contract,
+                            "external_height_semantics") != NULL;
+        ok = ok && json_get(height_contract,
+                            "active_tip_semantics") != NULL;
+        json_free(&root);
+        reducer_frontier_provable_tip_set(2);
+
         n = api_handle_request("GET", "/api/v1/node", NULL, 0,
                                resp, sizeof(resp));
         body = api_test_body(resp, n, sizeof(resp));
@@ -1544,6 +1600,7 @@ int test_api(void)
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
+        node_health_test_set_chain_advance_decision_override(NULL);
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();

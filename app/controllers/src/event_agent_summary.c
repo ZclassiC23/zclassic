@@ -3,6 +3,7 @@
  * Compact AI/operator first-call telemetry. This path must stay cheap even
  * while the full healthcheck path is doing repair-era evidence work. */
 #include "event_agent_summary.h"
+#include "controllers/agent_height_contract.h"
 #include "api_controller_internal.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_restart_watchdog.h"
@@ -591,6 +592,10 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_int(result, "target_height", health.target_height);
     json_push_kv_int(result, "gap", health.gap);
     json_push_kv_int(result, "index_gap", health.index_gap);
+    agent_push_height_contract_fields_json(
+        result, "height_contract", health.served_height, health.tip_height,
+        health.header_height, health.peer_best_height, health.target_height,
+        health.gap, health.log_head, health.log_head_gap);
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
     agent_push_restart_watchdog_json(result, "restart_watchdog", NULL);
 
@@ -618,7 +623,6 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                      health.projection_catchup_uptime_seconds);
     json_push_kv(result, "indexer", &indexer);
     json_free(&indexer);
-
     struct json_value reducer = {0};
     json_set_object(&reducer);
     json_push_kv_int(&reducer, "log_head", health.log_head);
@@ -631,7 +635,6 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                      health.validation_pack_detail);
     json_push_kv(result, "reducer", &reducer);
     json_free(&reducer);
-
     struct json_value health_obj = {0};
     json_set_object(&health_obj);
     json_push_kv_int(&health_obj, "warning_count",
@@ -648,9 +651,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                       health.operator_latch_recovered);
     json_push_kv(result, "health", &health_obj);
     json_free(&health_obj);
-
     agent_push_resources_json(result, "resources", &health.resources);
-
     struct json_value peers = {0};
     json_set_object(&peers);
     json_push_kv_int(&peers, "total", (int64_t)health.peer_count);
@@ -795,6 +796,5 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_bool(&services, "onion_service_ready", health.onion_service_ready);
     json_push_kv(result, "services", &services);
     json_free(&services);
-
     return true;
 }

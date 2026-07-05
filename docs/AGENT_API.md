@@ -193,6 +193,16 @@ The top-level status always reports exact `gap`, `index_gap`, and
 serving-health-compatible. Larger gaps still become `chain_gap` /
 `download_queue_idle` and can set `operator_needed`.
 
+The same packet includes `height_contract` (`zcl.height_contract.v1`) so agents
+do not confuse height surfaces. Top-level `height`, `served_height`,
+`getblockcount`, `getblockchaininfo.blocks`, and P2P `start_height` are the
+served/provable reducer frontier H*. `active_tip_height` is the internal
+sync-window lookahead tip and may be one block above H* while `tip_finalize`
+waits for a canonical successor. In that case `height_contract.status` is
+`normal_lookahead`, not a peer-connectivity failure. `lagging` means the served
+gap is material and should be diagnosed with `getsyncdiag` / `dumpstate
+reducer_frontier`.
+
 The same response includes `readiness` (`zcl.agent_readiness.v1`) so agents do
 not have to infer operational safety from the top-level status string alone.
 `chain_serving_ready=true` means the chain surface is serving with peers, no

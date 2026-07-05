@@ -6,6 +6,7 @@
  * MCP-friendly clients that do not need the full diagnostic tree. */
 
 #include "controllers/agent_controller.h"
+#include "controllers/agent_height_contract.h"
 #include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_resources.h"
 #include "controllers/api_controller.h"
@@ -503,6 +504,10 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_int(&body, "target_height", target);
     json_push_kv_int(&body, "gap", gap);
     json_push_kv_int(&body, "index_gap", index_gap);
+    agent_push_height_contract_fields_json(
+        &body, "height_contract", height, health.tip_height,
+        health.header_height, health.peer_best_height, target, gap,
+        health.log_head, health.log_head_gap);
     json_push_kv_str(&body, "sync_state",
                      sync_state_name(health.sync_state));
     agent_push_restart_watchdog_json(&body, "restart_watchdog", NULL);
