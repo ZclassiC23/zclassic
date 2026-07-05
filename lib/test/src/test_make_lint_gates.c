@@ -2846,9 +2846,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "node_db_sync_get_job_status")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "\"indexer\"") != NULL);
-        ASSERT(strstr(agent_summary_buf, "agent_push_readiness_json")
+        ASSERT(strstr(agent_summary_buf, "agent_push_readiness_contract_json")
                != NULL);
-        ASSERT(strstr(api_status_buf, "agent_push_readiness_json")
+        ASSERT(strstr(api_status_buf, "agent_push_readiness_contract_json")
+               != NULL);
+        ASSERT(strstr(agent_readiness_buf, "agent_push_readiness_json")
+               != NULL);
+        ASSERT(strstr(agent_readiness_buf, "agent_push_readiness_fields_json")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_push_height_contract_fields_json")
                != NULL);
@@ -2858,6 +2862,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_readiness_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_readiness_buf, "index_projection_ready") != NULL);
         ASSERT(strstr(agent_readiness_buf, "agent_work_ready") != NULL);
+        ASSERT(strstr(agent_readiness_buf, "readiness_status") != NULL);
+        ASSERT(strstr(agent_readiness_buf, "readiness_next_action") != NULL);
         ASSERT(strstr(agent_readiness_buf, "serving_projection_deferred")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "projection_lag") != NULL);
@@ -2996,6 +3002,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl.mirror_status.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "index_projection_ready") != NULL);
+        ASSERT(strstr(agent_doc_buf, "readiness_status") != NULL);
+        ASSERT(strstr(agent_doc_buf, "readiness_next_action") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);

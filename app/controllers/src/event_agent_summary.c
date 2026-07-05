@@ -506,9 +506,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
     bool material_index_gap = health.index_gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
-    const char *status = "healthy";
-    const char *primary = "none";
-    const char *next = "none";
+    const char *status = "healthy", *primary = "none", *next = "none";
     const char *summary = "node healthy at served frontier";
     bool operator_needed = false;
 
@@ -581,9 +579,10 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "primary_blocker", primary);
     json_push_kv_str(result, "next", next);
     agent_push_operator_lane_json(result, "operator_lane");
-    agent_push_readiness_json(result, "readiness", health.serving,
-                              health.has_peers, health.operator_needed,
-                              health.validation_pack_ok, health.gap, health.index_gap, health.log_head_gap);
+    agent_push_readiness_contract_json(result, "readiness", health.serving,
+                                       health.has_peers, operator_needed,
+                                       health.validation_pack_ok, health.gap,
+                                       health.index_gap, health.log_head_gap);
     json_push_kv_int(result, "height", health.served_height);
     json_push_kv_int(result, "served_height", health.served_height);
     json_push_kv_int(result, "indexed_height", health.indexed_height);

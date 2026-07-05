@@ -493,10 +493,10 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_str(&body, "primary_blocker", primary);
     json_push_kv_str(&body, "next_endpoint", next_endpoint);
     agent_push_operator_lane_json(&body, "operator_lane");
-    agent_push_readiness_json(&body, "readiness", health.serving,
-                              health.has_peers, operator_needed,
-                              health.validation_pack_ok, (int)gap,
-                              (int)index_gap, health.log_head_gap);
+    agent_push_readiness_contract_json(
+        &body, "readiness", health.serving, health.has_peers,
+        operator_needed, health.validation_pack_ok, (int)gap,
+        (int)index_gap, health.log_head_gap);
     json_push_kv_int(&body, "height", height);
     api_freshness_push_json(&body, &freshness);
     json_push_kv_int(&body, "header_height", health.header_height);

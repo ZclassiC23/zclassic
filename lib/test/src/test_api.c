@@ -184,6 +184,12 @@ static bool api_test_expect_readiness_shape(const struct json_value *root)
 
     return strcmp(json_get_str(json_get(readiness, "schema")),
                   "zcl.agent_readiness.v1") == 0 &&
+           json_get(root, "readiness_status") != NULL &&
+           json_get(root, "chain_serving_ready") != NULL &&
+           json_get(root, "index_projection_ready") != NULL &&
+           json_get(root, "agent_work_ready") != NULL &&
+           json_get(root, "operator_action_required") != NULL &&
+           json_get(root, "readiness_next_action") != NULL &&
            json_get_int(json_get(readiness, "schema_version")) == 1 &&
            json_get(readiness, "status") != NULL &&
            json_get(readiness, "chain_serving_ready") != NULL &&

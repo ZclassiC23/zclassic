@@ -151,7 +151,7 @@ probe_agent_contract() {
     fi
 
     if [ "$healthy" = "1" ] && [ "$serving" = "1" ]; then
-        echo "[dev-lane] AGENT READY: status=${status:-unknown} build=${build:-unknown} readiness=${readiness:-ok}"
+        echo "[dev-lane] AGENT READY: status=${status:-unknown} build=${build:-unknown} readiness=${readiness:-unknown}"
     else
         echo "[dev-lane] NOTE: agent status=${status:-unknown} healthy=$healthy serving=$serving; not declaring agent-ready yet"
         [ -n "$blocker" ] && echo "[dev-lane] NOTE: primary_blocker=$blocker"

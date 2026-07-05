@@ -223,6 +223,13 @@ can remain `degraded` with `primary_blocker="projection_lag"`, while
 `agent_work_ready=true` tell automation that development and diagnostics can
 continue without treating the node as down.
 
+The same readiness booleans are also duplicated as compact top-level fields:
+`readiness_status`, `chain_serving_ready`, `index_projection_ready`,
+`agent_work_ready`, `operator_action_required`, and
+`readiness_next_action`. They are computed by the same C helper that builds the
+nested readiness object, so shell deploy guards and MCP callers can read one
+flat key without re-parsing nested JSON.
+
 `make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
 calls the running node's C-native `agentdeployguard` RPC
 (`zcl.agent_deploy_guard.v1`) when available and falls back to the systemd

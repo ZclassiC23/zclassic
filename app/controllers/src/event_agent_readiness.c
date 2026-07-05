@@ -4,6 +4,14 @@
 #include "json/json.h"
 #include "services/node_health_service.h"
 
+struct agent_readiness_view {
+    const char *status;
+    const char *next_action;
+    bool chain_ready;
+    bool index_ready;
+    bool agent_work_ready;
+};
+
 static bool chain_serving_ready(bool serving, bool has_peers,
                                 bool operator_needed, int gap,
                                 int log_head_gap)
@@ -52,6 +60,48 @@ static const char *readiness_next_action(bool serving, bool has_peers,
     return "none";
 }
 
+static struct agent_readiness_view readiness_view(bool serving, bool has_peers,
+                                                  bool operator_needed,
+                                                  bool validation_pack_ok,
+                                                  int gap, int index_gap,
+                                                  int log_head_gap)
+{
+    struct agent_readiness_view view = {0};
+    view.chain_ready = chain_serving_ready(serving, has_peers,
+                                           operator_needed, gap,
+                                           log_head_gap);
+    view.index_ready = index_projection_ready(serving, has_peers,
+                                              operator_needed, gap,
+                                              index_gap, log_head_gap);
+    view.agent_work_ready = view.chain_ready && validation_pack_ok;
+    view.status = readiness_status(serving, has_peers, operator_needed,
+                                   gap, index_gap, log_head_gap);
+    view.next_action = readiness_next_action(serving, has_peers,
+                                             operator_needed, gap,
+                                             index_gap, log_head_gap);
+    return view;
+}
+
+void agent_push_readiness_fields_json(struct json_value *out,
+                                      bool serving, bool has_peers,
+                                      bool operator_needed,
+                                      bool validation_pack_ok, int gap,
+                                      int index_gap, int log_head_gap)
+{
+    if (!out)
+        return;
+
+    const struct agent_readiness_view view =
+        readiness_view(serving, has_peers, operator_needed,
+                       validation_pack_ok, gap, index_gap, log_head_gap);
+    json_push_kv_str(out, "readiness_status", view.status);
+    json_push_kv_bool(out, "chain_serving_ready", view.chain_ready);
+    json_push_kv_bool(out, "index_projection_ready", view.index_ready);
+    json_push_kv_bool(out, "agent_work_ready", view.agent_work_ready);
+    json_push_kv_bool(out, "operator_action_required", operator_needed);
+    json_push_kv_str(out, "readiness_next_action", view.next_action);
+}
+
 void agent_push_readiness_json(struct json_value *out, const char *key,
                                bool serving, bool has_peers,
                                bool operator_needed,
@@ -61,33 +111,42 @@ void agent_push_readiness_json(struct json_value *out, const char *key,
     if (!out)
         return;
 
-    const bool chain_ready = chain_serving_ready(serving, has_peers,
-                                                 operator_needed, gap,
-                                                 log_head_gap);
-    const bool index_ready = index_projection_ready(serving, has_peers,
-                                                    operator_needed, gap,
-                                                    index_gap, log_head_gap);
+    const struct agent_readiness_view view =
+        readiness_view(serving, has_peers, operator_needed,
+                       validation_pack_ok, gap, index_gap, log_head_gap);
     struct json_value obj = {0};
     json_set_object(&obj);
     json_push_kv_str(&obj, "schema", "zcl.agent_readiness.v1");
     json_push_kv_int(&obj, "schema_version", 1);
-    json_push_kv_str(&obj, "status",
-                     readiness_status(serving, has_peers, operator_needed,
-                                      gap, index_gap, log_head_gap));
-    json_push_kv_bool(&obj, "chain_serving_ready", chain_ready);
-    json_push_kv_bool(&obj, "index_projection_ready", index_ready);
-    json_push_kv_bool(&obj, "agent_work_ready",
-                      chain_ready && validation_pack_ok);
+    json_push_kv_str(&obj, "status", view.status);
+    json_push_kv_bool(&obj, "chain_serving_ready", view.chain_ready);
+    json_push_kv_bool(&obj, "index_projection_ready", view.index_ready);
+    json_push_kv_bool(&obj, "agent_work_ready", view.agent_work_ready);
     json_push_kv_bool(&obj, "operator_action_required", operator_needed);
     json_push_kv_int(&obj, "tip_gap_blocks", gap);
     json_push_kv_int(&obj, "index_gap_blocks", index_gap);
     json_push_kv_int(&obj, "reducer_log_gap_blocks", log_head_gap);
-    json_push_kv_str(&obj, "next_action",
-                     readiness_next_action(serving, has_peers,
-                                           operator_needed, gap, index_gap,
-                                           log_head_gap));
+    json_push_kv_str(&obj, "next_action", view.next_action);
     json_push_kv_str(&obj, "semantics",
                      "chain_serving_ready excludes index projection lag; use index_projection_ready for explorer/projection freshness");
     json_push_kv(out, key && key[0] ? key : "readiness", &obj);
     json_free(&obj);
+}
+
+void agent_push_readiness_contract_json(struct json_value *out,
+                                        const char *key,
+                                        bool serving, bool has_peers,
+                                        bool operator_needed,
+                                        bool validation_pack_ok, int gap,
+                                        int index_gap, int log_head_gap)
+{
+    if (!out)
+        return;
+
+    agent_push_readiness_fields_json(out, serving, has_peers,
+                                     operator_needed, validation_pack_ok,
+                                     gap, index_gap, log_head_gap);
+    agent_push_readiness_json(out, key, serving, has_peers, operator_needed,
+                              validation_pack_ok, gap, index_gap,
+                              log_head_gap);
 }

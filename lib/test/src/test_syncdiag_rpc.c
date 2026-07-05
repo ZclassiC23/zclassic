@@ -1412,14 +1412,28 @@ int test_syncdiag_rpc(void)
                           "zcl.agent_readiness.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(readiness, "status")),
                           "not_serving") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "readiness_status")),
+                          "not_serving") == 0;
         ok = ok && !json_get_bool(json_get(readiness,
+                                           "chain_serving_ready"));
+        ok = ok && !json_get_bool(json_get(&result,
                                            "chain_serving_ready"));
         ok = ok && !json_get_bool(json_get(readiness,
                                            "index_projection_ready"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "index_projection_ready"));
         ok = ok && !json_get_bool(json_get(readiness,
+                                           "agent_work_ready"));
+        ok = ok && !json_get_bool(json_get(&result,
                                            "agent_work_ready"));
         ok = ok && json_get_bool(json_get(readiness,
                                           "operator_action_required"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "operator_action_required"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "readiness_next_action")),
+                          "operator_intervention_required") == 0;
         const struct json_value *reducer = json_get(&result, "reducer");
         ok = ok && reducer && reducer->type == JSON_OBJ;
         ok = ok && json_get(reducer, "log_head") != NULL;
@@ -1481,11 +1495,17 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(readiness, "schema")),
                           "zcl.agent_readiness.v1") == 0;
         ok = ok && json_get(readiness, "status") != NULL;
+        ok = ok && json_get(&result, "readiness_status") != NULL;
         ok = ok && json_get(readiness, "chain_serving_ready") != NULL;
+        ok = ok && json_get(&result, "chain_serving_ready") != NULL;
         ok = ok && json_get(readiness, "index_projection_ready") != NULL;
+        ok = ok && json_get(&result, "index_projection_ready") != NULL;
         ok = ok && json_get(readiness, "agent_work_ready") != NULL;
+        ok = ok && json_get(&result, "agent_work_ready") != NULL;
         ok = ok && json_get(readiness, "operator_action_required") != NULL;
+        ok = ok && json_get(&result, "operator_action_required") != NULL;
         ok = ok && json_get(readiness, "next_action") != NULL;
+        ok = ok && json_get(&result, "readiness_next_action") != NULL;
         ok = ok && json_get(readiness, "semantics") != NULL;
         const struct json_value *download = json_get(&result, "download");
         ok = ok && download && download->type == JSON_OBJ;
@@ -1903,19 +1923,34 @@ int test_syncdiag_rpc(void)
                           "zcl.agent_readiness.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(readiness, "status")),
                           "serving_projection_deferred") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "readiness_status")),
+                          "serving_projection_deferred") == 0;
         ok = ok && json_get_bool(json_get(readiness,
+                                          "chain_serving_ready"));
+        ok = ok && json_get_bool(json_get(&result,
                                           "chain_serving_ready"));
         ok = ok && !json_get_bool(json_get(readiness,
                                            "index_projection_ready"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "index_projection_ready"));
         ok = ok && json_get_bool(json_get(readiness,
                                           "agent_work_ready"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "agent_work_ready"));
         ok = ok && !json_get_bool(json_get(readiness,
+                                           "operator_action_required"));
+        ok = ok && !json_get_bool(json_get(&result,
                                            "operator_action_required"));
         ok = ok && json_get_int(json_get(readiness, "tip_gap_blocks")) == 0;
         ok = ok && json_get_int(json_get(readiness, "index_gap_blocks")) ==
             projection_lag;
         ok = ok && strcmp(json_get_str(json_get(readiness,
                                                 "next_action")),
+                          "continue_chain_ops_inspect_indexer_if_needed")
+                          == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "readiness_next_action")),
                           "continue_chain_ops_inspect_indexer_if_needed")
                           == 0;
         ok = ok && indexer && indexer->type == JSON_OBJ;
