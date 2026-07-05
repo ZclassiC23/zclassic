@@ -141,6 +141,9 @@ void legacy_mirror_sync_push_observed_lag_json(
     struct json_value *out,
     const char *key,
     const struct legacy_mirror_sync_stats *stats);
+void legacy_mirror_sync_push_status_contract_json(
+    struct json_value *out,
+    const struct legacy_mirror_sync_stats *stats);
 const char *legacy_mirror_sync_blocker_code(
     const struct legacy_mirror_sync_stats *stats);
 bool legacy_mirror_sync_blocker_should_surface(

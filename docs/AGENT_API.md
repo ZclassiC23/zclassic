@@ -82,11 +82,21 @@ reads during startup or catch-up; use `zcl_status`, `zcl_state`, or
 `runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
 commit against the deploy-installed expected commit
 (`ZCL_AGENT_EXPECT_BUILD_COMMIT`, written by `make deploy` / `make deploy-dev`).
-Its `mirror` object exposes `contract_trusted`, `blocker_active`, and
-`operator_action_required`; agents should key on those booleans before any
-legacy `blocker` string. When `getmirrorstatus` includes
-`mirror_contract.blocker_active=false`, `zcl_operator_summary` suppresses
-stale top-level mirror blocker strings.
+It also includes `operator_latch` (`zcl.operator_latch.v1`), `conditions`
+(`zcl.condition_engine_summary.v1`), and `mirror_contract`
+(`zcl.mirror_status.v1`). `operator_latch.active` names whether an
+`EV_OPERATOR_NEEDED` page is still latched; `operator_action_required` is the
+machine decision agents should use before interrupting work. Mirror-only stale
+hash-disagreement latches can be marked
+`suppressed_by_mirror_contract=true` when the mirror contract proves there is
+no active advisory blocker. `conditions` gives cheap active/unresolved counts
+and points to `zcl_state subsystem=condition_engine` for the full registered
+condition list, attempts, thresholds, and detail. The MCP
+`zcl_operator_summary` `mirror` object exposes `contract_trusted`,
+`blocker_active`, and `operator_action_required`; agents should key on those
+booleans before any legacy `blocker` string. When `getmirrorstatus` includes
+`mirror_contract.blocker_active=false`, `zcl_operator_summary` suppresses stale
+top-level mirror blocker strings.
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract
 before deciding whether to deploy dev or request an operator-gated canonical

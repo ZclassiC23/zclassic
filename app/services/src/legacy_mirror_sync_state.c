@@ -158,7 +158,7 @@ bool legacy_mirror_sync_blocker_should_surface(
     return !non_legacy_source_selected;
 }
 
-static void lms_push_status_contract_json(
+void legacy_mirror_sync_push_status_contract_json(
     struct json_value *out,
     const struct legacy_mirror_sync_stats *s)
 {
@@ -519,7 +519,7 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_str(out, "build_commit", zcl_build_commit());
     json_push_kv_bool(out, "mirror_enabled", s.enabled);
     json_push_kv_str(out, "state", s.state);
-    lms_push_status_contract_json(out, &s);
+    legacy_mirror_sync_push_status_contract_json(out, &s);
     json_push_kv_bool(out, "mirror_monitor_running", s.running);
     json_push_kv_bool(out, "mirror_running", s.running);
     json_push_kv_bool(out, "running", s.running);

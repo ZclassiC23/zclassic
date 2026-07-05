@@ -95,22 +95,15 @@ static bool agent_str_starts(const char *s, const char *prefix)
 static bool agent_path_is_native_agent_api(const char *path)
 {
     static const char *const paths[] = {
-        "app/controllers/src/agent_controller.c",
-        "app/controllers/src/agent_impact_rules.c",
-        "app/controllers/src/agent_interface_controller.c",
-        "app/controllers/src/agent_lanes_controller.c",
-        "app/controllers/src/agent_resources.c",
-        "app/controllers/src/agent_restart_watchdog.c",
-        "app/controllers/src/agent_runtime_controller.c",
-        "app/controllers/src/event_agent_peers.c",
-        "app/controllers/src/event_agent_peers.h",
-        "app/controllers/src/event_agent_summary.c",
-        "app/controllers/src/event_agent_summary.h",
-        "app/controllers/include/controllers/agent_controller.h",
-        "app/controllers/include/controllers/agent_impact_rules.def",
-        "app/controllers/include/controllers/agent_impact_rules.h",
-        "app/controllers/include/controllers/agent_resources.h",
-        "app/controllers/include/controllers/agent_restart_watchdog.h",
+        "app/controllers/src/agent_controller.c", "app/controllers/src/agent_impact_rules.c",
+        "app/controllers/src/agent_interface_controller.c", "app/controllers/src/agent_lanes_controller.c",
+        "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_resources.c",
+        "app/controllers/src/agent_restart_watchdog.c", "app/controllers/src/agent_runtime_controller.c",
+        "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h",
+        "app/controllers/src/event_agent_summary.c", "app/controllers/src/event_agent_summary.h",
+        "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_impact_rules.def",
+        "app/controllers/include/controllers/agent_impact_rules.h", "app/controllers/include/controllers/agent_operator_contracts.h",
+        "app/controllers/include/controllers/agent_resources.h", "app/controllers/include/controllers/agent_restart_watchdog.h",
     };
 
     if (!path || !path[0])
@@ -561,8 +554,14 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
                       "nested in zcl.public_status.v1 height_contract",
                       "names served H*, active lookahead, header, peer, and target heights");
     agent_push_schema(&schemas, "zcl.mirror_status.v1",
-                      "nested in getmirrorstatus mirror_contract",
+                      "nested in zcl.public_status.v1 and getmirrorstatus mirror_contract",
                       "names mirror reachability, lag, hash agreement, and active blocker semantics");
+    agent_push_schema(&schemas, "zcl.operator_latch.v1",
+                      "nested in zcl.public_status.v1 operator_latch",
+                      "names EV_OPERATOR_NEEDED latch detail, age, and whether operator action is still required");
+    agent_push_schema(&schemas, "zcl.condition_engine_summary.v1",
+                      "nested in zcl.public_status.v1 conditions",
+                      "cheap active/unresolved condition counts with drill-down routes");
     agent_push_schema(&schemas, "zcl.runtime_build.v1",
                       "nested in zcl.public_status.v1 runtime_build",
                       "running-vs-deploy-expected build freshness for stale-runtime detection");

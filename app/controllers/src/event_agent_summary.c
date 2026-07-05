@@ -5,6 +5,7 @@
 #include "event_agent_summary.h"
 #include "controllers/agent_height_contract.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_operator_contracts.h"
 #include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_resources.h"
 #include "controllers/network_controller.h"
@@ -13,6 +14,7 @@
 #include "event_agent_peers.h"
 #include "event_agent_readiness.h"
 #include "event/event.h"
+#include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
 #include "json/json.h"
@@ -24,6 +26,7 @@
 #include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "services/block_source_policy.h"
+#include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include "services/invariant_sentinel.h"
 #include "services/gap_fill_service.h"
@@ -63,7 +66,9 @@ struct agent_fast_snapshot {
     bool healthy;
     bool serving;
     bool operator_needed;
+    bool operator_action_required;
     bool operator_latch_recovered;
+    bool operator_latch_suppressed_by_mirror;
     bool validation_pack_ok;
     bool provable_tip_published;
     bool tor_enabled;
@@ -139,13 +144,18 @@ struct agent_fast_snapshot {
     int64_t oldest_in_flight_age_seconds;
     int64_t last_error_age_seconds;
     struct agent_resource_snapshot resources;
+    struct legacy_mirror_sync_stats mirror;
+    int active_condition_count;
+    int unresolved_condition_count;
     int warning_count;
     char warning_reasons[256];
     char blocking_reason[ZCL_NODE_HEALTH_REASON_LEN];
+    char operator_needed_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
     char last_error_type[64];
     char projection_state[32];
     char last_projection_deferred_reason[64];
     char validation_pack_detail[64];
+    int64_t operator_needed_since_unix;
 };
 
 static int agent_fast_served_height(bool *published_out)
@@ -290,7 +300,11 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     s->oldest_in_flight_height = -1;
     s->peer_snapshot_age_seconds = -1;
     s->validation_pack_ok = true;
+    s->operator_needed_since_unix = 0;
     agent_resource_snapshot_collect(&s->resources);
+    legacy_mirror_sync_stats_snapshot(&s->mirror);
+    s->active_condition_count = condition_engine_get_active_count();
+    s->unresolved_condition_count = condition_engine_get_unresolved_count();
     if (s->resources.rss_warning)
         agent_fast_add_warning(s, "high_memory_usage");
 
@@ -435,19 +449,28 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     }
     s->serving = s->served_height > 0;
 
-    char operator_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
     bool frontier_recovered =
         s->serving && s->has_peers && s->gap <= 1 &&
         s->index_gap <= 1 &&
         (s->log_head_gap < 0 || s->log_head_gap <= 1);
     s->operator_latch_recovered =
         alerts_operator_needed_clear_if_chain_advance_recovered(
-            frontier_recovered, operator_detail, sizeof(operator_detail),
-            NULL);
+            frontier_recovered, s->operator_needed_detail,
+            sizeof(s->operator_needed_detail),
+            &s->operator_needed_since_unix);
     if (s->operator_latch_recovered)
         agent_fast_add_warning(s, "operator_latch_recovered");
     s->operator_needed =
-        alerts_operator_needed(operator_detail, sizeof(operator_detail), NULL);
+        alerts_operator_needed(s->operator_needed_detail,
+                               sizeof(s->operator_needed_detail),
+                               &s->operator_needed_since_unix);
+    s->operator_latch_suppressed_by_mirror =
+        agent_operator_latch_suppressed_by_mirror(
+            s->operator_needed, s->operator_needed_detail, &s->mirror);
+    if (s->operator_latch_suppressed_by_mirror)
+        agent_fast_add_warning(s, "operator_latch_suppressed_by_mirror");
+    s->operator_action_required =
+        s->operator_needed && !s->operator_latch_suppressed_by_mirror;
 
     s->catchup_active = s->in_flight > 0 || s->queued > 0;
     s->catchup_stalled =
@@ -470,15 +493,17 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     if (s->overdue_in_flight > 0)
         agent_fast_add_warning(s, "download_timeouts_overdue");
 
-    s->healthy = s->serving && s->has_peers && !s->operator_needed &&
+    s->healthy = s->serving && s->has_peers &&
+                 !s->operator_action_required &&
                  s->gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                  s->index_gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                  (s->log_head_gap < 0 || s->log_head_gap <= 1);
 
-    if (s->operator_needed) {
+    if (s->operator_action_required) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "operator_needed:%s",
-                 operator_detail[0] ? operator_detail : "unspecified");
+                 s->operator_needed_detail[0]
+                     ? s->operator_needed_detail : "unspecified");
     } else if (!s->has_peers) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "no_peers");
@@ -524,7 +549,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     const char *summary = "node healthy at served frontier";
     bool operator_needed = false;
 
-    if (health.operator_needed) {
+    if (health.operator_action_required) {
         status = "blocked";
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "operator_needed";
@@ -594,6 +619,22 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "next", next);
     agent_push_operator_lane_fields_json(result);
     agent_push_operator_lane_json(result, "operator_lane");
+    struct agent_operator_latch_contract_view latch_view = {
+        .active = health.operator_needed,
+        .operator_action_required = health.operator_action_required,
+        .recovered_this_call = health.operator_latch_recovered,
+        .suppressed_by_mirror_contract =
+            health.operator_latch_suppressed_by_mirror,
+        .since_unix = health.operator_needed_since_unix,
+        .detail = health.operator_needed_detail,
+    };
+    agent_push_operator_latch_contract_json(result, &latch_view);
+    struct agent_condition_summary_contract_view condition_view = {
+        .active_count = health.active_condition_count,
+        .unresolved_count = health.unresolved_condition_count,
+    };
+    agent_push_condition_summary_contract_json(result, &condition_view);
+    legacy_mirror_sync_push_status_contract_json(result, &health.mirror);
     agent_push_readiness_contract_json(
         result, "readiness", health.serving, health.has_peers, operator_needed,
         health.validation_pack_ok, health.gap, health.index_gap,
@@ -654,6 +695,13 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(&health_obj, "last_error_type", health.last_error_type);
     json_push_kv_str(&health_obj, "blocking_reason", health.blocking_reason);
     json_push_kv_bool(&health_obj, "operator_latch_recovered", health.operator_latch_recovered);
+    json_push_kv_bool(&health_obj, "operator_latch_active", health.operator_needed);
+    json_push_kv_bool(&health_obj, "operator_action_required", health.operator_action_required);
+    json_push_kv_bool(&health_obj, "operator_latch_suppressed_by_mirror", health.operator_latch_suppressed_by_mirror);
+    json_push_kv_str(&health_obj, "operator_latch_detail", health.operator_needed_detail);
+    json_push_kv_int(&health_obj, "operator_latch_since_unix", health.operator_needed_since_unix);
+    json_push_kv_int(&health_obj, "active_condition_count", health.active_condition_count);
+    json_push_kv_int(&health_obj, "unresolved_condition_count", health.unresolved_condition_count);
     json_push_kv(result, "health", &health_obj);
     json_free(&health_obj);
     agent_push_resources_json(result, "resources", &health.resources);
@@ -709,11 +757,9 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         json_push_kv_int(&intake, "current_depth", (int64_t)health.block_intake_current_depth);
         json_push_kv_int(&intake, "capacity", (int64_t)health.block_intake_capacity);
         json_push_kv_bool(&intake, "saturated",
-                          health.block_intake_running &&
-                          !health.block_intake_stopping &&
+                          health.block_intake_running && !health.block_intake_stopping &&
                           health.block_intake_capacity > 0 &&
-                          health.block_intake_current_depth >=
-                              health.block_intake_capacity);
+                          health.block_intake_current_depth >= health.block_intake_capacity);
         json_push_kv_int(&intake, "max_depth", (int64_t)health.block_intake_max_depth);
         json_push_kv_int(&intake, "enqueued", (int64_t)health.block_intake_enqueued);
         json_push_kv_int(&intake, "processed", (int64_t)health.block_intake_processed);

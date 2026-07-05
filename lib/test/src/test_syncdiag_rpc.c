@@ -1434,6 +1434,47 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "readiness_next_action")),
                           "operator_intervention_required") == 0;
+        const struct json_value *operator_latch =
+            json_get(&result, "operator_latch");
+        ok = ok && operator_latch && operator_latch->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(operator_latch, "schema")),
+                          "zcl.operator_latch.v1") == 0;
+        ok = ok && json_get_int(json_get(operator_latch,
+                                         "schema_version")) == 1;
+        ok = ok && json_get_bool(json_get(operator_latch, "active"));
+        ok = ok && json_get_bool(json_get(operator_latch,
+                                          "operator_action_required"));
+        ok = ok && !json_get_bool(json_get(operator_latch,
+                                           "recovered_this_call"));
+        ok = ok && !json_get_bool(json_get(operator_latch,
+                                           "suppressed_by_mirror_contract"));
+        ok = ok && json_get(operator_latch, "since_unix") != NULL;
+        ok = ok && strstr(json_get_str(json_get(operator_latch, "detail")),
+                          "window.consistency") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(operator_latch,
+                                                "state_tool")),
+                          "zcl_state subsystem=condition_engine") == 0;
+        const struct json_value *condition_summary =
+            json_get(&result, "conditions");
+        ok = ok && condition_summary && condition_summary->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(condition_summary,
+                                                "schema")),
+                          "zcl.condition_engine_summary.v1") == 0;
+        ok = ok && json_get(condition_summary, "active_count") != NULL;
+        ok = ok && json_get(condition_summary, "unresolved_count") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(condition_summary,
+                                                "state_tool")),
+                          "zcl_state subsystem=condition_engine") == 0;
+        const struct json_value *mirror_contract =
+            json_get(&result, "mirror_contract");
+        ok = ok && mirror_contract && mirror_contract->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(mirror_contract,
+                                                "schema")),
+                          "zcl.mirror_status.v1") == 0;
+        ok = ok && json_get_bool(json_get(mirror_contract,
+                                          "advisory_only"));
+        ok = ok && json_get(mirror_contract,
+                            "operator_action_required") != NULL;
         const struct json_value *reducer = json_get(&result, "reducer");
         ok = ok && reducer && reducer->type == JSON_OBJ;
         ok = ok && json_get(reducer, "log_head") != NULL;
@@ -1448,6 +1489,18 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(health, "last_error_age_seconds") != NULL;
         ok = ok && json_get(health, "last_error_type") != NULL;
         ok = ok && json_get(health, "blocking_reason") != NULL;
+        ok = ok && json_get_bool(json_get(health,
+                                          "operator_latch_active"));
+        ok = ok && json_get_bool(json_get(health,
+                                          "operator_action_required"));
+        ok = ok && json_get(health,
+                            "operator_latch_detail") != NULL;
+        ok = ok && json_get(health,
+                            "operator_latch_since_unix") != NULL;
+        ok = ok && json_get(health,
+                            "active_condition_count") != NULL;
+        ok = ok && json_get(health,
+                            "unresolved_condition_count") != NULL;
         const struct json_value *resources = json_get(&result, "resources");
         ok = ok && resources && resources->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(resources, "schema")),
@@ -1585,6 +1638,74 @@ int test_syncdiag_rpc(void)
         unsetenv("ZCL_AGENT_EXPECT_BUILD_SOURCE");
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         alerts_shutdown();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC agent suppresses stale mirror latch... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        alerts_init();
+        alerts_reset();
+        legacy_mirror_sync_reset_for_test();
+        struct legacy_mirror_sync_stats stats = {0};
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.legacy_height = 100;
+        stats.legacy_headers = 100;
+        stats.local_height = 99;
+        snprintf(stats.zclassic23_hash, sizeof(stats.zclassic23_hash),
+                 "%064x", 1);
+        snprintf(stats.zclassicd_hash, sizeof(stats.zclassicd_hash),
+                 "%064x", 2);
+        legacy_mirror_sync_test_set_stats(&stats, NULL);
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "chain_advance_hash-disagreement height=99");
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "agent", &params, &result);
+        const struct json_value *operator_latch =
+            json_get(&result, "operator_latch");
+        const struct json_value *mirror_contract =
+            json_get(&result, "mirror_contract");
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && operator_latch && operator_latch->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(operator_latch, "active"));
+        ok = ok && !json_get_bool(json_get(operator_latch,
+                                           "operator_action_required"));
+        ok = ok && json_get_bool(json_get(operator_latch,
+                                          "suppressed_by_mirror_contract"));
+        ok = ok && strstr(json_get_str(json_get(operator_latch, "detail")),
+                          "chain_advance_hash-disagreement") != NULL;
+        ok = ok && mirror_contract && mirror_contract->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(mirror_contract,
+                                                "schema")),
+                          "zcl.mirror_status.v1") == 0;
+        ok = ok && !json_get_bool(json_get(mirror_contract,
+                                           "operator_action_required"));
+        const char *primary =
+            json_get_str(json_get(&result, "primary_blocker"));
+        ok = ok && (!primary || strstr(primary, "operator_needed") == NULL);
+
+        json_free(&params);
+        json_free(&result);
+        alerts_shutdown();
+        legacy_mirror_sync_reset_for_test();
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -2135,6 +2256,11 @@ int test_syncdiag_rpc(void)
                                         "zcl.agent_readiness.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.runtime_build.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.operator_latch.v1") != NULL;
+        ok = ok &&
+            find_object_with_str(schemas, "schema",
+                                 "zcl.condition_engine_summary.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_interface.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
