@@ -2245,6 +2245,7 @@ static int t_dev_lane_deploy_contract(void)
 {
     int failures = 0;
     char *script = NULL;
+    char *guard = NULL;
     char *lane_health = NULL;
     char *handoff = NULL;
     char *makefile = NULL;
@@ -2253,6 +2254,7 @@ static int t_dev_lane_deploy_contract(void)
     char *dev_unit = NULL;
     TEST("dev lane deploy self-cleans stale reindex override") {
         char script_path[PATH_MAX];
+        char guard_path[PATH_MAX];
         char lane_health_path[PATH_MAX];
         char handoff_path[PATH_MAX];
         char makefile_path[PATH_MAX];
@@ -2261,6 +2263,8 @@ static int t_dev_lane_deploy_contract(void)
         char dev_unit_path[PATH_MAX];
         ASSERT(repo_path(script_path, sizeof(script_path),
                          "tools/dev/deploy-dev-lane.sh") == 0);
+        ASSERT(repo_path(guard_path, sizeof(guard_path),
+                         "tools/deploy_guard.sh") == 0);
         ASSERT(repo_path(lane_health_path, sizeof(lane_health_path),
                          "tools/scripts/lane_health.sh") == 0);
         ASSERT(repo_path(handoff_path, sizeof(handoff_path),
@@ -2274,6 +2278,7 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(repo_path(dev_unit_path, sizeof(dev_unit_path),
                          "deploy/zcl23-dev.service") == 0);
         ASSERT(read_entire_file(script_path, &script) == 0);
+        ASSERT(read_entire_file(guard_path, &guard) == 0);
         ASSERT(read_entire_file(lane_health_path, &lane_health) == 0);
         ASSERT(read_entire_file(handoff_path, &handoff) == 0);
         ASSERT(read_entire_file(makefile_path, &makefile) == 0);
@@ -2287,6 +2292,21 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "removing stale reindex drop-in") != NULL);
         ASSERT(strstr(script, "rm -f \"$STALE_REINDEX_DROPIN\"") != NULL);
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
+        ASSERT(strstr(makefile,
+                      "./tools/deploy_guard.sh canonical-deploy") != NULL);
+        ASSERT(strstr(guard, "ZCL_DEPLOY_ALLOW_CANONICAL") != NULL);
+        ASSERT(strstr(guard, "zcl.operator_deployment_safety.v1") != NULL);
+        ASSERT(strstr(guard, "automation_restart_ok") != NULL);
+        ASSERT(strstr(guard, "automation_deploy_ok") != NULL);
+        ASSERT(strstr(guard, "requires_operator_confirmation") != NULL);
+        ASSERT(strstr(guard, "systemctl --user show") != NULL);
+        ASSERT(strstr(guard, "-operator-lane") != NULL);
+        ASSERT(strstr(guard, "native deployment_safety blocks") != NULL);
+        ASSERT(strstr(guard, "legacy operator_lane reports canonical")
+               != NULL);
+        ASSERT(run_gate_script_with_env("tools/deploy_guard.sh",
+                                        "ZCL_DEPLOY_GUARD_SELFTEST",
+                                        "1") == 0);
         ASSERT(strstr(live_unit, "-operator-lane=canonical") != NULL);
         ASSERT(strstr(soak_unit, "-operator-lane=soak") != NULL);
         ASSERT(strstr(dev_unit, "-operator-lane=dev") != NULL);
@@ -2341,6 +2361,7 @@ static int t_dev_lane_deploy_contract(void)
         PASS();
     } _test_next:;
     free(script);
+    free(guard);
     free(lane_health);
     free(handoff);
     free(makefile);
@@ -2362,6 +2383,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "t-fast") != NULL);
         ASSERT(strstr(buf, "test_parallel_fast") != NULL);
         ASSERT(strstr(buf, "tools/agent_fast_ci.sh") != NULL);
+        ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE=0") != NULL);
@@ -2390,6 +2412,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
         ASSERT(strstr(buf, "fast_changed_files_file") != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
+        ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
         ASSERT(strstr(buf, "make_fast build-only") != NULL);
         ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
@@ -2627,6 +2650,11 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "requires_operator_confirmation") != NULL);
         ASSERT(strstr(agent_doc_buf, "safe_default_action") != NULL);
+        ASSERT(strstr(agent_doc_buf, "tools/deploy_guard.sh canonical-deploy")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_DEPLOY_ALLOW_CANONICAL=1")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "make deploy-dev") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_state") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_node_log") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_sql") != NULL);

@@ -63,6 +63,13 @@ before any restart or binary deployment:
 Canonical defaults to observe-only, soak defaults to preserving the evidence
 window, and dev defaults to `deploy_dev_lane`.
 
+`make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
+queries the running node's native `deployment_safety` object when RPC is
+reachable and falls back to the systemd `-operator-lane=` flag for older
+running binaries. An active canonical lane is refused by default; set
+`ZCL_DEPLOY_ALLOW_CANONICAL=1` only for a deliberate canonical restart window.
+Development builds should normally use `make deploy-dev`.
+
 ## Bootstrap Service Status
 
 Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a
