@@ -2590,6 +2590,12 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(rules, "app/jobs/include/jobs/validate_headers_stage.h")
                != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/block_failed_mask_at_tip.c")
+               != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_utxo_activation_paused.c")
+               != NULL);
+        ASSERT(strstr(rules, "utxo_activation_paused") != NULL);
+        ASSERT(strstr(rules, "condition_engine") != NULL);
         ASSERT(strstr(rules, "app/conditions/src/stale_validate_headers_repair.c")
                != NULL);
         ASSERT(strstr(rules, "lib/test/src/test_stale_validate_headers_repair_condition.c")

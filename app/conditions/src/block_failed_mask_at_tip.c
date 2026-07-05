@@ -28,6 +28,13 @@ static _Atomic int g_validate_repair_owner_mode = STAGE_REPAIR_POISON_NONE;
 static _Atomic int g_reducer_owner_target = -1;
 static _Atomic int g_reducer_owner_hstar = -1;
 static _Atomic int g_reducer_owner_reason = 0;
+static _Atomic int64_t g_last_remedy_target = -1;
+static _Atomic int g_last_remedy_result = REVAL_NOT_ATTEMPTED;
+static _Atomic int g_last_remedy_treated_ok = 0;
+static _Atomic int64_t g_last_witness_tip_height = -1;
+static _Atomic int g_last_witness_advanced_since_detect = 0;
+static _Atomic int g_last_witness_target_failed_present = 0;
+static _Atomic int g_last_witness_target_have_data_present = 0;
 
 enum block_failed_stall_type {
     BF_STALL_NONE = 0,
@@ -334,12 +341,26 @@ static enum condition_remedy_result remedy_block_failed_mask_at_tip(void)
     struct uint256 out_hash;
     enum reval_result r =
         process_block_revalidate((int)target, ms, &out_hash);
-    LOG_WARN("condition", "[condition:block_failed_mask_at_tip] target=%lld " "stall_type=%s tip_age_s=%lld result=%s", (long long)target, atomic_load(&g_stall_type_at_detect) == BF_STALL_NO_ADVANCE ? "no_advance" : "failed_mask", (long long)atomic_load(&g_tip_age_at_detect), reval_result_name(r));
-    if (atomic_load(&g_stall_type_at_detect) == BF_STALL_NO_ADVANCE &&
-        r == REVAL_HEIGHT_NOT_FOUND)
+    int stall_type = atomic_load(&g_stall_type_at_detect);
+    bool treated_ok =
+        (stall_type == BF_STALL_NO_ADVANCE &&
+         r == REVAL_HEIGHT_NOT_FOUND) ||
+        r == REVAL_RECOVERED ||
+        r == REVAL_NO_FAILURE;
+    atomic_store(&g_last_remedy_target, target);
+    atomic_store(&g_last_remedy_result, (int)r);
+    atomic_store(&g_last_remedy_treated_ok, treated_ok ? 1 : 0);
+    LOG_WARN("condition",
+             "[condition:block_failed_mask_at_tip] target=%lld "
+             "stall_type=%s tip_age_s=%lld result=%s treated_ok=%s",
+             (long long)target,
+             stall_type == BF_STALL_NO_ADVANCE ? "no_advance"
+                                                : "failed_mask",
+             (long long)atomic_load(&g_tip_age_at_detect),
+             reval_result_name(r), treated_ok ? "true" : "false");
+    if (treated_ok)
         return COND_REMEDY_OK;
-    return (r == REVAL_RECOVERED || r == REVAL_NO_FAILURE)
-        ? COND_REMEDY_OK : COND_REMEDY_FAILED;
+    return COND_REMEDY_FAILED;
 }
 
 static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
@@ -350,6 +371,14 @@ static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
     int stall_type = atomic_load(&g_stall_type_at_detect);
     if (!ms || target < 0)
         return false;
+    int64_t tip = current_tip_height(ms);
+    atomic_store(&g_last_witness_tip_height, tip);
+    atomic_store(&g_last_witness_advanced_since_detect,
+                 tip > atomic_load(&g_tip_at_detect) ? 1 : 0);
+    atomic_store(&g_last_witness_target_failed_present,
+                 find_failed_next(ms, (int)target) != NULL ? 1 : 0);
+    atomic_store(&g_last_witness_target_have_data_present,
+                 find_have_data_next(ms, (int)target) != NULL ? 1 : 0);
     if (reducer_frontier_owns_stall(ms, target, stall_type))
         return true;
     if (stall_type == BF_STALL_NO_ADVANCE) {
@@ -360,7 +389,7 @@ static bool witness_block_failed_mask_at_tip(int64_t target_at_detect)
             remember_validate_repair_owner(repair_height, repair_mode, target);
             return true;
         }
-        return current_tip_height(ms) > atomic_load(&g_tip_at_detect);
+        return tip > atomic_load(&g_tip_at_detect);
     }
     return find_failed_next(ms, (int)target) == NULL;
 }
@@ -393,6 +422,29 @@ static bool detail_block_failed_mask_at_tip(struct json_value *out)
     ok = ok && json_push_kv_int(out, "validate_repair_owner_mode",
                                 atomic_load(&g_validate_repair_owner_mode));
     ok = ok && json_push_kv_str(out, "delegated_owner", delegated_owner);
+    ok = ok && json_push_kv_int(out, "last_remedy_target_height",
+                                atomic_load(&g_last_remedy_target));
+    ok = ok && json_push_kv_str(
+        out, "last_remedy_result",
+        reval_result_name((enum reval_result)atomic_load(
+            &g_last_remedy_result)));
+    ok = ok && json_push_kv_bool(
+        out, "last_remedy_treated_ok",
+        atomic_load(&g_last_remedy_treated_ok) != 0);
+    ok = ok && json_push_kv_int(out, "last_witness_tip_height",
+                                atomic_load(&g_last_witness_tip_height));
+    ok = ok && json_push_kv_bool(
+        out, "last_witness_advanced_since_detect",
+        atomic_load(&g_last_witness_advanced_since_detect) != 0);
+    ok = ok && json_push_kv_bool(
+        out, "last_witness_target_failed_present",
+        atomic_load(&g_last_witness_target_failed_present) != 0);
+    ok = ok && json_push_kv_bool(
+        out, "last_witness_target_have_data_present",
+        atomic_load(&g_last_witness_target_have_data_present) != 0);
+    ok = ok && json_push_kv_str(
+        out, "remedy_contract",
+        "height_not_found is accepted only for no_advance; final success requires delegated owner, target failure cleared, or observed tip advance");
     ok = ok && json_push_kv_int(out, "reducer_frontier_owner_target",
                                 reducer_target);
     ok = ok && json_push_kv_int(out, "reducer_frontier_owner_hstar",
@@ -470,6 +522,13 @@ void block_failed_mask_at_tip_test_reset(void)
     atomic_store(&g_reducer_owner_hstar, -1);
     atomic_store(&g_reducer_owner_reason, RFO_NONE);
     atomic_store(&g_stall_type_at_detect, BF_STALL_NONE);
+    atomic_store(&g_last_remedy_target, -1);
+    atomic_store(&g_last_remedy_result, REVAL_NOT_ATTEMPTED);
+    atomic_store(&g_last_remedy_treated_ok, 0);
+    atomic_store(&g_last_witness_tip_height, -1);
+    atomic_store(&g_last_witness_advanced_since_detect, 0);
+    atomic_store(&g_last_witness_target_failed_present, 0);
+    atomic_store(&g_last_witness_target_have_data_present, 0);
     condition_reset_state(&c_block_failed_mask_at_tip);
 }
 

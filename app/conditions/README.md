@@ -24,6 +24,13 @@ void register_<name>(void) { condition_register(&c); }  /* registry calls this *
 The condition engine (in `lib/framework/condition.{c,h}`) polls every
 registered condition, dispatches remedies under backoff, and pages the
 operator only if `max_attempts` is exhausted with the witness still false.
+Condition detail JSON is part of the AI/operator surface exposed through
+`zcl_state subsystem=condition_engine`. When a remedy can return OK while the
+condition still needs a witness (for example a no-advance stall that accepts
+`height_not_found` but still requires an observed tip advance), the detail must
+include the last remedy result and the witness facts that decide whether the
+halt is still active. Agents should not have to reconstruct that from
+`node.log`.
 
 See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) §"The canonical form is
 struct-registration, not a block-DSL" (lines 198-226) and the exemplar

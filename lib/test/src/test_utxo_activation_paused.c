@@ -406,6 +406,25 @@ int test_utxo_activation_paused(void)
         ok = ok &&
              strcmp(json_get_str(json_get(detail, "delegated_owner")),
                     "none") == 0;
+        ok = ok &&
+             json_get_int(json_get(detail, "last_remedy_target_height")) == 1;
+        ok = ok &&
+             strcmp(json_get_str(json_get(detail, "last_remedy_result")),
+                    "height_not_found") == 0;
+        ok = ok &&
+             json_get_bool(json_get(detail, "last_remedy_treated_ok"));
+        ok = ok &&
+             json_get_int(json_get(detail, "last_witness_tip_height")) == 0;
+        ok = ok &&
+             !json_get_bool(json_get(
+                 detail, "last_witness_advanced_since_detect"));
+        ok = ok &&
+             !json_get_bool(json_get(
+                 detail, "last_witness_target_failed_present"));
+        ok = ok &&
+             json_get_bool(json_get(
+                 detail, "last_witness_target_have_data_present"));
+        ok = ok && json_get(detail, "remedy_contract") != NULL;
         json_free(&dump);
         ok = ok && active_chain_move_window_tip(&ms.chain_active, next);
         fake_clock_set(&clock, 1302);
