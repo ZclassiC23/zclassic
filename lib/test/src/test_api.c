@@ -1534,8 +1534,8 @@ int test_api(void)
     {
         test_reset_shared_globals();
         struct main_state ms;
-        struct connman cm;
-        struct net_address addr;
+        struct connman cm = {0};
+        struct net_address addr = {0};
         struct p2p_node *node = NULL;
         struct block_index *blocks[4] = {0};
         struct cac_decision decision;
@@ -1592,6 +1592,71 @@ int test_api(void)
         }
 
         node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: agent clears recovered chain-advance operator latch... ");
+    {
+        test_reset_shared_globals();
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        alerts_reset();
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=chain_advance_local_recovery_gate attempts=5");
+
+        struct main_state ms;
+        struct connman cm = {0};
+        struct net_address addr = {0};
+        struct p2p_node *node = NULL;
+        struct block_index *blocks[3] = {0};
+        bool ok = api_test_build_chain(&ms, blocks, 3);
+        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, 2);
+
+        if (ok) {
+            (void)node;
+            reducer_frontier_provable_tip_set(2);
+            ok = ok && sync_set_state(SYNC_IDLE,
+                                      "api agent latch reset");
+            ok = ok && sync_set_state(SYNC_FINDING_PEERS,
+                                      "api agent latch");
+            ok = ok && sync_set_state(SYNC_HEADERS_DOWNLOAD,
+                                      "api agent latch");
+            ok = ok && sync_set_state(SYNC_AT_TIP,
+                                      "api agent latch");
+            node_health_test_set_log_head_override(2);
+            api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+            size_t n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
+                                          resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                              "healthy") == 0;
+            ok = ok && json_get_bool(json_get(&root, "healthy"));
+            ok = ok && !json_get_bool(json_get(&root, "operator_needed"));
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "primary_blocker")),
+                              "none") == 0;
+            ok = ok && json_get_bool(json_get(&root,
+                                              "operator_latch_recovered"));
+            json_free(&root);
+        }
+
+        ok = ok && !alerts_operator_needed(NULL, 0, NULL);
+        alerts_shutdown();
         node_health_test_set_log_head_override(-2);
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         reducer_frontier_provable_tip_reset();

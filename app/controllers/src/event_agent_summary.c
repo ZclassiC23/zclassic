@@ -54,6 +54,7 @@ struct agent_fast_snapshot {
     bool healthy;
     bool serving;
     bool operator_needed;
+    bool operator_latch_recovered;
     bool validation_pack_ok;
     bool tor_enabled;
     bool tor_ready;
@@ -326,10 +327,6 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
                                   ? s->validation_pack_detail
                                   : "validation_pack");
 
-    char operator_detail[96] = {0};
-    s->operator_needed =
-        alerts_operator_needed(operator_detail, sizeof(operator_detail), NULL);
-
     s->target_height = s->tip_height > s->served_height
         ? s->tip_height : s->served_height;
     if (s->header_height > s->target_height)
@@ -340,6 +337,21 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         ? s->target_height - s->served_height : 0;
     s->index_gap = s->tip_height > s->served_height
         ? s->tip_height - s->served_height : 0;
+    s->serving = s->served_height > 0;
+
+    char operator_detail[96] = {0};
+    bool frontier_recovered =
+        s->serving && s->has_peers && s->gap <= 1 &&
+        (s->log_head_gap < 0 || s->log_head_gap <= 1);
+    s->operator_latch_recovered =
+        alerts_operator_needed_clear_if_chain_advance_recovered(
+            frontier_recovered, operator_detail, sizeof(operator_detail),
+            NULL);
+    if (s->operator_latch_recovered)
+        agent_fast_add_warning(s, "operator_latch_recovered");
+    s->operator_needed =
+        alerts_operator_needed(operator_detail, sizeof(operator_detail), NULL);
+
     s->catchup_active = s->in_flight > 0 || s->queued > 0;
     s->catchup_stalled =
         s->gap > 1 && s->catchup_active &&
@@ -361,7 +373,6 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     if (s->overdue_in_flight > 0)
         agent_fast_add_warning(s, "download_timeouts_overdue");
 
-    s->serving = s->served_height > 0;
     s->healthy = s->serving && s->has_peers && !s->operator_needed &&
                  s->gap <= 1 &&
                  (s->log_head_gap < 0 || s->log_head_gap <= 1);
@@ -506,6 +517,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                      health.last_error_type);
     json_push_kv_str(&health_obj, "blocking_reason",
                      health.blocking_reason);
+    json_push_kv_bool(&health_obj, "operator_latch_recovered",
+                      health.operator_latch_recovered);
     json_push_kv(result, "health", &health_obj);
     json_free(&health_obj);
 

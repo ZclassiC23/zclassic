@@ -271,6 +271,42 @@ static int test_operator_needed_latch(void)
     return failures;
 }
 
+static int test_operator_needed_chain_advance_recovery_clear(void)
+{
+    int failures = 0;
+    TEST("alerts: chain advance latch only clears after frontier recovery") {
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        alerts_init();
+        alerts_reset();
+
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=chain_advance_local_recovery_gate attempts=5");
+        char detail[128] = {0};
+        ASSERT(alerts_operator_needed(detail, sizeof(detail), NULL));
+        ASSERT(contains(detail, "chain_advance_local_recovery_gate"));
+
+        ASSERT(!alerts_operator_needed_clear_if_chain_advance_recovered(
+            false, detail, sizeof(detail), NULL));
+        ASSERT(alerts_operator_needed(NULL, 0, NULL));
+
+        ASSERT(alerts_operator_needed_clear_if_chain_advance_recovered(
+            true, detail, sizeof(detail), NULL));
+        ASSERT(contains(detail, "chain_advance_local_recovery_gate"));
+        ASSERT(!alerts_operator_needed(NULL, 0, NULL));
+
+        event_emitf(EV_OPERATOR_NEEDED, 0, "chain_integrity_failed");
+        ASSERT(!alerts_operator_needed_clear_if_chain_advance_recovered(
+            true, detail, sizeof(detail), NULL));
+        ASSERT(alerts_operator_needed(NULL, 0, NULL));
+
+        alerts_shutdown();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_alerts(void);
@@ -290,6 +326,7 @@ int test_alerts(void)
     failures += test_reset_clears_state();
     failures += test_rule_table_full();
     failures += test_operator_needed_latch();
+    failures += test_operator_needed_chain_advance_recovery_clear();
 
     alerts_shutdown();
     return failures;

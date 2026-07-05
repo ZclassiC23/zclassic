@@ -242,6 +242,37 @@ int test_rpc(void) {
         ok = ok && msg && strstr(msg, "Known subsystems:") != NULL;
         ok = ok && strstr(msg, "reducer_frontier") != NULL;
         ok = ok && strstr(msg, "block_index") != NULL;
+        ok = ok && strstr(msg, "block_intake") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("dumpstate block_intake exposes queue telemetry... ");
+    {
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value sub;
+        json_init(&sub);
+        json_set_str(&sub, "block_intake");
+        bool ok = json_push_back(&params, &sub);
+        json_free(&sub);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && diag_rpc_dumpstate(&params, false, &result);
+        const struct json_value *state = json_get(&result, "state");
+        ok = ok && state && state->type == JSON_OBJ;
+        ok = ok && json_get(state, "running") != NULL;
+        ok = ok && json_get(state, "current_depth") != NULL;
+        ok = ok && json_get(state, "capacity") != NULL;
+        ok = ok && json_get(state, "saturated") != NULL;
+        ok = ok && json_get(state, "enqueued") != NULL;
+        ok = ok && json_get(state, "processed") != NULL;
+        ok = ok && json_get(state, "dropped") != NULL;
 
         json_free(&params);
         json_free(&result);

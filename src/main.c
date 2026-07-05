@@ -678,6 +678,56 @@ static void cli_print(const char *json_str)
 
 static void print_usage(const char *prog);
 
+static bool cli_static_agent_method(const char *method)
+{
+    return strcmp(method, "agentmap") == 0 ||
+           strcmp(method, "agentimpact") == 0 ||
+           strcmp(method, "agentcontracts") == 0 ||
+           strcmp(method, "agentbuild") == 0 ||
+           strcmp(method, "agentinterface") == 0;
+}
+
+static bool cli_run_static_agent_method(const char *method,
+                                        const char **params_storage,
+                                        int nparams)
+{
+    struct json_value params, result;
+    if (!rpc_convert_values(method, params_storage, (size_t)nparams, &params)) {
+        fprintf(stderr, "Bad parameters\n");
+        json_free(&params);
+        return false;
+    }
+
+    json_init(&result);
+    bool ok = false;
+    if (strcmp(method, "agentmap") == 0) {
+        ok = rpc_agent_map(&params, false, &result);
+    } else if (strcmp(method, "agentimpact") == 0) {
+        ok = rpc_agent_impact(&params, false, &result);
+    } else if (strcmp(method, "agentcontracts") == 0) {
+        ok = rpc_agent_contracts(&params, false, &result);
+    } else if (strcmp(method, "agentbuild") == 0) {
+        ok = rpc_agent_build(&params, false, &result);
+    } else if (strcmp(method, "agentinterface") == 0) {
+        ok = rpc_agent_interface(&params, false, &result);
+    }
+
+    char out[131072];
+    size_t need = ok ? json_write(&result, out, sizeof(out)) : 0;
+    if (ok && need >= sizeof(out)) {
+        fprintf(stderr, "agent contract JSON exceeded CLI buffer\n");
+        ok = false;
+    } else if (ok) {
+        printf("%s\n", out);
+    } else {
+        fprintf(stderr, "agent contract generation failed\n");
+    }
+
+    json_free(&result);
+    json_free(&params);
+    return ok;
+}
+
 enum { CLI_MAX_PARAMS = 128 };
 
 static int cli_main(int argc, char **argv)
@@ -738,16 +788,20 @@ static int cli_main(int argc, char **argv)
         }
     }
 
-    if (!cli_read_cookie(datadir)) {
-        fprintf(stderr, "Node not running (no cookie at %s/.cookie)\n", datadir);
-        return 1;
-    }
-
     if (strcmp(method, "--agent") == 0 || strcmp(method, "-agent") == 0)
         method = "agent";
     else if (strcmp(method, "--summary") == 0 ||
              strcmp(method, "-summary") == 0)
         method = "summary";
+
+    if (cli_static_agent_method(method))
+        return cli_run_static_agent_method(method, params_storage, nparams) ?
+            0 : 1;
+
+    if (!cli_read_cookie(datadir)) {
+        fprintf(stderr, "Node not running (no cookie at %s/.cookie)\n", datadir);
+        return 1;
+    }
 
     struct json_value jp;
     if (!rpc_convert_values(method, params_storage, (size_t)nparams, &jp)) {

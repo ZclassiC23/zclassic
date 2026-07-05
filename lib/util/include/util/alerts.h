@@ -71,6 +71,15 @@ void alerts_reset(void);
 bool alerts_operator_needed(char *detail_out, size_t detail_cap,
                             int64_t *since_unix_out);
 
+/* Clear a stale chain-advance operator-needed latch once the caller has
+ * independently proven the node is back at the served/log frontier. Returns
+ * true only when it cleared an active chain-advance/local-recovery page. */
+bool alerts_operator_needed_clear_if_chain_advance_recovered(
+    bool frontier_recovered,
+    char *detail_out,
+    size_t detail_cap,
+    int64_t *since_unix_out);
+
 /* Clear the operator-needed latch. Called automatically on
  * EV_CONDITION_CLEARED; exposed for tests / manual operator ack. */
 void alerts_operator_needed_clear(void);

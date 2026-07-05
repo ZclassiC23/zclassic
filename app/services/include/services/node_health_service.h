@@ -146,6 +146,7 @@ struct node_health_snapshot {
      * zcl_status shows it and the sd_notify heartbeat stops. Cleared
      * automatically when the underlying condition clears. */
     bool     operator_needed;
+    bool     operator_latch_recovered;
     char     operator_needed_detail[128];
 
     /* Fail-loud validation pack rollup (services/invariant_sentinel.h):

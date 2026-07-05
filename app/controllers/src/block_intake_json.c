@@ -10,31 +10,45 @@
 
 #include <stdint.h>
 
-void controller_json_push_block_intake_stats(struct json_value *obj)
+void controller_json_set_block_intake_stats(struct json_value *obj)
 {
     struct msg_block_intake_stats st;
-    struct json_value intake = {0};
 
     msg_processor_get_block_intake_stats(rpc_net_get_msg_processor(), &st);
-    json_set_object(&intake);
-    json_push_kv_bool(&intake, "running", st.running);
-    json_push_kv_bool(&intake, "stopping", st.stopping);
-    json_push_kv_int(&intake, "current_depth", (int64_t)st.current_depth);
-    json_push_kv_int(&intake, "capacity", (int64_t)st.capacity);
-    json_push_kv_bool(&intake, "saturated",
+    json_set_object(obj);
+    json_push_kv_bool(obj, "running", st.running);
+    json_push_kv_bool(obj, "stopping", st.stopping);
+    json_push_kv_int(obj, "current_depth", (int64_t)st.current_depth);
+    json_push_kv_int(obj, "capacity", (int64_t)st.capacity);
+    json_push_kv_bool(obj, "saturated",
                       st.running && !st.stopping && st.capacity > 0 &&
                       st.current_depth >= st.capacity);
-    json_push_kv_int(&intake, "max_depth", (int64_t)st.max_depth);
-    json_push_kv_int(&intake, "enqueued", (int64_t)st.enqueued);
-    json_push_kv_int(&intake, "processed", (int64_t)st.processed);
-    json_push_kv_int(&intake, "accepted", (int64_t)st.accepted);
-    json_push_kv_int(&intake, "retryable", (int64_t)st.retryable);
-    json_push_kv_int(&intake, "rejected", (int64_t)st.rejected);
-    json_push_kv_int(&intake, "dropped", (int64_t)st.dropped);
-    json_push_kv_int(&intake, "clone_failed", (int64_t)st.clone_failed);
-    json_push_kv_int(&intake, "spawn_failed", (int64_t)st.spawn_failed);
-    json_push_kv_int(&intake, "last_enqueue_unix", st.last_enqueue_unix);
-    json_push_kv_int(&intake, "last_process_unix", st.last_process_unix);
+    json_push_kv_int(obj, "max_depth", (int64_t)st.max_depth);
+    json_push_kv_int(obj, "enqueued", (int64_t)st.enqueued);
+    json_push_kv_int(obj, "processed", (int64_t)st.processed);
+    json_push_kv_int(obj, "accepted", (int64_t)st.accepted);
+    json_push_kv_int(obj, "retryable", (int64_t)st.retryable);
+    json_push_kv_int(obj, "rejected", (int64_t)st.rejected);
+    json_push_kv_int(obj, "dropped", (int64_t)st.dropped);
+    json_push_kv_int(obj, "clone_failed", (int64_t)st.clone_failed);
+    json_push_kv_int(obj, "spawn_failed", (int64_t)st.spawn_failed);
+    json_push_kv_int(obj, "last_enqueue_unix", st.last_enqueue_unix);
+    json_push_kv_int(obj, "last_process_unix", st.last_process_unix);
+}
+
+void controller_json_push_block_intake_stats(struct json_value *obj)
+{
+    struct json_value intake = {0};
+
+    controller_json_set_block_intake_stats(&intake);
     json_push_kv(obj, "block_intake", &intake);
     json_free(&intake);
+}
+
+bool controller_block_intake_dump_state_json(struct json_value *out,
+                                             const char *key)
+{
+    (void)key;
+    controller_json_set_block_intake_stats(out);
+    return true;
 }

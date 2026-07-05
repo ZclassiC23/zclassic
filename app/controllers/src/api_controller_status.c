@@ -481,6 +481,8 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_bool(&body, "healthy", health.healthy);
     json_push_kv_bool(&body, "serving", health.serving);
     json_push_kv_bool(&body, "operator_needed", operator_needed);
+    json_push_kv_bool(&body, "operator_latch_recovered",
+                      health.operator_latch_recovered);
     json_push_kv_str(&body, "summary", summary);
     json_push_kv_str(&body, "primary_blocker", primary);
     json_push_kv_str(&body, "next_endpoint", next_endpoint);

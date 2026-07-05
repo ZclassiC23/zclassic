@@ -9,6 +9,7 @@
  */
 
 #include "platform/time_compat.h"
+#include "controllers/block_intake_json.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
 
@@ -559,11 +560,8 @@ static const struct dump_entry g_dumpers[] = {
                      "onion_enabled + onion_address. Diagnoses why the explorer is "
                      "or isn't serving on clearnet" },
     { "bundle_staleness", bundle_staleness_dump_state_json,
-                     "fast-sync starter-pack freshness: highest "
-                     "utxo-seed-<h>.snapshot seed height + block_index/.failed "
-                     "presence vs the network header tip, estimated "
-                     "fresh-install catch-up time, and a re-mint "
-                     "recommendation (read-only; never auto-mints)" },
+                     "fast-sync starter-pack freshness: seed height, "
+                     "block_index presence, network-tip gap, catch-up estimate, remint recommendation" },
     { "oracle",      zclassicd_oracle_dump_state_json,
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "header_probe", header_probe_dump_state_json,
@@ -574,6 +572,8 @@ static const struct dump_entry g_dumpers[] = {
                      "standing UTXO-set parity vs reference commitment at the finalized frontier: checks/matches/mismatches, finalized_frontier, last_checked_height, source name+exact flag" },
     { "legacy_mirror", legacy_mirror_sync_dump_state_json,
                      "legacy mirror: always-on lockstep catch-up from co-located zclassicd" },
+    { "block_intake", controller_block_intake_dump_state_json,
+                     "P2P block intake queue: async catch-up worker state, depth/capacity, backpressure saturation, accepted/retryable/rejected/drop counters" },
     { "oracle_policy", oracle_policy_dump_state_json,
                      "oracle policy: disagreement state machine (NORMAL / HALTED / PANIC)" },
     { "rolling_anchor", rolling_anchor_dump_state_json,

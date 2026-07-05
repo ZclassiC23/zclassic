@@ -737,6 +737,11 @@ void node_health_collect(struct node_health_snapshot *snapshot,
      * degraded_reason because it means automation has given up. */
     {
         char detail[sizeof(snapshot->operator_needed_detail)] = {0};
+        snapshot->operator_latch_recovered =
+            alerts_operator_needed_clear_if_chain_advance_recovered(
+                snapshot->healthy, detail, sizeof(detail), NULL);
+        if (snapshot->operator_latch_recovered)
+            health_add_warning(snapshot, "operator_latch_recovered");
         snapshot->operator_needed =
             alerts_operator_needed(detail, sizeof(detail), NULL);
         if (snapshot->operator_needed) {

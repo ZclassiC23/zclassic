@@ -2684,6 +2684,19 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "params_storage") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
+        ASSERT(strstr(main_buf, "cli_static_agent_method") != NULL);
+        ASSERT(strstr(main_buf, "cli_run_static_agent_method") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"agentinterface\")") != NULL);
+        ASSERT(strstr(main_buf,
+                      "rpc_agent_interface(&params, false, &result)")
+               != NULL);
+        char *static_agent_dispatch =
+            strstr(main_buf, "if (cli_static_agent_method(method))");
+        char *cookie_read =
+            strstr(main_buf, "if (!cli_read_cookie(datadir))");
+        ASSERT(static_agent_dispatch != NULL);
+        ASSERT(cookie_read != NULL);
+        ASSERT(static_agent_dispatch < cookie_read);
         ASSERT(strstr(event_buf, "{ \"control\", \"api\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"apiindex\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);

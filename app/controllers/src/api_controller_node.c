@@ -324,6 +324,8 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
     json_init(&status);
     json_set_object(&status);
     json_push_kv_bool(&status, "serving", health.serving);
+    json_push_kv_bool(&status, "operator_latch_recovered",
+                      health.operator_latch_recovered);
     api_json_push_kv_nullable_str(&status, "blocking_reason",
                                   health.blocking_reason);
     json_push_kv_bool(&status, "warning", health.warning);

@@ -428,6 +428,39 @@ bool alerts_operator_needed(char *detail_out, size_t detail_cap,
     return active;
 }
 
+static bool operator_needed_is_chain_advance_recovery(const char *detail)
+{
+    if (!detail || !detail[0])
+        return false;
+    return strstr(detail, "chain_advance_local_recovery_gate") ||
+           strstr(detail, "local_recovery_gate") ||
+           strstr(detail, "local_header_refill");
+}
+
+bool alerts_operator_needed_clear_if_chain_advance_recovered(
+    bool frontier_recovered,
+    char *detail_out,
+    size_t detail_cap,
+    int64_t *since_unix_out)
+{
+    char detail[128] = {0};
+    int64_t since = 0;
+
+    if (!alerts_operator_needed(detail, sizeof(detail), &since))
+        return false;
+    if (detail_out && detail_cap > 0)
+        snprintf(detail_out, detail_cap, "%s", detail);
+    if (since_unix_out)
+        *since_unix_out = since;
+
+    if (!frontier_recovered ||
+        !operator_needed_is_chain_advance_recovery(detail))
+        return false;
+
+    alerts_operator_needed_clear();
+    return true;
+}
+
 void alerts_operator_needed_clear(void)
 {
     atomic_store(&g_operator_needed, false);
