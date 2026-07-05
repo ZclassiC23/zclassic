@@ -13,6 +13,10 @@
 
 #define AGENT_RESOURCES_RSS_WARN_MB 4096
 #define AGENT_RESOURCES_CGROUP_ROOT "/sys/fs/cgroup"
+#define AGENT_RESOURCES_CGROUP_HIGH_WATCH_PCT 85
+#define AGENT_RESOURCES_CGROUP_HIGH_WARN_PCT 95
+#define AGENT_RESOURCES_CGROUP_MAX_WATCH_PCT 80
+#define AGENT_RESOURCES_CGROUP_MAX_WARN_PCT 90
 
 static int64_t agent_resources_rss_kb(void)
 {
@@ -185,6 +189,8 @@ static int64_t agent_resources_pct(int64_t current_mb, int64_t limit_mb)
 {
     if (current_mb < 0 || limit_mb <= 0)
         return -1; // raw-return-ok:sentinel
+    if (current_mb > INT64_MAX / 100)
+        return -1; // raw-return-ok:sentinel
     return (current_mb * 100) / limit_mb;
 }
 
@@ -213,12 +219,19 @@ static void agent_resources_collect_cgroup(struct agent_resource_snapshot *s)
         agent_resources_pct(s->cgroup_memory_current_mb,
                             s->cgroup_memory_max_mb);
 
-    bool high_warn = s->cgroup_memory_high_mb > 0 &&
-                     s->cgroup_memory_current_mb >=
-                     s->cgroup_memory_high_mb;
+    bool high_watch = s->cgroup_memory_high_pct >=
+                      AGENT_RESOURCES_CGROUP_HIGH_WATCH_PCT;
+    bool high_warn = s->cgroup_memory_high_pct >=
+                     AGENT_RESOURCES_CGROUP_HIGH_WARN_PCT;
+    bool max_watch = s->cgroup_memory_high_mb <= 0 &&
+                     s->cgroup_memory_max_pct >=
+                     AGENT_RESOURCES_CGROUP_MAX_WATCH_PCT;
     bool max_warn = s->cgroup_memory_max_mb > 0 &&
-                    s->cgroup_memory_max_pct >= 90;
+                    s->cgroup_memory_max_pct >=
+                    AGENT_RESOURCES_CGROUP_MAX_WARN_PCT;
     s->cgroup_memory_warning = high_warn || max_warn;
+    s->cgroup_memory_watch = high_watch || max_watch ||
+                              s->cgroup_memory_warning;
 }
 
 static const char *agent_resources_pressure(
@@ -226,8 +239,13 @@ static const char *agent_resources_pressure(
 {
     if (!s)
         return "unknown";
-    if (s->cgroup_memory_available)
-        return s->cgroup_memory_warning ? "warn" : "ok";
+    if (s->cgroup_memory_available) {
+        if (s->cgroup_memory_warning)
+            return "warn";
+        if (s->cgroup_memory_watch)
+            return "watch";
+        return "ok";
+    }
     if (s->rss_mb < 0)
         return "unknown";
     return s->rss_warning ? "warn" : "ok";
@@ -264,6 +282,7 @@ void agent_resource_snapshot_collect(struct agent_resource_snapshot *snapshot)
     snapshot->cgroup_memory_max_mb = -1;
     snapshot->cgroup_memory_high_pct = -1;
     snapshot->cgroup_memory_max_pct = -1;
+    snapshot->cgroup_memory_watch = false;
     snapshot->cgroup_memory_warning = false;
     snapshot->uptime_seconds = -1;
 
@@ -305,6 +324,8 @@ void agent_push_resources_json(struct json_value *out, const char *key,
                      snapshot->cgroup_memory_high_pct);
     json_push_kv_int(&resources, "cgroup_memory_max_pct",
                      snapshot->cgroup_memory_max_pct);
+    json_push_kv_bool(&resources, "cgroup_memory_watch",
+                      snapshot->cgroup_memory_watch);
     json_push_kv_bool(&resources, "cgroup_memory_warning",
                       snapshot->cgroup_memory_warning);
     json_push_kv_str(&resources, "memory_pressure",

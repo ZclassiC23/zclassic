@@ -18,6 +18,7 @@ struct agent_resource_snapshot {
     int64_t cgroup_memory_max_mb;
     int64_t cgroup_memory_high_pct;
     int64_t cgroup_memory_max_pct;
+    bool cgroup_memory_watch;
     bool cgroup_memory_warning;
     int64_t uptime_seconds;
 };

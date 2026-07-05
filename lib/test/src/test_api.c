@@ -1433,6 +1433,7 @@ int test_api(void)
         ok = ok && json_get(resources, "cgroup_memory_current_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_high_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_max_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_watch") != NULL;
         ok = ok && json_get(resources, "memory_pressure") != NULL;
         ok = ok && json_get(resources, "pressure_basis") != NULL;
         ok = ok && json_get(resources, "uptime_seconds") != NULL;

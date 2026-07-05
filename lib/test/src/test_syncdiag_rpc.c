@@ -1388,6 +1388,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(resources, "cgroup_memory_current_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_high_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_max_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_watch") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_warning") != NULL;
         ok = ok && json_get(resources, "memory_pressure") != NULL;
         ok = ok && json_get(resources, "pressure_basis") != NULL;
@@ -2075,6 +2076,7 @@ int test_syncdiag_rpc(void)
             .cgroup_memory_max_mb = -1,
             .cgroup_memory_high_pct = -1,
             .cgroup_memory_max_pct = -1,
+            .cgroup_memory_watch = false,
             .cgroup_memory_warning = false,
             .uptime_seconds = 123,
         };
@@ -2109,6 +2111,7 @@ int test_syncdiag_rpc(void)
             .cgroup_memory_max_mb = 16000,
             .cgroup_memory_high_pct = 75,
             .cgroup_memory_max_pct = 56,
+            .cgroup_memory_watch = false,
             .cgroup_memory_warning = false,
             .uptime_seconds = 456,
         };
@@ -2130,9 +2133,30 @@ int test_syncdiag_rpc(void)
                           "cgroup_high") == 0;
         json_free(&resources_body);
 
-        cgroup_resources.cgroup_memory_current_mb = 12100;
-        cgroup_resources.cgroup_memory_high_pct = 100;
-        cgroup_resources.cgroup_memory_max_pct = 75;
+        cgroup_resources.cgroup_memory_current_mb = 10320;
+        cgroup_resources.cgroup_memory_high_pct = 86;
+        cgroup_resources.cgroup_memory_max_pct = 64;
+        cgroup_resources.cgroup_memory_watch = true;
+        cgroup_resources.cgroup_memory_warning = false;
+        json_init(&resources_body);
+        json_set_object(&resources_body);
+        agent_push_resources_json(&resources_body, "resources",
+                                  &cgroup_resources);
+        fixed = json_get(&resources_body, "resources");
+        ok = ok && fixed && fixed->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(fixed,
+                                          "cgroup_memory_watch"));
+        ok = ok && !json_get_bool(json_get(fixed,
+                                           "cgroup_memory_warning"));
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure")),
+                          "watch") == 0;
+        json_free(&resources_body);
+
+        cgroup_resources.cgroup_memory_current_mb = 11400;
+        cgroup_resources.cgroup_memory_high_pct = 95;
+        cgroup_resources.cgroup_memory_max_pct = 71;
+        cgroup_resources.cgroup_memory_watch = true;
         cgroup_resources.cgroup_memory_warning = true;
         json_init(&resources_body);
         json_set_object(&resources_body);
