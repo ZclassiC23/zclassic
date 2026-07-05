@@ -2364,7 +2364,17 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_health, "ZCL_LANE_LAG_WARN") != NULL);
         ASSERT(strstr(lane_health, "ZCL_SOAK_LAG_WARN") != NULL);
         ASSERT(strstr(lane_health, "tip_lag_to_live") != NULL);
+        ASSERT(strstr(lane_health, "getblockchaininfo") != NULL);
+        ASSERT(strstr(lane_health, "chain_headers") != NULL);
+        ASSERT(strstr(lane_health, "initialblockdownload") != NULL);
         ASSERT(strstr(lane_health, "lag_to_live_") != NULL);
+        ASSERT(strstr(lane_health, "dumpstate reducer_frontier") != NULL);
+        ASSERT(strstr(lane_health, "dumpstate condition_engine") != NULL);
+        ASSERT(strstr(lane_health, "reducer_hstar") != NULL);
+        ASSERT(strstr(lane_health, "reducer_pending_stage") != NULL);
+        ASSERT(strstr(lane_health, "reducer_pending_detail") != NULL);
+        ASSERT(strstr(lane_health, "condition_active_count") != NULL);
+        ASSERT(strstr(lane_health, "condition_operator_needed_count") != NULL);
         ASSERT(strstr(lane_health, "no_peers") != NULL);
         ASSERT(strstr(lane_health, "memory_pressure") != NULL);
         ASSERT(strstr(lane_health, "bootstrapstatus") != NULL);

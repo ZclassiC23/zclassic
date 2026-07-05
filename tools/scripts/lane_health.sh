@@ -175,13 +175,21 @@ listen_state() {
 }
 
 rpc_call() {
-    local datadir="$1" rpcport="$2" method="$3"
+    local datadir="$1" rpcport="$2"
+    shift 2
     [ -x "$ZCL_CLI" ] || return 1
-    timeout "$RPC_TIMEOUT" "$ZCL_CLI" -datadir="$datadir" -rpcport="$rpcport" "$method" 2>/dev/null
+    timeout "$RPC_TIMEOUT" "$ZCL_CLI" -datadir="$datadir" -rpcport="$rpcport" "$@" 2>/dev/null
 }
 
 peer_count_from_json() {
     grep -o '"addr"[[:space:]]*:' 2>/dev/null | wc -l | tr -d ' '
+}
+
+json_true_count() {
+    local body="$1" key="$2"
+    printf '%s\n' "$body" \
+        | { grep -o "\"${key}\"[[:space:]]*:[[:space:]]*true" 2>/dev/null || true; } \
+        | wc -l | tr -d ' '
 }
 
 report_lane() {
@@ -191,6 +199,11 @@ report_lane() {
     local tip_lag status reason role_ready role_reason soak_eligible soak_reason
     local bootstrap_json snapshot_info snapshot_seed_height snapshot_path
     local snapshot_present loader_path loader_configured recovery_hint
+    local chaininfo_json chain_headers initialblockdownload
+    local reducer_json condition_json reducer_hstar reducer_pending_stage
+    local reducer_pending_detail reducer_primary_stage reducer_primary_detail
+    local reducer_blocker_count condition_active_count condition_unresolved_count
+    local condition_operator_needed_count
 
     active="$(systemd_show "$unit" ActiveState)"
     [ -n "$active" ] || active="unknown"
@@ -222,6 +235,17 @@ report_lane() {
     loader_configured=0
     [ -n "$loader_path" ] && loader_configured=1
     recovery_hint=""
+    chain_headers=""
+    initialblockdownload="null"
+    reducer_hstar=""
+    reducer_pending_stage=""
+    reducer_pending_detail=""
+    reducer_primary_stage=""
+    reducer_primary_detail=""
+    reducer_blocker_count=""
+    condition_active_count=""
+    condition_unresolved_count=""
+    condition_operator_needed_count=""
 
     p2p_listening=0
     rpc_listening=0
@@ -242,6 +266,11 @@ report_lane() {
     peers=""
     if [ "$rpc_up" = "1" ]; then
         peers="$(rpc_call "$datadir" "$rpcport" getpeerinfo | peer_count_from_json)"
+        chaininfo_json="$(rpc_call "$datadir" "$rpcport" getblockchaininfo || true)"
+        if [ -n "$chaininfo_json" ]; then
+            chain_headers="$(json_int_field "$chaininfo_json" "headers")"
+            initialblockdownload="$(json_bool_field "$chaininfo_json" "initialblockdownload")"
+        fi
         bootstrap_json="$(rpc_call "$datadir" "$rpcport" bootstrapstatus || true)"
         if [ -n "$bootstrap_json" ]; then
             snapshot_seed_height="$(json_int_field "$bootstrap_json" "bundle_seed_height")"
@@ -394,6 +423,26 @@ report_lane() {
             ;;
     esac
 
+    if [ "$rpc_up" = "1" ] &&
+       { [ "$status" != "ok" ] ||
+         { [ "$lane" = "soak" ] && [ "$soak_eligible" != "1" ]; }; }; then
+        reducer_json="$(rpc_call "$datadir" "$rpcport" dumpstate reducer_frontier || true)"
+        if [ -n "$reducer_json" ]; then
+            reducer_hstar="$(json_int_field "$reducer_json" "hstar")"
+            reducer_pending_stage="$(json_string_field "$reducer_json" "hstar_next_pending_stage")"
+            reducer_pending_detail="$(json_string_field "$reducer_json" "hstar_next_pending_detail")"
+            reducer_primary_stage="$(json_string_field "$reducer_json" "hstar_next_primary_stage")"
+            reducer_primary_detail="$(json_string_field "$reducer_json" "hstar_next_primary_detail")"
+            reducer_blocker_count="$(json_int_field "$reducer_json" "hstar_next_blocker_count")"
+        fi
+        condition_json="$(rpc_call "$datadir" "$rpcport" dumpstate condition_engine || true)"
+        if [ -n "$condition_json" ]; then
+            condition_active_count="$(json_int_field "$condition_json" "active_count")"
+            condition_unresolved_count="$(json_int_field "$condition_json" "unresolved_count")"
+            condition_operator_needed_count="$(json_true_count "$condition_json" "operator_needed_emitted")"
+        fi
+    fi
+
     case "$status" in
         ok) ok_count=$((ok_count + 1)) ;;
         warn) warn_count=$((warn_count + 1)) ;;
@@ -401,7 +450,7 @@ report_lane() {
     esac
 
     if [ "$JSON" = "1" ]; then
-        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","recovery_hint":"%s","role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
+        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$unit")" \
             "$(json_escape "$datadir")" \
@@ -418,6 +467,8 @@ report_lane() {
             "$(json_escape "$mem_pressure")" \
             "$(json_bool "$rpc_up")" \
             "${height:-null}" \
+            "$(json_number "$chain_headers")" \
+            "$(json_tri_bool "$initialblockdownload")" \
             "$tip_lag" \
             "$peers" \
             "$(json_bool "$p2p_listening")" \
@@ -429,6 +480,15 @@ report_lane() {
             "$(json_bool "$loader_configured")" \
             "$(json_escape "$loader_path")" \
             "$(json_escape "$recovery_hint")" \
+            "$(json_number "$reducer_hstar")" \
+            "$(json_escape "$reducer_pending_stage")" \
+            "$(json_escape "$reducer_pending_detail")" \
+            "$(json_escape "$reducer_primary_stage")" \
+            "$(json_escape "$reducer_primary_detail")" \
+            "$(json_number "$reducer_blocker_count")" \
+            "$(json_number "$condition_active_count")" \
+            "$(json_number "$condition_unresolved_count")" \
+            "$(json_number "$condition_operator_needed_count")" \
             "$(json_bool "$role_ready")" \
             "$(json_escape "$role_reason")" \
             "$(json_tri_bool "$soak_eligible")" \
@@ -436,13 +496,16 @@ report_lane() {
             "$(json_escape "$status")" \
             "$(json_escape "$reason")"
     else
-        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s recovery_hint=%s soak_eligible=%s soak_reason=%s\n' \
+        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
             "$lane" "$status" "$reason" \
             "$([ "$role_ready" = "1" ] && printf yes || printf no)" \
             "$role_reason" \
             "$unit" "$active" "$mainpid" "$restarts" \
             "$([ "$rpc_up" = "1" ] && printf up || printf down)" \
-            "${height:-null}" "$tip_lag" "$peers" \
+            "${height:-null}" \
+            "${chain_headers:-null}" \
+            "$([ "$initialblockdownload" = "1" ] && printf yes || { [ "$initialblockdownload" = "0" ] && printf no || printf n/a; })" \
+            "$tip_lag" "$peers" \
             "$([ "$p2p_listening" = "1" ] && printf yes || printf no)" \
             "$([ "$rpc_listening" = "1" ] && printf yes || printf no)" \
             "$([ "$reindex" = "1" ] && printf yes || printf no)" \
@@ -450,6 +513,11 @@ report_lane() {
             "${snapshot_seed_height:-none}" \
             "$([ "$loader_configured" = "1" ] && printf yes || printf no)" \
             "$recovery_hint" \
+            "${reducer_hstar:-null}" \
+            "${reducer_pending_stage:-none}" \
+            "${reducer_pending_detail:-none}" \
+            "${condition_active_count:-null}" \
+            "${condition_operator_needed_count:-null}" \
             "$([ "$soak_eligible" = "1" ] && printf yes || { [ "$soak_eligible" = "0" ] && printf no || printf n/a; })" \
             "$soak_reason"
     fi

@@ -110,6 +110,7 @@ struct legacy_mirror_sync_stats {
     enum blocker_class last_blocker_class;
     char    activation_blocker_reason[128];
     char    last_blocker_id[64];
+    bool    blocker_recovered_by_tip_agreement;
     char    csr_failure_reason[160];
     char    last_error[160];
     int     zclassicd_rpc_error_code;

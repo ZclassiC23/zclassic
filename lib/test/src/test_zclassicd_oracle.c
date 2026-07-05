@@ -933,6 +933,7 @@ int test_zclassicd_oracle(void)
     {
         struct legacy_mirror_sync_stats stats;
         struct legacy_mirror_sync_stats snap;
+        struct json_value root;
 
         zo_build_fixture(AGREE_HEX);
         legacy_mirror_sync_reset_for_test();
@@ -955,6 +956,49 @@ int test_zclassicd_oracle(void)
                  strcmp(snap.state, "healthy") == 0);
         ZO_CHECK("legacy mirror at tip has known lag",
                  snap.lag_known && snap.lag_valid && snap.lag == 0);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        zo_teardown();
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.local_height = 7;
+        stats.legacy_height = 7;
+        stats.legacy_headers = 7;
+        snprintf(stats.zclassicd_hash, sizeof(stats.zclassicd_hash),
+                 "%s", AGREE_HEX);
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "hash-disagreement");
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+        mirror_consensus_record_blocker("hash-disagreement");
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror at matching tip suppresses stale hash blocker",
+                 snap.activation_blocker_reason[0] == '\0' &&
+                 snap.last_blocker_id[0] == '\0');
+        ZO_CHECK("legacy mirror records hash blocker recovery",
+                 snap.blocker_recovered_by_tip_agreement);
+        ZO_CHECK("legacy mirror matching tip reports healthy",
+                 strcmp(snap.state, "healthy") == 0);
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("legacy mirror recovery dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&root, NULL));
+        ZO_CHECK("legacy mirror recovery dump active code empty",
+                 strcmp(json_get_str(json_get(&root, "active_error_code")),
+                        "") == 0);
+        ZO_CHECK("legacy mirror recovery dump candidate blocker empty",
+                 strcmp(json_get_str(json_get(&root, "candidate_blocker")),
+                        "") == 0);
+        ZO_CHECK("legacy mirror recovery dump flag true",
+                 json_get_bool(json_get(&root,
+                     "blocker_recovered_by_tip_agreement")));
+        json_free(&root);
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
         zo_teardown();
@@ -1007,7 +1051,6 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror unreachable remains blocked",
                  strcmp(snap.state, "blocked") == 0);
 
-        struct json_value root;
         json_init(&root);
         json_set_object(&root);
         ZO_CHECK("legacy mirror unreachable dump succeeds",

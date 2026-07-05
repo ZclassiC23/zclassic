@@ -19,6 +19,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 static const char *lms_state_name(const struct legacy_mirror_sync_stats *s)
 {
@@ -49,6 +50,25 @@ static bool lms_blocker_cleared_by_catchup(const char *code,
 {
     return code && lag_known &&
            strcmp(code, "activation-no-progress") == 0 && lag <= 0;
+}
+
+static bool lms_tips_agree(const struct legacy_mirror_sync_stats *s)
+{
+    return s && s->lag_known &&
+           s->local_height >= 0 &&
+           s->legacy_height >= 0 &&
+           s->local_height == s->legacy_height &&
+           s->zclassic23_hash[0] &&
+           s->zclassicd_hash[0] &&
+           strcasecmp(s->zclassic23_hash, s->zclassicd_hash) == 0;
+}
+
+static bool lms_hash_disagreement_recovered(
+    const char *code,
+    const struct legacy_mirror_sync_stats *s)
+{
+    return code && strcmp(code, "hash-disagreement") == 0 &&
+           lms_tips_agree(s);
 }
 
 static int lms_rpc_error_code(const char *err)
@@ -392,12 +412,21 @@ void legacy_mirror_sync_stats_snapshot(
     }
     if (lms_blocker_cleared_by_catchup(out->activation_blocker_reason,
                                        out->lag_known,
-                                       out->lag))
+                                       out->lag)) {
         out->activation_blocker_reason[0] = '\0';
+    } else if (lms_hash_disagreement_recovered(
+                   out->activation_blocker_reason, out)) {
+        out->blocker_recovered_by_tip_agreement = true;
+        out->activation_blocker_reason[0] = '\0';
+    }
     if (lms_blocker_cleared_by_catchup(out->last_blocker_id,
                                        out->lag_known,
-                                       out->lag))
+                                       out->lag)) {
         out->last_blocker_id[0] = '\0';
+    } else if (lms_hash_disagreement_recovered(out->last_blocker_id, out)) {
+        out->blocker_recovered_by_tip_agreement = true;
+        out->last_blocker_id[0] = '\0';
+    }
     if (!out->activation_blocker_reason[0])
         out->activation_blocker_class = BLOCKER_TRANSIENT;
     if (!out->last_blocker_id[0])
@@ -485,6 +514,8 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
                                               "candidate_lag_observed", &s);
     json_push_kv_str(out, "candidate_blocker",
                      legacy_mirror_sync_blocker_code(&s));
+    json_push_kv_bool(out, "blocker_recovered_by_tip_agreement",
+                      s.blocker_recovered_by_tip_agreement);
     json_push_kv_int(out, "target_height", s.target_height);
     json_push_kv_int(out, "authority_rewind_target",
                      s.authority_rewind_target);
