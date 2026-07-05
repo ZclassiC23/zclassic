@@ -29,6 +29,13 @@ native binary commands (`zclassic23 agentinterface`, `zclassic23 agent`, etc.)
 are the second-best interface for terminal work and scripts. REST is the
 public read-only mirror.
 
+The transport can vary, but the payload should not: AI-facing status surfaces
+return stable JSON objects with a `schema` or an explicit command contract, and
+they must identify the running node binary with `build_commit` whenever deploy
+drift would change the interpretation of state. `getmirrorstatus` follows this
+rule so an operator can distinguish a stale runtime binary from current source
+or a freshly deployed dev lane.
+
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions
 belong in C under `app/controllers/src/agent_controller.c` and

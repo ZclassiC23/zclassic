@@ -24,6 +24,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "util/clientversion.h"
 #include "util/supervisor.h"
 
 #include <arpa/inet.h>
@@ -807,6 +808,7 @@ int test_zclassicd_oracle(void)
         struct json_value root;
         const struct json_value *state;
         const struct json_value *authority;
+        const struct json_value *build_commit;
         const struct json_value *mirror_enabled;
         const struct json_value *trust;
         const struct json_value *lag_known;
@@ -854,6 +856,7 @@ int test_zclassicd_oracle(void)
                  legacy_mirror_sync_dump_state_json(&root, NULL));
         state = json_get(&root, "state");
         authority = json_get(&root, "consensus_authority");
+        build_commit = json_get(&root, "build_commit");
         mirror_enabled = json_get(&root, "mirror_authorization_enabled");
         trust = json_get(&root, "candidate_trust");
         lag_known = json_get(&root, "lag_known");
@@ -878,6 +881,9 @@ int test_zclassicd_oracle(void)
                  authority &&
                  strcmp(json_get_str(authority),
                         "local_consensus_validation") == 0);
+        ZO_CHECK("legacy mirror dump build commit identifies runtime",
+                 build_commit &&
+                 strcmp(json_get_str(build_commit), zcl_build_commit()) == 0);
         ZO_CHECK("legacy mirror dump omits mirror authorization",
                  mirror_enabled == NULL);
         ZO_CHECK("legacy mirror dump trust is bounded advisory",
@@ -975,9 +981,16 @@ int test_zclassicd_oracle(void)
         snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "hash-disagreement");
         legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+        sync_monitor_test_set_local_recovery(true, true, 3170884, 3,
+                                             "local_header_refill");
         mirror_consensus_record_blocker("hash-disagreement");
 
         legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("legacy mirror matching tip preserves recovery context",
+                 snap.local_recovery_active &&
+                 snap.local_retries_exhausted &&
+                 snap.local_missing_height == 3170884 &&
+                 snap.local_retry_count == 3);
         ZO_CHECK("legacy mirror at matching tip suppresses stale hash blocker",
                  snap.activation_blocker_reason[0] == '\0' &&
                  snap.last_blocker_id[0] == '\0');
@@ -995,10 +1008,20 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror recovery dump candidate blocker empty",
                  strcmp(json_get_str(json_get(&root, "candidate_blocker")),
                         "") == 0);
+        ZO_CHECK("legacy mirror recovery dump activation blocker empty",
+                 strcmp(json_get_str(json_get(&root, "activation_blocker")),
+                        "") == 0);
+        ZO_CHECK("legacy mirror recovery dump keeps local retry context",
+                 json_get_bool(json_get(&root, "local_recovery_active")) &&
+                 json_get_bool(json_get(&root, "local_retries_exhausted")) &&
+                 json_get_int(json_get(&root, "local_missing_height")) ==
+                     3170884 &&
+                 json_get_int(json_get(&root, "local_retry_count")) == 3);
         ZO_CHECK("legacy mirror recovery dump flag true",
                  json_get_bool(json_get(&root,
                      "blocker_recovered_by_tip_agreement")));
         json_free(&root);
+        sync_monitor_test_set_local_recovery(false, false, 0, 0, NULL);
         legacy_mirror_sync_reset_for_test();
         mirror_consensus_reset_for_test();
         zo_teardown();

@@ -13,6 +13,7 @@
 #include "services/sync_monitor.h"
 #include "supervisors/legacy_mirror_supervisor.h"
 #include "util/blocker.h"
+#include "util/clientversion.h"
 #include "util/log_macros.h"
 #include "validation/mirror_consensus.h"
 
@@ -473,6 +474,7 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     if (!out) return false;
     struct legacy_mirror_sync_stats s;
     legacy_mirror_sync_stats_snapshot(&s);
+    json_push_kv_str(out, "build_commit", zcl_build_commit());
     json_push_kv_bool(out, "mirror_enabled", s.enabled);
     json_push_kv_str(out, "state", s.state);
     json_push_kv_bool(out, "mirror_monitor_running", s.running);
