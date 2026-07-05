@@ -572,6 +572,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_lanes.v1",
                       "zclassic23 agentlanes / zcl_agent_lanes",
                       "canonical/soak/dev lane topology and safety rules");
+    agent_push_schema(&schemas, "zcl.agent_runtime_services.v1",
+                      "nested in zcl.agent_lanes.v1",
+                      "configured boot ports plus observed in-process listener state");
     agent_push_schema(&schemas, "zcl.agent_capability.v1",
                       "nested in zcl.agent_interface.v1 capabilities[]",
                       "one machine-readable agent operation and its transports");

@@ -2814,9 +2814,18 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.operator_lane.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "zcl.operator_deployment_safety.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "zcl.agent_runtime_services.v1") != NULL);
         ASSERT(strstr(agent_lanes_buf, "agent_push_lane_topology") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "agent_push_runtime_services_json") != NULL);
         ASSERT(strstr(agent_lanes_buf, "default_deploy_target") != NULL);
         ASSERT(strstr(agent_lanes_buf, "zcl23-dev") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "zcl.agent_runtime_services.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "rpc_running") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "https_bound_port") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "fs_bound_port") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.node_resources.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "Automation must read deployment_safety") != NULL);
@@ -2902,6 +2911,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_runtime_services.v1")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "configured boot intent") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);

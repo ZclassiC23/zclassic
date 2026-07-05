@@ -1006,6 +1006,11 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
     if (strcmp(method, "agentlanes") == 0)
         return strdup("{\"schema\":\"zcl.agent_lanes.v1\","
                       "\"default_deploy_target\":\"dev\","
+                      "\"current_runtime_services\":{"
+                      "\"schema\":\"zcl.agent_runtime_services.v1\","
+                      "\"rpc_running\":true,"
+                      "\"https_running\":false,"
+                      "\"fs_running\":true},"
                       "\"lanes\":[{\"lane\":\"canonical\","
                       "\"unit\":\"zclassic23\","
                       "\"deployment_safety\":{"
@@ -1272,6 +1277,7 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl.agent_lanes.v1");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "default_deploy_target")),
                       "dev");
+        ASSERT(json_get(&root, "current_runtime_services") != NULL);
         ASSERT(json_get(&root, "lanes") != NULL);
         json_free(&root);
         free(body);

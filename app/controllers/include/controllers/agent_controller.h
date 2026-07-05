@@ -22,6 +22,8 @@ void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
                                             int https_port, int fs_port);
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key);
+void agent_push_runtime_services_json(struct json_value *out,
+                                      const char *key);
 
 bool rpc_agent_map(const struct json_value *params, bool help,
                    struct json_value *result);

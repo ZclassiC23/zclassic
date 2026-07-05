@@ -343,8 +343,10 @@ static int test_file_service_start_stop_idempotent(void)
         fs_server_start(dir, 0);
         fs_server_start(dir, 0);
         sleep(1);
+        ok = ok && fs_server_is_running();
         fs_server_stop();
         fs_server_stop();
+        ok = ok && !fs_server_is_running();
 
         cleanup_manifest_test_dir(dir);
         if (ok) printf("OK\n");

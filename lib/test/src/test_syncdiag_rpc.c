@@ -2015,6 +2015,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_runtime_services.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_capability.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_machine_contract.v1")
@@ -2032,6 +2034,8 @@ int test_syncdiag_rpc(void)
         json_init(&lanes);
         ok = ok && rpc_table_execute(&tbl, "agentlanes", &params, &lanes);
         const struct json_value *lane_arr = json_get(&lanes, "lanes");
+        const struct json_value *runtime_services =
+            json_get(&lanes, "current_runtime_services");
         const struct json_value *canonical =
             find_object_with_str(lane_arr, "lane", "canonical");
         const struct json_value *dev =
@@ -2046,6 +2050,25 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&lanes,
                                                 "default_deploy_target")),
                           "dev") == 0;
+        ok = ok && runtime_services &&
+            strcmp(json_get_str(json_get(runtime_services, "schema")),
+                   "zcl.agent_runtime_services.v1") == 0;
+        ok = ok && runtime_services &&
+            json_get_int(json_get(runtime_services,
+                                  "rpc_configured_port")) == 0;
+        ok = ok && runtime_services &&
+            !json_get_bool(json_get(runtime_services, "rpc_running"));
+        ok = ok && runtime_services &&
+            json_get_int(json_get(runtime_services,
+                                  "https_configured_port")) == 0;
+        ok = ok && runtime_services &&
+            !json_get_bool(json_get(runtime_services, "https_running"));
+        ok = ok && runtime_services &&
+            json_get_int(json_get(runtime_services, "https_bound_port")) == 0;
+        ok = ok && runtime_services &&
+            !json_get_bool(json_get(runtime_services, "fs_running"));
+        ok = ok && runtime_services &&
+            json_get_int(json_get(runtime_services, "fs_bound_port")) == 0;
         ok = ok && lane_arr && lane_arr->type == JSON_ARR &&
             json_size(lane_arr) >= 3;
         ok = ok && canonical &&

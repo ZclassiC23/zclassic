@@ -93,6 +93,7 @@ bool rpc_agent_lanes(const struct json_value *params, bool help,
     json_push_kv_str(result, "source",
                      "native_c_agent_controller_lane_topology");
     agent_push_operator_lane_json(result, "current_runtime_lane");
+    agent_push_runtime_services_json(result, "current_runtime_services");
 
     json_init(&lanes);
     json_set_array(&lanes);

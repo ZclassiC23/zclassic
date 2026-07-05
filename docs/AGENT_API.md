@@ -141,8 +141,12 @@ canonical (`zclassic23`, `~/.zclassic-c23`, RPC 18232 / P2P 8033), soak
 (`zclassic23-soak`, `~/.zclassic-c23-soak`, RPC 18242 / P2P 8043), and dev
 (`zcl23-dev`, `~/.zclassic-c23-dev`, RPC 18252 / P2P 8053). It also embeds
 `current_runtime_lane`, the same `zcl.operator_lane.v1` object used by
-`zclassic23 agent`, plus an `automation_rules[]` list. Use this C-native
-topology before deciding where to deploy or restart; use `make lane-health` /
+`zclassic23 agent`, plus `current_runtime_services`
+(`zcl.agent_runtime_services.v1`). The lane object's port fields are the
+configured boot intent; `current_runtime_services` separates those configured
+ports from observed in-process listeners (`rpc_running`, `https_running`,
+`https_bound_port`, `fs_running`, `fs_bound_port`). Use this C-native topology
+before deciding where to deploy or restart; use `make lane-health` /
 `tools/scripts/lane_health.sh --json` only as the external systemd/RPC
 readiness probe that verifies the declared lanes are actually running.
 

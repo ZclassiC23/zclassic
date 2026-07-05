@@ -7,6 +7,9 @@
 #include "controllers/agent_controller.h"
 
 #include "json/json.h"
+#include "net/file_service.h"
+#include "net/https_server.h"
+#include "rpc/httpserver.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -246,4 +249,48 @@ void agent_push_operator_lane_json(struct json_value *out,
                                            g_agent_runtime.fs_port);
     json_push_kv(out, out_key, &lane_obj);
     json_free(&lane_obj);
+}
+
+void agent_push_runtime_services_json(struct json_value *out,
+                                      const char *key)
+{
+    if (!out)
+        return;
+    const char *out_key = (key && key[0]) ? key : "runtime_services";
+    const bool rpc_running = rpc_http_is_running();
+    const bool https_running = https_server_is_running();
+    const int https_bound_port = https_server_port();
+    const bool fs_running = fs_server_is_running();
+    const int fs_bound_port = fs_running ? (int)fs_server_get_port() : 0;
+    struct json_value svc;
+
+    json_init(&svc);
+    json_set_object(&svc);
+    json_push_kv_str(&svc, "schema", "zcl.agent_runtime_services.v1");
+    json_push_kv_int(&svc, "schema_version", 1);
+    json_push_kv_str(&svc, "configured_ports_source", "boot_context");
+    json_push_kv_str(&svc, "observed_services_source",
+                     "in_process_listener_state");
+    json_push_kv_str(&svc, "semantics",
+                     "configured ports are argv/config intent; running and bound_port fields are observed in-process listener state");
+    json_push_kv_int(&svc, "rpc_configured_port", g_agent_runtime.rpc_port);
+    json_push_kv_bool(&svc, "rpc_running", rpc_running);
+    json_push_kv_int(&svc, "rpc_bound_port",
+                     rpc_running ? g_agent_runtime.rpc_port : 0);
+    json_push_kv_int(&svc, "p2p_configured_port", g_agent_runtime.p2p_port);
+    json_push_kv_bool(&svc, "p2p_observed_here", false);
+    json_push_kv_str(&svc, "p2p_observed_source",
+                     "zcl_agent, zcl_peers, or lane_health");
+    json_push_kv_int(&svc, "https_configured_port",
+                     g_agent_runtime.https_port);
+    json_push_kv_bool(&svc, "https_running", https_running);
+    json_push_kv_int(&svc, "https_bound_port",
+                     https_running ? https_bound_port : 0);
+    json_push_kv_bool(&svc, "https_deferred",
+                      https_deferred_pending());
+    json_push_kv_int(&svc, "fs_configured_port", g_agent_runtime.fs_port);
+    json_push_kv_bool(&svc, "fs_running", fs_running);
+    json_push_kv_int(&svc, "fs_bound_port", fs_bound_port);
+    json_push_kv(out, out_key, &svc);
+    json_free(&svc);
 }

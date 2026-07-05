@@ -78,6 +78,7 @@ bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
 /* High-level: serve files on configured port. Runs in its own thread. */
 void fs_server_start(const char *datadir, uint16_t port);
 void fs_server_stop(void);
+bool fs_server_is_running(void);
 uint16_t fs_server_get_port(void);
 bool fs_server_refresh_manifest(void);
 

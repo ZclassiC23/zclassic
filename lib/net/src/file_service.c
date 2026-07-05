@@ -764,6 +764,16 @@ static void *fs_server_thread(void *arg)
     return NULL;
 }
 
+bool fs_server_is_running(void)
+{
+    bool running;
+
+    pthread_mutex_lock(&g_fs_state_mutex);
+    running = atomic_load(&g_fs_running) && g_fs_listen_fd >= 0;
+    pthread_mutex_unlock(&g_fs_state_mutex);
+    return running;
+}
+
 uint16_t fs_server_get_port(void) { return g_fs_port; }
 
 void fs_server_start(const char *datadir, uint16_t port)
