@@ -560,6 +560,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.height_contract.v1",
                       "nested in zcl.public_status.v1 height_contract",
                       "names served H*, active lookahead, header, peer, and target heights");
+    agent_push_schema(&schemas, "zcl.mirror_status.v1",
+                      "nested in getmirrorstatus mirror_contract",
+                      "names mirror reachability, lag, hash agreement, and active blocker semantics");
     agent_push_schema(&schemas, "zcl.runtime_build.v1",
                       "nested in zcl.public_status.v1 runtime_build",
                       "running-vs-deploy-expected build freshness for stale-runtime detection");

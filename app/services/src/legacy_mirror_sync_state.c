@@ -158,6 +158,47 @@ bool legacy_mirror_sync_blocker_should_surface(
     return !non_legacy_source_selected;
 }
 
+static void lms_push_status_contract_json(
+    struct json_value *out,
+    const struct legacy_mirror_sync_stats *s)
+{
+    if (!out || !s)
+        return;
+    const char *blocker = legacy_mirror_sync_blocker_code(s);
+    bool blocker_active =
+        blocker && blocker[0] && !s->blocker_recovered_by_tip_agreement;
+    bool operator_action_required =
+        blocker_active && legacy_mirror_sync_blocker_should_surface(s, false);
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "schema", "zcl.mirror_status.v1");
+    json_push_kv_int(&obj, "schema_version", 1);
+    json_push_kv_bool(&obj, "advisory_only", true);
+    json_push_kv_str(&obj, "consensus_authority", s->consensus_authority);
+    json_push_kv_str(&obj, "status", s->state);
+    json_push_kv_bool(&obj, "mirror_running", s->running);
+    json_push_kv_bool(&obj, "reachable", s->reachable);
+    json_push_kv_bool(&obj, "legacy_oracle_usable",
+                      s->legacy_oracle_usable);
+    json_push_kv_bool(&obj, "lag_known", s->lag_known);
+    json_push_kv_int(&obj, "lag_blocks", legacy_mirror_sync_reported_lag(s));
+    json_push_kv_bool(&obj, "same_height",
+                      s->lag_known && s->lag == 0);
+    json_push_kv_bool(&obj, "tip_hashes_agree", s->tip_hashes_agree);
+    json_push_kv_bool(&obj, "blocker_active", blocker_active);
+    json_push_kv_str(&obj, "blocker_code", blocker_active ? blocker : "");
+    json_push_kv_bool(&obj, "blocker_recovered_by_tip_agreement",
+                      s->blocker_recovered_by_tip_agreement);
+    json_push_kv_bool(&obj, "operator_action_required",
+                      operator_action_required);
+    json_push_kv_str(
+        &obj, "semantics",
+        "legacy mirror is advisory; local consensus remains authoritative, "
+        "and transient blockers are inactive once same-height hashes agree");
+    json_push_kv(out, "mirror_contract", &obj);
+    json_free(&obj);
+}
+
 struct zcl_result legacy_mirror_sync_request_catchup_result(const char *reason)
 {
     return lms_request_catchup_result_internal(reason);
@@ -478,6 +519,7 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_str(out, "build_commit", zcl_build_commit());
     json_push_kv_bool(out, "mirror_enabled", s.enabled);
     json_push_kv_str(out, "state", s.state);
+    lms_push_status_contract_json(out, &s);
     json_push_kv_bool(out, "mirror_monitor_running", s.running);
     json_push_kv_bool(out, "mirror_running", s.running);
     json_push_kv_bool(out, "running", s.running);

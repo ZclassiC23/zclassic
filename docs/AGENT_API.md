@@ -38,6 +38,15 @@ drift would change the interpretation of state. `getmirrorstatus` follows this
 rule so an operator can distinguish a stale runtime binary from current source
 or a freshly deployed dev lane.
 
+`getmirrorstatus` also includes `mirror_contract` (`zcl.mirror_status.v1`).
+Agents should prefer it over string-scraping top-level legacy fields. It names
+that the mirror is advisory-only, the local consensus authority, whether the
+mirror is running/reachable, whether lag is known, whether zclassic23 and
+zclassicd are at the same height with the same hash, whether a blocker is truly
+active, and whether operator action is required. A
+same-height same-hash mirror with no active blocker is healthy even if an older
+runtime or cached field once mentioned a transient `hash-disagreement`.
+
 `zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
 entry point for that rule. In addition to the human summary, it emits a
 top-level `build_commit`, a `runtime_identity` block for the binary that
@@ -299,7 +308,9 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build-only`, focused tests inferred from changed files, and a native
   linger-service probe when the service is available. Repeated identical green
   inputs hit `.cache/zcl-agent-fast-ci/` and skip repeated lint/build/focused
-  tests while still refreshing the live probe.
+  tests while still refreshing the live probe. The live probe trusts the
+  native `zcl.public_status.v1` health contract instead of duplicating height
+  gap policy in shell, and prints compact status JSON when it fails.
 - Focused test routing is DRY: both native `zclassic23 agentimpact` and
   `tools/agent_fast_ci.sh` read
   `app/controllers/include/controllers/agent_impact_rules.def`. Add a rule

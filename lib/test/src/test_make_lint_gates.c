@@ -2529,8 +2529,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "zcl.public_status.v1") != NULL);
         ASSERT(strstr(buf, ".status == \"healthy\"") != NULL);
         ASSERT(strstr(buf, ".healthy == true") != NULL);
+        ASSERT(strstr(buf, "((.gap // 0) <= 1)") == NULL);
+        ASSERT(strstr(buf, "agent probe summary") != NULL);
         ASSERT(strstr(buf, "healthcheck") != NULL);
         ASSERT(strstr(buf, ".checks.has_peers == true") != NULL);
+        ASSERT(strstr(buf, "health probe summary") != NULL);
         ASSERT(strstr(buf, "tools/z topology --json") == NULL);
         ASSERT(strstr(buf, "native service binary") != NULL);
         ASSERT(strstr(buf, "run make build-only or set ZCL_FAST_LIVE=0")
@@ -2858,6 +2861,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.height_contract.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.mirror_status.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_interface.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_runtime_identity.v1")
                != NULL);
@@ -2978,6 +2982,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "configured boot intent") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.height_contract.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.mirror_status.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "index_projection_ready") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);

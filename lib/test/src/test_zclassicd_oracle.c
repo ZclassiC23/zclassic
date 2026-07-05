@@ -823,6 +823,7 @@ int test_zclassicd_oracle(void)
         const struct json_value *override_scope;
         const struct json_value *blocker;
         const struct json_value *last_blocker_code;
+        const struct json_value *contract;
         const struct json_value *stalls_total;
         const struct json_value *local_recovery_active;
         const struct json_value *local_retries_exhausted;
@@ -871,6 +872,7 @@ int test_zclassicd_oracle(void)
         override_reason = json_get(&root, "last_override_reason");
         blocker = json_get(&root, "activation_blocker");
         last_blocker_code = json_get(&root, "last_blocker_code");
+        contract = json_get(&root, "mirror_contract");
         stalls_total = json_get(&root, "stalls_total");
         local_recovery_active = json_get(&root, "local_recovery_active");
         local_retries_exhausted = json_get(&root, "local_retries_exhausted");
@@ -923,6 +925,28 @@ int test_zclassicd_oracle(void)
                  last_blocker_code &&
                  strcmp(json_get_str(last_blocker_code),
                         "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror contract exists",
+                 contract && contract->type == JSON_OBJ);
+        ZO_CHECK("legacy mirror contract schema",
+                 strcmp(json_get_str(json_get(contract, "schema")),
+                        "zcl.mirror_status.v1") == 0);
+        ZO_CHECK("legacy mirror contract authority",
+                 json_get_bool(json_get(contract, "advisory_only")) &&
+                 strcmp(json_get_str(json_get(contract, "consensus_authority")),
+                        "local_consensus_validation") == 0);
+        ZO_CHECK("legacy mirror contract blocked status",
+                 strcmp(json_get_str(json_get(contract, "status")),
+                        "blocked") == 0);
+        ZO_CHECK("legacy mirror contract active blocker",
+                 json_get_bool(json_get(contract, "blocker_active")) &&
+                 strcmp(json_get_str(json_get(contract, "blocker_code")),
+                        "body-hash-mismatch") == 0);
+        ZO_CHECK("legacy mirror contract operator action",
+                 json_get_bool(json_get(contract,
+                                        "operator_action_required")));
+        ZO_CHECK("legacy mirror contract lag",
+                 json_get_int(json_get(contract, "lag_blocks")) == 1 &&
+                 !json_get_bool(json_get(contract, "same_height")));
         ZO_CHECK("legacy mirror dump stall count",
                  stalls_total && json_get_int(stalls_total) == 2);
         ZO_CHECK("legacy mirror dump local recovery field",
@@ -940,6 +964,7 @@ int test_zclassicd_oracle(void)
         struct legacy_mirror_sync_stats stats;
         struct legacy_mirror_sync_stats snap;
         struct json_value root;
+        const struct json_value *contract;
 
         zo_build_fixture(AGREE_HEX);
         legacy_mirror_sync_reset_for_test();
@@ -1028,6 +1053,27 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror recovery dump flag true",
                  json_get_bool(json_get(&root,
                      "blocker_recovered_by_tip_agreement")));
+        contract = json_get(&root, "mirror_contract");
+        ZO_CHECK("legacy mirror recovery contract exists",
+                 contract && contract->type == JSON_OBJ);
+        ZO_CHECK("legacy mirror recovery contract healthy",
+                 strcmp(json_get_str(json_get(contract, "status")),
+                        "healthy") == 0);
+        ZO_CHECK("legacy mirror recovery contract authority",
+                 json_get_bool(json_get(contract, "advisory_only")) &&
+                 strcmp(json_get_str(json_get(contract, "consensus_authority")),
+                        "local_consensus_validation") == 0);
+        ZO_CHECK("legacy mirror recovery contract no active blocker",
+                 !json_get_bool(json_get(contract, "blocker_active")) &&
+                 strcmp(json_get_str(json_get(contract, "blocker_code")),
+                        "") == 0 &&
+                 !json_get_bool(json_get(contract,
+                                         "operator_action_required")));
+        ZO_CHECK("legacy mirror recovery contract same hash",
+                 json_get_bool(json_get(contract, "same_height")) &&
+                 json_get_bool(json_get(contract, "tip_hashes_agree")));
+        ZO_CHECK("legacy mirror recovery contract semantics",
+                 json_get(contract, "semantics") != NULL);
         json_free(&root);
         sync_monitor_test_set_local_recovery(false, false, 0, 0, NULL);
         legacy_mirror_sync_reset_for_test();

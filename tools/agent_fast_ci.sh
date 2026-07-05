@@ -387,13 +387,17 @@ live_service_detected() {
 validate_agent_json() {
     local json="$1"
     if command -v jq >/dev/null 2>&1; then
-        printf '%s\n' "$json" |
+        if ! printf '%s\n' "$json" |
             jq -e '.schema == "zcl.public_status.v1" and
                    .status == "healthy" and
                    .healthy == true and
                    .serving == true and
-                   (.operator_needed == false) and
-                   ((.gap // 0) <= 1)' >/dev/null
+                   (.operator_needed == false)' >/dev/null; then
+            log "agent probe summary: $(printf '%s\n' "$json" |
+                jq -c '{schema,status,healthy,serving,operator_needed,gap,primary_blocker,next}' 2>/dev/null ||
+                printf '%s' "$json")"
+            fail "agent live probe did not report healthy serving status"
+        fi
     else
         printf '%s\n' "$json" |
             grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.public_status.v1"'
@@ -411,12 +415,17 @@ validate_agent_json() {
 validate_health_json() {
     local json="$1"
     if command -v jq >/dev/null 2>&1; then
-        printf '%s\n' "$json" |
+        if ! printf '%s\n' "$json" |
             jq -e '.healthy == true and
                    .serving == true and
                    .checks.has_peers == true and
                    .checks.peer_count > 0 and
-                   ((.checks.blocking_reason // "") == "")' >/dev/null
+                   ((.checks.blocking_reason // "") == "")' >/dev/null; then
+            log "health probe summary: $(printf '%s\n' "$json" |
+                jq -c '{healthy,serving,peer_count:.checks.peer_count,blocking_reason:.checks.blocking_reason,warning:.checks.warning,warning_reasons:.checks.warning_reasons}' 2>/dev/null ||
+                printf '%s' "$json")"
+            fail "health live probe did not report healthy serving status"
+        fi
     else
         printf '%s\n' "$json" |
             grep -q '"healthy"[[:space:]]*:[[:space:]]*true'
