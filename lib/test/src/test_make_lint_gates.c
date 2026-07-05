@@ -2556,9 +2556,21 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.operator_lane.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "zcl.operator_deployment_safety.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "Automation must read deployment_safety") != NULL);
         ASSERT(strstr(agent_runtime_buf, "zcl.operator_lane.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "zcl.operator_deployment_safety.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf, "restart_policy") != NULL);
         ASSERT(strstr(agent_runtime_buf, "safety_contract") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "automation_restart_ok") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "automation_deploy_ok") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "requires_operator_confirmation") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "safe_default_action") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_FAST_CACHE") != NULL);
         ASSERT(strstr(agent_ctrl_buf, ".cache/zcl-agent-fast-ci") != NULL);
@@ -2608,6 +2620,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
         ASSERT(strstr(agent_doc_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "zcl.operator_deployment_safety.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "automation_restart_ok") != NULL);
+        ASSERT(strstr(agent_doc_buf, "automation_deploy_ok") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "requires_operator_confirmation") != NULL);
+        ASSERT(strstr(agent_doc_buf, "safe_default_action") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_state") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_node_log") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_sql") != NULL);

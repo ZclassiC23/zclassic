@@ -551,6 +551,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.operator_lane.v1",
                       "zclassic23 agent / GET /api/v1/agent",
                       "declared canonical/soak/dev lane and restart policy");
+    agent_push_schema(&schemas, "zcl.operator_deployment_safety.v1",
+                      "nested in zcl.operator_lane.v1",
+                      "machine-readable deploy/restart safety contract");
     json_push_kv(result, "schemas", &schemas);
     json_free(&schemas);
 
@@ -572,6 +575,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_str(&rules, "Do not put new logic in shell wrappers.");
     agent_push_str(&rules, "Build JSON once in native services/controllers, then expose through MCP/REST.");
     agent_push_str(&rules, "Every new contract needs schema, docs, and focused tests.");
+    agent_push_str(&rules, "Automation must read deployment_safety before restarting a lane.");
     agent_push_str(&rules, "Consensus-risk paths require parity review and strict relevant tests.");
     json_push_kv(result, "design_rules", &rules);
     json_free(&rules);

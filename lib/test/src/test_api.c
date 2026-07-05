@@ -1418,6 +1418,24 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(lane,
                                                 "restart_policy")),
                           "operator_gated") == 0;
+        ok = ok && !json_get_bool(json_get(lane,
+                                           "automation_restart_ok"));
+        ok = ok && !json_get_bool(json_get(lane,
+                                           "automation_deploy_ok"));
+        ok = ok && json_get_bool(json_get(lane,
+                                          "requires_operator_confirmation"));
+        const struct json_value *safety =
+            json_get(lane, "deployment_safety");
+        ok = ok && safety && safety->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(safety, "schema")),
+                          "zcl.operator_deployment_safety.v1") == 0;
+        ok = ok && json_get_bool(json_get(safety,
+                                          "protects_public_endpoint"));
+        ok = ok && !json_get_bool(json_get(safety,
+                                           "automation_deploy_ok"));
+        ok = ok && strcmp(json_get_str(json_get(safety,
+                                                "safe_default_action")),
+                          "observe_only_or_use_dev_lane") == 0;
         json_free(&root);
 
         n = api_handle_request("GET", "/api/v1/node", NULL, 0,

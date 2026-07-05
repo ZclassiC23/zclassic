@@ -64,6 +64,73 @@ static const char *agent_lane_safety_contract(const char *lane)
     return "lane_not_declared";
 }
 
+static bool agent_lane_automation_restart_ok(const char *lane)
+{
+    return agent_lane_is(lane, "dev") ||
+           agent_lane_is(lane, "test") ||
+           agent_lane_is(lane, "copy");
+}
+
+static bool agent_lane_automation_deploy_ok(const char *lane)
+{
+    return agent_lane_is(lane, "dev") ||
+           agent_lane_is(lane, "test");
+}
+
+static bool agent_lane_requires_operator_confirmation(const char *lane)
+{
+    return agent_lane_is(lane, "canonical") ||
+           agent_lane_is(lane, "soak") ||
+           agent_lane_is(lane, "unknown");
+}
+
+static bool agent_lane_is_isolated_from_canonical(const char *lane)
+{
+    return agent_lane_is(lane, "soak") ||
+           agent_lane_is(lane, "dev") ||
+           agent_lane_is(lane, "test") ||
+           agent_lane_is(lane, "copy");
+}
+
+static const char *agent_lane_preferred_deploy_target(const char *lane)
+{
+    if (agent_lane_is(lane, "canonical") || agent_lane_is(lane, "soak"))
+        return "dev";
+    if (agent_lane_is(lane, "dev"))
+        return "dev";
+    if (agent_lane_is(lane, "test"))
+        return "test";
+    if (agent_lane_is(lane, "copy"))
+        return "copy_fixture";
+    return "declare_lane_first";
+}
+
+static const char *agent_lane_guard_env(const char *lane)
+{
+    if (agent_lane_is(lane, "canonical"))
+        return "ZCL_DEPLOY_ALLOW_CANONICAL";
+    if (agent_lane_is(lane, "soak"))
+        return "ZCL_DEPLOY_ALLOW_SOAK";
+    if (agent_lane_is(lane, "unknown"))
+        return "ZCL_OPERATOR_LANE";
+    return "";
+}
+
+static const char *agent_lane_safe_default_action(const char *lane)
+{
+    if (agent_lane_is(lane, "canonical"))
+        return "observe_only_or_use_dev_lane";
+    if (agent_lane_is(lane, "soak"))
+        return "preserve_soak_window";
+    if (agent_lane_is(lane, "dev"))
+        return "deploy_dev_lane";
+    if (agent_lane_is(lane, "test"))
+        return "run_test_fixture";
+    if (agent_lane_is(lane, "copy"))
+        return "prove_on_copy";
+    return "refuse_automation_until_lane_declared";
+}
+
 void rpc_agent_set_boot_context(const char *operator_lane,
                                 const char *runtime_profile,
                                 const char *datadir,
@@ -92,7 +159,19 @@ void agent_push_operator_lane_json(struct json_value *out,
         return;
     const char *lane = g_agent_runtime.operator_lane;
     const char *out_key = (key && key[0]) ? key : "operator_lane";
+    const bool canonical = agent_lane_is(lane, "canonical");
+    const bool soak = agent_lane_is(lane, "soak");
+    const bool dev = agent_lane_is(lane, "dev");
+    const bool ephemeral = agent_lane_is(lane, "test") ||
+                           agent_lane_is(lane, "copy");
+    const bool automation_restart_ok =
+        agent_lane_automation_restart_ok(lane);
+    const bool automation_deploy_ok =
+        agent_lane_automation_deploy_ok(lane);
+    const bool requires_operator_confirmation =
+        agent_lane_requires_operator_confirmation(lane);
     struct json_value lane_obj;
+    struct json_value safety;
 
     json_init(&lane_obj);
     json_set_object(&lane_obj);
@@ -106,19 +185,45 @@ void agent_push_operator_lane_json(struct json_value *out,
     json_push_kv_int(&lane_obj, "p2p_port", g_agent_runtime.p2p_port);
     json_push_kv_int(&lane_obj, "https_port", g_agent_runtime.https_port);
     json_push_kv_int(&lane_obj, "fs_port", g_agent_runtime.fs_port);
-    json_push_kv_bool(&lane_obj, "canonical",
-                      agent_lane_is(lane, "canonical"));
-    json_push_kv_bool(&lane_obj, "soak_evidence",
-                      agent_lane_is(lane, "soak"));
-    json_push_kv_bool(&lane_obj, "development",
-                      agent_lane_is(lane, "dev"));
-    json_push_kv_bool(&lane_obj, "ephemeral",
-                      agent_lane_is(lane, "test") ||
-                      agent_lane_is(lane, "copy"));
+    json_push_kv_bool(&lane_obj, "canonical", canonical);
+    json_push_kv_bool(&lane_obj, "soak_evidence", soak);
+    json_push_kv_bool(&lane_obj, "development", dev);
+    json_push_kv_bool(&lane_obj, "ephemeral", ephemeral);
     json_push_kv_str(&lane_obj, "restart_policy",
                      agent_lane_restart_policy(lane));
     json_push_kv_str(&lane_obj, "safety_contract",
                      agent_lane_safety_contract(lane));
+    json_push_kv_bool(&lane_obj, "automation_restart_ok",
+                      automation_restart_ok);
+    json_push_kv_bool(&lane_obj, "automation_deploy_ok",
+                      automation_deploy_ok);
+    json_push_kv_bool(&lane_obj, "requires_operator_confirmation",
+                      requires_operator_confirmation);
+
+    json_init(&safety);
+    json_set_object(&safety);
+    json_push_kv_str(&safety, "schema",
+                     "zcl.operator_deployment_safety.v1");
+    json_push_kv_int(&safety, "schema_version", 1);
+    json_push_kv_bool(&safety, "automation_restart_ok",
+                      automation_restart_ok);
+    json_push_kv_bool(&safety, "automation_deploy_ok",
+                      automation_deploy_ok);
+    json_push_kv_bool(&safety, "requires_operator_confirmation",
+                      requires_operator_confirmation);
+    json_push_kv_bool(&safety, "protects_public_endpoint", canonical);
+    json_push_kv_bool(&safety, "counts_for_soak_hours", soak);
+    json_push_kv_bool(&safety, "isolated_from_canonical_datadir",
+                      agent_lane_is_isolated_from_canonical(lane));
+    json_push_kv_str(&safety, "preferred_deploy_target",
+                     agent_lane_preferred_deploy_target(lane));
+    json_push_kv_str(&safety, "guard_env",
+                     agent_lane_guard_env(lane));
+    json_push_kv_str(&safety, "safe_default_action",
+                     agent_lane_safe_default_action(lane));
+    json_push_kv(&lane_obj, "deployment_safety", &safety);
+    json_free(&safety);
+
     json_push_kv(out, out_key, &lane_obj);
     json_free(&lane_obj);
 }

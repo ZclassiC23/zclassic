@@ -47,6 +47,22 @@ and the restartable development lane. Tooling should branch on the booleans
 `canonical`, `soak_evidence`, `development`, and `ephemeral`, not on systemd
 unit names or comments.
 
+The lane object also includes `deployment_safety`
+(`zcl.operator_deployment_safety.v1`). Automation must read this nested contract
+before any restart or binary deployment:
+
+- `automation_restart_ok` / `automation_deploy_ok` — whether an agent loop may
+  do the action without an operator confirmation.
+- `requires_operator_confirmation` and `guard_env` — the explicit stop sign for
+  canonical and soak lanes.
+- `protects_public_endpoint`, `counts_for_soak_hours`, and
+  `isolated_from_canonical_datadir` — why the lane exists.
+- `preferred_deploy_target` and `safe_default_action` — where fresh code should
+  go when the current lane must not be disturbed.
+
+Canonical defaults to observe-only, soak defaults to preserving the evidence
+window, and dev defaults to `deploy_dev_lane`.
+
 ## Bootstrap Service Status
 
 Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a

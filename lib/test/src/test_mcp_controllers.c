@@ -835,7 +835,18 @@ static char *mock_operator_degraded_rpc(const char *method,
                       "\"canonical\":false,"
                       "\"soak_evidence\":false,"
                       "\"development\":true,"
-                      "\"restart_policy\":\"frequent_deploy_ok\"}}");
+                      "\"restart_policy\":\"frequent_deploy_ok\","
+                      "\"automation_restart_ok\":true,"
+                      "\"automation_deploy_ok\":true,"
+                      "\"requires_operator_confirmation\":false,"
+                      "\"deployment_safety\":{"
+                      "\"schema\":\"zcl.operator_deployment_safety.v1\","
+                      "\"schema_version\":1,"
+                      "\"automation_restart_ok\":true,"
+                      "\"automation_deploy_ok\":true,"
+                      "\"requires_operator_confirmation\":false,"
+                      "\"preferred_deploy_target\":\"dev\","
+                      "\"safe_default_action\":\"deploy_dev_lane\"}}}");
     return strdup("null");
 }
 
@@ -875,7 +886,20 @@ static char *mock_operator_healthy_rpc(const char *method,
                       "\"canonical\":true,"
                       "\"soak_evidence\":false,"
                       "\"development\":false,"
-                      "\"restart_policy\":\"operator_gated\"}}");
+                      "\"restart_policy\":\"operator_gated\","
+                      "\"automation_restart_ok\":false,"
+                      "\"automation_deploy_ok\":false,"
+                      "\"requires_operator_confirmation\":true,"
+                      "\"deployment_safety\":{"
+                      "\"schema\":\"zcl.operator_deployment_safety.v1\","
+                      "\"schema_version\":1,"
+                      "\"automation_restart_ok\":false,"
+                      "\"automation_deploy_ok\":false,"
+                      "\"requires_operator_confirmation\":true,"
+                      "\"protects_public_endpoint\":true,"
+                      "\"preferred_deploy_target\":\"dev\","
+                      "\"safe_default_action\":"
+                      "\"observe_only_or_use_dev_lane\"}}}");
     if (strcmp(method, "milestone") == 0)
         return strdup("{\"schema\":\"zcl.milestone_status.v1\","
                       "\"api_version\":\"v1\","
@@ -930,7 +954,19 @@ static char *mock_operator_needed_rpc(const char *method,
                       "\"lane\":\"canonical\","
                       "\"canonical\":true,"
                       "\"development\":false,"
-                      "\"restart_policy\":\"operator_gated\"}}");
+                      "\"restart_policy\":\"operator_gated\","
+                      "\"automation_restart_ok\":false,"
+                      "\"automation_deploy_ok\":false,"
+                      "\"requires_operator_confirmation\":true,"
+                      "\"deployment_safety\":{"
+                      "\"schema\":\"zcl.operator_deployment_safety.v1\","
+                      "\"schema_version\":1,"
+                      "\"automation_restart_ok\":false,"
+                      "\"automation_deploy_ok\":false,"
+                      "\"requires_operator_confirmation\":true,"
+                      "\"preferred_deploy_target\":\"dev\","
+                      "\"safe_default_action\":"
+                      "\"observe_only_or_use_dev_lane\"}}}");
     return strdup("null");
 }
 
@@ -1005,6 +1041,18 @@ static int test_zcl_operator_summary_degraded_shape(void)
         ASSERT(json_get_bool(json_get(lane, "development")));
         ASSERT_STR_EQ(json_get_str(json_get(lane, "restart_policy")),
                       "frequent_deploy_ok");
+        ASSERT(json_get_bool(json_get(lane, "automation_restart_ok")));
+        ASSERT(json_get_bool(json_get(lane, "automation_deploy_ok")));
+        ASSERT(!json_get_bool(json_get(lane,
+                                       "requires_operator_confirmation")));
+        const struct json_value *safety =
+            json_get(lane, "deployment_safety");
+        ASSERT(safety && safety->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(safety, "schema")),
+                      "zcl.operator_deployment_safety.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(safety,
+                                            "safe_default_action")),
+                      "deploy_dev_lane");
 
         const struct json_value *tools =
             json_get(&root, "recommended_tools");
@@ -1070,6 +1118,17 @@ static int test_zcl_operator_summary_healthy_shape(void)
         ASSERT(json_get_bool(json_get(lane, "canonical")));
         ASSERT_STR_EQ(json_get_str(json_get(lane, "restart_policy")),
                       "operator_gated");
+        ASSERT(!json_get_bool(json_get(lane, "automation_restart_ok")));
+        ASSERT(!json_get_bool(json_get(lane, "automation_deploy_ok")));
+        ASSERT(json_get_bool(json_get(lane,
+                                      "requires_operator_confirmation")));
+        const struct json_value *safety =
+            json_get(lane, "deployment_safety");
+        ASSERT(safety && safety->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(safety, "schema")),
+                      "zcl.operator_deployment_safety.v1");
+        ASSERT(json_get_bool(json_get(safety,
+                                      "protects_public_endpoint")));
 
         const struct json_value *mirror = json_get(&root, "mirror");
         ASSERT(mirror != NULL);

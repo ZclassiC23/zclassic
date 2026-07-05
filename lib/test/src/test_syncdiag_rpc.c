@@ -1337,6 +1337,23 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(lane,
                                                 "restart_policy")),
                           "frequent_deploy_ok") == 0;
+        ok = ok && json_get_bool(json_get(lane,
+                                          "automation_restart_ok"));
+        ok = ok && json_get_bool(json_get(lane,
+                                          "automation_deploy_ok"));
+        ok = ok && !json_get_bool(json_get(lane,
+                                           "requires_operator_confirmation"));
+        const struct json_value *safety =
+            json_get(lane, "deployment_safety");
+        ok = ok && safety && safety->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(safety, "schema")),
+                          "zcl.operator_deployment_safety.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(safety,
+                                                "preferred_deploy_target")),
+                          "dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(safety,
+                                                "safe_default_action")),
+                          "deploy_dev_lane") == 0;
 
         json_free(&params);
         json_free(&result);
@@ -1468,6 +1485,9 @@ int test_syncdiag_rpc(void)
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.operator_lane.v1") != NULL;
+        ok = ok &&
+            find_object_with_str(schemas, "schema",
+                                 "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
 
         struct json_value build;
