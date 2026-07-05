@@ -248,10 +248,15 @@ selected snapshot is not newer than the lane height, unless
 `ZCL_LANE_RECOVERY_IMPORT_TIMEOUT` (default 1200 seconds).
 
 When lane RPC is reachable, `make lane-health --json` also consumes the native
-`agent` contract and exposes `agent_build_commit`,
+`agent` contract and exposes `agent_rpc_state`, `agent_build_commit`,
 `agent_contract_trusted`, `agent_status`, `agent_operator_needed`,
 `agent_primary_blocker`, `agent_next`, `agent_validation_pack_ok`, and
-`agent_validation_pack_detail`. A current native `agent` contract
+`agent_validation_pack_detail`. Agent calls use
+`ZCL_LANE_AGENT_TIMEOUT` (default 10 seconds), separate from the cheap generic
+RPC timeout. `agent_rpc_state` is `ok`, `timeout`, `error`, `empty`, or
+`not_called`; a timeout becomes `status=warn` with `reason=agent_timeout`
+unless a stronger condition-engine operator page is already active. A current
+native `agent` contract
 (`agent_contract_trusted=true`, which requires `build_commit`) with `blocked`
 or `operator_needed=true` makes the lane `status=fail` and clears role
 readiness, even if basic peer/height/listener checks still look fine. Older
@@ -260,6 +265,12 @@ themselves; lane health falls back to `condition_engine` operator-needed pages
 for those runtimes. This keeps the shell lane summary subordinate to the
 C-native API without letting stale wrapper-era responses hide or invent a
 validation-pack hold.
+
+`make deploy-dev` follows the same contract. Its height probe is only a sync
+sample (`SYNC OK`); the script prints `AGENT READY` only after the dev lane's
+native `agent` contract reports healthy and serving. A blocked, operator-needed,
+or failed validation-pack contract makes the deploy fail with the named blocker
+instead of falsely declaring the new binary healthy.
 
 ## Bootstrap Service Status
 

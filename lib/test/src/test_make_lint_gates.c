@@ -2311,6 +2311,12 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "zcl23-dev.service.d/90-build-identity.conf") != NULL);
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_COMMIT") != NULL);
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev") != NULL);
+        ASSERT(strstr(script, "probe_agent_contract") != NULL);
+        ASSERT(strstr(script, "ZCL_DEV_AGENT_TIMEOUT") != NULL);
+        ASSERT(strstr(script, "AGENT READY") != NULL);
+        ASSERT(strstr(script, "BLOCKED: agent status=") != NULL);
+        ASSERT(strstr(script, "SYNC OK") != NULL);
+        ASSERT(strstr(script, "HEALTHY:") == NULL);
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
         ASSERT(strstr(makefile,
                       "./tools/deploy_guard.sh canonical-deploy") != NULL);
@@ -2382,6 +2388,8 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_health, "forced_reindex_flag_present") != NULL);
         ASSERT(strstr(lane_health, "dev_booting_rpc_down") != NULL);
         ASSERT(strstr(lane_health, "ZCL_LANE_LAG_WARN") != NULL);
+        ASSERT(strstr(lane_health, "ZCL_LANE_AGENT_TIMEOUT") != NULL);
+        ASSERT(strstr(lane_health, "rpc_call_timeout") != NULL);
         ASSERT(strstr(lane_health, "ZCL_SOAK_LAG_WARN") != NULL);
         ASSERT(strstr(lane_health, "tip_lag_to_live") != NULL);
         ASSERT(strstr(lane_health, "getblockchaininfo") != NULL);
@@ -2395,6 +2403,9 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_health, "ZCL_LANE_HEALTH_SELFTEST") != NULL);
         ASSERT(strstr(lane_health, "json_first_bool_field") != NULL);
         ASSERT(strstr(lane_health, "agent_build_commit") != NULL);
+        ASSERT(strstr(lane_health, "agent_rpc_state") != NULL);
+        ASSERT(strstr(lane_health, "agent_timeout") != NULL);
+        ASSERT(strstr(lane_health, "inspect_agent_timeout") != NULL);
         ASSERT(strstr(lane_health, "agent_contract_trusted") != NULL);
         ASSERT(strstr(lane_health, "agent_operator_needed") != NULL);
         ASSERT(strstr(lane_health, "agent_primary_blocker") != NULL);

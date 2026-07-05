@@ -87,6 +87,78 @@ fi
 # Poll RPC, then confirm the height ADVANCES across two samples (or is already
 # at a peer's tip). A lane that never advances is a genuinely stuck bootstrap.
 CLI=(build/bin/zclassic-cli -datadir="$DEV_DATADIR" -rpcport=18252)
+
+json_first_string_field() {
+    local body="$1" key="$2" token
+    token="$(printf '%s\n' "$body" \
+        | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" 2>/dev/null \
+        | head -1 || true)"
+    [ -n "$token" ] || return 0
+    printf '%s\n' "$token" \
+        | sed -n "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"$/\1/p"
+}
+
+json_first_bool_field() {
+    local body="$1" key="$2" token
+    token="$(printf '%s\n' "$body" \
+        | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\\(true\\|false\\)" 2>/dev/null \
+        | head -1 || true)"
+    case "$token" in
+        *true) printf 1 ;;
+        *false) printf 0 ;;
+        *) printf null ;;
+    esac
+}
+
+probe_agent_contract() {
+    local timeout_s="${ZCL_DEV_AGENT_TIMEOUT:-10}"
+    local agent_json rc build status healthy serving operator_needed
+    local validation_pack_ok blocker next readiness
+
+    agent_json=""
+    if agent_json="$(timeout "$timeout_s" "${CLI[@]}" agent 2>/dev/null)"; then
+        if [ -z "$agent_json" ]; then
+            echo "[dev-lane] WARN: agent contract returned empty JSON; not declaring agent-ready"
+            return 0
+        fi
+    else
+        rc=$?
+        if [ "$rc" = "124" ]; then
+            echo "[dev-lane] WARN: agent contract timed out after ${timeout_s}s; not declaring agent-ready"
+        else
+            echo "[dev-lane] WARN: agent contract unavailable (rc=$rc); not declaring agent-ready"
+        fi
+        return 0
+    fi
+
+    build="$(json_first_string_field "$agent_json" "build_commit")"
+    status="$(json_first_string_field "$agent_json" "status")"
+    healthy="$(json_first_bool_field "$agent_json" "healthy")"
+    serving="$(json_first_bool_field "$agent_json" "serving")"
+    operator_needed="$(json_first_bool_field "$agent_json" "operator_needed")"
+    validation_pack_ok="$(json_first_bool_field "$agent_json" "validation_pack_ok")"
+    blocker="$(json_first_string_field "$agent_json" "primary_blocker")"
+    next="$(json_first_string_field "$agent_json" "next")"
+    readiness="$(json_first_string_field "$agent_json" "readiness_status")"
+
+    if [ "$operator_needed" = "1" ] ||
+       [ "$status" = "blocked" ] ||
+       [ "$validation_pack_ok" = "0" ]; then
+        echo "[dev-lane] BLOCKED: agent status=${status:-unknown} build=${build:-unknown} operator_needed=$operator_needed validation_pack_ok=$validation_pack_ok"
+        echo "[dev-lane] BLOCKED: primary_blocker=${blocker:-unknown}"
+        echo "[dev-lane] BLOCKED: next=${next:-zclassic23 healthcheck}"
+        exit 1
+    fi
+
+    if [ "$healthy" = "1" ] && [ "$serving" = "1" ]; then
+        echo "[dev-lane] AGENT READY: status=${status:-unknown} build=${build:-unknown} readiness=${readiness:-ok}"
+    else
+        echo "[dev-lane] NOTE: agent status=${status:-unknown} healthy=$healthy serving=$serving; not declaring agent-ready yet"
+        [ -n "$blocker" ] && echo "[dev-lane] NOTE: primary_blocker=$blocker"
+        [ -n "$next" ] && echo "[dev-lane] NOTE: next=$next"
+    fi
+}
+
 echo "[dev-lane] deployed $BUILD_COMMIT; verifying sync health..."
 h0=""; for i in $(seq 1 40); do
     h0="$("${CLI[@]}" getblockcount 2>/dev/null || true)"
@@ -100,12 +172,13 @@ else
     h1="$("${CLI[@]}" getblockcount 2>/dev/null || echo "$h0")"
     peer="$("${CLI[@]}" getpeerinfo 2>/dev/null | grep -oE '"(startingheight|synced_headers)": *[0-9]+' | grep -oE '[0-9]+' | sort -rn | head -1 || true)"
     if [ "${h1:-0}" -gt "${h0:-0}" ]; then
-        echo "[dev-lane] HEALTHY: height advancing ${h0} -> ${h1} (peer tip ~${peer:-?})"
+        echo "[dev-lane] SYNC OK: height advancing ${h0} -> ${h1} (peer tip ~${peer:-?})"
     elif [ -n "$peer" ] && [ "${h1:-0}" -ge $(( peer - 3 )) ]; then
-        echo "[dev-lane] HEALTHY: at tip ${h1} (peer tip ~${peer})"
+        echo "[dev-lane] SYNC OK: at tip ${h1} (peer tip ~${peer})"
     else
         echo "[dev-lane] NOTE: height ${h1} not advancing yet (peer tip ~${peer:-?}) — likely the cold-import reconcile; Restart=always will retry. Re-check: ${CLI[*]} getblockcount"
     fi
+    probe_agent_contract
 fi
 echo "[dev-lane] query it:  build/bin/zclassic-cli -datadir=$DEV_DATADIR -rpcport=18252 getblockcount"
 echo "[dev-lane] tail log:  tail -f $DEV_DATADIR/node.log"

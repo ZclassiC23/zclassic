@@ -36,6 +36,7 @@ done
 
 ZCL_CLI="${ZCL_CLI:-$REPO_ROOT/build/bin/zclassic-cli}"
 RPC_TIMEOUT="${ZCL_LANE_RPC_TIMEOUT:-3}"
+AGENT_RPC_TIMEOUT="${ZCL_LANE_AGENT_TIMEOUT:-10}"
 LAG_WARN="${ZCL_LANE_LAG_WARN:-10}"
 SOAK_LAG_WARN="${ZCL_SOAK_LAG_WARN:-$LAG_WARN}"
 
@@ -234,6 +235,13 @@ rpc_call() {
     timeout "$RPC_TIMEOUT" "$ZCL_CLI" -datadir="$datadir" -rpcport="$rpcport" "$@" 2>/dev/null
 }
 
+rpc_call_timeout() {
+    local timeout_s="$1" datadir="$2" rpcport="$3"
+    shift 3
+    [ -x "$ZCL_CLI" ] || return 1
+    timeout "$timeout_s" "$ZCL_CLI" -datadir="$datadir" -rpcport="$rpcport" "$@" 2>/dev/null
+}
+
 peer_count_from_json() {
     grep -o '"addr"[[:space:]]*:' 2>/dev/null | wc -l | tr -d ' '
 }
@@ -250,7 +258,7 @@ report_lane() {
     local active mainpid restarts start_ts mem_current mem_high mem_max mem_pressure
     local cmdline rpc_up height peers p2p_listening rpc_listening reindex
     local tip_lag status reason role_ready role_reason soak_eligible soak_reason
-    local agent_json agent_build_commit agent_contract_trusted
+    local agent_json agent_rpc_state agent_build_commit agent_contract_trusted
     local agent_status agent_operator_needed agent_primary_blocker
     local agent_next agent_validation_pack_ok agent_validation_pack_detail
     local agent_chain_serving_ready agent_work_ready
@@ -313,6 +321,7 @@ report_lane() {
     projection_state=""
     projection_deferred_reason=""
     agent_build_commit=""
+    agent_rpc_state="not_called"
     agent_contract_trusted=0
     agent_status=""
     agent_operator_needed="null"
@@ -347,8 +356,20 @@ report_lane() {
             chain_headers="$(json_int_field "$chaininfo_json" "headers")"
             initialblockdownload="$(json_bool_field "$chaininfo_json" "initialblockdownload")"
         fi
-        agent_json="$(rpc_call "$datadir" "$rpcport" agent || true)"
-        if [ -n "$agent_json" ]; then
+        agent_json=""
+        if agent_json="$(rpc_call_timeout "$AGENT_RPC_TIMEOUT" "$datadir" "$rpcport" agent)"; then
+            if [ -n "$agent_json" ]; then
+                agent_rpc_state="ok"
+            else
+                agent_rpc_state="empty"
+            fi
+        else
+            case "$?" in
+                124) agent_rpc_state="timeout" ;;
+                *) agent_rpc_state="error" ;;
+            esac
+        fi
+        if [ "$agent_rpc_state" = "ok" ]; then
             agent_build_commit="$(json_first_string_field "$agent_json" "build_commit")"
             [ -n "$agent_build_commit" ] && agent_contract_trusted=1
             agent_status="$(json_first_string_field "$agent_json" "status")"
@@ -449,6 +470,9 @@ report_lane() {
          [ "$condition_operator_needed_count" -gt 0 ]; then
         status="fail"
         reason="condition_operator_needed"
+    elif [ "$agent_rpc_state" = "timeout" ]; then
+        status="warn"
+        reason="agent_timeout"
     elif is_number "$peers" && [ "$peers" -lt 1 ]; then
         status="warn"
         reason="no_peers"
@@ -480,6 +504,8 @@ report_lane() {
     elif is_number "$condition_operator_needed_count" &&
          [ "$condition_operator_needed_count" -gt 0 ]; then
         recovery_hint="inspect_condition_engine"
+    elif [ "$agent_rpc_state" = "timeout" ]; then
+        recovery_hint="inspect_agent_timeout"
     fi
 
     if [ -z "$recovery_hint" ]; then
@@ -541,6 +567,8 @@ report_lane() {
         elif is_number "$condition_operator_needed_count" &&
              [ "$condition_operator_needed_count" -gt 0 ]; then
             soak_reason="condition_operator_needed"
+        elif [ "$agent_rpc_state" = "timeout" ]; then
+            soak_reason="agent_timeout"
         elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
             soak_reason="listener_missing"
         elif [ -z "$LIVE_REFERENCE_HEIGHT" ]; then
@@ -629,7 +657,7 @@ report_lane() {
     esac
 
     if [ "$JSON" = "1" ]; then
-        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"agent_build_commit":"%s","agent_contract_trusted":%s,"agent_status":"%s","agent_operator_needed":%s,"agent_primary_blocker":"%s","agent_next":"%s","agent_validation_pack_ok":%s,"agent_validation_pack_detail":"%s","height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","projection_height":%s,"projection_lag":%s,"projection_deferred":%s,"projection_state":"%s","projection_deferred_reason":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
+        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"agent_rpc_state":"%s","agent_build_commit":"%s","agent_contract_trusted":%s,"agent_status":"%s","agent_operator_needed":%s,"agent_primary_blocker":"%s","agent_next":"%s","agent_validation_pack_ok":%s,"agent_validation_pack_detail":"%s","height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","projection_height":%s,"projection_lag":%s,"projection_deferred":%s,"projection_state":"%s","projection_deferred_reason":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$unit")" \
             "$(json_escape "$datadir")" \
@@ -645,6 +673,7 @@ report_lane() {
             "$(json_number "$mem_max")" \
             "$(json_escape "$mem_pressure")" \
             "$(json_bool "$rpc_up")" \
+            "$(json_escape "$agent_rpc_state")" \
             "$(json_escape "$agent_build_commit")" \
             "$(json_bool "$agent_contract_trusted")" \
             "$(json_escape "$agent_status")" \
@@ -688,13 +717,14 @@ report_lane() {
             "$(json_escape "$status")" \
             "$(json_escape "$reason")"
     else
-        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s agent=%-8s agent_trusted=%s agent_op=%s agent_blocker=%s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s projection_h=%-8s projection_lag=%-8s projection_deferred=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
+        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s agent=%-8s agent_rpc=%-8s agent_trusted=%s agent_op=%s agent_blocker=%s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s projection_h=%-8s projection_lag=%-8s projection_deferred=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
             "$lane" "$status" "$reason" \
             "$([ "$role_ready" = "1" ] && printf yes || printf no)" \
             "$role_reason" \
             "$unit" "$active" "$mainpid" "$restarts" \
             "$([ "$rpc_up" = "1" ] && printf up || printf down)" \
             "${agent_status:-unknown}" \
+            "$agent_rpc_state" \
             "$([ "$agent_contract_trusted" = "1" ] && printf yes || printf no)" \
             "$([ "$agent_operator_needed" = "1" ] && printf yes || { [ "$agent_operator_needed" = "0" ] && printf no || printf n/a; })" \
             "${agent_primary_blocker:-none}" \
