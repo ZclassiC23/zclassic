@@ -2624,6 +2624,7 @@ static int t_native_agent_api_contract(void)
     int failures = 0;
     char *main_buf = NULL;
     char *event_buf = NULL;
+    char *agent_summary_buf = NULL;
     char *agent_ctrl_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_runtime_buf = NULL;
@@ -2632,6 +2633,7 @@ static int t_native_agent_api_contract(void)
     TEST("zclassic23 binary exposes native API and agent commands") {
         char main_path[PATH_MAX];
         char event_path[PATH_MAX];
+        char agent_summary_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_runtime_path[PATH_MAX];
@@ -2640,6 +2642,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(main_path, sizeof(main_path), "src/main.c") == 0);
         ASSERT(repo_path(event_path, sizeof(event_path),
                          "app/controllers/src/event_controller.c") == 0);
+        ASSERT(repo_path(agent_summary_path, sizeof(agent_summary_path),
+                         "app/controllers/src/event_agent_summary.c") == 0);
         ASSERT(repo_path(agent_ctrl_path, sizeof(agent_ctrl_path),
                          "app/controllers/src/agent_controller.c") == 0);
         ASSERT(repo_path(agent_iface_path, sizeof(agent_iface_path),
@@ -2654,6 +2658,7 @@ static int t_native_agent_api_contract(void)
                          "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
+        ASSERT(read_entire_file(agent_summary_path, &agent_summary_buf) == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
         ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
@@ -2691,7 +2696,16 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"milestone\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"refold\"") != NULL);
-        ASSERT(strstr(event_buf, "api_version\", \"v1\"") != NULL);
+        ASSERT(strstr(agent_summary_buf, "api_version\", \"v1\"") != NULL);
+        ASSERT(strstr(event_buf, "#include \"event_agent_summary.h\"") != NULL);
+        ASSERT(strstr(event_buf, "rpc_agent_summary") != NULL);
+        ASSERT(strstr(agent_summary_buf, "zcl.public_status.v1") != NULL);
+        ASSERT(strstr(agent_summary_buf, "agent_fast_collect") != NULL);
+        ASSERT(strstr(agent_summary_buf, "dl_get_stats") != NULL);
+        ASSERT(strstr(agent_summary_buf, "dl_get_throughput") != NULL);
+        ASSERT(strstr(agent_summary_buf, "sync_monitor_tip_advance_age")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
@@ -2816,6 +2830,7 @@ static int t_native_agent_api_contract(void)
     } _test_next:;
     free(main_buf);
     free(event_buf);
+    free(agent_summary_buf);
     free(agent_ctrl_buf);
     free(agent_iface_buf);
     free(agent_runtime_buf);

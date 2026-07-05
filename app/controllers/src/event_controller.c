@@ -11,6 +11,7 @@
 #include "controllers/agent_controller.h"
 #include "controllers/strong_params.h"
 #include "api_controller_internal.h"
+#include "event_agent_summary.h"
 #include "config/boot.h"
 #include "framework/condition.h"
 #include "services/node_health_service.h"
@@ -26,7 +27,6 @@
 #include "json/json.h"
 #include "rpc/server.h"
 #include "config/runtime.h"
-#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/clientversion.h"
@@ -478,168 +478,6 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
                      (int64_t)health.warning_count);
     json_push_kv(result, "checks", &checks);
     json_free(&checks);
-
-    return true;
-}
-
-static int agent_served_height(void)
-{
-    int64_t served = api_served_tip_height();
-    if (served < 0 || served > INT_MAX)
-        return 0;
-    return (int)served;
-}
-
-static bool rpc_agent_summary(const struct json_value *params, bool help,
-                              struct json_value *result)
-{
-    (void)params;
-    RPC_HELP(help, result,
-        "agent\n"
-        "\nReturn the compact first-check node summary used by REST "
-        "/api/v1/agent and MCP zcl_agent.\n"
-        "\nResult:\n"
-        "  { \"schema\":\"zcl.public_status.v1\", \"status\":\"healthy\", "
-        "\"height\":N, \"gap\":0, \"primary_blocker\":\"none\" }\n");
-
-    struct node_health_snapshot health = {0};
-    node_health_collect(&health, NULL, NULL);
-
-    int indexed_height = health.tip_height;
-    int height = agent_served_height();
-    int target = indexed_height > height ? indexed_height : height;
-    if (health.header_height > target)
-        target = health.header_height;
-    if (health.peer_best_height > target)
-        target = health.peer_best_height;
-    int gap = target > height ? target - height : 0;
-    int index_gap = indexed_height > height ? indexed_height - height : 0;
-    bool material_gap = gap > 1;
-
-    const char *status = "healthy";
-    const char *primary = "none";
-    const char *next = "none";
-    const char *summary = "node healthy at served frontier";
-    bool operator_needed = false;
-
-    if (!health.serving) {
-        status = "blocked";
-        primary = health.blocking_reason[0] ? health.blocking_reason
-                                            : "not_serving";
-        next = "zclassic23 healthcheck";
-        summary = health.blocking_reason[0]
-            ? "node has an active health blocker"
-            : "node is not serving";
-        operator_needed = true;
-    } else if (!health.has_peers) {
-        status = "blocked";
-        primary = "no_peers";
-        next = "zclassic23 getpeerinfo";
-        summary = "node has no connected peers";
-        operator_needed = true;
-    } else if (material_gap && (health.in_flight > 0 || health.queued > 0)) {
-        status = "catching_up";
-        primary = "chain_gap";
-        next = "zclassic23 downloadstats";
-        summary = "node is downloading blocks toward the best known tip";
-    } else if (material_gap) {
-        status = "degraded";
-        primary = "download_queue_idle";
-        next = "zclassic23 getsyncdiag";
-        summary = "node is behind the best known tip without active downloads";
-        operator_needed = true;
-    } else if (!health.healthy) {
-        status = "degraded";
-        primary = "healthcheck_unhealthy";
-        next = "zclassic23 healthcheck";
-        summary = "node health checks are degraded";
-        operator_needed = health.warning_count > 0;
-    }
-
-    json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.public_status.v1");
-    json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "status", status);
-    json_push_kv_bool(result, "healthy", strcmp(status, "healthy") == 0);
-    json_push_kv_bool(result, "serving", health.serving);
-    json_push_kv_bool(result, "operator_needed", operator_needed);
-    json_push_kv_str(result, "summary", summary);
-    json_push_kv_str(result, "primary_blocker", primary);
-    json_push_kv_str(result, "next", next);
-    agent_push_operator_lane_json(result, "operator_lane");
-    json_push_kv_int(result, "height", height);
-    json_push_kv_int(result, "served_height", height);
-    json_push_kv_int(result, "indexed_height", indexed_height);
-    json_push_kv_int(result, "header_height", health.header_height);
-    json_push_kv_int(result, "peer_best_height", health.peer_best_height);
-    json_push_kv_int(result, "target_height", target);
-    json_push_kv_int(result, "gap", gap);
-    json_push_kv_int(result, "index_gap", index_gap);
-    json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
-
-    struct json_value reducer = {0};
-    json_set_object(&reducer);
-    json_push_kv_int(&reducer, "log_head", health.log_head);
-    json_push_kv_int(&reducer, "log_head_gap", health.log_head_gap);
-    json_push_kv_int(&reducer, "tip_advance_age_seconds",
-                     health.tip_advance_age_seconds);
-    json_push_kv_bool(&reducer, "validation_pack_ok",
-                      health.validation_pack_ok);
-    json_push_kv_str(&reducer, "validation_pack_detail",
-                     health.validation_pack_detail);
-    json_push_kv(result, "reducer", &reducer);
-    json_free(&reducer);
-
-    struct json_value health_obj = {0};
-    json_set_object(&health_obj);
-    json_push_kv_int(&health_obj, "warning_count",
-                     (int64_t)health.warning_count);
-    json_push_kv_str(&health_obj, "warning_reasons",
-                     health.warning_reasons);
-    json_push_kv_int(&health_obj, "last_error_age_seconds",
-                     health.last_error_age_seconds);
-    json_push_kv_str(&health_obj, "last_error_type",
-                     health.last_error_type);
-    json_push_kv_str(&health_obj, "blocking_reason",
-                     health.blocking_reason);
-    json_push_kv(result, "health", &health_obj);
-    json_free(&health_obj);
-
-    struct json_value peers = {0};
-    json_set_object(&peers);
-    json_push_kv_int(&peers, "total", (int64_t)health.peer_count);
-    json_push_kv_bool(&peers, "has_peers", health.has_peers);
-    json_push_kv_int(&peers, "magicbean",
-                     (int64_t)health.magicbean_peer_count);
-    json_push_kv_int(&peers, "zclassic23",
-                     (int64_t)health.zclassic_c23_peer_count);
-    json_push_kv(result, "peers", &peers);
-    json_free(&peers);
-
-    struct json_value download = {0};
-    json_set_object(&download);
-    json_push_kv_int(&download, "requested",
-                     (int64_t)health.blocks_requested);
-    json_push_kv_int(&download, "received",
-                     (int64_t)health.blocks_received);
-    json_push_kv_int(&download, "timed_out",
-                     (int64_t)health.blocks_timed_out);
-    json_push_kv_int(&download, "in_flight", (int64_t)health.in_flight);
-    json_push_kv_int(&download, "queued", (int64_t)health.queued);
-    json_push_kv_int(&download, "bytes_received",
-                     (int64_t)health.download_bytes_received);
-    json_push_kv_real(&download, "mbps_avg", health.download_mbps_avg);
-    json_push_kv(result, "download", &download);
-    json_free(&download);
-
-    struct json_value services = {0};
-    json_set_object(&services);
-    json_push_kv_bool(&services, "tor_enabled", health.tor_enabled);
-    json_push_kv_bool(&services, "tor_ready", health.tor_ready);
-    json_push_kv_bool(&services, "onion_service_ready",
-                      health.onion_service_ready);
-    json_push_kv(result, "services", &services);
-    json_free(&services);
 
     return true;
 }
