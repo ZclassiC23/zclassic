@@ -23,6 +23,7 @@
 #include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "services/block_source_policy.h"
+#include "services/node_health_service.h"
 #include "services/invariant_sentinel.h"
 #include "services/gap_fill_service.h"
 #include "services/sync_monitor.h"
@@ -439,10 +440,10 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
 
     s->catchup_active = s->in_flight > 0 || s->queued > 0;
     s->catchup_stalled =
-        s->gap > 1 && s->catchup_active &&
+        s->gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS && s->catchup_active &&
         s->tip_advance_age_seconds >= AGENT_CATCHUP_STALL_SECS;
     s->download_dispatch_idle =
-        s->gap > 1 && s->queued > 0 && s->in_flight == 0;
+        s->gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS && s->queued > 0 && s->in_flight == 0;
     s->download_dispatch_stalled =
         s->download_dispatch_idle &&
         s->tip_advance_age_seconds >= AGENT_DISPATCH_IDLE_SECS;
@@ -459,8 +460,8 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         agent_fast_add_warning(s, "download_timeouts_overdue");
 
     s->healthy = s->serving && s->has_peers && !s->operator_needed &&
-                 s->gap <= 1 &&
-                 s->index_gap <= 1 &&
+                 s->gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
+                 s->index_gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                  (s->log_head_gap < 0 || s->log_head_gap <= 1);
 
     if (s->operator_needed) {
@@ -476,7 +477,8 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     } else if (s->download_dispatch_stalled) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "download_dispatch_idle");
-    } else if (s->gap > 1 && s->in_flight == 0 && s->queued == 0) {
+    } else if (s->gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
+               s->in_flight == 0 && s->queued == 0) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "download_queue_idle");
     } else if (s->log_head < 0) {
@@ -504,8 +506,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
 
     struct agent_fast_snapshot health;
     agent_fast_collect(&health);
-    bool material_gap = health.gap > 1;
-    bool material_index_gap = health.index_gap > 1;
+    bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
+    bool material_index_gap = health.index_gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
     const char *status = "healthy";
     const char *primary = "none";
@@ -790,8 +792,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_set_object(&services);
     json_push_kv_bool(&services, "tor_enabled", health.tor_enabled);
     json_push_kv_bool(&services, "tor_ready", health.tor_ready);
-    json_push_kv_bool(&services, "onion_service_ready",
-                      health.onion_service_ready);
+    json_push_kv_bool(&services, "onion_service_ready", health.onion_service_ready);
     json_push_kv(result, "services", &services);
     json_free(&services);
 

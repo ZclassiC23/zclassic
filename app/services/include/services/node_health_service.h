@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define ZCL_NODE_HEALTH_LAG_WARN_BLOCKS 10
+
 struct node_db;
 struct main_state;
 struct cac_decision;

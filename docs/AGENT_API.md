@@ -145,6 +145,11 @@ and 90% warn fallback. This is the first-call place to notice a lane that is
 still serving but approaching memory pressure, before reaching for shell-only
 systemd probes.
 
+The top-level status always reports exact `gap`, `index_gap`, and
+`target_height`, but it treats normal live-tip churn of up to 10 blocks as
+serving-health-compatible. Larger gaps still become `chain_gap` /
+`download_queue_idle` and can set `operator_needed`.
+
 `make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
 calls the running node's C-native `agentdeployguard` RPC
 (`zcl.agent_deploy_guard.v1`) when available and falls back to the systemd

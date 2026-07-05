@@ -435,7 +435,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     const char *status = "healthy";
     const char *primary = "none";
     const char *next_endpoint = "/api/v1/agent";
-    bool material_gap = gap > 1;
+    bool material_gap = gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
     const char *summary = "node healthy at served frontier";
     bool operator_needed = false;

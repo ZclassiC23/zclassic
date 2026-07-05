@@ -1599,36 +1599,38 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("api: public status treats one-block served gap as healthy... ");
+    printf("api: public status treats small served gap as healthy... ");
     {
         test_reset_shared_globals();
         struct main_state ms;
         struct connman cm = {0};
         struct net_address addr = {0};
         struct p2p_node *node = NULL;
-        struct block_index *blocks[4] = {0};
+        struct block_index *blocks[ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 3] = {0};
         struct cac_decision decision;
-        bool ok = api_test_build_chain(&ms, blocks, 4);
-        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, 3);
+        const int served = 1;
+        const int target = ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
+        bool ok = api_test_build_chain(&ms, blocks, target + 1);
+        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, target);
 
         memset(&decision, 0, sizeof(decision));
         decision.result = CAC_DECISION_USE_SOURCE;
         decision.selected_source = CAC_SOURCE_P2P;
-        decision.local_height = 2;
-        decision.target_height = 3;
-        decision.projection_height = 2;
+        decision.local_height = target;
+        decision.target_height = target;
+        decision.projection_height = target;
         struct cac_source_status *p2p =
             &decision.sources[CAC_SOURCE_P2P];
         p2p->source = CAC_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
-        p2p->height = 3;
+        p2p->height = target;
 
         if (ok) {
             (void)node;
-            reducer_frontier_provable_tip_set(2);
-            node_health_test_set_log_head_override(3);
+            reducer_frontier_provable_tip_set(served);
+            node_health_test_set_log_head_override(target);
             node_health_test_set_chain_advance_decision_override(&decision);
             sync_set_state(SYNC_IDLE, "api status reset");
             sync_set_state(SYNC_FINDING_PEERS, "api status");
@@ -1646,13 +1648,16 @@ int test_api(void)
             ok = ok && json_get_bool(json_get(&root, "healthy"));
             ok = ok && json_get_bool(json_get(&root, "serving"));
             ok = ok && !json_get_bool(json_get(&root, "operator_needed"));
-            ok = ok && json_get_int(json_get(&root, "height")) == 2;
-            ok = ok && json_get_int(json_get(&root, "target_height")) == 3;
-            ok = ok && json_get_int(json_get(&root, "gap")) == 1;
+            ok = ok && json_get_int(json_get(&root, "height")) == served;
+            ok = ok && json_get_int(json_get(&root, "target_height")) ==
+                target;
+            ok = ok && json_get_int(json_get(&root, "gap")) ==
+                target - served;
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "primary_blocker")),
                               "none") == 0;
-            ok = ok && json_get_int(json_get(&root, "served_height")) == 2;
+            ok = ok && json_get_int(json_get(&root, "served_height")) ==
+                served;
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "source_projection")),
                               "served_tip") == 0;
@@ -1745,29 +1750,31 @@ int test_api(void)
         struct connman cm;
         struct net_address addr;
         struct p2p_node *node = NULL;
-        struct block_index *blocks[4] = {0};
+        struct block_index *blocks[ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 3] = {0};
         struct cac_decision decision;
-        bool ok = api_test_build_chain(&ms, blocks, 4);
-        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, 3);
+        const int served = 1;
+        const int target = ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 2;
+        bool ok = api_test_build_chain(&ms, blocks, target + 1);
+        ok = ok && api_test_init_connman_peer(&cm, &addr, &node, target);
 
         memset(&decision, 0, sizeof(decision));
         decision.result = CAC_DECISION_USE_SOURCE;
         decision.selected_source = CAC_SOURCE_P2P;
-        decision.local_height = 3;
-        decision.target_height = 3;
-        decision.projection_height = 3;
+        decision.local_height = target;
+        decision.target_height = target;
+        decision.projection_height = target;
         struct cac_source_status *p2p =
             &decision.sources[CAC_SOURCE_P2P];
         p2p->source = CAC_SOURCE_P2P;
         p2p->available = true;
         p2p->healthy = true;
         p2p->selectable = true;
-        p2p->height = 3;
+        p2p->height = target;
 
         if (ok) {
             (void)node;
-            reducer_frontier_provable_tip_set(1);
-            node_health_test_set_log_head_override(3);
+            reducer_frontier_provable_tip_set(served);
+            node_health_test_set_log_head_override(target);
             node_health_test_set_chain_advance_decision_override(&decision);
             sync_set_state(SYNC_IDLE, "api status reset");
             sync_set_state(SYNC_FINDING_PEERS, "api status");
@@ -1783,13 +1790,16 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(&root, "status")),
                               "degraded") == 0;
             ok = ok && json_get_bool(json_get(&root, "operator_needed"));
-            ok = ok && json_get_int(json_get(&root, "height")) == 1;
-            ok = ok && json_get_int(json_get(&root, "target_height")) == 3;
-            ok = ok && json_get_int(json_get(&root, "gap")) == 2;
+            ok = ok && json_get_int(json_get(&root, "height")) == served;
+            ok = ok && json_get_int(json_get(&root, "target_height")) ==
+                target;
+            ok = ok && json_get_int(json_get(&root, "gap")) ==
+                target - served;
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "primary_blocker")),
                               "download_queue_idle") == 0;
-            ok = ok && json_get_int(json_get(&root, "served_height")) == 1;
+            ok = ok && json_get_int(json_get(&root, "served_height")) ==
+                served;
             ok = ok && strcmp(json_get_str(json_get(&root,
                                                     "source_projection")),
                               "served_tip") == 0;

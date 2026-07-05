@@ -246,6 +246,82 @@ int test_node_health_service(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("node_health_service: small header gap stays serving healthy... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip, header;
+        struct uint256 h_tip = {0}, h_hdr = {0};
+        const int tip_height = 200;
+        const int header_height =
+            tip_height + ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
+
+        memset(&health, 0, sizeof(health));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        memset(&tip, 0, sizeof(tip));
+        memset(&header, 0, sizeof(header));
+        main_state_init(&ms);
+        net_manager_init(&cm.manager);
+        block_index_init(&tip);
+        block_index_init(&header);
+
+        h_tip.data[0] = 3;
+        h_hdr.data[0] = 4;
+        tip.phashBlock = &h_tip;
+        tip.nHeight = tip_height;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        header.phashBlock = &h_hdr;
+        header.nHeight = header_height;
+        header.pprev = &tip;
+        header.nTime = tip.nTime;
+        bool ok = active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &header;
+
+        cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes),
+                                      "test_nodes");
+        ok = ok && (cm.manager.nodes != NULL);
+        node = p2p_node_create(&cm.manager, ZCL_INVALID_SOCKET, &addr,
+                               "small-gap-peer", false);
+        ok = ok && (node != NULL);
+        if (ok) {
+            node->starting_height = header_height;
+            node->state = PEER_HANDSHAKE_COMPLETE;
+            node->services = NODE_NETWORK;
+            cm.manager.nodes[0] = node;
+            cm.manager.num_nodes = 1;
+            rpc_net_set_connman(&cm);
+            node_health_test_set_log_head_override(header_height);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced;
+            ok = ok && health.has_peers;
+            ok = ok && health.healthy;
+            ok = ok && health.serving;
+            ok = ok && health.tip_height == tip_height;
+            ok = ok && health.header_height == header_height;
+            ok = ok && health.tip_lag == ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
+            ok = ok && health.degraded_reason[0] == '\0';
+            ok = ok && health.blocking_reason[0] == '\0';
+        }
+
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("node_health_service: reducer log-head gap degrades health... ");
     {
         struct node_health_snapshot health;

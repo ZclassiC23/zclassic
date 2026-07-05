@@ -29,6 +29,7 @@
 #include "models/database.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
+#include "services/node_health_service.h"
 #include "services/sync_monitor.h"
 #include "validation/mirror_consensus.h"
 #include "event/event.h"
@@ -1718,6 +1719,9 @@ int test_syncdiag_rpc(void)
         struct rpc_table tbl;
         struct json_value params;
         struct json_value result;
+        const int served_height = ZCL_NODE_HEALTH_LAG_WARN_BLOCKS + 10;
+        const int projection_height = 5;
+        const int projection_lag = served_height - projection_height;
 
         chain_params_select(CHAIN_MAIN);
         memset(&cm, 0, sizeof(cm));
@@ -1734,7 +1738,7 @@ int test_syncdiag_rpc(void)
         block_index_init(&tip);
         syncdiag_set_hash(&h_tip, 0x71);
         tip.phashBlock = &h_tip;
-        tip.nHeight = 10;
+        tip.nHeight = served_height;
         tip.nTime = (uint32_t)platform_time_wall_time_t();
         tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
         ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
@@ -1744,13 +1748,13 @@ int test_syncdiag_rpc(void)
             syncdiag_add_peer(&cm, 46, false, PEER_HANDSHAKE_COMPLETE);
         ok = ok && peer != NULL;
         if (peer)
-            peer->starting_height = 10;
+            peer->starting_height = served_height;
 
         memset(blk.hash, 0xA5, sizeof(blk.hash));
         memset(blk.prev_hash, 0x5A, sizeof(blk.prev_hash));
         memset(blk.merkle_root, 0xC3, sizeof(blk.merkle_root));
         memset(blk.nonce, 0x3C, sizeof(blk.nonce));
-        blk.height = 5;
+        blk.height = projection_height;
         blk.version = 4;
         blk.time = 1700000000;
         blk.bits = 0x1d00ffff;
@@ -1773,7 +1777,7 @@ int test_syncdiag_rpc(void)
             set_rpc_warmup_finished();
         rpc_net_set_connman(&cm);
         sync_monitor_set_context(&cm, dm, &ms);
-        reducer_frontier_provable_tip_set(10);
+        reducer_frontier_provable_tip_set(served_height);
         sync_set_state(SYNC_IDLE, "agent projection lag");
 
         json_init(&params);
@@ -1792,14 +1796,21 @@ int test_syncdiag_rpc(void)
                           "zclassic23 dumpstate chain_advance_coordinator")
                           == 0;
         ok = ok && !json_get_bool(json_get(&result, "operator_needed"));
-        ok = ok && json_get_int(json_get(&result, "served_height")) == 10;
-        ok = ok && json_get_int(json_get(&result, "indexed_height")) == 5;
-        ok = ok && json_get_int(json_get(&result, "index_gap")) == 5;
+        ok = ok && json_get_int(json_get(&result, "served_height")) ==
+            served_height;
+        ok = ok && json_get_int(json_get(&result, "indexed_height")) ==
+            projection_height;
+        ok = ok && json_get_int(json_get(&result, "index_gap")) ==
+            projection_lag;
         ok = ok && indexer && indexer->type == JSON_OBJ;
-        ok = ok && json_get_int(json_get(indexer, "height")) == 5;
-        ok = ok && json_get_int(json_get(indexer, "projection_height")) == 5;
-        ok = ok && json_get_int(json_get(indexer, "lag")) == 5;
-        ok = ok && json_get_int(json_get(indexer, "projection_lag")) == 5;
+        ok = ok && json_get_int(json_get(indexer, "height")) ==
+            projection_height;
+        ok = ok && json_get_int(json_get(indexer, "projection_height")) ==
+            projection_height;
+        ok = ok && json_get_int(json_get(indexer, "lag")) ==
+            projection_lag;
+        ok = ok && json_get_int(json_get(indexer, "projection_lag")) ==
+            projection_lag;
         ok = ok && json_get_bool(json_get(indexer, "projection_deferred"));
         ok = ok && strcmp(json_get_str(json_get(indexer,
                                                 "projection_state")),

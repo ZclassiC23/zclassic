@@ -575,10 +575,11 @@ void node_health_collect(struct node_health_snapshot *snapshot,
     } else if (!snapshot->synced) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "sync_state_%s", sync_state_name(snapshot->sync_state));
-    } else if (snapshot->header_height > snapshot->tip_height + 1) {
+    } else if (snapshot->header_height >
+               snapshot->tip_height + ZCL_NODE_HEALTH_LAG_WARN_BLOCKS) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "headers_ahead_%d", snapshot->header_height - snapshot->tip_height);
-    } else if (snapshot->tip_lag > 1) {
+    } else if (snapshot->tip_lag > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS) {
         snprintf(snapshot->degraded_reason, sizeof(snapshot->degraded_reason),
                  "tip_lag_%d", snapshot->tip_lag);
     } else if (snapshot->log_head_gap > 1) {
@@ -618,9 +619,10 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                         snapshot->tip_height >= 0 &&
                         snapshot->header_height >= 0 &&
                         snapshot->peer_best_height >= 0 &&
-                        snapshot->header_height <= snapshot->tip_height + 1 &&
+                        snapshot->header_height <= snapshot->tip_height +
+                            ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                         snapshot->tip_lag >= 0 &&
-                        snapshot->tip_lag <= 1 &&
+                        snapshot->tip_lag <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                         snapshot->log_head >= 0 &&
                         snapshot->log_head_gap <= 1;
 
