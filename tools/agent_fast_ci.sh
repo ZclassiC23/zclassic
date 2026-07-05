@@ -178,6 +178,14 @@ select_test_groups() {
                 add_group "peer_lifecycle"
                 matched=1
                 ;;
+            lib/net/include/net/protocol.h)
+                add_group "net"
+                matched=1
+                ;;
+            lib/test/src/test_net.c)
+                add_group "net"
+                matched=1
+                ;;
             app/models/src/peer.c|app/models/include/models/peer.h|lib/test/src/test_models_app.c)
                 add_group "models"
                 matched=1

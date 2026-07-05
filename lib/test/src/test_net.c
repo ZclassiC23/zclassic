@@ -2103,6 +2103,15 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("bootstrap service bit matches zclassicd beta6... ");
+    {
+        bool ok = (NODE_BOOTSTRAP == (1 << 24));
+        ok = ok && ((NODE_BOOTSTRAP & NODE_NETWORK) == 0);
+        ok = ok && ((NODE_BOOTSTRAP & NODE_ZCL23) == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("mainnet magic bytes... ");
     {
         chain_params_select(CHAIN_MAIN);

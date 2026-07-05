@@ -22,6 +22,7 @@
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
@@ -472,6 +473,130 @@ int test_syncdiag_rpc(void)
         json_free(&result);
         rpc_net_set_connman(NULL);
         msg_version_clear_external_ip_for_test();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bootstrapstatus: exposes versioned P2P and beta6 "
+           "snapshot contract (RED)... ");
+    {
+        struct connman cm;
+        struct node_signals sigs;
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+
+        chain_params_select(CHAIN_MAIN);
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, chain_params_get(), &sigs);
+        if (ok) {
+            cm.manager.listen_sockets =
+                zcl_calloc(1, sizeof(*cm.manager.listen_sockets),
+                           "syncdiag_listen_socket");
+            ok = cm.manager.listen_sockets != NULL;
+        }
+        if (ok) {
+            cm.manager.listen_sockets[0].socket = ZCL_INVALID_SOCKET;
+            cm.manager.num_listen_sockets = 1;
+            cm.manager.listen_sockets_cap = 1;
+        }
+        reducer_frontier_provable_tip_set(3170000);
+        msg_version_clear_external_ip_for_test();
+        msg_version_set_external_ip("203.0.113.7:8033", 8033);
+
+        if (ok) {
+            struct net_address addr;
+            struct net_addr src;
+            syncdiag_set_ipv4(&addr, 8, 8, 8, 8, 8033);
+            addr.nServices = NODE_NETWORK;
+            net_addr_init(&src);
+            unsigned char src_ip[4] = {1, 2, 3, 4};
+            net_addr_set_ipv4(&src, src_ip);
+            ok = addrman_add(&cm.manager.addrman, &addr, &src, 0);
+        }
+
+        rpc_table_init(&tbl);
+        register_net_rpc_commands(&tbl);
+        rpc_net_set_connman(&cm);
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "bootstrapstatus",
+                                     &params, &result);
+
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.bootstrap_status.v1") == 0;
+        ok = ok && json_get_int(json_get(&result,
+                                          "schema_version")) == 1;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "serving_p2p_bootstrap"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "serving_addr_bootstrap"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "serving_snapshot_bootstrap"));
+        ok = ok && json_get_bool(json_get(&result,
+            "zclassicd_beta6_p2p_compatible"));
+        ok = ok && !json_get_bool(json_get(&result,
+            "zclassicd_beta6_fast_bootstrap_compatible"));
+
+        const struct json_value *p2p = json_get(&result, "p2p");
+        ok = ok && p2p && p2p->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(p2p, "protocolversion")) ==
+                  PROTOCOL_VERSION;
+        ok = ok && json_get_int(json_get(p2p,
+                                          "minimum_peer_protocol")) ==
+                  MIN_PEER_PROTO_VERSION;
+        ok = ok && json_get_bool(json_get(p2p, "node_network"));
+        ok = ok && json_get_bool(json_get(p2p, "node_zclassic23"));
+        ok = ok && !json_get_bool(json_get(p2p, "node_bootstrap"));
+        ok = ok && json_get_int(json_get(p2p,
+                                          "advertised_start_height")) ==
+                  3170000;
+
+        const struct json_value *addrman = json_get(&result, "addrman");
+        ok = ok && addrman && addrman->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(addrman, "entries")) == 1;
+        ok = ok && json_get_bool(json_get(addrman,
+                                          "addr_relay_ready"));
+
+        const struct json_value *legacy =
+            json_get(&result, "legacy_p2p_bootstrap");
+        ok = ok && legacy && legacy->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(legacy, "serving"));
+        ok = ok && json_array_has_str(json_get(legacy, "messages"),
+                                      "getheaders");
+        ok = ok && json_array_has_str(json_get(legacy, "messages"),
+                                      "getaddr");
+
+        const struct json_value *beta6 =
+            json_get(&result, "beta6_snapshot_bootstrap");
+        ok = ok && beta6 && beta6->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(beta6,
+                                                "required_service_bit")),
+                          "NODE_BOOTSTRAP") == 0;
+        ok = ok && json_get_int(json_get(beta6,
+                                          "required_service_bit_value")) ==
+                  NODE_BOOTSTRAP;
+        ok = ok && !json_get_bool(json_get(beta6, "advertised"));
+        ok = ok && !json_get_bool(json_get(beta6, "serving"));
+        ok = ok && json_array_has_str(json_get(beta6, "messages"),
+                                      "getbsman");
+        ok = ok && json_array_has_str(json_get(beta6, "messages"),
+                                      "getbschk");
+
+        ok = ok && json_array_has_str(json_get(&result, "blockers"),
+                                      "beta6_NODE_BOOTSTRAP_not_advertised");
+
+        json_free(&params);
+        json_free(&result);
+        rpc_net_set_connman(NULL);
+        msg_version_clear_external_ip_for_test();
+        reducer_frontier_provable_tip_reset();
+        connman_free(&cm);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     109  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     110  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -59,7 +59,8 @@
                                  * +1 native milestone status: zcl_milestone
                                  * +1 native refold readiness: zcl_refold_status
                                  * +4 agent API tools: map, impact, contracts,
-                                 *   build */
+                                 *   build
+                                 * +1 net bootstrapstatus */
 #define EXPECTED_OPS        45  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
@@ -84,8 +85,9 @@
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
                                  * + zcl_waitforheight + zcl_waitforhalt
                                  *   + zcl_waitforblocker (wait tools) */
-#define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
-                                 * + zcl_onion_health (wave 6 #7) */
+#define EXPECTED_NET        10  /* + zcl_peer_report (wave 4 #5),
+                                 * + zcl_onion_health (wave 6 #7),
+                                 * + zcl_bootstrapstatus */
 #define EXPECTED_WALLET     20
 #define EXPECTED_APP        16
 #define EXPECTED_HEADROOM   32
@@ -128,6 +130,19 @@ static bool is_known_domain(const char *d)
 static bool contains(const char *haystack, const char *needle)
 {
     return haystack && needle && strstr(haystack, needle) != NULL;
+}
+
+static bool json_array_has_str(const struct json_value *arr,
+                               const char *value)
+{
+    if (!arr || arr->type != JSON_ARR || !value)
+        return false;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *child = json_at(arr, i);
+        if (child && strcmp(json_get_str(child), value) == 0)
+            return true;
+    }
+    return false;
 }
 
 static bool mcp_test_exec_sql(sqlite3 *db, const char *sql)
@@ -222,7 +237,7 @@ static int test_chain_domain_count(void)
 static int test_net_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: net domain has 9 tools") {
+    TEST("controllers: net domain has 10 tools") {
         register_all();
         size_t n = count_by_domain("net");
         if (n != EXPECTED_NET) {
@@ -392,7 +407,8 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_agent_build",
             "zcl_milestone", "zcl_refold_status", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
-            "zcl_peers", "zcl_networkinfo", "zcl_onion_status",
+            "zcl_peers", "zcl_networkinfo", "zcl_bootstrapstatus",
+            "zcl_onion_status",
             "zcl_balance", "zcl_send", "zcl_getnewaddress",
             "zcl_z_getnewaddress",
             "zcl_name_resolve", "zcl_msg_send",
@@ -1767,6 +1783,26 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"localaddresses\":[{\"address\":\"203.0.113.7\","
                       "\"port\":8033,\"score\":1}],"
                       "\"listening\":true}");
+    if (strcmp(method, "bootstrapstatus") == 0)
+        return strdup("{\"schema\":\"zcl.bootstrap_status.v1\","
+                      "\"schema_version\":1,"
+                      "\"serving_p2p_bootstrap\":true,"
+                      "\"serving_snapshot_bootstrap\":false,"
+                      "\"zclassicd_beta6_p2p_compatible\":true,"
+                      "\"zclassicd_beta6_fast_bootstrap_compatible\":false,"
+                      "\"beta6_snapshot_bootstrap\":{"
+                      "\"required_service_bit\":\"NODE_BOOTSTRAP\","
+                      "\"required_service_bit_value\":16777216,"
+                      "\"advertised\":false,"
+                      "\"serving\":false,"
+                      "\"current_blocker\":\"NODE_BOOTSTRAP service not implemented in zclassic23\","
+                      "\"messages\":[\"getbsman\",\"bsman\",\"getbschk\","
+                      "\"bschk\",\"getbspman\",\"bspman\",\"getbspchk\","
+                      "\"bspchk\"]},"
+                      "\"legacy_p2p_bootstrap\":{\"serving\":true,"
+                      "\"messages\":[\"version\",\"verack\",\"getheaders\","
+                      "\"headers\",\"getdata\",\"block\",\"getaddr\","
+                      "\"addr\"]}}");
     return strdup("null");
 }
 
@@ -1818,6 +1854,59 @@ static int test_zcl_networkinfo_exposes_reachability_fields(void)
         ASSERT(json_get_int(json_get(json_at(sources, 0), "timeout")) == 1);
         ASSERT_STR_EQ(json_get_str(json_get(json_at(sources, 1), "source")),
                       "addrman");
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_bootstrapstatus_exposes_beta6_contract(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_bootstrapstatus exposes beta6 contract") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_networkinfo_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_bootstrapstatus", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.bootstrap_status.v1");
+        ASSERT(json_get_bool(json_get(&root,
+                                      "serving_p2p_bootstrap")));
+        ASSERT(!json_get_bool(json_get(&root,
+                                       "serving_snapshot_bootstrap")));
+        ASSERT(json_get_bool(json_get(&root,
+                                      "zclassicd_beta6_p2p_compatible")));
+        ASSERT(!json_get_bool(json_get(&root,
+            "zclassicd_beta6_fast_bootstrap_compatible")));
+
+        const struct json_value *beta6 =
+            json_get(&root, "beta6_snapshot_bootstrap");
+        ASSERT(beta6 && beta6->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(beta6,
+                                            "required_service_bit")),
+                      "NODE_BOOTSTRAP");
+        ASSERT(json_get_int(json_get(beta6,
+                                     "required_service_bit_value")) ==
+               16777216);
+        ASSERT(!json_get_bool(json_get(beta6, "advertised")));
+        ASSERT(contains(json_get_str(json_get(beta6,
+                                              "current_blocker")),
+                        "NODE_BOOTSTRAP"));
+        ASSERT(json_array_has_str(json_get(beta6, "messages"),
+                                  "getbsman"));
+        ASSERT(json_array_has_str(json_get(beta6, "messages"),
+                                  "getbschk"));
+
         json_free(&root);
         json_free(&args);
         free(body);
@@ -2496,6 +2585,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_kpi_invalid_child_stays_parseable();
     failures += test_zcl_syncdiag_invalid_children_stay_parseable();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
+    failures += test_zcl_bootstrapstatus_exposes_beta6_contract();
     failures += test_meta_tools_in_ops_domain();
     failures += test_zcl_logtail_handles_null_eventlog_rpc();
     failures += test_tools_list_json_well_formed();

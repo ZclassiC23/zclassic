@@ -33,6 +33,29 @@ diagnostics registry and become reachable through `zcl_state`. Expensive
 development proof state belongs in a named background quality lane with a JSON
 verdict, not in an untracked terminal scrollback.
 
+## Bootstrap Service Status
+
+Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a
+zclassic23 node is helping fresh peers bootstrap. The response is versioned as
+`zcl.bootstrap_status.v1` and separates two surfaces:
+
+- `legacy_p2p_bootstrap`: ordinary full-node serving over `version`,
+  `getheaders`, `getdata`, `getaddr`, and related P2P messages. This is the
+  path used by zclassicd when its beta6 snapshot bootstrap is disabled with
+  `-bootstrap=0`, or after its snapshot stage has completed.
+- `beta6_snapshot_bootstrap`: the zclassicd v2.1.2-beta6 fast-bootstrap
+  snapshot protocol. A compatible server must advertise `NODE_BOOTSTRAP`
+  (`1 << 24`) and answer `getbsman/bsman`, `getbschk/bschk`,
+  `getbspman/bspman`, and `getbspchk/bspchk`. zclassic23 must not advertise
+  that bit until the matching C service is implemented.
+
+The key booleans are `serving_p2p_bootstrap`,
+`serving_addr_bootstrap`, `serving_snapshot_bootstrap`,
+`zclassicd_beta6_p2p_compatible`, and
+`zclassicd_beta6_fast_bootstrap_compatible`. `blockers[]` names missing
+requirements such as `not_listening`, `provable_tip_not_published`, or
+`beta6_NODE_BOOTSTRAP_not_advertised`.
+
 ## Build loop
 
 This is a C23 project, so the edit loop should compile only what changed.

@@ -7,9 +7,12 @@
 #include "util/log_macros.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "net/connman.h"
+#include "net/fast_sync.h"
 #include "net/peer_lifecycle.h"
+#include "net/protocol.h"
 #include "net/version.h"
 #include "util/clientversion.h"
 #include <arpa/inet.h>
@@ -21,6 +24,25 @@
 
 struct network_context {
     struct connman *connman;
+};
+
+#define BOOTSTRAP_STATUS_SCHEMA "zcl.bootstrap_status.v1"
+#define BOOTSTRAP_STATUS_SCHEMA_VERSION 1
+#define ZCLASSICD_BETA6_LABEL "zclassicd v2.1.2-beta6"
+
+struct network_counts {
+    size_t connections;
+    int inbound;
+    int outbound;
+    int handshaked;
+    int inbound_handshaked;
+    int outbound_handshaked;
+    int legacy_compatible;
+    int zcl23;
+    size_t listen_socket_count;
+    uint64_t local_services;
+    size_t addrman_entries;
+    struct addrman_bucket_stats addrman_stats;
 };
 
 static struct network_context g_network_ctx = {0};
@@ -38,6 +60,93 @@ void rpc_net_set_connman(struct connman *cm)
 struct connman *rpc_net_get_connman(void)
 {
     return network_ctx()->connman;
+}
+
+static void network_counts_collect(struct connman *cm,
+                                   struct network_counts *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!cm)
+        return;
+
+    out->connections = connman_get_node_count(cm);
+    out->listen_socket_count = cm->manager.num_listen_sockets;
+    out->local_services = cm->manager.local_services;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *node = cm->manager.nodes[i];
+        if (!node || node->disconnect)
+            continue;
+        if (node->inbound)
+            out->inbound++;
+        else
+            out->outbound++;
+        if (node->state >= PEER_HANDSHAKE_COMPLETE) {
+            bool is_legacy = false, is_z23 = false;
+            out->handshaked++;
+            if (node->inbound)
+                out->inbound_handshaked++;
+            else
+                out->outbound_handshaked++;
+            msg_version_classify_peer(node->sub_ver, node->services,
+                                      &is_legacy, &is_z23);
+            if (is_legacy)
+                out->legacy_compatible++;
+            if (is_z23)
+                out->zcl23++;
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+
+    zcl_mutex_lock(&cm->manager.addrman.cs);
+    out->addrman_entries = addrman_size(&cm->manager.addrman);
+    addrman_get_bucket_stats(&cm->manager.addrman,
+                             &out->addrman_stats);
+    zcl_mutex_unlock(&cm->manager.addrman.cs);
+}
+
+static void json_push_str_array(struct json_value *obj, const char *key,
+                                const char *const *items, size_t count)
+{
+    struct json_value arr = {0};
+    json_set_array(&arr);
+    for (size_t i = 0; i < count; i++) {
+        struct json_value item = {0};
+        json_set_str(&item, items[i]);
+        json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    json_push_kv(obj, key, &arr);
+    json_free(&arr);
+}
+
+static void json_push_localaddresses(struct json_value *obj,
+                                     const char *key,
+                                     const char *ext_ip,
+                                     uint16_t ext_port)
+{
+    struct json_value localaddrs = {0};
+    json_set_array(&localaddrs);
+    if (ext_ip && ext_ip[0] != '\0' && ext_port != 0) {
+        struct json_value entry = {0};
+        json_set_object(&entry);
+        json_push_kv_str(&entry, "address", ext_ip);
+        json_push_kv_int(&entry, "port", ext_port);
+        json_push_kv_int(&entry, "score", 1);
+        json_push_back(&localaddrs, &entry);
+        json_free(&entry);
+    }
+    json_push_kv(obj, key, &localaddrs);
+    json_free(&localaddrs);
+}
+
+static void json_push_string_item(struct json_value *arr, const char *value)
+{
+    struct json_value item = {0};
+    json_set_str(&item, value);
+    json_push_back(arr, &item);
+    json_free(&item);
 }
 
 static bool addnode_is_connected(struct connman *cm, int addnode_index)
@@ -124,18 +233,13 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
 
     struct network_context *ctx = network_ctx();
-    size_t conns = ctx->connman ? connman_get_node_count(ctx->connman) : 0;
-    int inbound = 0, outbound = 0, handshaked = 0;
-    int inbound_handshaked = 0, outbound_handshaked = 0;
-    int legacy_compatible = 0, zcl23 = 0;
-    size_t listen_socket_count = ctx->connman
-        ? ctx->connman->manager.num_listen_sockets
-        : 0;
-    json_push_kv_int(result, "connections", (int64_t)conns);
+    struct network_counts counts;
+    network_counts_collect(ctx->connman, &counts);
+    json_push_kv_int(result, "connections", (int64_t)counts.connections);
     json_push_kv_int(result, "localservices",
-                     ctx->connman ? (int64_t)ctx->connman->manager.local_services : 0);
+                     (int64_t)counts.local_services);
     json_push_kv_int(result, "advertised_services",
-                     ctx->connman ? (int64_t)ctx->connman->manager.local_services : 0);
+                     (int64_t)counts.local_services);
 
     struct json_value networks = {0};
     json_set_array(&networks);
@@ -144,66 +248,222 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
 
     json_push_kv_real(result, "relayfee", 0.00000100);
 
-    struct json_value localaddrs = {0};
-    json_set_array(&localaddrs);
-    char ext_ip[INET_ADDRSTRLEN];
+    char ext_ip[INET_ADDRSTRLEN] = {0};
     uint16_t ext_port = 0;
-    if (msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port)) {
-        struct json_value entry = {0};
-        json_set_object(&entry);
-        json_push_kv_str(&entry, "address", ext_ip);
-        json_push_kv_int(&entry, "port", ext_port);
-        json_push_kv_int(&entry, "score", 1);
-        json_push_back(&localaddrs, &entry);
-        json_free(&entry);
-    }
-    json_push_kv(result, "localaddresses", &localaddrs);
-    json_free(&localaddrs);
+    msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port);
+    json_push_localaddresses(result, "localaddresses", ext_ip, ext_port);
 
-    if (ctx->connman) {
-        zcl_mutex_lock(&ctx->connman->manager.cs_nodes);
-        for (size_t i = 0; i < ctx->connman->manager.num_nodes; i++) {
-            struct p2p_node *node = ctx->connman->manager.nodes[i];
-            if (!node || node->disconnect) continue;
-            if (node->inbound) inbound++; else outbound++;
-            if (node->state >= PEER_HANDSHAKE_COMPLETE) {
-                bool is_legacy = false, is_z23 = false;
-                handshaked++;
-                if (node->inbound) inbound_handshaked++;
-                else outbound_handshaked++;
-                msg_version_classify_peer(node->sub_ver, node->services,
-                                          &is_legacy, &is_z23);
-                if (is_legacy) legacy_compatible++;
-                if (is_z23) zcl23++;
-            }
-        }
-        zcl_mutex_unlock(&ctx->connman->manager.cs_nodes);
-    }
-    json_push_kv_int(result, "inbound_connections", inbound);
-    json_push_kv_int(result, "outbound_connections", outbound);
-    json_push_kv_int(result, "handshaked_connections", handshaked);
+    json_push_kv_int(result, "inbound_connections", counts.inbound);
+    json_push_kv_int(result, "outbound_connections", counts.outbound);
+    json_push_kv_int(result, "handshaked_connections", counts.handshaked);
     json_push_kv_int(result, "inbound_handshaked_connections",
-                     inbound_handshaked);
+                     counts.inbound_handshaked);
     json_push_kv_int(result, "outbound_handshaked_connections",
-                     outbound_handshaked);
-    json_push_kv_int(result, "legacy_compatible_peers", legacy_compatible);
-    json_push_kv_int(result, "legacy_magicbean_peers", legacy_compatible);
-    json_push_kv_int(result, "magicbean_peers", legacy_compatible);
-    json_push_kv_int(result, "zclassic23_peers", zcl23);
-    json_push_kv_int(result, "zclassic_c23_peers", zcl23);
+                     counts.outbound_handshaked);
+    json_push_kv_int(result, "legacy_compatible_peers",
+                     counts.legacy_compatible);
+    json_push_kv_int(result, "legacy_magicbean_peers",
+                     counts.legacy_compatible);
+    json_push_kv_int(result, "magicbean_peers", counts.legacy_compatible);
+    json_push_kv_int(result, "zclassic23_peers", counts.zcl23);
+    json_push_kv_int(result, "zclassic_c23_peers", counts.zcl23);
     json_push_kv_int(result, "listen_socket_count",
-                     (int64_t)listen_socket_count);
-    json_push_kv_bool(result, "listening", listen_socket_count > 0);
+                     (int64_t)counts.listen_socket_count);
+    json_push_kv_bool(result, "listening", counts.listen_socket_count > 0);
     json_push_kv_bool(result, "externalip_configured", ext_port != 0);
     json_push_kv_bool(result, "inbound_handshake_seen",
-                      inbound_handshaked > 0);
-    json_push_kv_bool(result, "remote_handshake_seen", handshaked > 0);
+                      counts.inbound_handshaked > 0);
+    json_push_kv_bool(result, "remote_handshake_seen",
+                      counts.handshaked > 0);
     push_addnode_status(result, ctx->connman);
 
     struct json_value life = {0};
     peer_lifecycle_summary_json(&life);
     json_push_kv(result, "peer_lifecycle", &life);
     json_free(&life);
+
+    return true;
+}
+
+static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "bootstrapstatus\n"
+        "Returns a versioned bootstrap-service contract: ordinary P2P "
+        "bootstrap readiness plus zclassicd beta6 snapshot-bootstrap "
+        "compatibility.");
+
+    struct network_context *ctx = network_ctx();
+    struct network_counts counts;
+    network_counts_collect(ctx->connman, &counts);
+
+    char ext_ip[INET_ADDRSTRLEN] = {0};
+    uint16_t ext_port = 0;
+    bool has_external_ip =
+        msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port);
+    int32_t advertised_height = reducer_frontier_provable_tip_cached();
+    bool has_connman = ctx->connman != NULL;
+    bool node_network = (counts.local_services & NODE_NETWORK) != 0;
+    bool node_zcl23 = (counts.local_services & NODE_ZCL23) != 0;
+    bool node_bootstrap = (counts.local_services & NODE_BOOTSTRAP) != 0;
+    bool protocol_ok = PROTOCOL_VERSION >= MIN_PEER_PROTO_VERSION;
+    bool listening = counts.listen_socket_count > 0;
+    bool has_tip = advertised_height > 0;
+    bool p2p_serving =
+        has_connman && listening && node_network && protocol_ok && has_tip;
+    bool addr_relay_ready = counts.addrman_entries > 0;
+    bool beta6_fast = p2p_serving && node_bootstrap;
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", BOOTSTRAP_STATUS_SCHEMA);
+    json_push_kv_int(result, "schema_version",
+                     BOOTSTRAP_STATUS_SCHEMA_VERSION);
+    json_push_kv_bool(result, "ok", p2p_serving);
+    json_push_kv_bool(result, "serving_p2p_bootstrap", p2p_serving);
+    json_push_kv_bool(result, "serving_addr_bootstrap",
+                      p2p_serving && addr_relay_ready);
+    json_push_kv_bool(result, "serving_snapshot_bootstrap", beta6_fast);
+    json_push_kv_bool(result, "zclassicd_beta6_p2p_compatible",
+                      node_network && protocol_ok);
+    json_push_kv_bool(result,
+                      "zclassicd_beta6_fast_bootstrap_compatible",
+                      beta6_fast);
+
+    struct json_value identity = {0};
+    json_set_object(&identity);
+    json_push_kv_int(&identity, "version", CLIENT_VERSION);
+    json_push_kv_str(&identity, "client_name", CLIENT_NAME);
+    json_push_kv_str(&identity, "advertised_subver",
+                     msg_version_user_agent());
+    json_push_kv_str(&identity, "build_commit", zcl_build_commit());
+    json_push_kv(result, "binary", &identity);
+    json_free(&identity);
+
+    struct json_value p2p = {0};
+    json_set_object(&p2p);
+    json_push_kv_int(&p2p, "protocolversion", PROTOCOL_VERSION);
+    json_push_kv_int(&p2p, "minimum_peer_protocol",
+                     MIN_PEER_PROTO_VERSION);
+    json_push_kv_int(&p2p, "advertised_services",
+                     (int64_t)counts.local_services);
+    json_push_kv_bool(&p2p, "node_network", node_network);
+    json_push_kv_bool(&p2p, "node_zclassic23", node_zcl23);
+    json_push_kv_bool(&p2p, "node_bootstrap", node_bootstrap);
+    json_push_kv_bool(&p2p, "listening", listening);
+    json_push_kv_int(&p2p, "listen_socket_count",
+                     (int64_t)counts.listen_socket_count);
+    json_push_kv_int(&p2p, "advertised_start_height",
+                     advertised_height);
+    json_push_kv_bool(&p2p, "externalip_configured",
+                      has_external_ip && ext_port != 0);
+    json_push_localaddresses(&p2p, "localaddresses", ext_ip, ext_port);
+    json_push_kv(result, "p2p", &p2p);
+    json_free(&p2p);
+
+    struct json_value peers = {0};
+    json_set_object(&peers);
+    json_push_kv_int(&peers, "connections", (int64_t)counts.connections);
+    json_push_kv_int(&peers, "inbound_connections", counts.inbound);
+    json_push_kv_int(&peers, "outbound_connections", counts.outbound);
+    json_push_kv_int(&peers, "handshaked_connections", counts.handshaked);
+    json_push_kv_int(&peers, "inbound_handshaked_connections",
+                     counts.inbound_handshaked);
+    json_push_kv_int(&peers, "outbound_handshaked_connections",
+                     counts.outbound_handshaked);
+    json_push_kv_int(&peers, "legacy_compatible_peers",
+                     counts.legacy_compatible);
+    json_push_kv_int(&peers, "zclassic23_peers", counts.zcl23);
+    json_push_kv(result, "peers", &peers);
+    json_free(&peers);
+
+    struct json_value addrman = {0};
+    json_set_object(&addrman);
+    json_push_kv_int(&addrman, "entries",
+                     (int64_t)counts.addrman_entries);
+    json_push_kv_int(&addrman, "getaddr_max", MAX_ADDR_TO_SEND);
+    json_push_kv_int(&addrman, "new_occupied",
+                     counts.addrman_stats.new_occupied);
+    json_push_kv_int(&addrman, "tried_occupied",
+                     counts.addrman_stats.tried_occupied);
+    json_push_kv_int(&addrman, "new_buckets_nonempty",
+                     counts.addrman_stats.new_buckets_nonempty);
+    json_push_kv_int(&addrman, "tried_buckets_nonempty",
+                     counts.addrman_stats.tried_buckets_nonempty);
+    json_push_kv_bool(&addrman, "addr_relay_ready", addr_relay_ready);
+    json_push_kv(result, "addrman", &addrman);
+    json_free(&addrman);
+
+    static const char *const legacy_msgs[] = {
+        "version", "verack", "sendheaders", "getheaders", "headers",
+        "getblocks", "inv", "getdata", "block", "getaddr", "addr",
+        "ping", "pong"
+    };
+    static const char *const beta6_msgs[] = {
+        "getbsman", "bsman", "getbschk", "bschk",
+        "getbspman", "bspman", "getbspchk", "bspchk"
+    };
+
+    struct json_value legacy = {0};
+    json_set_object(&legacy);
+    json_push_kv_str(&legacy, "schema", "zcl.bootstrap.p2p.v1");
+    json_push_kv_str(&legacy, "target_client", ZCLASSICD_BETA6_LABEL);
+    json_push_kv_str(&legacy, "required_service_bit", "NODE_NETWORK");
+    json_push_kv_int(&legacy, "required_service_bit_value", NODE_NETWORK);
+    json_push_kv_bool(&legacy, "serving", p2p_serving);
+    json_push_kv_bool(&legacy, "addr_relay_ready",
+                      p2p_serving && addr_relay_ready);
+    json_push_str_array(&legacy, "messages", legacy_msgs,
+                        sizeof(legacy_msgs) / sizeof(legacy_msgs[0]));
+    json_push_kv(result, "legacy_p2p_bootstrap", &legacy);
+    json_free(&legacy);
+
+    struct json_value beta6 = {0};
+    json_set_object(&beta6);
+    json_push_kv_str(&beta6, "schema",
+                     "zclassicd.bootstrap.snapshot.v3");
+    json_push_kv_str(&beta6, "target_client", ZCLASSICD_BETA6_LABEL);
+    json_push_kv_str(&beta6, "required_service_bit", "NODE_BOOTSTRAP");
+    json_push_kv_int(&beta6, "required_service_bit_value",
+                     NODE_BOOTSTRAP);
+    json_push_kv_bool(&beta6, "advertised", node_bootstrap);
+    json_push_kv_bool(&beta6, "serving", beta6_fast);
+    json_push_kv_int(&beta6, "chunk_size_bytes", 1024 * 1024);
+    json_push_kv_str(&beta6, "current_blocker",
+                     node_bootstrap ? "" :
+                     "NODE_BOOTSTRAP service not implemented in zclassic23");
+    json_push_str_array(&beta6, "messages", beta6_msgs,
+                        sizeof(beta6_msgs) / sizeof(beta6_msgs[0]));
+    json_push_kv(result, "beta6_snapshot_bootstrap", &beta6);
+    json_free(&beta6);
+
+    struct json_value blockers = {0};
+    json_set_array(&blockers);
+    if (!has_connman)
+        json_push_string_item(&blockers, "p2p_not_initialized");
+    if (has_connman && !listening)
+        json_push_string_item(&blockers, "not_listening");
+    if (!node_network)
+        json_push_string_item(&blockers, "NODE_NETWORK_not_advertised");
+    if (!protocol_ok)
+        json_push_string_item(&blockers, "protocol_below_min_peer_version");
+    if (!has_tip)
+        json_push_string_item(&blockers, "provable_tip_not_published");
+    if (!node_bootstrap)
+        json_push_string_item(&blockers,
+                              "beta6_NODE_BOOTSTRAP_not_advertised");
+    json_push_kv(result, "blockers", &blockers);
+    json_free(&blockers);
+
+    struct json_value warnings = {0};
+    json_set_array(&warnings);
+    if (!has_external_ip || ext_port == 0)
+        json_push_string_item(&warnings, "externalip_not_configured");
+    if (!addr_relay_ready)
+        json_push_string_item(&warnings, "addrman_empty");
+    json_push_kv(result, "warnings", &warnings);
+    json_free(&warnings);
 
     return true;
 }
@@ -394,6 +654,7 @@ void register_net_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "network", "getnetworkinfo",    rpc_getnetworkinfo,    true },
+        { "network", "bootstrapstatus",   rpc_bootstrapstatus,   true },
         { "network", "getpeerinfo",       rpc_getpeerinfo,       true },
         { "network", "getconnectioncount", rpc_getconnectioncount, true },
         { "network", "ping",              rpc_ping_rpc,          true },

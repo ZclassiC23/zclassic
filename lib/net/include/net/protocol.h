@@ -19,6 +19,10 @@
 enum {
     NODE_NETWORK = (1 << 0),
     NODE_BLOOM = (1 << 2),
+    /* zclassicd v2.1.2-beta6 fast-bootstrap service bit. A node may only
+     * advertise this when it can serve getbsman/bsman + getbschk/bschk
+     * snapshot messages; do not set it for ordinary block-serving peers. */
+    NODE_BOOTSTRAP = (1 << 24),
 };
 
 enum {
