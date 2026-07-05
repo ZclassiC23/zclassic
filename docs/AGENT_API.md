@@ -136,14 +136,32 @@ window, and dev defaults to `deploy_dev_lane`.
 The same public status contract includes `resources`
 (`zcl.node_resources.v1`) with cheap process-level RSS, RSS warning threshold,
 Linux cgroup memory usage/limits when available, memory pressure (`ok`,
-`watch`, `warn`, or `unknown`), pressure basis, uptime, and source.
-Cgroup/systemd pressure is preferred over raw RSS because canonical can have a
-large steady RSS while still running comfortably below its service memory
-guardrails. With a cgroup `memory.high` limit, `watch` starts at 85% and
-`warn` starts at 95%; without `memory.high`, the max limit gives an 80% watch
-and 90% warn fallback. This is the first-call place to notice a lane that is
-still serving but approaching memory pressure, before reaching for shell-only
-systemd probes.
+`watch`, `warn`, or `unknown`), `memory_pressure_detail`, pressure basis,
+uptime, and source. Cgroup/systemd pressure is preferred over raw RSS because
+canonical can have a large steady RSS while still running comfortably below its
+service memory guardrails. When cgroup v2 `memory.stat` is available, the node
+also reports anon/file/kernel buckets, reclaimable bytes, working set, and
+working-set percentages against `memory.high` / `memory.max`. With a cgroup
+`memory.high` limit, `watch` starts at 85% of total cgroup usage. `warn` starts
+at 95% only when the unreclaimable working set is also near the limit; a high
+total caused mostly by reclaimable file cache remains `watch` with
+`memory_pressure_detail="cgroup_reclaimable_cache_high"`. Without
+`memory.high`, the max limit gives an 80% watch and 90% warn fallback. This is
+the first-call place to notice a lane that is still serving but approaching
+memory pressure, before reaching for shell-only systemd probes.
+
+The same contract also includes `restart_watchdog`
+(`zcl.restart_watchdog.v1`). It is the cheap first-call view over the chain tip
+watchdog's bounded restart memory: whether the watchdog is registered, whether
+an autonomous no-progress recycle happened in the current episode, the stuck
+height anchoring that episode, restart count, restart budget remaining, and the
+deep drill-down command (`zclassic23 dumpstate chain_tip_watchdog`). A recent
+controlled liveness recycle appears as
+`last_restart_autonomous=true`,
+`last_restart_reason="no_progress_tip_stall"`, and
+`status="restart_budget_burning"`, which lets agents distinguish a deliberate
+watchdog remedy from a crash or manual soak rebaseline without scraping
+`node.log`.
 
 The top-level status always reports exact `gap`, `index_gap`, and
 `target_height`, but it treats normal live-tip churn of up to 10 blocks as

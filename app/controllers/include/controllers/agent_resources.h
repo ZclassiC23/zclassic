@@ -18,6 +18,17 @@ struct agent_resource_snapshot {
     int64_t cgroup_memory_max_mb;
     int64_t cgroup_memory_high_pct;
     int64_t cgroup_memory_max_pct;
+    bool cgroup_memory_stat_available;
+    int64_t cgroup_memory_anon_mb;
+    int64_t cgroup_memory_file_mb;
+    int64_t cgroup_memory_kernel_mb;
+    int64_t cgroup_memory_inactive_file_mb;
+    int64_t cgroup_memory_slab_reclaimable_mb;
+    int64_t cgroup_memory_reclaimable_mb;
+    int64_t cgroup_memory_working_set_mb;
+    int64_t cgroup_memory_working_set_high_pct;
+    int64_t cgroup_memory_working_set_max_pct;
+    bool cgroup_memory_reclaimable_dominant;
     bool cgroup_memory_watch;
     bool cgroup_memory_warning;
     int64_t uptime_seconds;

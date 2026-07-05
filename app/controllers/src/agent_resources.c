@@ -18,6 +18,22 @@
 #define AGENT_RESOURCES_CGROUP_MAX_WATCH_PCT 80
 #define AGENT_RESOURCES_CGROUP_MAX_WARN_PCT 90
 
+struct agent_resources_cgroup_stat {
+    bool available;
+    int64_t anon_bytes;
+    int64_t file_bytes;
+    int64_t kernel_bytes;
+    int64_t kernel_stack_bytes;
+    int64_t pagetables_bytes;
+    int64_t sec_pagetables_bytes;
+    int64_t percpu_bytes;
+    int64_t sock_bytes;
+    int64_t inactive_file_bytes;
+    int64_t slab_reclaimable_bytes;
+    int64_t slab_unreclaimable_bytes;
+    int64_t slab_bytes;
+};
+
 static int64_t agent_resources_rss_kb(void)
 {
     FILE *f = fopen("/proc/self/status", "r");
@@ -178,6 +194,101 @@ static int64_t agent_resources_cgroup_bytes(const char *dir, const char *name)
     return (int64_t)value;
 }
 
+static void agent_resources_cgroup_stat_init(
+    struct agent_resources_cgroup_stat *st)
+{
+    if (!st)
+        return;
+    memset(st, 0, sizeof(*st));
+    st->anon_bytes = -1;
+    st->file_bytes = -1;
+    st->kernel_bytes = -1;
+    st->kernel_stack_bytes = -1;
+    st->pagetables_bytes = -1;
+    st->sec_pagetables_bytes = -1;
+    st->percpu_bytes = -1;
+    st->sock_bytes = -1;
+    st->inactive_file_bytes = -1;
+    st->slab_reclaimable_bytes = -1;
+    st->slab_unreclaimable_bytes = -1;
+    st->slab_bytes = -1;
+}
+
+static void agent_resources_stat_assign(struct agent_resources_cgroup_stat *st,
+                                        const char *key,
+                                        int64_t value)
+{
+    if (!st || !key || value < 0)
+        return;
+    st->available = true;
+    if (strcmp(key, "anon") == 0)
+        st->anon_bytes = value;
+    else if (strcmp(key, "file") == 0)
+        st->file_bytes = value;
+    else if (strcmp(key, "kernel") == 0)
+        st->kernel_bytes = value;
+    else if (strcmp(key, "kernel_stack") == 0)
+        st->kernel_stack_bytes = value;
+    else if (strcmp(key, "pagetables") == 0)
+        st->pagetables_bytes = value;
+    else if (strcmp(key, "sec_pagetables") == 0)
+        st->sec_pagetables_bytes = value;
+    else if (strcmp(key, "percpu") == 0)
+        st->percpu_bytes = value;
+    else if (strcmp(key, "sock") == 0)
+        st->sock_bytes = value;
+    else if (strcmp(key, "inactive_file") == 0)
+        st->inactive_file_bytes = value;
+    else if (strcmp(key, "slab_reclaimable") == 0)
+        st->slab_reclaimable_bytes = value;
+    else if (strcmp(key, "slab_unreclaimable") == 0)
+        st->slab_unreclaimable_bytes = value;
+    else if (strcmp(key, "slab") == 0)
+        st->slab_bytes = value;
+}
+
+static bool agent_resources_cgroup_stat_load(
+    const char *dir,
+    struct agent_resources_cgroup_stat *st)
+{
+    if (!dir || !st)
+        return false; // raw-return-ok:optional-cgroup-unavailable
+
+    agent_resources_cgroup_stat_init(st);
+    char path[768];
+    int n = snprintf(path, sizeof(path), "%s/%s", dir, "memory.stat");
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return false; // raw-return-ok:optional-cgroup-unavailable
+
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false; // raw-return-ok:optional-cgroup-unavailable
+
+    char key[64];
+    long long value = -1;
+    while (fscanf(f, "%63s %lld", key, &value) == 2)
+        agent_resources_stat_assign(st, key, (int64_t)value);
+
+    fclose(f);
+    return st->available;
+}
+
+static int64_t agent_resources_sum_nonnegative(const int64_t *values,
+                                               size_t count)
+{
+    int64_t total = 0;
+    bool saw = false;
+    for (size_t i = 0; i < count; i++) {
+        if (values[i] < 0)
+            continue;
+        if (total > INT64_MAX - values[i])
+            return -1; // raw-return-ok:sentinel
+        total += values[i];
+        saw = true;
+    }
+    return saw ? total : -1;
+}
+
 static int64_t agent_resources_bytes_to_mb(int64_t bytes)
 {
     if (bytes < 0)
@@ -194,6 +305,70 @@ static int64_t agent_resources_pct(int64_t current_mb, int64_t limit_mb)
     return (current_mb * 100) / limit_mb;
 }
 
+static int64_t agent_resources_cgroup_kernel_bytes(
+    const struct agent_resources_cgroup_stat *st)
+{
+    if (!st || !st->available)
+        return -1; // raw-return-ok:sentinel
+    if (st->kernel_bytes >= 0)
+        return st->kernel_bytes;
+    int64_t values[] = {
+        st->kernel_stack_bytes,
+        st->pagetables_bytes,
+        st->sec_pagetables_bytes,
+        st->percpu_bytes,
+        st->sock_bytes,
+        st->slab_bytes >= 0 ? st->slab_bytes : st->slab_unreclaimable_bytes,
+    };
+    return agent_resources_sum_nonnegative(values,
+        sizeof(values) / sizeof(values[0]));
+}
+
+static void agent_resources_apply_cgroup_stat(
+    struct agent_resource_snapshot *s,
+    const struct agent_resources_cgroup_stat *st,
+    int64_t current_bytes)
+{
+    if (!s || !st || !st->available)
+        return;
+
+    s->cgroup_memory_stat_available = true;
+    s->cgroup_memory_anon_mb =
+        agent_resources_bytes_to_mb(st->anon_bytes);
+    s->cgroup_memory_file_mb =
+        agent_resources_bytes_to_mb(st->file_bytes);
+    s->cgroup_memory_kernel_mb =
+        agent_resources_bytes_to_mb(agent_resources_cgroup_kernel_bytes(st));
+    s->cgroup_memory_inactive_file_mb =
+        agent_resources_bytes_to_mb(st->inactive_file_bytes);
+    s->cgroup_memory_slab_reclaimable_mb =
+        agent_resources_bytes_to_mb(st->slab_reclaimable_bytes);
+
+    int64_t reclaimable_values[] = {
+        st->inactive_file_bytes,
+        st->slab_reclaimable_bytes,
+    };
+    int64_t reclaimable_bytes = agent_resources_sum_nonnegative(
+        reclaimable_values, sizeof(reclaimable_values) /
+        sizeof(reclaimable_values[0]));
+    s->cgroup_memory_reclaimable_mb =
+        agent_resources_bytes_to_mb(reclaimable_bytes);
+    if (current_bytes >= 0 && reclaimable_bytes >= 0) {
+        int64_t working_set = current_bytes > reclaimable_bytes
+            ? current_bytes - reclaimable_bytes : 0;
+        s->cgroup_memory_working_set_mb =
+            agent_resources_bytes_to_mb(working_set);
+        s->cgroup_memory_working_set_high_pct =
+            agent_resources_pct(s->cgroup_memory_working_set_mb,
+                                s->cgroup_memory_high_mb);
+        s->cgroup_memory_working_set_max_pct =
+            agent_resources_pct(s->cgroup_memory_working_set_mb,
+                                s->cgroup_memory_max_mb);
+        s->cgroup_memory_reclaimable_dominant =
+            reclaimable_bytes > working_set;
+    }
+}
+
 static void agent_resources_collect_cgroup(struct agent_resource_snapshot *s)
 {
     char dir[768];
@@ -207,6 +382,8 @@ static void agent_resources_collect_cgroup(struct agent_resource_snapshot *s)
 
     int64_t high_bytes = agent_resources_cgroup_bytes(dir, "memory.high");
     int64_t max_bytes = agent_resources_cgroup_bytes(dir, "memory.max");
+    struct agent_resources_cgroup_stat st;
+    bool stat_ok = agent_resources_cgroup_stat_load(dir, &st);
     s->cgroup_memory_available = true;
     s->cgroup_memory_current_mb =
         agent_resources_bytes_to_mb(current_bytes);
@@ -218,20 +395,56 @@ static void agent_resources_collect_cgroup(struct agent_resource_snapshot *s)
     s->cgroup_memory_max_pct =
         agent_resources_pct(s->cgroup_memory_current_mb,
                             s->cgroup_memory_max_mb);
+    if (stat_ok)
+        agent_resources_apply_cgroup_stat(s, &st, current_bytes);
+
+    bool working_high_near =
+        s->cgroup_memory_working_set_high_pct < 0 ||
+        s->cgroup_memory_working_set_high_pct >=
+            AGENT_RESOURCES_CGROUP_HIGH_WATCH_PCT;
+    bool working_max_near =
+        s->cgroup_memory_working_set_max_pct < 0 ||
+        s->cgroup_memory_working_set_max_pct >=
+            AGENT_RESOURCES_CGROUP_MAX_WATCH_PCT;
 
     bool high_watch = s->cgroup_memory_high_pct >=
                       AGENT_RESOURCES_CGROUP_HIGH_WATCH_PCT;
     bool high_warn = s->cgroup_memory_high_pct >=
-                     AGENT_RESOURCES_CGROUP_HIGH_WARN_PCT;
+                     AGENT_RESOURCES_CGROUP_HIGH_WARN_PCT &&
+                     working_high_near;
     bool max_watch = s->cgroup_memory_high_mb <= 0 &&
                      s->cgroup_memory_max_pct >=
                      AGENT_RESOURCES_CGROUP_MAX_WATCH_PCT;
     bool max_warn = s->cgroup_memory_max_mb > 0 &&
                     s->cgroup_memory_max_pct >=
-                    AGENT_RESOURCES_CGROUP_MAX_WARN_PCT;
+                    AGENT_RESOURCES_CGROUP_MAX_WARN_PCT &&
+                    working_max_near;
     s->cgroup_memory_warning = high_warn || max_warn;
     s->cgroup_memory_watch = high_watch || max_watch ||
                               s->cgroup_memory_warning;
+}
+
+static const char *agent_resources_pressure_detail(
+    const struct agent_resource_snapshot *s)
+{
+    if (!s)
+        return "unknown";
+    if (s->cgroup_memory_available) {
+        if (s->cgroup_memory_warning)
+            return "cgroup_working_set_high";
+        if (s->cgroup_memory_high_pct >=
+                AGENT_RESOURCES_CGROUP_HIGH_WARN_PCT ||
+            s->cgroup_memory_max_pct >=
+                AGENT_RESOURCES_CGROUP_MAX_WARN_PCT)
+            return "cgroup_reclaimable_cache_high";
+        if (s->cgroup_memory_watch)
+            return s->cgroup_memory_reclaimable_dominant
+                ? "cgroup_cache_watch" : "cgroup_limit_watch";
+        return "within_limits";
+    }
+    if (s->rss_mb < 0)
+        return "unknown";
+    return s->rss_warning ? "rss_over_threshold" : "within_limits";
 }
 
 static const char *agent_resources_pressure(
@@ -282,6 +495,17 @@ void agent_resource_snapshot_collect(struct agent_resource_snapshot *snapshot)
     snapshot->cgroup_memory_max_mb = -1;
     snapshot->cgroup_memory_high_pct = -1;
     snapshot->cgroup_memory_max_pct = -1;
+    snapshot->cgroup_memory_stat_available = false;
+    snapshot->cgroup_memory_anon_mb = -1;
+    snapshot->cgroup_memory_file_mb = -1;
+    snapshot->cgroup_memory_kernel_mb = -1;
+    snapshot->cgroup_memory_inactive_file_mb = -1;
+    snapshot->cgroup_memory_slab_reclaimable_mb = -1;
+    snapshot->cgroup_memory_reclaimable_mb = -1;
+    snapshot->cgroup_memory_working_set_mb = -1;
+    snapshot->cgroup_memory_working_set_high_pct = -1;
+    snapshot->cgroup_memory_working_set_max_pct = -1;
+    snapshot->cgroup_memory_reclaimable_dominant = false;
     snapshot->cgroup_memory_watch = false;
     snapshot->cgroup_memory_warning = false;
     snapshot->uptime_seconds = -1;
@@ -324,17 +548,43 @@ void agent_push_resources_json(struct json_value *out, const char *key,
                      snapshot->cgroup_memory_high_pct);
     json_push_kv_int(&resources, "cgroup_memory_max_pct",
                      snapshot->cgroup_memory_max_pct);
+    json_push_kv_bool(&resources, "cgroup_memory_stat_available",
+                      snapshot->cgroup_memory_stat_available);
+    json_push_kv_int(&resources, "cgroup_memory_anon_mb",
+                     snapshot->cgroup_memory_anon_mb);
+    json_push_kv_int(&resources, "cgroup_memory_file_mb",
+                     snapshot->cgroup_memory_file_mb);
+    json_push_kv_int(&resources, "cgroup_memory_kernel_mb",
+                     snapshot->cgroup_memory_kernel_mb);
+    json_push_kv_int(&resources, "cgroup_memory_inactive_file_mb",
+                     snapshot->cgroup_memory_inactive_file_mb);
+    json_push_kv_int(&resources, "cgroup_memory_slab_reclaimable_mb",
+                     snapshot->cgroup_memory_slab_reclaimable_mb);
+    json_push_kv_int(&resources, "cgroup_memory_reclaimable_mb",
+                     snapshot->cgroup_memory_reclaimable_mb);
+    json_push_kv_int(&resources, "cgroup_memory_working_set_mb",
+                     snapshot->cgroup_memory_working_set_mb);
+    json_push_kv_int(&resources, "cgroup_memory_working_set_high_pct",
+                     snapshot->cgroup_memory_working_set_high_pct);
+    json_push_kv_int(&resources, "cgroup_memory_working_set_max_pct",
+                     snapshot->cgroup_memory_working_set_max_pct);
+    json_push_kv_bool(&resources, "cgroup_memory_reclaimable_dominant",
+                      snapshot->cgroup_memory_reclaimable_dominant);
     json_push_kv_bool(&resources, "cgroup_memory_watch",
                       snapshot->cgroup_memory_watch);
     json_push_kv_bool(&resources, "cgroup_memory_warning",
                       snapshot->cgroup_memory_warning);
     json_push_kv_str(&resources, "memory_pressure",
                      agent_resources_pressure(snapshot));
+    json_push_kv_str(&resources, "memory_pressure_detail",
+                     agent_resources_pressure_detail(snapshot));
     json_push_kv_str(&resources, "pressure_basis",
                      agent_resources_pressure_basis(snapshot));
     json_push_kv_int(&resources, "uptime_seconds",
                      snapshot->uptime_seconds);
     json_push_kv_str(&resources, "source",
+                     snapshot->cgroup_memory_stat_available
+                     ? "proc_self+cgroup_v2+memory.stat" :
                      snapshot->cgroup_memory_available
                      ? "proc_self+cgroup_v2" : "proc_self");
     json_push_kv(out, key ? key : "resources", &resources);

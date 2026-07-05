@@ -20,6 +20,7 @@
 #include "test/test_helpers.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_resources.h"
+#include "controllers/agent_restart_watchdog.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
@@ -1389,11 +1390,38 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(resources, "cgroup_memory_current_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_high_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_max_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_stat_available") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_anon_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_file_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_kernel_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_reclaimable_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_working_set_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_watch") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_warning") != NULL;
         ok = ok && json_get(resources, "memory_pressure") != NULL;
+        ok = ok && json_get(resources, "memory_pressure_detail") != NULL;
         ok = ok && json_get(resources, "pressure_basis") != NULL;
         ok = ok && json_get(resources, "uptime_seconds") != NULL;
+        const struct json_value *restart_watchdog =
+            json_get(&result, "restart_watchdog");
+        ok = ok && restart_watchdog && restart_watchdog->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(restart_watchdog, "schema")),
+                          "zcl.restart_watchdog.v1") == 0;
+        ok = ok && json_get(restart_watchdog, "status") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "last_restart_autonomous") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "last_restart_reason") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "no_progress_restarts") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "restarts_remaining") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "deep_state") != NULL;
         const struct json_value *download = json_get(&result, "download");
         ok = ok && download && download->type == JSON_OBJ;
         ok = ok && json_get(download, "requested") != NULL;
@@ -2087,6 +2115,17 @@ int test_syncdiag_rpc(void)
             .cgroup_memory_max_mb = -1,
             .cgroup_memory_high_pct = -1,
             .cgroup_memory_max_pct = -1,
+            .cgroup_memory_stat_available = false,
+            .cgroup_memory_anon_mb = -1,
+            .cgroup_memory_file_mb = -1,
+            .cgroup_memory_kernel_mb = -1,
+            .cgroup_memory_inactive_file_mb = -1,
+            .cgroup_memory_slab_reclaimable_mb = -1,
+            .cgroup_memory_reclaimable_mb = -1,
+            .cgroup_memory_working_set_mb = -1,
+            .cgroup_memory_working_set_high_pct = -1,
+            .cgroup_memory_working_set_max_pct = -1,
+            .cgroup_memory_reclaimable_dominant = false,
             .cgroup_memory_watch = false,
             .cgroup_memory_warning = false,
             .uptime_seconds = 123,
@@ -2108,6 +2147,9 @@ int test_syncdiag_rpc(void)
                                                 "memory_pressure")),
                           "warn") == 0;
         ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure_detail")),
+                          "rss_over_threshold") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
                                                 "pressure_basis")),
                           "rss") == 0;
         json_free(&resources_body);
@@ -2122,6 +2164,17 @@ int test_syncdiag_rpc(void)
             .cgroup_memory_max_mb = 16000,
             .cgroup_memory_high_pct = 75,
             .cgroup_memory_max_pct = 56,
+            .cgroup_memory_stat_available = true,
+            .cgroup_memory_anon_mb = 3000,
+            .cgroup_memory_file_mb = 5000,
+            .cgroup_memory_kernel_mb = 200,
+            .cgroup_memory_inactive_file_mb = 4500,
+            .cgroup_memory_slab_reclaimable_mb = 200,
+            .cgroup_memory_reclaimable_mb = 4700,
+            .cgroup_memory_working_set_mb = 4300,
+            .cgroup_memory_working_set_high_pct = 35,
+            .cgroup_memory_working_set_max_pct = 26,
+            .cgroup_memory_reclaimable_dominant = true,
             .cgroup_memory_watch = false,
             .cgroup_memory_warning = false,
             .uptime_seconds = 456,
@@ -2136,9 +2189,19 @@ int test_syncdiag_rpc(void)
                                           "cgroup_memory_available"));
         ok = ok && json_get_int(json_get(fixed,
                                          "cgroup_memory_current_mb")) == 9000;
+        ok = ok && json_get_bool(json_get(fixed,
+                                          "cgroup_memory_stat_available"));
+        ok = ok && json_get_int(json_get(fixed,
+                                         "cgroup_memory_working_set_mb")) ==
+            4300;
+        ok = ok && json_get_bool(json_get(fixed,
+            "cgroup_memory_reclaimable_dominant"));
         ok = ok && strcmp(json_get_str(json_get(fixed,
                                                 "memory_pressure")),
                           "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure_detail")),
+                          "within_limits") == 0;
         ok = ok && strcmp(json_get_str(json_get(fixed,
                                                 "pressure_basis")),
                           "cgroup_high") == 0;
@@ -2147,6 +2210,10 @@ int test_syncdiag_rpc(void)
         cgroup_resources.cgroup_memory_current_mb = 10320;
         cgroup_resources.cgroup_memory_high_pct = 86;
         cgroup_resources.cgroup_memory_max_pct = 64;
+        cgroup_resources.cgroup_memory_working_set_mb = 4300;
+        cgroup_resources.cgroup_memory_working_set_high_pct = 35;
+        cgroup_resources.cgroup_memory_working_set_max_pct = 26;
+        cgroup_resources.cgroup_memory_reclaimable_dominant = true;
         cgroup_resources.cgroup_memory_watch = true;
         cgroup_resources.cgroup_memory_warning = false;
         json_init(&resources_body);
@@ -2162,11 +2229,45 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(fixed,
                                                 "memory_pressure")),
                           "watch") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure_detail")),
+                          "cgroup_cache_watch") == 0;
+        json_free(&resources_body);
+
+        cgroup_resources.cgroup_memory_current_mb = 11520;
+        cgroup_resources.cgroup_memory_high_pct = 96;
+        cgroup_resources.cgroup_memory_max_pct = 72;
+        cgroup_resources.cgroup_memory_working_set_mb = 4800;
+        cgroup_resources.cgroup_memory_working_set_high_pct = 40;
+        cgroup_resources.cgroup_memory_working_set_max_pct = 30;
+        cgroup_resources.cgroup_memory_reclaimable_dominant = true;
+        cgroup_resources.cgroup_memory_watch = true;
+        cgroup_resources.cgroup_memory_warning = false;
+        json_init(&resources_body);
+        json_set_object(&resources_body);
+        agent_push_resources_json(&resources_body, "resources",
+                                  &cgroup_resources);
+        fixed = json_get(&resources_body, "resources");
+        ok = ok && fixed && fixed->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(fixed,
+                                          "cgroup_memory_watch"));
+        ok = ok && !json_get_bool(json_get(fixed,
+                                           "cgroup_memory_warning"));
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure")),
+                          "watch") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure_detail")),
+                          "cgroup_reclaimable_cache_high") == 0;
         json_free(&resources_body);
 
         cgroup_resources.cgroup_memory_current_mb = 11400;
         cgroup_resources.cgroup_memory_high_pct = 95;
         cgroup_resources.cgroup_memory_max_pct = 71;
+        cgroup_resources.cgroup_memory_working_set_mb = 10320;
+        cgroup_resources.cgroup_memory_working_set_high_pct = 86;
+        cgroup_resources.cgroup_memory_working_set_max_pct = 64;
+        cgroup_resources.cgroup_memory_reclaimable_dominant = false;
         cgroup_resources.cgroup_memory_watch = true;
         cgroup_resources.cgroup_memory_warning = true;
         json_init(&resources_body);
@@ -2180,7 +2281,70 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(fixed,
                                                 "memory_pressure")),
                           "warn") == 0;
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure_detail")),
+                          "cgroup_working_set_high") == 0;
         json_free(&resources_body);
+
+        struct agent_restart_watchdog_snapshot wd = {
+            .registered = true,
+            .highest_tip = 3171111,
+            .last_advance_unix = 1783268402,
+            .age_secs = 45,
+            .escalation_level = 0,
+            .fires_mirror = 2,
+            .fires_restart = 0,
+            .fires_operator_needed = 0,
+            .threshold_restart_secs = 1200,
+            .persisted_stuck_height = 3171109,
+            .no_progress_restarts = 1,
+            .max_restarts = 3,
+            .operator_needed = false,
+        };
+        struct json_value watchdog_body;
+        json_init(&watchdog_body);
+        json_set_object(&watchdog_body);
+        agent_push_restart_watchdog_json(&watchdog_body,
+                                         "restart_watchdog", &wd);
+        const struct json_value *wd_json =
+            json_get(&watchdog_body, "restart_watchdog");
+        ok = ok && wd_json && wd_json->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(wd_json, "schema")),
+                          "zcl.restart_watchdog.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(wd_json, "status")),
+                          "restart_budget_burning") == 0;
+        ok = ok && json_get_bool(json_get(wd_json,
+                                          "last_restart_autonomous"));
+        ok = ok && strcmp(json_get_str(json_get(wd_json,
+                                                "last_restart_reason")),
+                          "no_progress_tip_stall") == 0;
+        ok = ok && json_get_int(json_get(wd_json,
+                                         "persisted_stuck_height")) ==
+            3171109;
+        ok = ok && json_get_int(json_get(wd_json,
+                                         "no_progress_restarts")) == 1;
+        ok = ok && json_get_int(json_get(wd_json,
+                                         "restarts_remaining")) == 2;
+        ok = ok && strcmp(json_get_str(json_get(wd_json, "deep_state")),
+                          "zclassic23 dumpstate chain_tip_watchdog") == 0;
+        json_free(&watchdog_body);
+
+        wd.no_progress_restarts = 3;
+        wd.fires_restart = 3;
+        wd.operator_needed = false;
+        json_init(&watchdog_body);
+        json_set_object(&watchdog_body);
+        agent_push_restart_watchdog_json(&watchdog_body,
+                                         "restart_watchdog", &wd);
+        wd_json = json_get(&watchdog_body, "restart_watchdog");
+        ok = ok && wd_json && wd_json->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(wd_json, "status")),
+                          "restart_budget_exhausted") == 0;
+        ok = ok && json_get_bool(json_get(wd_json,
+                                          "restart_budget_exhausted"));
+        ok = ok && json_get_int(json_get(wd_json,
+                                         "restarts_remaining")) == 0;
+        json_free(&watchdog_body);
 
         rpc_agent_set_boot_context("canonical", "full",
                                    "/tmp/zcl-agent-canonical",

@@ -6,6 +6,7 @@
  * MCP-friendly clients that do not need the full diagnostic tree. */
 
 #include "controllers/agent_controller.h"
+#include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_resources.h"
 #include "controllers/api_controller.h"
 #include "api_controller_internal.h"
@@ -499,6 +500,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_int(&body, "index_gap", index_gap);
     json_push_kv_str(&body, "sync_state",
                      sync_state_name(health.sync_state));
+    agent_push_restart_watchdog_json(&body, "restart_watchdog", NULL);
 
     struct agent_resource_snapshot resources;
     agent_resource_snapshot_collect(&resources);

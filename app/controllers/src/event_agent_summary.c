@@ -2,11 +2,10 @@
  *
  * Compact AI/operator first-call telemetry. This path must stay cheap even
  * while the full healthcheck path is doing repair-era evidence work. */
-
 #include "event_agent_summary.h"
-
 #include "api_controller_internal.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_resources.h"
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
@@ -32,7 +31,6 @@
 #include "util/clientversion.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
-
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -592,6 +590,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_int(result, "gap", health.gap);
     json_push_kv_int(result, "index_gap", health.index_gap);
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
+    agent_push_restart_watchdog_json(result, "restart_watchdog", NULL);
 
     struct json_value indexer = {0};
     json_set_object(&indexer);

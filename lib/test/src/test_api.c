@@ -1433,8 +1433,17 @@ int test_api(void)
         ok = ok && json_get(resources, "cgroup_memory_current_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_high_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_max_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_stat_available") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_anon_mb") != NULL;
+        ok = ok && json_get(resources, "cgroup_memory_file_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_working_set_mb") != NULL;
+        ok = ok && json_get(resources,
+                            "cgroup_memory_reclaimable_mb") != NULL;
         ok = ok && json_get(resources, "cgroup_memory_watch") != NULL;
         ok = ok && json_get(resources, "memory_pressure") != NULL;
+        ok = ok && json_get(resources, "memory_pressure_detail") != NULL;
         ok = ok && json_get(resources, "pressure_basis") != NULL;
         ok = ok && json_get(resources, "uptime_seconds") != NULL;
         const struct json_value *lane =
@@ -1467,6 +1476,19 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(safety,
                                                 "safe_default_action")),
                           "observe_only_or_use_dev_lane") == 0;
+        const struct json_value *restart_watchdog =
+            json_get(&root, "restart_watchdog");
+        ok = ok && restart_watchdog && restart_watchdog->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(restart_watchdog,
+                                                "schema")),
+                          "zcl.restart_watchdog.v1") == 0;
+        ok = ok && json_get(restart_watchdog, "status") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "last_restart_autonomous") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "last_restart_reason") != NULL;
+        ok = ok && json_get(restart_watchdog,
+                            "no_progress_restarts") != NULL;
         json_free(&root);
 
         n = api_handle_request("GET", "/api/v1/node", NULL, 0,

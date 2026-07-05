@@ -567,6 +567,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.node_resources.v1",
                       "nested in zcl.public_status.v1 resources",
                       "cheap process RSS, uptime, and memory-pressure telemetry");
+    agent_push_schema(&schemas, "zcl.restart_watchdog.v1",
+                      "nested in zcl.public_status.v1 restart_watchdog",
+                      "chain tip watchdog restart budget and last autonomous recycle reason");
     json_push_kv(result, "schemas", &schemas);
     json_free(&schemas);
 
