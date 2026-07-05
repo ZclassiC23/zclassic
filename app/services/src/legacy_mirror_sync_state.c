@@ -69,7 +69,7 @@ static bool lms_hash_disagreement_recovered(
     const struct legacy_mirror_sync_stats *s)
 {
     return code && strcmp(code, "hash-disagreement") == 0 &&
-           lms_tips_agree(s);
+           s && s->tip_hashes_agree;
 }
 
 static int lms_rpc_error_code(const char *err)
@@ -351,6 +351,7 @@ void legacy_mirror_sync_stats_snapshot(
         pthread_mutex_unlock(&g_lms.lock);
     }
     out->lag = out->lag_known ? out->legacy_height - out->local_height : 0;
+    out->tip_hashes_agree = lms_tips_agree(out);
     out->zclassicd_rpc_transport_reachable =
         out->reachable || lms_error_implies_transport_reachable(out->last_error);
     out->legacy_oracle_usable =
@@ -504,6 +505,7 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_bool(out, "target_height_known", s.target_height_known);
     json_push_kv_bool(out, "lag_known", s.lag_known);
     json_push_kv_bool(out, "lag_valid", s.lag_valid);
+    json_push_kv_bool(out, "tip_hashes_agree", s.tip_hashes_agree);
     json_push_kv_int(out, "lag", legacy_mirror_sync_reported_lag(&s));
     legacy_mirror_sync_push_observed_lag_json(out, "lag_observed", &s);
     json_push_kv_str(out, "candidate_source", "legacy_advisory");

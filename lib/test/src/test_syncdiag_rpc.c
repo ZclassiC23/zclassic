@@ -933,6 +933,12 @@ int test_syncdiag_rpc(void)
             json_is_null(json_get(svc, "candidate_lag_observed"));
         ok = ok && json_get(svc, "candidate_lag") != NULL &&
             json_get_int(json_get(svc, "candidate_lag")) == 0;
+        ok = ok && json_get(svc, "tip_hashes_agree") != NULL &&
+            !json_get_bool(json_get(svc, "tip_hashes_agree"));
+        ok = ok && json_get(svc, "blocker_recovered_by_tip_agreement") !=
+                 NULL &&
+            !json_get_bool(json_get(
+                svc, "blocker_recovered_by_tip_agreement"));
         ok = ok && json_get(svc, "mirror_monitor_running") != NULL &&
             json_get_bool(json_get(svc, "mirror_monitor_running"));
         ok = ok && json_get(svc, "zclassicd_rpc_transport_reachable") != NULL &&
@@ -1048,6 +1054,13 @@ int test_syncdiag_rpc(void)
             !json_get_bool(json_get(&result, "candidate_lag_known"));
         ok = ok && json_get(&result, "candidate_lag_valid") != NULL &&
             !json_get_bool(json_get(&result, "candidate_lag_valid"));
+        ok = ok && json_get(&result, "mirror_tip_hashes_agree") != NULL &&
+            !json_get_bool(json_get(&result, "mirror_tip_hashes_agree"));
+        ok = ok && json_get(&result,
+                            "mirror_blocker_recovered_by_tip_agreement")
+                 != NULL &&
+            !json_get_bool(json_get(
+                &result, "mirror_blocker_recovered_by_tip_agreement"));
         ok = ok && json_get(&result, "candidate_lag") != NULL &&
             json_get_int(json_get(&result, "candidate_lag")) == 0;
         ok = ok && json_get(&result, "candidate_lag_observed") != NULL &&

@@ -991,6 +991,8 @@ int test_zclassicd_oracle(void)
                  snap.local_retries_exhausted &&
                  snap.local_missing_height == 3170884 &&
                  snap.local_retry_count == 3);
+        ZO_CHECK("legacy mirror matching tip records hash agreement",
+                 snap.tip_hashes_agree);
         ZO_CHECK("legacy mirror at matching tip suppresses stale hash blocker",
                  snap.activation_blocker_reason[0] == '\0' &&
                  snap.last_blocker_id[0] == '\0');
@@ -1011,6 +1013,8 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror recovery dump activation blocker empty",
                  strcmp(json_get_str(json_get(&root, "activation_blocker")),
                         "") == 0);
+        ZO_CHECK("legacy mirror recovery dump hash agreement true",
+                 json_get_bool(json_get(&root, "tip_hashes_agree")));
         ZO_CHECK("legacy mirror recovery dump keeps local retry context",
                  json_get_bool(json_get(&root, "local_recovery_active")) &&
                  json_get_bool(json_get(&root, "local_retries_exhausted")) &&

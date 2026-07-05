@@ -70,6 +70,7 @@ struct legacy_mirror_sync_stats {
     bool    target_height_known;
     bool    lag_known;
     bool    lag_valid;
+    bool    tip_hashes_agree;
     int     lag;
     int     target_height;
     int     authority_rewind_target;

@@ -95,6 +95,10 @@ static void push_mirror_sync_fields(struct json_value *result)
     json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
     json_push_kv_bool(result, "candidate_lag_known", ms.lag_known);
     json_push_kv_bool(result, "candidate_lag_valid", ms.lag_valid);
+    json_push_kv_bool(result, "mirror_tip_hashes_agree",
+                      ms.tip_hashes_agree);
+    json_push_kv_bool(result, "mirror_blocker_recovered_by_tip_agreement",
+                      ms.blocker_recovered_by_tip_agreement);
     json_push_kv_int(result, "candidate_lag",
                      legacy_mirror_sync_reported_lag(&ms));
     legacy_mirror_sync_push_observed_lag_json(result,
@@ -396,6 +400,10 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
                          ms.candidate_trust);
         json_push_kv_bool(&svc, "candidate_lag_known", ms.lag_known);
         json_push_kv_bool(&svc, "candidate_lag_valid", ms.lag_valid);
+        json_push_kv_bool(&svc, "tip_hashes_agree",
+                          ms.tip_hashes_agree);
+        json_push_kv_bool(&svc, "blocker_recovered_by_tip_agreement",
+                          ms.blocker_recovered_by_tip_agreement);
         json_push_kv_int(&svc, "candidate_lag",
                          legacy_mirror_sync_reported_lag(&ms));
         legacy_mirror_sync_push_observed_lag_json(

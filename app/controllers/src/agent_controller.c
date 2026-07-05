@@ -150,6 +150,14 @@ static const char *agent_classify_path(const char *path,
         docs = "docs/AGENT_API.md";
         acc->agent_api_changed = true;
         acc->code_changed = true;
+    } else if (strcmp(path, "app/controllers/src/health_controller.c") == 0 ||
+               strcmp(path,
+                      "app/controllers/include/controllers/health_controller.h") == 0) {
+        subsystem = "native_status_api";
+        risk = "operator_api";
+        docs = "docs/AGENT_API.md";
+        acc->agent_api_changed = true;
+        acc->code_changed = true;
     } else if (strcmp(path, "src/main.c") == 0) {
         subsystem = "native_cli_api";
         risk = "operator_api";
