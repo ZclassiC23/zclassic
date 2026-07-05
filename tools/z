@@ -168,6 +168,7 @@ normalize_mirror_status_json() {
     local json="$1" lag blocker reachable lag_known lag_valid
     local candidate_lag_known candidate_lag_valid
     local legacy_height_known target_height_known
+    local c23_h zd_h c23_hash zd_hash tip_hashes_agree recovered
     reachable="$(json_field "$json" reachable)"
     lag="$(json_field "$json" candidate_lag)"
     [ -n "$lag" ] || lag="$(json_field "$json" lag)"
@@ -199,6 +200,24 @@ normalize_mirror_status_json() {
     blocker="$(json_field "$json" candidate_blocker)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" last_blocker_code)"
     [ -n "$blocker" ] || blocker="$(json_field "$json" activation_blocker)"
+    tip_hashes_agree="$(json_field "$json" tip_hashes_agree)"
+    recovered="$(json_field "$json" blocker_recovered_by_tip_agreement)"
+    c23_h="$(json_field "$json" zclassic23_height)"
+    zd_h="$(json_field "$json" zclassicd_height)"
+    c23_hash="$(json_field "$json" zclassic23_hash)"
+    zd_hash="$(json_field "$json" zclassicd_hash)"
+    if [ "$blocker" = "hash-disagreement" ]; then
+        if [ "$tip_hashes_agree" = "true" ] || [ "$recovered" = "true" ]; then
+            blocker=""
+            tip_hashes_agree=true
+            recovered=true
+        elif [ -n "$c23_h" ] && [ "$c23_h" = "$zd_h" ] &&
+             [ -n "$c23_hash" ] && [ "$c23_hash" = "$zd_hash" ]; then
+            blocker=""
+            tip_hashes_agree=true
+            recovered=true
+        fi
+    fi
     active_detail=""
     if [ -n "$blocker" ]; then
         active_detail="$(json_field "$json" last_error)"
@@ -223,10 +242,78 @@ normalize_mirror_status_json() {
         json="$(json_put_null "$json" candidate_lag_observed)"
     fi
     json="$(json_put_string "$json" candidate_blocker "$blocker")"
+    if [ "$recovered" = "true" ] && [ -z "$blocker" ]; then
+        json="$(json_put_string "$json" activation_blocker "")"
+        json="$(json_put_string "$json" last_blocker_code "")"
+        if [ "$reachable" = "true" ] && [ "$lag_known" = "true" ]; then
+            case "$lag" in
+                -[0-9]*|[0-9]*)
+                    if [ "$lag" -ge 0 ] && [ "$lag" -le 1 ]; then
+                        json="$(json_put_string "$json" state "healthy")"
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+    [ -n "$tip_hashes_agree" ] &&
+        json="$(json_put_bool "$json" tip_hashes_agree "$tip_hashes_agree")"
+    [ -n "$recovered" ] &&
+        json="$(json_put_bool "$json" blocker_recovered_by_tip_agreement "$recovered")"
     json="$(json_put_string "$json" active_error_code "$blocker")"
     json="$(json_put_string "$json" active_error_detail "$active_detail")"
     printf '%s\n' "$json"
 }
+
+tools_z_selftest() {
+    local sample normalized
+    sample='{"zclassic23_height":7,"zclassic23_hash":"0000abc","zclassicd_height":7,"zclassicd_hash":"0000abc","reachable":true,"lag":0,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","last_error":"stale mismatch"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "" ] || {
+        echo "tools/z selftest: stale same-hash candidate blocker not cleared" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" active_error_code)" = "" ] || {
+        echo "tools/z selftest: stale same-hash active error not cleared" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" active_error_detail)" = "" ] || {
+        echo "tools/z selftest: stale same-hash detail not cleared" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" activation_blocker)" = "" ] || {
+        echo "tools/z selftest: stale same-hash activation blocker not cleared" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" state)" = "healthy" ] || {
+        echo "tools/z selftest: stale same-hash state not normalized" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" tip_hashes_agree)" = "true" ] || {
+        echo "tools/z selftest: tip hash agreement not inferred" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" blocker_recovered_by_tip_agreement)" = "true" ] || {
+        echo "tools/z selftest: blocker recovery not inferred" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"0000abc","zclassicd_height":7,"zclassicd_hash":"0000def","reachable":true,"lag":0,"candidate_blocker":"hash-disagreement","last_error":"real mismatch"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] || {
+        echo "tools/z selftest: real mismatch candidate blocker was cleared" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" active_error_code)" = "hash-disagreement" ] || {
+        echo "tools/z selftest: real mismatch active error was cleared" >&2
+        return 1
+    }
+    return 0
+}
+
+if [ "${ZCL_TOOLS_Z_SELFTEST:-0}" = "1" ]; then
+    tools_z_selftest
+    exit $?
+fi
 
 legacy_conf_value() {
     awk -F= -v k="$1" '

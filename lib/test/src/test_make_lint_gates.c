@@ -2058,6 +2058,14 @@ static int t_tools_z_mirror_fallback_contract(void)
                != NULL);
         ASSERT(strstr(buf,
                       "active_error_detail \"$active_detail\"") != NULL);
+        ASSERT(strstr(buf, "ZCL_TOOLS_Z_SELFTEST") != NULL);
+        ASSERT(strstr(buf, "blocker_recovered_by_tip_agreement") != NULL);
+        ASSERT(strstr(buf, "tip_hashes_agree") != NULL);
+        ASSERT(strstr(buf, "stale same-hash active error not cleared")
+               != NULL);
+        ASSERT(run_gate_script_with_env("tools/z",
+                                        "ZCL_TOOLS_Z_SELFTEST",
+                                        "1") == 0);
         ASSERT(strstr(buf,
                       "LEGACY_RPCPORT:-${LEGACY_RPC_PORT:-$(legacy_conf_value rpcport)}")
                != NULL);

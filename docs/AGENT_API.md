@@ -46,6 +46,9 @@ zclassicd are at the same height with the same hash, whether a blocker is truly
 active, and whether operator action is required. A
 same-height same-hash mirror with no active blocker is healthy even if an older
 runtime or cached field once mentioned a transient `hash-disagreement`.
+`tools/z mirror --json` mirrors that interpretation only as a compatibility
+shim for long-running older binaries: it clears a `hash-disagreement` active
+blocker only when the payload itself proves equal height and equal hash.
 
 `zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
 entry point for that rule. In addition to the human summary, it emits a
