@@ -6,6 +6,7 @@
  *   zclassic23 -mcp                   — MCP stdio server for agents
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 agent                  — compact status from running node
+ *   zclassic23 agentlanes             — canonical/soak/dev lane topology
  *   zclassic23 agentinterface         — preferred AI/operator interface
  *   zclassic23 milestone              — ASCII milestone status from node
  *   zclassic23 refold                 — refold anchor readiness from node
@@ -651,6 +652,7 @@ static void print_usage(const char *prog);
 static bool cli_static_agent_method(const char *method)
 {
     return strcmp(method, "agentmap") == 0 ||
+           strcmp(method, "agentlanes") == 0 ||
            strcmp(method, "agentimpact") == 0 ||
            strcmp(method, "agentcontracts") == 0 ||
            strcmp(method, "agentbuild") == 0 ||
@@ -672,6 +674,8 @@ static bool cli_run_static_agent_method(const char *method,
     bool ok = false;
     if (strcmp(method, "agentmap") == 0) {
         ok = rpc_agent_map(&params, false, &result);
+    } else if (strcmp(method, "agentlanes") == 0) {
+        ok = rpc_agent_lanes(&params, false, &result);
     } else if (strcmp(method, "agentimpact") == 0) {
         ok = rpc_agent_impact(&params, false, &result);
     } else if (strcmp(method, "agentcontracts") == 0) {
@@ -871,6 +875,7 @@ static void print_usage(const char *prog)
     printf("  %s api                     API discovery from running node\n", prog);
     printf("  %s agent                   Compact status from running node\n", prog);
     printf("  %s agentmap                AI-coder code/docs/test map\n", prog);
+    printf("  %s agentlanes              Canonical/soak/dev lane topology JSON\n", prog);
     printf("  %s agentimpact <files...>  Changed files to tests/risk\n", prog);
     printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);

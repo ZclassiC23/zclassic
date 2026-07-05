@@ -140,7 +140,7 @@ actually fires.
 
 ## 3. The agent surface (MCP)
 
-~100 typed tools. Discover them live with `zcl_tools_list`; smoke-test with
+113 typed tools. Discover them live with `zcl_tools_list`; smoke-test with
 `zcl_self_test`; dump schemas with `zcl_openapi`. Source of truth is the
 controller `k_routes[]` arrays.
 
@@ -154,6 +154,9 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
+- `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
+  topology and `zcl.operator_deployment_safety.v1` policy. Use this before
+  deciding where a fresh binary may be deployed or restarted.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at

@@ -1269,6 +1269,8 @@ int test_syncdiag_rpc(void)
                    "zcl_agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "map_tool")),
                           "zcl_agent_map") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "lanes_tool")),
+                          "zcl_agent_lanes") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "impact_tool")),
                           "zcl_agent_impact") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "contracts_tool")),
@@ -1290,6 +1292,8 @@ int test_syncdiag_rpc(void)
                           "zclassic23 agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "map_command")),
                           "zclassic23 agentmap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "lanes_command")),
+                          "zclassic23 agentlanes") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "impact_command")),
                           "zclassic23 agentimpact <files...>") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "contracts_command")),
@@ -1926,6 +1930,7 @@ int test_syncdiag_rpc(void)
         json_set_array(&params);
         const char *files[] = {
             "app/controllers/src/agent_controller.c",
+            "app/controllers/src/agent_lanes_controller.c",
             "tools/mcp/controllers/ops_controller.c",
             "docs/AGENT_API.md",
         };
@@ -1949,7 +1954,7 @@ int test_syncdiag_rpc(void)
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.agent_impact.v1") == 0;
-        ok = ok && json_get_int(json_get(&result, "files_count")) == 3;
+        ok = ok && json_get_int(json_get(&result, "files_count")) == 4;
         ok = ok && json_get_bool(json_get(&result, "code_changed"));
         ok = ok && !json_get_bool(json_get(&result, "docs_only"));
         ok = ok && json_get_bool(json_get(&result, "agent_api_changed"));
@@ -1957,10 +1962,10 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result, "mapping_source")),
                           "app/controllers/include/controllers/agent_impact_rules.def") == 0;
         ok = ok && json_get_int(json_get(&result, "shared_rule_count")) > 0;
-        ok = ok && json_get_int(json_get(&result, "shared_rule_hits")) >= 3;
+        ok = ok && json_get_int(json_get(&result, "shared_rule_hits")) >= 4;
         ok = ok && json_get_int(json_get(
                      &result, "relevant_test_groups_count")) >= 3;
-        ok = ok && out_files && json_size(out_files) == 3;
+        ok = ok && out_files && json_size(out_files) == 4;
         ok = ok && json_array_has_str(groups, "syncdiag_rpc");
         ok = ok && json_array_has_str(groups, "mcp_controllers");
         ok = ok && json_array_has_str(groups, "make_lint_gates");
@@ -2008,6 +2013,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_interface.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_lanes.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_capability.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_machine_contract.v1")
@@ -2020,6 +2027,48 @@ int test_syncdiag_rpc(void)
             find_object_with_str(schemas, "schema",
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
+
+        struct json_value lanes;
+        json_init(&lanes);
+        ok = ok && rpc_table_execute(&tbl, "agentlanes", &params, &lanes);
+        const struct json_value *lane_arr = json_get(&lanes, "lanes");
+        const struct json_value *canonical =
+            find_object_with_str(lane_arr, "lane", "canonical");
+        const struct json_value *dev =
+            find_object_with_str(lane_arr, "lane", "dev");
+        const struct json_value *canonical_safety =
+            canonical ? json_get(canonical, "deployment_safety") : NULL;
+        const struct json_value *dev_safety =
+            dev ? json_get(dev, "deployment_safety") : NULL;
+        ok = ok && lanes.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&lanes, "schema")),
+                          "zcl.agent_lanes.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&lanes,
+                                                "default_deploy_target")),
+                          "dev") == 0;
+        ok = ok && lane_arr && lane_arr->type == JSON_ARR &&
+            json_size(lane_arr) >= 3;
+        ok = ok && canonical &&
+            strcmp(json_get_str(json_get(canonical, "unit")),
+                   "zclassic23") == 0;
+        ok = ok && canonical &&
+            json_get_int(json_get(canonical, "https_port")) == 8443;
+        ok = ok && canonical &&
+            json_get_int(json_get(canonical, "fs_port")) == 0;
+        ok = ok && canonical_safety &&
+            json_get_bool(json_get(canonical_safety,
+                                   "requires_operator_confirmation"));
+        ok = ok && !json_get_bool(json_get(canonical_safety,
+                                           "automation_deploy_ok"));
+        ok = ok && dev &&
+            strcmp(json_get_str(json_get(dev, "unit")), "zcl23-dev") == 0;
+        ok = ok && dev && json_get_int(json_get(dev, "https_port")) == 0;
+        ok = ok && dev && json_get_int(json_get(dev, "fs_port")) == 18034;
+        ok = ok && dev_safety &&
+            json_get_bool(json_get(dev_safety, "automation_deploy_ok"));
+        ok = ok && strcmp(json_get_str(json_get(dev_safety,
+                                                "safe_default_action")),
+                          "deploy_dev_lane") == 0;
 
         struct json_value build;
         json_init(&build);
@@ -2060,6 +2109,8 @@ int test_syncdiag_rpc(void)
             json_get(&interface, "capabilities");
         const struct json_value *runtime_status =
             find_object_with_str(capabilities, "name", "runtime_status");
+        const struct json_value *lane_topology =
+            find_object_with_str(capabilities, "name", "lane_topology");
         const struct json_value *deploy_cap =
             find_object_with_str(capabilities, "name", "deploy_guard");
         const struct json_value *machine =
@@ -2084,6 +2135,12 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(avoid,
                                          "do not require Python");
         ok = ok && capabilities && json_size(capabilities) >= 8;
+        ok = ok && lane_topology &&
+            strcmp(json_get_str(json_get(lane_topology, "schema")),
+                   "zcl.agent_lanes.v1") == 0;
+        ok = ok && lane_topology &&
+            strcmp(json_get_str(json_get(lane_topology, "mcp")),
+                   "zcl_agent_lanes") == 0;
         ok = ok && runtime_status &&
             strcmp(json_get_str(json_get(runtime_status, "mcp")),
                    "zcl_agent") == 0;
@@ -2395,6 +2452,7 @@ int test_syncdiag_rpc(void)
 
         json_free(&params);
         json_free(&contracts);
+        json_free(&lanes);
         json_free(&build);
         json_free(&interface);
         json_free(&guard_params);

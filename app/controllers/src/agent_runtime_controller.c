@@ -152,13 +152,17 @@ void rpc_agent_set_boot_context(const char *operator_lane,
     g_agent_runtime.fs_port = fs_port;
 }
 
-void agent_push_operator_lane_json(struct json_value *out,
-                                   const char *key)
+void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
+                                            const char *operator_lane,
+                                            const char *runtime_profile,
+                                            const char *datadir,
+                                            int rpc_port, int p2p_port,
+                                            int https_port, int fs_port)
 {
-    if (!out)
+    if (!lane_obj)
         return;
-    const char *lane = g_agent_runtime.operator_lane;
-    const char *out_key = (key && key[0]) ? key : "operator_lane";
+    const char *lane =
+        operator_lane && operator_lane[0] ? operator_lane : "unknown";
     const bool canonical = agent_lane_is(lane, "canonical");
     const bool soak = agent_lane_is(lane, "soak");
     const bool dev = agent_lane_is(lane, "dev");
@@ -170,34 +174,33 @@ void agent_push_operator_lane_json(struct json_value *out,
         agent_lane_automation_deploy_ok(lane);
     const bool requires_operator_confirmation =
         agent_lane_requires_operator_confirmation(lane);
-    struct json_value lane_obj;
     struct json_value safety;
 
-    json_init(&lane_obj);
-    json_set_object(&lane_obj);
-    json_push_kv_str(&lane_obj, "schema", "zcl.operator_lane.v1");
-    json_push_kv_int(&lane_obj, "schema_version", 1);
-    json_push_kv_str(&lane_obj, "lane", lane);
-    json_push_kv_str(&lane_obj, "runtime_profile",
-                     g_agent_runtime.runtime_profile);
-    json_push_kv_str(&lane_obj, "datadir", g_agent_runtime.datadir);
-    json_push_kv_int(&lane_obj, "rpcport", g_agent_runtime.rpc_port);
-    json_push_kv_int(&lane_obj, "p2p_port", g_agent_runtime.p2p_port);
-    json_push_kv_int(&lane_obj, "https_port", g_agent_runtime.https_port);
-    json_push_kv_int(&lane_obj, "fs_port", g_agent_runtime.fs_port);
-    json_push_kv_bool(&lane_obj, "canonical", canonical);
-    json_push_kv_bool(&lane_obj, "soak_evidence", soak);
-    json_push_kv_bool(&lane_obj, "development", dev);
-    json_push_kv_bool(&lane_obj, "ephemeral", ephemeral);
-    json_push_kv_str(&lane_obj, "restart_policy",
+    json_set_object(lane_obj);
+    json_push_kv_str(lane_obj, "schema", "zcl.operator_lane.v1");
+    json_push_kv_int(lane_obj, "schema_version", 1);
+    json_push_kv_str(lane_obj, "lane", lane);
+    json_push_kv_str(lane_obj, "runtime_profile",
+                     runtime_profile && runtime_profile[0]
+                         ? runtime_profile : "unknown");
+    json_push_kv_str(lane_obj, "datadir", datadir ? datadir : "");
+    json_push_kv_int(lane_obj, "rpcport", rpc_port);
+    json_push_kv_int(lane_obj, "p2p_port", p2p_port);
+    json_push_kv_int(lane_obj, "https_port", https_port);
+    json_push_kv_int(lane_obj, "fs_port", fs_port);
+    json_push_kv_bool(lane_obj, "canonical", canonical);
+    json_push_kv_bool(lane_obj, "soak_evidence", soak);
+    json_push_kv_bool(lane_obj, "development", dev);
+    json_push_kv_bool(lane_obj, "ephemeral", ephemeral);
+    json_push_kv_str(lane_obj, "restart_policy",
                      agent_lane_restart_policy(lane));
-    json_push_kv_str(&lane_obj, "safety_contract",
+    json_push_kv_str(lane_obj, "safety_contract",
                      agent_lane_safety_contract(lane));
-    json_push_kv_bool(&lane_obj, "automation_restart_ok",
+    json_push_kv_bool(lane_obj, "automation_restart_ok",
                       automation_restart_ok);
-    json_push_kv_bool(&lane_obj, "automation_deploy_ok",
+    json_push_kv_bool(lane_obj, "automation_deploy_ok",
                       automation_deploy_ok);
-    json_push_kv_bool(&lane_obj, "requires_operator_confirmation",
+    json_push_kv_bool(lane_obj, "requires_operator_confirmation",
                       requires_operator_confirmation);
 
     json_init(&safety);
@@ -221,9 +224,26 @@ void agent_push_operator_lane_json(struct json_value *out,
                      agent_lane_guard_env(lane));
     json_push_kv_str(&safety, "safe_default_action",
                      agent_lane_safe_default_action(lane));
-    json_push_kv(&lane_obj, "deployment_safety", &safety);
+    json_push_kv(lane_obj, "deployment_safety", &safety);
     json_free(&safety);
+}
 
+void agent_push_operator_lane_json(struct json_value *out,
+                                   const char *key)
+{
+    if (!out)
+        return;
+    const char *out_key = (key && key[0]) ? key : "operator_lane";
+    struct json_value lane_obj;
+    json_init(&lane_obj);
+    agent_fill_operator_lane_contract_json(&lane_obj,
+                                           g_agent_runtime.operator_lane,
+                                           g_agent_runtime.runtime_profile,
+                                           g_agent_runtime.datadir,
+                                           g_agent_runtime.rpc_port,
+                                           g_agent_runtime.p2p_port,
+                                           g_agent_runtime.https_port,
+                                           g_agent_runtime.fs_port);
     json_push_kv(out, out_key, &lane_obj);
     json_free(&lane_obj);
 }

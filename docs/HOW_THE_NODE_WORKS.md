@@ -71,6 +71,7 @@ answer.
 |------|-------|
 | `zclassic23 agentinterface` | Preferred AI/operator interface contract. Same contract as MCP `zcl_agent_interface`: MCP first, native CLI JSON second, REST read-only, no Python or `tools/z` logic required. |
 | `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, and first native/MCP/REST calls. Start here when choosing an interface. |
+| `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract. Same contract as MCP `zcl_agent_lanes`; use it before choosing a deploy or restart target. |
 | `zcl_agent` | The simple first MCP check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `zcl_operator_summary` is the longer compatible alias. Start here when checking live state. |
 | `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone` and MCP `zcl_milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
 | `zcl_status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Use after the summary names a drill-down. |
@@ -139,6 +140,7 @@ sovereign is its coin-set starting point. (Verify whether the cure has shipped v
    **`docs/CODEBASE_MAP.md`** is where-things-live + how-to-do-each-thing.
 3. Look at the live node before trusting any doc: start with
    `zclassic23 agentmap` or `zcl_agent_map` for the code/docs/test map,
+   `zclassic23 agentlanes` or `zcl_agent_lanes` for canonical/soak/dev safety,
    `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop, and
    `zclassic23 api` for interface discovery. Then use `zclassic23 agent` or
    `zcl_agent` for compact live state, and `zclassic23 milestone` or

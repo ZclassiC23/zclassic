@@ -100,11 +100,11 @@ or MCP `zcl_agent_build`.
 
 Canonical operator APIs, in priority order:
 
-1. `build/bin/zclassic23 agentmap`, `agentimpact`, `agentbuild`, `agent`,
-   `healthcheck`, and raw RPC methods — native C binary client to the running
-   linger service.
-2. MCP tools (`zcl_agent_map`, `zcl_agent_impact`, `zcl_agent_build`,
-   `zcl_agent`, `zcl_status`, `zcl_state`, `zcl_node_log`,
+1. `build/bin/zclassic23 agentmap`, `agentlanes`, `agentimpact`,
+   `agentbuild`, `agent`, `healthcheck`, and raw RPC methods — native C binary
+   client to the running linger service.
+2. MCP tools (`zcl_agent_map`, `zcl_agent_lanes`, `zcl_agent_impact`,
+   `zcl_agent_build`, `zcl_agent`, `zcl_status`, `zcl_state`, `zcl_node_log`,
    `zcl_sql`) — typed agent interface over the same node RPC truth.
 3. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.
 4. `tools/z` — deprecated shell compatibility for older terminals and scripts,

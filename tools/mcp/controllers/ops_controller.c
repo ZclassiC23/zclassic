@@ -42,6 +42,7 @@ DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
 DEFINE_PT(h_zcl_milestone,      "milestone",      "mcp.ops")
 DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
 DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
+DEFINE_PT(h_zcl_agent_lanes,    "agentlanes",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
 DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
@@ -1382,6 +1383,11 @@ static const struct mcp_tool_route k_routes[] = {
       "AI-coder map: primary native/MCP commands, code ownership, docs, "
       "and focused tests. Prefer this over searching shell wrappers.",
       NULL, 0, h_zcl_agent_map, 0, NULL },
+    { "zcl_agent_lanes", "ops",
+      "Native canonical/soak/dev lane topology, including datadirs, ports, "
+      "systemd units, and zcl.operator_deployment_safety.v1 restart/deploy "
+      "rules.",
+      NULL, 0, h_zcl_agent_lanes, 0, NULL },
     { "zcl_agent_impact", "ops",
       "Map changed repository file paths to subsystem, risk, docs, "
       "recommended focused tests, and pre-push gates.",

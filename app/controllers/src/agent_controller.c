@@ -92,6 +92,36 @@ static bool agent_str_starts(const char *s, const char *prefix)
     return s && prefix && strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
+static bool agent_path_is_native_agent_api(const char *path)
+{
+    static const char *const paths[] = {
+        "app/controllers/src/agent_controller.c",
+        "app/controllers/src/agent_impact_rules.c",
+        "app/controllers/src/agent_interface_controller.c",
+        "app/controllers/src/agent_lanes_controller.c",
+        "app/controllers/src/agent_resources.c",
+        "app/controllers/src/agent_restart_watchdog.c",
+        "app/controllers/src/agent_runtime_controller.c",
+        "app/controllers/src/event_agent_peers.c",
+        "app/controllers/src/event_agent_peers.h",
+        "app/controllers/src/event_agent_summary.c",
+        "app/controllers/src/event_agent_summary.h",
+        "app/controllers/include/controllers/agent_controller.h",
+        "app/controllers/include/controllers/agent_impact_rules.def",
+        "app/controllers/include/controllers/agent_impact_rules.h",
+        "app/controllers/include/controllers/agent_resources.h",
+        "app/controllers/include/controllers/agent_restart_watchdog.h",
+    };
+
+    if (!path || !path[0])
+        return false;
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        if (strcmp(path, paths[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
 static const char *agent_classify_path(const char *path,
                                        struct agent_impact_acc *acc,
                                        const char **risk_out,
@@ -131,14 +161,7 @@ static const char *agent_classify_path(const char *path,
         acc->mcp_changed = true;
         acc->agent_api_changed = true;
         acc->code_changed = true;
-    } else if (strcmp(path, "app/controllers/src/agent_controller.c") == 0 ||
-               strcmp(path,
-                      "app/controllers/src/agent_interface_controller.c") == 0 ||
-               strcmp(path, "app/controllers/src/agent_runtime_controller.c") == 0 ||
-               strcmp(path,
-                      "app/controllers/include/controllers/agent_controller.h") == 0 ||
-               strcmp(path,
-                      "app/controllers/include/controllers/agent_impact_rules.def") == 0) {
+    } else if (agent_path_is_native_agent_api(path)) {
         subsystem = "native_agent_api";
         risk = "operator_api";
         docs = "docs/AGENT_API.md";
@@ -265,6 +288,9 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     agent_push_command(&commands, "interface", "zclassic23 agentinterface",
                        "zcl_agent_interface",
                        "preferred AI/operator transport and JSON rules");
+    agent_push_command(&commands, "lanes", "zclassic23 agentlanes",
+                       "zcl_agent_lanes",
+                       "canonical/soak/dev topology and restart/deploy rules");
     agent_push_command(&commands, "deploy_guard",
                        "zclassic23 agentdeployguard [action]",
                        "zcl_agent_deploy_guard",
@@ -321,10 +347,10 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_set_array(&subsystems);
     agent_push_subsystem(&subsystems, "native_agent_api",
                          "first-call binary JSON contracts",
-                         "app/controllers/src/agent_controller.c, src/main.c",
+                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_runtime_controller.c, src/main.c",
                          "docs/AGENT_API.md",
                          "syncdiag_rpc, mcp_controllers, make_lint_gates",
-                         "zcl_agent, zcl_agent_interface, zcl_agent_map");
+                         "zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map");
     agent_push_subsystem(&subsystems, "mcp_agent_api",
                          "typed AI tool routes over the same native RPC truth",
                          "tools/mcp/controllers/ops_controller.c",
@@ -543,6 +569,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_interface.v1",
                       "zclassic23 agentinterface / zcl_agent_interface",
                       "preferred AI development interface and transport ranking");
+    agent_push_schema(&schemas, "zcl.agent_lanes.v1",
+                      "zclassic23 agentlanes / zcl_agent_lanes",
+                      "canonical/soak/dev lane topology and safety rules");
     agent_push_schema(&schemas, "zcl.agent_capability.v1",
                       "nested in zcl.agent_interface.v1 capabilities[]",
                       "one machine-readable agent operation and its transports");
@@ -576,9 +605,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     agent_push_str(&transports,
-                   "native: zclassic23 agent|agentinterface|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard");
+                   "native: zclassic23 agent|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard");
     agent_push_str(&transports,
-                   "mcp: zcl_agent, zcl_agent_interface, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard");
+                   "mcp: zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard");
     agent_push_str(&transports,
                    "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
     agent_push_str(&transports,

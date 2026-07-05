@@ -617,6 +617,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "summary",           rpc_agent_summary,     true },
         { "control", "operatorsummary",   rpc_agent_summary,     true },
         { "control", "agentmap",          rpc_agent_map,         true },
+        { "control", "agentlanes",        rpc_agent_lanes,       true },
         { "control", "agentimpact",       rpc_agent_impact,      true },
         { "control", "agentcontracts",    rpc_agent_contracts,   true },
         { "control", "agentbuild",        rpc_agent_build,       true },

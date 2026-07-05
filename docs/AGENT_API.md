@@ -9,6 +9,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 |---|---|---|
 | Live node status | `zclassic23 agent` | `zcl_agent` |
 | Code/docs/test map | `zclassic23 agentmap` | `zcl_agent_map` |
+| Lane topology | `zclassic23 agentlanes` | `zcl_agent_lanes` |
 | Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
@@ -23,8 +24,9 @@ currently exposes the public status contract at `GET /api/v1/agent`.
 ## Preferred Interface
 
 The best interface for an AI coding operator is MCP with typed JSON tools:
-start with `zcl_agent_interface`, then use `zcl_agent`, `zcl_agent_impact`,
-`zcl_agent_build`, `zcl_state`, `zcl_node_log`, and `zcl_sql` as needed. The
+start with `zcl_agent_interface`, then use `zcl_agent`, `zcl_agent_lanes`,
+`zcl_agent_impact`, `zcl_agent_build`, `zcl_state`, `zcl_node_log`, and
+`zcl_sql` as needed. The
 native binary commands (`zclassic23 agentinterface`, `zclassic23 agent`, etc.)
 are the second-best interface for terminal work and scripts. REST is the
 public read-only mirror.
@@ -132,6 +134,17 @@ before any restart or binary deployment:
 
 Canonical defaults to observe-only, soak defaults to preserving the evidence
 window, and dev defaults to `deploy_dev_lane`.
+
+`zclassic23 agentlanes` / `zcl_agent_lanes` returns the native
+`zcl.agent_lanes.v1` topology contract for all first-class operator lanes:
+canonical (`zclassic23`, `~/.zclassic-c23`, RPC 18232 / P2P 8033), soak
+(`zclassic23-soak`, `~/.zclassic-c23-soak`, RPC 18242 / P2P 8043), and dev
+(`zcl23-dev`, `~/.zclassic-c23-dev`, RPC 18252 / P2P 8053). It also embeds
+`current_runtime_lane`, the same `zcl.operator_lane.v1` object used by
+`zclassic23 agent`, plus an `automation_rules[]` list. Use this C-native
+topology before deciding where to deploy or restart; use `make lane-health` /
+`tools/scripts/lane_health.sh --json` only as the external systemd/RPC
+readiness probe that verifies the declared lanes are actually running.
 
 The same public status contract includes `resources`
 (`zcl.node_resources.v1`) with cheap process-level RSS, RSS warning threshold,

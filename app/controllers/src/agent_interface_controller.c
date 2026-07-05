@@ -150,6 +150,10 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "zcl.public_status.v1", "zclassic23 agent", "zcl_agent",
         "GET /api/v1/agent",
         "compact live status, lane safety, blocker, and next action");
+    agent_interface_push_capability(&capabilities, "lane_topology",
+        "zcl.agent_lanes.v1", "zclassic23 agentlanes",
+        "zcl_agent_lanes", "",
+        "canonical, soak, and dev lane topology with restart/deploy rules");
     agent_interface_push_capability(&capabilities, "semantic_state",
         "subsystem-specific zcl_state JSON", "zclassic23 dumpstate <subsystem>",
         "zcl_state", "",
@@ -212,6 +216,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_set_object(&loop);
     json_push_kv_str(&loop, "discover", "zclassic23 agentinterface");
     json_push_kv_str(&loop, "status", "zcl_agent");
+    json_push_kv_str(&loop, "lane_topology", "zcl_agent_lanes");
     json_push_kv_str(&loop, "code_map", "zcl_agent_map");
     json_push_kv_str(&loop, "changed_files_to_tests", "zcl_agent_impact");
     json_push_kv_str(&loop, "build_contract", "zcl_agent_build");

@@ -14,11 +14,19 @@ void rpc_agent_set_boot_context(const char *operator_lane,
                                 const char *datadir,
                                 int rpc_port, int p2p_port,
                                 int https_port, int fs_port);
+void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
+                                            const char *operator_lane,
+                                            const char *runtime_profile,
+                                            const char *datadir,
+                                            int rpc_port, int p2p_port,
+                                            int https_port, int fs_port);
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key);
 
 bool rpc_agent_map(const struct json_value *params, bool help,
                    struct json_value *result);
+bool rpc_agent_lanes(const struct json_value *params, bool help,
+                     struct json_value *result);
 bool rpc_agent_impact(const struct json_value *params, bool help,
                       struct json_value *result);
 bool rpc_agent_contracts(const struct json_value *params, bool help,
