@@ -958,6 +958,36 @@ int test_utxo_activation_paused(void)
         observed = observed && attempts && json_get_int(attempts) == 1;
         observed = observed && last_outcome &&
                    strcmp(json_get_str(last_outcome), "unwitnessed") == 0;
+        const struct json_value *detail =
+            condition ? json_get(condition, "detail") : NULL;
+        observed = observed && detail != NULL;
+        observed = observed &&
+                   strcmp(json_get_str(json_get(detail, "trigger")),
+                          "block_failed_mask_exhausted") == 0;
+        observed = observed &&
+                   json_get_int(json_get(
+                       detail, "local_height_at_detect")) == 100;
+        observed = observed &&
+                   json_get_int(json_get(
+                       detail, "best_header_at_detect")) == 110;
+        observed = observed &&
+                   json_get_int(json_get(
+                       detail, "target_height_at_detect")) == 101;
+        observed = observed &&
+                   json_get_bool(json_get(detail, "recovery_attempted"));
+        observed = observed &&
+                   json_get_bool(json_get(detail, "recovery_accepted"));
+        observed = observed &&
+                   json_get_int(json_get(
+                       detail, "last_manifest_height")) == 101;
+        observed = observed &&
+                   strcmp(json_get_str(json_get(
+                              detail, "snapshot_sync_state")),
+                          "negotiating") == 0;
+        observed = observed &&
+                   json_get_int(json_get(
+                       detail, "last_witness_local_height")) == 100;
+        observed = observed && json_get(detail, "remedy_contract") != NULL;
 
         ok = ok && active_chain_move_window_tip(&ms.chain_active, &recovered_tip);
         fake_clock_set(&clock, 6001);

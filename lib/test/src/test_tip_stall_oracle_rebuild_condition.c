@@ -117,6 +117,22 @@ static struct block_index *tsor_build_header_chain(struct main_state *ms,
     return best_header;
 }
 
+static const struct json_value *tsor_json_condition(
+    const struct json_value *root,
+    const char *name)
+{
+    const struct json_value *conditions = json_get(root, "conditions");
+    if (!conditions || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = cond ? json_get(cond, "name") : NULL;
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return cond;
+    }
+    return NULL;
+}
+
 int test_tip_stall_oracle_rebuild_condition(void)
 {
     printf("\n=== tip_stall_oracle_rebuild condition tests ===\n");
@@ -160,6 +176,41 @@ int test_tip_stall_oracle_rebuild_condition(void)
         ok = ok && tip_stall_oracle_rebuild_test_last_rebuild_from()
                        == TIP_H - 2;
         ok = ok && condition_engine_get_active_count() == 0; /* witnessed */
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *cond = tsor_json_condition(
+            &dump, "tip_stall_oracle_rebuild");
+        const struct json_value *detail = cond ? json_get(cond, "detail")
+                                               : NULL;
+        ok = ok && detail != NULL;
+        ok = ok &&
+             json_get_int(json_get(detail, "tip_height_at_detect")) == TIP_H;
+        ok = ok &&
+             json_get_int(json_get(detail, "best_header_at_detect")) ==
+             TIP_H + 5;
+        ok = ok &&
+             json_get_int(json_get(detail, "oracle_height_at_detect")) ==
+             TIP_H + 5;
+        ok = ok &&
+             json_get_int(json_get(detail, "current_tip_height")) ==
+             TIP_H + 1;
+        ok = ok &&
+             json_get_int(json_get(detail, "last_rebuild_from")) ==
+             TIP_H - 2;
+        ok = ok && json_get_bool(json_get(detail, "last_rebuild_ok"));
+        ok = ok &&
+             json_get_int(json_get(detail, "last_witness_tip_height")) ==
+             TIP_H + 1;
+        ok = ok && json_get_bool(json_get(
+            detail, "last_witness_tip_advanced"));
+        ok = ok &&
+             json_get_int(json_get(detail, "stall_secs")) == 120;
+        ok = ok &&
+             json_get_int(json_get(detail, "min_gap_blocks")) == 2;
+        ok = ok && json_get(detail, "remedy_contract") != NULL;
+        json_free(&dump);
         TSOR_CHECK("non-fork stall + oracle ahead -> rebuild from tip-2, "
                    "witnessed", ok);
 

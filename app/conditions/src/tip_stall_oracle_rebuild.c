@@ -70,6 +70,11 @@
 static _Atomic int64_t g_tip_height_at_check = -1;
 static _Atomic int64_t g_tip_unchanged_since = 0;
 static _Atomic int64_t g_tip_at_detect = -1;
+static _Atomic int64_t g_best_header_at_detect = -1;
+static _Atomic int g_oracle_height_at_detect = -1;
+static _Atomic int g_last_rebuild_from = -1;
+static _Atomic int g_last_rebuild_ok = 0;
+static _Atomic int64_t g_last_witness_tip_height = -1;
 
 /* Test seams: the remedy's real side effects (read zclassicd height, run
  * rebuild_recent_repair) reach external services unavailable to a unit test,
@@ -172,6 +177,8 @@ static bool detect_tip_stall_oracle_rebuild(void)
         return false;
 
     atomic_store(&g_tip_at_detect, tip_h);
+    atomic_store(&g_best_header_at_detect, bh->nHeight);
+    atomic_store(&g_oracle_height_at_detect, remote);
     return true;
 }
 
@@ -193,6 +200,8 @@ static enum condition_remedy_result remedy_tip_stall_oracle_rebuild(void)
         from_h = 0;
 
     bool rebuilt = g_rebuild_fn(from_h);
+    atomic_store(&g_last_rebuild_from, from_h);
+    atomic_store(&g_last_rebuild_ok, rebuilt ? 1 : 0);
 #ifdef ZCL_TESTING
     atomic_fetch_add(&g_test_rebuild_calls, 1);
     atomic_store(&g_test_last_rebuild_from, from_h);
@@ -218,7 +227,55 @@ static bool witness_tip_stall_oracle_rebuild(int64_t target_at_detect)
     struct main_state *ms = ms_or_null();
     if (!ms)
         return false;
-    return current_tip_height(ms) > atomic_load(&g_tip_at_detect);
+    int64_t tip = current_tip_height(ms);
+    atomic_store(&g_last_witness_tip_height, tip);
+    return tip > atomic_load(&g_tip_at_detect);
+}
+
+static bool detail_tip_stall_oracle_rebuild(struct json_value *out)
+{
+    struct main_state *ms = ms_or_null();
+    int64_t current_tip = current_tip_height(ms);
+    int64_t current_best_header =
+        ms && ms->pindex_best_header ? ms->pindex_best_header->nHeight : -1;
+    int64_t unchanged_since = atomic_load(&g_tip_unchanged_since);
+    int64_t now = platform_time_wall_unix();
+    int64_t unchanged_age =
+        unchanged_since > 0 && now >= unchanged_since ? now - unchanged_since
+                                                      : -1;
+
+    bool ok = true;
+    ok = ok && json_push_kv_int(out, "tip_height_at_check",
+                                atomic_load(&g_tip_height_at_check));
+    ok = ok && json_push_kv_int(out, "tip_unchanged_since_unix",
+                                unchanged_since);
+    ok = ok && json_push_kv_int(out, "tip_unchanged_age_s",
+                                unchanged_age);
+    ok = ok && json_push_kv_int(out, "tip_height_at_detect",
+                                atomic_load(&g_tip_at_detect));
+    ok = ok && json_push_kv_int(out, "best_header_at_detect",
+                                atomic_load(&g_best_header_at_detect));
+    ok = ok && json_push_kv_int(out, "oracle_height_at_detect",
+                                atomic_load(&g_oracle_height_at_detect));
+    ok = ok && json_push_kv_int(out, "current_tip_height", current_tip);
+    ok = ok && json_push_kv_int(out, "current_best_header_height",
+                                current_best_header);
+    ok = ok && json_push_kv_int(out, "last_rebuild_from",
+                                atomic_load(&g_last_rebuild_from));
+    ok = ok && json_push_kv_bool(out, "last_rebuild_ok",
+                                 atomic_load(&g_last_rebuild_ok) != 0);
+    ok = ok && json_push_kv_int(out, "last_witness_tip_height",
+                                atomic_load(&g_last_witness_tip_height));
+    ok = ok && json_push_kv_bool(
+        out, "last_witness_tip_advanced",
+        atomic_load(&g_last_witness_tip_height) >
+            atomic_load(&g_tip_at_detect));
+    ok = ok && json_push_kv_int(out, "stall_secs", TIP_STALL_SECS);
+    ok = ok && json_push_kv_int(out, "min_gap_blocks", MIN_GAP);
+    ok = ok && json_push_kv_str(
+        out, "remedy_contract",
+        "oracle rebuild is witnessed only when active tip advances beyond tip_height_at_detect");
+    return ok;
 }
 
 static struct condition c_tip_stall_oracle_rebuild = {
@@ -241,6 +298,7 @@ static struct condition c_tip_stall_oracle_rebuild = {
     .detect = detect_tip_stall_oracle_rebuild,
     .remedy = remedy_tip_stall_oracle_rebuild,
     .witness = witness_tip_stall_oracle_rebuild,
+    .detail = detail_tip_stall_oracle_rebuild,
     .witness_window_secs = 180,
 };
 
@@ -255,6 +313,11 @@ void tip_stall_oracle_rebuild_test_reset(void)
     atomic_store(&g_tip_height_at_check, -1);
     atomic_store(&g_tip_unchanged_since, 0);
     atomic_store(&g_tip_at_detect, -1);
+    atomic_store(&g_best_header_at_detect, -1);
+    atomic_store(&g_oracle_height_at_detect, -1);
+    atomic_store(&g_last_rebuild_from, -1);
+    atomic_store(&g_last_rebuild_ok, 0);
+    atomic_store(&g_last_witness_tip_height, -1);
     g_oracle_height_fn = legacy_chain_rpc_get_block_count;
     g_rebuild_fn = rebuild_recent_repair;
     atomic_store(&g_test_rebuild_calls, 0);

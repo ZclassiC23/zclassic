@@ -104,6 +104,21 @@ static struct block_index *insert_watchdog_block(struct main_state *ms,
     return bi;
 }
 
+static const struct json_value *sync_watchdog_condition_json(
+    const struct json_value *conditions,
+    const char *name)
+{
+    if (!conditions || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(conditions); i++) {
+        const struct json_value *cond = json_at(conditions, i);
+        const struct json_value *n = cond ? json_get(cond, "name") : NULL;
+        if (n && strcmp(json_get_str(n), name) == 0)
+            return cond;
+    }
+    return NULL;
+}
+
 int test_sync_watchdog_conditions(void)
 {
     printf("\n=== sync watchdog condition tests ===\n");
@@ -239,7 +254,32 @@ int test_sync_watchdog_conditions(void)
         fake_clock_set(&clock, 3121);
         condition_engine_tick();
         ok = ok && download_queue_starved_test_remedy_calls() == 1;
-        SYNC_WATCHDOG_CHECK("download queue starved kicks refill", ok);
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *conditions = json_get(&dump, "conditions");
+        const struct json_value *cond = sync_watchdog_condition_json(
+            conditions, "download_queue_starved");
+        const struct json_value *detail = cond ? json_get(cond, "detail")
+                                               : NULL;
+        ok = ok && detail != NULL;
+        ok = ok && strcmp(json_get_str(json_get(detail, "sync_state")),
+                          "blocks_download") == 0;
+        ok = ok && json_get_int(json_get(detail, "peer_count")) == 1;
+        ok = ok && json_get_int(json_get(detail, "detect_age_s")) == 121;
+        ok = ok && json_get_int(json_get(
+            detail, "requested_at_detect")) == 0;
+        ok = ok && json_get_int(json_get(detail, "current_requested")) == 0;
+        ok = ok && json_get_int(json_get(
+            detail, "last_witness_requested")) == 0;
+        ok = ok && !json_get_bool(json_get(
+            detail, "witness_request_counter_advanced"));
+        ok = ok && json_get(detail, "last_assign_result") != NULL;
+        ok = ok && json_get(detail, "remedy_contract") != NULL;
+        json_free(&dump);
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved kicks refill with detail json", ok);
         cleanup_sync_watchdog();
     }
 
@@ -366,7 +406,35 @@ int test_sync_watchdog_conditions(void)
         struct watchdog_local_recovery_stats lr;
         sync_monitor_get_local_recovery_stats(&lr);
         ok = ok && lr.active && lr.missing_height == 11;
-        SYNC_WATCHDOG_CHECK("local header refill rotates peers", ok);
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *conditions = json_get(&dump, "conditions");
+        const struct json_value *cond = sync_watchdog_condition_json(
+            conditions, "local_header_refill_needed");
+        const struct json_value *detail = cond ? json_get(cond, "detail")
+                                               : NULL;
+        ok = ok && detail != NULL;
+        ok = ok && strcmp(json_get_str(json_get(detail, "sync_state")),
+                          "headers_download") == 0;
+        ok = ok && json_get_int(json_get(
+            detail, "tip_height_at_detect")) == 10;
+        ok = ok && json_get_int(json_get(detail, "missing_height")) == 11;
+        ok = ok && json_get_int(json_get(detail, "peer_max_at_detect")) == 20;
+        ok = ok && json_get_bool(json_get(
+            detail, "local_recovery_active"));
+        ok = ok && json_get_int(json_get(
+            detail, "local_recovery_missing_height")) == 11;
+        ok = ok && json_get_int(json_get(detail, "retry_count")) == 1;
+        ok = ok && json_get_int(json_get(
+            detail, "distinct_peer_count")) == 3;
+        ok = ok && strcmp(json_get_str(json_get(
+            detail, "local_recovery_mode")), "next-child-missing") == 0;
+        ok = ok && json_get(detail, "remedy_contract") != NULL;
+        json_free(&dump);
+        SYNC_WATCHDOG_CHECK(
+            "local header refill rotates peers with detail json", ok);
         cleanup_sync_watchdog();
     }
 

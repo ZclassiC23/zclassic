@@ -36,6 +36,8 @@ static _Atomic int g_target_height_at_detect = -1;
 static _Atomic int g_recovery_attempted;
 static _Atomic int g_recovery_accepted;
 static _Atomic int g_last_manifest_height = -1;
+static _Atomic int g_last_witness_local_height = -1;
+static _Atomic int g_last_witness_snapsync_state = SNAPSYNC_IDLE;
 
 #ifdef ZCL_TESTING
 static struct node_db *g_test_ndb;
@@ -83,7 +85,7 @@ static struct snapshot_sync_service *runtime_snapsync(struct node_db *ndb)
     return snapsync_global();
 }
 
-static bool snapshot_recovery_already_active(void)
+static struct snapshot_sync_service *runtime_snapsync_existing(void)
 {
     struct snapshot_sync_service *svc = NULL;
 #ifdef ZCL_TESTING
@@ -94,6 +96,12 @@ static bool snapshot_recovery_already_active(void)
         svc = app_runtime_snapshot_sync();
     if (!svc && snapsync_global_initialized())
         svc = snapsync_global();
+    return svc;
+}
+
+static bool snapshot_recovery_already_active(void)
+{
+    struct snapshot_sync_service *svc = runtime_snapsync_existing();
     return svc && svc->state != SNAPSYNC_IDLE;
 }
 
@@ -220,11 +228,57 @@ static bool witness_tip_wedged_resnapshot(int64_t target_at_detect)
     if (!ms)
         ms = condition_engine_main_state();
     int target = atomic_load(&g_target_height_at_detect);
-    if (ms && target > 0 && active_chain_height(&ms->chain_active) >= target)
+    int local = ms ? active_chain_height(&ms->chain_active) : -1;
+    atomic_store(&g_last_witness_local_height, local);
+    if (target > 0 && local >= target)
         return true;
 
     struct snapshot_sync_service *svc = runtime_snapsync(runtime_ndb());
-    return svc && svc->state == SNAPSYNC_COMPLETE;
+    enum snapshot_sync_state st = svc ? svc->state : SNAPSYNC_IDLE;
+    atomic_store(&g_last_witness_snapsync_state, (int)st);
+    return st == SNAPSYNC_COMPLETE;
+}
+
+static bool detail_tip_wedged_resnapshot(struct json_value *out)
+{
+    struct main_state *ms = sync_monitor_main_state();
+    if (!ms)
+        ms = condition_engine_main_state();
+    struct snapshot_sync_service *svc = runtime_snapsync_existing();
+    enum snapshot_sync_state st = svc ? svc->state : SNAPSYNC_IDLE;
+    int current_local = ms ? active_chain_height(&ms->chain_active) : -1;
+
+    bool ok = true;
+    ok = ok && json_push_kv_str(
+        out, "trigger",
+        trigger_name((enum tip_wedged_trigger)atomic_load(
+            &g_trigger_at_detect)));
+    ok = ok && json_push_kv_int(out, "local_height_at_detect",
+                                atomic_load(&g_local_height_at_detect));
+    ok = ok && json_push_kv_int(out, "best_header_at_detect",
+                                atomic_load(&g_best_header_at_detect));
+    ok = ok && json_push_kv_int(out, "target_height_at_detect",
+                                atomic_load(&g_target_height_at_detect));
+    ok = ok && json_push_kv_int(out, "current_local_height",
+                                current_local);
+    ok = ok && json_push_kv_bool(out, "recovery_attempted",
+                                 atomic_load(&g_recovery_attempted) != 0);
+    ok = ok && json_push_kv_bool(out, "recovery_accepted",
+                                 atomic_load(&g_recovery_accepted) != 0);
+    ok = ok && json_push_kv_int(out, "last_manifest_height",
+                                atomic_load(&g_last_manifest_height));
+    ok = ok && json_push_kv_str(out, "snapshot_sync_state",
+                                snapsync_state_name(st));
+    ok = ok && json_push_kv_int(out, "last_witness_local_height",
+                                atomic_load(&g_last_witness_local_height));
+    ok = ok && json_push_kv_str(
+        out, "last_witness_snapshot_sync_state",
+        snapsync_state_name((enum snapshot_sync_state)atomic_load(
+            &g_last_witness_snapsync_state)));
+    ok = ok && json_push_kv_str(
+        out, "remedy_contract",
+        "snapshot recovery is witnessed when local height reaches target or snapshot sync completes");
+    return ok;
 }
 
 static struct condition c_tip_wedged_resnapshot = {
@@ -236,6 +290,7 @@ static struct condition c_tip_wedged_resnapshot = {
     .detect = detect_tip_wedged_resnapshot,
     .remedy = remedy_tip_wedged_resnapshot,
     .witness = witness_tip_wedged_resnapshot,
+    .detail = detail_tip_wedged_resnapshot,
     .witness_window_secs = 300,
 };
 
@@ -254,6 +309,8 @@ void tip_wedged_resnapshot_test_reset(void)
     atomic_store(&g_recovery_attempted, 0);
     atomic_store(&g_recovery_accepted, 0);
     atomic_store(&g_last_manifest_height, -1);
+    atomic_store(&g_last_witness_local_height, -1);
+    atomic_store(&g_last_witness_snapsync_state, SNAPSYNC_IDLE);
     atomic_store(&g_test_remedy_calls, 0);
     g_test_ndb = NULL;
     g_test_svc = NULL;

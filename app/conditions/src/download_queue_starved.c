@@ -21,6 +21,7 @@ static _Atomic uint64_t g_inflight_at_detect;
 static _Atomic uint64_t g_queued_at_detect;
 static _Atomic uint64_t g_requested_at_detect;
 static _Atomic int64_t g_age_at_detect;
+static _Atomic uint64_t g_last_witness_requested;
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_remedy_calls;
@@ -92,7 +93,94 @@ static bool witness_download_queue_starved(int64_t target_at_detect)
      * requested. A frozen download pipeline cannot manufacture that increase. */
     uint64_t requested = 0;
     dl_get_stats(dm, &requested, NULL, NULL, NULL, NULL);
+    atomic_store(&g_last_witness_requested, requested);
     return requested > atomic_load(&g_requested_at_detect);
+}
+
+static bool detail_download_queue_starved(struct json_value *out)
+{
+    struct connman *cm = sync_monitor_connman();
+    struct download_manager *dm = sync_monitor_download_manager();
+    uint64_t requested = 0;
+    uint64_t received = 0;
+    uint64_t timed_out = 0;
+    uint64_t inflight = 0;
+    uint64_t queued = 0;
+    struct dl_diagnostics diag;
+    dl_get_diagnostics(dm, &diag);
+    if (dm) {
+        dl_get_stats(dm, &requested, &received, &timed_out, &inflight,
+                     &queued);
+    }
+
+    bool ok = true;
+    ok = ok && json_push_kv_str(out, "sync_state",
+                                sync_state_name(sync_get_state()));
+    ok = ok && json_push_kv_bool(out, "has_connman", cm != NULL);
+    ok = ok && json_push_kv_bool(out, "has_download_manager", dm != NULL);
+    ok = ok && json_push_kv_int(
+        out, "peer_count", cm ? (int64_t)connman_get_node_count(cm) : -1);
+    ok = ok && json_push_kv_int(out, "inflight_threshold",
+                                DL_MAX_IN_FLIGHT_TOTAL_IBD /
+                                    QUEUE_STARVED_RATIO_DEN);
+    ok = ok && json_push_kv_int(out, "trigger_secs",
+                                QUEUE_STARVED_TRIGGER_SECS);
+    ok = ok && json_push_kv_int(out, "first_seen_unix",
+                                atomic_load(&g_first_seen));
+    ok = ok && json_push_kv_int(out, "detect_age_s",
+                                atomic_load(&g_age_at_detect));
+    ok = ok && json_push_kv_int(out, "requested_at_detect",
+                                (int64_t)atomic_load(
+                                    &g_requested_at_detect));
+    ok = ok && json_push_kv_int(out, "inflight_at_detect",
+                                (int64_t)atomic_load(
+                                    &g_inflight_at_detect));
+    ok = ok && json_push_kv_int(out, "queued_at_detect",
+                                (int64_t)atomic_load(&g_queued_at_detect));
+    ok = ok && json_push_kv_int(out, "current_requested",
+                                (int64_t)requested);
+    ok = ok && json_push_kv_int(out, "current_received",
+                                (int64_t)received);
+    ok = ok && json_push_kv_int(out, "current_timed_out",
+                                (int64_t)timed_out);
+    ok = ok && json_push_kv_int(out, "current_inflight",
+                                (int64_t)inflight);
+    ok = ok && json_push_kv_int(out, "current_queued",
+                                (int64_t)queued);
+    ok = ok && json_push_kv_int(out, "last_witness_requested",
+                                (int64_t)atomic_load(
+                                    &g_last_witness_requested));
+    ok = ok && json_push_kv_bool(
+        out, "witness_request_counter_advanced",
+        atomic_load(&g_last_witness_requested) >
+            atomic_load(&g_requested_at_detect));
+    ok = ok && json_push_kv_int(out, "assign_attempts",
+                                (int64_t)diag.assign_attempts);
+    ok = ok && json_push_kv_int(out, "assign_successes",
+                                (int64_t)diag.assign_successes);
+    ok = ok && json_push_kv_int(out, "assign_zero_results",
+                                (int64_t)diag.assign_zero_results);
+    ok = ok && json_push_kv_str(out, "last_assign_result",
+                                dl_assign_result_name(
+                                    diag.last_assign_result));
+    ok = ok && json_push_kv_int(out, "last_assign_peer_id",
+                                diag.last_assign_peer_id);
+    ok = ok && json_push_kv_int(out, "last_assign_available",
+                                (int64_t)diag.last_assign_available);
+    ok = ok && json_push_kv_int(out, "last_assign_assigned",
+                                (int64_t)diag.last_assign_assigned);
+    ok = ok && json_push_kv_int(out, "last_assign_queue_len",
+                                (int64_t)diag.last_assign_queue_len);
+    ok = ok && json_push_kv_int(out, "last_assign_active",
+                                (int64_t)diag.last_assign_active);
+    ok = ok && json_push_kv_int(out, "oldest_in_flight_age_seconds",
+                                diag.oldest_in_flight_age_seconds);
+    ok = ok && json_push_kv_int(out, "overdue_in_flight",
+                                (int64_t)diag.overdue_in_flight);
+    ok = ok && json_push_kv_str(
+        out, "remedy_contract",
+        "kick_local_sync is witnessed only when total_requested advances past requested_at_detect");
+    return ok;
 }
 
 static struct condition c_download_queue_starved = {
@@ -109,6 +197,7 @@ static struct condition c_download_queue_starved = {
     .detect = detect_download_queue_starved,
     .remedy = remedy_download_queue_starved,
     .witness = witness_download_queue_starved,
+    .detail = detail_download_queue_starved,
     .witness_window_secs = 60,
     /* External-resource fault (peers / bandwidth / a momentarily empty fetch
      * window) — NOT a deterministic local fault. Re-arm on a long cooldown so a
@@ -132,6 +221,7 @@ void download_queue_starved_test_reset(void)
     atomic_store(&g_queued_at_detect, 0);
     atomic_store(&g_requested_at_detect, 0);
     atomic_store(&g_age_at_detect, 0);
+    atomic_store(&g_last_witness_requested, 0);
     atomic_store(&g_test_remedy_calls, 0);
 }
 

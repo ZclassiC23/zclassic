@@ -2596,6 +2596,21 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(rules, "utxo_activation_paused") != NULL);
         ASSERT(strstr(rules, "condition_engine") != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/download_queue_starved.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/local_header_refill_needed.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/tip_wedged_resnapshot.c")
+               != NULL);
+        ASSERT(strstr(rules, "app/conditions/src/tip_stall_oracle_rebuild.c")
+               != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_sync_watchdog_conditions.c")
+               != NULL);
+        ASSERT(strstr(rules,
+                      "lib/test/src/test_tip_stall_oracle_rebuild_condition.c")
+               != NULL);
+        ASSERT(strstr(rules, "sync_watchdog_conditions") != NULL);
+        ASSERT(strstr(rules, "tip_stall_oracle_rebuild_condition") != NULL);
         ASSERT(strstr(rules, "app/conditions/src/stale_validate_headers_repair.c")
                != NULL);
         ASSERT(strstr(rules, "lib/test/src/test_stale_validate_headers_repair_condition.c")
