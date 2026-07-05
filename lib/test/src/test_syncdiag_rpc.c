@@ -1563,6 +1563,21 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(safety,
                                                 "safe_default_action")),
                           "deploy_dev_lane") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "operator_lane_name")),
+                          "dev") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "automation_restart_ok"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "automation_deploy_ok"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "requires_operator_confirmation"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "preferred_deploy_target")),
+                          "dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_default_action")),
+                          "deploy_dev_lane") == 0;
 
         json_free(&params);
         json_free(&result);

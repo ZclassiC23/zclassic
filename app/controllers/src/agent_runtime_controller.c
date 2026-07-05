@@ -233,6 +233,26 @@ void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
     json_free(&safety);
 }
 
+void agent_push_operator_lane_fields_json(struct json_value *out)
+{
+    if (!out)
+        return;
+
+    const char *lane = g_agent_runtime.operator_lane[0]
+        ? g_agent_runtime.operator_lane : "unknown";
+    json_push_kv_str(out, "operator_lane_name", lane);
+    json_push_kv_bool(out, "automation_restart_ok",
+                      agent_lane_automation_restart_ok(lane));
+    json_push_kv_bool(out, "automation_deploy_ok",
+                      agent_lane_automation_deploy_ok(lane));
+    json_push_kv_bool(out, "requires_operator_confirmation",
+                      agent_lane_requires_operator_confirmation(lane));
+    json_push_kv_str(out, "preferred_deploy_target",
+                     agent_lane_preferred_deploy_target(lane));
+    json_push_kv_str(out, "safe_default_action",
+                     agent_lane_safe_default_action(lane));
+}
+
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key)
 {

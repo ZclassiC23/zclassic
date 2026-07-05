@@ -578,6 +578,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_push_kv_str(result, "summary", summary);
     json_push_kv_str(result, "primary_blocker", primary);
     json_push_kv_str(result, "next", next);
+    agent_push_operator_lane_fields_json(result);
     agent_push_operator_lane_json(result, "operator_lane");
     agent_push_readiness_contract_json(result, "readiness", health.serving,
                                        health.has_peers, operator_needed,

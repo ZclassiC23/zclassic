@@ -1115,6 +1115,17 @@ static int test_zcl_operator_summary_degraded_shape(void)
                       "download_queue_idle");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
                       "zcl_syncdiag");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "operator_lane_name")),
+                      "dev");
+        ASSERT(json_get_bool(json_get(&root, "automation_restart_ok")));
+        ASSERT(json_get_bool(json_get(&root, "automation_deploy_ok")));
+        ASSERT(!json_get_bool(json_get(&root,
+                                       "requires_operator_confirmation")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "preferred_deploy_target")),
+                      "dev");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "safe_default_action")),
+                      "deploy_dev_lane");
         const struct json_value *lane =
             json_get(&root, "operator_lane");
         ASSERT(lane && lane->type == JSON_OBJ);
@@ -1191,6 +1202,17 @@ static int test_zcl_operator_summary_healthy_shape(void)
                       "none");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")), "none");
         ASSERT(json_size(json_get(&root, "recommended_tools")) == 0);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "operator_lane_name")),
+                      "canonical");
+        ASSERT(!json_get_bool(json_get(&root, "automation_restart_ok")));
+        ASSERT(!json_get_bool(json_get(&root, "automation_deploy_ok")));
+        ASSERT(json_get_bool(json_get(&root,
+                                      "requires_operator_confirmation")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "preferred_deploy_target")),
+                      "dev");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "safe_default_action")),
+                      "observe_only_or_use_dev_lane");
         const struct json_value *lane =
             json_get(&root, "operator_lane");
         ASSERT(lane && lane->type == JSON_OBJ);

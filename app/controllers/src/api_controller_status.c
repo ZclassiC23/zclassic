@@ -492,6 +492,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_str(&body, "summary", summary);
     json_push_kv_str(&body, "primary_blocker", primary);
     json_push_kv_str(&body, "next_endpoint", next_endpoint);
+    agent_push_operator_lane_fields_json(&body);
     agent_push_operator_lane_json(&body, "operator_lane");
     agent_push_readiness_contract_json(
         &body, "readiness", health.serving, health.has_peers,

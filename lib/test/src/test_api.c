@@ -203,6 +203,26 @@ static bool api_test_expect_readiness_shape(const struct json_value *root)
            json_get(readiness, "semantics") != NULL;
 }
 
+static bool api_test_expect_lane_safety_fields(
+    const struct json_value *root, const char *lane,
+    bool restart_ok, bool deploy_ok, bool requires,
+    const char *target, const char *action)
+{
+    return strcmp(json_get_str(json_get(root, "operator_lane_name")),
+                  lane) == 0 &&
+           json_get_bool(json_get(root, "automation_restart_ok")) ==
+               restart_ok &&
+           json_get_bool(json_get(root, "automation_deploy_ok")) ==
+               deploy_ok &&
+           json_get_bool(json_get(root,
+                                  "requires_operator_confirmation")) ==
+               requires &&
+           strcmp(json_get_str(json_get(root, "preferred_deploy_target")),
+                  target) == 0 &&
+           strcmp(json_get_str(json_get(root, "safe_default_action")),
+                  action) == 0;
+}
+
 static const struct json_value *api_test_openapi_get(
     const struct json_value *root,
     const char *path)
@@ -1417,6 +1437,9 @@ int test_api(void)
         ok = ok && json_get(&root, "height") != NULL;
         ok = ok && json_get(&root, "recommended_endpoints") != NULL;
         ok = ok && api_test_expect_readiness_shape(&root);
+        ok = ok && api_test_expect_lane_safety_fields(
+            &root, "canonical", false, false, true, "dev",
+            "observe_only_or_use_dev_lane");
         json_free(&root);
 
         api_set_state(NULL, NULL, NULL, NULL, NULL);
@@ -1460,6 +1483,9 @@ int test_api(void)
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
         ok = ok && api_test_expect_readiness_shape(&root);
+        ok = ok && api_test_expect_lane_safety_fields(
+            &root, "canonical", false, false, true, "dev",
+            "observe_only_or_use_dev_lane");
         const struct json_value *height_contract =
             json_get(&root, "height_contract");
         ok = ok && height_contract && height_contract->type == JSON_OBJ;

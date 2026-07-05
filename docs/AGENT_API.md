@@ -152,6 +152,16 @@ before any restart or binary deployment:
 Canonical defaults to observe-only, soak defaults to preserving the evidence
 window, and dev defaults to `deploy_dev_lane`.
 
+For fast deploy loops and MCP summaries, the most important lane-safety values
+are also duplicated as compact top-level fields on the public agent packet:
+`operator_lane_name`, `automation_restart_ok`, `automation_deploy_ok`,
+`requires_operator_confirmation`, `preferred_deploy_target`, and
+`safe_default_action`. They are emitted by the same C helper as the nested
+lane object. A canonical packet should therefore say
+`operator_lane_name="canonical"`, `automation_restart_ok=false`,
+`automation_deploy_ok=false`, and
+`safe_default_action="observe_only_or_use_dev_lane"`.
+
 `zclassic23 agentlanes` / `zcl_agent_lanes` returns the native
 `zcl.agent_lanes.v1` topology contract for all first-class operator lanes:
 canonical (`zclassic23`, `~/.zclassic-c23`, RPC 18232 / P2P 8033), soak

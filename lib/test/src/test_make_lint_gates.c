@@ -2919,6 +2919,10 @@ static int t_native_agent_api_contract(void)
                       "zcl.operator_deployment_safety.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "agent_fill_operator_lane_contract_json") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "agent_push_operator_lane_fields_json") != NULL);
+        ASSERT(strstr(agent_summary_buf,
+                      "agent_push_operator_lane_fields_json") != NULL);
         ASSERT(strstr(agent_runtime_buf, "restart_policy") != NULL);
         ASSERT(strstr(agent_runtime_buf, "safety_contract") != NULL);
         ASSERT(strstr(agent_runtime_buf, "automation_restart_ok") != NULL);
@@ -3021,6 +3025,8 @@ static int t_native_agent_api_contract(void)
                       "zcl.operator_deployment_safety.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "automation_restart_ok") != NULL);
         ASSERT(strstr(agent_doc_buf, "automation_deploy_ok") != NULL);
+        ASSERT(strstr(agent_doc_buf, "operator_lane_name") != NULL);
+        ASSERT(strstr(agent_doc_buf, "preferred_deploy_target") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "requires_operator_confirmation") != NULL);
         ASSERT(strstr(agent_doc_buf, "safe_default_action") != NULL);

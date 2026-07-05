@@ -313,6 +313,34 @@ static void status_push_string_array(struct json_value *obj,
     json_free(&arr);
 }
 
+static void status_push_lane_safety_fields(
+    struct json_value *root, const struct json_value *lane)
+{
+    if (!root || !lane || lane->type != JSON_OBJ)
+        return;
+
+    const struct json_value *safety = json_get(lane, "deployment_safety");
+    json_push_kv_str(root, "operator_lane_name",
+                     status_json_str(lane, "lane", "unknown"));
+    json_push_kv_bool(root, "automation_restart_ok",
+                      status_json_bool(lane, "automation_restart_ok", false));
+    json_push_kv_bool(root, "automation_deploy_ok",
+                      status_json_bool(lane, "automation_deploy_ok", false));
+    json_push_kv_bool(root, "requires_operator_confirmation",
+                      status_json_bool(lane,
+                                       "requires_operator_confirmation",
+                                       true));
+    json_push_kv_str(root, "preferred_deploy_target",
+                     safety ? status_json_str(safety,
+                                              "preferred_deploy_target",
+                                              "unknown") : "unknown");
+    json_push_kv_str(root, "safe_default_action",
+                     safety ? status_json_str(safety,
+                                              "safe_default_action",
+                                              "inspect_operator_lane")
+                            : "inspect_operator_lane");
+}
+
 static void status_peer_summary(const struct json_value *peers,
                                 int *total_out,
                                 int *inbound_out,
@@ -782,8 +810,10 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_push_kv_int(&root, "unresolved_conditions", unresolved_conditions);
     const struct json_value *operator_lane =
         agent_ok ? json_get(&agent_j, "operator_lane") : NULL;
-    if (operator_lane && operator_lane->type == JSON_OBJ)
+    if (operator_lane && operator_lane->type == JSON_OBJ) {
+        status_push_lane_safety_fields(&root, operator_lane);
         json_push_kv(&root, "operator_lane", operator_lane);
+    }
 
     json_init(&peer_obj);
     json_set_object(&peer_obj);
