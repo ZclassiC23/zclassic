@@ -24,6 +24,8 @@
 #include "controllers/network_controller.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
+#include "models/block.h"
+#include "models/database.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
@@ -1368,6 +1370,20 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(download, "queued") != NULL;
         ok = ok && json_get(download, "bytes_received") != NULL;
         ok = ok && json_get(download, "mbps_avg") != NULL;
+        const struct json_value *indexer = json_get(&result, "indexer");
+        ok = ok && indexer && indexer->type == JSON_OBJ;
+        ok = ok && json_get(indexer, "height") != NULL;
+        ok = ok && json_get(indexer, "lag") != NULL;
+        ok = ok && json_get(indexer, "projection_height") != NULL;
+        ok = ok && json_get(indexer, "projection_lag") != NULL;
+        ok = ok && json_get(indexer, "projection_deferred") != NULL;
+        ok = ok && json_get(indexer, "projection_state") != NULL;
+        ok = ok && json_get(indexer, "catchup_active") != NULL;
+        ok = ok && json_get(indexer, "catchup_height") != NULL;
+        ok = ok && json_get(indexer, "catchup_target_height") != NULL;
+        ok = ok && json_get(indexer,
+                            "catchup_progress_age_seconds") != NULL;
+        ok = ok && json_get(indexer, "catchup_uptime_seconds") != NULL;
         const struct json_value *lane =
             json_get(&result, "operator_lane");
         ok = ok && lane && lane->type == JSON_OBJ;
@@ -1643,6 +1659,127 @@ int test_syncdiag_rpc(void)
         sync_set_state(SYNC_IDLE, "agent dispatch idle cleanup");
         main_state_free(&ms);
         connman_free(&cm);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC agent reports projection lag telemetry... ");
+    {
+        struct connman cm;
+        struct node_signals sigs;
+        struct main_state ms;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct node_db ndb;
+        struct db_block blk;
+        uint8_t solution[] = {0x01, 0x02, 0x03};
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+
+        chain_params_select(CHAIN_MAIN);
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&ms, 0, sizeof(ms));
+        memset(&tip, 0, sizeof(tip));
+        memset(&h_tip, 0, sizeof(h_tip));
+        memset(&ndb, 0, sizeof(ndb));
+        memset(&blk, 0, sizeof(blk));
+
+        bool ok = node_db_open(&ndb, ":memory:");
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
+        main_state_init(&ms);
+        block_index_init(&tip);
+        syncdiag_set_hash(&h_tip, 0x71);
+        tip.phashBlock = &h_tip;
+        tip.nHeight = 10;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &tip;
+
+        struct p2p_node *peer =
+            syncdiag_add_peer(&cm, 46, false, PEER_HANDSHAKE_COMPLETE);
+        ok = ok && peer != NULL;
+        if (peer)
+            peer->starting_height = 10;
+
+        memset(blk.hash, 0xA5, sizeof(blk.hash));
+        memset(blk.prev_hash, 0x5A, sizeof(blk.prev_hash));
+        memset(blk.merkle_root, 0xC3, sizeof(blk.merkle_root));
+        memset(blk.nonce, 0x3C, sizeof(blk.nonce));
+        blk.height = 5;
+        blk.version = 4;
+        blk.time = 1700000000;
+        blk.bits = 0x1d00ffff;
+        blk.solution = solution;
+        blk.solution_len = sizeof(solution);
+        blk.status = 5;
+        blk.file_num = 1;
+        blk.data_pos = 8192;
+        blk.num_tx = 1;
+        ok = ok && db_block_save(&ndb, &blk);
+
+        struct download_manager *dm = msg_get_download_mgr();
+        dl_drain_for_backpressure(dm);
+        block_source_policy_reset_for_test();
+        block_source_policy_init(&cm, &ms, &ndb);
+
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+        rpc_net_set_connman(&cm);
+        sync_monitor_set_context(&cm, dm, &ms);
+        reducer_frontier_provable_tip_set(10);
+        sync_set_state(SYNC_IDLE, "agent projection lag");
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agent", &params, &result);
+        const struct json_value *indexer = json_get(&result, "indexer");
+        const struct json_value *health = json_get(&result, "health");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "degraded") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_blocker")),
+                          "projection_lag") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "next")),
+                          "zclassic23 dumpstate chain_advance_coordinator")
+                          == 0;
+        ok = ok && !json_get_bool(json_get(&result, "operator_needed"));
+        ok = ok && json_get_int(json_get(&result, "served_height")) == 10;
+        ok = ok && json_get_int(json_get(&result, "indexed_height")) == 5;
+        ok = ok && json_get_int(json_get(&result, "index_gap")) == 5;
+        ok = ok && indexer && indexer->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(indexer, "height")) == 5;
+        ok = ok && json_get_int(json_get(indexer, "projection_height")) == 5;
+        ok = ok && json_get_int(json_get(indexer, "lag")) == 5;
+        ok = ok && json_get_int(json_get(indexer, "projection_lag")) == 5;
+        ok = ok && json_get_bool(json_get(indexer, "projection_deferred"));
+        ok = ok && strcmp(json_get_str(json_get(indexer,
+                                                "projection_state")),
+                          "deferred") == 0;
+        ok = ok && json_get(indexer, "catchup_active") != NULL;
+        ok = ok && json_get(indexer, "catchup_height") != NULL;
+        ok = ok && health && health->type == JSON_OBJ;
+        ok = ok && strstr(json_get_str(json_get(health,
+                                                "warning_reasons")),
+                          "projection_lag") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+        sync_monitor_set_context(NULL, NULL, NULL);
+        rpc_net_set_connman(NULL);
+        reducer_frontier_provable_tip_reset();
+        block_source_policy_reset_for_test();
+        dl_drain_for_backpressure(dm);
+        main_state_free(&ms);
+        connman_free(&cm);
+        node_db_close(&ndb);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

@@ -204,6 +204,8 @@ report_lane() {
     local reducer_pending_detail reducer_primary_stage reducer_primary_detail
     local reducer_blocker_count condition_active_count condition_unresolved_count
     local condition_operator_needed_count
+    local chain_advance_json chain_advance_current_json projection_height projection_lag
+    local projection_deferred projection_state projection_deferred_reason
 
     active="$(systemd_show "$unit" ActiveState)"
     [ -n "$active" ] || active="unknown"
@@ -246,6 +248,11 @@ report_lane() {
     condition_active_count=""
     condition_unresolved_count=""
     condition_operator_needed_count=""
+    projection_height=""
+    projection_lag=""
+    projection_deferred="null"
+    projection_state=""
+    projection_deferred_reason=""
 
     p2p_listening=0
     rpc_listening=0
@@ -284,6 +291,20 @@ report_lane() {
             fi
             loader_path="$(json_string_field "$bootstrap_json" "active_loader_path")"
             recovery_hint="$(json_string_field "$bootstrap_json" "recovery_hint")"
+        fi
+        chain_advance_json="$(rpc_call "$datadir" "$rpcport" dumpstate chain_advance_coordinator || true)"
+        if [ -n "$chain_advance_json" ]; then
+            chain_advance_current_json="$chain_advance_json"
+            case "$chain_advance_current_json" in
+                *\"last_decision\"*)
+                    chain_advance_current_json="${chain_advance_current_json%%\"last_decision\"*}"
+                    ;;
+            esac
+            projection_height="$(json_int_field "$chain_advance_current_json" "projection_height")"
+            projection_lag="$(json_int_field "$chain_advance_current_json" "projection_lag")"
+            projection_deferred="$(json_bool_field "$chain_advance_current_json" "projection_deferred")"
+            projection_state="$(json_string_field "$chain_advance_current_json" "projection_state")"
+            projection_deferred_reason="$(json_string_field "$chain_advance_current_json" "last_projection_deferred_reason")"
         fi
     fi
     [ -n "$peers" ] || peers="null"
@@ -328,6 +349,9 @@ report_lane() {
     elif [ "$tip_lag" != "null" ] && [ "$tip_lag" -gt "$LAG_WARN" ]; then
         status="warn"
         reason="lag_to_live_${tip_lag}"
+    elif is_number "$projection_lag" && [ "$projection_lag" -gt "$LAG_WARN" ]; then
+        status="warn"
+        reason="projection_lag_${projection_lag}"
     elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
         status="warn"
         reason="listener_missing"
@@ -348,6 +372,8 @@ report_lane() {
             else
                 recovery_hint="inspect_reducer_frontier"
             fi
+        elif is_number "$projection_lag" && [ "$projection_lag" -gt "$LAG_WARN" ]; then
+            recovery_hint="inspect_chain_advance_coordinator"
         elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
             recovery_hint="inspect_listeners"
         elif is_number "$peers" && [ "$peers" -lt 1 ]; then
@@ -375,6 +401,8 @@ report_lane() {
             soak_reason="lag_unknown"
         elif [ "$tip_lag" -gt "$SOAK_LAG_WARN" ]; then
             soak_reason="lag_to_live_${tip_lag}"
+        elif is_number "$projection_lag" && [ "$projection_lag" -gt "$SOAK_LAG_WARN" ]; then
+            soak_reason="projection_lag_${projection_lag}"
         elif ! is_number "$peers" || [ "$peers" -lt 1 ]; then
             soak_reason="no_peers"
         else
@@ -450,7 +478,7 @@ report_lane() {
     esac
 
     if [ "$JSON" = "1" ]; then
-        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
+        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"chain_headers":%s,"initialblockdownload":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","projection_height":%s,"projection_lag":%s,"projection_deferred":%s,"projection_state":"%s","projection_deferred_reason":"%s","recovery_hint":"%s","reducer_hstar":%s,"reducer_pending_stage":"%s","reducer_pending_detail":"%s","reducer_primary_stage":"%s","reducer_primary_detail":"%s","reducer_blocker_count":%s,"condition_active_count":%s,"condition_unresolved_count":%s,"condition_operator_needed_count":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$unit")" \
             "$(json_escape "$datadir")" \
@@ -479,6 +507,11 @@ report_lane() {
             "$(json_escape "$snapshot_path")" \
             "$(json_bool "$loader_configured")" \
             "$(json_escape "$loader_path")" \
+            "$(json_number "$projection_height")" \
+            "$(json_number "$projection_lag")" \
+            "$(json_tri_bool "$projection_deferred")" \
+            "$(json_escape "$projection_state")" \
+            "$(json_escape "$projection_deferred_reason")" \
             "$(json_escape "$recovery_hint")" \
             "$(json_number "$reducer_hstar")" \
             "$(json_escape "$reducer_pending_stage")" \
@@ -496,7 +529,7 @@ report_lane() {
             "$(json_escape "$status")" \
             "$(json_escape "$reason")"
     else
-        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
+        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s headers=%-8s ibd=%s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s projection_h=%-8s projection_lag=%-8s projection_deferred=%s recovery_hint=%s hstar=%-8s reducer_pending=%s:%s cond_active=%s cond_operator_needed=%s soak_eligible=%s soak_reason=%s\n' \
             "$lane" "$status" "$reason" \
             "$([ "$role_ready" = "1" ] && printf yes || printf no)" \
             "$role_reason" \
@@ -512,6 +545,9 @@ report_lane() {
             "$mem_pressure" \
             "${snapshot_seed_height:-none}" \
             "$([ "$loader_configured" = "1" ] && printf yes || printf no)" \
+            "${projection_height:-null}" \
+            "${projection_lag:-null}" \
+            "$([ "$projection_deferred" = "1" ] && printf yes || { [ "$projection_deferred" = "0" ] && printf no || printf n/a; })" \
             "$recovery_hint" \
             "${reducer_hstar:-null}" \
             "${reducer_pending_stage:-none}" \

@@ -2370,9 +2370,18 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_health, "lag_to_live_") != NULL);
         ASSERT(strstr(lane_health, "dumpstate reducer_frontier") != NULL);
         ASSERT(strstr(lane_health, "dumpstate condition_engine") != NULL);
+        ASSERT(strstr(lane_health,
+                      "dumpstate chain_advance_coordinator") != NULL);
+        ASSERT(strstr(lane_health, "chain_advance_current_json") != NULL);
+        ASSERT(strstr(lane_health, "\\\"last_decision\\\"") != NULL);
         ASSERT(strstr(lane_health, "reducer_hstar") != NULL);
         ASSERT(strstr(lane_health, "reducer_pending_stage") != NULL);
         ASSERT(strstr(lane_health, "reducer_pending_detail") != NULL);
+        ASSERT(strstr(lane_health, "projection_height") != NULL);
+        ASSERT(strstr(lane_health, "projection_lag") != NULL);
+        ASSERT(strstr(lane_health, "projection_deferred") != NULL);
+        ASSERT(strstr(lane_health, "inspect_chain_advance_coordinator")
+               != NULL);
         ASSERT(strstr(lane_health, "condition_active_count") != NULL);
         ASSERT(strstr(lane_health, "condition_operator_needed_count") != NULL);
         ASSERT(strstr(lane_health, "no_peers") != NULL);
@@ -2740,6 +2749,15 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_summary_buf, "catchup_stalled") != NULL);
         ASSERT(strstr(agent_summary_buf, "download_dispatch_idle")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf, "block_source_policy_get_status")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf, "node_db_sync_get_job_status")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf, "\"indexer\"") != NULL);
+        ASSERT(strstr(agent_summary_buf, "projection_lag") != NULL);
+        ASSERT(strstr(agent_summary_buf, "projection_deferred") != NULL);
+        ASSERT(strstr(agent_summary_buf, "projection_catchup_active")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);

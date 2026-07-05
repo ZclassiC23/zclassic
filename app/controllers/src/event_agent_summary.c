@@ -9,6 +9,7 @@
 #include "controllers/agent_controller.h"
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
+#include "controllers/sync_controller.h"
 #include "event/event.h"
 #include "jobs/tip_finalize_stage.h"
 #include "json/json.h"
@@ -20,6 +21,7 @@
 #include "net/version.h"
 #include "platform/time_compat.h"
 #include "rpc/server.h"
+#include "services/block_source_policy.h"
 #include "services/invariant_sentinel.h"
 #include "services/gap_fill_service.h"
 #include "services/sync_monitor.h"
@@ -40,6 +42,7 @@ struct agent_fast_snapshot {
     enum sync_state sync_state;
     int served_height;
     int tip_height;
+    int indexed_height;
     int header_height;
     int peer_best_height;
     int target_height;
@@ -61,6 +64,8 @@ struct agent_fast_snapshot {
     bool onion_service_ready;
     bool catchup_active;
     bool catchup_stalled;
+    bool projection_deferred;
+    bool projection_catchup_active;
     bool download_dispatch_idle;
     bool download_dispatch_stalled;
     uint64_t blocks_requested;
@@ -107,8 +112,17 @@ struct agent_fast_snapshot {
     double download_mbps_avg;
     int request_timeout_seconds;
     int last_assign_result;
+    int projection_height;
+    int projection_catchup_height;
+    int projection_catchup_target_height;
+    int last_projection_deferred_height;
     int32_t oldest_in_flight_height;
     uint32_t oldest_in_flight_peer_id;
+    int64_t projection_lag;
+    int64_t projection_deferred_total;
+    int64_t last_projection_deferred_time;
+    int64_t projection_catchup_progress_age_seconds;
+    int64_t projection_catchup_uptime_seconds;
     int64_t tip_advance_age_seconds;
     int64_t catchup_stall_seconds;
     int64_t download_dispatch_idle_seconds;
@@ -118,6 +132,8 @@ struct agent_fast_snapshot {
     char warning_reasons[256];
     char blocking_reason[128];
     char last_error_type[64];
+    char projection_state[32];
+    char last_projection_deferred_reason[64];
     char validation_pack_detail[64];
 };
 
@@ -154,6 +170,15 @@ static int agent_fast_tip_finalize_log_head(void)
     if (live > 0 && live <= INT_MAX)
         return (int)live;
     return -1; // raw-return-ok:sentinel
+}
+
+static int agent_fast_clamp_nonnegative_i64(int64_t value)
+{
+    if (value < 0)
+        return -1; // raw-return-ok:sentinel
+    if (value > INT_MAX)
+        return INT_MAX;
+    return (int)value;
 }
 
 static void agent_fast_collect_peer_counts(struct agent_fast_snapshot *s,
@@ -205,6 +230,50 @@ static void agent_fast_collect_errors(struct agent_fast_snapshot *s)
         agent_fast_add_warning(s, "recent_error");
 }
 
+static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
+{
+    if (!s)
+        return;
+
+    struct cac_decision decision;
+    memset(&decision, 0, sizeof(decision));
+    block_source_policy_get_status(&decision);
+    if (decision.target_height > s->target_height)
+        s->target_height = decision.target_height;
+    if (decision.projection_height >= 0) {
+        s->projection_height = decision.projection_height;
+        s->indexed_height = decision.projection_height;
+    }
+    s->projection_lag = decision.projection_lag;
+    s->projection_deferred = decision.projection_deferred;
+    s->projection_deferred_total = decision.projection_deferred_total;
+    s->last_projection_deferred_height =
+        decision.last_projection_deferred_height;
+    s->last_projection_deferred_time =
+        decision.last_projection_deferred_time;
+    snprintf(s->projection_state, sizeof(s->projection_state),
+             "%s", decision.projection_state);
+    snprintf(s->last_projection_deferred_reason,
+             sizeof(s->last_projection_deferred_reason),
+             "%s", decision.last_projection_deferred_reason);
+    if (s->projection_lag > 1)
+        agent_fast_add_warning(s, "projection_lag");
+
+    struct node_db_sync_job_status jobs = {0};
+    node_db_sync_get_job_status(&jobs);
+    s->projection_catchup_active = jobs.catchup_active;
+    s->projection_catchup_height = jobs.catchup_height;
+    s->projection_catchup_target_height = jobs.catchup_target_height;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    if (jobs.catchup_started_at > 0 && now >= jobs.catchup_started_at)
+        s->projection_catchup_uptime_seconds =
+            now - jobs.catchup_started_at;
+    if (jobs.catchup_last_progress_at > 0 &&
+        now >= jobs.catchup_last_progress_at)
+        s->projection_catchup_progress_age_seconds =
+            now - jobs.catchup_last_progress_at;
+}
+
 static void agent_fast_collect(struct agent_fast_snapshot *s)
 {
     struct agent_fast_snapshot empty = {0};
@@ -212,8 +281,16 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         return;
     *s = empty;
     s->tip_height = -1;
+    s->indexed_height = -1;
     s->header_height = -1;
     s->peer_best_height = -1;
+    s->projection_height = -1;
+    s->projection_lag = -1;
+    s->projection_catchup_height = -1;
+    s->projection_catchup_target_height = -1;
+    s->last_projection_deferred_height = -1;
+    s->projection_catchup_progress_age_seconds = -1;
+    s->projection_catchup_uptime_seconds = -1;
     s->log_head = -1;
     s->log_head_gap = -1;
     s->last_error_age_seconds = -1;
@@ -234,8 +311,10 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     }
     if (s->tip_height < 0)
         s->tip_height = s->served_height;
+    s->indexed_height = s->tip_height;
     if (s->header_height < 0)
         s->header_height = s->tip_height;
+    snprintf(s->projection_state, sizeof(s->projection_state), "unknown");
 
     agent_fast_collect_peer_counts(s, rpc_net_get_connman());
 
@@ -333,15 +412,23 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         s->target_height = s->header_height;
     if (s->peer_best_height > s->target_height)
         s->target_height = s->peer_best_height;
+    agent_fast_collect_indexer(s);
     s->gap = s->target_height > s->served_height
         ? s->target_height - s->served_height : 0;
-    s->index_gap = s->tip_height > s->served_height
-        ? s->tip_height - s->served_height : 0;
+    if (s->projection_lag >= 0) {
+        s->index_gap = agent_fast_clamp_nonnegative_i64(s->projection_lag);
+    } else if (s->target_height > s->indexed_height &&
+               s->indexed_height >= 0) {
+        s->index_gap = s->target_height - s->indexed_height;
+    } else {
+        s->index_gap = 0;
+    }
     s->serving = s->served_height > 0;
 
     char operator_detail[96] = {0};
     bool frontier_recovered =
         s->serving && s->has_peers && s->gap <= 1 &&
+        s->index_gap <= 1 &&
         (s->log_head_gap < 0 || s->log_head_gap <= 1);
     s->operator_latch_recovered =
         alerts_operator_needed_clear_if_chain_advance_recovered(
@@ -375,6 +462,7 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
 
     s->healthy = s->serving && s->has_peers && !s->operator_needed &&
                  s->gap <= 1 &&
+                 s->index_gap <= 1 &&
                  (s->log_head_gap < 0 || s->log_head_gap <= 1);
 
     if (s->operator_needed) {
@@ -418,6 +506,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     struct agent_fast_snapshot health;
     agent_fast_collect(&health);
     bool material_gap = health.gap > 1;
+    bool material_index_gap = health.index_gap > 1;
 
     const char *status = "healthy";
     const char *primary = "none";
@@ -462,6 +551,11 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         next = "zclassic23 getsyncdiag";
         summary = "node is behind the best known tip without active downloads";
         operator_needed = true;
+    } else if (material_index_gap) {
+        status = "degraded";
+        primary = "projection_lag";
+        next = "zclassic23 dumpstate chain_advance_coordinator";
+        summary = "node block projection is behind the served frontier";
     } else if (!health.healthy) {
         status = "degraded";
         primary = health.blocking_reason[0] ? health.blocking_reason
@@ -484,13 +578,46 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     agent_push_operator_lane_json(result, "operator_lane");
     json_push_kv_int(result, "height", health.served_height);
     json_push_kv_int(result, "served_height", health.served_height);
-    json_push_kv_int(result, "indexed_height", health.tip_height);
+    json_push_kv_int(result, "indexed_height", health.indexed_height);
     json_push_kv_int(result, "header_height", health.header_height);
     json_push_kv_int(result, "peer_best_height", health.peer_best_height);
     json_push_kv_int(result, "target_height", health.target_height);
     json_push_kv_int(result, "gap", health.gap);
     json_push_kv_int(result, "index_gap", health.index_gap);
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
+
+    struct json_value indexer = {0};
+    json_set_object(&indexer);
+    json_push_kv_int(&indexer, "height", health.indexed_height);
+    json_push_kv_int(&indexer, "lag", health.projection_lag);
+    json_push_kv_int(&indexer, "projection_height",
+                     health.projection_height);
+    json_push_kv_int(&indexer, "projection_lag",
+                     health.projection_lag);
+    json_push_kv_bool(&indexer, "projection_deferred",
+                      health.projection_deferred);
+    json_push_kv_str(&indexer, "projection_state",
+                     health.projection_state);
+    json_push_kv_int(&indexer, "projection_deferred_total",
+                     health.projection_deferred_total);
+    json_push_kv_int(&indexer, "last_projection_deferred_height",
+                     health.last_projection_deferred_height);
+    json_push_kv_int(&indexer, "last_projection_deferred_time",
+                     health.last_projection_deferred_time);
+    json_push_kv_str(&indexer, "last_projection_deferred_reason",
+                     health.last_projection_deferred_reason);
+    json_push_kv_bool(&indexer, "catchup_active",
+                      health.projection_catchup_active);
+    json_push_kv_int(&indexer, "catchup_height",
+                     health.projection_catchup_height);
+    json_push_kv_int(&indexer, "catchup_target_height",
+                     health.projection_catchup_target_height);
+    json_push_kv_int(&indexer, "catchup_progress_age_seconds",
+                     health.projection_catchup_progress_age_seconds);
+    json_push_kv_int(&indexer, "catchup_uptime_seconds",
+                     health.projection_catchup_uptime_seconds);
+    json_push_kv(result, "indexer", &indexer);
+    json_free(&indexer);
 
     struct json_value reducer = {0};
     json_set_object(&reducer);
