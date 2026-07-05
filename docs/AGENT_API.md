@@ -38,12 +38,14 @@ or a freshly deployed dev lane.
 
 `zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
 entry point for that rule. In addition to the human summary, it emits a
-`capabilities[]` matrix that names each first-class agent operation, its schema,
-and its native/MCP/REST transport, plus a `machine_contract` block declaring
-that payloads are JSON objects with required `schema`, `api_version`, and
-`status` fields. Those nested shapes are versioned as `zcl.agent_capability.v1`
-and `zcl.agent_machine_contract.v1`. Future operator APIs should extend that
-matrix before adding new wrapper behavior.
+top-level `build_commit`, a `runtime_identity` block for the binary that
+produced the interface contract, a `capabilities[]` matrix that names each
+first-class agent operation, its schema, and its native/MCP/REST transport, plus
+a `machine_contract` block declaring that payloads are JSON objects with
+required `schema`, `api_version`, and `status` fields. Those nested shapes are
+versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and
+`zcl.agent_machine_contract.v1`. Future operator APIs should extend that matrix
+before adding new wrapper behavior.
 
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions

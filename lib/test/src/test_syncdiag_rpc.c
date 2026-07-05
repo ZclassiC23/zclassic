@@ -1999,9 +1999,13 @@ int test_syncdiag_rpc(void)
             find_object_with_str(capabilities, "name", "deploy_guard");
         const struct json_value *machine =
             json_get(&interface, "machine_contract");
+        const struct json_value *runtime =
+            json_get(&interface, "runtime_identity");
         ok = ok && interface.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&interface, "schema")),
                           "zcl.agent_interface.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&interface, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && strcmp(json_get_str(json_get(&interface,
                                                 "preferred_transport")),
                           "mcp") == 0;
@@ -2035,6 +2039,15 @@ int test_syncdiag_rpc(void)
                                           "transport_equivalent_payloads"));
         ok = ok && json_get_bool(json_get(machine, "no_python_required"));
         ok = ok && json_get_bool(json_get(machine, "no_tools_z_required"));
+        ok = ok && runtime &&
+            strcmp(json_get_str(json_get(runtime, "schema")),
+                   "zcl.agent_runtime_identity.v1") == 0;
+        ok = ok && runtime &&
+            strcmp(json_get_str(json_get(runtime, "build_commit")),
+                   zcl_build_commit()) == 0;
+        ok = ok && runtime &&
+            strcmp(json_get_str(json_get(runtime, "binary")),
+                   "zclassic23") == 0;
 
         rpc_agent_set_boot_context("canonical", "full",
                                    "/tmp/zcl-agent-canonical",

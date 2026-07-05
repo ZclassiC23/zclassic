@@ -1023,6 +1023,7 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"reproducible_release\":{\"command\":\"make ci-reproducible\"}}");
     if (strcmp(method, "agentinterface") == 0)
         return strdup("{\"schema\":\"zcl.agent_interface.v1\","
+                      "\"build_commit\":\"nodecafe123\","
                       "\"preferred_transport\":\"mcp\","
                       "\"preferred_payload\":\"json\","
                       "\"capabilities\":[{\"name\":\"runtime_status\","
@@ -1034,6 +1035,9 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"transport_equivalent_payloads\":true,"
                       "\"no_python_required\":true,"
                       "\"no_tools_z_required\":true},"
+                      "\"runtime_identity\":{\"schema\":\"zcl.agent_runtime_identity.v1\","
+                      "\"build_commit\":\"nodecafe123\","
+                      "\"binary\":\"zclassic23\"},"
                       "\"must_live_in_c\":[\"deploy/restart safety decisions\"],"
                       "\"avoid\":[\"do not add new operator logic to tools/z\"]}");
     if (strcmp(method, "agentdeployguard") == 0) {
@@ -1288,8 +1292,17 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl.agent_interface.v1");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "preferred_transport")),
                       "mcp");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit")),
+                      "nodecafe123");
         ASSERT(json_get(&root, "capabilities") != NULL);
         ASSERT(json_get(&root, "machine_contract") != NULL);
+        const struct json_value *runtime =
+            json_get(&root, "runtime_identity");
+        ASSERT(runtime != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(runtime, "schema")),
+                      "zcl.agent_runtime_identity.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(runtime, "build_commit")),
+                      "nodecafe123");
         json_free(&root);
         free(body);
 

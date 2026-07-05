@@ -549,6 +549,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_machine_contract.v1",
                       "nested in zcl.agent_interface.v1 machine_contract",
                       "JSON/schema/version compatibility requirements for agents");
+    agent_push_schema(&schemas, "zcl.agent_runtime_identity.v1",
+                      "nested in zcl.agent_interface.v1 runtime_identity",
+                      "running binary identity for the interface contract producer");
     agent_push_schema(&schemas, "zcl.agent_deploy_guard.v1",
                       "zclassic23 agentdeployguard / zcl_agent_deploy_guard",
                       "C-native deploy/restart allow/refuse decision");

@@ -8,6 +8,7 @@
 #include "controllers/strong_params.h"
 
 #include "json/json.h"
+#include "util/clientversion.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -109,12 +110,13 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_interface.v1\", "
         "\"preferred_transport\":\"mcp\", ... }\n");
 
-    struct json_value transports, capabilities, machine, loop, native_owned,
-                      avoid, versioning;
+    struct json_value transports, capabilities, machine, runtime, loop,
+                      native_owned, avoid, versioning;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_interface.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
+    json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "preferred_transport", "mcp");
     json_push_kv_str(result, "preferred_payload", "json");
     json_push_kv_str(result, "canonical_implementation",
@@ -193,6 +195,18 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
                      "Agents may rely on existing field meanings; new optional fields are additive until v2.");
     json_push_kv(result, "machine_contract", &machine);
     json_free(&machine);
+
+    json_init(&runtime);
+    json_set_object(&runtime);
+    json_push_kv_str(&runtime, "schema", "zcl.agent_runtime_identity.v1");
+    json_push_kv_str(&runtime, "build_commit", zcl_build_commit());
+    json_push_kv_str(&runtime, "binary", "zclassic23");
+    json_push_kv_str(&runtime, "generated_by",
+                     "app/controllers/src/agent_interface_controller.c");
+    json_push_kv_str(&runtime, "identity_rule",
+                     "Treat this as the runtime binary that produced the interface contract.");
+    json_push_kv(result, "runtime_identity", &runtime);
+    json_free(&runtime);
 
     json_init(&loop);
     json_set_object(&loop);

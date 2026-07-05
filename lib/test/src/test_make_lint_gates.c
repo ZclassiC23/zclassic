@@ -2771,8 +2771,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_interface.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.agent_runtime_identity.v1")
+               != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_deploy_guard.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "No Python is required") != NULL);
+        ASSERT(strstr(agent_iface_buf, "build_commit") != NULL);
+        ASSERT(strstr(agent_iface_buf, "runtime_identity") != NULL);
         ASSERT(strstr(agent_iface_buf, "preferred_transport") != NULL);
         ASSERT(strstr(agent_iface_buf, "must_live_in_c") != NULL);
         ASSERT(strstr(agent_iface_buf,
