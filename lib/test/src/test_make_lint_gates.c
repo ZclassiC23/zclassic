@@ -2288,6 +2288,15 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_health, "lag_to_live_") != NULL);
         ASSERT(strstr(lane_health, "no_peers") != NULL);
         ASSERT(strstr(lane_health, "memory_pressure") != NULL);
+        ASSERT(strstr(lane_health, "bootstrapstatus") != NULL);
+        ASSERT(strstr(lane_health, "snapshot_seed_height") != NULL);
+        ASSERT(strstr(lane_health, "snapshot_loader_configured") != NULL);
+        ASSERT(strstr(lane_health, "snapshot_loader_path") != NULL);
+        ASSERT(strstr(lane_health, "recovery_hint") != NULL);
+        ASSERT(strstr(lane_health, "restart_with_load_snapshot_at_own_height")
+               != NULL);
+        ASSERT(strstr(lane_health, "install_tip_seed_snapshot") != NULL);
+        ASSERT(strstr(lane_health, "inspect_reducer_frontier") != NULL);
         ASSERT(strstr(lane_health, "role_ready") != NULL);
         ASSERT(strstr(lane_health, "role_reason") != NULL);
         ASSERT(strstr(lane_health, "canonical_ready") != NULL);
@@ -2304,6 +2313,9 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(handoff, "read-only three-lane status check") != NULL);
         ASSERT(strstr(handoff, "lag from the live lane") != NULL);
         ASSERT(strstr(handoff, "memory pressure") != NULL);
+        ASSERT(strstr(handoff, "bootstrapstatus.snapshot_loader") != NULL);
+        ASSERT(strstr(handoff, "snapshot seed height") != NULL);
+        ASSERT(strstr(handoff, "recovery_hint") != NULL);
         ASSERT(strstr(handoff, "role readiness") != NULL);
         ASSERT(strstr(handoff, "soak-evidence") != NULL);
         ASSERT(strstr(handoff, "soak_eligible=false") != NULL);
@@ -2370,6 +2382,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "deploy/zclassic23-test-suite.service") != NULL);
         ASSERT(strstr(buf, "lib/net/include/net/msg_internal.h") != NULL);
         ASSERT(strstr(buf, "lib/net/include/net/port_policy.h") != NULL);
+        ASSERT(strstr(buf, "app/controllers/include/controllers/network_controller.h")
+               != NULL);
+        ASSERT(strstr(buf, "config/src/boot_services.c") != NULL);
         ASSERT(strstr(buf, "models") != NULL);
         ASSERT(strstr(buf, "lib/test/src/test_syncdiag_rpc.c") != NULL);
         ASSERT(strstr(buf, "target=\"t-fast\"") != NULL);

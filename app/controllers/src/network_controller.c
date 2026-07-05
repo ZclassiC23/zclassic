@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
+#include "controllers/diagnostics_internal.h"
 #include "controllers/network_controller.h"
 #include "util/log_macros.h"
 #include "controllers/strong_params.h"
@@ -21,9 +22,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 struct network_context {
     struct connman *connman;
+    const char *datadir;
+    const char *load_snapshot_at_own_height;
 };
 
 #define BOOTSTRAP_STATUS_SCHEMA "zcl.bootstrap_status.v1"
@@ -60,6 +64,14 @@ void rpc_net_set_connman(struct connman *cm)
 struct connman *rpc_net_get_connman(void)
 {
     return network_ctx()->connman;
+}
+
+void rpc_net_set_boot_context(const char *datadir,
+                              const char *load_snapshot_at_own_height)
+{
+    struct network_context *ctx = network_ctx();
+    ctx->datadir = datadir;
+    ctx->load_snapshot_at_own_height = load_snapshot_at_own_height;
 }
 
 static void network_counts_collect(struct connman *cm,
@@ -215,6 +227,92 @@ static void push_addnode_status(struct json_value *result,
 
     json_push_kv(result, "addnode_status", &arr);
     json_free(&arr);
+}
+
+static bool join_path(char *out, size_t out_sz, const char *dir,
+                      const char *base)
+{
+    int n;
+
+    if (!out || out_sz == 0 || !dir || !dir[0] || !base || !base[0])
+        return false; // raw-return-ok:predicate-invalid-path
+    n = snprintf(out, out_sz, "%s/%s", dir, base);
+    return n > 0 && (size_t)n < out_sz;
+}
+
+static void push_snapshot_loader_status(struct json_value *result,
+                                        const struct network_context *ctx)
+{
+    const char *datadir = (ctx && ctx->datadir) ? ctx->datadir : "";
+    const char *loader_path =
+        (ctx && ctx->load_snapshot_at_own_height)
+            ? ctx->load_snapshot_at_own_height : "";
+    char best_name[256] = {0};
+    char bundle_path[1200] = {0};
+    char failed_marker_path[1400] = {0};
+    int bundle_count = 0;
+    long long seed_h = bundle_scan_seed_height(datadir, &bundle_count,
+                                               best_name, sizeof(best_name));
+    bool bundle_present = seed_h >= 0;
+    bool block_index_present = false;
+    bool failed_marker = false;
+    bool loader_configured = loader_path[0] != '\0';
+    bool bundle_path_ready = false;
+    bool bootable_bundle = false;
+    const char *recovery_hint = "install_tip_seed_snapshot";
+
+    if (bundle_present)
+        bundle_path_ready = join_path(bundle_path, sizeof(bundle_path),
+                                      datadir, best_name);
+
+    if (datadir[0]) {
+        char p[1200];
+        if (join_path(p, sizeof(p), datadir, "block_index.bin"))
+            block_index_present = access(p, F_OK) == 0;
+        if (bundle_path_ready) {
+            int n = snprintf(failed_marker_path,
+                             sizeof(failed_marker_path),
+                             "%s.failed", bundle_path);
+            if (n > 0 && (size_t)n < sizeof(failed_marker_path))
+                failed_marker = access(failed_marker_path, F_OK) == 0;
+        }
+    }
+
+    bootable_bundle = bundle_present && block_index_present && !failed_marker;
+
+    if (!datadir[0])
+        recovery_hint = "configure_datadir";
+    else if (loader_configured)
+        recovery_hint = "loader_active";
+    else if (bootable_bundle)
+        recovery_hint = "restart_with_load_snapshot_at_own_height";
+    else if (bundle_present && failed_marker)
+        recovery_hint = "replace_failed_seed_snapshot";
+
+    struct json_value loader = {0};
+    json_set_object(&loader);
+    json_push_kv_str(&loader, "schema", "zcl.snapshot_loader.v1");
+    json_push_kv_int(&loader, "schema_version", 1);
+    json_push_kv_str(&loader, "datadir", datadir);
+    json_push_kv_bool(&loader, "bundle_present", bundle_present);
+    json_push_kv_int(&loader, "bundle_count", bundle_count);
+    json_push_kv_int(&loader, "bundle_seed_height", seed_h);
+    json_push_kv_str(&loader, "bundle_name", best_name);
+    json_push_kv_str(&loader, "bundle_path",
+                     bundle_path_ready ? bundle_path : "");
+    json_push_kv_bool(&loader, "block_index_present",
+                      block_index_present);
+    json_push_kv_bool(&loader, "failed_marker", failed_marker);
+    json_push_kv_bool(&loader, "bootable_bundle", bootable_bundle);
+    json_push_kv_bool(&loader, "active_loader_configured",
+                      loader_configured);
+    json_push_kv_str(&loader, "active_loader_path", loader_path);
+    json_push_kv_bool(&loader, "active_loader_matches_bundle",
+                      loader_configured && bundle_path_ready &&
+                      strcmp(loader_path, bundle_path) == 0);
+    json_push_kv_str(&loader, "recovery_hint", recovery_hint);
+    json_push_kv(result, "snapshot_loader", &loader);
+    json_free(&loader);
 }
 
 static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
@@ -394,6 +492,8 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     json_push_kv_bool(&addrman, "addr_relay_ready", addr_relay_ready);
     json_push_kv(result, "addrman", &addrman);
     json_free(&addrman);
+
+    push_snapshot_loader_status(result, ctx);
 
     static const char *const legacy_msgs[] = {
         "version", "verack", "sendheaders", "getheaders", "headers",

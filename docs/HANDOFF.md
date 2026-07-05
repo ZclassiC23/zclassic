@@ -1074,11 +1074,14 @@ into `-reindex-chainstate`.
 public live lane, long-uptime soak lane, and fresh-build dev lane with systemd
 state, RPC reachability, listener state, height, lag from the live lane, peer
 count, restart count, memory pressure, role readiness, soak-evidence
-eligibility, and any `-reindex-chainstate` flag. `role_ready` answers whether a
-lane is serving its assigned purpose (`canonical_ready`, `soak_evidence_ready`,
-or `dev_lane_ready`); `soak_eligible=false` means the soak lane is alive but not
-currently earning clean MVP-C6 evidence. It is an observability/failsafe check,
-not an automatic failover mechanism.
+eligibility, any `-reindex-chainstate` flag, and the binary-owned
+`bootstrapstatus.snapshot_loader` posture: snapshot seed height, active loader
+path, and `recovery_hint`. `role_ready` answers whether a lane is serving its
+assigned purpose (`canonical_ready`, `soak_evidence_ready`, or
+`dev_lane_ready`); the dev lane is not role-ready when its lag exceeds the lane
+threshold, even if RPC/listeners are up. `soak_eligible=false` means the soak
+lane is alive but not currently earning clean MVP-C6 evidence. It is an
+observability/failsafe check, not an automatic failover mechanism.
 
 The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and
 folding forward, so each restart is a ~13 min self-healing boot (cold `node.db`

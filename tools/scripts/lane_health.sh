@@ -79,6 +79,60 @@ is_safe_arith_number() {
     is_number "$1" && [ "${#1}" -le 18 ]
 }
 
+json_string_field() {
+    local body="$1" key="$2"
+    printf '%s\n' "$body" \
+        | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+        | head -1
+}
+
+json_int_field() {
+    local body="$1" key="$2"
+    printf '%s\n' "$body" \
+        | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p" \
+        | head -1
+}
+
+json_bool_field() {
+    local body="$1" key="$2" v
+    v="$(printf '%s\n' "$body" \
+        | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" \
+        | head -1)"
+    case "$v" in
+        true) printf 1 ;;
+        false) printf 0 ;;
+        *) printf null ;;
+    esac
+}
+
+highest_snapshot() {
+    local datadir="$1" file base stem best_h best_path
+    best_h=""
+    best_path=""
+    if [ -d "$datadir" ]; then
+        for file in "$datadir"/utxo-seed-*.snapshot; do
+            [ -e "$file" ] || continue
+            base="${file##*/}"
+            stem="${base#utxo-seed-}"
+            stem="${stem%.snapshot}"
+            is_safe_arith_number "$stem" || continue
+            if [ -z "$best_h" ] || [ "$stem" -gt "$best_h" ]; then
+                best_h="$stem"
+                best_path="$file"
+            fi
+        done
+    fi
+    printf '%s|%s\n' "$best_h" "$best_path"
+}
+
+exec_arg_value() {
+    local cmdline="$1" key="$2"
+    printf '%s\n' "$cmdline" \
+        | tr ' ' '\n' \
+        | sed -n "s/^${key}=//p" \
+        | head -1
+}
+
 memory_pressure_state() {
     local current="$1" high="$2"
     if ! is_safe_arith_number "$current" || ! is_safe_arith_number "$high"; then
@@ -135,6 +189,8 @@ report_lane() {
     local active mainpid restarts start_ts mem_current mem_high mem_max mem_pressure
     local cmdline rpc_up height peers p2p_listening rpc_listening reindex
     local tip_lag status reason role_ready role_reason soak_eligible soak_reason
+    local bootstrap_json snapshot_info snapshot_seed_height snapshot_path
+    local snapshot_present loader_path loader_configured recovery_hint
 
     active="$(systemd_show "$unit" ActiveState)"
     [ -n "$active" ] || active="unknown"
@@ -159,6 +215,14 @@ report_lane() {
         *" -reindex-chainstate"*|*"-reindex-chainstate "*) reindex=1 ;;
     esac
 
+    snapshot_seed_height=""
+    snapshot_path=""
+    snapshot_present=0
+    loader_path="$(exec_arg_value "$cmdline" "-load-snapshot-at-own-height")"
+    loader_configured=0
+    [ -n "$loader_path" ] && loader_configured=1
+    recovery_hint=""
+
     p2p_listening=0
     rpc_listening=0
     listen_state "$p2p_port" && p2p_listening=1
@@ -178,8 +242,31 @@ report_lane() {
     peers=""
     if [ "$rpc_up" = "1" ]; then
         peers="$(rpc_call "$datadir" "$rpcport" getpeerinfo | peer_count_from_json)"
+        bootstrap_json="$(rpc_call "$datadir" "$rpcport" bootstrapstatus || true)"
+        if [ -n "$bootstrap_json" ]; then
+            snapshot_seed_height="$(json_int_field "$bootstrap_json" "bundle_seed_height")"
+            [ "$snapshot_seed_height" = "-1" ] && snapshot_seed_height=""
+            snapshot_path="$(json_string_field "$bootstrap_json" "bundle_path")"
+            if [ "$(json_bool_field "$bootstrap_json" "bundle_present")" = "1" ]; then
+                snapshot_present=1
+            fi
+            if [ "$(json_bool_field "$bootstrap_json" "active_loader_configured")" = "1" ]; then
+                loader_configured=1
+            fi
+            loader_path="$(json_string_field "$bootstrap_json" "active_loader_path")"
+            recovery_hint="$(json_string_field "$bootstrap_json" "recovery_hint")"
+        fi
     fi
     [ -n "$peers" ] || peers="null"
+
+    if [ -z "$snapshot_seed_height" ]; then
+        snapshot_info="$(highest_snapshot "$datadir")"
+        snapshot_seed_height="${snapshot_info%%|*}"
+        snapshot_path="${snapshot_info#*|}"
+        if [ -n "$snapshot_seed_height" ]; then
+            snapshot_present=1
+        fi
+    fi
 
     tip_lag="null"
     if [ -n "$height" ] && [ -n "$LIVE_REFERENCE_HEIGHT" ]; then
@@ -215,6 +302,30 @@ report_lane() {
     elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
         status="warn"
         reason="listener_missing"
+    fi
+
+    if [ -z "$recovery_hint" ]; then
+        if [ "$active" != "active" ]; then
+            recovery_hint="start_or_inspect_${unit}"
+        elif [ "$reindex" = "1" ]; then
+            recovery_hint="remove_forced_reindex_override"
+        elif [ "$rpc_up" != "1" ]; then
+            recovery_hint="wait_or_tail_node_log"
+        elif [ "$tip_lag" != "null" ] && [ "$tip_lag" -gt "$LAG_WARN" ]; then
+            if [ "$snapshot_present" = "1" ] && [ "$loader_configured" != "1" ]; then
+                recovery_hint="restart_with_load_snapshot_at_own_height"
+            elif [ "$snapshot_present" != "1" ]; then
+                recovery_hint="install_tip_seed_snapshot"
+            else
+                recovery_hint="inspect_reducer_frontier"
+            fi
+        elif [ "$p2p_listening" != "1" ] || [ "$rpc_listening" != "1" ]; then
+            recovery_hint="inspect_listeners"
+        elif is_number "$peers" && [ "$peers" -lt 1 ]; then
+            recovery_hint="inspect_peer_floor"
+        else
+            recovery_hint="none"
+        fi
     fi
 
     soak_eligible="null"
@@ -272,7 +383,8 @@ report_lane() {
                [ "$reindex" != "1" ] &&
                [ "$rpc_up" = "1" ] &&
                [ "$p2p_listening" = "1" ] &&
-               [ "$rpc_listening" = "1" ]; then
+               [ "$rpc_listening" = "1" ] &&
+               { [ "$tip_lag" = "null" ] || [ "$tip_lag" -le "$LAG_WARN" ]; }; then
                 role_ready=1
                 role_reason="dev_lane_ready"
             else
@@ -289,7 +401,7 @@ report_lane() {
     esac
 
     if [ "$JSON" = "1" ]; then
-        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
+        printf '{"lane":"%s","unit":"%s","datadir":"%s","rpcport":%s,"p2p_port":%s,"role":"%s","active_state":"%s","mainpid":%s,"restarts":%s,"start_timestamp":"%s","memory_current_bytes":%s,"memory_high_bytes":%s,"memory_max_bytes":%s,"memory_pressure":"%s","rpc_up":%s,"height":%s,"tip_lag_to_live":%s,"peer_count":%s,"p2p_listening":%s,"rpc_listening":%s,"reindex_chainstate":%s,"snapshot_present":%s,"snapshot_seed_height":%s,"snapshot_path":"%s","snapshot_loader_configured":%s,"snapshot_loader_path":"%s","recovery_hint":"%s","role_ready":%s,"role_reason":"%s","soak_eligible":%s,"soak_reason":"%s","status":"%s","reason":"%s"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$unit")" \
             "$(json_escape "$datadir")" \
@@ -311,6 +423,12 @@ report_lane() {
             "$(json_bool "$p2p_listening")" \
             "$(json_bool "$rpc_listening")" \
             "$(json_bool "$reindex")" \
+            "$(json_bool "$snapshot_present")" \
+            "$(json_number "$snapshot_seed_height")" \
+            "$(json_escape "$snapshot_path")" \
+            "$(json_bool "$loader_configured")" \
+            "$(json_escape "$loader_path")" \
+            "$(json_escape "$recovery_hint")" \
             "$(json_bool "$role_ready")" \
             "$(json_escape "$role_reason")" \
             "$(json_tri_bool "$soak_eligible")" \
@@ -318,7 +436,7 @@ report_lane() {
             "$(json_escape "$status")" \
             "$(json_escape "$reason")"
     else
-        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s soak_eligible=%s soak_reason=%s\n' \
+        printf 'lane-health: %-4s status=%-4s reason=%-28s role_ready=%-3s role_reason=%-24s unit=%-20s active=%-8s pid=%-7s restarts=%-4s rpc=%-4s height=%-8s lag=%-8s peers=%-4s p2p_listen=%s rpc_listen=%s reindex=%s mem_pressure=%s snapshot_h=%-8s loader=%s recovery_hint=%s soak_eligible=%s soak_reason=%s\n' \
             "$lane" "$status" "$reason" \
             "$([ "$role_ready" = "1" ] && printf yes || printf no)" \
             "$role_reason" \
@@ -329,6 +447,9 @@ report_lane() {
             "$([ "$rpc_listening" = "1" ] && printf yes || printf no)" \
             "$([ "$reindex" = "1" ] && printf yes || printf no)" \
             "$mem_pressure" \
+            "${snapshot_seed_height:-none}" \
+            "$([ "$loader_configured" = "1" ] && printf yes || printf no)" \
+            "$recovery_hint" \
             "$([ "$soak_eligible" = "1" ] && printf yes || { [ "$soak_eligible" = "0" ] && printf no || printf n/a; })" \
             "$soak_reason"
     fi

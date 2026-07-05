@@ -56,6 +56,15 @@ The key booleans are `serving_p2p_bootstrap`,
 requirements such as `not_listening`, `provable_tip_not_published`, or
 `beta6_NODE_BOOTSTRAP_not_advertised`.
 
+The same response also includes `snapshot_loader` (`zcl.snapshot_loader.v1`),
+the binary-owned recovery contract for the node's own fast-start bundle:
+datadir, highest `utxo-seed-<h>.snapshot`, seed height, matching
+`block_index.bin`, failed marker, active `-load-snapshot-at-own-height` path,
+and `recovery_hint` (`loader_active`,
+`restart_with_load_snapshot_at_own_height`, `install_tip_seed_snapshot`, etc.).
+Operational scripts should consume this versioned C API instead of scraping
+systemd command lines whenever the node RPC is reachable.
+
 ## Build loop
 
 This is a C23 project, so the edit loop should compile only what changed.

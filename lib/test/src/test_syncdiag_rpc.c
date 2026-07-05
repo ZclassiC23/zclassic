@@ -40,6 +40,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* Push a 64 KiB frame filled with 0xCC onto the stack, then return.
  * The frame is freed on return but the bytes persist in memory — any
@@ -80,6 +82,15 @@ static const struct json_value *find_source_json(const struct json_value *arr,
             return child;
     }
     return NULL;
+}
+
+static bool syncdiag_touch_file(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    fclose(f);
+    return true;
 }
 
 static const struct json_value *find_object_with_str(const struct json_value *arr,
@@ -486,11 +497,25 @@ int test_syncdiag_rpc(void)
         struct rpc_table tbl;
         struct json_value params;
         struct json_value result;
+        char tmp_template[] = "/tmp/zcl-bootstrapstatus-XXXXXX";
+        char *tmp_dir = mkdtemp(tmp_template);
+        char snap_path[512] = {0};
+        char index_path[512] = {0};
+        int snap_n = tmp_dir ? snprintf(snap_path, sizeof(snap_path),
+                                        "%s/utxo-seed-3170000.snapshot",
+                                        tmp_dir) : -1;
+        int index_n = tmp_dir ? snprintf(index_path, sizeof(index_path),
+                                         "%s/block_index.bin", tmp_dir) : -1;
 
         chain_params_select(CHAIN_MAIN);
         memset(&cm, 0, sizeof(cm));
         memset(&sigs, 0, sizeof(sigs));
-        bool ok = connman_init(&cm, chain_params_get(), &sigs);
+        bool ok = tmp_dir != NULL &&
+                  snap_n > 0 && (size_t)snap_n < sizeof(snap_path) &&
+                  index_n > 0 && (size_t)index_n < sizeof(index_path);
+        ok = ok && syncdiag_touch_file(snap_path);
+        ok = ok && syncdiag_touch_file(index_path);
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
         if (ok) {
             cm.manager.listen_sockets =
                 zcl_calloc(1, sizeof(*cm.manager.listen_sockets),
@@ -520,6 +545,7 @@ int test_syncdiag_rpc(void)
         rpc_table_init(&tbl);
         register_net_rpc_commands(&tbl);
         rpc_net_set_connman(&cm);
+        rpc_net_set_boot_context(tmp_dir, snap_path);
 
         json_init(&params);
         json_set_array(&params);
@@ -563,6 +589,29 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_bool(json_get(addrman,
                                           "addr_relay_ready"));
 
+        const struct json_value *loader =
+            json_get(&result, "snapshot_loader");
+        ok = ok && loader && loader->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(loader, "schema")),
+                          "zcl.snapshot_loader.v1") == 0;
+        ok = ok && json_get_int(json_get(loader, "schema_version")) == 1;
+        ok = ok && json_get_bool(json_get(loader, "bundle_present"));
+        ok = ok && json_get_int(json_get(loader,
+                                         "bundle_seed_height")) == 3170000;
+        ok = ok && strcmp(json_get_str(json_get(loader, "bundle_path")),
+                          snap_path) == 0;
+        ok = ok && json_get_bool(json_get(loader,
+                                          "block_index_present"));
+        ok = ok && json_get_bool(json_get(loader, "bootable_bundle"));
+        ok = ok && json_get_bool(json_get(loader,
+            "active_loader_configured"));
+        ok = ok && strcmp(json_get_str(json_get(loader,
+            "active_loader_path")), snap_path) == 0;
+        ok = ok && json_get_bool(json_get(loader,
+            "active_loader_matches_bundle"));
+        ok = ok && strcmp(json_get_str(json_get(loader,
+            "recovery_hint")), "loader_active") == 0;
+
         const struct json_value *legacy =
             json_get(&result, "legacy_p2p_bootstrap");
         ok = ok && legacy && legacy->type == JSON_OBJ;
@@ -591,12 +640,35 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_str(json_get(&result, "blockers"),
                                       "beta6_NODE_BOOTSTRAP_not_advertised");
 
+        ok = ok && unlink(index_path) == 0;
+        rpc_net_set_boot_context(tmp_dir, NULL);
+        json_free(&result);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "bootstrapstatus",
+                                     &params, &result);
+        loader = json_get(&result, "snapshot_loader");
+        ok = ok && loader && loader->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(loader, "bundle_present"));
+        ok = ok && !json_get_bool(json_get(loader,
+                                           "block_index_present"));
+        ok = ok && !json_get_bool(json_get(loader, "bootable_bundle"));
+        ok = ok && !json_get_bool(json_get(loader,
+            "active_loader_configured"));
+        ok = ok && strcmp(json_get_str(json_get(loader,
+            "recovery_hint")), "install_tip_seed_snapshot") == 0;
+
         json_free(&params);
         json_free(&result);
         rpc_net_set_connman(NULL);
+        rpc_net_set_boot_context(NULL, NULL);
         msg_version_clear_external_ip_for_test();
         reducer_frontier_provable_tip_reset();
         connman_free(&cm);
+        if (tmp_dir) {
+            unlink(snap_path);
+            unlink(index_path);
+            rmdir(tmp_dir);
+        }
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

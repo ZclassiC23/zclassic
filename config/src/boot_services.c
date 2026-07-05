@@ -1190,6 +1190,8 @@ bool app_init_services(struct app_context *ctx,
     rpc_misc_set_wallet(svc->wallet);
     register_misc_rpc_commands(svc->rpc_table);
     rpc_net_set_connman(svc->connman);
+    rpc_net_set_boot_context(ctx->datadir,
+                             ctx->load_snapshot_at_own_height);
     block_source_policy_init(svc->connman, svc->state,
                                    boot_node_db(svc));
     register_net_rpc_commands(svc->rpc_table);

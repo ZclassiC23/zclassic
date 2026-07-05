@@ -1790,6 +1790,22 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"serving_snapshot_bootstrap\":false,"
                       "\"zclassicd_beta6_p2p_compatible\":true,"
                       "\"zclassicd_beta6_fast_bootstrap_compatible\":false,"
+                      "\"snapshot_loader\":{"
+                      "\"schema\":\"zcl.snapshot_loader.v1\","
+                      "\"schema_version\":1,"
+                      "\"datadir\":\"/tmp/zcl-test\","
+                      "\"bundle_present\":true,"
+                      "\"bundle_count\":1,"
+                      "\"bundle_seed_height\":3170000,"
+                      "\"bundle_name\":\"utxo-seed-3170000.snapshot\","
+                      "\"bundle_path\":\"/tmp/zcl-test/utxo-seed-3170000.snapshot\","
+                      "\"block_index_present\":true,"
+                      "\"failed_marker\":false,"
+                      "\"bootable_bundle\":true,"
+                      "\"active_loader_configured\":true,"
+                      "\"active_loader_path\":\"/tmp/zcl-test/utxo-seed-3170000.snapshot\","
+                      "\"active_loader_matches_bundle\":true,"
+                      "\"recovery_hint\":\"loader_active\"},"
                       "\"beta6_snapshot_bootstrap\":{"
                       "\"required_service_bit\":\"NODE_BOOTSTRAP\","
                       "\"required_service_bit_value\":16777216,"
@@ -1888,6 +1904,23 @@ static int test_zcl_bootstrapstatus_exposes_beta6_contract(void)
                                       "zclassicd_beta6_p2p_compatible")));
         ASSERT(!json_get_bool(json_get(&root,
             "zclassicd_beta6_fast_bootstrap_compatible")));
+
+        const struct json_value *loader =
+            json_get(&root, "snapshot_loader");
+        ASSERT(loader && loader->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(loader, "schema")),
+                      "zcl.snapshot_loader.v1");
+        ASSERT(json_get_int(json_get(loader, "schema_version")) == 1);
+        ASSERT(json_get_bool(json_get(loader, "bundle_present")));
+        ASSERT(json_get_int(json_get(loader,
+                                     "bundle_seed_height")) == 3170000);
+        ASSERT(json_get_bool(json_get(loader,
+                                      "active_loader_configured")));
+        ASSERT_STR_EQ(json_get_str(json_get(loader,
+                                            "active_loader_path")),
+                      "/tmp/zcl-test/utxo-seed-3170000.snapshot");
+        ASSERT_STR_EQ(json_get_str(json_get(loader, "recovery_hint")),
+                      "loader_active");
 
         const struct json_value *beta6 =
             json_get(&root, "beta6_snapshot_bootstrap");

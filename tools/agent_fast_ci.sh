@@ -190,7 +190,12 @@ select_test_groups() {
                 add_group "models"
                 matched=1
                 ;;
-            app/controllers/src/network_controller.c|app/controllers/src/sync_controller.c|lib/test/src/test_syncdiag_rpc.c)
+            app/controllers/src/network_controller.c|app/controllers/include/controllers/network_controller.h|app/controllers/src/sync_controller.c|lib/test/src/test_syncdiag_rpc.c)
+                add_group "syncdiag_rpc"
+                matched=1
+                ;;
+            config/src/boot_services.c)
+                add_group "make_lint_gates"
                 add_group "syncdiag_rpc"
                 matched=1
                 ;;

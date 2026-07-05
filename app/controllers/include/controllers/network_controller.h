@@ -11,6 +11,8 @@ struct connman;
 
 void rpc_net_set_connman(struct connman *cm);
 struct connman *rpc_net_get_connman(void);
+void rpc_net_set_boot_context(const char *datadir,
+                              const char *load_snapshot_at_own_height);
 void register_net_rpc_commands(struct rpc_table *t);
 
 #endif
