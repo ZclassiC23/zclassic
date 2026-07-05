@@ -36,6 +36,15 @@ drift would change the interpretation of state. `getmirrorstatus` follows this
 rule so an operator can distinguish a stale runtime binary from current source
 or a freshly deployed dev lane.
 
+`zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
+entry point for that rule. In addition to the human summary, it emits a
+`capabilities[]` matrix that names each first-class agent operation, its schema,
+and its native/MCP/REST transport, plus a `machine_contract` block declaring
+that payloads are JSON objects with required `schema`, `api_version`, and
+`status` fields. Those nested shapes are versioned as `zcl.agent_capability.v1`
+and `zcl.agent_machine_contract.v1`. Future operator APIs should extend that
+matrix before adding new wrapper behavior.
+
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions
 belong in C under `app/controllers/src/agent_controller.c` and
@@ -141,7 +150,9 @@ rewriting long command lines. If the snapshot is ahead of the lane's served
 height, the plan imports headers first with the documented
 `--importblockindex $HOME/.zclassic` step; `--import-headers` /
 `ZCL_LANE_RECOVERY_IMPORT_HEADERS=1` forces that step for a loader-equipped
-noncanonical lane that is still pre-RPC. The import is bounded by
+noncanonical lane that is still pre-RPC. Forced import is skipped when the
+selected snapshot is not newer than the lane height, unless
+`ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT=1` is set. The import is bounded by
 `ZCL_LANE_RECOVERY_IMPORT_TIMEOUT` (default 1200 seconds).
 
 ## Bootstrap Service Status

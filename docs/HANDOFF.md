@@ -1102,7 +1102,11 @@ the lane's served height, the recovery plan runs the documented
 `--importblockindex $HOME/.zclassic` header import before restart; use
 `--import-headers` / `ZCL_LANE_RECOVERY_IMPORT_HEADERS=1` to force that step for
 a pre-RPC noncanonical lane whose log says the snapshot loader skipped because
-headers were not synced yet. The import is bounded by
+headers were not synced yet. Forced import is skipped when the selected snapshot
+is not newer than the lane height, unless
+`ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT=1` is set; stale legacy
+block-index imports can slow recovery without improving the lane. The import is
+bounded by
 `ZCL_LANE_RECOVERY_IMPORT_TIMEOUT` (default 1200 seconds).
 
 The live datadir runs `-load-snapshot-at-own-height` re-seeding 3,156,809 and

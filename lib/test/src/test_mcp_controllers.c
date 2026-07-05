@@ -1025,6 +1025,15 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
         return strdup("{\"schema\":\"zcl.agent_interface.v1\","
                       "\"preferred_transport\":\"mcp\","
                       "\"preferred_payload\":\"json\","
+                      "\"capabilities\":[{\"name\":\"runtime_status\","
+                      "\"schema\":\"zcl.public_status.v1\","
+                      "\"mcp\":\"zcl_agent\"}],"
+                      "\"machine_contract\":{\"schema\":\"zcl.agent_machine_contract.v1\","
+                      "\"payload\":\"json_object\","
+                      "\"schema_required\":true,"
+                      "\"transport_equivalent_payloads\":true,"
+                      "\"no_python_required\":true,"
+                      "\"no_tools_z_required\":true},"
                       "\"must_live_in_c\":[\"deploy/restart safety decisions\"],"
                       "\"avoid\":[\"do not add new operator logic to tools/z\"]}");
     if (strcmp(method, "agentdeployguard") == 0) {
@@ -1279,6 +1288,8 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl.agent_interface.v1");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "preferred_transport")),
                       "mcp");
+        ASSERT(json_get(&root, "capabilities") != NULL);
+        ASSERT(json_get(&root, "machine_contract") != NULL);
         json_free(&root);
         free(body);
 

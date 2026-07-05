@@ -543,6 +543,12 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_interface.v1",
                       "zclassic23 agentinterface / zcl_agent_interface",
                       "preferred AI development interface and transport ranking");
+    agent_push_schema(&schemas, "zcl.agent_capability.v1",
+                      "nested in zcl.agent_interface.v1 capabilities[]",
+                      "one machine-readable agent operation and its transports");
+    agent_push_schema(&schemas, "zcl.agent_machine_contract.v1",
+                      "nested in zcl.agent_interface.v1 machine_contract",
+                      "JSON/schema/version compatibility requirements for agents");
     agent_push_schema(&schemas, "zcl.agent_deploy_guard.v1",
                       "zclassic23 agentdeployguard / zcl_agent_deploy_guard",
                       "C-native deploy/restart allow/refuse decision");

@@ -1943,6 +1943,11 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_interface.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_capability.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_machine_contract.v1")
+            != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_deploy_guard.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.operator_lane.v1") != NULL;
@@ -1986,18 +1991,50 @@ int test_syncdiag_rpc(void)
         const struct json_value *must_live_in_c =
             json_get(&interface, "must_live_in_c");
         const struct json_value *avoid = json_get(&interface, "avoid");
+        const struct json_value *capabilities =
+            json_get(&interface, "capabilities");
+        const struct json_value *runtime_status =
+            find_object_with_str(capabilities, "name", "runtime_status");
+        const struct json_value *deploy_cap =
+            find_object_with_str(capabilities, "name", "deploy_guard");
+        const struct json_value *machine =
+            json_get(&interface, "machine_contract");
         ok = ok && interface.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&interface, "schema")),
                           "zcl.agent_interface.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&interface,
                                                 "preferred_transport")),
                           "mcp") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&interface,
+                                                "capabilities_schema")),
+                          "zcl.agent_capability.v1") == 0;
         ok = ok && interface_transports &&
             json_size(interface_transports) >= 3;
         ok = ok && json_array_has_substr(must_live_in_c,
                                          "deploy/restart safety decisions");
         ok = ok && json_array_has_substr(avoid,
                                          "do not require Python");
+        ok = ok && capabilities && json_size(capabilities) >= 8;
+        ok = ok && runtime_status &&
+            strcmp(json_get_str(json_get(runtime_status, "mcp")),
+                   "zcl_agent") == 0;
+        ok = ok && runtime_status &&
+            strcmp(json_get_str(json_get(runtime_status, "schema")),
+                   "zcl.public_status.v1") == 0;
+        ok = ok && deploy_cap &&
+            strcmp(json_get_str(json_get(deploy_cap, "schema")),
+                   "zcl.agent_deploy_guard.v1") == 0;
+        ok = ok && machine &&
+            strcmp(json_get_str(json_get(machine, "schema")),
+                   "zcl.agent_machine_contract.v1") == 0;
+        ok = ok && machine &&
+            strcmp(json_get_str(json_get(machine, "payload")),
+                   "json_object") == 0;
+        ok = ok && json_get_bool(json_get(machine, "schema_required"));
+        ok = ok && json_get_bool(json_get(machine,
+                                          "transport_equivalent_payloads"));
+        ok = ok && json_get_bool(json_get(machine, "no_python_required"));
+        ok = ok && json_get_bool(json_get(machine, "no_tools_z_required"));
 
         rpc_agent_set_boot_context("canonical", "full",
                                    "/tmp/zcl-agent-canonical",

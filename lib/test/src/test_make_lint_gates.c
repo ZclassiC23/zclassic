@@ -2328,6 +2328,12 @@ static int t_dev_lane_deploy_contract(void)
                != NULL);
         ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_IMPORT_HEADERS")
                != NULL);
+        ASSERT(strstr(lane_recover,
+                      "ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT")
+               != NULL);
+        ASSERT(strstr(lane_recover,
+                      "header_import_skipped_snapshot_not_newer")
+               != NULL);
         ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_IMPORT_TIMEOUT")
                != NULL);
         ASSERT(strstr(lane_recover, "--importblockindex") != NULL);

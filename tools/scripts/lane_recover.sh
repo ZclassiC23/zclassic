@@ -11,6 +11,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 APPLY="${ZCL_LANE_RECOVERY_APPLY:-0}"
 FORCE_HEADER_IMPORT="${ZCL_LANE_RECOVERY_IMPORT_HEADERS:-0}"
+ALLOW_STALE_HEADER_IMPORT="${ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT:-0}"
 JSON=0
 LANE="${1:-all}"
 
@@ -25,7 +26,10 @@ noncanonical unit.
 
 --import-headers runs the documented `--importblockindex $HOME/.zclassic`
 header import for the selected noncanonical lane before restart. This is useful
-when the loader snapshot is newer than the lane's current header frontier.
+when the loader snapshot is newer than the lane's current height. If the
+snapshot is not newer, the flag is ignored unless
+ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT=1 is set; stale legacy block-index
+imports can make recovery slower without improving the lane.
 
 Canonical/live/main is always refused. Use make lane-health for read-only status.
 USAGE
@@ -337,17 +341,24 @@ recover_lane() {
         snapshot_seed_height="$(snapshot_height_from_path "$snapshot" || true)"
     fi
     if [ "$FORCE_HEADER_IMPORT" = "1" ] && [ -n "$snapshot" ]; then
-        case "$action" in
-            restart_noncanonical_lane|inspect_only)
-                action="import_headers_restart"
-                ;;
-            install_loader_dropin_restart)
-                action="import_headers_install_loader_restart"
-                ;;
-            copy_seed_install_loader_restart)
-                action="copy_seed_import_headers_install_loader_restart"
-                ;;
-        esac
+        if [ "$ALLOW_STALE_HEADER_IMPORT" != "1" ] &&
+           [ -n "$height" ] && [ -n "$snapshot_seed_height" ] &&
+           [ "$snapshot_seed_height" -le "$height" ] 2>/dev/null; then
+            reason="${reason};header_import_skipped_snapshot_not_newer"
+            log "$lane skipping forced header import: snapshot_seed_height=$snapshot_seed_height <= lane_height=$height; set ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT=1 to override"
+        else
+            case "$action" in
+                restart_noncanonical_lane|inspect_only)
+                    action="import_headers_restart"
+                    ;;
+                install_loader_dropin_restart)
+                    action="import_headers_install_loader_restart"
+                    ;;
+                copy_seed_install_loader_restart)
+                    action="copy_seed_import_headers_install_loader_restart"
+                    ;;
+            esac
+        fi
     elif [ -n "$height" ] && [ -n "$snapshot_seed_height" ] &&
          [ "$snapshot_seed_height" -gt "$height" ] 2>/dev/null; then
         case "$action" in
@@ -413,14 +424,34 @@ selftest_case() {
     fi
 }
 
+selftest_case_contains() {
+    local name="$1" lane="$2" body="$3" needle="$4" out rc
+    rc=0
+    out="$(ZCL_LANE_RECOVERY_HEALTH_JSON="$body" \
+        env -u ZCL_LANE_RECOVERY_SELFTEST "$0" "$lane" --json --import-headers 2>&1)" || rc=$?
+    if [ "$rc" != "0" ]; then
+        printf 'lane-recover selftest FAIL expected pass: %s rc=%s out=%s\n' \
+            "$name" "$rc" "$out" >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$out" | grep -F "$needle" >/dev/null; then
+        printf 'lane-recover selftest FAIL missing %s: %s out=%s\n' \
+            "$needle" "$name" "$out" >&2
+        exit 1
+    fi
+}
+
 selftest() {
-    local dev soak live
+    local dev soak live stale_import
     dev='{"lane":"dev","unit":"zcl23-dev","datadir":"/tmp/zcl-dev","role_ready":false,"status":"warn","reason":"lag_to_live_99","snapshot_path":"/tmp/zcl-dev/utxo-seed-10.snapshot","snapshot_loader_configured":false,"recovery_hint":"restart_with_load_snapshot_at_own_height"}'
     soak='{"lane":"soak","unit":"zclassic23-soak","datadir":"/tmp/zcl-soak","role_ready":false,"status":"warn","reason":"lag_to_live_99","snapshot_path":"","snapshot_loader_configured":false,"recovery_hint":"install_tip_seed_snapshot"}'
     live='{"lane":"live","unit":"zclassic23","datadir":"/tmp/zcl-live","role_ready":false,"status":"warn","reason":"lag_to_live_99","snapshot_path":"/tmp/zcl-live/utxo-seed-10.snapshot","snapshot_loader_configured":false,"recovery_hint":"restart_with_load_snapshot_at_own_height"}'
+    stale_import='{"lane":"dev","unit":"zcl23-dev","datadir":"/tmp/zcl-dev","role_ready":false,"status":"warn","reason":"lag_to_live_99","height":50,"snapshot_seed_height":10,"snapshot_path":"/tmp/zcl-dev/utxo-seed-10.snapshot","snapshot_loader_configured":true,"recovery_hint":"loader_active"}'
     selftest_case "dev loader plan" dev 0 "$dev"
     selftest_case "soak seed plan" soak 0 "$soak"
     selftest_case "canonical refused" live 1 "$live"
+    selftest_case_contains "stale forced header import skipped" dev \
+        "$stale_import" "header_import_skipped_snapshot_not_newer"
     printf 'lane-recover selftest PASS\n'
 }
 
