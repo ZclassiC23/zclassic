@@ -69,6 +69,46 @@ struct dl_peer_stats {
                                      * and bypasses bandwidth-score scaling */
 };
 
+/* Cheap operator/AI diagnostics over the current in-flight set. Sentinel
+ * values when no request is in flight:
+ *   oldest_in_flight_age_seconds = -1
+ *   oldest_in_flight_height      = -1
+ *   oldest_in_flight_peer_id     = 0
+ */
+struct dl_diagnostics {
+    int     request_timeout_seconds;
+    int64_t oldest_in_flight_age_seconds;
+    int32_t oldest_in_flight_height;
+    uint32_t oldest_in_flight_peer_id;
+    uint64_t overdue_in_flight;
+    uint64_t in_flight_peer_count;
+    uint64_t assign_attempts;
+    uint64_t assign_successes;
+    uint64_t assign_zero_results;
+    uint32_t last_assign_peer_id;
+    uint64_t last_assign_max_requested;
+    uint64_t last_assign_available;
+    uint64_t last_assign_assigned;
+    uint64_t last_assign_queue_len;
+    uint64_t last_assign_active;
+    uint64_t last_assign_peer_in_flight;
+    uint64_t last_assign_peer_limit;
+    uint64_t last_assign_global_limit;
+    int      last_assign_result;
+};
+
+enum dl_assign_result {
+    DL_ASSIGN_NONE = 0,
+    DL_ASSIGN_ASSIGNED,
+    DL_ASSIGN_NO_QUEUE,
+    DL_ASSIGN_MAX_ZERO,
+    DL_ASSIGN_PEER_WINDOW_FULL,
+    DL_ASSIGN_GLOBAL_WINDOW_FULL,
+    DL_ASSIGN_NO_SLOT,
+};
+
+const char *dl_assign_result_name(int result);
+
 /* Download manager — global singleton */
 struct download_manager {
     zcl_mutex_t cs;
@@ -107,6 +147,23 @@ struct download_manager {
     uint64_t total_queue_evicted;   /* high-height entries displaced at cap */
     uint64_t total_queue_rejected;  /* pushes refused at cap (not lower
                                      * than the current tail) */
+
+    /* Last assignment attempt telemetry. These fields let the agent
+     * distinguish "message pump never tried" from "tried but peer/global
+     * windows rejected the work" without tailing logs. */
+    uint64_t assign_attempts;
+    uint64_t assign_successes;
+    uint64_t assign_zero_results;
+    uint32_t last_assign_peer_id;
+    uint64_t last_assign_max_requested;
+    uint64_t last_assign_available;
+    uint64_t last_assign_assigned;
+    uint64_t last_assign_queue_len;
+    uint64_t last_assign_active;
+    uint64_t last_assign_peer_in_flight;
+    uint64_t last_assign_peer_limit;
+    uint64_t last_assign_global_limit;
+    int      last_assign_result;
 
     /* Byte throughput tracking */
     uint64_t total_bytes_received;   /* total block bytes downloaded */
@@ -181,6 +238,10 @@ void dl_get_stats(struct download_manager *dm,
                   uint64_t *requested, uint64_t *received,
                   uint64_t *timed_out, uint64_t *in_flight,
                   uint64_t *queued);
+
+/* Get in-flight age/overdue diagnostics for RPC/agent telemetry. */
+void dl_get_diagnostics(struct download_manager *dm,
+                        struct dl_diagnostics *out);
 
 /* Record block bytes received (call from process_block_msg). */
 void dl_add_bytes_received(struct download_manager *dm, uint64_t bytes);

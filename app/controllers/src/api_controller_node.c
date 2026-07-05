@@ -11,6 +11,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
+#include "controllers/network_controller.h"
 #include "api_controller_internal.h"
 #include "config/boot.h"
 #include "config/runtime.h"
@@ -25,8 +26,10 @@
 #include "models/file_service.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
+#include "net/connman.h"
 #include "net/download.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "services/gap_fill_service.h"
 #include "services/node_health_service.h"
 #include "net/snapshot_sync_contract.h"
 #include "validation/contextual_check_tx.h"
@@ -108,8 +111,14 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
 {
     struct download_manager *dm = msg_get_download_mgr();
     uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;
+    struct dl_diagnostics diag;
+    struct gap_fill_stats gf_stats;
+    struct connman_message_cycle_stats msg_stats;
     struct json_value body;
     dl_get_stats(dm, &req, &recv, &tout, &inflight, &queued);
+    dl_get_diagnostics(dm, &diag);
+    gap_fill_get_stats(&gf_stats);
+    connman_get_message_cycle_stats(rpc_net_get_connman(), &msg_stats);
     json_init(&body);
     json_set_object(&body);
     json_push_kv_str(&body, "schema", "zcl.downloadstats.v1");
@@ -120,6 +129,60 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
     json_push_kv_int(&body, "timed_out", (int64_t)tout);
     json_push_kv_int(&body, "in_flight", (int64_t)inflight);
     json_push_kv_int(&body, "queued", (int64_t)queued);
+    json_push_kv_int(&body, "request_timeout_seconds",
+                     (int64_t)diag.request_timeout_seconds);
+    json_push_kv_int(&body, "oldest_in_flight_age_seconds",
+                     diag.oldest_in_flight_age_seconds);
+    json_push_kv_int(&body, "oldest_in_flight_height",
+                     diag.oldest_in_flight_height);
+    json_push_kv_int(&body, "oldest_in_flight_peer_id",
+                     (int64_t)diag.oldest_in_flight_peer_id);
+    json_push_kv_int(&body, "overdue_in_flight",
+                     (int64_t)diag.overdue_in_flight);
+    json_push_kv_int(&body, "in_flight_peer_count",
+                     (int64_t)diag.in_flight_peer_count);
+    json_push_kv_int(&body, "assign_attempts",
+                     (int64_t)diag.assign_attempts);
+    json_push_kv_int(&body, "assign_successes",
+                     (int64_t)diag.assign_successes);
+    json_push_kv_int(&body, "assign_zero_results",
+                     (int64_t)diag.assign_zero_results);
+    json_push_kv_int(&body, "dispatch_wakes",
+                     (int64_t)gf_stats.dispatch_wakes);
+    json_push_kv_int(&body, "message_cycles",
+                     (int64_t)msg_stats.cycles);
+    json_push_kv_int(&body, "message_nodes_snapshotted",
+                     (int64_t)msg_stats.nodes_snapshotted);
+    json_push_kv_int(&body, "message_send_calls",
+                     (int64_t)msg_stats.send_calls);
+    json_push_kv_int(&body, "message_process_calls",
+                     (int64_t)msg_stats.process_calls);
+    json_push_kv_int(&body, "message_recv_ready",
+                     (int64_t)msg_stats.recv_ready);
+    json_push_kv_int(&body, "message_idle_waits",
+                     (int64_t)msg_stats.idle_waits);
+    json_push_kv_int(&body, "message_wakes",
+                     (int64_t)msg_stats.wakes);
+    json_push_kv_int(&body, "last_assign_peer_id",
+                     (int64_t)diag.last_assign_peer_id);
+    json_push_kv_int(&body, "last_assign_max_requested",
+                     (int64_t)diag.last_assign_max_requested);
+    json_push_kv_int(&body, "last_assign_available",
+                     (int64_t)diag.last_assign_available);
+    json_push_kv_int(&body, "last_assign_assigned",
+                     (int64_t)diag.last_assign_assigned);
+    json_push_kv_int(&body, "last_assign_queue_len",
+                     (int64_t)diag.last_assign_queue_len);
+    json_push_kv_int(&body, "last_assign_active",
+                     (int64_t)diag.last_assign_active);
+    json_push_kv_int(&body, "last_assign_peer_in_flight",
+                     (int64_t)diag.last_assign_peer_in_flight);
+    json_push_kv_int(&body, "last_assign_peer_limit",
+                     (int64_t)diag.last_assign_peer_limit);
+    json_push_kv_int(&body, "last_assign_global_limit",
+                     (int64_t)diag.last_assign_global_limit);
+    json_push_kv_str(&body, "last_assign_result",
+                     dl_assign_result_name(diag.last_assign_result));
     json_push_kv_int(&body, "defer_proof_validation_below_height",
                      g_deferred_proof_validation_below_height);
     size_t n = api_json_ok(response, response_max, &body);

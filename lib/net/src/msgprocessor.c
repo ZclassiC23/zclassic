@@ -1160,7 +1160,9 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
      * scale, not per-message scale. */
     tip_watchdog_tick();
 
-    while (!node->disconnect) {
+    size_t processed = 0;
+    while (!node->disconnect &&
+           processed < ZCL_MSG_PROCESS_MAX_PER_CYCLE) {
         zcl_mutex_lock(&node->cs_recv);
         if (node->recv_msg_count == 0 ||
             !net_message_complete(&node->recv_msgs[0])) {
@@ -1173,6 +1175,7 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
                 (node->recv_msg_count - 1) * sizeof(struct net_message));
         node->recv_msg_count--;
         zcl_mutex_unlock(&node->cs_recv);
+        processed++;
 
         /* Verify message checksum (first 4 bytes of double-SHA256) */
         struct uint256 msg_hash;

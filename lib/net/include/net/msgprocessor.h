@@ -246,6 +246,11 @@ void msg_processor_set_utxo_sha3_compute(
     msg_utxo_sha3_compute_fn compute,
     void *ctx);
 
+/* Fairness contract for the connman message cycle: inbound work for one
+ * peer must yield back to the send phase regularly so queued block requests
+ * and timeout reassignments cannot be starved by a large receive backlog. */
+#define ZCL_MSG_PROCESS_MAX_PER_CYCLE 32
+
 bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);
 int msg_get_height(void *ctx);

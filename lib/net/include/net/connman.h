@@ -10,6 +10,7 @@
 #include "net/net.h"
 #include "net/onion_discovery.h"
 #include "chain/chainparams.h"
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -67,6 +68,16 @@ struct connman_outbound_health {
     int64_t addnode_protocol_failures;
 };
 
+struct connman_message_cycle_stats {
+    uint64_t cycles;
+    uint64_t nodes_snapshotted;
+    uint64_t send_calls;
+    uint64_t process_calls;
+    uint64_t recv_ready;
+    uint64_t idle_waits;
+    uint64_t wakes;
+};
+
 struct connman {
     struct net_manager manager;
     const struct chain_params *params;
@@ -92,6 +103,17 @@ struct connman {
     onion_peer_discover_fn onion_peer_discover;
     connman_known_zcl23_peers_fn known_zcl23_peers;
     void *known_zcl23_peers_ctx;
+
+    /* Message-loop counters for operator/agent diagnostics. The message
+     * thread updates these on the hot path; RPC/API readers snapshot them
+     * lock-free via connman_get_message_cycle_stats(). */
+    _Atomic uint64_t message_cycles;
+    _Atomic uint64_t message_nodes_snapshotted;
+    _Atomic uint64_t message_send_calls;
+    _Atomic uint64_t message_process_calls;
+    _Atomic uint64_t message_recv_ready;
+    _Atomic uint64_t message_idle_waits;
+    _Atomic uint64_t message_wakes;
 };
 
 bool connman_init(struct connman *cm, const struct chain_params *params,
@@ -151,6 +173,9 @@ size_t connman_outbound_healthy_count(struct connman *cm);
 int connman_max_peer_height(struct connman *cm);
 void connman_get_outbound_health(struct connman *cm,
                                  struct connman_outbound_health *out);
+void connman_get_message_cycle_stats(
+    struct connman *cm,
+    struct connman_message_cycle_stats *out);
 int connman_force_outbound_rotation(struct connman *cm, const char *reason);
 
 void connman_relay_transaction(struct connman *cm,
@@ -166,6 +191,11 @@ void connman_relay_transaction(struct connman *cm,
  * Exposed outside the message thread so the stress test can drive
  * the cycle directly without needing to stand up a full connman_start(). */
 bool connman_run_message_cycle(struct connman *cm);
+
+/* Wake the message-handler thread so queued outbound work (for example
+ * timeout-requeued block downloads) is dispatched immediately instead of
+ * waiting for the idle poll interval. Safe to call from service threads. */
+void connman_wake_message_handler(struct connman *cm);
 
 /* one pass of the socket-handler deferred-free sweep.
  *

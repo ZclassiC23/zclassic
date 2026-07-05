@@ -2702,12 +2702,22 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "zcl.public_status.v1") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_fast_collect") != NULL);
         ASSERT(strstr(agent_summary_buf, "dl_get_stats") != NULL);
+        ASSERT(strstr(agent_summary_buf, "dl_get_diagnostics") != NULL);
         ASSERT(strstr(agent_summary_buf, "dl_get_throughput") != NULL);
+        ASSERT(strstr(agent_summary_buf, "assign_attempts") != NULL);
+        ASSERT(strstr(agent_summary_buf, "message_send_calls") != NULL);
+        ASSERT(strstr(agent_summary_buf, "connman_get_message_cycle_stats")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf, "dl_assign_result_name") != NULL);
         ASSERT(strstr(agent_summary_buf, "sync_monitor_tip_advance_age")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "AGENT_CATCHUP_STALL_SECS")
                != NULL);
+        ASSERT(strstr(agent_summary_buf, "AGENT_DISPATCH_IDLE_SECS")
+               != NULL);
         ASSERT(strstr(agent_summary_buf, "catchup_stalled") != NULL);
+        ASSERT(strstr(agent_summary_buf, "download_dispatch_idle")
+               != NULL);
         ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
@@ -4488,6 +4498,78 @@ static int t_trusted_peer_stall_guard_contract(void)
     return failures;
 }
 
+static int t_gap_fill_wakes_connman_dispatch_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("gap-fill requeue wakes connman dispatch") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/gap_fill_service.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "gap_fill_wake_dispatcher(\"timeout_sweep\")")
+               != NULL);
+        ASSERT(strstr(buf, "gap_fill_wake_dispatcher(\"queued_blocks\")")
+               != NULL);
+        ASSERT(strstr(buf, "gap_fill_wake_dispatch_if_idle(dm, \"queued_idle\")")
+               != NULL);
+        ASSERT(strstr(buf, "dispatch_wakes") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_runtime_sync_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "gap_fill_set_dispatch_wake(") != NULL);
+        ASSERT(strstr(buf, "connman_wake_message_handler") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/net/src/connman.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "connman_wake_message_handler") != NULL);
+        ASSERT(strstr(buf, "pthread_cond_timedwait") != NULL);
+        ASSERT(strstr(buf, "message_wakes") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_msg_process_yields_to_send_phase_contract(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("msg_process yields to send phase under recv backlog") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msgprocessor.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "processed < ZCL_MSG_PROCESS_MAX_PER_CYCLE")
+               != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/connman.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "Phase 2: send first") != NULL);
+        ASSERT(strstr(buf, "message_send_calls") != NULL);
+        ASSERT(strstr(buf, "message_process_calls") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/net/include/net/msgprocessor.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "#define ZCL_MSG_PROCESS_MAX_PER_CYCLE 32")
+               != NULL);
+        ASSERT(strstr(buf, "send phase regularly") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 int test_make_lint_gates(void)
 {
     printf("\n=== make_lint_gates tests ===\n");
@@ -4555,6 +4637,8 @@ int test_make_lint_gates(void)
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
     failures += t_trusted_peer_stall_guard_contract();
+    failures += t_gap_fill_wakes_connman_dispatch_contract();
+    failures += t_msg_process_yields_to_send_phase_contract();
     failures += t_e1_file_size_ceiling();
     failures += t_no_new_repair_rung();
     failures += t_no_new_borrowed_seed_caller();

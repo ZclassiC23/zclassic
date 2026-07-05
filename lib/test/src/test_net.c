@@ -161,6 +161,30 @@ static bool p25_mock_send_messages(void *ctx, struct p2p_node *node,
     return true;
 }
 
+struct p25_order_ctx {
+    _Atomic int seq;
+    int send_order;
+    int process_order;
+};
+
+static bool p25_order_process_messages(void *ctx, struct p2p_node *node)
+{
+    (void)node;
+    struct p25_order_ctx *c = ctx;
+    c->process_order = atomic_fetch_add(&c->seq, 1) + 1;
+    return true;
+}
+
+static bool p25_order_send_messages(void *ctx, struct p2p_node *node,
+                                    bool send_trickle)
+{
+    (void)node;
+    (void)send_trickle;
+    struct p25_order_ctx *c = ctx;
+    c->send_order = atomic_fetch_add(&c->seq, 1) + 1;
+    return true;
+}
+
 static void *p25_message_worker(void *arg)
 {
     struct p25_ctx *c = arg;
@@ -4449,6 +4473,61 @@ skip_parallel_tests:
     event_clear_observers(EV_BACKPRESSURE_ACTIVE);
     event_clear_observers(EV_BACKPRESSURE_REJECT);
     event_clear_observers(EV_BACKPRESSURE_CLEAR);
+
+    printf("p25_connman: message cycle sends before inbound processing... ");
+    {
+        const struct chain_params *params = chain_params_get();
+        struct p25_order_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        sigs.ctx = &ctx;
+        sigs.process_messages = p25_order_process_messages;
+        sigs.send_messages = p25_order_send_messages;
+
+        bool ok = connman_init(&cm, params, &sigs);
+        cm.manager.nodes = zcl_realloc(cm.manager.nodes,
+                                       sizeof(*cm.manager.nodes),
+                                       "p25_order_node_array");
+        cm.manager.nodes_cap = cm.manager.nodes ? 1 : 0;
+        ok = ok && cm.manager.nodes != NULL;
+        struct net_address fake_addr;
+        memset(&fake_addr, 0, sizeof(fake_addr));
+        fake_addr.svc.port = 18033;
+        struct p2p_node *n = p2p_node_create(
+            &cm.manager, ZCL_INVALID_SOCKET, &fake_addr, "phase-peer",
+            false);
+        ok = ok && n != NULL;
+        if (n) {
+            n->state = PEER_HANDSHAKE_COMPLETE;
+            n->recv_msg_count = 1;
+            cm.manager.nodes[cm.manager.num_nodes++] = n;
+        }
+
+        bool cycle = connman_run_message_cycle(&cm);
+        struct connman_message_cycle_stats stats;
+        connman_get_message_cycle_stats(&cm, &stats);
+
+        if (n)
+            n->recv_msg_count = 0;
+        connman_free(&cm);
+
+        ok = ok && cycle && ctx.send_order == 1 &&
+             ctx.process_order == 2 && stats.cycles == 1 &&
+             stats.nodes_snapshotted == 1 && stats.send_calls == 1 &&
+             stats.process_calls == 1 && stats.recv_ready == 1;
+        if (ok) printf("OK\n");
+        else { printf("FAIL (cycle=%d send_order=%d process_order=%d "
+                      "cycles=%llu send=%llu process=%llu recv=%llu)\n",
+                      cycle, ctx.send_order, ctx.process_order,
+                      (unsigned long long)stats.cycles,
+                      (unsigned long long)stats.send_calls,
+                      (unsigned long long)stats.process_calls,
+                      (unsigned long long)stats.recv_ready);
+               failures++; }
+    }
 
     /* ── connman snapshot-iterate stress (opt-in) ──────────
      * Exercise the refactored message-cycle + deferred-free-sweep

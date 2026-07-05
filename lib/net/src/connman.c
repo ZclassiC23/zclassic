@@ -1508,6 +1508,8 @@ bool connman_run_message_cycle(struct connman *cm)
      * The deferred_free sweep respects ref_count > 0 so a peer
      * in-flight in a snapshot cannot be freed out from under us. */
     bool did_work = false;
+    atomic_fetch_add_explicit(&cm->message_cycles, 1,
+                              memory_order_relaxed);
 
     /* Phase 1: snapshot + add_ref under cs_nodes. */
     zcl_mutex_lock(&cm->manager.cs_nodes);
@@ -1532,13 +1534,36 @@ bool connman_run_message_cycle(struct connman *cm)
     zcl_mutex_unlock(&cm->manager.cs_nodes);
 
     if (!snap) return false;
+    atomic_fetch_add_explicit(&cm->message_nodes_snapshotted,
+                              (uint64_t)snap_count, memory_order_relaxed);
 
-    /* Phase 2: drive callbacks against the local copy, NO lock held. */
+    /* Phase 2: send first. A received block can drive local reducer work
+     * that takes locks or waits on validation workers. Queued getdata
+     * dispatch must not sit behind that heavy local processing. */
     for (size_t i = 0; i < snap_count; i++) {
         struct p2p_node *node = snap[i];
         /* Peer may have disconnected mid-iteration — ref_count still
          * keeps the pointer valid, but there's no point talking to a
          * dead socket. */
+        if (node->disconnect) continue;
+
+        if (cm->manager.signals.send_messages) {
+            bool trickle = trickle_denom > 0 &&
+                           (GetRand(trickle_denom) == 0);
+            atomic_fetch_add_explicit(&cm->message_send_calls, 1,
+                                      memory_order_relaxed);
+            cm->manager.signals.send_messages(
+                cm->manager.signals.ctx, node, trickle);
+            /* Keep tight loop when serving snapshot — don't sleep */
+            if (node->state == PEER_SNAPSHOT_SERVING ||
+                node->state == PEER_SNAPSHOT_RECEIVING)
+                did_work = true;
+        }
+    }
+
+    /* Phase 3: then process bounded inbound work, NO lock held. */
+    for (size_t i = 0; i < snap_count; i++) {
+        struct p2p_node *node = snap[i];
         if (node->disconnect) continue;
 
         bool has_recv_messages = false;
@@ -1547,20 +1572,13 @@ bool connman_run_message_cycle(struct connman *cm)
         zcl_mutex_unlock(&node->cs_recv);
 
         if (has_recv_messages && cm->manager.signals.process_messages) {
+            atomic_fetch_add_explicit(&cm->message_recv_ready, 1,
+                                      memory_order_relaxed);
+            atomic_fetch_add_explicit(&cm->message_process_calls, 1,
+                                      memory_order_relaxed);
             cm->manager.signals.process_messages(
                 cm->manager.signals.ctx, node);
             did_work = true;
-        }
-
-        if (!node->disconnect && cm->manager.signals.send_messages) {
-            bool trickle = trickle_denom > 0 &&
-                           (GetRand(trickle_denom) == 0);
-            cm->manager.signals.send_messages(
-                cm->manager.signals.ctx, node, trickle);
-            /* Keep tight loop when serving snapshot — don't sleep */
-            if (node->state == PEER_SNAPSHOT_SERVING ||
-                node->state == PEER_SNAPSHOT_RECEIVING)
-                did_work = true;
         }
     }
 
@@ -1579,6 +1597,16 @@ bool connman_run_message_cycle(struct connman *cm)
 
     free(snap);
     return did_work;
+}
+
+void connman_wake_message_handler(struct connman *cm)
+{
+    if (!cm)
+        return;
+    atomic_fetch_add_explicit(&cm->message_wakes, 1, memory_order_relaxed);
+    zcl_mutex_lock(&cm->manager.msg_handler_mutex);
+    zcl_cond_signal(&cm->manager.msg_handler_cond);
+    zcl_mutex_unlock(&cm->manager.msg_handler_mutex);
 }
 
 void connman_run_deferred_free_sweep(struct connman *cm)
@@ -1606,8 +1634,23 @@ static void *thread_message_handler(void *arg)
 
     while (!g_stop) {
         bool did_work = connman_run_message_cycle(cm);
-        if (!did_work)
-            usleep(100000);
+        if (!did_work) {
+            struct timespec until;
+            platform_time_realtime_timespec(&until);
+            until.tv_nsec += 100 * 1000 * 1000;
+            if (until.tv_nsec >= 1000 * 1000 * 1000) {
+                until.tv_sec++;
+                until.tv_nsec -= 1000 * 1000 * 1000;
+            }
+            atomic_fetch_add_explicit(&cm->message_idle_waits, 1,
+                                      memory_order_relaxed);
+            zcl_mutex_lock(&cm->manager.msg_handler_mutex);
+            if (!g_stop)
+                pthread_cond_timedwait(&cm->manager.msg_handler_cond,
+                                       &cm->manager.msg_handler_mutex,
+                                       &until);
+            zcl_mutex_unlock(&cm->manager.msg_handler_mutex);
+        }
     }
     return NULL;
 }
@@ -2167,4 +2210,28 @@ void connman_get_outbound_health(struct connman *cm,
 
     out->ipv4_group_count = num_groups;
     out->healthy_ipv4_group_count = healthy_num_groups;
+}
+
+void connman_get_message_cycle_stats(
+    struct connman *cm,
+    struct connman_message_cycle_stats *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!cm) return;
+
+    out->cycles = atomic_load_explicit(&cm->message_cycles,
+                                       memory_order_relaxed);
+    out->nodes_snapshotted = atomic_load_explicit(
+        &cm->message_nodes_snapshotted, memory_order_relaxed);
+    out->send_calls = atomic_load_explicit(&cm->message_send_calls,
+                                           memory_order_relaxed);
+    out->process_calls = atomic_load_explicit(&cm->message_process_calls,
+                                              memory_order_relaxed);
+    out->recv_ready = atomic_load_explicit(&cm->message_recv_ready,
+                                           memory_order_relaxed);
+    out->idle_waits = atomic_load_explicit(&cm->message_idle_waits,
+                                           memory_order_relaxed);
+    out->wakes = atomic_load_explicit(&cm->message_wakes,
+                                      memory_order_relaxed);
 }

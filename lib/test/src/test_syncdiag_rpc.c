@@ -1497,6 +1497,22 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_bool(json_get(download, "catchup_stalled"));
         ok = ok && json_get_int(json_get(download,
                                           "catchup_stall_seconds")) >= 120;
+        ok = ok && json_get(download, "request_timeout_seconds") != NULL;
+        ok = ok && json_get(download,
+                            "oldest_in_flight_age_seconds") != NULL;
+        ok = ok && json_get(download, "overdue_in_flight") != NULL;
+        ok = ok && json_get(download, "in_flight_peer_count") != NULL;
+        ok = ok && json_get(download, "assign_attempts") != NULL;
+        ok = ok && json_get(download, "assign_successes") != NULL;
+        ok = ok && json_get(download, "assign_zero_results") != NULL;
+        ok = ok && json_get(download, "dispatch_wakes") != NULL;
+        ok = ok && json_get(download, "message_cycles") != NULL;
+        ok = ok && json_get(download, "message_send_calls") != NULL;
+        ok = ok && json_get(download, "message_process_calls") != NULL;
+        ok = ok && json_get(download, "message_recv_ready") != NULL;
+        ok = ok && json_get(download, "message_idle_waits") != NULL;
+        ok = ok && json_get(download, "message_wakes") != NULL;
+        ok = ok && json_get(download, "last_assign_result") != NULL;
         ok = ok && json_get_int(json_get(download, "in_flight")) >= 1;
         ok = ok && json_get_int(json_get(download, "queued")) >= 1;
         ok = ok && health && health->type == JSON_OBJ;
@@ -1512,6 +1528,119 @@ int test_syncdiag_rpc(void)
         reducer_frontier_provable_tip_reset();
         sync_monitor_test_set_tip_advance_ts(0);
         sync_set_state(SYNC_IDLE, "agent stalled cleanup");
+        main_state_free(&ms);
+        connman_free(&cm);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC agent flags idle download dispatch... ");
+    {
+        struct connman cm;
+        struct node_signals sigs;
+        struct main_state ms;
+        struct block_index tip, best_header;
+        struct uint256 h_tip, h_hdr, h_queued;
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+
+        chain_params_select(CHAIN_MAIN);
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&ms, 0, sizeof(ms));
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(&h_tip, 0, sizeof(h_tip));
+        memset(&h_hdr, 0, sizeof(h_hdr));
+        memset(&h_queued, 0, sizeof(h_queued));
+
+        bool ok = connman_init(&cm, chain_params_get(), &sigs);
+        main_state_init(&ms);
+        block_index_init(&tip);
+        block_index_init(&best_header);
+        syncdiag_set_hash(&h_tip, 0x61);
+        syncdiag_set_hash(&h_hdr, 0x62);
+        tip.phashBlock = &h_tip;
+        tip.nHeight = 100;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        best_header.phashBlock = &h_hdr;
+        best_header.nHeight = 125;
+        best_header.pprev = &tip;
+        best_header.nTime = tip.nTime;
+        best_header.nStatus = BLOCK_VALID_TREE;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &best_header;
+
+        struct p2p_node *peer =
+            syncdiag_add_peer(&cm, 45, false, PEER_HANDSHAKE_COMPLETE);
+        ok = ok && peer != NULL;
+        if (peer)
+            peer->starting_height = 125;
+
+        struct download_manager *dm = msg_get_download_mgr();
+        dl_drain_for_backpressure(dm);
+        syncdiag_set_hash(&h_queued, 0x63);
+        int32_t queued_h = 101;
+        ok = ok && dl_queue_blocks(dm, &h_queued, &queued_h, 1) == 1;
+
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+        rpc_net_set_connman(&cm);
+        sync_monitor_set_context(&cm, dm, &ms);
+        reducer_frontier_provable_tip_set(100);
+        sync_monitor_test_set_tip_advance_ts(
+            (int64_t)platform_time_wall_time_t() - 45);
+        sync_set_state(SYNC_IDLE, "agent dispatch idle reset");
+        sync_set_state(SYNC_FINDING_PEERS, "agent dispatch idle");
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "agent dispatch idle");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "agent dispatch idle");
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agent", &params, &result);
+        const struct json_value *download = json_get(&result, "download");
+        const struct json_value *health = json_get(&result, "health");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "degraded") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_blocker")),
+                          "download_dispatch_idle") == 0;
+        ok = ok && json_get_bool(json_get(&result, "operator_needed"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "next")),
+                          "zclassic23 getsyncdiag") == 0;
+        ok = ok && json_get_int(json_get(&result, "gap")) == 25;
+        ok = ok && download && download->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(download, "active"));
+        ok = ok && !json_get_bool(json_get(download, "catchup_stalled"));
+        ok = ok && json_get_bool(json_get(download, "dispatch_idle"));
+        ok = ok && json_get_bool(json_get(download, "dispatch_stalled"));
+        ok = ok && json_get_int(json_get(download,
+                                          "dispatch_idle_seconds")) >= 30;
+        ok = ok && json_get_int(json_get(download, "in_flight")) == 0;
+        ok = ok && json_get_int(json_get(download, "queued")) >= 1;
+        ok = ok && health && health->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(health,
+                                                "blocking_reason")),
+                          "download_dispatch_idle") == 0;
+        ok = ok && strstr(json_get_str(json_get(health,
+                                                "warning_reasons")),
+                          "download_dispatch_idle") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+        dl_drain_for_backpressure(dm);
+        sync_monitor_set_context(NULL, NULL, NULL);
+        rpc_net_set_connman(NULL);
+        reducer_frontier_provable_tip_reset();
+        sync_monitor_test_set_tip_advance_ts(0);
+        sync_set_state(SYNC_IDLE, "agent dispatch idle cleanup");
         main_state_free(&ms);
         connman_free(&cm);
 

@@ -29,10 +29,13 @@
 #include "util/result.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 struct main_state;
 struct download_manager;
 struct block_index;
+
+typedef void (*gap_fill_dispatch_wake_fn)(void *ctx);
 
 #define GAPFILL_TICK_SECS    5       /* periodic refill cadence */
 #define GAPFILL_WINDOW       65536   /* max blocks per pass — needs to be
@@ -55,6 +58,9 @@ struct gap_fill_stats {
     uint64_t blocks_enqueued;
     uint64_t passes_idle;
     uint64_t passes_corrupt_walk;
+    uint64_t timeout_sweeps;
+    uint64_t timeouts_requeued;
+    uint64_t dispatch_wakes;
     int      last_tip_h;
     int      last_best_h;
     int      last_window_lo;
@@ -85,6 +91,21 @@ struct block_index *gap_fill_window_walk_start(
 /* Candidate predicate before the download-manager in-flight check. */
 bool gap_fill_block_needs_queue(const struct block_index *bi);
 
+/* Copy cheap runtime counters for RPC/API/agent diagnostics. */
+void gap_fill_get_stats(struct gap_fill_stats *out);
+
+/* Run the independent download timeout sweep owned by the supervised gap-fill
+ * cadence. This is the redundant path for peers that keep in-flight slots
+ * occupied while the peer send loop is not making timeout progress. */
+size_t gap_fill_sweep_download_timeouts(struct download_manager *dm,
+                                        int64_t now_seconds);
+
+/* Wake the network dispatcher when block work is already queued but no
+ * request is in flight. This covers duplicate/no-op refill passes where the
+ * original queue wake may have raced the message-handler wait. */
+bool gap_fill_wake_dispatch_if_idle(struct download_manager *dm,
+                                    const char *reason);
+
 /* Start the service. Spawns one pthread. ms and dm must outlive the
  * service. Returns ZCL_OK on success (including the already-running
  * no-op); a non-ok result on bad args or spawn failure. Idempotent —
@@ -99,5 +120,10 @@ void gap_fill_stop(void);
  * header-reception when new headers expand pindex_best_header. No-op if
  * service not running. */
 void gap_fill_kick(void);
+
+/* Optional wake hook for the network dispatcher. Gap-fill owns queue refill
+ * and timeout sweeps; connman owns peer enumeration and getdata writes. This
+ * bridges those two without exposing peer internals to the service. */
+void gap_fill_set_dispatch_wake(gap_fill_dispatch_wake_fn fn, void *ctx);
 
 #endif /* ZCL_GAP_FILL_SERVICE_H */

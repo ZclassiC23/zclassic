@@ -20,6 +20,7 @@
 #include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "services/invariant_sentinel.h"
+#include "services/gap_fill_service.h"
 #include "services/sync_monitor.h"
 #include "sync/sync_state.h"
 #include "util/alerts.h"
@@ -32,6 +33,7 @@
 #include <string.h>
 
 #define AGENT_CATCHUP_STALL_SECS 120
+#define AGENT_DISPATCH_IDLE_SECS 30
 
 struct agent_fast_snapshot {
     enum sync_state sync_state;
@@ -57,15 +59,45 @@ struct agent_fast_snapshot {
     bool onion_service_ready;
     bool catchup_active;
     bool catchup_stalled;
+    bool download_dispatch_idle;
+    bool download_dispatch_stalled;
     uint64_t blocks_requested;
     uint64_t blocks_received;
     uint64_t blocks_timed_out;
     uint64_t in_flight;
     uint64_t queued;
+    uint64_t overdue_in_flight;
+    uint64_t in_flight_peer_count;
+    uint64_t assign_attempts;
+    uint64_t assign_successes;
+    uint64_t assign_zero_results;
+    uint64_t dispatch_wakes;
+    uint64_t message_cycles;
+    uint64_t message_nodes_snapshotted;
+    uint64_t message_send_calls;
+    uint64_t message_process_calls;
+    uint64_t message_recv_ready;
+    uint64_t message_idle_waits;
+    uint64_t message_wakes;
+    uint32_t last_assign_peer_id;
+    uint64_t last_assign_max_requested;
+    uint64_t last_assign_available;
+    uint64_t last_assign_assigned;
+    uint64_t last_assign_queue_len;
+    uint64_t last_assign_active;
+    uint64_t last_assign_peer_in_flight;
+    uint64_t last_assign_peer_limit;
+    uint64_t last_assign_global_limit;
     uint64_t download_bytes_received;
     double download_mbps_avg;
+    int request_timeout_seconds;
+    int last_assign_result;
+    int32_t oldest_in_flight_height;
+    uint32_t oldest_in_flight_peer_id;
     int64_t tip_advance_age_seconds;
     int64_t catchup_stall_seconds;
+    int64_t download_dispatch_idle_seconds;
+    int64_t oldest_in_flight_age_seconds;
     int64_t last_error_age_seconds;
     int warning_count;
     char warning_reasons[256];
@@ -170,6 +202,8 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     s->log_head = -1;
     s->log_head_gap = -1;
     s->last_error_age_seconds = -1;
+    s->oldest_in_flight_age_seconds = -1;
+    s->oldest_in_flight_height = -1;
     s->validation_pack_ok = true;
 
     s->sync_state = sync_get_state();
@@ -196,10 +230,48 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
 
     struct download_manager *dm = msg_get_download_mgr();
     if (dm) {
+        struct dl_diagnostics diag;
         dl_get_stats(dm, &s->blocks_requested, &s->blocks_received,
                      &s->blocks_timed_out, &s->in_flight, &s->queued);
+        dl_get_diagnostics(dm, &diag);
+        s->request_timeout_seconds = diag.request_timeout_seconds;
+        s->oldest_in_flight_age_seconds =
+            diag.oldest_in_flight_age_seconds;
+        s->oldest_in_flight_height = diag.oldest_in_flight_height;
+        s->oldest_in_flight_peer_id = diag.oldest_in_flight_peer_id;
+        s->overdue_in_flight = diag.overdue_in_flight;
+        s->in_flight_peer_count = diag.in_flight_peer_count;
+        s->assign_attempts = diag.assign_attempts;
+        s->assign_successes = diag.assign_successes;
+        s->assign_zero_results = diag.assign_zero_results;
+        s->last_assign_peer_id = diag.last_assign_peer_id;
+        s->last_assign_max_requested = diag.last_assign_max_requested;
+        s->last_assign_available = diag.last_assign_available;
+        s->last_assign_assigned = diag.last_assign_assigned;
+        s->last_assign_queue_len = diag.last_assign_queue_len;
+        s->last_assign_active = diag.last_assign_active;
+        s->last_assign_peer_in_flight = diag.last_assign_peer_in_flight;
+        s->last_assign_peer_limit = diag.last_assign_peer_limit;
+        s->last_assign_global_limit = diag.last_assign_global_limit;
+        s->last_assign_result = diag.last_assign_result;
         dl_get_throughput(dm, &s->download_bytes_received,
                           &s->download_mbps_avg);
+    }
+    {
+        struct gap_fill_stats gf_stats;
+        gap_fill_get_stats(&gf_stats);
+        s->dispatch_wakes = gf_stats.dispatch_wakes;
+    }
+    {
+        struct connman_message_cycle_stats msg_stats;
+        connman_get_message_cycle_stats(rpc_net_get_connman(), &msg_stats);
+        s->message_cycles = msg_stats.cycles;
+        s->message_nodes_snapshotted = msg_stats.nodes_snapshotted;
+        s->message_send_calls = msg_stats.send_calls;
+        s->message_process_calls = msg_stats.process_calls;
+        s->message_recv_ready = msg_stats.recv_ready;
+        s->message_idle_waits = msg_stats.idle_waits;
+        s->message_wakes = msg_stats.wakes;
     }
 
     s->tip_advance_age_seconds = sync_monitor_tip_advance_age();
@@ -235,10 +307,22 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     s->catchup_stalled =
         s->gap > 1 && s->catchup_active &&
         s->tip_advance_age_seconds >= AGENT_CATCHUP_STALL_SECS;
+    s->download_dispatch_idle =
+        s->gap > 1 && s->queued > 0 && s->in_flight == 0;
+    s->download_dispatch_stalled =
+        s->download_dispatch_idle &&
+        s->tip_advance_age_seconds >= AGENT_DISPATCH_IDLE_SECS;
     if (s->catchup_stalled) {
         s->catchup_stall_seconds = s->tip_advance_age_seconds;
         agent_fast_add_warning(s, "catchup_stalled");
     }
+    if (s->download_dispatch_idle) {
+        s->download_dispatch_idle_seconds =
+            s->tip_advance_age_seconds >= 0 ? s->tip_advance_age_seconds : 0;
+        agent_fast_add_warning(s, "download_dispatch_idle");
+    }
+    if (s->overdue_in_flight > 0)
+        agent_fast_add_warning(s, "download_timeouts_overdue");
 
     s->serving = s->served_height > 0;
     s->healthy = s->serving && s->has_peers && !s->operator_needed &&
@@ -255,6 +339,9 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     } else if (s->catchup_stalled) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "catchup_stalled");
+    } else if (s->download_dispatch_stalled) {
+        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
+                 "download_dispatch_idle");
     } else if (s->gap > 1 && s->in_flight == 0 && s->queued == 0) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "download_queue_idle");
@@ -308,6 +395,12 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         primary = "catchup_stalled";
         next = "zclassic23 getsyncdiag";
         summary = "node is behind and catch-up has not advanced recently";
+        operator_needed = true;
+    } else if (material_gap && health.download_dispatch_stalled) {
+        status = "degraded";
+        primary = "download_dispatch_idle";
+        next = "zclassic23 getsyncdiag";
+        summary = "node has queued block downloads but no in-flight requests";
         operator_needed = true;
     } else if (material_gap &&
                (health.in_flight > 0 || health.queued > 0)) {
@@ -405,6 +498,66 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                       health.catchup_stalled);
     json_push_kv_int(&download, "catchup_stall_seconds",
                      health.catchup_stall_seconds);
+    json_push_kv_bool(&download, "dispatch_idle",
+                      health.download_dispatch_idle);
+    json_push_kv_bool(&download, "dispatch_stalled",
+                      health.download_dispatch_stalled);
+    json_push_kv_int(&download, "dispatch_idle_seconds",
+                     health.download_dispatch_idle_seconds);
+    json_push_kv_int(&download, "request_timeout_seconds",
+                     (int64_t)health.request_timeout_seconds);
+    json_push_kv_int(&download, "oldest_in_flight_age_seconds",
+                     health.oldest_in_flight_age_seconds);
+    json_push_kv_int(&download, "oldest_in_flight_height",
+                     health.oldest_in_flight_height);
+    json_push_kv_int(&download, "oldest_in_flight_peer_id",
+                     (int64_t)health.oldest_in_flight_peer_id);
+    json_push_kv_int(&download, "overdue_in_flight",
+                     (int64_t)health.overdue_in_flight);
+    json_push_kv_int(&download, "in_flight_peer_count",
+                     (int64_t)health.in_flight_peer_count);
+    json_push_kv_int(&download, "assign_attempts",
+                     (int64_t)health.assign_attempts);
+    json_push_kv_int(&download, "assign_successes",
+                     (int64_t)health.assign_successes);
+    json_push_kv_int(&download, "assign_zero_results",
+                     (int64_t)health.assign_zero_results);
+    json_push_kv_int(&download, "dispatch_wakes",
+                     (int64_t)health.dispatch_wakes);
+    json_push_kv_int(&download, "message_cycles",
+                     (int64_t)health.message_cycles);
+    json_push_kv_int(&download, "message_nodes_snapshotted",
+                     (int64_t)health.message_nodes_snapshotted);
+    json_push_kv_int(&download, "message_send_calls",
+                     (int64_t)health.message_send_calls);
+    json_push_kv_int(&download, "message_process_calls",
+                     (int64_t)health.message_process_calls);
+    json_push_kv_int(&download, "message_recv_ready",
+                     (int64_t)health.message_recv_ready);
+    json_push_kv_int(&download, "message_idle_waits",
+                     (int64_t)health.message_idle_waits);
+    json_push_kv_int(&download, "message_wakes",
+                     (int64_t)health.message_wakes);
+    json_push_kv_int(&download, "last_assign_peer_id",
+                     (int64_t)health.last_assign_peer_id);
+    json_push_kv_int(&download, "last_assign_max_requested",
+                     (int64_t)health.last_assign_max_requested);
+    json_push_kv_int(&download, "last_assign_available",
+                     (int64_t)health.last_assign_available);
+    json_push_kv_int(&download, "last_assign_assigned",
+                     (int64_t)health.last_assign_assigned);
+    json_push_kv_int(&download, "last_assign_queue_len",
+                     (int64_t)health.last_assign_queue_len);
+    json_push_kv_int(&download, "last_assign_active",
+                     (int64_t)health.last_assign_active);
+    json_push_kv_int(&download, "last_assign_peer_in_flight",
+                     (int64_t)health.last_assign_peer_in_flight);
+    json_push_kv_int(&download, "last_assign_peer_limit",
+                     (int64_t)health.last_assign_peer_limit);
+    json_push_kv_int(&download, "last_assign_global_limit",
+                     (int64_t)health.last_assign_global_limit);
+    json_push_kv_str(&download, "last_assign_result",
+                     dl_assign_result_name(health.last_assign_result));
     json_push_kv_int(&download, "bytes_received",
                      (int64_t)health.download_bytes_received);
     json_push_kv_real(&download, "mbps_avg", health.download_mbps_avg);

@@ -39,6 +39,20 @@ int dl_get_request_timeout_secs(void)
                        : DL_REQUEST_TIMEOUT_SECS;
 }
 
+const char *dl_assign_result_name(int result)
+{
+    switch (result) {
+    case DL_ASSIGN_NONE:               return "none";
+    case DL_ASSIGN_ASSIGNED:           return "assigned";
+    case DL_ASSIGN_NO_QUEUE:           return "no_queue";
+    case DL_ASSIGN_MAX_ZERO:           return "max_zero";
+    case DL_ASSIGN_PEER_WINDOW_FULL:   return "peer_window_full";
+    case DL_ASSIGN_GLOBAL_WINDOW_FULL: return "global_window_full";
+    case DL_ASSIGN_NO_SLOT:            return "no_slot";
+    default:                           return "unknown";
+    }
+}
+
 /* FNV-1a hash for uint256 → slot index */
 static size_t hash_slot(const struct uint256 *h, size_t mask)
 {
@@ -749,6 +763,8 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                          size_t max_assign)
 {
     zcl_mutex_lock(&dm->cs);
+    size_t queue_before = dm->queue_len;
+    size_t active_before = dm->num_active;
 
     /* Adaptive per-peer limit: fast peers get larger windows.
      * bandwidth_score 0-63 → 16 slots, 64-127 → 32-64, 128+ → 64-128.
@@ -790,6 +806,16 @@ size_t dl_assign_to_peer(struct download_manager *dm,
         available = 0;
     else if (dm->num_active + available > global_limit)
         available = global_limit - dm->num_active;
+
+    int assign_result = DL_ASSIGN_ASSIGNED;
+    if (queue_before == 0)
+        assign_result = DL_ASSIGN_NO_QUEUE;
+    else if (max_assign == 0)
+        assign_result = DL_ASSIGN_MAX_ZERO;
+    else if (peer_count >= peer_limit)
+        assign_result = DL_ASSIGN_PEER_WINDOW_FULL;
+    else if (active_before >= global_limit)
+        assign_result = DL_ASSIGN_GLOBAL_WINDOW_FULL;
 
     /* Pop from front — the queue is kept height-sorted ascending by
      * dl_queue_push, so the front is always the LOWEST-height queued
@@ -834,7 +860,26 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     if (assigned > 0) {
         struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
         if (ps) ps->blocks_requested += (uint32_t)assigned;
+        assign_result = DL_ASSIGN_ASSIGNED;
+    } else if (assign_result == DL_ASSIGN_ASSIGNED) {
+        assign_result = DL_ASSIGN_NO_SLOT;
     }
+
+    dm->assign_attempts++;
+    if (assigned > 0)
+        dm->assign_successes++;
+    else
+        dm->assign_zero_results++;
+    dm->last_assign_peer_id = peer_id;
+    dm->last_assign_max_requested = (uint64_t)max_assign;
+    dm->last_assign_available = (uint64_t)available;
+    dm->last_assign_assigned = (uint64_t)assigned;
+    dm->last_assign_queue_len = (uint64_t)queue_before;
+    dm->last_assign_active = (uint64_t)active_before;
+    dm->last_assign_peer_in_flight = (uint64_t)peer_count;
+    dm->last_assign_peer_limit = (uint64_t)peer_limit;
+    dm->last_assign_global_limit = (uint64_t)global_limit;
+    dm->last_assign_result = assign_result;
 
     zcl_mutex_unlock(&dm->cs);
     return assigned;
@@ -927,6 +972,71 @@ void dl_get_stats(struct download_manager *dm,
     if (timed_out)  *timed_out  = dm->total_timed_out;
     if (in_flight)  *in_flight  = dm->num_active;
     if (queued)     *queued     = dm->queue_len;
+    zcl_mutex_unlock(&dm->cs);
+}
+
+void dl_get_diagnostics(struct download_manager *dm,
+                        struct dl_diagnostics *out)
+{
+    if (!out)
+        return;
+
+    struct dl_diagnostics empty = {
+        .request_timeout_seconds = dl_get_request_timeout_secs(),
+        .oldest_in_flight_age_seconds = -1,
+        .oldest_in_flight_height = -1,
+        .oldest_in_flight_peer_id = 0,
+        .last_assign_result = DL_ASSIGN_NONE,
+    };
+    *out = empty;
+    if (!dm)
+        return;
+
+    uint32_t peer_ids[256];
+    size_t peer_count = 0;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    int timeout = dl_get_request_timeout_secs();
+
+    zcl_mutex_lock(&dm->cs);
+    out->assign_attempts = dm->assign_attempts;
+    out->assign_successes = dm->assign_successes;
+    out->assign_zero_results = dm->assign_zero_results;
+    out->last_assign_peer_id = dm->last_assign_peer_id;
+    out->last_assign_max_requested = dm->last_assign_max_requested;
+    out->last_assign_available = dm->last_assign_available;
+    out->last_assign_assigned = dm->last_assign_assigned;
+    out->last_assign_queue_len = dm->last_assign_queue_len;
+    out->last_assign_active = dm->last_assign_active;
+    out->last_assign_peer_in_flight = dm->last_assign_peer_in_flight;
+    out->last_assign_peer_limit = dm->last_assign_peer_limit;
+    out->last_assign_global_limit = dm->last_assign_global_limit;
+    out->last_assign_result = dm->last_assign_result;
+    for (size_t i = 0; i < dm->num_slots; i++) {
+        struct dl_in_flight *s = &dm->slots[i];
+        if (!s->active)
+            continue;
+
+        int64_t age = now >= s->request_time ? now - s->request_time : 0;
+        if (out->oldest_in_flight_age_seconds < 0 ||
+            age > out->oldest_in_flight_age_seconds) {
+            out->oldest_in_flight_age_seconds = age;
+            out->oldest_in_flight_height = s->height;
+            out->oldest_in_flight_peer_id = s->peer_id;
+        }
+        if (age >= timeout)
+            out->overdue_in_flight++;
+
+        bool seen_peer = false;
+        for (size_t p = 0; p < peer_count; p++) {
+            if (peer_ids[p] == s->peer_id) {
+                seen_peer = true;
+                break;
+            }
+        }
+        if (!seen_peer && peer_count < sizeof(peer_ids) / sizeof(peer_ids[0]))
+            peer_ids[peer_count++] = s->peer_id;
+    }
+    out->in_flight_peer_count = (uint64_t)peer_count;
     zcl_mutex_unlock(&dm->cs);
 }
 

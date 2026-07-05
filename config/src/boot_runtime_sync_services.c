@@ -30,6 +30,7 @@
 #include "services/zclassicd_oracle_service.h"
 #include "services/rolling_anchor_service.h"
 #include "services/utxo_mirror_sync_service.h"
+#include "net/connman.h"
 #include "net/download.h"
 #include <stdio.h>
 
@@ -99,16 +100,23 @@ void boot_legacy_mirror_stop(void *ctx)
 }
 
 /* Start the background body gap-fill service (runtime svc). */
+static void boot_gap_fill_dispatch_wake(void *ctx)
+{
+    connman_wake_message_handler((struct connman *)ctx);
+}
+
 bool boot_gap_fill_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
+    gap_fill_set_dispatch_wake(boot_gap_fill_dispatch_wake, svc->connman);
     struct zcl_result gr = gap_fill_start(svc->state, msg_get_download_mgr());
     if (gr.ok) {
         printf("[gap-fill] background gap-fill service started\n");
         return true;
     }
+    gap_fill_set_dispatch_wake(NULL, NULL);
     fprintf(stderr, "WARNING: gap_fill_start failed: %s:%d code=%d %s\n",
             gr.source_file, gr.source_line, gr.code, gr.message);
     return false;

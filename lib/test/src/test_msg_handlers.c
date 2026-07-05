@@ -12,13 +12,17 @@
  */
 
 #include "test/test_helpers.h"
+#include "core/hash.h"
 #include "net/msgprocessor.h"
 #include "net/msg_internal.h"
 #include "consensus/validation.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
+#include "util/safe_alloc.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ── msg_headers.c tests ───────────────────────────────────────── */
@@ -308,6 +312,56 @@ static int test_process_block_msg_reducer_pending_stays_retryable(void)
     return failures;
 }
 
+static void test_init_complete_empty_message(struct net_message *msg,
+                                             const char *command)
+{
+    static const unsigned char msgstart[MESSAGE_START_SIZE] = {
+        0x24, 0xe9, 0x27, 0x64
+    };
+    unsigned char hash[SHA256_OUTPUT_SIZE];
+    net_message_init(msg, msgstart);
+    msg_header_init_full(&msg->hdr, msgstart, command, 0);
+    hash256(NULL, 0, hash);
+    memcpy(&msg->hdr.nChecksum, hash, sizeof(msg->hdr.nChecksum));
+    msg->in_data = true;
+    msg->data_pos = 0;
+}
+
+static int test_msg_process_messages_yields_after_bounded_batch(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: inbound processing yields after bounded batch") {
+        const size_t total = ZCL_MSG_PROCESS_MAX_PER_CYCLE + 3;
+        struct p2p_node node;
+        struct msg_processor mp;
+        memset(&node, 0, sizeof(node));
+        memset(&mp, 0, sizeof(mp));
+        node.id = 88;
+        node.version = 170011;
+        atomic_store(&node.state, PEER_ACTIVE);
+        zcl_mutex_init(&node.cs_recv);
+        node.recv_msg_cap = total;
+        node.recv_msg_count = total;
+        node.recv_msgs = zcl_calloc(total, sizeof(*node.recv_msgs),
+                                    "test_recv_msgs");
+        ASSERT(node.recv_msgs != NULL);
+        snprintf(node.addr_name, sizeof(node.addr_name), "test-peer");
+        for (size_t i = 0; i < total; i++)
+            test_init_complete_empty_message(&node.recv_msgs[i], "noop");
+
+        ASSERT(msg_process_messages(&mp, &node));
+        ASSERT(!node.disconnect);
+        ASSERT(node.recv_msg_count == total - ZCL_MSG_PROCESS_MAX_PER_CYCLE);
+
+        for (size_t i = 0; i < node.recv_msg_count; i++)
+            net_message_free(&node.recv_msgs[i]);
+        free(node.recv_msgs);
+        zcl_mutex_destroy(&node.cs_recv);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────── */
 
 int test_msg_handlers(void);
@@ -330,6 +384,7 @@ int test_msg_handlers(void)
     failures += test_p148_should_mark_seen_accepts_active();
     failures += test_block_validation_retryable_classifier();
     failures += test_process_block_msg_reducer_pending_stays_retryable();
+    failures += test_msg_process_messages_yields_after_bounded_batch();
 
     return failures;
 }

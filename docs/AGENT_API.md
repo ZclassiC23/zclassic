@@ -41,12 +41,40 @@ The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
 height/gap, peer summary, active blockers, next action, and recommended
 drill-down tools. The compact packet also includes reducer frontier telemetry,
-download queue/in-flight/throughput counters, recent error state, and
-`download.catchup_stalled` when a lagging node has active download work but the
-served frontier has not advanced for the stall window. Use `zcl_status` for the
-larger health packet, `zcl_state` for subsystem internals, `zcl_node_log` for
-bounded log search, `zcl_sql` for SELECT-only database inspection, and
-`zcl_events` for recent structured events.
+download queue/in-flight/throughput counters, recent error state, and precise
+download age fields:
+`download.oldest_in_flight_age_seconds`,
+`download.oldest_in_flight_height`,
+`download.oldest_in_flight_peer_id`,
+`download.overdue_in_flight`, and
+`download.in_flight_peer_count`. It reports `download.catchup_stalled` when a
+lagging node has active download work but the served frontier has not advanced
+for the stall window. It reports `download.dispatch_idle`,
+`download.dispatch_stalled`, and `download.dispatch_idle_seconds` when queued
+block work is waiting but no block request is currently in flight, so the AI
+operator can tell dispatch starvation from ordinary catch-up. Assignment-loop
+telemetry is in `download.assign_attempts`, `download.assign_successes`,
+`download.assign_zero_results`, and the `download.last_assign_*` fields; the
+string `download.last_assign_result` names the last planner result
+(`assigned`, `no_queue`, `peer_window_full`, `global_window_full`, `no_slot`,
+etc.). `download.dispatch_wakes` counts gap-fill wakeups of the connman message
+dispatcher after queue refill or timeout requeue work. Stale in-flight requests
+are swept both by the peer send loop and by the supervised gap-fill worker; when
+the worker requeues timed-out blocks it wakes the C-native peer dispatcher, so a
+connected-but-silent peer cannot own block requests forever. If gap-fill sees
+queued body work with zero in-flight requests on a duplicate/no-op refill pass,
+it also wakes the dispatcher; queued work is never allowed to sit idle because a
+previous wake raced the message-handler wait. `download.message_cycles`,
+`download.message_send_calls`, `download.message_process_calls`,
+`download.message_recv_ready`, `download.message_idle_waits`, and
+`download.message_wakes` expose the connman loop itself. The peer message cycle
+sends outbound work before inbound processing, then yields from inbound
+processing after a bounded batch (`ZCL_MSG_PROCESS_MAX_PER_CYCLE`) so the
+outbound send/assignment phase keeps running even under a large receive backlog
+or slow local reducer work. Use `zcl_status`
+for the larger health packet, `zcl_state` for subsystem internals,
+`zcl_node_log` for bounded log search, `zcl_sql` for SELECT-only database
+inspection, and `zcl_events` for recent structured events.
 
 Every new subsystem that has runtime state should expose it through the
 diagnostics registry and become reachable through `zcl_state`. Expensive

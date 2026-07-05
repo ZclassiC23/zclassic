@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 /* Helper: make a uint256 from a single byte value */
 static struct uint256 make_hash(uint8_t v)
@@ -20,6 +21,14 @@ static struct uint256 make_hash(uint8_t v)
     h.data[0] = v;
     h.data[31] = v; /* non-zero in both positions for probe chain testing */
     return h;
+}
+
+static _Atomic int g_gap_fill_dispatch_wakes;
+
+static void test_gap_fill_dispatch_wake(void *ctx)
+{
+    (void)ctx;
+    atomic_fetch_add(&g_gap_fill_dispatch_wakes, 1);
 }
 
 static int test_dl_init_free(void)
@@ -164,6 +173,23 @@ static int test_dl_assign_to_peer(void)
         struct uint256 out[5];
         size_t assigned = dl_assign_to_peer(&dm, 1, out, 5);
         ASSERT(assigned == 5);
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.assign_attempts == 1);
+        ASSERT(diag.assign_successes == 1);
+        ASSERT(diag.assign_zero_results == 0);
+        ASSERT(diag.last_assign_peer_id == 1);
+        ASSERT(diag.last_assign_max_requested == 5);
+        ASSERT(diag.last_assign_available == 5);
+        ASSERT(diag.last_assign_assigned == 5);
+        ASSERT(diag.last_assign_queue_len == 10);
+        ASSERT(diag.last_assign_active == 0);
+        ASSERT(diag.last_assign_peer_in_flight == 0);
+        ASSERT(diag.last_assign_peer_limit >= 5);
+        ASSERT(diag.last_assign_global_limit >= 5);
+        ASSERT(diag.last_assign_result == DL_ASSIGN_ASSIGNED);
+        ASSERT(strcmp(dl_assign_result_name(diag.last_assign_result),
+                      "assigned") == 0);
 
         /* First 5 should be in-flight for peer 1 */
         ASSERT(dl_peer_in_flight(&dm, 1) == 5);
@@ -183,6 +209,19 @@ static int test_dl_assign_to_peer(void)
         dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
         ASSERT(queued == 0);
         ASSERT(inflight == 10);
+
+        assigned = dl_assign_to_peer(&dm, 3, out, 5);
+        ASSERT(assigned == 0);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.assign_attempts == 3);
+        ASSERT(diag.assign_successes == 2);
+        ASSERT(diag.assign_zero_results == 1);
+        ASSERT(diag.last_assign_peer_id == 3);
+        ASSERT(diag.last_assign_queue_len == 0);
+        ASSERT(diag.last_assign_assigned == 0);
+        ASSERT(diag.last_assign_result == DL_ASSIGN_NO_QUEUE);
+        ASSERT(strcmp(dl_assign_result_name(diag.last_assign_result),
+                      "no_queue") == 0);
 
         dl_free(&dm);
         PASS();
@@ -254,6 +293,174 @@ static int test_dl_check_timeouts(void)
         ASSERT(queued == 1); /* re-queued */
         ASSERT(inflight == 0);
 
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_diagnostics(void)
+{
+    int failures = 0;
+    TEST("dl_get_diagnostics exposes oldest and overdue in-flight request") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.request_timeout_seconds == dl_get_request_timeout_secs());
+        ASSERT(diag.oldest_in_flight_age_seconds == -1);
+        ASSERT(diag.oldest_in_flight_height == -1);
+        ASSERT(diag.oldest_in_flight_peer_id == 0);
+        ASSERT(diag.overdue_in_flight == 0);
+        ASSERT(diag.in_flight_peer_count == 0);
+        ASSERT(diag.assign_attempts == 0);
+        ASSERT(diag.assign_successes == 0);
+        ASSERT(diag.assign_zero_results == 0);
+        ASSERT(diag.last_assign_result == DL_ASSIGN_NONE);
+        ASSERT(strcmp(dl_assign_result_name(diag.last_assign_result),
+                      "none") == 0);
+
+        struct uint256 h1 = make_hash(11);
+        struct uint256 h2 = make_hash(12);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        int timeout = dl_get_request_timeout_secs();
+        ASSERT(dl_mark_requested(&dm, &h1, 200, 7));
+        ASSERT(dl_mark_requested(&dm, &h2, 201, 8));
+
+        zcl_mutex_lock(&dm.cs);
+        for (size_t i = 0; i < dm.num_slots; i++) {
+            if (!dm.slots[i].active)
+                continue;
+            if (uint256_eq(&dm.slots[i].hash, &h1))
+                dm.slots[i].request_time = now - timeout - 5;
+            if (uint256_eq(&dm.slots[i].hash, &h2))
+                dm.slots[i].request_time = now - 1;
+        }
+        zcl_mutex_unlock(&dm.cs);
+
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.request_timeout_seconds == timeout);
+        ASSERT(diag.oldest_in_flight_age_seconds >= timeout + 5);
+        ASSERT(diag.oldest_in_flight_height == 200);
+        ASSERT(diag.oldest_in_flight_peer_id == 7);
+        ASSERT(diag.overdue_in_flight == 1);
+        ASSERT(diag.in_flight_peer_count == 2);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_gap_fill_timeout_sweep(void)
+{
+    int failures = 0;
+    TEST("gap_fill timeout sweep re-queues stale in-flight blocks") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(13);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        ASSERT(dl_mark_requested(&dm, &h1, 300, 9));
+
+        int timeout = dl_get_request_timeout_secs();
+        size_t requeued =
+            gap_fill_sweep_download_timeouts(&dm, now + timeout + 1);
+        ASSERT(requeued == 1);
+
+        uint64_t req, recv, tout, inflight, queued;
+        dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
+        ASSERT(req == 1);
+        ASSERT(recv == 0);
+        ASSERT(tout == 1);
+        ASSERT(inflight == 0);
+        ASSERT(queued == 1);
+        ASSERT(!dl_is_in_flight(&dm, &h1));
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_gap_fill_timeout_wakes_dispatcher(void)
+{
+    int failures = 0;
+    TEST("gap_fill timeout pass wakes network dispatcher") {
+        bool ok = true;
+        supervisor_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(14);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        int timeout = dl_get_request_timeout_secs();
+        ok = ok && dl_mark_requested(&dm, &h1, 301, 10);
+
+        zcl_mutex_lock(&dm.cs);
+        for (size_t i = 0; i < dm.num_slots; i++) {
+            if (dm.slots[i].active && uint256_eq(&dm.slots[i].hash, &h1))
+                dm.slots[i].request_time = now - timeout - 1;
+        }
+        zcl_mutex_unlock(&dm.cs);
+
+        atomic_store(&g_gap_fill_dispatch_wakes, 0);
+        gap_fill_set_dispatch_wake(test_gap_fill_dispatch_wake, NULL);
+        struct zcl_result r = gap_fill_start(&ms, &dm);
+        ok = ok && r.ok;
+        if (r.ok) {
+            for (int i = 0; i < 50 &&
+                 atomic_load(&g_gap_fill_dispatch_wakes) == 0; i++) {
+                struct timespec ts = { .tv_sec = 0,
+                                       .tv_nsec = 20 * 1000 * 1000 };
+                nanosleep(&ts, NULL);
+            }
+            gap_fill_stop();
+        }
+
+        uint64_t inflight = 0, queued = 0, timed_out = 0;
+        dl_get_stats(&dm, NULL, NULL, &timed_out, &inflight, &queued);
+        ok = ok && atomic_load(&g_gap_fill_dispatch_wakes) > 0;
+        ok = ok && timed_out == 1;
+        ok = ok && inflight == 0;
+        ok = ok && queued == 1;
+
+        dl_free(&dm);
+        main_state_free(&ms);
+        supervisor_reset_for_testing();
+        ASSERT(ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_gap_fill_queued_idle_wakes_dispatcher(void)
+{
+    int failures = 0;
+    TEST("gap_fill queued idle work wakes network dispatcher") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(15);
+        int32_t h1_height = 401;
+        ASSERT(dl_queue_blocks(&dm, &h1, &h1_height, 1) == 1);
+
+        atomic_store(&g_gap_fill_dispatch_wakes, 0);
+        gap_fill_set_dispatch_wake(test_gap_fill_dispatch_wake, NULL);
+        ASSERT(gap_fill_wake_dispatch_if_idle(&dm, "unit_queued_idle"));
+        ASSERT(atomic_load(&g_gap_fill_dispatch_wakes) == 1);
+
+        struct uint256 h2 = make_hash(16);
+        ASSERT(dl_mark_requested(&dm, &h2, 402, 2));
+        ASSERT(!gap_fill_wake_dispatch_if_idle(&dm,
+                                               "unit_queued_not_idle"));
+        ASSERT(atomic_load(&g_gap_fill_dispatch_wakes) == 1);
+
+        gap_fill_set_dispatch_wake(NULL, NULL);
         dl_free(&dm);
         PASS();
     } _test_next:;
@@ -728,6 +935,10 @@ int test_download(void)
     failures += test_dl_assign_to_peer();
     failures += test_dl_peer_disconnected();
     failures += test_dl_check_timeouts();
+    failures += test_dl_diagnostics();
+    failures += test_gap_fill_timeout_sweep();
+    failures += test_gap_fill_timeout_wakes_dispatcher();
+    failures += test_gap_fill_queued_idle_wakes_dispatcher();
     failures += test_dl_many_insertions();
     failures += test_dl_per_peer_limit();
     failures += test_dl_concurrent();

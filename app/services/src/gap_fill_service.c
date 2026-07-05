@@ -34,6 +34,8 @@ struct gap_fill_state {
 
     struct main_state      *ms;
     struct download_manager *dm;
+    gap_fill_dispatch_wake_fn wake_dispatch;
+    void                   *wake_dispatch_ctx;
 
     struct gap_fill_stats  stats;
     _Atomic supervisor_child_id supervisor_id;
@@ -54,7 +56,9 @@ static int64_t gap_fill_supervisor_deadline_secs(void)
 
 static int64_t gap_fill_progress_marker(void)
 {
-    return (int64_t)g_gf.stats.passes;
+    struct gap_fill_stats st;
+    gap_fill_get_stats(&st);
+    return (int64_t)st.passes;
 }
 
 static void gap_fill_supervisor_heartbeat(void)
@@ -68,25 +72,37 @@ static void gap_fill_supervisor_heartbeat(void)
 
 static void gap_fill_on_stall(struct liveness_contract *c)
 {
+    struct gap_fill_stats st;
+    gap_fill_get_stats(&st);
     const char *reason = c
         ? supervisor_stall_reason_name(
               (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
         : "unknown";
     LOG_WARN("gap_fill",
-             "[gap-fill] supervisor stall reason=%s passes=%llu enqueued=%llu idle=%llu corrupt=%llu",
+             "[gap-fill] supervisor stall reason=%s passes=%llu "
+             "enqueued=%llu idle=%llu corrupt=%llu timeout_sweeps=%llu "
+             "timeouts_requeued=%llu dispatch_wakes=%llu",
              reason,
-             (unsigned long long)g_gf.stats.passes,
-             (unsigned long long)g_gf.stats.blocks_enqueued,
-             (unsigned long long)g_gf.stats.passes_idle,
-             (unsigned long long)g_gf.stats.passes_corrupt_walk);
+             (unsigned long long)st.passes,
+             (unsigned long long)st.blocks_enqueued,
+             (unsigned long long)st.passes_idle,
+             (unsigned long long)st.passes_corrupt_walk,
+             (unsigned long long)st.timeout_sweeps,
+             (unsigned long long)st.timeouts_requeued,
+             (unsigned long long)st.dispatch_wakes);
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "source=chain.gap_fill decision=worker_stall "
-                "reason=%s passes=%llu enqueued=%llu idle=%llu corrupt=%llu",
+                "reason=%s passes=%llu enqueued=%llu idle=%llu corrupt=%llu "
+                "timeout_sweeps=%llu timeouts_requeued=%llu "
+                "dispatch_wakes=%llu",
                 reason,
-                (unsigned long long)g_gf.stats.passes,
-                (unsigned long long)g_gf.stats.blocks_enqueued,
-                (unsigned long long)g_gf.stats.passes_idle,
-                (unsigned long long)g_gf.stats.passes_corrupt_walk);
+                (unsigned long long)st.passes,
+                (unsigned long long)st.blocks_enqueued,
+                (unsigned long long)st.passes_idle,
+                (unsigned long long)st.passes_corrupt_walk,
+                (unsigned long long)st.timeout_sweeps,
+                (unsigned long long)st.timeouts_requeued,
+                (unsigned long long)st.dispatch_wakes);
     gap_fill_kick();
 }
 
@@ -201,6 +217,72 @@ bool gap_fill_block_needs_queue(const struct block_index *bi)
     return bi && bi->phashBlock && !(bi->nStatus & BLOCK_HAVE_DATA);
 }
 
+void gap_fill_get_stats(struct gap_fill_stats *out)
+{
+    if (!out)
+        return;
+    pthread_mutex_lock(&g_gf.mu);
+    *out = g_gf.stats;
+    pthread_mutex_unlock(&g_gf.mu);
+}
+
+size_t gap_fill_sweep_download_timeouts(struct download_manager *dm,
+                                        int64_t now_seconds)
+{
+    if (!dm)
+        return 0;
+    if (now_seconds <= 0)
+        now_seconds = (int64_t)platform_time_wall_time_t();
+
+    size_t timed_out = dl_check_timeouts(dm, now_seconds);
+    if (timed_out > 0) {
+        LOG_WARN("gap_fill",
+                 "[gap-fill] download timeout sweep requeued=%zu",
+                 timed_out);
+        event_emitf(EV_BLOCK_REQUESTED, 0,
+                    "gap_fill timeout_sweep requeued=%zu", timed_out);
+    }
+    return timed_out;
+}
+
+static void gap_fill_wake_dispatcher(const char *reason)
+{
+    uint64_t total = 0;
+    gap_fill_dispatch_wake_fn fn = NULL;
+    void *ctx = NULL;
+    pthread_mutex_lock(&g_gf.mu);
+    fn = g_gf.wake_dispatch;
+    ctx = g_gf.wake_dispatch_ctx;
+    pthread_mutex_unlock(&g_gf.mu);
+    if (!fn)
+        return;
+    fn(ctx);
+    pthread_mutex_lock(&g_gf.mu);
+    g_gf.stats.dispatch_wakes++;
+    total = g_gf.stats.dispatch_wakes;
+    pthread_mutex_unlock(&g_gf.mu);
+    event_emitf(EV_BLOCK_REQUESTED, 0,
+                "gap_fill dispatch_wake reason=%s total=%llu",
+                reason ? reason : "unknown",
+                (unsigned long long)total);
+}
+
+bool gap_fill_wake_dispatch_if_idle(struct download_manager *dm,
+                                    const char *reason)
+{
+    if (!dm)
+        return false;
+
+    uint64_t in_flight = 0;
+    uint64_t queued = 0;
+    dl_get_stats(dm, NULL, NULL, NULL, &in_flight, &queued);
+    if (queued == 0 || in_flight > 0)
+        return false;
+
+    gap_fill_wake_dispatcher(reason ? reason : "dispatch_idle");
+    return true;
+}
+
 /* One pass: scan [tip+1, best_header] for missing data, queue
  * downloads. Returns number of blocks enqueued (0 = idle, -1 =
  * corrupt walk detected). */
@@ -209,6 +291,15 @@ static int gap_fill_pass(void)
     struct main_state *ms = g_gf.ms;
     struct download_manager *dm = g_gf.dm;
     if (!ms || !dm) return 0;
+
+    size_t timed_out = gap_fill_sweep_download_timeouts(
+        dm, (int64_t)platform_time_wall_time_t());
+    pthread_mutex_lock(&g_gf.mu);
+    g_gf.stats.timeout_sweeps++;
+    g_gf.stats.timeouts_requeued += (uint64_t)timed_out;
+    pthread_mutex_unlock(&g_gf.mu);
+    if (timed_out > 0)
+        gap_fill_wake_dispatcher("timeout_sweep");
 
     /* Snapshot tip and best_header under cs_main. We hold the lock
      * only for the pointer reads + pprev walk; the dl_queue_blocks
@@ -225,8 +316,10 @@ static int gap_fill_pass(void)
 
     if (!has_window) {
         zcl_mutex_unlock(&ms->cs_main);
+        pthread_mutex_lock(&g_gf.mu);
         g_gf.stats.last_tip_h  = tip_h;
         g_gf.stats.last_best_h = best_h;
+        pthread_mutex_unlock(&g_gf.mu);
         return 0;
     }
 
@@ -265,10 +358,12 @@ static int gap_fill_pass(void)
     if (collected == 0) {
         zcl_mutex_unlock(&ms->cs_main);
         free(bis);
+        pthread_mutex_lock(&g_gf.mu);
         g_gf.stats.last_tip_h = tip_h;
         g_gf.stats.last_best_h = best_h;
         g_gf.stats.last_window_lo = tip_h + 1;
         g_gf.stats.last_window_hi = tip_h;
+        pthread_mutex_unlock(&g_gf.mu);
         return 0;
     }
 
@@ -310,6 +405,9 @@ static int gap_fill_pass(void)
             event_emitf(EV_BLOCK_REQUESTED, 0,
                         "gap_fill queued=%zu lo=%d hi=%d tip=%d best=%d",
                         added, lo, hi, tip_h, best_h);
+            gap_fill_wake_dispatcher("queued_blocks");
+        } else {
+            gap_fill_wake_dispatch_if_idle(dm, "queued_idle");
         }
 
         /* Explicitly front-insert (priority) the LOWEST N missing blocks
@@ -331,10 +429,12 @@ static int gap_fill_pass(void)
     free(hashes);
     free(heights);
 
+    pthread_mutex_lock(&g_gf.mu);
     g_gf.stats.last_tip_h     = tip_h;
     g_gf.stats.last_best_h    = best_h;
     g_gf.stats.last_window_lo = lo;
     g_gf.stats.last_window_hi = hi;
+    pthread_mutex_unlock(&g_gf.mu);
     return enqueued;
 }
 
@@ -345,6 +445,7 @@ static void *gap_fill_thread_main(void *arg)
     gap_fill_supervisor_heartbeat();
     while (!atomic_load(&g_gf.stop_requested)) {
         int n = gap_fill_pass();
+        pthread_mutex_lock(&g_gf.mu);
         g_gf.stats.passes++;
         if (n > 0) {
             g_gf.stats.blocks_enqueued += (uint64_t)n;
@@ -352,6 +453,9 @@ static void *gap_fill_thread_main(void *arg)
             g_gf.stats.passes_idle++;
         } else {
             g_gf.stats.passes_corrupt_walk++;
+        }
+        pthread_mutex_unlock(&g_gf.mu);
+        if (n < 0) {
             LOG_WARN("gap", "[gap-fill] %s:%d %s(): corrupt pprev walk detected, " "skipping pass", __FILE__, __LINE__, __func__);
         }
         gap_fill_supervisor_heartbeat();
@@ -366,12 +470,18 @@ static void *gap_fill_thread_main(void *arg)
         }
         pthread_mutex_unlock(&g_gf.mu);
     }
+    struct gap_fill_stats st;
+    gap_fill_get_stats(&st);
     printf("[gap-fill] service stopped (passes=%llu enqueued=%llu "
-           "idle=%llu corrupt=%llu)\n",
-           (unsigned long long)g_gf.stats.passes,
-           (unsigned long long)g_gf.stats.blocks_enqueued,
-           (unsigned long long)g_gf.stats.passes_idle,
-           (unsigned long long)g_gf.stats.passes_corrupt_walk);
+           "idle=%llu corrupt=%llu timeout_sweeps=%llu "
+           "timeouts_requeued=%llu dispatch_wakes=%llu)\n",
+           (unsigned long long)st.passes,
+           (unsigned long long)st.blocks_enqueued,
+           (unsigned long long)st.passes_idle,
+           (unsigned long long)st.passes_corrupt_walk,
+           (unsigned long long)st.timeout_sweeps,
+           (unsigned long long)st.timeouts_requeued,
+           (unsigned long long)st.dispatch_wakes);
     return NULL;
 }
 
@@ -432,6 +542,10 @@ void gap_fill_stop(void)
         g_gf.thread_started = false;
     }
     atomic_store(&g_gf.running, false);
+    pthread_mutex_lock(&g_gf.mu);
+    g_gf.wake_dispatch = NULL;
+    g_gf.wake_dispatch_ctx = NULL;
+    pthread_mutex_unlock(&g_gf.mu);
 #ifdef ZCL_TESTING
     id = atomic_exchange(&g_gf.supervisor_id, SUPERVISOR_INVALID_ID);
     if (id != SUPERVISOR_INVALID_ID)
@@ -444,5 +558,13 @@ void gap_fill_kick(void)
     if (!atomic_load(&g_gf.running)) return;
     pthread_mutex_lock(&g_gf.mu);
     pthread_cond_broadcast(&g_gf.cv);
+    pthread_mutex_unlock(&g_gf.mu);
+}
+
+void gap_fill_set_dispatch_wake(gap_fill_dispatch_wake_fn fn, void *ctx)
+{
+    pthread_mutex_lock(&g_gf.mu);
+    g_gf.wake_dispatch = fn;
+    g_gf.wake_dispatch_ctx = ctx;
     pthread_mutex_unlock(&g_gf.mu);
 }
