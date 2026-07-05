@@ -2788,6 +2788,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.operator_lane.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "zcl.operator_deployment_safety.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl.node_resources.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
                       "Automation must read deployment_safety") != NULL);
         ASSERT(strstr(agent_runtime_buf, "zcl.operator_lane.v1") != NULL);

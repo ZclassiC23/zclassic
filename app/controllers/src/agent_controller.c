@@ -564,6 +564,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.operator_deployment_safety.v1",
                       "nested in zcl.operator_lane.v1",
                       "machine-readable deploy/restart safety contract");
+    agent_push_schema(&schemas, "zcl.node_resources.v1",
+                      "nested in zcl.public_status.v1 resources",
+                      "cheap process RSS, uptime, and memory-pressure telemetry");
     json_push_kv(result, "schemas", &schemas);
     json_free(&schemas);
 

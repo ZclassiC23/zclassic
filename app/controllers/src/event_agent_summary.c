@@ -7,6 +7,7 @@
 
 #include "api_controller_internal.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_resources.h"
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
 #include "controllers/sync_controller.h"
@@ -134,6 +135,7 @@ struct agent_fast_snapshot {
     int64_t queue_peer_avoid_max_seconds;
     int64_t oldest_in_flight_age_seconds;
     int64_t last_error_age_seconds;
+    struct agent_resource_snapshot resources;
     int warning_count;
     char warning_reasons[256];
     char blocking_reason[128];
@@ -276,6 +278,9 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     s->oldest_in_flight_height = -1;
     s->peer_snapshot_age_seconds = -1;
     s->validation_pack_ok = true;
+    agent_resource_snapshot_collect(&s->resources);
+    if (s->resources.rss_warning)
+        agent_fast_add_warning(s, "high_memory_usage");
 
     s->sync_state = sync_get_state();
     s->served_height = agent_fast_served_height();
@@ -590,28 +595,20 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_set_object(&indexer);
     json_push_kv_int(&indexer, "height", health.indexed_height);
     json_push_kv_int(&indexer, "lag", health.projection_lag);
-    json_push_kv_int(&indexer, "projection_height",
-                     health.projection_height);
-    json_push_kv_int(&indexer, "projection_lag",
-                     health.projection_lag);
-    json_push_kv_bool(&indexer, "projection_deferred",
-                      health.projection_deferred);
-    json_push_kv_str(&indexer, "projection_state",
-                     health.projection_state);
-    json_push_kv_int(&indexer, "projection_deferred_total",
-                     health.projection_deferred_total);
+    json_push_kv_int(&indexer, "projection_height", health.projection_height);
+    json_push_kv_int(&indexer, "projection_lag", health.projection_lag);
+    json_push_kv_bool(&indexer, "projection_deferred", health.projection_deferred);
+    json_push_kv_str(&indexer, "projection_state", health.projection_state);
+    json_push_kv_int(&indexer, "projection_deferred_total", health.projection_deferred_total);
     json_push_kv_int(&indexer, "last_projection_deferred_height",
                      health.last_projection_deferred_height);
     json_push_kv_int(&indexer, "last_projection_deferred_time",
                      health.last_projection_deferred_time);
     json_push_kv_str(&indexer, "last_projection_deferred_reason",
                      health.last_projection_deferred_reason);
-    json_push_kv_bool(&indexer, "catchup_active",
-                      health.projection_catchup_active);
-    json_push_kv_int(&indexer, "catchup_height",
-                     health.projection_catchup_height);
-    json_push_kv_int(&indexer, "catchup_target_height",
-                     health.projection_catchup_target_height);
+    json_push_kv_bool(&indexer, "catchup_active", health.projection_catchup_active);
+    json_push_kv_int(&indexer, "catchup_height", health.projection_catchup_height);
+    json_push_kv_int(&indexer, "catchup_target_height", health.projection_catchup_target_height);
     json_push_kv_int(&indexer, "catchup_progress_age_seconds",
                      health.projection_catchup_progress_age_seconds);
     json_push_kv_int(&indexer, "catchup_uptime_seconds",
@@ -648,6 +645,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                       health.operator_latch_recovered);
     json_push_kv(result, "health", &health_obj);
     json_free(&health_obj);
+
+    agent_push_resources_json(result, "resources", &health.resources);
 
     struct json_value peers = {0};
     json_set_object(&peers);

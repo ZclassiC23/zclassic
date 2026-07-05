@@ -133,6 +133,12 @@ before any restart or binary deployment:
 Canonical defaults to observe-only, soak defaults to preserving the evidence
 window, and dev defaults to `deploy_dev_lane`.
 
+The same public status contract includes `resources`
+(`zcl.node_resources.v1`) with cheap process-level RSS, RSS warning threshold,
+memory pressure (`ok`, `warn`, or `unknown`), uptime, and source. This is the
+first-call place to notice a lane that is still serving but approaching memory
+pressure, before reaching for shell-only systemd probes.
+
 `make deploy` is guarded by `tools/deploy_guard.sh canonical-deploy`. The guard
 calls the running node's C-native `agentdeployguard` RPC
 (`zcl.agent_deploy_guard.v1`) when available and falls back to the systemd

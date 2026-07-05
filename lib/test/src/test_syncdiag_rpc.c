@@ -19,6 +19,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_resources.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
@@ -1376,6 +1377,15 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(health, "last_error_age_seconds") != NULL;
         ok = ok && json_get(health, "last_error_type") != NULL;
         ok = ok && json_get(health, "blocking_reason") != NULL;
+        const struct json_value *resources = json_get(&result, "resources");
+        ok = ok && resources && resources->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(resources, "schema")),
+                          "zcl.node_resources.v1") == 0;
+        ok = ok && json_get(resources, "rss_mb") != NULL;
+        ok = ok && json_get(resources, "rss_warn_threshold_mb") != NULL;
+        ok = ok && json_get(resources, "rss_warning") != NULL;
+        ok = ok && json_get(resources, "memory_pressure") != NULL;
+        ok = ok && json_get(resources, "uptime_seconds") != NULL;
         const struct json_value *download = json_get(&result, "download");
         ok = ok && download && download->type == JSON_OBJ;
         ok = ok && json_get(download, "requested") != NULL;
@@ -2048,6 +2058,30 @@ int test_syncdiag_rpc(void)
         ok = ok && runtime &&
             strcmp(json_get_str(json_get(runtime, "binary")),
                    "zclassic23") == 0;
+
+        struct agent_resource_snapshot fixed_resources = {
+            .rss_mb = 5000,
+            .rss_warn_threshold_mb = 4096,
+            .rss_warning = true,
+            .uptime_seconds = 123,
+        };
+        struct json_value resources_body;
+        json_init(&resources_body);
+        json_set_object(&resources_body);
+        agent_push_resources_json(&resources_body, "resources",
+                                  &fixed_resources);
+        const struct json_value *fixed =
+            json_get(&resources_body, "resources");
+        ok = ok && fixed && fixed->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(fixed, "schema")),
+                          "zcl.node_resources.v1") == 0;
+        ok = ok && json_get_int(json_get(fixed, "schema_version")) == 1;
+        ok = ok && json_get_int(json_get(fixed, "rss_mb")) == 5000;
+        ok = ok && json_get_bool(json_get(fixed, "rss_warning"));
+        ok = ok && strcmp(json_get_str(json_get(fixed,
+                                                "memory_pressure")),
+                          "warn") == 0;
+        json_free(&resources_body);
 
         rpc_agent_set_boot_context("canonical", "full",
                                    "/tmp/zcl-agent-canonical",

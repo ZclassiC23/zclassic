@@ -1423,6 +1423,14 @@ int test_api(void)
                           zcl_build_commit()) == 0;
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
+        const struct json_value *resources =
+            json_get(&root, "resources");
+        ok = ok && resources && resources->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(resources, "schema")),
+                          "zcl.node_resources.v1") == 0;
+        ok = ok && json_get(resources, "rss_mb") != NULL;
+        ok = ok && json_get(resources, "memory_pressure") != NULL;
+        ok = ok && json_get(resources, "uptime_seconds") != NULL;
         const struct json_value *lane =
             json_get(&root, "operator_lane");
         ok = ok && lane && lane->type == JSON_OBJ;

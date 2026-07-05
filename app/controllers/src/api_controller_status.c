@@ -5,8 +5,9 @@
 /* Compact public REST status endpoint for dashboards, website checks, and
  * MCP-friendly clients that do not need the full diagnostic tree. */
 
-#include "controllers/api_controller.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_resources.h"
+#include "controllers/api_controller.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
 #include "json/json.h"
@@ -498,6 +499,10 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_int(&body, "index_gap", index_gap);
     json_push_kv_str(&body, "sync_state",
                      sync_state_name(health.sync_state));
+
+    struct agent_resource_snapshot resources;
+    agent_resource_snapshot_collect(&resources);
+    agent_push_resources_json(&body, "resources", &resources);
 
     struct json_value peers;
     json_init(&peers);
