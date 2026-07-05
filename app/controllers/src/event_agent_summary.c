@@ -31,6 +31,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define AGENT_CATCHUP_STALL_SECS 120
+
 struct agent_fast_snapshot {
     enum sync_state sync_state;
     int served_height;
@@ -53,6 +55,8 @@ struct agent_fast_snapshot {
     bool tor_enabled;
     bool tor_ready;
     bool onion_service_ready;
+    bool catchup_active;
+    bool catchup_stalled;
     uint64_t blocks_requested;
     uint64_t blocks_received;
     uint64_t blocks_timed_out;
@@ -61,6 +65,7 @@ struct agent_fast_snapshot {
     uint64_t download_bytes_received;
     double download_mbps_avg;
     int64_t tip_advance_age_seconds;
+    int64_t catchup_stall_seconds;
     int64_t last_error_age_seconds;
     int warning_count;
     char warning_reasons[256];
@@ -226,6 +231,14 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
         ? s->target_height - s->served_height : 0;
     s->index_gap = s->tip_height > s->served_height
         ? s->tip_height - s->served_height : 0;
+    s->catchup_active = s->in_flight > 0 || s->queued > 0;
+    s->catchup_stalled =
+        s->gap > 1 && s->catchup_active &&
+        s->tip_advance_age_seconds >= AGENT_CATCHUP_STALL_SECS;
+    if (s->catchup_stalled) {
+        s->catchup_stall_seconds = s->tip_advance_age_seconds;
+        agent_fast_add_warning(s, "catchup_stalled");
+    }
 
     s->serving = s->served_height > 0;
     s->healthy = s->serving && s->has_peers && !s->operator_needed &&
@@ -239,6 +252,9 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     } else if (!s->has_peers) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "no_peers");
+    } else if (s->catchup_stalled) {
+        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
+                 "catchup_stalled");
     } else if (s->gap > 1 && s->in_flight == 0 && s->queued == 0) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "download_queue_idle");
@@ -286,6 +302,12 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         primary = "no_peers";
         next = "zclassic23 getpeerinfo";
         summary = "node has no connected peers";
+        operator_needed = true;
+    } else if (material_gap && health.catchup_stalled) {
+        status = "degraded";
+        primary = "catchup_stalled";
+        next = "zclassic23 getsyncdiag";
+        summary = "node is behind and catch-up has not advanced recently";
         operator_needed = true;
     } else if (material_gap &&
                (health.in_flight > 0 || health.queued > 0)) {
@@ -378,6 +400,11 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                      (int64_t)health.blocks_timed_out);
     json_push_kv_int(&download, "in_flight", (int64_t)health.in_flight);
     json_push_kv_int(&download, "queued", (int64_t)health.queued);
+    json_push_kv_bool(&download, "active", health.catchup_active);
+    json_push_kv_bool(&download, "catchup_stalled",
+                      health.catchup_stalled);
+    json_push_kv_int(&download, "catchup_stall_seconds",
+                     health.catchup_stall_seconds);
     json_push_kv_int(&download, "bytes_received",
                      (int64_t)health.download_bytes_received);
     json_push_kv_real(&download, "mbps_avg", health.download_mbps_avg);

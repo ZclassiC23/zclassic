@@ -2705,6 +2705,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "dl_get_throughput") != NULL);
         ASSERT(strstr(agent_summary_buf, "sync_monitor_tip_advance_age")
                != NULL);
+        ASSERT(strstr(agent_summary_buf, "AGENT_CATCHUP_STALL_SECS")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf, "catchup_stalled") != NULL);
         ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);

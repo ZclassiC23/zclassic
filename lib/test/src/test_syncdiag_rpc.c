@@ -30,8 +30,10 @@
 #include "validation/mirror_consensus.h"
 #include "event/event.h"
 #include "net/connman.h"
+#include "net/download.h"
 #include "net/fast_sync.h"
 #include "net/version.h"
+#include "platform/time_compat.h"
 #include "rpc/httpserver.h"
 #include "rpc/server.h"
 #include "json/json.h"
@@ -148,6 +150,15 @@ static void syncdiag_set_ipv4(struct net_address *addr,
     addr->svc.addr.ip[14] = c;
     addr->svc.addr.ip[15] = d;
     addr->svc.port = port;
+}
+
+static void syncdiag_set_hash(struct uint256 *hash, uint8_t tag)
+{
+    if (!hash)
+        return;
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = tag;
+    hash->data[31] = (uint8_t)(0xffu ^ tag);
 }
 
 static struct p2p_node *syncdiag_add_peer(struct connman *cm,
@@ -1392,6 +1403,117 @@ int test_syncdiag_rpc(void)
         json_free(&result);
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         alerts_shutdown();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC agent flags stalled catch-up telemetry... ");
+    {
+        struct connman cm;
+        struct node_signals sigs;
+        struct main_state ms;
+        struct block_index tip, best_header;
+        struct uint256 h_tip, h_hdr, h_inflight, h_queued;
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+
+        chain_params_select(CHAIN_MAIN);
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&ms, 0, sizeof(ms));
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(&h_tip, 0, sizeof(h_tip));
+        memset(&h_hdr, 0, sizeof(h_hdr));
+        memset(&h_inflight, 0, sizeof(h_inflight));
+        memset(&h_queued, 0, sizeof(h_queued));
+
+        bool ok = connman_init(&cm, chain_params_get(), &sigs);
+        main_state_init(&ms);
+        block_index_init(&tip);
+        block_index_init(&best_header);
+        syncdiag_set_hash(&h_tip, 0x41);
+        syncdiag_set_hash(&h_hdr, 0x42);
+        tip.phashBlock = &h_tip;
+        tip.nHeight = 100;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        best_header.phashBlock = &h_hdr;
+        best_header.nHeight = 125;
+        best_header.pprev = &tip;
+        best_header.nTime = tip.nTime;
+        best_header.nStatus = BLOCK_VALID_TREE;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &best_header;
+
+        struct p2p_node *peer =
+            syncdiag_add_peer(&cm, 44, false, PEER_HANDSHAKE_COMPLETE);
+        ok = ok && peer != NULL;
+        if (peer)
+            peer->starting_height = 125;
+
+        struct download_manager *dm = msg_get_download_mgr();
+        dl_drain_for_backpressure(dm);
+        syncdiag_set_hash(&h_inflight, 0x51);
+        syncdiag_set_hash(&h_queued, 0x52);
+        int32_t queued_h = 102;
+        ok = ok && dl_mark_requested(dm, &h_inflight, 101, 44);
+        ok = ok && dl_queue_blocks(dm, &h_queued, &queued_h, 1) == 1;
+
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+        rpc_net_set_connman(&cm);
+        sync_monitor_set_context(&cm, dm, &ms);
+        reducer_frontier_provable_tip_set(100);
+        sync_monitor_test_set_tip_advance_ts(
+            (int64_t)platform_time_wall_time_t() - 180);
+        sync_set_state(SYNC_IDLE, "agent stalled reset");
+        sync_set_state(SYNC_FINDING_PEERS, "agent stalled");
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "agent stalled");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "agent stalled");
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agent", &params, &result);
+        const struct json_value *download = json_get(&result, "download");
+        const struct json_value *health = json_get(&result, "health");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "degraded") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_blocker")),
+                          "catchup_stalled") == 0;
+        ok = ok && json_get_bool(json_get(&result, "operator_needed"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "next")),
+                          "zclassic23 getsyncdiag") == 0;
+        ok = ok && json_get_int(json_get(&result, "gap")) == 25;
+        ok = ok && download && download->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(download, "active"));
+        ok = ok && json_get_bool(json_get(download, "catchup_stalled"));
+        ok = ok && json_get_int(json_get(download,
+                                          "catchup_stall_seconds")) >= 120;
+        ok = ok && json_get_int(json_get(download, "in_flight")) >= 1;
+        ok = ok && json_get_int(json_get(download, "queued")) >= 1;
+        ok = ok && health && health->type == JSON_OBJ;
+        ok = ok && strstr(json_get_str(json_get(health,
+                                                "warning_reasons")),
+                          "catchup_stalled") != NULL;
+
+        json_free(&params);
+        json_free(&result);
+        dl_drain_for_backpressure(dm);
+        sync_monitor_set_context(NULL, NULL, NULL);
+        rpc_net_set_connman(NULL);
+        reducer_frontier_provable_tip_reset();
+        sync_monitor_test_set_tip_advance_ts(0);
+        sync_set_state(SYNC_IDLE, "agent stalled cleanup");
+        main_state_free(&ms);
+        connman_free(&cm);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

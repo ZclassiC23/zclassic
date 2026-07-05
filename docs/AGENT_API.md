@@ -40,10 +40,13 @@ MCP/native/REST.
 The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
 height/gap, peer summary, active blockers, next action, and recommended
-drill-down tools. Use `zcl_status` for the larger health packet, `zcl_state`
-for subsystem internals, `zcl_node_log` for bounded log search, `zcl_sql`
-for SELECT-only database inspection, and `zcl_events` for recent structured
-events.
+drill-down tools. The compact packet also includes reducer frontier telemetry,
+download queue/in-flight/throughput counters, recent error state, and
+`download.catchup_stalled` when a lagging node has active download work but the
+served frontier has not advanced for the stall window. Use `zcl_status` for the
+larger health packet, `zcl_state` for subsystem internals, `zcl_node_log` for
+bounded log search, `zcl_sql` for SELECT-only database inspection, and
+`zcl_events` for recent structured events.
 
 Every new subsystem that has runtime state should expose it through the
 diagnostics registry and become reachable through `zcl_state`. Expensive
