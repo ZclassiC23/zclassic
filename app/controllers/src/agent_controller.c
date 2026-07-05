@@ -256,7 +256,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_map.v1\", \"commands\":[...], "
         "\"subsystems\":[...] }\n");
 
-    struct json_value commands, subsystems, shim;
+    struct json_value commands, subsystems, telemetry, shim;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_map.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -296,6 +296,37 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zcl_state", "generic subsystem diagnostics");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
+
+    json_init(&telemetry);
+    json_set_array(&telemetry);
+    agent_push_command(&telemetry, "summary", "zclassic23 agent",
+                       "zcl_operator_summary",
+                       "stable first-call status, blocker, next-action contract");
+    agent_push_command(&telemetry, "full_status", "zclassic23 healthcheck",
+                       "zcl_status",
+                       "wide health packet with peers, sync, chain, validation, and memory");
+    agent_push_command(&telemetry, "subsystem_state",
+                       "zclassic23 dumpstate <subsystem>",
+                       "zcl_state",
+                       "semantic subsystem internals through diagnostics registry");
+    agent_push_command(&telemetry, "node_log",
+                       "zclassic23 getnodelog <regex>",
+                       "zcl_node_log",
+                       "server-side regex tail over node.log history");
+    agent_push_command(&telemetry, "node_db",
+                       "zclassic23 dbquery <select>",
+                       "zcl_sql",
+                       "SELECT-only node.db inspection with limits");
+    agent_push_command(&telemetry, "events",
+                       "zclassic23 eventlog <count>",
+                       "zcl_events",
+                       "recent structured node events");
+    agent_push_command(&telemetry, "quality_lanes",
+                       "make quality-linger-status",
+                       "zcl_agent_build",
+                       "background tests/fuzz/coverage verdicts");
+    json_push_kv(result, "telemetry_drilldowns", &telemetry);
+    json_free(&telemetry);
 
     json_init(&subsystems);
     json_set_array(&subsystems);
@@ -635,7 +666,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                              "build twice in isolated dirs and cmp binaries");
     agent_push_build_command(&commands, "background_quality_status",
                              "make quality-linger-status",
-                             "show latest background fuzz/coverage JSON verdicts");
+                             "show latest background tests/fuzz/coverage JSON verdicts");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
 
@@ -673,6 +704,9 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_command(&lanes, "coverage",
                              "zclassic23-coverage.timer",
                              "weekly coverage lane with JSON verdict");
+    agent_push_build_command(&lanes, "tests",
+                             "zclassic23-test-suite.timer",
+                             "hourly full test suite lane with JSON verdict");
     json_push_kv(&background, "lanes", &lanes);
     json_free(&lanes);
     json_push_kv(result, "background_quality_lanes", &background);
@@ -686,7 +720,9 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_str(&gates,
                    "tracked pre-push hook runs make pre-push-ci");
     agent_push_str(&gates,
-                   "long fuzz/coverage lanes run via make install-quality-linger");
+                   "pre-push-ci skips live service probe; inspect live health separately");
+    agent_push_str(&gates,
+                   "full-suite/fuzz/coverage lanes run via make install-quality-linger");
     json_push_kv(result, "pre_push_gates", &gates);
     json_free(&gates);
     return true;

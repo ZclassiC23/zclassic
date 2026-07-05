@@ -24,8 +24,9 @@ The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
 height/gap, peer summary, active blockers, next action, and recommended
 drill-down tools. Use `zcl_status` for the larger health packet, `zcl_state`
-for subsystem internals, `zcl_node_log` for bounded log search, and `zcl_sql`
-for SELECT-only database inspection.
+for subsystem internals, `zcl_node_log` for bounded log search, `zcl_sql`
+for SELECT-only database inspection, and `zcl_events` for recent structured
+events.
 
 Every new subsystem that has runtime state should expose it through the
 diagnostics registry and become reachable through `zcl_state`. Expensive
@@ -55,24 +56,30 @@ This is a C23 project, so the edit loop should compile only what changed.
   `ZCL_FAST_CACHE_RESET=1` to clear the green-input cache, or
   `ZCL_FAST_CACHE_DIR=...` to move it.
 
-Before pushing `main`, the strict gate remains `make lint`, `make build-only`,
-and the relevant strict `make t ONLY=<group>` tests. The tracked pre-push hook
-runs `make pre-push-ci`, which is `make ci` with fuzz and coverage skipped.
-Long-running fuzz and coverage evidence belongs to the background quality
-lanes: install them with `make install-quality-linger` and inspect them with
-`make quality-linger-status`. Status JSON is written under
-`~/.local/state/zclassic23-quality`.
+Before pushing `main`, the tracked pre-push hook computes the exact
+`origin/main..HEAD` changed-file set, rejects non-`main` remote refs, and runs
+`make pre-push-ci`. That command uses cached `make t-fast ONLY=<group>` tests
+selected by `tools/agent_fast_ci.sh`, plus `make build-only` for compiler and
+`-Werror` coverage; it does not rerun the full suite when the changed files only
+require narrower coverage. It also sets `ZCL_FAST_LIVE=0`, so an already-running
+node condition is visible through telemetry but does not block a code push. Set
+`ZCL_FAST_STRICT_TESTS=1` when a change needs strict whole-harness focused
+tests. Full-suite, fuzz, and coverage evidence belongs to the background quality lanes: install them with
+`make install-quality-linger` and inspect them with `make quality-linger-status`.
+Status JSON is written under `~/.local/state/zclassic23-quality`.
 
 ## Background proof lanes
 
 The background lanes keep expensive proof work running without blocking every
-push.
+push or AI edit loop.
 
 - `zclassic23-fuzz.timer` runs `tools/scripts/background_quality_lane.sh fuzz`
   hourly. Default duration is 900 seconds per fuzzer; override with
   `ZCL_FUZZ_DURATION`.
 - `zclassic23-coverage.timer` runs
   `tools/scripts/background_quality_lane.sh coverage` weekly.
+- `zclassic23-test-suite.timer` runs
+  `tools/scripts/background_quality_lane.sh tests` hourly.
 - `make quality-linger-status` prints timer status plus the latest
   `zcl.background_quality_status.v1` JSON verdict.
 

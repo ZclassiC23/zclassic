@@ -159,22 +159,51 @@ run_coverage() {
     return "$rc"
 }
 
+run_tests() {
+    local started started_epoch finished finished_epoch elapsed rc log
+    started="$(utc_now)"
+    started_epoch="$(epoch_now)"
+    log="$LOG_DIR/tests-${started//[:]/}.log"
+
+    write_status "tests" "running" "$started" "" 0 0 "$log" "running make test"
+    printf 'background_quality: lane=tests started=%s commit=%s\n' \
+        "$started" "$(git_commit)" | tee -a "$log"
+
+    if run_logged "$log" make test; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    finished="$(utc_now)"
+    finished_epoch="$(epoch_now)"
+    elapsed=$((finished_epoch - started_epoch))
+    if [ "$rc" -eq 0 ]; then
+        write_status "tests" "passed" "$started" "$finished" "$elapsed" 0 "$log" "full test suite completed"
+    else
+        write_status "tests" "failed" "$started" "$finished" "$elapsed" "$rc" "$log" "make test failed"
+    fi
+    return "$rc"
+}
+
 print_status() {
-    local fuzz coverage
+    local fuzz coverage tests
     fuzz="null"
     coverage="null"
+    tests="null"
     [ -f "$STATUS_DIR/fuzz.json" ] && fuzz="$(cat "$STATUS_DIR/fuzz.json")"
     [ -f "$STATUS_DIR/coverage.json" ] && coverage="$(cat "$STATUS_DIR/coverage.json")"
+    [ -f "$STATUS_DIR/tests.json" ] && tests="$(cat "$STATUS_DIR/tests.json")"
     printf '{'
     printf '"schema":"zcl.background_quality_status.v1"'
     printf ',"state_dir":"%s"' "$(json_escape "$STATE_ROOT")"
-    printf ',"lanes":{"fuzz":%s,"coverage":%s}' "$fuzz" "$coverage"
+    printf ',"lanes":{"fuzz":%s,"coverage":%s,"tests":%s}' "$fuzz" "$coverage" "$tests"
     printf '}\n'
 }
 
 usage() {
     cat <<'EOF'
-usage: tools/scripts/background_quality_lane.sh <fuzz|coverage|status>
+usage: tools/scripts/background_quality_lane.sh <fuzz|coverage|tests|status>
 
 Environment:
   ZCL_QUALITY_STATE_DIR   status/log root (default ~/.local/state/zclassic23-quality)
@@ -187,6 +216,7 @@ EOF
 case "${1:-status}" in
     fuzz) run_fuzz ;;
     coverage) run_coverage ;;
+    tests) run_tests ;;
     status) print_status ;;
     -h|--help|help) usage ;;
     *)

@@ -60,9 +60,9 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + `build-only` + focused tests inferred from changed files + native linger-service probe; identical green inputs skip repeated lint/build/focused tests |
-| `make pre-push-ci` | bounded push gate: `make ci` with fuzz and coverage skipped |
-| `make install-quality-linger` | install hourly fuzz and weekly coverage user timers |
-| `make quality-linger-status` | show latest background fuzz/coverage JSON verdicts |
+| `make pre-push-ci` | bounded push gate: cached focused fast-ci for changed files |
+| `make install-quality-linger` | install background full-test, fuzz, and coverage user timers |
+| `make quality-linger-status` | show latest background tests/fuzz/coverage JSON verdicts |
 | `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
 | `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
@@ -105,13 +105,17 @@ Canonical operator APIs, in priority order:
 4. `tools/z` — deprecated shell compatibility/fallback for terminals and
    scripts. Keep it working; do not add new operator logic there.
 
-`make fast-ci` is not the release gate. Before pushing `main`, the manual
-preflight remains `make lint`, `make build-only`, and the relevant strict
-`make t ONLY=<group>` tests; the tracked pre-push hook runs `make pre-push-ci`
-(`make ci SKIP_FUZZ=1 SKIP_COV=1`). Full `make ci` still runs fuzz and
-coverage when called explicitly, but those expensive lanes are normally kept
-fresh by `zclassic23-fuzz.timer` and `zclassic23-coverage.timer`. Install them
-with `make install-quality-linger`; inspect their latest
+`make fast-ci` is the normal AI/operator edit gate. Before pushing `main`, the
+tracked pre-push hook computes the exact `origin/main..HEAD` changed-file set,
+passes it to `make pre-push-ci`, and rejects remote refs other than
+`refs/heads/main`. `make pre-push-ci` runs cached focused fast-ci for that file
+set (`build-only` plus mapped `t-fast` groups); it does not rerun the full suite
+on every push, and it forces `ZCL_FAST_LIVE=0` so a live node condition remains
+telemetry rather than a push blocker. Set `ZCL_FAST_STRICT_TESTS=1` for a
+deliberate strict focused run. Full `make ci` still exists for release-grade manual runs, but the
+expensive proof lanes are kept fresh by `zclassic23-test-suite.timer`,
+`zclassic23-fuzz.timer`, and `zclassic23-coverage.timer`. Install them with
+`make install-quality-linger`; inspect their latest
 `zcl.background_quality_status.v1` verdict with `make quality-linger-status`.
 
 ## Invariants that hold across every stage

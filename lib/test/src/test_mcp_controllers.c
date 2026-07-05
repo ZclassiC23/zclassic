@@ -1282,7 +1282,7 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit")),
                       "nodecafe123");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_build_commit")),
-                      ZCL_BUILD_COMMIT);
+                      zcl_build_commit());
         const struct json_value *blockers = json_get(&root, "blockers");
         ASSERT(blockers != NULL);
         ASSERT(json_get_int(json_get(blockers, "active_count")) == 0);

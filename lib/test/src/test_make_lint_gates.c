@@ -439,6 +439,51 @@ static int check_deleted_engine_names_file(const char *path)
     return 0;
 }
 
+static bool build_commit_macro_file_allowed(const char *path)
+{
+    return strstr(path, "/lib/util/src/clientversion.c") ||
+           strstr(path, "/lib/util/include/util/clientversion.h") ||
+           strstr(path, "/lib/test/src/test_make_lint_gates.c");
+}
+
+static int check_build_commit_macro_file(const char *path)
+{
+    if (build_commit_macro_file_allowed(path))
+        return 0;
+
+    char *buf = NULL;
+    if (read_entire_file(path, &buf) != 0)
+        return -1;
+
+    int rc = 0;
+    if (strstr(buf, "ZCL_BUILD_COMMIT")) {
+        fprintf(stderr,
+                "ZCL_BUILD_COMMIT used outside clientversion getter: %s\n",
+                path);
+        rc = 1;
+    }
+
+    free(buf);
+    return rc;
+}
+
+static int run_check_build_commit_macro_contract(void)
+{
+    const char *roots[] = {
+        "app", "lib", "config", "tools", "src",
+        "domain", "application", "adapters", "ports",
+    };
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        char dir[PATH_MAX];
+        if (repo_path(dir, sizeof(dir), roots[i]) != 0)
+            return -1;
+        int rc = walk_ch_files(dir, check_build_commit_macro_file);
+        if (rc != 0)
+            return rc;
+    }
+    return 0;
+}
+
 static int run_check_raw_sqlite(void)
 {
     return run_gate_script(RAW_SQLITE_SCRIPT_REL, NULL);
@@ -2287,10 +2332,15 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE=0") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES") != NULL);
         ASSERT(strstr(buf, "pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_LIVE=0 $(MAKE) fast-ci") != NULL);
         ASSERT(strstr(buf, "install-quality-linger") != NULL);
         ASSERT(strstr(buf, "quality-linger-status") != NULL);
         ASSERT(strstr(buf, "tools/scripts/background_quality_lane.sh") != NULL);
+        ASSERT(strstr(buf, "background-tests") != NULL);
+        ASSERT(strstr(buf, "zclassic23-test-suite.timer") != NULL);
         free(buf);
         buf = NULL;
 
@@ -2303,6 +2353,8 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "git diff --check") != NULL);
         ASSERT(strstr(buf, "git ls-files --others --exclude-standard")
                != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
+        ASSERT(strstr(buf, "fast_changed_files_file") != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
         ASSERT(strstr(buf, "make_fast build-only") != NULL);
@@ -2314,6 +2366,8 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "app/models/src/peer.c") != NULL);
         ASSERT(strstr(buf, "lib/net/src/connman.c") != NULL);
         ASSERT(strstr(buf, "docs/AGENT_API.md") != NULL);
+        ASSERT(strstr(buf, "deploy/*.service") != NULL);
+        ASSERT(strstr(buf, "deploy/zclassic23-test-suite.service") != NULL);
         ASSERT(strstr(buf, "lib/net/include/net/msg_internal.h") != NULL);
         ASSERT(strstr(buf, "lib/net/include/net/port_policy.h") != NULL);
         ASSERT(strstr(buf, "models") != NULL);
@@ -2369,10 +2423,12 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "MCP tools") != NULL);
         ASSERT(strstr(buf, "`tools/z`") != NULL);
         ASSERT(strstr(buf, "deprecated shell compatibility") != NULL);
-        ASSERT(strstr(buf, "tracked pre-push hook runs `make pre-push-ci`")
-               != NULL);
+        ASSERT(strstr(buf, "origin/main..HEAD") != NULL);
+        ASSERT(strstr(buf, "cached focused fast-ci") != NULL);
+        ASSERT(strstr(buf, "live node condition remains") != NULL);
         ASSERT(strstr(buf, "zclassic23-fuzz.timer") != NULL);
         ASSERT(strstr(buf, "zclassic23-coverage.timer") != NULL);
+        ASSERT(strstr(buf, "zclassic23-test-suite.timer") != NULL);
         ASSERT(strstr(buf, "zcl.background_quality_status.v1") != NULL);
         free(buf);
         buf = NULL;
@@ -2381,7 +2437,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "Fast local edit-loop before commit:  make fast-ci")
                != NULL);
-        ASSERT(strstr(buf, "default pre-push is make pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "files being pushed to origin/main") != NULL);
+        ASSERT(strstr(buf, "refs/heads/main") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
+        ASSERT(strstr(buf, "git diff --name-only \"$rsha\" \"$lsha\"")
+               != NULL);
         ASSERT(strstr(buf, "make install-quality-linger") != NULL);
         PASS();
     } _test_next:;
@@ -2451,10 +2511,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "command_center") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "telemetry_drilldowns") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl_sql") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl_events") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23 dbquery <select>") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality_lanes") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make quality-linger-status") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23-fuzz.timer") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23-coverage.timer") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23-test-suite.timer") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "pre-push-ci skips live service probe")
+               != NULL);
         ASSERT(strstr(agent_ctrl_buf, "app/controllers/src/agent_controller.c")
                != NULL);
         ASSERT(strstr(api_buf,
@@ -2489,7 +2556,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_operator_summary") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_state") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_node_log") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_sql") != NULL);
         ASSERT(strstr(agent_doc_buf, "make pre-push-ci") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_FAST_LIVE=0") != NULL);
         ASSERT(strstr(agent_doc_buf, "make install-quality-linger") != NULL);
         ASSERT(strstr(agent_doc_buf, "make quality-linger-status") != NULL);
         ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
@@ -4071,6 +4140,16 @@ static int t_deleted_engine_names_absent_from_production_sources(void)
     return failures;
 }
 
+static int t_build_commit_macro_stays_behind_getter(void)
+{
+    int failures = 0;
+    TEST("build commit macro stays behind runtime getter") {
+        ASSERT(run_check_build_commit_macro_contract() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_projection_deferral_is_not_block_rejected_contract(void)
 {
     int failures = 0;
@@ -4199,6 +4278,7 @@ int test_make_lint_gates(void)
     failures += t_process_block_split_uses_reducer_language();
     failures += t_production_comments_do_not_carry_refactor_scaffold_labels();
     failures += t_deleted_engine_names_absent_from_production_sources();
+    failures += t_build_commit_macro_stays_behind_getter();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_refold_from_anchor_explicit_span_gate_contract();

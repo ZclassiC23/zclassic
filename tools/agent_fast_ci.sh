@@ -89,6 +89,14 @@ make_fast() {
 }
 
 changed_files() {
+    if [ -n "${ZCL_FAST_CHANGED_FILES_FILE:-}" ]; then
+        [ -f "$ZCL_FAST_CHANGED_FILES_FILE" ] ||
+            fail "ZCL_FAST_CHANGED_FILES_FILE does not exist: $ZCL_FAST_CHANGED_FILES_FILE"
+        cat "$ZCL_FAST_CHANGED_FILES_FILE"
+    fi
+    if [ -n "${ZCL_FAST_CHANGED_FILES:-}" ]; then
+        printf '%s\n' "$ZCL_FAST_CHANGED_FILES" | tr ' ,' '\n'
+    fi
     if [ -n "${ZCL_FAST_BASE:-}" ]; then
         git diff --name-only "$ZCL_FAST_BASE"...HEAD -- || true
     fi
@@ -143,7 +151,7 @@ select_test_groups() {
         [ -n "$file" ] || continue
         matched=0
         case "$file" in
-            Makefile|src/main.c|tools/*|docs/AGENT_API.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
+            Makefile|src/main.c|tools/*|tools/scripts/*|deploy/*.service|deploy/*.timer|docs/AGENT_API.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c)
                 add_group "make_lint_gates"
                 matched=1
                 ;;
@@ -252,6 +260,8 @@ cache_manifest() {
     printf 'cache_tool\t%s\n' "$CACHE_TOOL"
     printf 'fast_jobs\t%s\n' "$FAST_JOBS"
     printf 'fast_tests_env\t%s\n' "${ZCL_FAST_TESTS:-}"
+    printf 'fast_changed_files_file\t%s\n' "${ZCL_FAST_CHANGED_FILES_FILE:-}"
+    printf 'fast_changed_files_env\t%s\n' "${ZCL_FAST_CHANGED_FILES:-}"
     printf 'fast_strict_tests\t%s\n' "${ZCL_FAST_STRICT_TESTS:-0}"
     printf 'fast_live\t%s\n' "${ZCL_FAST_LIVE:-auto}"
     printf 'node_bin\t%s\n' "$NODE_BIN"
@@ -277,6 +287,7 @@ cache_manifest() {
         tools/scripts/background_quality_lane.sh \
         deploy/zclassic23-fuzz.service deploy/zclassic23-fuzz.timer \
         deploy/zclassic23-coverage.service deploy/zclassic23-coverage.timer \
+        deploy/zclassic23-test-suite.service deploy/zclassic23-test-suite.timer \
         lib/test/src/test_make_lint_gates.c docs/work/fast-path.md \
         docs/AGENT_API.md app/controllers/src/agent_controller.c; do
         cache_manifest_file "$file" "$file"
@@ -503,7 +514,7 @@ main() {
     if maybe_fast_cache_hit; then
         maybe_live_probe
         log "PASS: fast lane cache hit; not full release CI"
-        log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Long fuzz/coverage run through make install-quality-linger."
+        log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Full-suite/fuzz/coverage run through make install-quality-linger."
         return
     fi
 
@@ -519,7 +530,7 @@ main() {
 
     record_fast_cache_pass
     log "PASS: fast lane complete; not full release CI"
-    log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Long fuzz/coverage run through make install-quality-linger."
+    log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Full-suite/fuzz/coverage run through make install-quality-linger."
 }
 
 main "$@"

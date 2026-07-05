@@ -169,7 +169,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev lane-health check-restart-follow \
-        background-fuzz background-coverage install-quality-linger quality-linger-status pre-push-ci \
+        background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
         lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
@@ -315,6 +315,9 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   ZCL_FAST_CACHE=0 make fast-ci      # force rerun even on identical input
 #   ZCL_FAST_CACHE_RESET=1 make fast-ci
 #   ZCL_FAST_LIVE=0 make fast-ci   # skip live linger-service probe
+#   ZCL_FAST_CHANGED_FILES_FILE=/tmp/files make fast-ci
+#   ZCL_FAST_CHANGED_FILES='app/controllers/src/agent_controller.c' make fast-ci
+#   make pre-push-ci               # skips live probe; code gate only
 fast-ci agent-fast-ci dev-ci:
 	@tools/agent_fast_ci.sh
 
@@ -1724,36 +1727,41 @@ background-fuzz:
 background-coverage:
 	@./tools/scripts/background_quality_lane.sh coverage
 
+background-tests:
+	@./tools/scripts/background_quality_lane.sh tests
+
 install-quality-linger:
 	@install -d "$(HOME)/.config/systemd/user"
 	@install -m 644 deploy/zclassic23-fuzz.service "$(HOME)/.config/systemd/user/zclassic23-fuzz.service"
 	@install -m 644 deploy/zclassic23-fuzz.timer "$(HOME)/.config/systemd/user/zclassic23-fuzz.timer"
 	@install -m 644 deploy/zclassic23-coverage.service "$(HOME)/.config/systemd/user/zclassic23-coverage.service"
 	@install -m 644 deploy/zclassic23-coverage.timer "$(HOME)/.config/systemd/user/zclassic23-coverage.timer"
+	@install -m 644 deploy/zclassic23-test-suite.service "$(HOME)/.config/systemd/user/zclassic23-test-suite.service"
+	@install -m 644 deploy/zclassic23-test-suite.timer "$(HOME)/.config/systemd/user/zclassic23-test-suite.timer"
 	@systemctl --user daemon-reload
-	@systemctl --user enable --now zclassic23-fuzz.timer zclassic23-coverage.timer
-	@echo "installed background quality lanes: zclassic23-fuzz.timer zclassic23-coverage.timer"
+	@systemctl --user enable --now zclassic23-fuzz.timer zclassic23-coverage.timer zclassic23-test-suite.timer
+	@echo "installed background quality lanes: zclassic23-fuzz.timer zclassic23-coverage.timer zclassic23-test-suite.timer"
 	@echo "status: make quality-linger-status"
 
 quality-linger-status:
-	@systemctl --user list-timers zclassic23-fuzz.timer zclassic23-coverage.timer --no-pager 2>/dev/null || true
-	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service --no-pager -n 12 2>/dev/null || true
+	@systemctl --user list-timers zclassic23-fuzz.timer zclassic23-coverage.timer zclassic23-test-suite.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service zclassic23-test-suite.service --no-pager -n 12 2>/dev/null || true
 	@./tools/scripts/background_quality_lane.sh status
 
 release:
 	@./tools/release.sh
 
 # Install the tracked git hooks (shared across all worktrees via core.hooksPath).
-# pre-push runs the bounded LOCAL CI gate (`make pre-push-ci`) so nothing
-# unverified reaches origin. Long fuzz/coverage proof work runs through the
-# linger timers installed by `make install-quality-linger`.
+# pre-push runs the bounded LOCAL CI gate (`make pre-push-ci`) so changed
+# files get strict focused tests. Full-suite/fuzz/coverage proof work runs
+# through the linger timers installed by `make install-quality-linger`.
 .PHONY: install-hooks
 install-hooks:
 	@git config core.hooksPath tools/githooks
 	@chmod +x tools/githooks/* 2>/dev/null || true
 	@echo "Installed git hooks: core.hooksPath=tools/githooks"
 	@echo "  pre-push -> runs 'make pre-push-ci' before every push to origin"
-	@echo "  long fuzz/coverage -> make install-quality-linger"
+	@echo "  full-suite/fuzz/coverage -> make install-quality-linger"
 	@echo "  bypass one push: git push --no-verify   (or ZCL_SKIP_PREPUSH=1)"
 
 .PHONY: check-git-hooks-installed
@@ -1948,7 +1956,7 @@ docs-mcp-check: zclassic23
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
 pre-push-ci:
-	@$(MAKE) ci SKIP_FUZZ=1 SKIP_COV=1
+	@ZCL_FAST_LIVE=0 $(MAKE) fast-ci
 
 check-malloc:
 	@echo "══ LINT: bare malloc/calloc/realloc in app/tools code ══"

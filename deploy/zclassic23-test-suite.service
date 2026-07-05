@@ -1,0 +1,20 @@
+[Unit]
+Description=ZClassic23 Background Full Test Suite Lane
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/github/zclassic23
+ExecStart=%h/github/zclassic23/tools/scripts/background_quality_lane.sh tests
+TimeoutStartSec=3600
+
+# Full tests are proof work. Keep them out of the synchronous push path and run
+# them with low scheduling weight so the node and interactive development win.
+Nice=15
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+MemoryHigh=12G
+TasksMax=2048
+
+StandardOutput=journal
+StandardError=journal
