@@ -978,6 +978,7 @@ int test_zclassicd_oracle(void)
         stats.legacy_headers = 7;
         snprintf(stats.zclassicd_hash, sizeof(stats.zclassicd_hash),
                  "%s", AGREE_HEX);
+        stats.last_progress_blocks = 1;
         snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "hash-disagreement");
         legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
@@ -1004,6 +1005,9 @@ int test_zclassicd_oracle(void)
         json_set_object(&root);
         ZO_CHECK("legacy mirror recovery dump succeeds",
                  legacy_mirror_sync_dump_state_json(&root, NULL));
+        ZO_CHECK("legacy mirror recovery dump reports healthy at tip",
+                 strcmp(json_get_str(json_get(&root, "state")),
+                        "healthy") == 0);
         ZO_CHECK("legacy mirror recovery dump active code empty",
                  strcmp(json_get_str(json_get(&root, "active_error_code")),
                         "") == 0);

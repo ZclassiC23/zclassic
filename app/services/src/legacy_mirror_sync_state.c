@@ -37,11 +37,11 @@ static const char *lms_state_name(const struct legacy_mirror_sync_stats *s)
         return "gated_by_local_retries";
     if (s->lag_known && s->lag < 0)
         return "observing";
+    if (s->lag_known && s->lag <= 1)
+        return "healthy";
     if (s->in_flight || s->last_progress_blocks > 0 ||
         (s->lag_known && s->lag > 1))
         return "catching_up";
-    if (s->lag_known && s->lag <= 1)
-        return "healthy";
     return "observing";
 }
 
