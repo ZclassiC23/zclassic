@@ -76,6 +76,7 @@ struct agent_fast_snapshot {
     uint64_t queued;
     uint64_t overdue_in_flight;
     uint64_t in_flight_peer_count;
+    uint64_t queue_peer_avoid_count;
     uint64_t assign_attempts;
     uint64_t assign_successes;
     uint64_t assign_zero_results;
@@ -127,6 +128,7 @@ struct agent_fast_snapshot {
     int64_t tip_advance_age_seconds;
     int64_t catchup_stall_seconds;
     int64_t download_dispatch_idle_seconds;
+    int64_t queue_peer_avoid_max_seconds;
     int64_t oldest_in_flight_age_seconds;
     int64_t last_error_age_seconds;
     int warning_count;
@@ -330,12 +332,13 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
                      &s->blocks_timed_out, &s->in_flight, &s->queued);
         dl_get_diagnostics(dm, &diag);
         s->request_timeout_seconds = diag.request_timeout_seconds;
-        s->oldest_in_flight_age_seconds =
-            diag.oldest_in_flight_age_seconds;
+        s->oldest_in_flight_age_seconds = diag.oldest_in_flight_age_seconds;
         s->oldest_in_flight_height = diag.oldest_in_flight_height;
         s->oldest_in_flight_peer_id = diag.oldest_in_flight_peer_id;
         s->overdue_in_flight = diag.overdue_in_flight;
         s->in_flight_peer_count = diag.in_flight_peer_count;
+        s->queue_peer_avoid_count = diag.queue_peer_avoid_count;
+        s->queue_peer_avoid_max_seconds = diag.queue_peer_avoid_max_seconds;
         s->assign_attempts = diag.assign_attempts;
         s->assign_successes = diag.assign_successes;
         s->assign_zero_results = diag.assign_zero_results;
@@ -694,8 +697,10 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                      (int64_t)health.oldest_in_flight_peer_id);
     json_push_kv_int(&download, "overdue_in_flight",
                      (int64_t)health.overdue_in_flight);
-    json_push_kv_int(&download, "in_flight_peer_count",
-                     (int64_t)health.in_flight_peer_count);
+    json_push_kv_int(&download, "in_flight_peer_count", (int64_t)health.in_flight_peer_count);
+    json_push_kv_int(&download, "queue_peer_avoid_count", (int64_t)health.queue_peer_avoid_count);
+    json_push_kv_int(&download, "queue_peer_avoid_max_seconds",
+                     health.queue_peer_avoid_max_seconds);
     json_push_kv_int(&download, "assign_attempts",
                      (int64_t)health.assign_attempts);
     json_push_kv_int(&download, "assign_successes",

@@ -1370,6 +1370,9 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(download, "timed_out") != NULL;
         ok = ok && json_get(download, "in_flight") != NULL;
         ok = ok && json_get(download, "queued") != NULL;
+        ok = ok && json_get(download, "queue_peer_avoid_count") != NULL;
+        ok = ok && json_get(download,
+                            "queue_peer_avoid_max_seconds") != NULL;
         ok = ok && json_get(download, "bytes_received") != NULL;
         ok = ok && json_get(download, "mbps_avg") != NULL;
         const struct json_value *indexer = json_get(&result, "indexer");
@@ -1520,6 +1523,9 @@ int test_syncdiag_rpc(void)
                             "oldest_in_flight_age_seconds") != NULL;
         ok = ok && json_get(download, "overdue_in_flight") != NULL;
         ok = ok && json_get(download, "in_flight_peer_count") != NULL;
+        ok = ok && json_get(download, "queue_peer_avoid_count") != NULL;
+        ok = ok && json_get(download,
+                            "queue_peer_avoid_max_seconds") != NULL;
         ok = ok && json_get(download, "assign_attempts") != NULL;
         ok = ok && json_get(download, "assign_successes") != NULL;
         ok = ok && json_get(download, "assign_zero_results") != NULL;
@@ -1643,6 +1649,9 @@ int test_syncdiag_rpc(void)
                                           "dispatch_idle_seconds")) >= 30;
         ok = ok && json_get_int(json_get(download, "in_flight")) == 0;
         ok = ok && json_get_int(json_get(download, "queued")) >= 1;
+        ok = ok && json_get(download, "queue_peer_avoid_count") != NULL;
+        ok = ok && json_get(download,
+                            "queue_peer_avoid_max_seconds") != NULL;
         ok = ok && health && health->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(health,
                                                 "blocking_reason")),

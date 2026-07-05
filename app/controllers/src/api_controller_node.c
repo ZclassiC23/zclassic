@@ -143,6 +143,10 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
                      (int64_t)diag.overdue_in_flight);
     json_push_kv_int(&body, "in_flight_peer_count",
                      (int64_t)diag.in_flight_peer_count);
+    json_push_kv_int(&body, "queue_peer_avoid_count",
+                     (int64_t)diag.queue_peer_avoid_count);
+    json_push_kv_int(&body, "queue_peer_avoid_max_seconds",
+                     diag.queue_peer_avoid_max_seconds);
     json_push_kv_int(&body, "assign_attempts",
                      (int64_t)diag.assign_attempts);
     json_push_kv_int(&body, "assign_successes",

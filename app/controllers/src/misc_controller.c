@@ -216,7 +216,8 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
         "\nResult:\n"
         "  { \"requested\", \"received\", \"timed_out\", "
         "\"in_flight\", \"queued\", \"oldest_in_flight_age_seconds\", "
-        "\"overdue_in_flight\", \"dispatch_wakes\", "
+        "\"overdue_in_flight\", \"queue_peer_avoid_count\", "
+        "\"dispatch_wakes\", "
         "\"message_send_calls\", \"message_process_calls\", "
         "\"last_assign_result\", "
         "\"sync_state\" }\n");
@@ -250,6 +251,10 @@ static bool rpc_downloadstats(const struct json_value *params, bool help,
                      (int64_t)diag.overdue_in_flight);
     json_push_kv_int(result, "in_flight_peer_count",
                      (int64_t)diag.in_flight_peer_count);
+    json_push_kv_int(result, "queue_peer_avoid_count",
+                     (int64_t)diag.queue_peer_avoid_count);
+    json_push_kv_int(result, "queue_peer_avoid_max_seconds",
+                     diag.queue_peer_avoid_max_seconds);
     json_push_kv_int(result, "assign_attempts",
                      (int64_t)diag.assign_attempts);
     json_push_kv_int(result, "assign_successes",

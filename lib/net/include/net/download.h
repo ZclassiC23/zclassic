@@ -31,6 +31,8 @@
 #define DL_REQUEST_TIMEOUT_SECS_IBD 15   /* reassign after this many seconds (during IBD) */
 #define DL_STALL_TIMEOUT_SECS     120    /* disconnect peer after this */
 #define DL_WINDOW_SIZE            512    /* blocks to request per batch */
+#define DL_PEER_AVOID_COOLDOWN_SECS 30   /* temporarily avoid a peer after a
+                                          * block request timeout */
 
 /* Dynamic limits — return aggressive values during IBD, conservative at tip.
  * These check sync_get_state() internally. Thread-safe. */
@@ -82,6 +84,8 @@ struct dl_diagnostics {
     uint32_t oldest_in_flight_peer_id;
     uint64_t overdue_in_flight;
     uint64_t in_flight_peer_count;
+    uint64_t queue_peer_avoid_count;
+    int64_t  queue_peer_avoid_max_seconds;
     uint64_t assign_attempts;
     uint64_t assign_successes;
     uint64_t assign_zero_results;
@@ -105,6 +109,7 @@ enum dl_assign_result {
     DL_ASSIGN_PEER_WINDOW_FULL,
     DL_ASSIGN_GLOBAL_WINDOW_FULL,
     DL_ASSIGN_NO_SLOT,
+    DL_ASSIGN_PEER_AVOID_COOLDOWN,
 };
 
 const char *dl_assign_result_name(int result);
@@ -125,6 +130,8 @@ struct download_manager {
     /* Download window: blocks we need but haven't requested yet */
     struct uint256      *queue;         /* block hashes to download */
     int32_t             *queue_heights; /* corresponding heights */
+    uint32_t            *queue_avoid_peers; /* peer to avoid temporarily */
+    int64_t             *queue_avoid_until; /* epoch seconds; 0 = inactive */
     size_t               queue_len;
     size_t               queue_cap;
 

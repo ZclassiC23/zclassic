@@ -47,7 +47,11 @@ recent error state, and precise download age fields:
 `download.oldest_in_flight_height`,
 `download.oldest_in_flight_peer_id`,
 `download.overdue_in_flight`, and
-`download.in_flight_peer_count`. It reports `download.catchup_stalled` when a
+`download.in_flight_peer_count`. It also reports
+`download.queue_peer_avoid_count` and
+`download.queue_peer_avoid_max_seconds` when timed-out block bodies are queued
+for immediate retry by other peers while temporarily avoiding the peer that just
+failed that exact hash. It reports `download.catchup_stalled` when a
 lagging node has active download work but the served frontier has not advanced
 for the stall window. It reports `download.dispatch_idle`,
 `download.dispatch_stalled`, and `download.dispatch_idle_seconds` when queued

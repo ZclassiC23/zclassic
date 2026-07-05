@@ -39,6 +39,16 @@ int dl_get_request_timeout_secs(void)
                        : DL_REQUEST_TIMEOUT_SECS;
 }
 
+static int64_t dl_peer_avoid_deadline(int64_t now)
+{
+    int cooldown = dl_get_request_timeout_secs();
+    if (cooldown < 1)
+        cooldown = 1;
+    if (cooldown > DL_PEER_AVOID_COOLDOWN_SECS)
+        cooldown = DL_PEER_AVOID_COOLDOWN_SECS;
+    return now + cooldown;
+}
+
 const char *dl_assign_result_name(int result)
 {
     switch (result) {
@@ -49,6 +59,7 @@ const char *dl_assign_result_name(int result)
     case DL_ASSIGN_PEER_WINDOW_FULL:   return "peer_window_full";
     case DL_ASSIGN_GLOBAL_WINDOW_FULL: return "global_window_full";
     case DL_ASSIGN_NO_SLOT:            return "no_slot";
+    case DL_ASSIGN_PEER_AVOID_COOLDOWN:return "peer_avoid_cooldown";
     default:                           return "unknown";
     }
 }
@@ -76,11 +87,19 @@ void dl_init(struct download_manager *dm)
     dm->queue_cap = INITIAL_QUEUE;
     dm->queue = zcl_malloc(dm->queue_cap * sizeof(struct uint256), "dl_queue");
     dm->queue_heights = zcl_malloc(dm->queue_cap * sizeof(int32_t), "dl_queue_heights");
+    dm->queue_avoid_peers =
+        zcl_calloc(dm->queue_cap, sizeof(uint32_t), "dl_queue_avoid_peers");
+    dm->queue_avoid_until =
+        zcl_calloc(dm->queue_cap, sizeof(int64_t), "dl_queue_avoid_until");
     dm->qset_slots = INITIAL_QSET_SLOTS;
     dm->qset = zcl_calloc(dm->qset_slots, sizeof(struct dl_queued_key), "dl_qset");
-    if (!dm->slots || !dm->queue || !dm->queue_heights || !dm->qset) {
-        free(dm->slots); free(dm->queue); free(dm->queue_heights); free(dm->qset);
+    if (!dm->slots || !dm->queue || !dm->queue_heights ||
+        !dm->queue_avoid_peers || !dm->queue_avoid_until || !dm->qset) {
+        free(dm->slots); free(dm->queue); free(dm->queue_heights);
+        free(dm->queue_avoid_peers); free(dm->queue_avoid_until);
+        free(dm->qset);
         dm->slots = NULL; dm->queue = NULL; dm->queue_heights = NULL;
+        dm->queue_avoid_peers = NULL; dm->queue_avoid_until = NULL;
         dm->qset = NULL;
         dm->num_slots = 0; dm->queue_cap = 0; dm->qset_slots = 0;
     }
@@ -91,10 +110,14 @@ void dl_free(struct download_manager *dm)
     free(dm->slots);
     free(dm->queue);
     free(dm->queue_heights);
+    free(dm->queue_avoid_peers);
+    free(dm->queue_avoid_until);
     free(dm->qset);
     dm->slots = NULL;
     dm->queue = NULL;
     dm->queue_heights = NULL;
+    dm->queue_avoid_peers = NULL;
+    dm->queue_avoid_until = NULL;
     dm->qset = NULL;
 }
 
@@ -229,16 +252,38 @@ static bool dl_queue_grow(struct download_manager *dm)
     if (dm->queue_cap == 0)
         return false; // raw-return-ok:dl_init-oom-doubling-0-spins-forever
     size_t new_cap = dm->queue_cap * 2;
-    struct uint256 *nq = zcl_realloc(dm->queue, new_cap * sizeof(struct uint256), "dl_queue");
-    int32_t *nh = zcl_realloc(dm->queue_heights, new_cap * sizeof(int32_t), "dl_queue_heights");
-    if (!nq || !nh) {
-        /* If one succeeded, keep the old pointer valid */
-        if (nq) dm->queue = nq;
-        if (nh) dm->queue_heights = nh;
+    struct uint256 *nq =
+        zcl_malloc(new_cap * sizeof(struct uint256), "dl_queue");
+    int32_t *nh =
+        zcl_malloc(new_cap * sizeof(int32_t), "dl_queue_heights");
+    uint32_t *nap =
+        zcl_calloc(new_cap, sizeof(uint32_t), "dl_queue_avoid_peers");
+    int64_t *nau =
+        zcl_calloc(new_cap, sizeof(int64_t), "dl_queue_avoid_until");
+    if (!nq || !nh || !nap || !nau) {
+        free(nq);
+        free(nh);
+        free(nap);
+        free(nau);
         LOG_FAIL("net", "dl_queue_grow: realloc failed for new_cap=%zu", new_cap);
     }
+
+    if (dm->queue_len > 0) {
+        memcpy(nq, dm->queue, dm->queue_len * sizeof(*nq));
+        memcpy(nh, dm->queue_heights, dm->queue_len * sizeof(*nh));
+        memcpy(nap, dm->queue_avoid_peers, dm->queue_len * sizeof(*nap));
+        memcpy(nau, dm->queue_avoid_until, dm->queue_len * sizeof(*nau));
+    }
+
+    free(dm->queue);
+    free(dm->queue_heights);
+    free(dm->queue_avoid_peers);
+    free(dm->queue_avoid_until);
+
     dm->queue = nq;
     dm->queue_heights = nh;
+    dm->queue_avoid_peers = nap;
+    dm->queue_avoid_until = nau;
     dm->queue_cap = new_cap;
     return true;
 }
@@ -262,7 +307,8 @@ static inline int64_t dl_sort_key(int32_t height)
  * one-at-a-time and the queue is bounded (<= 65536), so this is cheap
  * relative to the per-item O(n) dedup scan callers already perform. */
 static bool dl_queue_push(struct download_manager *dm,
-                           const struct uint256 *hash, int32_t height)
+                          const struct uint256 *hash, int32_t height,
+                          uint32_t avoid_peer, int64_t avoid_until)
 {
     if (qset_contains(dm, hash))
         return false; // raw-return-ok:duplicate-is-benign
@@ -309,12 +355,51 @@ static bool dl_queue_push(struct download_manager *dm,
                 (dm->queue_len - pos) * sizeof(struct uint256));
         memmove(&dm->queue_heights[pos + 1], &dm->queue_heights[pos],
                 (dm->queue_len - pos) * sizeof(int32_t));
+        memmove(&dm->queue_avoid_peers[pos + 1],
+                &dm->queue_avoid_peers[pos],
+                (dm->queue_len - pos) * sizeof(uint32_t));
+        memmove(&dm->queue_avoid_until[pos + 1],
+                &dm->queue_avoid_until[pos],
+                (dm->queue_len - pos) * sizeof(int64_t));
     }
     dm->queue[pos] = *hash;
     dm->queue_heights[pos] = height;
+    dm->queue_avoid_peers[pos] = avoid_peer;
+    dm->queue_avoid_until[pos] = avoid_peer ? avoid_until : 0;
     dm->queue_len++;
     qset_insert_raw(dm, hash);
     return true;
+}
+
+static bool dl_queue_item_avoids_peer(const struct download_manager *dm,
+                                      size_t idx,
+                                      uint32_t peer_id,
+                                      int64_t now)
+{
+    if (!dm->queue_avoid_peers || !dm->queue_avoid_until)
+        return false;
+    if (peer_id == 0 || idx >= dm->queue_len)
+        return false;
+    return dm->queue_avoid_peers[idx] == peer_id &&
+           dm->queue_avoid_until[idx] > now;
+}
+
+static void dl_queue_remove_at(struct download_manager *dm, size_t idx)
+{
+    if (idx >= dm->queue_len)
+        return;
+    size_t tail = dm->queue_len - idx - 1;
+    if (tail > 0) {
+        memmove(&dm->queue[idx], &dm->queue[idx + 1],
+                tail * sizeof(dm->queue[0]));
+        memmove(&dm->queue_heights[idx], &dm->queue_heights[idx + 1],
+                tail * sizeof(dm->queue_heights[0]));
+        memmove(&dm->queue_avoid_peers[idx], &dm->queue_avoid_peers[idx + 1],
+                tail * sizeof(dm->queue_avoid_peers[0]));
+        memmove(&dm->queue_avoid_until[idx], &dm->queue_avoid_until[idx + 1],
+                tail * sizeof(dm->queue_avoid_until[0]));
+    }
+    dm->queue_len--;
 }
 
 /* Find or update peer stats. Caller holds mutex. */
@@ -437,14 +522,8 @@ bool dl_mark_requested(struct download_manager *dm,
     if (qset_contains(dm, hash)) {
         for (size_t j = 0; j < dm->queue_len; j++) {
             if (uint256_eq(&dm->queue[j], hash)) {
-                dm->queue_len--;
-                if (j < dm->queue_len) {
-                    memmove(&dm->queue[j], &dm->queue[j + 1],
-                            (dm->queue_len - j) * sizeof(struct uint256));
-                    memmove(&dm->queue_heights[j], &dm->queue_heights[j + 1],
-                            (dm->queue_len - j) * sizeof(int32_t));
-                }
                 qset_remove(dm, hash);
+                dl_queue_remove_at(dm, j);
                 break;
             }
         }
@@ -541,7 +620,8 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now)
         struct dl_peer_stats *ps = dl_find_peer(dm, s->peer_id, false);
         if (ps) ps->blocks_timed_out++;
 
-        dl_queue_push(dm, &s->hash, s->height);
+        dl_queue_push(dm, &s->hash, s->height,
+                      s->peer_id, dl_peer_avoid_deadline(now));
         s->active = false;
         dm->num_active--;
         dm->total_timed_out++;
@@ -571,12 +651,14 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
 {
     zcl_mutex_lock(&dm->cs);
     size_t requeued = 0;
+    int64_t avoid_until =
+        dl_peer_avoid_deadline((int64_t)platform_time_wall_time_t());
 
     for (size_t i = 0; i < dm->num_slots; i++) {
         struct dl_in_flight *s = &dm->slots[i];
         if (!s->active || s->peer_id != peer_id) continue;
 
-        dl_queue_push(dm, &s->hash, s->height);
+        dl_queue_push(dm, &s->hash, s->height, peer_id, avoid_until);
         s->active = false;
         dm->num_active--;
         requeued++;
@@ -665,8 +747,10 @@ size_t dl_queue_blocks(struct download_manager *dm,
     size_t total = dm->queue_len + n_stage;
     struct uint256 *mh = zcl_malloc(total * sizeof(*mh), "dl_merge_h");
     int32_t *mg = zcl_malloc(total * sizeof(*mg), "dl_merge_g");
+    uint32_t *map = zcl_calloc(total, sizeof(*map), "dl_merge_avoid_peers");
+    int64_t *mau = zcl_calloc(total, sizeof(*mau), "dl_merge_avoid_until");
     size_t added = 0;
-    if (mh && mg) {
+    if (mh && mg && map && mau) {
         size_t qi = 0, si = 0, mi = 0;
         while (qi < dm->queue_len || si < n_stage) {
             bool take_stage;
@@ -677,10 +761,14 @@ size_t dl_queue_blocks(struct download_manager *dm,
             if (take_stage) {
                 mh[mi] = stage[si].hash;
                 mg[mi] = stage[si].height;
+                map[mi] = 0;
+                mau[mi] = 0;
                 si++;
             } else {
                 mh[mi] = dm->queue[qi];
                 mg[mi] = dm->queue_heights[qi];
+                map[mi] = dm->queue_avoid_peers[qi];
+                mau[mi] = dm->queue_avoid_until[qi];
                 qi++;
             }
             mi++;
@@ -692,6 +780,8 @@ size_t dl_queue_blocks(struct download_manager *dm,
         }
         memcpy(dm->queue, mh, keep * sizeof(*mh));
         memcpy(dm->queue_heights, mg, keep * sizeof(*mg));
+        memcpy(dm->queue_avoid_peers, map, keep * sizeof(*map));
+        memcpy(dm->queue_avoid_until, mau, keep * sizeof(*mau));
         dm->queue_len = keep;
         /* Count the newcomers that survived the cap: a newcomer is in
          * the queue iff its membership entry is still live. */
@@ -708,12 +798,14 @@ size_t dl_queue_blocks(struct download_manager *dm,
          * rejects must be erased. */
         for (size_t i = 0; i < n_stage; i++) {
             qset_remove(dm, &stage[i].hash);
-            if (dl_queue_push(dm, &stage[i].hash, stage[i].height))
+            if (dl_queue_push(dm, &stage[i].hash, stage[i].height, 0, 0))
                 added++;
         }
     }
     free(mh);
     free(mg);
+    free(map);
+    free(mau);
     free(stage);
 
     zcl_mutex_unlock(&dm->cs);
@@ -736,12 +828,8 @@ void dl_queue_priority(struct download_manager *dm,
     if (qset_contains(dm, hash)) {
         for (size_t j = 0; j < dm->queue_len; j++) {
             if (uint256_eq(&dm->queue[j], hash)) {
-                memmove(&dm->queue[j], &dm->queue[j+1],
-                        (dm->queue_len - j - 1) * sizeof(dm->queue[0]));
-                memmove(&dm->queue_heights[j], &dm->queue_heights[j+1],
-                        (dm->queue_len - j - 1) * sizeof(dm->queue_heights[0]));
-                dm->queue_len--;
                 qset_remove(dm, hash);
+                dl_queue_remove_at(dm, j);
                 break;
             }
         }
@@ -752,7 +840,7 @@ void dl_queue_priority(struct download_manager *dm,
      * a priority block (always tip-adjacent / lowest-height in practice)
      * lands at the front and is fetched first — without breaking the
      * single sorted invariant that makes tail-starvation impossible. */
-    dl_queue_push(dm, hash, height);
+    dl_queue_push(dm, hash, height, 0, 0);
 
     zcl_mutex_unlock(&dm->cs);
 }
@@ -817,28 +905,41 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     else if (active_before >= global_limit)
         assign_result = DL_ASSIGN_GLOBAL_WINDOW_FULL;
 
-    /* Pop from front — the queue is kept height-sorted ascending by
-     * dl_queue_push, so the front is always the LOWEST-height queued
-     * block (the one closest to the tip). Popping front therefore hands
-     * out tip-advancing blocks first, making it structurally impossible
-     * for any caller's enqueue order to tail-starve the connectable
-     * bottom. Batch the memmove after the loop (O(1) amortized per pop). */
-    size_t pop_count = 0;
+    /* Pick the first non-avoided entry in height order. A timed-out hash
+     * should be immediately available to other peers, but the same peer
+     * that just failed it should not be allowed to grab it again while
+     * alternative peers are asking for work. */
     size_t assigned = 0;
-    while (assigned < available && pop_count < dm->queue_len) {
-        struct uint256 hash = dm->queue[pop_count];
-        int32_t height = dm->queue_heights[pop_count];
-        pop_count++;
+    bool avoid_blocked = false;
+    bool attempted_slot = false;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    while (assigned < available && dm->queue_len > 0) {
+        size_t pick = dm->queue_len;
+        for (size_t i = 0; i < dm->queue_len; i++) {
+            if (dl_queue_item_avoids_peer(dm, i, peer_id, now)) {
+                avoid_blocked = true;
+                continue;
+            }
+            pick = i;
+            break;
+        }
+        if (pick == dm->queue_len)
+            break;
+
+        struct uint256 hash = dm->queue[pick];
+        int32_t height = dm->queue_heights[pick];
         qset_remove(dm, &hash);
+        dl_queue_remove_at(dm, pick);
 
         maybe_grow(dm);
+        attempted_slot = true;
         struct dl_in_flight *slot = find_slot(dm, &hash, true);
         if (!slot) continue;
 
         slot->hash = hash;
         slot->height = height;
         slot->peer_id = peer_id;
-        slot->request_time = (int64_t)platform_time_wall_time_t();
+        slot->request_time = now;
         slot->active = true;
         dm->num_active++;
         dm->total_requested++;
@@ -846,21 +947,13 @@ size_t dl_assign_to_peer(struct download_manager *dm,
         out_hashes[assigned++] = hash;
     }
 
-    /* Batch shift: remove all popped entries in one memmove */
-    if (pop_count > 0) {
-        dm->queue_len -= pop_count;
-        if (dm->queue_len > 0) {
-            memmove(&dm->queue[0], &dm->queue[pop_count],
-                    dm->queue_len * sizeof(struct uint256));
-            memmove(&dm->queue_heights[0], &dm->queue_heights[pop_count],
-                    dm->queue_len * sizeof(int32_t));
-        }
-    }
-
     if (assigned > 0) {
         struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
         if (ps) ps->blocks_requested += (uint32_t)assigned;
         assign_result = DL_ASSIGN_ASSIGNED;
+    } else if (!attempted_slot && avoid_blocked &&
+               assign_result == DL_ASSIGN_ASSIGNED) {
+        assign_result = DL_ASSIGN_PEER_AVOID_COOLDOWN;
     } else if (assign_result == DL_ASSIGN_ASSIGNED) {
         assign_result = DL_ASSIGN_NO_SLOT;
     }
@@ -1011,6 +1104,15 @@ void dl_get_diagnostics(struct download_manager *dm,
     out->last_assign_peer_limit = dm->last_assign_peer_limit;
     out->last_assign_global_limit = dm->last_assign_global_limit;
     out->last_assign_result = dm->last_assign_result;
+    for (size_t i = 0; i < dm->queue_len; i++) {
+        if (dm->queue_avoid_peers[i] == 0 ||
+            dm->queue_avoid_until[i] <= now)
+            continue;
+        int64_t remaining = dm->queue_avoid_until[i] - now;
+        out->queue_peer_avoid_count++;
+        if (remaining > out->queue_peer_avoid_max_seconds)
+            out->queue_peer_avoid_max_seconds = remaining;
+    }
     for (size_t i = 0; i < dm->num_slots; i++) {
         struct dl_in_flight *s = &dm->slots[i];
         if (!s->active)
