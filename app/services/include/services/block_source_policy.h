@@ -166,6 +166,7 @@ bool block_source_policy_local_header_refill_needed(
 void block_source_policy_note_projection_deferred(int height,
                                                   const char *reason);
 void block_source_policy_get_status(struct cac_decision *out);
+bool block_source_policy_get_cached_status(struct cac_decision *out);
 bool block_source_policy_selected_non_legacy_source(void);
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 bool block_source_policy_dump_state_json(struct json_value *out,

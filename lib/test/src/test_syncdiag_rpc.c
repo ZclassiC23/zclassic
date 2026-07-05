@@ -1836,7 +1836,7 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
-    printf("api: native RPC agent reports projection lag telemetry... ");
+    printf("api: native RPC agent keeps projection detail on fast cache miss... ");
     {
         struct connman cm;
         struct node_signals sigs;
@@ -1918,37 +1918,37 @@ int test_syncdiag_rpc(void)
         const struct json_value *health = json_get(&result, "health");
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "status")),
-                          "degraded") == 0;
+                          "healthy") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "primary_blocker")),
-                          "projection_lag") == 0;
+                          "none") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
-                          "zclassic23 dumpstate chain_advance_coordinator")
-                          == 0;
+                          "none") == 0;
         ok = ok && !json_get_bool(json_get(&result, "operator_needed"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "provable_tip_published"));
         ok = ok && json_get_int(json_get(&result, "served_height")) ==
             served_height;
         ok = ok && json_get_int(json_get(&result, "indexed_height")) ==
-            projection_height;
-        ok = ok && json_get_int(json_get(&result, "index_gap")) ==
-            projection_lag;
+            served_height;
+        ok = ok && json_get_int(json_get(&result, "index_gap")) == 0;
         const struct json_value *readiness = json_get(&result, "readiness");
         ok = ok && readiness && readiness->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(readiness, "schema")),
                           "zcl.agent_readiness.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(readiness, "status")),
-                          "serving_projection_deferred") == 0;
+                          "ready") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "readiness_status")),
-                          "serving_projection_deferred") == 0;
+                          "ready") == 0;
         ok = ok && json_get_bool(json_get(readiness,
                                           "chain_serving_ready"));
         ok = ok && json_get_bool(json_get(&result,
                                           "chain_serving_ready"));
-        ok = ok && !json_get_bool(json_get(readiness,
-                                           "index_projection_ready"));
-        ok = ok && !json_get_bool(json_get(&result,
-                                           "index_projection_ready"));
+        ok = ok && json_get_bool(json_get(readiness,
+                                          "index_projection_ready"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "index_projection_ready"));
         ok = ok && json_get_bool(json_get(readiness,
                                           "agent_work_ready"));
         ok = ok && json_get_bool(json_get(&result,
@@ -1958,35 +1958,32 @@ int test_syncdiag_rpc(void)
         ok = ok && !json_get_bool(json_get(&result,
                                            "operator_action_required"));
         ok = ok && json_get_int(json_get(readiness, "tip_gap_blocks")) == 0;
-        ok = ok && json_get_int(json_get(readiness, "index_gap_blocks")) ==
-            projection_lag;
+        ok = ok && json_get_int(json_get(readiness, "index_gap_blocks")) == 0;
         ok = ok && strcmp(json_get_str(json_get(readiness,
                                                 "next_action")),
-                          "continue_chain_ops_inspect_indexer_if_needed")
-                          == 0;
+                          "none") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "readiness_next_action")),
-                          "continue_chain_ops_inspect_indexer_if_needed")
-                          == 0;
+                          "none") == 0;
         ok = ok && indexer && indexer->type == JSON_OBJ;
+        ok = ok && !json_get_bool(json_get(indexer,
+                                           "block_source_status_cached"));
         ok = ok && json_get_int(json_get(indexer, "height")) ==
-            projection_height;
+            served_height;
         ok = ok && json_get_int(json_get(indexer, "projection_height")) ==
-            projection_height;
-        ok = ok && json_get_int(json_get(indexer, "lag")) ==
-            projection_lag;
-        ok = ok && json_get_int(json_get(indexer, "projection_lag")) ==
-            projection_lag;
-        ok = ok && json_get_bool(json_get(indexer, "projection_deferred"));
+            -1;
+        ok = ok && json_get_int(json_get(indexer, "lag")) == -1;
+        ok = ok && json_get_int(json_get(indexer, "projection_lag")) == -1;
+        ok = ok && !json_get_bool(json_get(indexer, "projection_deferred"));
         ok = ok && strcmp(json_get_str(json_get(indexer,
                                                 "projection_state")),
-                          "deferred") == 0;
+                          "cached_status_unavailable") == 0;
         ok = ok && json_get(indexer, "catchup_active") != NULL;
         ok = ok && json_get(indexer, "catchup_height") != NULL;
         ok = ok && health && health->type == JSON_OBJ;
         ok = ok && strstr(json_get_str(json_get(health,
                                                 "warning_reasons")),
-                          "projection_lag") != NULL;
+                          "block_source_status_busy") != NULL;
 
         json_free(&params);
         json_free(&result);

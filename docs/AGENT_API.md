@@ -73,6 +73,10 @@ The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
 the running binary `build_commit`, height/gap, peer summary, active blockers,
 next action, and recommended drill-down tools. The compact packet also includes
+`provable_tip_published` and `indexer.block_source_status_cached` so agents can
+tell when the first-call fast path intentionally avoided blocking projection
+reads during startup or catch-up; use `zcl_status`, `zcl_state`, or
+`getmirrorstatus` for heavier detail instead of making `agent` wait on SQLite.
 `runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
 commit against the deploy-installed expected commit
 (`ZCL_AGENT_EXPECT_BUILD_COMMIT`, written by `make deploy` / `make deploy-dev`).

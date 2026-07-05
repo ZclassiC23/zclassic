@@ -2851,8 +2851,11 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "catchup_stalled") != NULL);
         ASSERT(strstr(agent_summary_buf, "download_dispatch_idle")
                != NULL);
+        ASSERT(strstr(agent_summary_buf,
+                      "block_source_policy_get_cached_status") != NULL);
         ASSERT(strstr(agent_summary_buf, "block_source_policy_get_status")
-               != NULL);
+               == NULL);
+        ASSERT(strstr(agent_summary_buf, "api_served_tip_height()") == NULL);
         ASSERT(strstr(agent_summary_buf, "node_db_sync_get_job_status")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "\"indexer\"") != NULL);

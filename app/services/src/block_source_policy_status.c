@@ -3,11 +3,12 @@
 /* This seam owns no fallible service surface: pure JSON serializers
  * (bsp_source_to_json / bsp_decision_to_json), a name lookup
  * (bsp_source_class_name), a void status read (block_source_policy_get_status),
- * and block_source_policy_dump_state_json — whose bool return is the
- * g_dumpers[] dispatch-table convention (a serialize-into-out getter, not an
- * error channel; see CLAUDE.md "Adding state introspection"). No node.db
- * writes, no failure path to carry. The fallible persist/restore/record seam
- * lives in the sibling files and returns struct zcl_result. */
+ * a nonblocking cached status read, and block_source_policy_dump_state_json —
+ * whose bool return is the g_dumpers[] dispatch-table convention (a
+ * serialize-into-out getter, not an error channel; see CLAUDE.md "Adding state
+ * introspection"). No node.db writes, no failure path to carry. The fallible
+ * persist/restore/record seam lives in the sibling files and returns struct
+ * zcl_result. */
 
 /* Status / introspection seam for the block-source policy stateful runtime.
  * The status read (block_source_policy_get_status), the per-source and
@@ -241,6 +242,33 @@ void block_source_policy_get_status(struct cac_decision *out)
     bsp_build_runtime_input(&in);
     block_source_policy_plan(&in, out);
     bsp_enrich_projection_deferral(out);
+}
+
+bool block_source_policy_get_cached_status(struct cac_decision *out)
+{
+    if (!out)
+        return false; // raw-return-ok:null-optional-cache-read
+    memset(out, 0, sizeof(*out));
+
+    bsp_lock_init_once();
+    if (!zcl_mutex_trylock(&g_bsp.lock))
+        return false; // raw-return-ok:busy-optional-cache-read
+
+    bool ok = g_bsp.has_last;
+    if (ok) {
+        *out = g_bsp.last;
+        out->projection_deferred_total = g_bsp.projection_deferred_total;
+        out->last_projection_deferred_height =
+            g_bsp.last_projection_deferred_height;
+        out->last_projection_deferred_time =
+            g_bsp.last_projection_deferred_time;
+        bsp_copy_text(out->last_projection_deferred_reason,
+                      sizeof(out->last_projection_deferred_reason),
+                      g_bsp.last_projection_deferred_reason);
+    }
+
+    zcl_mutex_unlock(&g_bsp.lock);
+    return ok;
 }
 
 bool block_source_policy_selected_non_legacy_source(void)

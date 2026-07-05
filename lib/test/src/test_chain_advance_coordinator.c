@@ -709,6 +709,7 @@ static int test_cac_projection_deferral_accounting(void)
     {
         struct json_value root;
         struct cac_decision status;
+        struct cac_decision cached;
         const struct json_value *total;
         const struct json_value *height;
         const struct json_value *when;
@@ -724,6 +725,18 @@ static int test_cac_projection_deferral_accounting(void)
         ASSERT(status.last_projection_deferred_height == 42);
         ASSERT(status.last_projection_deferred_time > 0);
         ASSERT_STR_EQ(status.last_projection_deferred_reason,
+                      "consensus_path");
+        ASSERT(!block_source_policy_get_cached_status(&cached));
+
+        memset(&status, 0, sizeof(status));
+        ASSERT(!block_source_policy_peer_floor_recovery_needed(
+            3, 2, 100, 100, &status));
+        ASSERT(block_source_policy_get_cached_status(&cached));
+        ASSERT(cached.result == status.result);
+        ASSERT(cached.target_height == status.target_height);
+        ASSERT(cached.projection_deferred_total == 1);
+        ASSERT(cached.last_projection_deferred_height == 42);
+        ASSERT_STR_EQ(cached.last_projection_deferred_reason,
                       "consensus_path");
 
         json_init(&root);
