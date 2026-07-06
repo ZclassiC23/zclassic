@@ -227,10 +227,10 @@ selftest() {
 
 main() {
     case "$ACTION" in
-        canonical-deploy|canonical-restart|deploy|restart) ;;
+        canonical-deploy|canonical-restart|deploy|restart|deploy-dev|dev-deploy|restart-dev|dev-restart) ;;
         -h|--help)
             cat <<'USAGE'
-usage: tools/deploy_guard.sh [canonical-deploy|canonical-restart|deploy|restart]
+usage: tools/deploy_guard.sh [canonical-deploy|canonical-restart|deploy|restart|deploy-dev|restart-dev]
 
 Blocks accidental restarts of an active canonical zclassic23 lane unless
 ZCL_DEPLOY_ALLOW_CANONICAL=1 is set for an intentional restart window.

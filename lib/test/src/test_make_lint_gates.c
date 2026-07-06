@@ -2348,6 +2348,8 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(guard, "-operator-lane") != NULL);
         ASSERT(strstr(guard, "native agentdeployguard blocks") != NULL);
         ASSERT(strstr(guard, "allowed") != NULL);
+        ASSERT(strstr(guard, "deploy-dev") != NULL);
+        ASSERT(strstr(guard, "restart-dev") != NULL);
         ASSERT(run_gate_script_with_env("tools/deploy_guard.sh",
                                         "ZCL_DEPLOY_GUARD_SELFTEST",
                                         "1") == 0);
@@ -3348,8 +3350,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "no_jq_required=true") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentdeployguard") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard deploy")
+                      "zclassic23 agentdeployguard deploy-dev")
                != NULL);
+        ASSERT(strstr(agent_doc_buf, "target_lane_name=\"dev\"") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "zclassic23 agentdeployguard -operator-lane=dev deploy")
                != NULL);

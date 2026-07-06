@@ -372,9 +372,12 @@ lane-safety fields (`operator_lane_name`, `automation_restart_ok`,
 `preferred_deploy_target`, and `safe_default_action`) so a refusal can be
 handled without scraping nested JSON. The native no-RPC form is intentionally
 safe by default: `zclassic23 agentdeployguard deploy` refuses until a lane is
-declared. Use `ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard deploy` or
-`zclassic23 agentdeployguard -operator-lane=dev deploy` when checking the
-restartable development lane from automation.
+declared. Use `zclassic23 agentdeployguard deploy-dev` when checking the
+documented dev-lane deploy path from automation; the response includes
+`target_lane_name="dev"` and evaluates the dev lane contract even when the
+current inspected service is canonical. `ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard deploy`
+and `zclassic23 agentdeployguard -operator-lane=dev deploy` remain supported
+for checking a process already declared as dev.
 
 `make lane-health` is the read-only redundancy check for the canonical, soak,
 and dev lanes. `make lane-recover LANE=dev` or `LANE=soak` plans a bounded

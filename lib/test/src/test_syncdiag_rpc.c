@@ -3374,6 +3374,49 @@ int test_syncdiag_rpc(void)
                           "canonical-restart") == 0;
         ok = ok && !json_get_bool(json_get(&guard_object, "allowed"));
 
+        struct json_value dev_guard_params;
+        json_init(&dev_guard_params);
+        json_set_array(&dev_guard_params);
+        json_init(&action);
+        json_set_str(&action, "deploy-dev");
+        json_push_back(&dev_guard_params, &action);
+        json_free(&action);
+        struct json_value dev_guard;
+        json_init(&dev_guard);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &dev_guard_params, &dev_guard);
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard, "action")),
+                          "deploy-dev") == 0;
+        ok = ok && json_get_bool(json_get(&dev_guard, "allowed"));
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard, "decision")),
+                          "allow") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard, "reason")),
+                          "deployment_safety_allows_action") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard, "action_scope")),
+                          "explicit_target_lane") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard,
+                                                "current_lane_name")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard,
+                                                "operator_lane_name")),
+                          "dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard, "lane")),
+                          "dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard,
+                                                "target_lane_name")),
+                          "dev") == 0;
+        const struct json_value *dev_target =
+            json_get(&dev_guard, "target_lane");
+        ok = ok && dev_target && dev_target->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(dev_target, "development"));
+        ok = ok && json_get_bool(json_get(dev_target,
+                                          "automation_deploy_ok"));
+        ok = ok && !json_get_bool(json_get(dev_target,
+                                           "requires_operator_confirmation"));
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard,
+                                                "safe_default_action")),
+                          "deploy_dev_lane") == 0;
+
         json_free(&params);
         json_free(&contracts);
         json_free(&ops);
@@ -3388,6 +3431,8 @@ int test_syncdiag_rpc(void)
         json_free(&guard);
         json_free(&guard_object_params);
         json_free(&guard_object);
+        json_free(&dev_guard_params);
+        json_free(&dev_guard);
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         if (old_quality_env_set)
             setenv("ZCL_QUALITY_STATE_DIR", old_quality_env_buf, 1);

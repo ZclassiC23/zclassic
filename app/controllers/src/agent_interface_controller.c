@@ -96,6 +96,10 @@ static bool agent_deploy_action_known(const char *action)
     return action &&
            (strcmp(action, "canonical-deploy") == 0 ||
             strcmp(action, "canonical-restart") == 0 ||
+            strcmp(action, "deploy-dev") == 0 ||
+            strcmp(action, "dev-deploy") == 0 ||
+            strcmp(action, "restart-dev") == 0 ||
+            strcmp(action, "dev-restart") == 0 ||
             strcmp(action, "deploy") == 0 ||
             strcmp(action, "restart") == 0);
 }
@@ -104,7 +108,48 @@ static bool agent_deploy_action_is_restart(const char *action)
 {
     return action &&
            (strcmp(action, "canonical-restart") == 0 ||
+            strcmp(action, "restart-dev") == 0 ||
+            strcmp(action, "dev-restart") == 0 ||
             strcmp(action, "restart") == 0);
+}
+
+static const char *agent_deploy_action_target_lane(const char *action)
+{
+    if (!action)
+        return "";
+    if (strcmp(action, "deploy-dev") == 0 ||
+        strcmp(action, "dev-deploy") == 0 ||
+        strcmp(action, "restart-dev") == 0 ||
+        strcmp(action, "dev-restart") == 0)
+        return "dev";
+    return "";
+}
+
+static void agent_deploy_push_target_lane(struct json_value *out,
+                                          const char *action,
+                                          const char *current_lane)
+{
+    const char *target = agent_deploy_action_target_lane(action);
+    struct json_value lane;
+    json_init(&lane);
+
+    if (target[0]) {
+        agent_fill_operator_lane_contract_json(&lane, target, "full",
+                                               "~/.zclassic-c23-dev",
+                                               18252, 8053, 0, 18034);
+    } else {
+        const struct json_value *current = json_get(out, "operator_lane");
+        if (current && current->type == JSON_OBJ) {
+            json_copy(&lane, current);
+        } else {
+            agent_fill_operator_lane_contract_json(
+                &lane, current_lane ? current_lane : "unknown",
+                "unknown", "", 0, 0, 0, 0);
+        }
+    }
+
+    json_push_kv(out, "target_lane", &lane);
+    json_free(&lane);
 }
 
 bool rpc_agent_interface(const struct json_value *params, bool help,
@@ -265,7 +310,8 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
         "agentdeployguard ( action )\n"
         "\nReturn a C-native allow/refuse decision for deploy/restart\n"
         "automation based on zcl.operator_deployment_safety.v1.\n"
-        "\nActions: canonical-deploy, canonical-restart, deploy, restart.\n"
+        "\nActions: canonical-deploy, canonical-restart, deploy, restart,\n"
+        "         deploy-dev, restart-dev.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.agent_deploy_guard.v1\", "
         "\"allowed\":false, \"exit_code\":1, ... }\n");
@@ -278,11 +324,15 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "action", action);
     agent_push_operator_lane_json(result, "operator_lane");
-    agent_push_operator_lane_fields_json(result);
 
     const struct json_value *lane = json_get(result, "operator_lane");
+    agent_deploy_push_target_lane(result, action,
+                                  lane && json_get(lane, "lane")
+                                      ? json_get_str(json_get(lane, "lane"))
+                                      : "unknown");
+    const struct json_value *target_lane = json_get(result, "target_lane");
     const struct json_value *safety =
-        lane ? json_get(lane, "deployment_safety") : NULL;
+        target_lane ? json_get(target_lane, "deployment_safety") : NULL;
     const bool deploy_ok = safety &&
         json_get_bool(json_get(safety, "automation_deploy_ok"));
     const bool restart_ok = safety &&
@@ -291,17 +341,37 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
         json_get_bool(json_get(safety, "requires_operator_confirmation"));
     const char *lane_name = lane && json_get(lane, "lane")
         ? json_get_str(json_get(lane, "lane")) : "unknown";
+    const char *target_lane_name = target_lane && json_get(target_lane, "lane")
+        ? json_get_str(json_get(target_lane, "lane")) : lane_name;
     const bool known = agent_deploy_action_known(action);
     const bool wants_restart = agent_deploy_action_is_restart(action);
     const bool allowed = known && !requires &&
         (wants_restart ? restart_ok : deploy_ok);
 
+    json_push_kv_str(result, "current_lane_name", lane_name);
+    json_push_kv_str(result, "operator_lane_name", target_lane_name);
+    json_push_kv_bool(result, "automation_restart_ok", restart_ok);
+    json_push_kv_bool(result, "automation_deploy_ok", deploy_ok);
+    json_push_kv_bool(result, "requires_operator_confirmation", requires);
+    json_push_kv_str(result, "preferred_deploy_target",
+                     safety && json_get(safety, "preferred_deploy_target")
+                         ? json_get_str(json_get(safety,
+                                                "preferred_deploy_target"))
+                         : "");
+    json_push_kv_str(result, "safe_default_action",
+                     safety && json_get(safety, "safe_default_action")
+                         ? json_get_str(json_get(safety,
+                                                "safe_default_action")) : "");
     json_push_kv_bool(result, "allowed", allowed);
     json_push_kv_int(result, "exit_code", allowed ? 0 : 1);
     json_push_kv_str(result, "decision", allowed ? "allow" : "refuse");
     json_push_kv_str(result, "required_contract",
                      "zcl.operator_deployment_safety.v1");
     json_push_kv_str(result, "source", "native_c_agent_interface_controller");
+    json_push_kv_str(result, "action_scope",
+                     agent_deploy_action_target_lane(action)[0]
+                         ? "explicit_target_lane"
+                         : "current_runtime_lane");
     if (!known) {
         json_push_kv_str(result, "reason", "unknown_action");
     } else if (requires) {
@@ -314,13 +384,10 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
     } else {
         json_push_kv_str(result, "reason", "deployment_safety_allows_action");
     }
-    json_push_kv_str(result, "lane", lane_name);
+    json_push_kv_str(result, "lane", target_lane_name);
+    json_push_kv_str(result, "target_lane_name", target_lane_name);
     json_push_kv_str(result, "guard_env",
                      safety && json_get(safety, "guard_env")
                          ? json_get_str(json_get(safety, "guard_env")) : "");
-    json_push_kv_str(result, "safe_default_action",
-                     safety && json_get(safety, "safe_default_action")
-                         ? json_get_str(json_get(safety,
-                                                "safe_default_action")) : "");
     return true;
 }
