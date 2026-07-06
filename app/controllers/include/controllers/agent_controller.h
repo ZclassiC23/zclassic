@@ -64,6 +64,10 @@ void agent_fill_operator_lane_topology_json(
 size_t agent_contract_count(void);
 const struct agent_contract *agent_contract_at(size_t index);
 const struct agent_contract *agent_contract_lookup(const char *method);
+bool agent_push_contract_json(struct json_value *arr,
+                              const struct agent_contract *contract);
+void agent_push_contracts_json(struct json_value *arr);
+void agent_push_contract_transport_summary_json(struct json_value *arr);
 bool agent_push_contract_command_json(struct json_value *arr,
                                       const char *name,
                                       const char *method,

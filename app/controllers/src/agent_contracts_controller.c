@@ -78,13 +78,19 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_contracts.v1\", "
         "\"schemas\":[...] }\n");
 
-    struct json_value schemas, transports, rules;
+    struct json_value contract_list, schemas, transports, rules;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_contracts.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "canonical_interface",
                      "native zclassic23 agent* RPCs and MCP zcl_agent_* tools");
+
+    json_init(&contract_list);
+    json_set_array(&contract_list);
+    agent_push_contracts_json(&contract_list);
+    json_push_kv(result, "contracts", &contract_list);
+    json_free(&contract_list);
 
     json_init(&schemas);
     json_set_array(&schemas);
@@ -145,13 +151,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
 
     json_init(&transports);
     json_set_array(&transports);
-    contracts_push_str(&transports,
-        "native: zclassic23 agent|agentops|agentdiagnose|agentinterface|agentlanes|agentliveness|agentmap|agentimpact|agentcontracts|agentbuild|statecatalog|timeline|agentdeployguard|getmirrorstatus");
-    contracts_push_str(&transports,
-        "mcp: zcl_agent, zcl_agent_ops, zcl_agent_diagnose, zcl_agent_interface, zcl_agent_lanes, zcl_agent_liveness, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_state_catalog, zcl_timeline, zcl_agent_deploy_guard, zcl_mirror_status");
-    contracts_push_str(&transports,
-        "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
-    contracts_push_str(&transports, "deprecated: tools/z compatibility shim only");
+    agent_push_contract_transport_summary_json(&transports);
     json_push_kv(result, "transports", &transports);
     json_free(&transports);
 

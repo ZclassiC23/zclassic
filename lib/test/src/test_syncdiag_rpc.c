@@ -2584,11 +2584,33 @@ int test_syncdiag_rpc(void)
         bool ok = rpc_table_execute(&tbl, "agentcontracts",
                                     &params, &contracts);
         const struct json_value *schemas = json_get(&contracts, "schemas");
+        const struct json_value *contract_list =
+            json_get(&contracts, "contracts");
         const struct json_value *transports =
             json_get(&contracts, "transports");
+        const struct json_value *contract_agentops =
+            find_object_with_str(contract_list, "method", "agentops");
+        const struct json_value *contract_diagnose =
+            find_object_with_str(contract_list, "method", "agentdiagnose");
         ok = ok && contracts.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
+        ok = ok && contract_list && contract_list->type == JSON_ARR;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops, "schema")),
+                   "zcl.agent_ops.v1") == 0;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops, "native")),
+                   "zclassic23 agentops") == 0;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops, "mcp")),
+                   "zcl_agent_ops") == 0;
+        ok = ok && contract_diagnose &&
+            strcmp(json_get_str(json_get(contract_diagnose, "schema")),
+                   "zcl.agent_diagnose.v1") == 0;
+        ok = ok && contract_diagnose &&
+            strcmp(json_get_str(json_get(contract_diagnose, "mcp")),
+                   "zcl_agent_diagnose") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
@@ -2635,6 +2657,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(schemas, "schema",
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
+        ok = ok && json_array_has_substr(transports,
+                                         "zclassic23 agentops");
         ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
         ok = ok && json_array_has_substr(transports, "zcl_agent_diagnose");
         ok = ok && json_array_has_substr(transports, "zcl_state_catalog");
