@@ -315,11 +315,17 @@ stays server-side.
 For peer churn, reconnect, or duplicate-entry reports, start with
 `zclassic23 dumpstate peer_lifecycle incidents` /
 `zcl_state(subsystem="peer_lifecycle", key="incidents")`. It returns bounded
-`zcl.peer_incidents.v1` JSON with `top_incidents`, `duplicate_host_groups`,
-reconnect counts, last reasons, direction, handshake age, advertised height,
-service summaries, bootstrap readiness/usefulness, current open/handshaked
-connection counts, and separate duplicate-host counts for historical entries
-versus live open/handshaked duplicates. Use the full
+`zcl.peer_incidents.v1` JSON with `primary_host_issue`, `top_host_incidents`,
+`top_incidents`, `duplicate_host_groups`, reconnect counts, last reasons,
+direction, handshake age, advertised height, service summaries, bootstrap
+readiness/usefulness, current open/handshaked connection counts, and separate
+duplicate-host counts for historical entries versus live open/handshaked
+duplicates. `primary_host_issue` and `top_host_incidents` are the no-jq path
+for reconnect storms where many peer rows share one host; they collapse the
+storm to one host-level `issue_class`, `incident_score`, and `next_action`.
+`host_incident_count` is the total scored host count; `host_count_returned` is
+the bounded number included in `top_host_incidents`.
+Use the full
 `dumpstate peer_lifecycle` only after the compact incident view identifies the
 host or peer worth drilling into.
 

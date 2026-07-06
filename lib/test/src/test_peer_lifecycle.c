@@ -577,12 +577,27 @@ static int test_peer_lifecycle_incident_view(void)
                == 2);
         ASSERT(json_get_int(json_get(&incidents,
                                      "bootstrap_useful_count")) == 2);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "host_incident_limit")) == 8);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "host_incident_count")) == 1);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "host_count_returned")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "safe_next_action")),
+                      "inspect primary_host_issue and top_host_incidents")
+               == 0);
 
         const struct json_value *groups =
             json_get(&incidents, "duplicate_host_groups");
         const struct json_value *group =
             find_lifecycle_obj_str(groups, "host", "40.160.53.56");
         ASSERT(group && group->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(group, "incident_score")) > 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "issue_class")),
+                      "reconnect_timeout_pressure") == 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "next_action")),
+                      "inspect_peer_timeline_for_reconnect_timeouts") == 0);
         ASSERT(json_get_int(json_get(group, "entries")) == 2);
         ASSERT(json_get_int(json_get(group, "inbound_entries")) == 2);
         ASSERT(json_get_int(json_get(group, "open_connections")) == 1);
@@ -599,6 +614,25 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(json_get_int(json_get(group,
                                      "pre_handshake_disconnects")) == 1);
         ASSERT(json_get_bool(json_get(group, "bootstrap_useful")));
+
+        const struct json_value *primary =
+            json_get(&incidents, "primary_host_issue");
+        ASSERT(primary && primary->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(primary, "status")),
+                      "attention") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "host")),
+                      "40.160.53.56") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "issue_class")),
+                      "reconnect_timeout_pressure") == 0);
+        ASSERT(json_get_int(json_get(primary, "timeout")) == 1);
+
+        const struct json_value *host_incidents =
+            json_get(&incidents, "top_host_incidents");
+        const struct json_value *host_pick =
+            find_lifecycle_obj_str(host_incidents, "host", "40.160.53.56");
+        ASSERT(host_pick && host_pick->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(host_pick, "issue_class")),
+                      "reconnect_timeout_pressure") == 0);
 
         const struct json_value *top =
             json_get(&incidents, "top_incidents");
@@ -707,12 +741,25 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                                      "bootstrap_useful_count")) == 2);
         ASSERT(json_get_int(json_get(&incidents,
                                      "fast_sync_useful_count")) == 1);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "host_incident_count")) == 1);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "host_count_returned")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "safe_next_action")),
+                      "inspect primary_host_issue and top_host_incidents")
+               == 0);
 
         const struct json_value *groups =
             json_get(&incidents, "duplicate_host_groups");
         const struct json_value *group =
             find_lifecycle_obj_str(groups, "host", "203.0.113.42");
         ASSERT(group && group->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(group, "incident_score")) > 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "issue_class")),
+                      "duplicate_handshaked_connections") == 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "next_action")),
+                      "inspect_duplicate_current_connections_for_host") == 0);
         ASSERT(json_get_int(json_get(group, "entries")) == 2);
         ASSERT(json_get_int(json_get(group, "open_connections")) == 2);
         ASSERT(json_get_int(json_get(group,
@@ -731,6 +778,24 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                       "NODE_ZCL23") != NULL);
         ASSERT(json_get_int(json_get(group, "max_advertised_height"))
                == 3172092);
+
+        const struct json_value *primary =
+            json_get(&incidents, "primary_host_issue");
+        ASSERT(primary && primary->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(primary, "host")),
+                      "203.0.113.42") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "issue_class")),
+                      "duplicate_handshaked_connections") == 0);
+        ASSERT(json_get_bool(json_get(primary,
+                                      "duplicate_handshaked_connections")));
+
+        const struct json_value *host_incidents =
+            json_get(&incidents, "top_host_incidents");
+        const struct json_value *host_pick =
+            find_lifecycle_obj_str(host_incidents, "host", "203.0.113.42");
+        ASSERT(host_pick && host_pick->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(host_pick,
+                                     "fast_sync_useful_connections")) == 1);
 
         const struct json_value *top =
             json_get(&incidents, "top_incidents");
