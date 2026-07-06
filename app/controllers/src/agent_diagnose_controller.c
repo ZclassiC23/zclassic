@@ -317,12 +317,18 @@ static void diagnose_push_primary_host_issue(struct json_value *out,
 
 static const char *diagnose_peer_detail(int64_t peer_count,
                                         int64_t peer_incidents,
-                                        int64_t material_signals)
+                                        int64_t material_signals,
+                                        bool bootstrap_blocker,
+                                        bool fast_sync_blocker)
 {
     if (peer_count <= 0)
         return "no connected peers";
+    if (bootstrap_blocker)
+        return "peer lifecycle has no currently bootstrap-useful peer";
     if (material_signals > 0)
         return "peer lifecycle has material reconnect, duplicate, timeout, or reject incidents";
+    if (fast_sync_blocker)
+        return "peer lifecycle has bootstrap peers but no zclassic23 fast-sync peer";
     if (peer_incidents > 0)
         return "minor peer lifecycle incidents only; no duplicate or reconnect storm";
     return "peer lifecycle has no scored incidents";
@@ -330,12 +336,18 @@ static const char *diagnose_peer_detail(int64_t peer_count,
 
 static const char *diagnose_peer_next_action(int64_t peer_count,
                                              int64_t peer_incidents,
-                                             int64_t material_signals)
+                                             int64_t material_signals,
+                                             bool bootstrap_blocker,
+                                             bool fast_sync_blocker)
 {
     if (peer_count <= 0)
         return "inspect peer lifecycle and bootstrap status";
+    if (bootstrap_blocker)
+        return "inspect_peer_lifecycle_bootstrap_readiness";
     if (material_signals > 0)
         return "dumpstate peer_lifecycle incidents";
+    if (fast_sync_blocker)
+        return "prefer_zclassic23_fast_sync_peer";
     if (peer_incidents > 0)
         return "monitor peer lifecycle incidents";
     return "monitor getnetworkinfo peer_lifecycle";
@@ -365,6 +377,7 @@ static const char *diagnose_next_action(bool operator_needed,
                                         bool chain_attention,
                                         int64_t peer_count,
                                         bool peer_attention,
+                                        bool peer_bootstrap_blocker,
                                         bool mirror_attention,
                                         const char *peer_host_action)
 {
@@ -374,6 +387,8 @@ static const char *diagnose_next_action(bool operator_needed,
         return "inspect_agent_healthcheck_and_chain_timeline";
     if (peer_count <= 0)
         return "inspect_peer_lifecycle_incidents_and_bootstrapstatus";
+    if (peer_attention && peer_bootstrap_blocker)
+        return "inspect_peer_lifecycle_bootstrap_readiness";
     if (peer_attention && diagnose_peer_host_action_is_specific(
                               peer_host_action))
         return peer_host_action;
@@ -508,6 +523,14 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         diagnose_peer_host_str(primary_host, "bootstrap_readiness");
     const char *primary_host_fast_sync_readiness =
         diagnose_peer_host_str(primary_host, "fast_sync_readiness");
+    const char *peer_bootstrap_readiness =
+        json_get_str(json_get(&peers, "bootstrap_readiness"));
+    const char *peer_fast_sync_readiness =
+        json_get_str(json_get(&peers, "fast_sync_readiness"));
+    bool peer_bootstrap_blocker =
+        json_get_bool(json_get(&peers, "bootstrap_blocked"));
+    bool peer_fast_sync_blocker =
+        json_get_bool(json_get(&peers, "fast_sync_blocked"));
     int64_t material_peer_incidents =
         diagnose_peer_material_incidents(&peers);
     int64_t material_peer_groups =
@@ -516,11 +539,12 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         peer_incidents > material_peer_incidents
             ? peer_incidents - material_peer_incidents : 0;
     bool peer_attention =
-        peer_count <= 0 || material_peer_incidents > 0 ||
+        peer_count <= 0 || peer_bootstrap_blocker ||
+        material_peer_incidents > 0 ||
         material_peer_groups > 0 || duplicate_groups > 0;
     const char *peer_severity =
         peer_attention ? "attention" :
-        (peer_incidents > 0 ? "info" : "ok");
+        (peer_fast_sync_blocker || peer_incidents > 0 ? "info" : "ok");
     int64_t material_peer_signals =
         material_peer_incidents + material_peer_groups;
     const struct json_value *mirror_contract =
@@ -571,6 +595,14 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                      primary_host_bootstrap_readiness);
     json_push_kv_str(result, "peer_primary_host_fast_sync_readiness",
                      primary_host_fast_sync_readiness);
+    json_push_kv_str(result, "peer_bootstrap_readiness",
+                     peer_bootstrap_readiness);
+    json_push_kv_str(result, "peer_fast_sync_readiness",
+                     peer_fast_sync_readiness);
+    json_push_kv_bool(result, "peer_bootstrap_blocker",
+                      peer_bootstrap_blocker);
+    json_push_kv_bool(result, "peer_fast_sync_blocker",
+                      peer_fast_sync_blocker);
     json_push_kv_int(result, "peer_primary_host_incident_score",
                      diagnose_peer_host_int(primary_host, "incident_score"));
     json_push_kv_str(result, "peer_incident_severity", peer_severity);
@@ -583,7 +615,9 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                      informational_peer_incidents);
     json_push_kv_str(result, "peer_incident_summary",
                      diagnose_peer_detail(peer_count, peer_incidents,
-                                          material_peer_signals));
+                                          material_peer_signals,
+                                          peer_bootstrap_blocker,
+                                          peer_fast_sync_blocker));
     json_push_kv_str(result, "mirror_status", mirror_status);
     json_push_kv_str(result, "mirror_severity", mirror_severity);
     json_push_kv_bool(result, "mirror_advisory_only", mirror_advisory_only);
@@ -594,7 +628,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     bool chain_attention = !chain_serving_ready;
     const char *next_action =
         diagnose_next_action(operator_needed, agent_healthy, chain_attention,
-                             peer_count, peer_attention, mirror_attention,
+                             peer_count, peer_attention,
+                             peer_bootstrap_blocker, mirror_attention,
                              primary_host_next_action);
     bool attention = operator_needed || !agent_healthy || chain_attention ||
                      peer_attention || mirror_attention;
@@ -614,14 +649,18 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     diagnose_push_finding(&findings, "peer_lifecycle",
                           peer_severity,
                           diagnose_peer_detail(peer_count, peer_incidents,
-                                               material_peer_signals),
+                                               material_peer_signals,
+                                               peer_bootstrap_blocker,
+                                               peer_fast_sync_blocker),
                           peer_attention &&
                                   diagnose_peer_host_action_is_specific(
                                       primary_host_next_action)
                               ? primary_host_next_action
                               : diagnose_peer_next_action(
                                     peer_count, peer_incidents,
-                                    material_peer_signals));
+                                    material_peer_signals,
+                                    peer_bootstrap_blocker,
+                                    peer_fast_sync_blocker));
     diagnose_push_finding(&findings, "mirror",
                           mirror_severity,
                           mirror_present ? mirror_status

@@ -588,6 +588,18 @@ static int test_peer_lifecycle_incident_view(void)
                                             "safe_next_action")),
                       "inspect primary_host_issue and top_host_incidents")
                == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "bootstrap_readiness")),
+                      "ready") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "fast_sync_readiness")),
+                      "no_zclassic23_fast_sync_peer") == 0);
+        ASSERT(!json_get_bool(json_get(&incidents, "bootstrap_blocked")));
+        ASSERT(json_get_bool(json_get(&incidents, "fast_sync_blocked")));
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "incident_severity")),
+                      "attention") == 0);
+        ASSERT(json_get_bool(json_get(&incidents, "stability_blocker")));
 
         const struct json_value *groups =
             json_get(&incidents, "duplicate_host_groups");
@@ -775,6 +787,17 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                                             "safe_next_action")),
                       "inspect primary_host_issue and top_host_incidents")
                == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "bootstrap_readiness")),
+                      "ready") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "fast_sync_readiness")),
+                      "ready") == 0);
+        ASSERT(!json_get_bool(json_get(&incidents, "bootstrap_blocked")));
+        ASSERT(!json_get_bool(json_get(&incidents, "fast_sync_blocked")));
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "incident_severity")),
+                      "attention") == 0);
 
         const struct json_value *groups =
             json_get(&incidents, "duplicate_host_groups");
@@ -911,6 +934,15 @@ static int test_peer_lifecycle_host_readiness_reasons(void)
         ASSERT(strcmp(json_get_str(json_get(missing,
                                             "fast_sync_readiness")),
                       "missing_NODE_NETWORK") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "bootstrap_readiness")),
+                      "no_bootstrap_useful_peer") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "fast_sync_readiness")),
+                      "no_bootstrap_useful_peer") == 0);
+        ASSERT(json_get_bool(json_get(&incidents, "bootstrap_blocked")));
+        ASSERT(json_get_bool(json_get(&incidents, "fast_sync_blocked")));
+        ASSERT(json_get_bool(json_get(&incidents, "stability_blocker")));
         ASSERT(json_get_int(json_get(missing,
                                      "handshaked_network_connections")) == 0);
         ASSERT(json_get_int(json_get(missing,
@@ -979,6 +1011,39 @@ static int test_peer_lifecycle_host_readiness_reasons(void)
     return failures;
 }
 
+static int test_peer_lifecycle_empty_incident_readiness(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: empty incident view names bootstrap blocker")
+    {
+        struct json_value incidents;
+
+        peer_lifecycle_reset_for_test();
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        ASSERT(strcmp(json_get_str(json_get(&incidents, "schema")),
+                      "zcl.peer_incidents.v1") == 0);
+        ASSERT(json_get_int(json_get(&incidents, "incident_count")) == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "bootstrap_readiness")),
+                      "no_current_open_connection") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "fast_sync_readiness")),
+                      "no_current_open_connection") == 0);
+        ASSERT(json_get_bool(json_get(&incidents, "bootstrap_blocked")));
+        ASSERT(json_get_bool(json_get(&incidents, "fast_sync_blocked")));
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "incident_severity")),
+                      "ok") == 0);
+        ASSERT(json_get_bool(json_get(&incidents, "stability_blocker")));
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "safe_next_action")),
+                      "add_or_fix_bootstrap_peers") == 0);
+        json_free(&incidents);
+    } TEST_END
+    return failures;
+}
+
 int test_peer_lifecycle(void)
 {
     int failures = 0;
@@ -995,6 +1060,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_incident_view();
     failures += test_peer_lifecycle_duplicate_current_bootstrap_view();
     failures += test_peer_lifecycle_host_readiness_reasons();
+    failures += test_peer_lifecycle_empty_incident_readiness();
 
     return failures;
 }

@@ -1240,6 +1240,57 @@ static void append_primary_host_issue_json(
     json_free(&obj);
 }
 
+static const char *peer_incidents_bootstrap_readiness(
+    int64_t open_connections, int64_t handshaked_connections,
+    int64_t bootstrap_useful_connections)
+{
+    if (bootstrap_useful_connections > 0)
+        return "ready";
+    if (open_connections <= 0)
+        return "no_current_open_connection";
+    if (handshaked_connections <= 0)
+        return "no_current_handshaked_connection";
+    return "no_bootstrap_useful_peer";
+}
+
+static const char *peer_incidents_fast_sync_readiness(
+    int64_t bootstrap_useful_connections, int64_t fast_sync_useful_connections,
+    const char *bootstrap_readiness)
+{
+    if (fast_sync_useful_connections > 0)
+        return "ready";
+    if (bootstrap_useful_connections <= 0)
+        return bootstrap_readiness ? bootstrap_readiness
+                                   : "no_bootstrap_useful_peer";
+    return "no_zclassic23_fast_sync_peer";
+}
+
+static const char *peer_incidents_severity(
+    int64_t incident_count, int64_t host_incident_count,
+    int64_t duplicate_group_count)
+{
+    if (host_incident_count > 0 || duplicate_group_count > 0)
+        return "attention";
+    if (incident_count > 0)
+        return "info";
+    return "ok";
+}
+
+static const char *peer_incidents_next_action(
+    size_t host_pick_count, int64_t incident_count,
+    bool bootstrap_blocked, bool fast_sync_blocked)
+{
+    if (host_pick_count > 0)
+        return "inspect primary_host_issue and top_host_incidents";
+    if (incident_count > 0)
+        return "inspect top_incidents";
+    if (bootstrap_blocked)
+        return "add_or_fix_bootstrap_peers";
+    if (fast_sync_blocked)
+        return "prefer_zclassic23_fast_sync_peer";
+    return "peer lifecycle has no scored incidents";
+}
+
 bool peer_lifecycle_incidents_json(struct json_value *out)
 {
     if (!out)
@@ -1303,6 +1354,23 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
                                duplicate_entries, host);
     }
 
+    const char *bootstrap_readiness =
+        peer_incidents_bootstrap_readiness(open_connection_count,
+                                           handshaked_open_connection_count,
+                                           bootstrap_useful_count);
+    const char *fast_sync_readiness =
+        peer_incidents_fast_sync_readiness(bootstrap_useful_count,
+                                           fast_sync_useful_count,
+                                           bootstrap_readiness);
+    bool bootstrap_blocked = strcmp(bootstrap_readiness, "ready") != 0;
+    bool fast_sync_blocked = strcmp(fast_sync_readiness, "ready") != 0;
+    const char *incident_severity =
+        peer_incidents_severity(incident_count, host_incident_count,
+                                duplicate_group_count);
+    const char *next_action =
+        peer_incidents_next_action(host_pick_count, incident_count,
+                                   bootstrap_blocked, fast_sync_blocked);
+
     json_set_object(out);
     json_push_kv_str(out, "schema", "zcl.peer_incidents.v1");
     json_push_kv_int(out, "schema_version", 1);
@@ -1330,15 +1398,18 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
     json_push_kv_int(out, "bootstrap_useful_count",
                      bootstrap_useful_count);
     json_push_kv_int(out, "fast_sync_useful_count", fast_sync_useful_count);
+    json_push_kv_str(out, "bootstrap_readiness", bootstrap_readiness);
+    json_push_kv_str(out, "fast_sync_readiness", fast_sync_readiness);
+    json_push_kv_bool(out, "bootstrap_blocked", bootstrap_blocked);
+    json_push_kv_bool(out, "fast_sync_blocked", fast_sync_blocked);
+    json_push_kv_str(out, "incident_severity", incident_severity);
+    json_push_kv_bool(out, "stability_blocker",
+                      strcmp(incident_severity, "attention") == 0 ||
+                      bootstrap_blocked);
     json_push_kv_str(out, "semantics",
                      "bounded peer lifecycle incident view grouped by host; "
                      "use full peer_lifecycle only for raw forensic dumps");
-    json_push_kv_str(out, "safe_next_action",
-                     host_pick_count > 0
-                         ? "inspect primary_host_issue and top_host_incidents"
-                         : incident_count > 0
-                         ? "inspect top_incidents"
-                         : "peer lifecycle has no scored incidents");
+    json_push_kv_str(out, "safe_next_action", next_action);
     append_primary_host_issue_json(host_pick_count > 0 ? &host_picks[0]
                                                        : NULL, out);
 

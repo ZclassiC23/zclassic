@@ -109,6 +109,8 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 `peer_primary_host_issue_class`, `peer_primary_host_next_action`,
 `peer_primary_host_bootstrap_readiness`,
 `peer_primary_host_fast_sync_readiness`,
+`peer_bootstrap_readiness`, `peer_fast_sync_readiness`,
+`peer_bootstrap_blocker`, `peer_fast_sync_blocker`,
 `peer_primary_host_incident_score`, `peer_primary_host_issue`,
 `peer_incident_severity`, `peer_stability_blocker`,
 `peer_material_incident_count`, `peer_material_group_count`,
@@ -131,6 +133,14 @@ contract as `agent`: a small non-material tip gap remains healthy when
 `chain_serving_ready=true`. It also echoes `chain_readiness_status` and
 `height_contract_status` so agents can tell normal lookahead/minor lag from a
 real serving blocker without re-parsing the embedded `agent` object.
+For peer readiness, `peer_bootstrap_readiness=ready` means at least one current
+handshaked peer has `NODE_NETWORK` and an advertised height. Any other value
+sets `peer_bootstrap_blocker=true`, escalates the peer finding to attention,
+and makes `safe_next_action=inspect_peer_lifecycle_bootstrap_readiness` unless
+a higher-priority chain/operator issue exists. `peer_fast_sync_blocker=true`
+with bootstrap ready means the node has usable peers but no current zclassic23
+fast-sync-capable peer; that is `info` unless material reconnect/duplicate
+incidents are also present.
 `peer_incident_severity=info` means the raw peer lifecycle view still has
 forensic detail, but there is no duplicate/reconnect storm and the overall
 verdict can remain healthy. `peer_incident_severity=attention` means the
@@ -144,6 +154,14 @@ For a peer-only packet without the rest of `agentdiagnose`, use native
 counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
 last disconnect reasons, service flags, advertised heights, and bootstrap /
 fast-sync usefulness without requiring log scraping.
+Its top-level `bootstrap_readiness`, `fast_sync_readiness`,
+`bootstrap_blocked`, `fast_sync_blocked`, `incident_severity`,
+`stability_blocker`, and `safe_next_action` are the no-jq verdict fields.
+`bootstrap_readiness` uses `ready`, `no_current_open_connection`,
+`no_current_handshaked_connection`, or `no_bootstrap_useful_peer`.
+`fast_sync_readiness` is `ready`, `no_zclassic23_fast_sync_peer`, or the active
+bootstrap blocker. `incident_severity` only scores incident pressure;
+`stability_blocker` also becomes true for bootstrap blockers.
 Likewise, `mirror_severity=info` means the advisory zclassicd mirror is worth
 watching but is not a local-node stability blocker; only
 `mirror_operator_action_required=true` escalates the overall diagnosis.
@@ -369,8 +387,9 @@ direction, handshake age, advertised height, service summaries, bootstrap
 readiness/usefulness, fast-sync readiness/usefulness, current handshaked
 service/height/ZClassic23 counts, reconnect cadence (`last_reconnect_interval_secs` and
 host min/max/latest reconnect intervals), current open/handshaked connection
-counts, and separate duplicate-host counts for historical entries versus live
-open/handshaked duplicates. `primary_host_issue` and `top_host_incidents` are
+counts, top-level bootstrap/fast-sync blocker verdicts, and separate
+duplicate-host counts for historical entries versus live open/handshaked
+duplicates. `primary_host_issue` and `top_host_incidents` are
 the no-jq path for reconnect storms where many peer rows share one host; they
 collapse the storm to one host-level `issue_class`, `incident_score`,
 `next_action`, readiness reason, and reconnect cadence.

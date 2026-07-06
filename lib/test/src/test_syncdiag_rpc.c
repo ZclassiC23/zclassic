@@ -455,6 +455,21 @@ static struct p2p_node *syncdiag_add_peer(struct connman *cm,
     return node;
 }
 
+static void syncdiag_note_peer_lifecycle_active(
+    const struct p2p_node *node, enum peer_lifecycle_source source)
+{
+    if (!node)
+        return;
+    peer_lifecycle_note_connected(node, source);
+    peer_lifecycle_note_version_received(node, node->services,
+                                         node->starting_height,
+                                         node->sub_ver);
+    if (node->state == PEER_HANDSHAKE_COMPLETE) {
+        peer_lifecycle_note_handshake_complete(node);
+        peer_lifecycle_note_active(node);
+    }
+}
+
 int test_syncdiag_rpc(void)
 {
     int failures = 0;
@@ -847,6 +862,21 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.peer_incidents.v1") == 0;
         ok = ok && json_get_bool(json_get(&result, "bounded"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "bootstrap_readiness")),
+                          "ready") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "fast_sync_readiness")),
+                          "no_zclassic23_fast_sync_peer") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "bootstrap_blocked"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "fast_sync_blocked"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "incident_severity")),
+                          "attention") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "stability_blocker"));
         ok = ok && json_get_int(json_get(&result,
                          "duplicate_host_group_count")) == 1;
         ok = ok && json_get_int(json_get(&result,
@@ -2903,8 +2933,11 @@ int test_syncdiag_rpc(void)
         struct p2p_node *peer =
             syncdiag_add_peer(&cm, 47, false, PEER_HANDSHAKE_COMPLETE);
         ok = ok && peer != NULL;
-        if (peer)
+        if (peer) {
             peer->starting_height = target_height;
+            syncdiag_note_peer_lifecycle_active(
+                peer, PEER_LIFECYCLE_SOURCE_ADDRMAN);
+        }
         struct p2p_node flaky;
         memset(&flaky, 0, sizeof(flaky));
         syncdiag_set_ipv4(&flaky.addr, 149, 50, 116, 7, 20022);
@@ -2983,6 +3016,16 @@ int test_syncdiag_rpc(void)
                           "info") == 0;
         ok = ok && !json_get_bool(json_get(&result,
                                            "peer_stability_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_bootstrap_readiness")),
+                          "ready") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_fast_sync_readiness")),
+                          "ready") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "peer_bootstrap_blocker"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "peer_fast_sync_blocker"));
         ok = ok && json_get_int(json_get(&result,
                                          "peer_material_incident_count")) == 0;
         ok = ok && json_get_int(json_get(&result,
@@ -3092,6 +3135,62 @@ int test_syncdiag_rpc(void)
                    "zclassic23 agentdiagnose full") == 0;
         json_free(&result);
         json_free(&brief_params);
+
+        peer_lifecycle_reset_for_test();
+        struct p2p_node limited_peer;
+        memset(&limited_peer, 0, sizeof(limited_peer));
+        syncdiag_set_ipv4(&limited_peer.addr, 203, 0, 113, 88, 8033);
+        limited_peer.id = 407;
+        limited_peer.state = PEER_HANDSHAKE_COMPLETE;
+        limited_peer.services = 0;
+        limited_peer.starting_height = target_height;
+        snprintf(limited_peer.addr_name, sizeof(limited_peer.addr_name),
+                 "203.0.113.88:8033");
+        snprintf(limited_peer.sub_ver, sizeof(limited_peer.sub_ver),
+                 "%s", "/LimitedPeer:0.1.0/");
+        syncdiag_note_peer_lifecycle_active(
+            &limited_peer, PEER_LIFECYCLE_SOURCE_ADDRMAN);
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &result);
+        findings = json_get(&result, "findings");
+        peer_finding = find_object_with_str(findings, "name",
+                                            "peer_lifecycle");
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "attention_needed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "inspect_peer_lifecycle_bootstrap_readiness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_bootstrap_readiness")),
+                          "no_bootstrap_useful_peer") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_fast_sync_readiness")),
+                          "no_bootstrap_useful_peer") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "peer_bootstrap_blocker"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "peer_fast_sync_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_incident_severity")),
+                          "attention") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "peer_stability_blocker"));
+        ok = ok && strstr(json_get_str(json_get(&result,
+                                                "peer_incident_summary")),
+                          "no currently bootstrap-useful peer") != NULL;
+        ok = ok && peer_finding && strcmp(json_get_str(json_get(
+            peer_finding, "severity")), "attention") == 0;
+        ok = ok && peer_finding && strcmp(json_get_str(json_get(
+            peer_finding, "next_action")),
+            "inspect_peer_lifecycle_bootstrap_readiness") == 0;
+        json_free(&result);
+
+        peer_lifecycle_reset_for_test();
+        if (peer)
+            syncdiag_note_peer_lifecycle_active(
+                peer, PEER_LIFECYCLE_SOURCE_ADDRMAN);
 
         tip.nHeight = served_height + 2;
         ms.pindex_best_header = &tip;
@@ -3220,6 +3319,16 @@ int test_syncdiag_rpc(void)
                           "attention") == 0;
         ok = ok && json_get_bool(json_get(&result,
                                           "peer_stability_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_bootstrap_readiness")),
+                          "ready") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_fast_sync_readiness")),
+                          "no_zclassic23_fast_sync_peer") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "peer_bootstrap_blocker"));
+        ok = ok && json_get_bool(json_get(&result,
+                                          "peer_fast_sync_blocker"));
         ok = ok && json_get_int(json_get(&result,
                                          "duplicate_host_group_count")) == 1;
         ok = ok && json_get_int(json_get(&result,
@@ -3276,6 +3385,9 @@ int test_syncdiag_rpc(void)
         json_free(&result);
 
         peer_lifecycle_reset_for_test();
+        if (peer)
+            syncdiag_note_peer_lifecycle_active(
+                peer, PEER_LIFECYCLE_SOURCE_ADDRMAN);
         memset(&mirror_stats, 0, sizeof(mirror_stats));
         mirror_stats.enabled = true;
         mirror_stats.running = true;
