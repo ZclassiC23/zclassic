@@ -2395,6 +2395,8 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"status\":\"attention\","
                       "\"host\":\"40.160.53.56\","
                       "\"issue_class\":\"duplicate_handshaked_connections\","
+                      "\"direction\":\"mixed\","
+                      "\"mixed_direction\":true,"
                       "\"duplicate_current_connections\":true,"
                       "\"duplicate_handshaked_connections\":true,"
                       "\"bootstrap_useful\":true,"

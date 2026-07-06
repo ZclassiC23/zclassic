@@ -63,7 +63,13 @@ struct peer_lifecycle_host_group {
     int64_t outbound_entries;
     int64_t unknown_entries;
     int64_t open_connections;
+    int64_t open_inbound_connections;
+    int64_t open_outbound_connections;
+    int64_t open_unknown_connections;
     int64_t handshaked_open_connections;
+    int64_t handshaked_inbound_connections;
+    int64_t handshaked_outbound_connections;
+    int64_t handshaked_unknown_connections;
     int64_t handshaked_network_connections;
     int64_t handshaked_advertised_height_connections;
     int64_t handshaked_zclassic23_connections;
@@ -267,6 +273,55 @@ static const char *entry_direction(const struct peer_lifecycle_entry *e)
     if (source_is_outbound(e->source))
         return "outbound";
     return "unknown";
+}
+
+static int direction_count(int64_t inbound, int64_t outbound, int64_t unknown)
+{
+    int n = 0;
+    if (inbound > 0)
+        n++;
+    if (outbound > 0)
+        n++;
+    if (unknown > 0)
+        n++;
+    return n;
+}
+
+static bool direction_mixed(int64_t inbound, int64_t outbound,
+                            int64_t unknown)
+{
+    return direction_count(inbound, outbound, unknown) > 1;
+}
+
+static const char *direction_summary(int64_t inbound, int64_t outbound,
+                                     int64_t unknown)
+{
+    int n = direction_count(inbound, outbound, unknown);
+    if (n > 1)
+        return "mixed";
+    if (inbound > 0)
+        return "inbound";
+    if (outbound > 0)
+        return "outbound";
+    return "unknown";
+}
+
+static const char *host_group_direction(
+    const struct peer_lifecycle_host_group *g)
+{
+    if (!g)
+        return "unknown";
+    return direction_summary(g->inbound_entries, g->outbound_entries,
+                             g->unknown_entries);
+}
+
+static bool host_group_mixed_direction(
+    const struct peer_lifecycle_host_group *g)
+{
+    if (!g)
+        return false;
+    return direction_mixed(g->inbound_entries, g->outbound_entries,
+                           g->unknown_entries);
 }
 
 static bool entry_connection_open(const struct peer_lifecycle_entry *e)
@@ -855,10 +910,25 @@ static void host_group_add_entry(struct peer_lifecycle_host_group *group,
         group->outbound_entries++;
     else
         group->unknown_entries++;
-    if (entry_connection_open(e))
+    bool open = entry_connection_open(e);
+    bool handshaked = entry_current_connection_handshaked(e);
+    if (open) {
         group->open_connections++;
-    if (entry_current_connection_handshaked(e)) {
+        if (source_is_inbound(e->source))
+            group->open_inbound_connections++;
+        else if (source_is_outbound(e->source))
+            group->open_outbound_connections++;
+        else
+            group->open_unknown_connections++;
+    }
+    if (handshaked) {
         group->handshaked_open_connections++;
+        if (source_is_inbound(e->source))
+            group->handshaked_inbound_connections++;
+        else if (source_is_outbound(e->source))
+            group->handshaked_outbound_connections++;
+        else
+            group->handshaked_unknown_connections++;
         if ((e->services & NODE_NETWORK) != 0)
             group->handshaked_network_connections++;
         if (e->start_height > 0)
@@ -1159,13 +1229,44 @@ static void host_group_to_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_int(obj, "incident_score", score);
     json_push_kv_str(obj, "issue_class", host_group_issue_class(g));
     json_push_kv_str(obj, "next_action", host_group_next_action(g));
+    json_push_kv_str(obj, "direction", host_group_direction(g));
+    json_push_kv_bool(obj, "mixed_direction",
+                      host_group_mixed_direction(g));
     json_push_kv_int(obj, "entries", g->entries);
     json_push_kv_int(obj, "inbound_entries", g->inbound_entries);
     json_push_kv_int(obj, "outbound_entries", g->outbound_entries);
     json_push_kv_int(obj, "unknown_entries", g->unknown_entries);
     json_push_kv_int(obj, "open_connections", g->open_connections);
+    json_push_kv_str(obj, "current_open_direction",
+                     direction_summary(g->open_inbound_connections,
+                                       g->open_outbound_connections,
+                                       g->open_unknown_connections));
+    json_push_kv_bool(obj, "current_open_mixed_direction",
+                      direction_mixed(g->open_inbound_connections,
+                                      g->open_outbound_connections,
+                                      g->open_unknown_connections));
+    json_push_kv_int(obj, "current_open_inbound_connections",
+                     g->open_inbound_connections);
+    json_push_kv_int(obj, "current_open_outbound_connections",
+                     g->open_outbound_connections);
+    json_push_kv_int(obj, "current_open_unknown_connections",
+                     g->open_unknown_connections);
     json_push_kv_int(obj, "handshaked_open_connections",
                      g->handshaked_open_connections);
+    json_push_kv_str(obj, "current_handshaked_direction",
+                     direction_summary(g->handshaked_inbound_connections,
+                                       g->handshaked_outbound_connections,
+                                       g->handshaked_unknown_connections));
+    json_push_kv_bool(obj, "current_handshaked_mixed_direction",
+                      direction_mixed(g->handshaked_inbound_connections,
+                                      g->handshaked_outbound_connections,
+                                      g->handshaked_unknown_connections));
+    json_push_kv_int(obj, "current_handshaked_inbound_connections",
+                     g->handshaked_inbound_connections);
+    json_push_kv_int(obj, "current_handshaked_outbound_connections",
+                     g->handshaked_outbound_connections);
+    json_push_kv_int(obj, "current_handshaked_unknown_connections",
+                     g->handshaked_unknown_connections);
     json_push_kv_int(obj, "handshaked_network_connections",
                      g->handshaked_network_connections);
     json_push_kv_int(obj, "handshaked_advertised_height_connections",

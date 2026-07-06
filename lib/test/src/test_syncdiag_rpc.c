@@ -3346,6 +3346,11 @@ int test_syncdiag_rpc(void)
                                                 "peer_primary_host_next_action")),
                           "inspect_peer_timeline_for_reconnect_timeouts") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_primary_host_direction")),
+                          "inbound") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "peer_primary_host_mixed_direction"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
             "peer_primary_host_bootstrap_readiness")),
             "useful") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
@@ -3365,6 +3370,32 @@ int test_syncdiag_rpc(void)
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue, "next_action")),
                    "inspect_peer_timeline_for_reconnect_timeouts") == 0;
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue, "direction")),
+                   "inbound") == 0;
+        ok = ok && primary_host_issue &&
+            !json_get_bool(json_get(primary_host_issue, "mixed_direction"));
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue,
+                                         "current_open_direction")),
+                   "inbound") == 0;
+        ok = ok && primary_host_issue &&
+            !json_get_bool(json_get(primary_host_issue,
+                                    "current_open_mixed_direction"));
+        ok = ok && primary_host_issue &&
+            json_get_int(json_get(primary_host_issue,
+                                  "current_open_unknown_connections")) == 0;
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue,
+                                         "current_handshaked_direction")),
+                   "inbound") == 0;
+        ok = ok && primary_host_issue &&
+            !json_get_bool(json_get(primary_host_issue,
+                                    "current_handshaked_mixed_direction"));
+        ok = ok && primary_host_issue &&
+            json_get_int(json_get(primary_host_issue,
+                                  "current_handshaked_unknown_connections"))
+                == 0;
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue,
                                          "bootstrap_readiness")),

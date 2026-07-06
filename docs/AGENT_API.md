@@ -143,6 +143,7 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 `gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`,
 `peer_host_incident_count`, `peer_host_count_returned`, `peer_primary_host`,
 `peer_primary_host_issue_class`, `peer_primary_host_next_action`,
+`peer_primary_host_direction`, `peer_primary_host_mixed_direction`,
 `peer_primary_host_bootstrap_readiness`,
 `peer_primary_host_fast_sync_readiness`,
 `peer_bootstrap_readiness`, `peer_fast_sync_readiness`,
@@ -189,7 +190,11 @@ For a peer-only packet without the rest of `agentdiagnose`, use native
 `zcl.peer_incidents.v1` and is bounded by design: it returns aggregate incident
 counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
 last disconnect reasons, service flags, advertised heights, and bootstrap /
-fast-sync usefulness without requiring log scraping.
+fast-sync usefulness without requiring log scraping. Host-level objects expose
+`direction`, `mixed_direction`, `current_open_direction`,
+`current_handshaked_direction`, and per-direction current open/handshaked
+counts so reconnect storms that mix inbound ephemeral ports with outbound
+dial attempts are visible without expanding the full peer list.
 Its top-level `bootstrap_readiness`, `fast_sync_readiness`,
 `bootstrap_blocked`, `fast_sync_blocked`, `incident_severity`,
 `stability_blocker`, and `safe_next_action` are the no-jq verdict fields.
@@ -422,14 +427,15 @@ For peer churn, reconnect, or duplicate-entry reports, start with
 `top_incidents`, `duplicate_host_groups`, reconnect counts, last reasons,
 direction, handshake age, advertised height, service summaries, bootstrap
 readiness/usefulness, fast-sync readiness/usefulness, current handshaked
-service/height/ZClassic23 counts, reconnect cadence (`last_reconnect_interval_secs` and
+service/height/ZClassic23 counts, host `direction` / `mixed_direction`,
+current open/handshaked direction summaries, reconnect cadence (`last_reconnect_interval_secs` and
 host min/max/latest reconnect intervals), current open/handshaked connection
 counts, top-level bootstrap/fast-sync blocker verdicts, and separate
 duplicate-host counts for historical entries versus live open/handshaked
 duplicates. `primary_host_issue` and `top_host_incidents` are
 the no-jq path for reconnect storms where many peer rows share one host; they
 collapse the storm to one host-level `issue_class`, `incident_score`,
-`next_action`, readiness reason, and reconnect cadence.
+`next_action`, direction summary, readiness reason, and reconnect cadence.
 `host_incident_count` is the total scored host count; `host_count_returned` is
 the bounded number included in `top_host_incidents`.
 Use the full

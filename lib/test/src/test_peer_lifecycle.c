@@ -613,9 +613,31 @@ static int test_peer_lifecycle_incident_view(void)
                       "inspect_peer_timeline_for_reconnect_timeouts") == 0);
         ASSERT(json_get_int(json_get(group, "entries")) == 2);
         ASSERT(json_get_int(json_get(group, "inbound_entries")) == 2);
+        ASSERT(json_get_int(json_get(group, "outbound_entries")) == 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(group, "mixed_direction")));
         ASSERT(json_get_int(json_get(group, "open_connections")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "current_open_direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(group,
+                                       "current_open_mixed_direction")));
+        ASSERT(json_get_int(json_get(group,
+            "current_open_inbound_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "current_open_outbound_connections")) == 0);
         ASSERT(json_get_int(json_get(group,
                                      "handshaked_open_connections")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "current_handshaked_direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(group,
+            "current_handshaked_mixed_direction")));
+        ASSERT(json_get_int(json_get(group,
+            "current_handshaked_inbound_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "current_handshaked_outbound_connections")) == 0);
         ASSERT(json_get_int(json_get(group,
                                      "handshaked_network_connections")) == 1);
         ASSERT(json_get_int(json_get(group,
@@ -656,6 +678,9 @@ static int test_peer_lifecycle_incident_view(void)
                       "40.160.53.56") == 0);
         ASSERT(strcmp(json_get_str(json_get(primary, "issue_class")),
                       "reconnect_timeout_pressure") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(primary, "mixed_direction")));
         ASSERT(json_get_int(json_get(primary, "timeout")) == 1);
         ASSERT(strcmp(json_get_str(json_get(primary, "bootstrap_readiness")),
                       "useful") == 0);
@@ -810,9 +835,30 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
         ASSERT(strcmp(json_get_str(json_get(group, "next_action")),
                       "inspect_duplicate_current_connections_for_host") == 0);
         ASSERT(json_get_int(json_get(group, "entries")) == 2);
+        ASSERT(strcmp(json_get_str(json_get(group, "direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(group, "mixed_direction")));
         ASSERT(json_get_int(json_get(group, "open_connections")) == 2);
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "current_open_direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(group,
+                                       "current_open_mixed_direction")));
+        ASSERT(json_get_int(json_get(group,
+            "current_open_inbound_connections")) == 2);
+        ASSERT(json_get_int(json_get(group,
+            "current_open_outbound_connections")) == 0);
         ASSERT(json_get_int(json_get(group,
                                      "handshaked_open_connections")) == 2);
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "current_handshaked_direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(group,
+            "current_handshaked_mixed_direction")));
+        ASSERT(json_get_int(json_get(group,
+            "current_handshaked_inbound_connections")) == 2);
+        ASSERT(json_get_int(json_get(group,
+            "current_handshaked_outbound_connections")) == 0);
         ASSERT(json_get_int(json_get(group,
                                      "handshaked_network_connections")) == 2);
         ASSERT(json_get_int(json_get(group,
@@ -846,6 +892,9 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                       "203.0.113.42") == 0);
         ASSERT(strcmp(json_get_str(json_get(primary, "issue_class")),
                       "duplicate_handshaked_connections") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "direction")),
+                      "inbound") == 0);
+        ASSERT(!json_get_bool(json_get(primary, "mixed_direction")));
         ASSERT(json_get_bool(json_get(primary,
                                       "duplicate_handshaked_connections")));
         ASSERT(strcmp(json_get_str(json_get(primary, "bootstrap_readiness")),
@@ -872,6 +921,100 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
         ASSERT(json_get_bool(json_get(fast, "fast_sync_useful")));
         ASSERT(strstr(json_get_str(json_get(fast, "services_summary")),
                       "NODE_ZCL23") != NULL);
+        json_free(&incidents);
+    } TEST_END
+    return failures;
+}
+
+static int test_peer_lifecycle_mixed_direction_host_view(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: host incident view names mixed directions")
+    {
+        struct p2p_node inbound;
+        struct p2p_node outbound;
+        struct json_value incidents;
+
+        peer_lifecycle_reset_for_test();
+
+        memset(&inbound, 0, sizeof(inbound));
+        test_addr_ipv4(&inbound.addr, 203, 0, 113, 77, 45111);
+        inbound.id = 351;
+        inbound.inbound = true;
+        inbound.state = PEER_HANDSHAKE_COMPLETE;
+        inbound.services = NODE_NETWORK;
+        snprintf(inbound.addr_name, sizeof(inbound.addr_name),
+                 "203.0.113.77:45111");
+        snprintf(inbound.sub_ver, sizeof(inbound.sub_ver),
+                 "%s", "/MagicBean:2.1.2-beta6/");
+
+        peer_lifecycle_note_connected(&inbound,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&inbound, inbound.services,
+                                             3172101, inbound.sub_ver);
+        peer_lifecycle_note_handshake_complete(&inbound);
+        peer_lifecycle_note_active(&inbound);
+
+        memset(&outbound, 0, sizeof(outbound));
+        test_addr_ipv4(&outbound.addr, 203, 0, 113, 77, 8033);
+        outbound.id = 352;
+        outbound.state = PEER_HANDSHAKE_COMPLETE;
+        outbound.services = NODE_NETWORK | NODE_ZCL23;
+        snprintf(outbound.addr_name, sizeof(outbound.addr_name),
+                 "203.0.113.77:8033");
+        snprintf(outbound.sub_ver, sizeof(outbound.sub_ver),
+                 "%s", msg_version_user_agent());
+
+        peer_lifecycle_note_connected(&outbound,
+                                      PEER_LIFECYCLE_SOURCE_MANUAL);
+        peer_lifecycle_note_version_received(&outbound, outbound.services,
+                                             3172102, outbound.sub_ver);
+        peer_lifecycle_note_handshake_complete(&outbound);
+        peer_lifecycle_note_active(&outbound);
+
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        const struct json_value *groups =
+            json_get(&incidents, "duplicate_host_groups");
+        const struct json_value *group =
+            find_lifecycle_obj_str(groups, "host", "203.0.113.77");
+        ASSERT(group && group->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(group, "direction")),
+                      "mixed") == 0);
+        ASSERT(json_get_bool(json_get(group, "mixed_direction")));
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "current_open_direction")),
+                      "mixed") == 0);
+        ASSERT(json_get_bool(json_get(group,
+                                      "current_open_mixed_direction")));
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "current_handshaked_direction")),
+                      "mixed") == 0);
+        ASSERT(json_get_bool(json_get(group,
+            "current_handshaked_mixed_direction")));
+        ASSERT(json_get_int(json_get(group, "inbound_entries")) == 1);
+        ASSERT(json_get_int(json_get(group, "outbound_entries")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "current_open_inbound_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "current_open_outbound_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "current_handshaked_inbound_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "current_handshaked_outbound_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+                                     "bootstrap_useful_connections")) == 2);
+        ASSERT(json_get_int(json_get(group,
+                                     "fast_sync_useful_connections")) == 1);
+
+        const struct json_value *primary =
+            json_get(&incidents, "primary_host_issue");
+        ASSERT(primary && primary->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(primary, "host")),
+                      "203.0.113.77") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "direction")),
+                      "mixed") == 0);
+        ASSERT(json_get_bool(json_get(primary, "mixed_direction")));
         json_free(&incidents);
     } TEST_END
     return failures;
@@ -1059,6 +1202,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_inbound_classifies_remote_version();
     failures += test_peer_lifecycle_incident_view();
     failures += test_peer_lifecycle_duplicate_current_bootstrap_view();
+    failures += test_peer_lifecycle_mixed_direction_host_view();
     failures += test_peer_lifecycle_host_readiness_reasons();
     failures += test_peer_lifecycle_empty_incident_readiness();
 

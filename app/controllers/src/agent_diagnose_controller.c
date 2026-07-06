@@ -268,15 +268,51 @@ static void diagnose_push_primary_host_issue(struct json_value *out,
                      diagnose_peer_host_str(primary, "issue_class"));
     json_push_kv_str(&obj, "next_action",
                      diagnose_peer_host_str(primary, "next_action"));
+    json_push_kv_str(&obj, "direction",
+                     diagnose_peer_host_str(primary, "direction"));
+    json_push_kv_bool(&obj, "mixed_direction",
+                      diagnose_peer_host_bool(primary, "mixed_direction"));
+    json_push_kv_str(&obj, "current_open_direction",
+                     diagnose_peer_host_str(primary,
+                                            "current_open_direction"));
+    json_push_kv_bool(&obj, "current_open_mixed_direction",
+                      diagnose_peer_host_bool(primary,
+                                             "current_open_mixed_direction"));
+    json_push_kv_str(&obj, "current_handshaked_direction",
+                     diagnose_peer_host_str(
+                         primary, "current_handshaked_direction"));
+    json_push_kv_bool(
+        &obj, "current_handshaked_mixed_direction",
+        diagnose_peer_host_bool(primary,
+                                "current_handshaked_mixed_direction"));
     json_push_kv_int(&obj, "incident_score",
                      diagnose_peer_host_int(primary, "incident_score"));
     json_push_kv_int(&obj, "entries",
                      diagnose_peer_host_int(primary, "entries"));
     json_push_kv_int(&obj, "open_connections",
                      diagnose_peer_host_int(primary, "open_connections"));
+    json_push_kv_int(&obj, "current_open_inbound_connections",
+                     diagnose_peer_host_int(
+                         primary, "current_open_inbound_connections"));
+    json_push_kv_int(&obj, "current_open_outbound_connections",
+                     diagnose_peer_host_int(
+                         primary, "current_open_outbound_connections"));
+    json_push_kv_int(&obj, "current_open_unknown_connections",
+                     diagnose_peer_host_int(
+                         primary, "current_open_unknown_connections"));
     json_push_kv_int(&obj, "handshaked_open_connections",
                      diagnose_peer_host_int(primary,
                                            "handshaked_open_connections"));
+    json_push_kv_int(&obj, "current_handshaked_inbound_connections",
+                     diagnose_peer_host_int(
+                         primary, "current_handshaked_inbound_connections"));
+    json_push_kv_int(&obj, "current_handshaked_outbound_connections",
+                     diagnose_peer_host_int(
+                         primary, "current_handshaked_outbound_connections"));
+    json_push_kv_int(&obj, "current_handshaked_unknown_connections",
+                     diagnose_peer_host_int(
+                         primary,
+                         "current_handshaked_unknown_connections"));
     json_push_kv_int(&obj, "handshaked_network_connections",
                      diagnose_peer_host_int(primary,
                                            "handshaked_network_connections"));
@@ -519,6 +555,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         diagnose_peer_host_str(primary_host, "issue_class");
     const char *primary_host_next_action =
         diagnose_peer_host_str(primary_host, "next_action");
+    const char *primary_host_direction =
+        diagnose_peer_host_str(primary_host, "direction");
     const char *primary_host_bootstrap_readiness =
         diagnose_peer_host_str(primary_host, "bootstrap_readiness");
     const char *primary_host_fast_sync_readiness =
@@ -591,6 +629,11 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                      primary_host_issue_class);
     json_push_kv_str(result, "peer_primary_host_next_action",
                      primary_host_next_action);
+    json_push_kv_str(result, "peer_primary_host_direction",
+                     primary_host_direction);
+    json_push_kv_bool(result, "peer_primary_host_mixed_direction",
+                      diagnose_peer_host_bool(primary_host,
+                                             "mixed_direction"));
     json_push_kv_str(result, "peer_primary_host_bootstrap_readiness",
                      primary_host_bootstrap_readiness);
     json_push_kv_str(result, "peer_primary_host_fast_sync_readiness",
