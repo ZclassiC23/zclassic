@@ -2315,6 +2315,21 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "removing stale memory-budget drop-in") != NULL);
         ASSERT(strstr(script, "deploy/zcl23-dev.service owns the dev lane memory budget") != NULL);
         ASSERT(strstr(script, "rm -f \"$STALE_OOM_BUDGET_DROPIN\"") != NULL);
+        ASSERT(strstr(script, "AUTO_REINDEX_SENTINEL=") != NULL);
+        ASSERT(strstr(script, "auto_reindex_request") != NULL);
+        ASSERT(strstr(script, "auto_reindex_status") != NULL);
+        ASSERT(strstr(script, "guard_pending_auto_reindex") != NULL);
+        ASSERT(strstr(script, "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY") != NULL);
+        ASSERT(strstr(script, "unreadable auto-reindex marker") != NULL);
+        ASSERT(strstr(script, "ignoring malformed auto-reindex marker") != NULL);
+        ASSERT(strstr(script, "pending crash-only auto-reindex request")
+               != NULL);
+        ASSERT(strstr(script, "refusing to start or hot-swap the dev lane")
+               != NULL);
+        ASSERT(strstr(script, "pre_rpc_boot_diagnostic") != NULL);
+        ASSERT(strstr(script, "pre-RPC recovery: reindex-chainstate")
+               != NULL);
+        ASSERT(strstr(script, "boot diagnostic: $diag") != NULL);
         ASSERT(strstr(script, "BUILD_ID_DROPIN=") != NULL);
         ASSERT(strstr(script, "zcl23-dev.service.d/90-build-identity.conf") != NULL);
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_COMMIT") != NULL);

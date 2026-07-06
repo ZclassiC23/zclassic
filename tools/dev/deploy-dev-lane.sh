@@ -23,15 +23,82 @@ DEV_BIN="$HOME/.local/bin/zclassic23-dev"
 DEV_DATADIR="$HOME/.zclassic-c23-dev"
 LEGACY_SRC="$HOME/.zclassic"          # running zclassicd datadir (read-only import source)
 UNIT="zcl23-dev.service"
+NODE_LOG="$DEV_DATADIR/node.log"
+AUTO_REINDEX_SENTINEL="$DEV_DATADIR/auto_reindex_request"
 STALE_REINDEX_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/reindex.conf"
 STALE_OOM_BUDGET_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/zz-oom-budget.conf"
 BUILD_ID_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/90-build-identity.conf"
+
+auto_reindex_status() {
+    local anchor="" count=""
+    [ -r "$AUTO_REINDEX_SENTINEL" ] || return 1
+    read -r anchor count < "$AUTO_REINDEX_SENTINEL" || return 1
+    [[ "$anchor" =~ ^-?[0-9]+$ ]] || return 1
+    [[ "$count" =~ ^-?[0-9]+$ ]] || return 1
+    printf '%s %s\n' "$anchor" "$count"
+}
+
+pre_rpc_boot_diagnostic() {
+    [ -r "$NODE_LOG" ] || return 0
+    tail -n 500 "$NODE_LOG" | awk '
+        /crash-only recovery: consuming auto-reindex request/ {
+            recovery=$0
+        }
+        /reindex-chainstate: rebuilding UTXO set/ {
+            reindex=1
+        }
+        /height [0-9]+\/[0-9]+ .*ETA/ {
+            progress=$0
+        }
+        END {
+            if (progress != "") {
+                print "pre-RPC recovery: reindex-chainstate " progress
+            } else if (reindex) {
+                print "pre-RPC recovery: reindex-chainstate active"
+            } else if (recovery != "") {
+                print "pre-RPC recovery: " recovery
+            }
+        }'
+}
+
+guard_pending_auto_reindex() {
+    local status anchor count
+    [ -e "$AUTO_REINDEX_SENTINEL" ] || return 0
+    if [ ! -r "$AUTO_REINDEX_SENTINEL" ]; then
+        echo "[dev-lane] WARN: unreadable auto-reindex marker: $AUTO_REINDEX_SENTINEL"
+        return 0
+    fi
+    status="$(auto_reindex_status || true)"
+    if [ -z "$status" ]; then
+        echo "[dev-lane] WARN: ignoring malformed auto-reindex marker: $AUTO_REINDEX_SENTINEL"
+        return 0
+    fi
+    anchor="${status%% *}"
+    count="${status##* }"
+    if [ "$count" = "-1" ]; then
+        echo "[dev-lane] NOTE: terminal auto-reindex marker present anchor=$anchor; not a pending rebuild"
+        return 0
+    fi
+    if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -le 0 ]; then
+        echo "[dev-lane] WARN: ignoring malformed auto-reindex marker: $AUTO_REINDEX_SENTINEL"
+        return 0
+    fi
+    if [ "${ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY:-0}" != "1" ]; then
+        echo "[dev-lane] BLOCKED: pending crash-only auto-reindex request anchor=$anchor count=$count"
+        echo "[dev-lane] BLOCKED: refusing to start or hot-swap the dev lane because boot would consume the marker and rebuild chainstate before RPC is available"
+        echo "[dev-lane] BLOCKED: let recovery finish, clear a stale marker only after proving it stale, or set ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 to force this deploy"
+        exit 1
+    fi
+    echo "[dev-lane] WARN: pending crash-only auto-reindex request anchor=$anchor count=$count; next boot will rebuild chainstate"
+}
 
 git update-index -q --refresh >/dev/null 2>&1 || true
 BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if ! git diff-index --quiet HEAD -- 2>/dev/null; then
     BUILD_COMMIT="${BUILD_COMMIT}-dirty"
 fi
+
+guard_pending_auto_reindex
 
 echo "[dev-lane] building fresh binary (stamp = $BUILD_COMMIT)..."
 make build/bin/zclassic23 -j"$(nproc)" >/dev/null
@@ -178,6 +245,8 @@ h0=""; for i in $(seq 1 40); do
 done
 if [ -z "$h0" ] || ! [[ "$h0" =~ ^[0-9]+$ ]]; then
     echo "[dev-lane] WARN: RPC not up after ~4 min — still booting/reconciling. Check: tail $DEV_DATADIR/node.log"
+    diag="$(pre_rpc_boot_diagnostic || true)"
+    [ -n "$diag" ] && echo "[dev-lane] boot diagnostic: $diag"
 else
     sleep 20
     h1="$("${CLI[@]}" getblockcount 2>/dev/null || echo "$h0")"
