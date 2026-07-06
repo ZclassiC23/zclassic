@@ -20,6 +20,14 @@
 struct json_value;
 struct main_state;
 
+typedef bool (*diagnostics_dump_fn)(struct json_value *out, const char *key);
+
+struct diagnostics_dump_entry {
+    const char *name;
+    diagnostics_dump_fn fn;
+    const char *desc;
+};
+
 /* Wired controller-level state, owned by diagnostics_registry.c.
  * `diag_datadir()` returns "" until set_state() runs. */
 const char *diag_datadir(void);
@@ -64,6 +72,9 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
                         struct json_value *result);
 bool diag_rpc_statecatalog(const struct json_value *params, bool help,
                            struct json_value *result);
+size_t diagnostics_dumper_count(void);
+const struct diagnostics_dump_entry *diagnostics_dumper_at(size_t idx);
+const char *diagnostics_oracle_owner_file(void);
 
 /* The native chain-evidence dump, registered in g_dumpers. `out` must be
  * a fresh json_value; the function sets it to an object. */

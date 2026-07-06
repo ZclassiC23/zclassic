@@ -95,9 +95,9 @@ void anchor_selfmint_hook_in_tx(struct sqlite3 *db, const char *datadir,
  * -> "."). Returns true and fills buf on success. */
 bool anchor_selfmint_resolve_path(const char *datadir, char *buf, size_t cap);
 
-/* Read-only readiness probe for the sovereign refold anchor. This is the same
- * predicate used before trusting a snapshot: stat the resolved candidate,
- * inspect its header, then call uss_open(verify_full_sha3=true,
+/* Read-only readiness probe for the self-verified UTXO anchor rebuild. This is
+ * the same predicate used before trusting a snapshot: stat the resolved
+ * candidate, inspect its header, then call uss_open(verify_full_sha3=true,
  * expected_sha3=checkpoint). No coins_kv mutation. */
 bool anchor_selfmint_snapshot_status(const char *datadir,
                                      struct anchor_snapshot_status *out);

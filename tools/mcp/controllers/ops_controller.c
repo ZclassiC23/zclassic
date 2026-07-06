@@ -43,6 +43,7 @@ DEFINE_PT(h_zcl_milestone,      "milestone",      "mcp.ops")
 DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
 DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
 DEFINE_PT(h_zcl_agent_lanes,    "agentlanes",     "mcp.ops")
+DEFINE_PT(h_zcl_agent_liveness, "agentliveness",  "mcp.ops")
 DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
 DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
@@ -1486,6 +1487,10 @@ static const struct mcp_tool_route k_routes[] = {
       "systemd units, and zcl.operator_deployment_safety.v1 restart/deploy "
       "rules.",
       NULL, 0, h_zcl_agent_lanes, 0, NULL },
+    { "zcl_agent_liveness", "ops",
+      "Unified AI/operator liveness: current lane identity, runtime "
+      "listeners, supervisor children, and background quality lanes.",
+      NULL, 0, h_zcl_agent_liveness, 0, NULL },
     { "zcl_agent_impact", "ops",
       "Map changed repository file paths to subsystem, risk, docs, "
       "recommended focused tests, and pre-push gates.",
@@ -1517,9 +1522,9 @@ static const struct mcp_tool_route k_routes[] = {
       "milestone, including systems/goals/subgoals bars and MVP criteria.",
       NULL, 0, h_zcl_milestone, 0, NULL },
     { "zcl_refold_status", "ops",
-      "Sovereign refold anchor readiness: compiled checkpoint, candidate "
-      "anchor snapshot path, full SHA3/count verification status, and next "
-      "copy-proof action.",
+      "Self-verified UTXO anchor rebuild readiness: compiled checkpoint, "
+      "candidate anchor snapshot path, full SHA3/count verification status, "
+      "and next copy-proof action.",
       NULL, 0, h_zcl_refold_status, 0, NULL },
     { "zcl_health", "ops",
       "Health check: pass/fail, chain height, peers, sync, onion.",

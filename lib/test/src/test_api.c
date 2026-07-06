@@ -1052,6 +1052,13 @@ int test_api(void)
                           "zcl.refold_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "api_version")),
                           "v1") == 0;
+        ok = ok && strstr(json_get_str(json_get(&root, "purpose")),
+                          "UTXO anchor rebuild") != NULL;
+        ok = ok && strstr(json_get_str(json_get(&root, "plain_english")),
+                          "borrowed snapshot seed") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "internal_mechanism")),
+                          "-refold-from-anchor") == 0;
         ok = ok && !json_get_bool(json_get(&root, "ready_for_refold"));
         ok = ok && strcmp(json_get_str(json_get(&root, "primary_blocker")),
                           "missing_verified_anchor_snapshot") == 0;

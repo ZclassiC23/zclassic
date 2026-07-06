@@ -50,36 +50,10 @@ struct agent_runtime_probe_method {
 };
 
 static const struct agent_runtime_probe_method g_probe_methods[] = {
-    { "agent", "runtime_status", "zclassic23 agent", "zcl_agent",
-      "zcl.public_status.v1" },
-    { "agentops", "operator_command_center", "zclassic23 agentops",
-      "zcl_agent_ops", "zcl.agent_ops.v1" },
-    { "agentinterface", "discover_interface",
-      "zclassic23 agentinterface", "zcl_agent_interface",
-      "zcl.agent_interface.v1" },
-    { "agentcontracts", "contract_registry", "zclassic23 agentcontracts",
-      "zcl_agent_contracts", "zcl.agent_contracts.v1" },
-    { "agentbuild", "build_loop", "zclassic23 agentbuild",
-      "zcl_agent_build", "zcl.agent_build.v1" },
-    { "agentmap", "code_map", "zclassic23 agentmap", "zcl_agent_map",
-      "zcl.agent_map.v1" },
-    { "agentlanes", "lane_topology", "zclassic23 agentlanes",
-      "zcl_agent_lanes", "zcl.agent_lanes.v1" },
-    { "agentimpact", "changed_files_to_tests",
-      "zclassic23 agentimpact <files...>", "zcl_agent_impact",
-      "zcl.agent_impact.v1" },
-    { "agentdeployguard", "deploy_guard",
-      "zclassic23 agentdeployguard <action>", "zcl_agent_deploy_guard",
-      "zcl.agent_deploy_guard.v1" },
-    { "statecatalog", "state_catalog", "zclassic23 statecatalog",
-      "zcl_state_catalog", "zcl.state_catalog.v1" },
-    { "timeline", "semantic_timeline",
-      "zclassic23 timeline <category> <count>", "zcl_timeline",
-      "zcl.timeline.v1" },
-    { "getmirrorstatus", "mirror_status", "zclassic23 getmirrorstatus",
-      "zcl_mirror_status", "zcl.mirror_status.v1" },
-    { "api", "api_index", "zclassic23 api", "zcl_openapi",
-      "zcl.api_index.v1" },
+#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) \
+    { method, capability, native, mcp, schema },
+#include "controllers/agent_contracts.def"
+#undef AGENT_CONTRACT
 };
 
 struct agent_runtime_method_probe {

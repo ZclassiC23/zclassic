@@ -2787,14 +2787,17 @@ static int t_native_agent_api_contract(void)
     char *agent_operator_buf = NULL;
     char *agent_ctrl_buf = NULL;
     char *agent_contracts_buf = NULL;
+    char *agent_contracts_def_buf = NULL;
     char *agent_bg_quality_buf = NULL;
     char *agent_lanes_buf = NULL;
+    char *agent_liveness_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_ops_buf = NULL;
     char *agent_runtime_buf = NULL;
     char *agent_readiness_buf = NULL;
     char *diag_ctrl_buf = NULL;
     char *diag_reg_buf = NULL;
+    char *diag_catalog_buf = NULL;
     char *api_buf = NULL;
     char *api_status_buf = NULL;
     char *agent_doc_buf = NULL;
@@ -2805,14 +2808,17 @@ static int t_native_agent_api_contract(void)
         char agent_operator_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
         char agent_contracts_path[PATH_MAX];
+        char agent_contracts_def_path[PATH_MAX];
         char agent_bg_quality_path[PATH_MAX];
         char agent_lanes_path[PATH_MAX];
+        char agent_liveness_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_ops_path[PATH_MAX];
         char agent_runtime_path[PATH_MAX];
         char agent_readiness_path[PATH_MAX];
         char diag_ctrl_path[PATH_MAX];
         char diag_reg_path[PATH_MAX];
+        char diag_catalog_path[PATH_MAX];
         char api_path[PATH_MAX];
         char api_status_path[PATH_MAX];
         char agent_doc_path[PATH_MAX];
@@ -2829,12 +2835,19 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(agent_contracts_path, sizeof(agent_contracts_path),
                          "app/controllers/src/agent_contracts_controller.c")
                == 0);
+        ASSERT(repo_path(agent_contracts_def_path,
+                         sizeof(agent_contracts_def_path),
+                         "app/controllers/include/controllers/agent_contracts.def")
+               == 0);
         ASSERT(repo_path(agent_bg_quality_path,
                          sizeof(agent_bg_quality_path),
                          "app/controllers/src/agent_background_quality.c")
                == 0);
         ASSERT(repo_path(agent_lanes_path, sizeof(agent_lanes_path),
                          "app/controllers/src/agent_lanes_controller.c") == 0);
+        ASSERT(repo_path(agent_liveness_path, sizeof(agent_liveness_path),
+                         "app/controllers/src/agent_liveness_controller.c")
+               == 0);
         ASSERT(repo_path(agent_iface_path, sizeof(agent_iface_path),
                          "app/controllers/src/agent_interface_controller.c")
                == 0);
@@ -2848,6 +2861,9 @@ static int t_native_agent_api_contract(void)
                          "app/controllers/src/diagnostics_controller.c") == 0);
         ASSERT(repo_path(diag_reg_path, sizeof(diag_reg_path),
                          "app/controllers/src/diagnostics_registry.c") == 0);
+        ASSERT(repo_path(diag_catalog_path, sizeof(diag_catalog_path),
+                         "app/controllers/src/diagnostics_catalog_controller.c")
+               == 0);
         ASSERT(repo_path(api_path, sizeof(api_path),
                          "app/controllers/src/api_controller_agent_index.c")
                == 0);
@@ -2863,9 +2879,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
         ASSERT(read_entire_file(agent_contracts_path,
                                 &agent_contracts_buf) == 0);
+        ASSERT(read_entire_file(agent_contracts_def_path,
+                                &agent_contracts_def_buf) == 0);
         ASSERT(read_entire_file(agent_bg_quality_path,
                                 &agent_bg_quality_buf) == 0);
         ASSERT(read_entire_file(agent_lanes_path, &agent_lanes_buf) == 0);
+        ASSERT(read_entire_file(agent_liveness_path,
+                                &agent_liveness_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
         ASSERT(read_entire_file(agent_ops_path, &agent_ops_buf) == 0);
         ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
@@ -2873,6 +2893,7 @@ static int t_native_agent_api_contract(void)
                                 &agent_readiness_buf) == 0);
         ASSERT(read_entire_file(diag_ctrl_path, &diag_ctrl_buf) == 0);
         ASSERT(read_entire_file(diag_reg_path, &diag_reg_buf) == 0);
+        ASSERT(read_entire_file(diag_catalog_path, &diag_catalog_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
         ASSERT(read_entire_file(api_status_path, &api_status_buf) == 0);
         ASSERT(read_entire_file(agent_doc_path, &agent_doc_buf) == 0);
@@ -2880,6 +2901,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
         ASSERT(strstr(main_buf, "%s agentmap") != NULL);
         ASSERT(strstr(main_buf, "%s agentlanes") != NULL);
+        ASSERT(strstr(main_buf, "%s agentliveness") != NULL);
         ASSERT(strstr(main_buf, "%s agentimpact") != NULL);
         ASSERT(strstr(main_buf, "%s agentcontracts") != NULL);
         ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
@@ -2913,6 +2935,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "cli_run_static_agent_method") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentinterface\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentops\")") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"agentliveness\")")
+               != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"statecatalog\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentlanes\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentdeployguard\")")
@@ -2928,6 +2952,9 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(main_buf,
                       "rpc_agent_lanes(&params, false, &result)")
+               != NULL);
+        ASSERT(strstr(main_buf,
+                      "rpc_agent_liveness(&params, false, &result)")
                != NULL);
         ASSERT(strstr(main_buf,
                       "rpc_agent_deploy_guard(&params, false, &result)")
@@ -2947,6 +2974,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"timeline\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentmap\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentlanes\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"agentliveness\"")
+               != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentimpact\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentcontracts\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentbuild\"") != NULL);
@@ -2957,10 +2986,19 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"refold\"") != NULL);
         ASSERT(strstr(diag_ctrl_buf, "{ \"control\", \"statecatalog\"")
                != NULL);
-        ASSERT(strstr(diag_reg_buf, "zcl.state_catalog.v1") != NULL);
-        ASSERT(strstr(diag_reg_buf, "diagnostics_catalog_push_entry")
+        ASSERT(strstr(diag_reg_buf, "diagnostics_dumper_count") != NULL);
+        ASSERT(strstr(diag_reg_buf, "diagnostics_dumper_at") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "zcl.state_catalog.v1") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_push_entry")
                != NULL);
-        ASSERT(strstr(diag_reg_buf, "diagnostics_catalog_cost") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_cost") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_owner_file")
+               != NULL);
+        ASSERT(strstr(diag_catalog_buf, "\"owner_file\"") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "\"safety_level\"") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "\"accepted_keys\"") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "\"tests\"") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "\"drilldowns\"") != NULL);
         ASSERT(strstr(agent_summary_buf, "api_version\", \"v1\"") != NULL);
         ASSERT(strstr(event_buf, "#include \"event_agent_summary.h\"") != NULL);
         ASSERT(strstr(event_buf, "rpc_agent_summary") != NULL);
@@ -3034,27 +3072,49 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "node_health_collect(") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
         ASSERT(strstr(agent_lanes_buf, "zcl.agent_lanes.v1") != NULL);
+        ASSERT(strstr(agent_liveness_buf, "zcl.agent_liveness.v1") != NULL);
+        ASSERT(strstr(agent_liveness_buf, "supervisor_dump_state_json")
+               != NULL);
+        ASSERT(strstr(agent_liveness_buf,
+                      "agent_build_background_quality_status") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_interface.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_ops.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_liveness.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_agent_liveness")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.timeline.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_timeline") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.state_catalog.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_state_catalog")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_deploy_guard.v1")
+               != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_readiness.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.height_contract.v1") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.mirror_status.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.mirror_status.v1")
+               != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.operator_latch.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "zcl.condition_engine_summary.v1") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.agent_interface.v1") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.agent_ops.v1") != NULL);
+        ASSERT(strstr(agent_contracts_buf,
+                      "contracts_push_agent_registry_schemas") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "zcl.agent_runtime_availability.v1") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.timeline.v1") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl_timeline") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.state_catalog.v1") != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl_state_catalog") != NULL);
         ASSERT(strstr(agent_ops_buf, "zcl.agent_ops.v1") != NULL);
         ASSERT(strstr(agent_ops_buf, "zclassic23 statecatalog") != NULL);
+        ASSERT(strstr(agent_ops_buf, "zclassic23 agentliveness") != NULL);
+        ASSERT(strstr(agent_ops_buf, "zcl_agent_liveness") != NULL);
         ASSERT(strstr(agent_ops_buf, "zclassic23 timeline") != NULL);
         ASSERT(strstr(agent_ops_buf, "zcl_timeline") != NULL);
         ASSERT(strstr(agent_ops_buf, "refold_plain_english") != NULL);
@@ -3062,21 +3122,18 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_ops_buf, "no_jq_required") != NULL);
         ASSERT(strstr(agent_ops_buf, "top_next_work") != NULL);
-        ASSERT(strstr(agent_ops_buf, "finish_self_verified_anchor_refold")
+        ASSERT(strstr(agent_ops_buf, "finish_self_verified_utxo_anchor_rebuild")
                != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_runtime_identity.v1")
-               != NULL);
-        ASSERT(strstr(agent_contracts_buf, "zcl.agent_deploy_guard.v1")
                != NULL);
         ASSERT(strstr(agent_contracts_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_iface_buf, "build_commit") != NULL);
         ASSERT(strstr(agent_iface_buf, "runtime_identity") != NULL);
         ASSERT(strstr(agent_iface_buf, "runtime_availability") != NULL);
         ASSERT(strstr(agent_iface_buf, "preferred_transport") != NULL);
-        ASSERT(strstr(agent_iface_buf, "zcl.state_catalog.v1") != NULL);
-        ASSERT(strstr(agent_iface_buf, "zcl_state_catalog") != NULL);
-        ASSERT(strstr(agent_iface_buf, "zcl.timeline.v1") != NULL);
-        ASSERT(strstr(agent_iface_buf, "zcl_timeline") != NULL);
+        ASSERT(strstr(agent_iface_buf,
+                      "agent_interface_push_registry_capabilities")
+               != NULL);
         ASSERT(strstr(agent_iface_buf, "must_live_in_c") != NULL);
         ASSERT(strstr(agent_iface_buf,
                       "app/controllers/src/agent_interface_controller.c")
@@ -3098,6 +3155,8 @@ static int t_native_agent_api_contract(void)
                       "zcl.agent_runtime_services.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "zcl.agent_runtime_availability.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "controllers/agent_contracts.def")
+               != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_runtime_buf,
@@ -3160,6 +3219,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf,
                       "app/controllers/src/agent_lanes_controller.c")
                != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "app/controllers/src/agent_liveness_controller.c")
+               != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl_agent_liveness") != NULL);
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"api_command\", "
                       "\"zclassic23 api\")") != NULL);
@@ -3175,6 +3238,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"lanes_command\", "
                       "\"zclassic23 agentlanes\")") != NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(cli, \"liveness_command\", "
+                      "\"zclassic23 agentliveness\")") != NULL);
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"impact_command\", "
                       "\"zclassic23 agentimpact <files...>\")") != NULL);
@@ -3206,6 +3272,9 @@ static int t_native_agent_api_contract(void)
                       "json_push_kv_str(mcp, \"lanes_tool\", "
                       "\"zcl_agent_lanes\")") != NULL);
         ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"liveness_tool\", "
+                      "\"zcl_agent_liveness\")") != NULL);
+        ASSERT(strstr(api_buf,
                       "json_push_kv_str(mcp, \"interface_tool\", "
                       "\"zcl_agent_interface\")") != NULL);
         ASSERT(strstr(api_buf,
@@ -3229,6 +3298,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 agentliveness") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_agent_liveness") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_liveness.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "agent_contracts.def") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 getmirrorstatus") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_mirror_status") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_runtime_services.v1")
@@ -3314,14 +3387,17 @@ static int t_native_agent_api_contract(void)
     free(agent_operator_buf);
     free(agent_ctrl_buf);
     free(agent_contracts_buf);
+    free(agent_contracts_def_buf);
     free(agent_bg_quality_buf);
     free(agent_lanes_buf);
+    free(agent_liveness_buf);
     free(agent_iface_buf);
     free(agent_ops_buf);
     free(agent_runtime_buf);
     free(agent_readiness_buf);
     free(diag_ctrl_buf);
     free(diag_reg_buf);
+    free(diag_catalog_buf);
     free(api_buf);
     free(api_status_buf);
     free(agent_doc_buf);

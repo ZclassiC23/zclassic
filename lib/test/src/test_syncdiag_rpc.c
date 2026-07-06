@@ -2280,6 +2280,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_liveness.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_runtime_services.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_capability.v1") != NULL;
@@ -2343,6 +2345,8 @@ int test_syncdiag_rpc(void)
         event_emitf(EV_SYNC_STATE_CHANGE, 0, "idle->headers");
         event_emitf(EV_MSG_RECEIVED, 0, "noise");
         event_emitf(EV_SYNC_HEARTBEAT, 0, "state=headers h=10");
+        event_emitf(EV_TIP_STALE, 7,
+                    "state=headers since=600 peers=0 max_peer=20");
         struct json_value timeline_params;
         json_init(&timeline_params);
         json_set_array(&timeline_params);
@@ -2353,7 +2357,7 @@ int test_syncdiag_rpc(void)
         json_free(&timeline_category);
         struct json_value timeline_count;
         json_init(&timeline_count);
-        json_set_int(&timeline_count, 2);
+        json_set_int(&timeline_count, 3);
         json_push_back(&timeline_params, &timeline_count);
         json_free(&timeline_count);
         struct json_value timeline;
@@ -2362,6 +2366,15 @@ int test_syncdiag_rpc(void)
                                      &timeline);
         const struct json_value *timeline_events =
             json_get(&timeline, "events");
+        const struct json_value *timeline_summary =
+            json_get(&timeline, "semantic_summary");
+        const struct json_value *timeline_type_counts =
+            json_get(&timeline, "type_counts");
+        const struct json_value *timeline_tip_stale =
+            find_object_with_str(timeline_type_counts, "type",
+                                 "sync.tip_stale");
+        const struct json_value *timeline_drilldowns =
+            json_get(&timeline, "recommended_drilldowns");
         ok = ok && timeline.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&timeline, "schema")),
                           "zcl.timeline.v1") == 0;
@@ -2371,9 +2384,26 @@ int test_syncdiag_rpc(void)
                           "sync") == 0;
         ok = ok && strcmp(json_get_str(json_get(&timeline, "mcp_tool")),
                           "zcl_timeline") == 0;
-        ok = ok && json_get_int(json_get(&timeline, "head_seq")) >= 3;
+        ok = ok && json_get_int(json_get(&timeline, "head_seq")) >= 4;
         ok = ok && timeline_events && timeline_events->type == JSON_ARR &&
-            json_size(timeline_events) == 2;
+            json_size(timeline_events) == 3;
+        ok = ok && timeline_summary &&
+            json_get_int(json_get(timeline_summary, "event_count")) == 3;
+        ok = ok && timeline_summary &&
+            json_get_int(json_get(timeline_summary,
+                                  "problem_event_count")) == 1;
+        ok = ok && timeline_summary &&
+            json_get_bool(json_get(timeline_summary, "has_problem_events"));
+        ok = ok && timeline_summary &&
+            strcmp(json_get_str(json_get(timeline_summary,
+                                         "dominant_type")),
+                   "sync.state_change") == 0;
+        ok = ok && timeline_tip_stale &&
+            json_get_bool(json_get(timeline_tip_stale, "problem"));
+        ok = ok && timeline_drilldowns &&
+            json_array_has_substr(timeline_drilldowns, "reducer_frontier");
+        ok = ok && timeline_drilldowns &&
+            json_array_has_substr(timeline_drilldowns, "fail|reject|stale");
 
         struct json_value catalog;
         json_init(&catalog);
@@ -2405,9 +2435,45 @@ int test_syncdiag_rpc(void)
         ok = ok && block_index_cat &&
             strcmp(json_get_str(json_get(block_index_cat, "mcp_tool")),
                    "zcl_state") == 0;
+        ok = ok && block_index_cat &&
+            strcmp(json_get_str(json_get(block_index_cat, "subsystem")),
+                   "block_index") == 0;
+        ok = ok && block_index_cat &&
+            strcmp(json_get_str(json_get(block_index_cat, "owner_file")),
+                   "app/controllers/src/diagnostics_block_index.c") == 0;
+        ok = ok && block_index_cat &&
+            strcmp(json_get_str(json_get(block_index_cat, "safety_level")),
+                   "read_only") == 0;
+        ok = ok && block_index_cat &&
+            json_array_has_str(json_get(block_index_cat, "accepted_keys"),
+                               "height or 64-char block hash");
+        ok = ok && block_index_cat &&
+            json_array_has_str(json_get(block_index_cat, "key_examples"),
+                               "3170000");
+        ok = ok && block_index_cat &&
+            json_array_has_substr(json_get(block_index_cat, "tests"),
+                                  "test_block_index_integrity.c");
+        ok = ok && block_index_cat &&
+            json_array_has_substr(json_get(block_index_cat, "drilldowns"),
+                                  "zcl_state {\"subsystem\":\"block_index\"");
         ok = ok && frontier_cat &&
             strcmp(json_get_str(json_get(frontier_cat, "state_class")),
                    "reducer_stage") == 0;
+        ok = ok && frontier_cat &&
+            strcmp(json_get_str(json_get(frontier_cat, "owner_file")),
+                   "app/jobs/src/reducer_frontier_dump.c") == 0;
+        ok = ok && frontier_cat &&
+            strcmp(json_get_str(json_get(frontier_cat, "safety_level")),
+                   "read_only") == 0;
+        ok = ok && frontier_cat &&
+            json_array_has_substr(json_get(frontier_cat, "tests"),
+                                  "test_reducer_frontier.c");
+        ok = ok && frontier_cat &&
+            json_array_has_str(json_get(frontier_cat, "accepted_keys"), "") ==
+            false;
+        ok = ok && frontier_cat &&
+            json_array_has_substr(json_get(frontier_cat, "drilldowns"),
+                                  "zclassic23 dumpstate reducer_frontier");
 
         struct json_value lanes;
         json_init(&lanes);
@@ -2592,6 +2658,46 @@ int test_syncdiag_rpc(void)
         ok = ok && coverage_lane &&
             !json_get_bool(json_get(coverage_lane, "status_file_present"));
 
+        struct json_value liveness;
+        json_init(&liveness);
+        ok = ok && rpc_table_execute(&tbl, "agentliveness", &params,
+                                     &liveness);
+        const struct json_value *live_summary =
+            json_get(&liveness, "liveness_summary");
+        const struct json_value *live_runtime =
+            json_get(&liveness, "runtime_services");
+        const struct json_value *live_quality =
+            json_get(&liveness, "background_quality_status");
+        const struct json_value *live_supervisor =
+            json_get(&liveness, "supervisor_state");
+        const struct json_value *live_drilldowns =
+            json_get(&liveness, "recommended_drilldowns");
+        ok = ok && liveness.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&liveness, "schema")),
+                          "zcl.agent_liveness.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&liveness, "mcp_tool")),
+                          "zcl_agent_liveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&liveness,
+                                                "overall_liveness")),
+                          "static_or_offline_context") == 0;
+        ok = ok && live_summary &&
+            strcmp(json_get_str(json_get(live_summary,
+                                         "background_quality_summary")),
+                   "background_quality_incomplete") == 0;
+        ok = ok && live_summary &&
+            json_get_int(json_get(live_summary,
+                                  "background_quality_status_files_valid")) == 1;
+        ok = ok && live_runtime &&
+            strcmp(json_get_str(json_get(live_runtime, "schema")),
+                   "zcl.agent_runtime_services.v1") == 0;
+        ok = ok && live_quality &&
+            strcmp(json_get_str(json_get(live_quality, "schema")),
+                   "zcl.background_quality_runtime.v1") == 0;
+        ok = ok && live_supervisor &&
+            json_get(live_supervisor, "running") != NULL;
+        ok = ok && live_drilldowns &&
+            json_array_has_substr(live_drilldowns, "zcl_state");
+
         struct json_value interface;
         json_init(&interface);
         agent_runtime_availability_begin_probe("test_target_rpc",
@@ -2617,6 +2723,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(capabilities, "name", "mirror_status");
         const struct json_value *lane_topology =
             find_object_with_str(capabilities, "name", "lane_topology");
+        const struct json_value *unified_liveness =
+            find_object_with_str(capabilities, "name", "unified_liveness");
         const struct json_value *deploy_cap =
             find_object_with_str(capabilities, "name", "deploy_guard");
         const struct json_value *state_catalog_cap =
@@ -2659,6 +2767,12 @@ int test_syncdiag_rpc(void)
         ok = ok && lane_topology &&
             strcmp(json_get_str(json_get(lane_topology, "mcp")),
                    "zcl_agent_lanes") == 0;
+        ok = ok && unified_liveness &&
+            strcmp(json_get_str(json_get(unified_liveness, "schema")),
+                   "zcl.agent_liveness.v1") == 0;
+        ok = ok && unified_liveness &&
+            strcmp(json_get_str(json_get(unified_liveness, "mcp")),
+                   "zcl_agent_liveness") == 0;
         ok = ok && runtime_status &&
             strcmp(json_get_str(json_get(runtime_status, "mcp")),
                    "zcl_agent") == 0;
@@ -3074,6 +3188,7 @@ int test_syncdiag_rpc(void)
         json_free(&catalog);
         json_free(&lanes);
         json_free(&build);
+        json_free(&liveness);
         json_free(&interface);
         json_free(&guard_params);
         json_free(&guard);
@@ -3141,7 +3256,7 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
-    printf("api: native RPC returns refold anchor readiness... ");
+    printf("api: native RPC returns UTXO anchor rebuild readiness... ");
     {
         struct rpc_table tbl;
         rpc_table_init(&tbl);
@@ -3165,6 +3280,13 @@ int test_syncdiag_rpc(void)
                           "zcl.refold_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "api_version")),
                           "v1") == 0;
+        ok = ok && strstr(json_get_str(json_get(&result, "purpose")),
+                          "UTXO anchor rebuild") != NULL;
+        ok = ok && strstr(json_get_str(json_get(&result, "plain_english")),
+                          "borrowed snapshot seed") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "internal_mechanism")),
+                          "-refold-from-anchor") == 0;
         ok = ok && !json_get_bool(json_get(&result, "ready_for_refold"));
         ok = ok && snap && json_get(snap, "verification") != NULL;
         ok = ok && commands &&

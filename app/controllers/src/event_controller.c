@@ -534,9 +534,10 @@ static bool rpc_refold_status(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "refold\n"
-        "\nReturn read-only self-verified anchor refold readiness. This "
-        "checks whether zclassic23 has a locally rebuilt UTXO anchor that "
-        "can replace the borrowed snapshot seed.\n"
+        "\nReturn read-only self-verified UTXO anchor rebuild readiness. "
+        "This checks whether zclassic23 has a locally rebuilt UTXO anchor "
+        "that can replace the borrowed snapshot seed. Internal boot flag: "
+        "-refold-from-anchor.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.refold_status.v1\", "
         "\"ready_for_refold\":false, "
@@ -620,6 +621,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "operatorsummary",   rpc_agent_summary,     true },
         { "control", "agentmap",          rpc_agent_map,         true },
         { "control", "agentlanes",        rpc_agent_lanes,       true },
+        { "control", "agentliveness",     rpc_agent_liveness,    true },
         { "control", "agentimpact",       rpc_agent_impact,      true },
         { "control", "agentcontracts",    rpc_agent_contracts,   true },
         { "control", "agentbuild",        rpc_agent_build,       true },

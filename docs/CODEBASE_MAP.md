@@ -154,9 +154,14 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
+  First-call method/schema/tool metadata is centralized in
+  `app/controllers/include/controllers/agent_contracts.def`.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology and `zcl.operator_deployment_safety.v1` policy. Use this before
   deciding where a fresh binary may be deployed or restarted.
+- `zclassic23 agentliveness` / `zcl_agent_liveness` — unified current-lane
+  liveness rollup: lane identity, observed listeners, supervisor children,
+  background quality verdicts, direct `overall_liveness`, and next drilldowns.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at
@@ -166,13 +171,15 @@ controller `k_routes[]` arrays.
   `make build-only`, `make t-fast`, `make fast-ci`, cache knobs, strict gates,
   and `make ci-reproducible`.
 - `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
-  for every `zcl_state` subsystem: name, description, key hint, expected cost,
-  freshness, owner shape, and native/MCP drill-down command.
+  for every `zcl_state` subsystem: name, description, accepted key forms,
+  expected cost, freshness, owner shape/file, read-only safety level, focused
+  tests, and native/MCP drill-down commands.
 - `zclassic23 timeline <category> <count>` / `zcl_timeline` — versioned
   semantic event timeline over the structured event ring. Categories include
   `sync`, `peer`, `message`, `chain`, `validation`, `condition`, `oracle`,
   `mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, and `net`; responses include
-  `head_seq` plus `events[].seq` cursor fields.
+  `head_seq`, `semantic_summary`, `type_counts`, `peer_counts`,
+  `recommended_drilldowns`, and `events[].seq` cursor fields.
 - `zclassic23 api` — native API discovery from the running node. It returns the
   same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the
@@ -207,8 +214,9 @@ and expose them through MCP/REST instead.
 - `zcl_node_log(pattern, since_secs, max_lines, level)` — server-side reverse
   scan of node.log in 64 KB chunks.
 - `zcl_timeline(category, count)` — category-filtered structured events with
-  `zcl.timeline.v1` metadata and seq cursors; prefer this before raw
-  `zcl_events` when answering root-cause questions.
+  `zcl.timeline.v1` metadata, semantic summaries, type/peer counts, suggested
+  drill-downs, and seq cursors; prefer this before raw `zcl_events` when
+  answering root-cause questions.
 - `zcl_sql("SELECT ...")` — SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
   budget, 100-row cap, rate-gated 1 RPS.
 
@@ -256,7 +264,8 @@ Confirm the target before acting.
    use `atomic_load` for thread-touched fields; don't allocate).
 3. Register one line in `app/controllers/src/diagnostics_registry.c`
    (`g_dumpers[]`). That's it — `zcl_state_catalog` and `zcl_state`
-   auto-expose it. ~30 lines total.
+   auto-expose it with owner file, accepted key forms, safety level, tests, and
+   drill-down commands. ~30 lines total.
 
 ---
 

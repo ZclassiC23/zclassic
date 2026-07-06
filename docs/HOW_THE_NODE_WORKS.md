@@ -72,6 +72,7 @@ answer.
 | `zclassic23 agentinterface` | Preferred AI/operator interface contract. Same contract as MCP `zcl_agent_interface`: MCP first, native CLI JSON second, REST read-only, no Python or `tools/z` logic required. |
 | `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, and first native/MCP/REST calls. Start here when choosing an interface. |
 | `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract. Same contract as MCP `zcl_agent_lanes`; use it before choosing a deploy or restart target. |
+| `zclassic23 agentliveness` | Unified lane/service/supervisor/background-quality liveness. Same contract as MCP `zcl_agent_liveness`; use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. |
 | `zcl_agent` | The simple first MCP check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `zcl_operator_summary` is the longer compatible alias. Start here when checking live state. |
 | `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone` and MCP `zcl_milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
 | `zcl_status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine (it stitches the `getpeerinfo` / `syncstate` / `healthcheck` RPCs with the `reducer_frontier` / `tip_finalize` / `condition_engine` dumps). Use after the summary names a drill-down. |
@@ -120,14 +121,16 @@ UTXO checkpoint compiled into the binary (`get_sha3_utxo_checkpoint()`), and the
 restore path refuses to install a non-matching tip (`utxo_recovery_frontier_gate.c`)
 — so it is safe, but it is **borrowed**, not re-derived from genesis. The plan
 (`docs/work/self-verified-tip-plan.md`, and `docs/work/sync-fix-plan-2026-06-21.md`
-for the ordered steps) replaces it with `-refold-from-anchor`
+for the ordered steps) replaces it with a **self-verified UTXO anchor rebuild**:
+the internal boot path is `-refold-from-anchor`
 (`app/jobs/src/refold_progress.c`, `app/services/src/anchor_selfmint.c`), which
 rebuilds the coin set from that compiled checkpoint forward, then deletes the
 borrowed-seed path and the older recovery-import code that fed it (≈3330 LOC
 production fully deletable, plus PRUNE-not-delete tear paths that keep their
 crash-recovery slice). Until that lands, the one place the node is not fully
 sovereign is its coin-set starting point. (Verify whether the cure has shipped via
-`docs/HANDOFF.md` and the live node — do not assume from this page.)
+`zclassic23 refold`, `docs/HANDOFF.md`, and the live node — do not assume from
+this page.)
 
 ## 5. START HERE — fresh agent
 
@@ -141,6 +144,8 @@ sovereign is its coin-set starting point. (Verify whether the cure has shipped v
 3. Look at the live node before trusting any doc: start with
    `zclassic23 agentmap` or `zcl_agent_map` for the code/docs/test map,
    `zclassic23 agentlanes` or `zcl_agent_lanes` for canonical/soak/dev safety,
+   `zclassic23 agentliveness` or `zcl_agent_liveness` for the current lane's
+   listener/supervisor/quality rollup,
    `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop, and
    `zclassic23 api` for interface discovery. Then use `zclassic23 agent` or
    `zcl_agent` for compact live state, and `zclassic23 milestone` or

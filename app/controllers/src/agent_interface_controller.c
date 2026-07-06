@@ -64,6 +64,15 @@ static void agent_interface_push_capability(struct json_value *arr,
     json_free(&obj);
 }
 
+static void agent_interface_push_registry_capabilities(struct json_value *arr)
+{
+#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) \
+    agent_interface_push_capability(arr, capability, schema, native, mcp,      \
+                                    rest, purpose);
+#include "controllers/agent_contracts.def"
+#undef AGENT_CONTRACT
+}
+
 static const char *agent_interface_param0_str(const struct json_value *params,
                                               const char *fallback)
 {
@@ -142,59 +151,19 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&capabilities);
     json_set_array(&capabilities);
-    agent_interface_push_capability(&capabilities, "discover_interface",
-        "zcl.agent_interface.v1", "zclassic23 agentinterface",
-        "zcl_agent_interface", "",
-        "ranked transports, payload rules, and C ownership boundaries");
-    agent_interface_push_capability(&capabilities, "runtime_status",
-        "zcl.public_status.v1", "zclassic23 agent", "zcl_agent",
-        "GET /api/v1/agent",
-        "compact live status, lane safety, blocker, and next action");
-    agent_interface_push_capability(&capabilities, "mirror_status",
-        "zcl.mirror_status.v1", "zclassic23 getmirrorstatus",
-        "zcl_mirror_status", "",
-        "mirror reachability, lag, hash agreement, and active blocker contract");
-    agent_interface_push_capability(&capabilities, "lane_topology",
-        "zcl.agent_lanes.v1", "zclassic23 agentlanes",
-        "zcl_agent_lanes", "",
-        "canonical, soak, and dev lane topology with restart/deploy rules");
+    agent_interface_push_registry_capabilities(&capabilities);
     agent_interface_push_capability(&capabilities, "semantic_state",
         "subsystem-specific zcl_state JSON", "zclassic23 dumpstate <subsystem>",
         "zcl_state", "",
         "generic subsystem state without adding bespoke tools");
-    agent_interface_push_capability(&capabilities, "state_catalog",
-        "zcl.state_catalog.v1", "zclassic23 statecatalog",
-        "zcl_state_catalog", "",
-        "machine-readable zcl_state subsystem catalog with keys, cost, and owner hints");
     agent_interface_push_capability(&capabilities, "bounded_logs",
         "zcl.node_log.v1", "zclassic23 getnodelog <pattern>",
         "zcl_node_log", "",
         "server-side log search without shipping full node.log history");
-    agent_interface_push_capability(&capabilities, "semantic_timeline",
-        "zcl.timeline.v1", "zclassic23 timeline <category> <count>",
-        "zcl_timeline", "",
-        "category-filtered structured event timeline with seq cursors");
     agent_interface_push_capability(&capabilities, "select_sql",
         "zcl.sql_result.v1", "zclassic23 dbquery <SELECT>",
         "zcl_sql", "",
         "bounded SELECT-only node.db inspection");
-    agent_interface_push_capability(&capabilities, "changed_files_to_tests",
-        "zcl.agent_impact.v1", "zclassic23 agentimpact <files...>",
-        "zcl_agent_impact", "",
-        "map edits to risk flags, docs, and focused validation");
-    agent_interface_push_capability(&capabilities, "build_loop",
-        "zcl.agent_build.v1", "zclassic23 agentbuild",
-        "zcl_agent_build", "",
-        "cache-aware compile/test/reproducibility contract");
-    agent_interface_push_capability(&capabilities, "operator_command_center",
-        "zcl.agent_ops.v1", "zclassic23 agentops",
-        "zcl_agent_ops", "",
-        "compact no-jq agent command center and next-work list");
-    agent_interface_push_capability(&capabilities, "deploy_guard",
-        "zcl.agent_deploy_guard.v1",
-        "zclassic23 agentdeployguard <action>",
-        "zcl_agent_deploy_guard", "",
-        "machine allow/refuse decision before restart or deploy");
     json_push_kv(result, "capabilities", &capabilities);
     json_free(&capabilities);
 
@@ -235,6 +204,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(&loop, "status", "zcl_agent");
     json_push_kv_str(&loop, "mirror_status", "zcl_mirror_status");
     json_push_kv_str(&loop, "lane_topology", "zcl_agent_lanes");
+    json_push_kv_str(&loop, "liveness", "zcl_agent_liveness");
     json_push_kv_str(&loop, "code_map", "zcl_agent_map");
     json_push_kv_str(&loop, "changed_files_to_tests", "zcl_agent_impact");
     json_push_kv_str(&loop, "build_contract", "zcl_agent_build");

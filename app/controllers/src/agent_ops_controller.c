@@ -93,6 +93,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_str(result, "mcp_tool", "zcl_agent_ops");
     json_push_kv_str(result, "live_status_command", "zclassic23 agent");
     json_push_kv_str(result, "live_status_tool", "zcl_agent");
+    json_push_kv_str(result, "liveness_command",
+                     "zclassic23 agentliveness");
+    json_push_kv_str(result, "liveness_tool", "zcl_agent_liveness");
     json_push_kv_str(result, "diagnostics_catalog_command",
                      "zclassic23 statecatalog");
     json_push_kv_str(result, "diagnostics_catalog_tool",
@@ -119,6 +122,10 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     agent_ops_push_command(&api_rules, "live_status",
                            "zclassic23 agent", "zcl_agent",
                            "serving state, heights, peers, blockers, lane, readiness");
+    agent_ops_push_command(&api_rules, "unified_liveness",
+                           "zclassic23 agentliveness",
+                           "zcl_agent_liveness",
+                           "lane, listener, supervisor, and background quality liveness");
     agent_ops_push_command(&api_rules, "state_drilldown",
                            "zclassic23 dumpstate <subsystem>", "zcl_state",
                            "one subsystem state object with description");
@@ -148,6 +155,10 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     agent_ops_push_command(&commands, "lanes",
                            "zclassic23 agentlanes", "zcl_agent_lanes",
                            "canonical/soak/dev safety contracts");
+    agent_ops_push_command(&commands, "liveness",
+                           "zclassic23 agentliveness",
+                           "zcl_agent_liveness",
+                           "current lane/service/supervisor/quality rollup");
     agent_ops_push_command(&commands, "build_loop",
                            "zclassic23 agentbuild", "zcl_agent_build",
                            "fast-ci, background quality lanes, reproducibility");
@@ -191,25 +202,25 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     json_init(&work);
     json_set_array(&work);
-    agent_ops_push_work(&work, 1, "finish_self_verified_anchor_refold",
+    agent_ops_push_work(&work, 1, "finish_self_verified_utxo_anchor_rebuild",
         "It replaces the borrowed snapshot seed with a UTXO anchor rebuilt from zclassic23's own verified block history.",
         "copy-prove -refold-from-anchor artifact and cutover gates",
         "copy fixture, refold tests, parity checks, live H* climb");
-    agent_ops_push_work(&work, 2, "make_agentops_the_first_call",
-        "No agent should need jq to know the next safe command or current API contract.",
-        "keep direct fields small and add only named drill-downs",
+    agent_ops_push_work(&work, 2, "dry_agent_contract_registry",
+        "The first-call contracts now exist, but their method/schema/tool names still appear in several tables.",
+        "move repeated agent command metadata into one C-owned registry",
         "syncdiag_rpc + mcp_controllers + make_lint_gates");
     agent_ops_push_work(&work, 3, "promote_diagnostics_catalog",
         "Every subsystem should be semantically discoverable without source search.",
         "keep zcl.state_catalog.v1 complete as dumpers grow and route agents through it first",
         "statecatalog RPC + MCP route + docs tests");
-    agent_ops_push_work(&work, 4, "add_semantic_timeline",
-        "Root-cause work should query peer/sync/reducer/deploy history directly.",
-        "extend zcl.timeline.v1 from event-ring categories toward durable event_log/node.log references",
+    agent_ops_push_work(&work, 4, "extend_semantic_timeline_durability",
+        "The event-ring timeline is semantic now; longer root-cause windows need durable event_log/node.log references.",
+        "extend zcl.timeline.v1 toward durable event_log/node.log references",
         "event + mcp_controllers + syncdiag_rpc");
-    agent_ops_push_work(&work, 5, "converge_lanes_quality_supervisor",
-        "Canonical, soak, dev, timers, and long-running quality lanes should appear in one liveness tree.",
-        "register or mirror lane/quality status into supervisor-style contracts",
+    agent_ops_push_work(&work, 5, "harden_agent_liveness_slos",
+        "zcl.agent_liveness.v1 now composes lanes, supervisor, and quality; the next step is explicit SLO thresholds.",
+        "add production SLO thresholds and alert semantics to the liveness summary",
         "supervisor production tree + lane health + background quality tests");
     json_push_kv(result, "top_next_work", &work);
     json_free(&work);

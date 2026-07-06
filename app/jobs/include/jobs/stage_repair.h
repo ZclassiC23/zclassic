@@ -226,8 +226,9 @@ struct stage_reducer_frontier_reconcile_result {
 
 /* Result classifiers used by the Condition and memo cache. Keep this seam
  * named: the coin-frontier group is the borrowed-seed recovery scaffold that
- * should shrink after the sovereign refold cure, while the row-residue group is
- * retained liveness repair. */
+ * should shrink after the self-verified UTXO anchor rebuild cure
+ * (-refold-from-anchor), while the row-residue group is retained liveness
+ * repair. */
 static inline bool stage_reducer_frontier_result_has_coin_repair_evidence(
     const struct stage_reducer_frontier_reconcile_result *rr)
 {

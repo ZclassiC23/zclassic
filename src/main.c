@@ -8,9 +8,10 @@
  *   zclassic23 agent                  — compact status from running node
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
+ *   zclassic23 agentliveness          — unified liveness rollup
  *   zclassic23 agentinterface         — preferred AI/operator interface
  *   zclassic23 milestone              — ASCII milestone status from node
- *   zclassic23 refold                 — refold anchor readiness from node
+ *   zclassic23 refold                 — UTXO anchor rebuild readiness
  *   zclassic23 <method> [params...]   — RPC client to running node */
 
 #include "config/boot.h"
@@ -778,6 +779,7 @@ static bool cli_static_agent_method(const char *method)
 {
     return strcmp(method, "agentmap") == 0 ||
            strcmp(method, "agentlanes") == 0 ||
+           strcmp(method, "agentliveness") == 0 ||
            strcmp(method, "agentimpact") == 0 ||
            strcmp(method, "agentcontracts") == 0 ||
            strcmp(method, "agentbuild") == 0 ||
@@ -804,6 +806,8 @@ static bool cli_run_static_agent_method(const char *method,
         ok = rpc_agent_map(&params, false, &result);
     } else if (strcmp(method, "agentlanes") == 0) {
         ok = rpc_agent_lanes(&params, false, &result);
+    } else if (strcmp(method, "agentliveness") == 0) {
+        ok = rpc_agent_liveness(&params, false, &result);
     } else if (strcmp(method, "agentimpact") == 0) {
         ok = rpc_agent_impact(&params, false, &result);
     } else if (strcmp(method, "agentcontracts") == 0) {
@@ -1034,6 +1038,7 @@ static void print_usage(const char *prog)
     printf("  %s agent                   Compact status from running node\n", prog);
     printf("  %s agentmap                AI-coder code/docs/test map\n", prog);
     printf("  %s agentlanes              Canonical/soak/dev lane topology JSON\n", prog);
+    printf("  %s agentliveness           Lane/service/supervisor/quality liveness\n", prog);
     printf("  %s agentimpact <files...>  Changed files to tests/risk\n", prog);
     printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
@@ -1044,7 +1049,7 @@ static void print_usage(const char *prog)
     printf("  %s agentdeployguard [act]  C-native deploy/restart guard JSON\n", prog);
     printf("  %s getmirrorstatus         Mirror lag/blocker contract JSON\n", prog);
     printf("  %s milestone               ASCII milestone status from running node\n", prog);
-    printf("  %s refold                  Refold anchor readiness from running node\n", prog);
+    printf("  %s refold                  UTXO anchor rebuild readiness from running node\n", prog);
     printf("  %s --agent                 Same compact status\n", prog);
     printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);

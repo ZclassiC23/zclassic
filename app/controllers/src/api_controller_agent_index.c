@@ -14,6 +14,7 @@ void api_rest_index_mcp_json(struct json_value *mcp)
     json_push_kv_str(mcp, "first_tool", "zcl_agent");
     json_push_kv_str(mcp, "map_tool", "zcl_agent_map");
     json_push_kv_str(mcp, "lanes_tool", "zcl_agent_lanes");
+    json_push_kv_str(mcp, "liveness_tool", "zcl_agent_liveness");
     json_push_kv_str(mcp, "impact_tool", "zcl_agent_impact");
     json_push_kv_str(mcp, "contracts_tool", "zcl_agent_contracts");
     json_push_kv_str(mcp, "build_tool", "zcl_agent_build");
@@ -35,6 +36,7 @@ void api_rest_index_cli_json(struct json_value *cli)
     json_push_kv_str(cli, "first_command", "zclassic23 agent");
     json_push_kv_str(cli, "map_command", "zclassic23 agentmap");
     json_push_kv_str(cli, "lanes_command", "zclassic23 agentlanes");
+    json_push_kv_str(cli, "liveness_command", "zclassic23 agentliveness");
     json_push_kv_str(cli, "impact_command", "zclassic23 agentimpact <files...>");
     json_push_kv_str(cli, "contracts_command", "zclassic23 agentcontracts");
     json_push_kv_str(cli, "build_command", "zclassic23 agentbuild");

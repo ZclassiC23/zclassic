@@ -4,10 +4,11 @@
 # Lint gate — no NEW production caller of stage_repair_coin_backfill_try.
 #
 # The coin-backfill repair ladder is a borrowed-seed-era cure path that should
-# shrink after the sovereign refold cutover. Keep the runtime entry point owned
-# by reducer_frontier only; new production callers widen the repair fabric and
-# must fail review. A second call in the allowed file also fails so the allowed
-# surface remains exact, not "anything from this file".
+# shrink after the self-verified UTXO anchor rebuild cutover
+# (-refold-from-anchor). Keep the runtime entry point owned by reducer_frontier
+# only; new production callers widen the repair fabric and must fail review. A
+# second call in the allowed file also fails so the allowed surface remains
+# exact, not "anything from this file".
 set -euo pipefail
 
 ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -56,5 +57,5 @@ fi
 echo ""
 echo "Do NOT add another coin-backfill repair entry caller. Route reducer-frontier"
 echo "repair evidence through the existing dispatcher, or delete/shrink this ladder"
-echo "after the sovereign refold cure."
+echo "after the self-verified UTXO anchor rebuild cure (-refold-from-anchor)."
 exit 1

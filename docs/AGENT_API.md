@@ -11,6 +11,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Live node status | `zclassic23 agent` | `zcl_agent` |
 | Code/docs/test map | `zclassic23 agentmap` | `zcl_agent_map` |
 | Lane topology | `zclassic23 agentlanes` | `zcl_agent_lanes` |
+| Unified liveness | `zclassic23 agentliveness` | `zcl_agent_liveness` |
 | Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
@@ -26,13 +27,18 @@ for the versioned contract registry, and `app/controllers/src/agent_ops_controll
 for the focused no-jq command center. MCP routes in
 `tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
 currently exposes the public status contract at `GET /api/v1/agent`.
+First-call method/schema/tool metadata lives in the C-owned registry
+`app/controllers/include/controllers/agent_contracts.def`; runtime availability,
+the contract registry, and the interface capability matrix consume that table
+instead of maintaining separate lists.
 
 ## Preferred Interface
 
 The best interface for an AI coding operator is MCP with typed JSON tools:
 start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_interface` when checking the full transport contract, then use
-`zcl_agent`, `zcl_agent_lanes`, `zcl_mirror_status`, `zcl_agent_impact`,
+`zcl_agent`, `zcl_agent_liveness`, `zcl_agent_lanes`, `zcl_mirror_status`,
+`zcl_agent_impact`,
 `zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
 `zcl_node_log`, and `zcl_sql` as needed. The native binary commands (`zclassic23 agentinterface`,
 `zclassic23 agent`, etc.) are the second-best interface for terminal work and
@@ -53,6 +59,14 @@ zclassicd are at the same height with the same hash, whether a blocker is truly
 active, and whether operator action is required. A
 same-height same-hash mirror with no active blocker is healthy even if an older
 runtime or cached field once mentioned a transient `hash-disagreement`.
+
+`agentliveness` (`zcl.agent_liveness.v1`) is the one-call runtime liveness
+rollup. It composes `current_runtime_lane`, observed runtime listeners,
+`supervisor_state`, and `background_quality_status`, then adds direct fields
+such as `overall_liveness`, `agent_next_action`, `liveness_summary`, and
+`recommended_drilldowns`. Use it when deciding whether a lane is alive,
+stalled, missing quality verdicts, or merely being inspected from a static
+binary outside a running node.
 `tools/z mirror --json` mirrors that interpretation only as a compatibility
 shim for long-running older binaries: it clears a `hash-disagreement` active
 blocker only when the payload itself proves equal height and equal hash.
@@ -167,8 +181,10 @@ processing after a bounded batch (`ZCL_MSG_PROCESS_MAX_PER_CYCLE`) so the
 outbound send/assignment phase keeps running even under a large receive backlog
 or slow local reducer work. Use `zcl_status`
 for the larger health packet, `zcl_state_catalog` to discover every state
-subsystem and its key/cost/freshness hints, `zcl_state` for subsystem internals,
-`zcl_timeline` for category-filtered structured event history with seq cursors,
+subsystem and its accepted keys, cost, freshness, owner file, safety level,
+tests, and drill-down commands, `zcl_state` for subsystem internals,
+`zcl_timeline` for category-filtered structured event history with semantic
+summaries, type/peer counts, recommended drill-downs, and seq cursors,
 `zcl_node_log` for bounded log search, `zcl_sql` for SELECT-only database
 inspection, and `zcl_events` for the raw recent event ring.
 
@@ -176,9 +192,10 @@ Every new subsystem that has runtime state should expose it through the
 diagnostics registry and become reachable through `zcl_state`. The same
 registry feeds `zclassic23 statecatalog` / `zcl_state_catalog`
 (`zcl.state_catalog.v1`), so agents can discover the subsystem name,
-description, owner shape, expected cost, freshness, and key hint without source
-search. Expensive development proof state belongs in a named background quality
-lane with a JSON verdict, not in an untracked terminal scrollback.
+description, owner shape/file, expected cost, freshness, accepted keys, safety
+level, focused tests, and drill-down commands without source search. Expensive
+development proof state belongs in a named background quality lane with a JSON
+verdict, not in an untracked terminal scrollback.
 
 For "what happened?" questions, start with `zclassic23 timeline sync 50` or
 `zcl_timeline(category="sync", count=50)` and switch category as needed
@@ -186,7 +203,9 @@ For "what happened?" questions, start with `zclassic23 timeline sync 50` or
 `boot`, `db`, `wallet`, `disk`, `mcp`, `net`). The response is
 `zcl.timeline.v1`, includes `head_seq`, and returns `events[].seq` so agents can
 tie a timeline slice to later drill-downs without piping raw events through
-`jq`.
+`jq`. The same payload includes `semantic_summary`, `type_counts`,
+`peer_counts`, `safe_next_action`, and `recommended_drilldowns` so common
+root-cause triage stays server-side.
 
 ## Operator Lane
 
