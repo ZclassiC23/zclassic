@@ -784,6 +784,95 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("peerincidents: exposes compact duplicate host telemetry "
+           "(RED)... ");
+    {
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+        struct p2p_node zigma_a;
+        struct p2p_node zigma_b;
+
+        peer_lifecycle_reset_for_test();
+        memset(&zigma_a, 0, sizeof(zigma_a));
+        syncdiag_set_ipv4(&zigma_a.addr, 40, 160, 53, 56, 45474);
+        zigma_a.id = 7701;
+        zigma_a.inbound = true;
+        zigma_a.state = PEER_HANDSHAKE_COMPLETE;
+        zigma_a.services = NODE_NETWORK;
+        snprintf(zigma_a.addr_name, sizeof(zigma_a.addr_name),
+                 "40.160.53.56:45474");
+        snprintf(zigma_a.sub_ver, sizeof(zigma_a.sub_ver),
+                 "%s", "/Zigma:0.1.0/");
+
+        memset(&zigma_b, 0, sizeof(zigma_b));
+        syncdiag_set_ipv4(&zigma_b.addr, 40, 160, 53, 56, 39030);
+        zigma_b.id = 7702;
+        zigma_b.inbound = true;
+        zigma_b.state = PEER_HANDSHAKE_COMPLETE;
+        zigma_b.services = NODE_NETWORK;
+        snprintf(zigma_b.addr_name, sizeof(zigma_b.addr_name),
+                 "40.160.53.56:39030");
+        snprintf(zigma_b.sub_ver, sizeof(zigma_b.sub_ver),
+                 "%s", "/Zigma:0.1.0/");
+
+        peer_lifecycle_note_connected(&zigma_a,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&zigma_a, zigma_a.services,
+                                             3172229, zigma_a.sub_ver);
+        peer_lifecycle_note_handshake_complete(&zigma_a);
+        peer_lifecycle_note_active(&zigma_a);
+
+        peer_lifecycle_note_connected(&zigma_b,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&zigma_b, zigma_b.services,
+                                             3172230, zigma_b.sub_ver);
+        peer_lifecycle_note_handshake_complete(&zigma_b);
+        peer_lifecycle_note_active(&zigma_b);
+
+        rpc_table_init(&tbl);
+        register_net_rpc_commands(&tbl);
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        bool ok = rpc_table_execute(&tbl, "peerincidents",
+                                    &params, &result);
+        const struct json_value *primary =
+            json_get(&result, "primary_host_issue");
+        const struct json_value *hosts =
+            json_get(&result, "duplicate_host_groups");
+        const struct json_value *top_hosts =
+            json_get(&result, "top_host_incidents");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.peer_incidents.v1") == 0;
+        ok = ok && json_get_bool(json_get(&result, "bounded"));
+        ok = ok && json_get_int(json_get(&result,
+                         "duplicate_host_group_count")) == 1;
+        ok = ok && json_get_int(json_get(&result,
+                         "duplicate_open_host_group_count")) == 1;
+        ok = ok && json_get_int(json_get(&result,
+                         "duplicate_handshaked_host_group_count")) == 1;
+        ok = ok && primary && primary->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(primary, "host")),
+                          "40.160.53.56") == 0;
+        ok = ok && json_get_bool(json_get(primary,
+                                          "duplicate_current_connections"));
+        ok = ok && json_get_bool(json_get(primary,
+                                          "bootstrap_useful"));
+        ok = ok && hosts && hosts->type == JSON_ARR;
+        ok = ok && json_size(hosts) == 1;
+        ok = ok && top_hosts && top_hosts->type == JSON_ARR;
+        ok = ok && json_size(top_hosts) == 1;
+
+        json_free(&params);
+        json_free(&result);
+        peer_lifecycle_reset_for_test();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("getnetworkinfo: exposes configured external endpoint "
            "(RED)... ");
     {

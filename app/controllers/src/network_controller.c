@@ -659,6 +659,21 @@ static bool rpc_getconnectioncount(const struct json_value *params, bool help,
     return true;
 }
 
+static bool rpc_peerincidents(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "peerincidents\n"
+        "Returns a bounded peer lifecycle incident view grouped by host.");
+
+    if (!peer_lifecycle_incidents_json(result)) {
+        json_set_str(result, "peer lifecycle incident view unavailable");
+        return false;
+    }
+    return true;
+}
+
 static bool rpc_ping_rpc(const struct json_value *params, bool help,
                            struct json_value *result)
 {
@@ -749,6 +764,7 @@ void register_net_rpc_commands(struct rpc_table *t)
         { "network", "bootstrapstatus",   rpc_bootstrapstatus,   true },
         { "network", "getpeerinfo",       rpc_getpeerinfo,       true },
         { "network", "getconnectioncount", rpc_getconnectioncount, true },
+        { "network", "peerincidents",     rpc_peerincidents,     true },
         { "network", "ping",              rpc_ping_rpc,          true },
         { "network", "addnode",           rpc_addnode,           true },
     };

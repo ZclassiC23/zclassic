@@ -138,6 +138,12 @@ incident view found material duplicate, reconnect, timeout, reject, or no-peer
 signals and `safe_next_action` will point at a host-specific
 `peer_primary_host_next_action` when the compact host scorer can name one;
 otherwise it falls back to the generic peer-lifecycle drill-down.
+For a peer-only packet without the rest of `agentdiagnose`, use native
+`zclassic23 peerincidents` or MCP `zcl_peer_incidents`. The response schema is
+`zcl.peer_incidents.v1` and is bounded by design: it returns aggregate incident
+counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
+last disconnect reasons, service flags, advertised heights, and bootstrap /
+fast-sync usefulness without requiring log scraping.
 Likewise, `mirror_severity=info` means the advisory zclassicd mirror is worth
 watching but is not a local-node stability blocker; only
 `mirror_operator_action_required=true` escalates the overall diagnosis.

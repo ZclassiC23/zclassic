@@ -22,6 +22,7 @@
 
 DEFINE_PT(h_zcl_peers,        "getpeerinfo",    "mcp.net")
 DEFINE_PT(h_zcl_networkinfo,  "getnetworkinfo", "mcp.net")
+DEFINE_PT(h_zcl_peer_incidents, "peerincidents", "mcp.net")
 DEFINE_PT(h_zcl_bootstrapstatus, "bootstrapstatus", "mcp.net")
 DEFINE_PT(h_zcl_onion_status, "healthcheck",    "mcp.net")
 DEFINE_PT(h_zcl_gametypes,    "gametypes",      "mcp.net")
@@ -164,6 +165,10 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_networkinfo", "net",
       "Network info: reachability, handshakes, and lifecycle failures by source.",
       NULL, 0, h_zcl_networkinfo, 0, NULL },
+    { "zcl_peer_incidents", "net",
+      "Bounded peer lifecycle incident view: reconnects, duplicates, "
+      "disconnect reasons, services, advertised height, and bootstrap usefulness.",
+      NULL, 0, h_zcl_peer_incidents, 0, NULL },
     { "zcl_bootstrapstatus", "net",
       "Versioned bootstrap-service contract: ordinary P2P bootstrap "
       "readiness plus zclassicd beta6 snapshot-bootstrap compatibility.",
