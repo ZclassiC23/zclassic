@@ -24,6 +24,8 @@ struct peer_lifecycle_entry {
     int64_t first_seen;
     int64_t last_seen;
     int64_t connected_at;
+    int64_t last_reconnect_at;
+    int64_t last_reconnect_interval_secs;
     uint64_t connected_seq;
     int64_t version_sent_at;
     int64_t version_received_at;
@@ -72,6 +74,10 @@ struct peer_lifecycle_host_group {
     int64_t rejected;
     int64_t reconnects;
     int64_t pre_handshake_disconnects;
+    int64_t last_reconnect_at;
+    int64_t last_reconnect_interval_secs;
+    int64_t min_reconnect_interval_secs;
+    int64_t max_reconnect_interval_secs;
     int64_t last_seen;
     int64_t max_advertised_height;
     uint64_t services_or;
@@ -415,6 +421,11 @@ void peer_lifecycle_note_connected(const struct p2p_node *node,
         bool terminal_after_connect =
             e->terminal_seq > 0 && e->terminal_seq >= e->connected_seq;
         e->peer_id = node ? node->id : e->peer_id;
+        if (terminal_after_connect && e->connected_at > 0) {
+            e->last_reconnect_at = now;
+            e->last_reconnect_interval_secs =
+                now >= e->connected_at ? now - e->connected_at : 0;
+        }
         e->connected++;
         if (e->connected_at == 0 || terminal_after_connect) {
             e->connected_at = now;
@@ -654,6 +665,9 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
                      e->pre_handshake_disconnects);
     json_push_kv_str(out, "direction", entry_direction(e));
     json_push_kv_int(out, "reconnects", entry_reconnects(e));
+    json_push_kv_int(out, "last_reconnect_at", e->last_reconnect_at);
+    json_push_kv_int(out, "last_reconnect_interval_secs",
+                     e->last_reconnect_interval_secs);
     json_push_kv_bool(out, "connection_open", entry_connection_open(e));
     json_push_kv_bool(out, "current_connection_handshaked",
                       entry_current_connection_handshaked(e));
@@ -825,6 +839,22 @@ static void host_group_add_entry(struct peer_lifecycle_host_group *group,
     group->rejected += e->rejected;
     group->reconnects += entry_reconnects(e);
     group->pre_handshake_disconnects += e->pre_handshake_disconnects;
+    if (e->last_reconnect_interval_secs > 0) {
+        if (group->min_reconnect_interval_secs == 0 ||
+            e->last_reconnect_interval_secs <
+                group->min_reconnect_interval_secs)
+            group->min_reconnect_interval_secs =
+                e->last_reconnect_interval_secs;
+        if (e->last_reconnect_interval_secs >
+            group->max_reconnect_interval_secs)
+            group->max_reconnect_interval_secs =
+                e->last_reconnect_interval_secs;
+        if (e->last_reconnect_at >= group->last_reconnect_at) {
+            group->last_reconnect_at = e->last_reconnect_at;
+            group->last_reconnect_interval_secs =
+                e->last_reconnect_interval_secs;
+        }
+    }
     group->services_or |= e->services;
     if (e->start_height > group->max_advertised_height)
         group->max_advertised_height = e->start_height;
@@ -1048,6 +1078,9 @@ static void append_incident_peer_json(
     json_push_kv_int(&obj, "duplicate_host_entries",
                      pick->duplicate_host_entries);
     json_push_kv_int(&obj, "reconnects", entry_reconnects(e));
+    json_push_kv_int(&obj, "last_reconnect_at", e->last_reconnect_at);
+    json_push_kv_int(&obj, "last_reconnect_interval_secs",
+                     e->last_reconnect_interval_secs);
     json_push_kv_int(&obj, "connected", e->connected);
     json_push_kv_int(&obj, "handshake_complete", e->handshake_complete);
     json_push_kv_int(&obj, "disconnected", e->disconnected);
@@ -1109,6 +1142,13 @@ static void host_group_to_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_int(obj, "timeout", g->timeout);
     json_push_kv_int(obj, "rejected", g->rejected);
     json_push_kv_int(obj, "reconnects", g->reconnects);
+    json_push_kv_int(obj, "last_reconnect_at", g->last_reconnect_at);
+    json_push_kv_int(obj, "last_reconnect_interval_secs",
+                     g->last_reconnect_interval_secs);
+    json_push_kv_int(obj, "min_reconnect_interval_secs",
+                     g->min_reconnect_interval_secs);
+    json_push_kv_int(obj, "max_reconnect_interval_secs",
+                     g->max_reconnect_interval_secs);
     json_push_kv_int(obj, "pre_handshake_disconnects",
                      g->pre_handshake_disconnects);
     json_push_kv_int(obj, "services_or", (int64_t)g->services_or);

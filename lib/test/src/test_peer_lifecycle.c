@@ -520,6 +520,7 @@ static int test_peer_lifecycle_incident_view(void)
         peer_lifecycle_note_handshake_complete(&zigma_a);
         peer_lifecycle_note_active(&zigma_a);
         peer_lifecycle_note_disconnected(&zigma_a, "cleanup");
+        sleep(1);
         peer_lifecycle_note_connected(&zigma_a,
                                       PEER_LIFECYCLE_SOURCE_INBOUND);
         peer_lifecycle_note_version_received(&zigma_a, zigma_a.services,
@@ -610,6 +611,14 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(!json_get_bool(json_get(group,
                                        "duplicate_handshaked_connections")));
         ASSERT(json_get_int(json_get(group, "reconnects")) == 1);
+        ASSERT(json_get_int(json_get(group,
+                                     "last_reconnect_interval_secs")) >= 1);
+        ASSERT(json_get_int(json_get(group,
+                                     "min_reconnect_interval_secs")) >= 1);
+        ASSERT(json_get_int(json_get(group,
+                                     "max_reconnect_interval_secs")) >=
+               json_get_int(json_get(group,
+                                     "min_reconnect_interval_secs")));
         ASSERT(json_get_int(json_get(group, "timeout")) == 1);
         ASSERT(json_get_int(json_get(group,
                                      "pre_handshake_disconnects")) == 1);
@@ -644,6 +653,8 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(b && b->type == JSON_OBJ);
         ASSERT(json_get_int(json_get(a, "duplicate_host_entries")) == 2);
         ASSERT(json_get_int(json_get(a, "reconnects")) == 1);
+        ASSERT(json_get_int(json_get(a,
+                                     "last_reconnect_interval_secs")) >= 1);
         ASSERT(strcmp(json_get_str(json_get(a, "direction")), "inbound") == 0);
         ASSERT(strstr(json_get_str(json_get(a, "services_summary")),
                       "NODE_NETWORK") != NULL);
