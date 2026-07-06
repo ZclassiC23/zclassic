@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     115  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     116  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -61,8 +61,9 @@
                                  * +8 agent API tools: map, lanes, impact,
                                  *   contracts, build, interface, ops, deploy_guard
                                  * +1 net bootstrapstatus
-                                 * +1 state catalog: zcl_state_catalog */
-#define EXPECTED_OPS        50  /* + zcl_rebuild_recent (bounded recovery);
+                                 * +1 state catalog: zcl_state_catalog
+                                 * +1 semantic timeline: zcl_timeline */
+#define EXPECTED_OPS        51  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -80,7 +81,8 @@
                                  * + zcl_operator_summary + zcl_agent
                                  *   (simple MCP status)
                                  * + zcl_refold_status
-                                 * +7 zcl_agent_* development tools */
+                                 * +7 zcl_agent_* development tools
+                                 * + zcl_timeline */
 #define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
@@ -416,7 +418,7 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_name_resolve", "zcl_msg_send",
             "zcl_swap_chains", "zcl_market_list",
             "zcl_tools_list", "zcl_self_test", "zcl_logtail",
-            "zcl_rpc", "zcl_state_catalog",
+            "zcl_rpc", "zcl_state_catalog", "zcl_timeline",
             "zcl_postmortem_list", "zcl_postmortem_replay",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
@@ -1137,8 +1139,20 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"native_command\":\"zclassic23 agentops\","
                       "\"mcp_tool\":\"zcl_agent_ops\","
                       "\"top_next_work\":[{\"rank\":1,"
-                      "\"name\":\"finish_sovereign_refold\"}],"
+                      "\"name\":\"finish_self_verified_anchor_refold\"}],"
                       "\"direct_commands\":[{\"name\":\"live_status\"}]}");
+    if (strcmp(method, "timeline") == 0)
+        return strdup("{\"schema\":\"zcl.timeline.v1\","
+                      "\"api_version\":\"v1\","
+                      "\"status\":\"ok\","
+                      "\"source\":\"event_ring\","
+                      "\"category\":\"sync\","
+                      "\"type_prefix\":\"sync.\","
+                      "\"mcp_tool\":\"zcl_timeline\","
+                      "\"head_seq\":12,"
+                      "\"events\":[{\"seq\":11,"
+                      "\"type\":\"sync.heartbeat\","
+                      "\"data\":\"state=headers\"}]}");
     if (strcmp(method, "agentdeployguard") == 0) {
         g_agent_deploy_guard_params_seen =
             params_json && contains(params_json, "canonical-deploy");
@@ -1487,6 +1501,22 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
                       "zcl_agent_ops");
         ASSERT(json_get(&root, "top_next_work") != NULL);
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        ASSERT(json_read(&args, "{\"category\":\"sync\",\"count\":5}",
+                         strlen("{\"category\":\"sync\",\"count\":5}")));
+        body = mcp_router_dispatch("zcl_timeline", &args);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.timeline.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_timeline");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "category")),
+                      "sync");
+        ASSERT(json_get(&root, "events") != NULL);
         json_free(&root);
         free(body);
 

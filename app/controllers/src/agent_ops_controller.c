@@ -100,6 +100,11 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_str(result, "diagnostics_drilldown_command",
                      "zclassic23 dumpstate <subsystem> [key]");
     json_push_kv_str(result, "diagnostics_drilldown_tool", "zcl_state");
+    json_push_kv_str(result, "timeline_command",
+                     "zclassic23 timeline <category> <count>");
+    json_push_kv_str(result, "timeline_tool", "zcl_timeline");
+    json_push_kv_str(result, "refold_plain_english",
+                     "Rebuild the UTXO/trust anchor from zclassic23's own verified block history, then cut over so the node no longer depends on a borrowed snapshot seed.");
 
     agent_push_operator_lane_json(result, "current_runtime_lane");
     agent_push_runtime_build_json(result, "runtime_build");
@@ -122,6 +127,10 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     agent_ops_push_command(&api_rules, "log_search",
                            "zclassic23 getnodelog <pattern>", "zcl_node_log",
                            "bounded server-side log search");
+    agent_ops_push_command(&api_rules, "semantic_timeline",
+                           "zclassic23 timeline <category> <count>",
+                           "zcl_timeline",
+                           "versioned event timeline by category with seq cursors");
     agent_ops_push_command(&api_rules, "test_routing",
                            "zclassic23 agentimpact <files...>",
                            "zcl_agent_impact",
@@ -174,15 +183,15 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "statecatalog RPC + MCP catalog tests");
     agent_ops_push_work(&gaps, 3, "timeline_query",
         "Agents still stitch together logs, SQL, events, and condition detail to answer what happened.",
-        "add bounded C-native event/log timeline query with categories and cursors",
-        "event_log + mcp fuzz + syncdiag_rpc");
+        "ship and extend zcl.timeline.v1 before adding more bespoke log readers",
+        "event + mcp_controllers + syncdiag_rpc");
     json_push_kv(result, "api_gaps", &gaps);
     json_free(&gaps);
 
     json_init(&work);
     json_set_array(&work);
-    agent_ops_push_work(&work, 1, "finish_sovereign_refold",
-        "It removes the borrowed snapshot trust root and simplifies recovery architecture.",
+    agent_ops_push_work(&work, 1, "finish_self_verified_anchor_refold",
+        "It replaces the borrowed snapshot seed with a UTXO anchor rebuilt from zclassic23's own verified block history.",
         "copy-prove -refold-from-anchor artifact and cutover gates",
         "copy fixture, refold tests, parity checks, live H* climb");
     agent_ops_push_work(&work, 2, "make_agentops_the_first_call",
@@ -195,8 +204,8 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "statecatalog RPC + MCP route + docs tests");
     agent_ops_push_work(&work, 4, "add_semantic_timeline",
         "Root-cause work should query peer/sync/reducer/deploy history directly.",
-        "C-native bounded timeline over event_log plus node.log references",
-        "event_log tests + zcl_events/zcl_node_log MCP tests");
+        "extend zcl.timeline.v1 from event-ring categories toward durable event_log/node.log references",
+        "event + mcp_controllers + syncdiag_rpc");
     agent_ops_push_work(&work, 5, "converge_lanes_quality_supervisor",
         "Canonical, soak, dev, timers, and long-running quality lanes should appear in one liveness tree.",
         "register or mirror lane/quality status into supervisor-style contracts",

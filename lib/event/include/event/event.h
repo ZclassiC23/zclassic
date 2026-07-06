@@ -302,6 +302,11 @@ const char *event_type_name(enum event_type type);
 size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
                                  const char *type_prefix);
 
+/* Monotonic sequence number that will be assigned to the next emitted event.
+ * Existing event objects expose their own `seq`; this helper gives timeline
+ * callers a cheap cursor upper bound without reading the ring internals. */
+uint64_t event_log_head_sequence(void);
+
 /* Install crash signal handlers (SIGSEGV, SIGABRT, SIGBUS).
  * On crash, dumps last 200 events to stderr before exit. */
 void event_install_crash_handler(void);

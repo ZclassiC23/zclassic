@@ -285,7 +285,7 @@ void api_refold_status_json(struct json_value *result)
     json_push_kv_str(result, "api_version", ZCL_REST_API_VERSION);
     json_push_kv_str(result, "source", "zclassic23");
     json_push_kv_str(result, "purpose",
-                     "sovereign refold anchor readiness");
+                     "self-verified anchor refold readiness");
     json_push_kv_bool(result, "ready_for_refold",
                       status_ok && st.verified);
     json_push_kv_str(result, "primary_blocker",

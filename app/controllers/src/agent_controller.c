@@ -94,9 +94,9 @@ static bool agent_path_is_native_agent_api(const char *path)
 {
     static const char *const paths[] = {
         "app/controllers/src/agent_controller.c", "app/controllers/src/agent_background_quality.c", "app/controllers/src/agent_impact_rules.c", "app/controllers/src/agent_interface_controller.c",
-        "app/controllers/src/agent_lanes_controller.c", "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_ops_controller.c", "app/controllers/src/agent_resources.c", "app/controllers/src/agent_restart_watchdog.c",
+        "app/controllers/src/agent_contracts_controller.c", "app/controllers/src/agent_lanes_controller.c", "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_ops_controller.c", "app/controllers/src/agent_resources.c", "app/controllers/src/agent_restart_watchdog.c",
         "app/controllers/src/agent_runtime_controller.c", "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h", "app/controllers/src/event_agent_summary.c",
-        "app/controllers/src/event_agent_summary.h", "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_background_quality.h", "app/controllers/include/controllers/agent_impact_rules.def",
+        "app/controllers/src/event_agent_summary.h", "app/controllers/src/event_timeline_controller.c", "app/controllers/include/controllers/event_timeline_controller.h", "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_background_quality.h", "app/controllers/include/controllers/agent_impact_rules.def",
         "app/controllers/include/controllers/agent_impact_rules.h", "app/controllers/include/controllers/agent_operator_contracts.h", "app/controllers/include/controllers/agent_resources.h", "app/controllers/include/controllers/agent_restart_watchdog.h",
         "app/controllers/src/diagnostics_registry.c", "app/controllers/src/diagnostics_controller.c", "app/controllers/include/controllers/diagnostics_controller.h", "app/controllers/include/controllers/diagnostics_internal.h",
     };
@@ -295,6 +295,10 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zcl_health", "strict health drill-down");
     agent_push_command(&commands, "logs", "zclassic23 getnodelog <regex>",
                        "zcl_node_log", "bounded server-side log search");
+    agent_push_command(&commands, "timeline",
+                       "zclassic23 timeline <category> <count>",
+                       "zcl_timeline",
+                       "category-filtered event timeline with seq cursors");
     agent_push_command(&commands, "state", "zclassic23 dumpstate <subsystem>",
                        "zcl_state", "generic subsystem diagnostics");
     agent_push_command(&commands, "state_catalog", "zclassic23 statecatalog",
@@ -330,6 +334,10 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zclassic23 eventlog <count>",
                        "zcl_events",
                        "recent structured node events");
+    agent_push_command(&telemetry, "timeline",
+                       "zclassic23 timeline <category> <count>",
+                       "zcl_timeline",
+                       "versioned category-filtered event timeline with seq cursors");
     agent_push_command(&telemetry, "quality_lanes",
                        "make quality-linger-status",
                        "zcl_agent_build",
@@ -341,7 +349,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_set_array(&subsystems);
     agent_push_subsystem(&subsystems, "native_agent_api",
                          "first-call binary JSON contracts",
-                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_runtime_controller.c, src/main.c",
+                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_contracts_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_runtime_controller.c, src/main.c",
                          "docs/AGENT_API.md",
                          "syncdiag_rpc, mcp_controllers, make_lint_gates",
                          "zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map");
@@ -507,144 +515,6 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
     json_free(&groups);
     json_free(&commands);
     json_free(&gates);
-    return true;
-}
-
-static void agent_push_schema(struct json_value *arr, const char *schema,
-                              const char *producer, const char *purpose)
-{
-    struct json_value obj;
-    json_init(&obj);
-    json_set_object(&obj);
-    json_push_kv_str(&obj, "schema", schema);
-    json_push_kv_str(&obj, "producer", producer);
-    json_push_kv_str(&obj, "purpose", purpose);
-    json_push_back(arr, &obj);
-    json_free(&obj);
-}
-
-bool rpc_agent_contracts(const struct json_value *params, bool help,
-                         struct json_value *result)
-{
-    (void)params;
-    RPC_HELP(help, result,
-        "agentcontracts\n"
-        "\nReturn the versioned AI/operator API contracts and their native,\n"
-        "MCP, and REST transport names.\n"
-        "\nResult:\n"
-        "  { \"schema\":\"zcl.agent_contracts.v1\", "
-        "\"schemas\":[...] }\n");
-
-    struct json_value schemas, transports, rules;
-    json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_contracts.v1");
-    json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "status", "ok");
-    json_push_kv_str(result, "canonical_interface",
-                     "native zclassic23 agent* RPCs and MCP zcl_agent_* tools");
-
-    json_init(&schemas);
-    json_set_array(&schemas);
-    agent_push_schema(&schemas, "zcl.public_status.v1",
-                      "zclassic23 agent / zcl_agent / GET /api/v1/agent",
-                      "compact live node status");
-    agent_push_schema(&schemas, "zcl.agent_readiness.v1",
-                      "nested in zcl.public_status.v1 readiness",
-                      "separates chain-serving readiness from index projection freshness");
-    agent_push_schema(&schemas, "zcl.height_contract.v1",
-                      "nested in zcl.public_status.v1 height_contract",
-                      "names served H*, active lookahead, header, peer, and target heights");
-    agent_push_schema(&schemas, "zcl.mirror_status.v1",
-                      "nested in zcl.public_status.v1 and getmirrorstatus mirror_contract",
-                      "names mirror reachability, lag, hash agreement, and active blocker semantics");
-    agent_push_schema(&schemas, "zcl.operator_latch.v1",
-                      "nested in zcl.public_status.v1 operator_latch",
-                      "names EV_OPERATOR_NEEDED latch detail, age, and whether operator action is still required");
-    agent_push_schema(&schemas, "zcl.condition_engine_summary.v1",
-                      "nested in zcl.public_status.v1 conditions",
-                      "cheap active/unresolved condition counts with drill-down routes");
-    agent_push_schema(&schemas, "zcl.runtime_build.v1",
-                      "nested in zcl.public_status.v1 runtime_build",
-                      "running-vs-deploy-expected build freshness for stale-runtime detection");
-    agent_push_schema(&schemas, "zcl.agent_map.v1",
-                      "zclassic23 agentmap / zcl_agent_map",
-                      "AI-coder code/docs/test map");
-    agent_push_schema(&schemas, "zcl.agent_impact.v1",
-                      "zclassic23 agentimpact / zcl_agent_impact",
-                      "changed paths to tests and risk");
-    agent_push_schema(&schemas, "zcl.agent_contracts.v1",
-                      "zclassic23 agentcontracts / zcl_agent_contracts",
-                      "contract registry");
-    agent_push_schema(&schemas, "zcl.agent_build.v1",
-                      "zclassic23 agentbuild / zcl_agent_build",
-                      "cached incremental and reproducible build contract");
-    agent_push_schema(&schemas, "zcl.background_quality_runtime.v1", "nested in zcl.agent_build.v1 background_quality_status", "native status-file reader for background tests/fuzz/coverage verdicts");
-    agent_push_schema(&schemas, "zcl.agent_interface.v1",
-                      "zclassic23 agentinterface / zcl_agent_interface",
-                      "preferred AI development interface and transport ranking");
-    agent_push_schema(&schemas, "zcl.agent_ops.v1", "zclassic23 agentops / zcl_agent_ops", "compact no-jq operator command center and top next work");
-    agent_push_schema(&schemas, "zcl.state_catalog.v1",
-                      "zclassic23 statecatalog / zcl_state_catalog",
-                      "machine-readable zcl_state subsystem catalog");
-    agent_push_schema(&schemas, "zcl.agent_lanes.v1",
-                      "zclassic23 agentlanes / zcl_agent_lanes",
-                      "canonical/soak/dev lane topology and safety rules");
-    agent_push_schema(&schemas, "zcl.agent_runtime_services.v1",
-                      "nested in zcl.agent_lanes.v1",
-                      "configured boot ports plus observed in-process listener state");
-    agent_push_schema(&schemas, "zcl.agent_capability.v1",
-                      "nested in zcl.agent_interface.v1 capabilities[]",
-                      "one machine-readable agent operation and its transports");
-    agent_push_schema(&schemas, "zcl.agent_machine_contract.v1",
-                      "nested in zcl.agent_interface.v1 machine_contract",
-                      "JSON/schema/version compatibility requirements for agents");
-    agent_push_schema(&schemas, "zcl.agent_runtime_identity.v1",
-                      "nested in zcl.agent_interface.v1 runtime_identity",
-                      "running binary identity for the interface contract producer");
-    agent_push_schema(&schemas, "zcl.agent_deploy_guard.v1",
-                      "zclassic23 agentdeployguard / zcl_agent_deploy_guard",
-                      "C-native deploy/restart allow/refuse decision");
-    agent_push_schema(&schemas, "zcl.operator_summary.v1",
-                      "zcl_operator_summary",
-                      "long MCP operator summary with raw drill-down");
-    agent_push_schema(&schemas, "zcl.operator_lane.v1",
-                      "zclassic23 agent / GET /api/v1/agent",
-                      "declared canonical/soak/dev lane and restart policy");
-    agent_push_schema(&schemas, "zcl.operator_deployment_safety.v1",
-                      "nested in zcl.operator_lane.v1",
-                      "machine-readable deploy/restart safety contract");
-    agent_push_schema(&schemas, "zcl.node_resources.v1",
-                      "nested in zcl.public_status.v1 resources",
-                      "cheap process RSS, uptime, and memory-pressure telemetry");
-    agent_push_schema(&schemas, "zcl.restart_watchdog.v1",
-                      "nested in zcl.public_status.v1 restart_watchdog",
-                      "chain tip watchdog restart budget and last autonomous recycle reason");
-    json_push_kv(result, "schemas", &schemas);
-    json_free(&schemas);
-
-    json_init(&transports);
-    json_set_array(&transports);
-    agent_push_str(&transports,
-                   "native: zclassic23 agent|agentops|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|statecatalog|agentdeployguard|getmirrorstatus");
-    agent_push_str(&transports,
-                   "mcp: zcl_agent, zcl_agent_ops, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_state_catalog, zcl_agent_deploy_guard, zcl_mirror_status");
-    agent_push_str(&transports,
-                   "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
-    agent_push_str(&transports,
-                   "deprecated: tools/z compatibility shim only");
-    json_push_kv(result, "transports", &transports);
-    json_free(&transports);
-
-    json_init(&rules);
-    json_set_array(&rules);
-    agent_push_str(&rules, "Do not put new logic in shell wrappers.");
-    agent_push_str(&rules, "Build JSON once in native services/controllers, then expose through MCP/REST.");
-    agent_push_str(&rules, "Every new contract needs schema, docs, and focused tests.");
-    agent_push_str(&rules, "No Python is required to consume the preferred agent API.");
-    agent_push_str(&rules, "Automation must read deployment_safety before restarting a lane.");
-    agent_push_str(&rules, "Consensus-risk paths require parity review and strict relevant tests.");
-    json_push_kv(result, "design_rules", &rules);
-    json_free(&rules);
     return true;
 }
 

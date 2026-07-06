@@ -4,6 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "event/event.h"
+#include "util/safe_alloc.h"
 #include "util/signal_handler.h"
 #include "util/thread_registry.h"
 #include <stdio.h>
@@ -644,31 +645,50 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
     size_t prefix_len = strlen(type_prefix);
     if (prefix_len == 0)
         return event_dump_json(buf, buf_size, count);
+    if (count > EVENT_LOG_SIZE)
+        count = EVENT_LOG_SIZE;
+    if (count == 0) {
+        if (buf_size > 0) buf[0] = '[';
+        if (buf_size > 1) buf[1] = ']';
+        if (buf_size > 2) buf[2] = '\0';
+        return 2;
+    }
 
     uint64_t end = atomic_load(&g_log.write_pos);
-    /* Scan more events than requested to find `count` matches */
-    uint64_t scan = count * 10;
-    if (scan > EVENT_LOG_SIZE) scan = EVENT_LOG_SIZE;
-    uint64_t start = end > scan ? end - scan : 0;
+    uint64_t start = end > EVENT_LOG_SIZE ? end - EVENT_LOG_SIZE : 0;
+    uint64_t *matches = zcl_malloc(count * sizeof(*matches),
+                                   "event_dump_json_filtered/matches");
+    if (!matches)
+        return 0;
 
-    size_t w = 0;
-    if (w < buf_size) buf[w++] = '[';
-
-    bool first = true;
     size_t matched = 0;
-    for (uint64_t i = start; i < end && w + 256 < buf_size && matched < count; i++) {
-        const struct event *ev = &g_log.ring[i & EVENT_LOG_MASK];
+    for (uint64_t i = end; i > start && matched < count; i--) {
+        uint64_t seqno = i - 1;
+        const struct event *ev = &g_log.ring[seqno & EVENT_LOG_MASK];
         uint64_t seq = atomic_load_explicit(&ev->sequence,
                                              memory_order_acquire);
-        if (seq != i + 1) continue;
+        if (seq != seqno + 1) continue;
 
         const char *name = event_type_name(ev->type);
         if (strncmp(name, type_prefix, prefix_len) != 0)
             continue;
 
+        matches[matched++] = seqno;
+    }
+
+    size_t w = 0;
+    if (w < buf_size) buf[w++] = '[';
+
+    bool first = true;
+    for (size_t j = matched; j > 0 && w + 256 < buf_size; j--) {
+        uint64_t seqno = matches[j - 1];
+        const struct event *ev = &g_log.ring[seqno & EVENT_LOG_MASK];
+        uint64_t seq = atomic_load_explicit(&ev->sequence,
+                                             memory_order_acquire);
+        if (seq != seqno + 1) continue;
+
         if (!first && w < buf_size) buf[w++] = ',';
         first = false;
-        matched++;
 
         char escaped[256];
         size_t elen = format_payload_escaped(escaped, sizeof(escaped),
@@ -677,15 +697,23 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
         w += (size_t)snprintf(buf + w, buf_size - w,
             "{\"seq\":%llu,\"ts\":%lld,\"type\":\"%s\","
             "\"peer\":%u,\"data\":\"%.*s\"}",
-            (unsigned long long)(i),
+            (unsigned long long)(seqno),
             (long long)ev->timestamp_us,
-            name, ev->peer_id,
+            event_type_name(ev->type), ev->peer_id,
             (int)elen, escaped);
     }
 
     if (w < buf_size) buf[w++] = ']';
     if (w < buf_size) buf[w] = '\0';
+    free(matches);
     return w;
+}
+
+uint64_t event_log_head_sequence(void)
+{
+    if (!atomic_load(&g_log.initialized))
+        return 0;
+    return atomic_load_explicit(&g_log.write_pos, memory_order_acquire);
 }
 
 /* ── Crash handler ───────────────────────────────────────── */

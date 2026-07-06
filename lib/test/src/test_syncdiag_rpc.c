@@ -2271,6 +2271,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_ops.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.timeline.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.state_catalog.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
@@ -2291,6 +2293,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
         ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
         ok = ok && json_array_has_substr(transports, "zcl_state_catalog");
+        ok = ok && json_array_has_substr(transports, "zcl_timeline");
 
         struct json_value ops;
         json_init(&ops);
@@ -2310,8 +2313,49 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "diagnostics_catalog_tool")),
                           "zcl_state_catalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "timeline_tool")),
+                          "zcl_timeline") == 0;
+        ok = ok && strstr(json_get_str(json_get(&ops,
+                                                "refold_plain_english")),
+                          "borrowed snapshot seed") != NULL;
         ok = ok && ops_work && json_size(ops_work) == 5;
         ok = ok && json_get(&ops, "architecture_review") != NULL;
+
+        event_log_init();
+        event_emitf(EV_SYNC_STATE_CHANGE, 0, "idle->headers");
+        event_emitf(EV_MSG_RECEIVED, 0, "noise");
+        event_emitf(EV_SYNC_HEARTBEAT, 0, "state=headers h=10");
+        struct json_value timeline_params;
+        json_init(&timeline_params);
+        json_set_array(&timeline_params);
+        struct json_value timeline_category;
+        json_init(&timeline_category);
+        json_set_str(&timeline_category, "sync");
+        json_push_back(&timeline_params, &timeline_category);
+        json_free(&timeline_category);
+        struct json_value timeline_count;
+        json_init(&timeline_count);
+        json_set_int(&timeline_count, 2);
+        json_push_back(&timeline_params, &timeline_count);
+        json_free(&timeline_count);
+        struct json_value timeline;
+        json_init(&timeline);
+        ok = ok && rpc_table_execute(&tbl, "timeline", &timeline_params,
+                                     &timeline);
+        const struct json_value *timeline_events =
+            json_get(&timeline, "events");
+        ok = ok && timeline.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&timeline, "schema")),
+                          "zcl.timeline.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline, "status")),
+                          "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline, "category")),
+                          "sync") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline, "mcp_tool")),
+                          "zcl_timeline") == 0;
+        ok = ok && json_get_int(json_get(&timeline, "head_seq")) >= 3;
+        ok = ok && timeline_events && timeline_events->type == JSON_ARR &&
+            json_size(timeline_events) == 2;
 
         struct json_value catalog;
         json_init(&catalog);
@@ -2551,6 +2595,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(capabilities, "name", "deploy_guard");
         const struct json_value *state_catalog_cap =
             find_object_with_str(capabilities, "name", "state_catalog");
+        const struct json_value *timeline_cap =
+            find_object_with_str(capabilities, "name", "semantic_timeline");
         const struct json_value *machine =
             json_get(&interface, "machine_contract");
         const struct json_value *runtime =
@@ -2603,6 +2649,12 @@ int test_syncdiag_rpc(void)
         ok = ok && state_catalog_cap &&
             strcmp(json_get_str(json_get(state_catalog_cap, "mcp")),
                    "zcl_state_catalog") == 0;
+        ok = ok && timeline_cap &&
+            strcmp(json_get_str(json_get(timeline_cap, "schema")),
+                   "zcl.timeline.v1") == 0;
+        ok = ok && timeline_cap &&
+            strcmp(json_get_str(json_get(timeline_cap, "mcp")),
+                   "zcl_timeline") == 0;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "schema")),
                    "zcl.agent_machine_contract.v1") == 0;
@@ -2921,6 +2973,8 @@ int test_syncdiag_rpc(void)
         json_free(&params);
         json_free(&contracts);
         json_free(&ops);
+        json_free(&timeline);
+        json_free(&timeline_params);
         json_free(&catalog);
         json_free(&lanes);
         json_free(&build);

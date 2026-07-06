@@ -170,6 +170,10 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "zcl.node_log.v1", "zclassic23 getnodelog <pattern>",
         "zcl_node_log", "",
         "server-side log search without shipping full node.log history");
+    agent_interface_push_capability(&capabilities, "semantic_timeline",
+        "zcl.timeline.v1", "zclassic23 timeline <category> <count>",
+        "zcl_timeline", "",
+        "category-filtered structured event timeline with seq cursors");
     agent_interface_push_capability(&capabilities, "select_sql",
         "zcl.sql_result.v1", "zclassic23 dbquery <SELECT>",
         "zcl_sql", "",

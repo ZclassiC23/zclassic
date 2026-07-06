@@ -168,6 +168,11 @@ controller `k_routes[]` arrays.
 - `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
   for every `zcl_state` subsystem: name, description, key hint, expected cost,
   freshness, owner shape, and native/MCP drill-down command.
+- `zclassic23 timeline <category> <count>` / `zcl_timeline` — versioned
+  semantic event timeline over the structured event ring. Categories include
+  `sync`, `peer`, `message`, `chain`, `validation`, `condition`, `oracle`,
+  `mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, and `net`; responses include
+  `head_seq` plus `events[].seq` cursor fields.
 - `zclassic23 api` — native API discovery from the running node. It returns the
   same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the
@@ -201,6 +206,9 @@ and expose them through MCP/REST instead.
   header_probe, verify_engine, ...).
 - `zcl_node_log(pattern, since_secs, max_lines, level)` — server-side reverse
   scan of node.log in 64 KB chunks.
+- `zcl_timeline(category, count)` — category-filtered structured events with
+  `zcl.timeline.v1` metadata and seq cursors; prefer this before raw
+  `zcl_events` when answering root-cause questions.
 - `zcl_sql("SELECT ...")` — SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
   budget, 100-row cap, rate-gated 1 RPS.
 

@@ -16,12 +16,14 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
+| Semantic event timeline | `zclassic23 timeline <category> <count>` | `zcl_timeline` |
 | Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
 | Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
-The native RPC contracts are implemented in
-`app/controllers/src/agent_controller.c` and the focused no-jq command center
-in `app/controllers/src/agent_ops_controller.c`. MCP routes in
+The native RPC contracts are implemented in `app/controllers/src/agent_controller.c`
+for the agent map/build surface, `app/controllers/src/agent_contracts_controller.c`
+for the versioned contract registry, and `app/controllers/src/agent_ops_controller.c`
+for the focused no-jq command center. MCP routes in
 `tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
 currently exposes the public status contract at `GET /api/v1/agent`.
 
@@ -31,8 +33,8 @@ The best interface for an AI coding operator is MCP with typed JSON tools:
 start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_interface` when checking the full transport contract, then use
 `zcl_agent`, `zcl_agent_lanes`, `zcl_mirror_status`, `zcl_agent_impact`,
-`zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_node_log`, and
-`zcl_sql` as needed. The native binary commands (`zclassic23 agentinterface`,
+`zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
+`zcl_node_log`, and `zcl_sql` as needed. The native binary commands (`zclassic23 agentinterface`,
 `zclassic23 agent`, etc.) are the second-best interface for terminal work and
 scripts. REST is the public read-only mirror.
 
@@ -69,9 +71,10 @@ before adding new wrapper behavior.
 
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions
-belong in C under `app/controllers/src/agent_controller.c` and
-`app/controllers/src/agent_interface_controller.c`; compact operator/architecture
-answers that should not require `jq` belong in
+belong in C under `app/controllers/src/agent_controller.c`,
+`app/controllers/src/agent_contracts_controller.c`, and
+`app/controllers/src/agent_interface_controller.c`; compact
+operator/architecture answers that should not require `jq` belong in
 `app/controllers/src/agent_ops_controller.c`, then get exposed through
 MCP/native/REST.
 
@@ -153,8 +156,9 @@ outbound send/assignment phase keeps running even under a large receive backlog
 or slow local reducer work. Use `zcl_status`
 for the larger health packet, `zcl_state_catalog` to discover every state
 subsystem and its key/cost/freshness hints, `zcl_state` for subsystem internals,
+`zcl_timeline` for category-filtered structured event history with seq cursors,
 `zcl_node_log` for bounded log search, `zcl_sql` for SELECT-only database
-inspection, and `zcl_events` for recent structured events.
+inspection, and `zcl_events` for the raw recent event ring.
 
 Every new subsystem that has runtime state should expose it through the
 diagnostics registry and become reachable through `zcl_state`. The same
@@ -163,6 +167,14 @@ registry feeds `zclassic23 statecatalog` / `zcl_state_catalog`
 description, owner shape, expected cost, freshness, and key hint without source
 search. Expensive development proof state belongs in a named background quality
 lane with a JSON verdict, not in an untracked terminal scrollback.
+
+For "what happened?" questions, start with `zclassic23 timeline sync 50` or
+`zcl_timeline(category="sync", count=50)` and switch category as needed
+(`peer`, `message`, `chain`, `validation`, `condition`, `oracle`, `mirror`,
+`boot`, `db`, `wallet`, `disk`, `mcp`, `net`). The response is
+`zcl.timeline.v1`, includes `head_seq`, and returns `events[].seq` so agents can
+tie a timeline slice to later drill-downs without piping raw events through
+`jq`.
 
 ## Operator Lane
 

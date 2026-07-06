@@ -418,6 +418,37 @@ static int test_dump_filtered(void)
     return failures;
 }
 
+static int test_dump_filtered_latest(void)
+{
+    int failures = 0;
+
+    TEST("event_dump_json_filtered returns newest matching events") {
+        event_log_init();
+
+        for (int i = 0; i < 30; i++) {
+            event_emitf(EV_MSG_RECEIVED, 0, "noise%d", i);
+            if (i == 0)
+                event_emitf(EV_PEER_VERSION, 1, "peer-old");
+        }
+        event_emitf(EV_PEER_VERSION, 1, "peer-new-1");
+        event_emitf(EV_MSG_RECEIVED, 0, "noise-final");
+        event_emitf(EV_PEER_MISBEHAVE, 1, "peer-new-2");
+
+        char buf[4096];
+        size_t len = event_dump_json_filtered(buf, sizeof(buf), 2, "peer.");
+        ASSERT(len > 0);
+        buf[len] = '\0';
+        ASSERT(strstr(buf, "peer-new-1") != NULL);
+        ASSERT(strstr(buf, "peer-new-2") != NULL);
+        ASSERT(strstr(buf, "peer-old") == NULL);
+        ASSERT(event_log_head_sequence() >= 33);
+
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_full_lifecycle(void)
 {
     int failures = 0;
@@ -816,6 +847,7 @@ int test_event(void)
     failures += test_dump_small_buffer();
     failures += test_dump_empty_log();
     failures += test_dump_filtered();
+    failures += test_dump_filtered_latest();
     failures += test_sync_full_lifecycle();
     failures += test_sync_snapshot_path();
     failures += test_sync_snapshot_from_headers();

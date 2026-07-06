@@ -9,6 +9,7 @@
 
 #include "controllers/event_controller.h"
 #include "controllers/agent_controller.h"
+#include "controllers/event_timeline_controller.h"
 #include "controllers/strong_params.h"
 #include "api_controller_internal.h"
 #include "event_agent_summary.h"
@@ -533,9 +534,9 @@ static bool rpc_refold_status(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "refold\n"
-        "\nReturn read-only sovereign refold anchor readiness. This verifies "
-        "the candidate anchor snapshot path with the same full SHA3/count "
-        "loader predicate the boot path uses before trusting it.\n"
+        "\nReturn read-only self-verified anchor refold readiness. This "
+        "checks whether zclassic23 has a locally rebuilt UTXO anchor that "
+        "can replace the borrowed snapshot seed.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.refold_status.v1\", "
         "\"ready_for_refold\":false, "
@@ -611,6 +612,7 @@ void register_event_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "control", "eventlog",          rpc_eventlog,          true },
+        { "control", "timeline",          rpc_timeline,          true },
         { "control", "api",               rpc_api_index,         true },
         { "control", "apiindex",          rpc_api_index,         true },
         { "control", "agent",             rpc_agent_summary,     true },

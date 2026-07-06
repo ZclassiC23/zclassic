@@ -977,6 +977,22 @@ static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
                                 "eventlog", "mcp.ops");
 }
 
+static int h_zcl_timeline(const struct mcp_request *req,
+                          struct mcp_response *res)
+{
+    const char *category = json_get_str_or(req->args, "category", "all");
+    int64_t count = json_get_int_or(req->args, "count", 50);
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, (category && category[0]) ? category : "all");
+    mcp_params_push_int(&p, count);
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("timeline", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, body, "timeline", "mcp.ops");
+}
+
 static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
 {
     const char *m = json_get_str(json_get(req->args, "method"));
@@ -1403,6 +1419,15 @@ static const struct mcp_param_spec p_events[] = {
     { "count", MCP_PARAM_INT, false, "Number of events",
       1, 1000, 0, 0, NULL, "20" },
 };
+static const struct mcp_param_spec p_timeline[] = {
+    { "category", MCP_PARAM_STR, false,
+      "Timeline category: all, tcp, peer, message, sync, snapshot, chain, validation, condition, oracle, mirror, boot, db, wallet, mempool, disk, mcp, net",
+      0, 0, 0, 32,
+      "all,tcp,peer,message,sync,snapshot,chain,validation,condition,oracle,mirror,boot,db,wallet,mempool,disk,mcp,net",
+      "\"all\"" },
+    { "count", MCP_PARAM_INT, false, "Number of events",
+      1, 1000, 0, 0, NULL, "50" },
+};
 static const struct mcp_param_spec p_rpc[] = {
     { "method", MCP_PARAM_STR, true,  "RPC method name",
       0, 0, 1, 128, NULL, NULL },
@@ -1558,6 +1583,11 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_events", "ops",
       "Recent event log: sync events, peer connections, blocks.",
       p_events, PARAM_COUNT(p_events), h_zcl_events, 0, NULL },
+    { "zcl_timeline", "ops",
+      "Versioned semantic event timeline by category with seq cursors; "
+      "prefer this over client-side jq/string filtering of zcl_events.",
+      p_timeline, PARAM_COUNT(p_timeline), h_zcl_timeline, 0,
+      "{\"category\":\"sync\",\"count\":50}" },
     { "zcl_rpc", "ops",
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc,
