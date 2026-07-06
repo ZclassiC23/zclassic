@@ -16,6 +16,7 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+#include "controllers/agent_controller.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "sim/postmortem.h"
@@ -41,6 +42,7 @@ DEFINE_PT(h_zcl_benchmark,      "benchmark",      "mcp.ops")
 DEFINE_PT(h_zcl_dbstats,        "db_info",        "mcp.ops")
 DEFINE_PT(h_zcl_milestone,      "milestone",      "mcp.ops")
 DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
+DEFINE_PT(h_zcl_agent,          "agent",          "mcp.ops")
 DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
 DEFINE_PT(h_zcl_agent_lanes,    "agentlanes",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_liveness, "agentliveness",  "mcp.ops")
@@ -1499,6 +1501,63 @@ static const struct mcp_param_spec p_agent_deploy_guard[] = {
       "Action to evaluate: canonical-deploy, canonical-restart, deploy, or restart",
       0, 0, 0, 64, NULL, "\"canonical-deploy\"" },
 };
+
+struct agent_mcp_binding {
+    const char *method;
+    const struct mcp_param_spec *params;
+    size_t num_params;
+    mcp_handler_fn handler;
+    uint32_t flags;
+    const char *self_test_args;
+};
+
+static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
+    { "agent", NULL, 0, h_zcl_agent, 0, NULL },
+    { "agentmap", NULL, 0, h_zcl_agent_map, 0, NULL },
+    { "agentlanes", NULL, 0, h_zcl_agent_lanes, 0, NULL },
+    { "agentliveness", NULL, 0, h_zcl_agent_liveness, 0, NULL },
+    { "agentimpact", p_agent_impact, PARAM_COUNT(p_agent_impact),
+      h_zcl_agent_impact, 0,
+      "{\"files\":[\"app/controllers/src/event_controller.c\","
+      "\"tools/mcp/controllers/ops_controller.c\"]}" },
+    { "agentcontracts", NULL, 0, h_zcl_agent_contracts, 0, NULL },
+    { "agentbuild", NULL, 0, h_zcl_agent_build, 0, NULL },
+    { "agentinterface", NULL, 0, h_zcl_agent_interface, 0, NULL },
+    { "agentops", NULL, 0, h_zcl_agent_ops, 0, NULL },
+    { "agentdiagnose", NULL, 0, h_zcl_agent_diagnose, 0, NULL },
+    { "agentdeployguard", p_agent_deploy_guard,
+      PARAM_COUNT(p_agent_deploy_guard), h_zcl_agent_deploy_guard, 0,
+      "{\"action\":\"canonical-deploy\"}" },
+};
+
+static struct mcp_tool_route
+    g_agent_mcp_routes[PARAM_COUNT(k_agent_mcp_bindings)];
+
+static void register_agent_mcp_routes(void)
+{
+    for (size_t i = 0; i < PARAM_COUNT(k_agent_mcp_bindings); i++) {
+        const struct agent_mcp_binding *b = &k_agent_mcp_bindings[i];
+        const struct agent_contract *c = agent_contract_lookup(b->method);
+        if (!c || !c->mcp_tool || !c->purpose) {
+            fprintf(stderr,
+                    "[mcp.ops] FATAL: missing agent contract for method=%s\n",
+                    b->method ? b->method : "(null)");
+            abort();
+        }
+        g_agent_mcp_routes[i] = (struct mcp_tool_route) {
+            c->mcp_tool,
+            "ops",
+            c->purpose,
+            b->params,
+            b->num_params,
+            b->handler,
+            b->flags,
+            b->self_test_args,
+        };
+        mcp_router_register_required(&g_agent_mcp_routes[i]);
+    }
+}
+
 static const struct mcp_param_spec p_postmortem_list[] = {
     { "dir", MCP_PARAM_STR, false, "Capsule directory",
       0, 0, 0, 512, NULL, NULL },
@@ -1522,60 +1581,12 @@ static const struct mcp_tool_route k_routes[] = {
       "bg-validation progress, health checks, and chain advance source "
       "scoring. The single command to check if everything is working.",
       NULL, 0, h_zcl_status, 0, NULL },
-    { "zcl_agent", "ops",
-      "Shortest MCP-friendly first check: stable top-level status, heights, "
-      "gap, peer counts, primary blocker, next action, and recommended next "
-      "tools, with raw diagnostics attached under `raw` for drill-down.",
-      NULL, 0, h_zcl_operator_summary, 0, NULL },
     { "zcl_operator_summary", "ops",
       "MCP-friendly operator summary: stable top-level status, height, "
       "target height, gap, peer counts, primary blocker, next action, "
       "and recommended next tools, with raw diagnostics attached under "
       "`raw` for drill-down.",
       NULL, 0, h_zcl_operator_summary, 0, NULL },
-    { "zcl_agent_map", "ops",
-      "AI-coder map: primary native/MCP commands, code ownership, docs, "
-      "and focused tests. Prefer this over searching shell wrappers.",
-      NULL, 0, h_zcl_agent_map, 0, NULL },
-    { "zcl_agent_lanes", "ops",
-      "Native canonical/soak/dev lane topology, including datadirs, ports, "
-      "systemd units, and zcl.operator_deployment_safety.v1 restart/deploy "
-      "rules.",
-      NULL, 0, h_zcl_agent_lanes, 0, NULL },
-    { "zcl_agent_liveness", "ops",
-      "Unified AI/operator liveness: current lane identity, runtime "
-      "listeners, supervisor children, and background quality lanes.",
-      NULL, 0, h_zcl_agent_liveness, 0, NULL },
-    { "zcl_agent_impact", "ops",
-      "Map changed repository file paths to subsystem, risk, docs, "
-      "recommended focused tests, and pre-push gates.",
-      p_agent_impact, PARAM_COUNT(p_agent_impact), h_zcl_agent_impact,
-      0, "{\"files\":[\"app/controllers/src/event_controller.c\",\"tools/mcp/controllers/ops_controller.c\"]}" },
-    { "zcl_agent_contracts", "ops",
-      "Versioned AI/operator API contracts across native, MCP, REST, "
-      "and deprecated compatibility transports.",
-      NULL, 0, h_zcl_agent_contracts, 0, NULL },
-    { "zcl_agent_build", "ops",
-      "Fast C build contract: incremental object builds, cache knobs, "
-      "focused tests, strict gates, and byte-identity reproducibility.",
-      NULL, 0, h_zcl_agent_build, 0, NULL },
-    { "zcl_agent_interface", "ops",
-      "Preferred AI development interface: MCP vs native CLI vs REST, "
-      "versioned JSON rules, C ownership, and anti-patterns to avoid.",
-      NULL, 0, h_zcl_agent_interface, 0, NULL },
-    { "zcl_agent_ops", "ops",
-      "Compact no-jq AI/operator command center: direct decision fields, "
-      "drill-down commands, API gaps, and top next architecture work.",
-      NULL, 0, h_zcl_agent_ops, 0, NULL },
-    { "zcl_agent_diagnose", "ops",
-      "Bounded no-jq diagnosis: live status, first-call healthcheck, peer "
-      "incidents, mirror status, and timeline pointers.",
-      NULL, 0, h_zcl_agent_diagnose, 0, NULL },
-    { "zcl_agent_deploy_guard", "ops",
-      "C-native deploy/restart guard decision based on "
-      "zcl.operator_deployment_safety.v1.",
-      p_agent_deploy_guard, PARAM_COUNT(p_agent_deploy_guard),
-      h_zcl_agent_deploy_guard, 0, "{\"action\":\"canonical-deploy\"}" },
     { "zcl_milestone", "ops",
       "Node-computed ASCII and JSON progress toward the next version "
       "milestone, including systems/goals/subgoals bars and MVP criteria.",
@@ -1678,6 +1689,7 @@ static const struct mcp_tool_route k_routes[] = {
 
 void mcp_register_ops(void)
 {
+    register_agent_mcp_routes();
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register_required(&k_routes[i]);
 }

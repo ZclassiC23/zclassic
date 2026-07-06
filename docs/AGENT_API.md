@@ -137,7 +137,7 @@ drill-down commands, API gaps, and the top next architecture work list. Do not
 pipe larger discovery payloads through `jq` to build this answer by hand; add a
 field to `agentops` when an agent repeatedly needs the same decision.
 
-The first-call operator view is `zcl_operator_summary` through MCP, or
+The first-call operator status view is `zcl_agent` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,
 the running binary `build_commit`, height/gap, peer summary, active blockers,
 next action, and recommended drill-down tools. The compact packet also includes
@@ -145,6 +145,8 @@ next action, and recommended drill-down tools. The compact packet also includes
 tell when the first-call fast path intentionally avoided blocking projection
 reads during startup or catch-up; use `zcl_status`, `zcl_state`, or
 `getmirrorstatus` for heavier detail instead of making `agent` wait on SQLite.
+`zcl_operator_summary` remains a longer MCP compatibility aggregate with raw
+drill-down payloads, not the canonical bounded status contract.
 `runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
 commit against the deploy-installed expected commit
 (`ZCL_AGENT_EXPECT_BUILD_COMMIT`, written by `make deploy` / `make deploy-dev`).

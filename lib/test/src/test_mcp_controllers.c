@@ -26,6 +26,7 @@
 #include "mcp/controllers.h"
 #include "mcp/rpc_params.h"
 #include "mcp/rpc_client.h"
+#include "controllers/agent_controller.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "sim/postmortem.h"
@@ -557,6 +558,8 @@ static int test_zcl_agent_dev_tools_shape(void)
     int failures = 0;
     TEST("controllers: zcl_agent_* development tools have stable shapes") {
         register_all();
+        const struct mcp_tool_route *agent =
+            mcp_router_find("zcl_agent");
         const struct mcp_tool_route *map =
             mcp_router_find("zcl_agent_map");
         const struct mcp_tool_route *impact =
@@ -575,6 +578,7 @@ static int test_zcl_agent_dev_tools_shape(void)
             mcp_router_find("zcl_agent_liveness");
         const struct mcp_tool_route *deploy_guard =
             mcp_router_find("zcl_agent_deploy_guard");
+        ASSERT(agent != NULL);
         ASSERT(map != NULL);
         ASSERT(lanes != NULL);
         ASSERT(impact != NULL);
@@ -584,6 +588,7 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(ops != NULL);
         ASSERT(liveness != NULL);
         ASSERT(deploy_guard != NULL);
+        ASSERT(strcmp(agent->domain, "ops") == 0);
         ASSERT(strcmp(map->domain, "ops") == 0);
         ASSERT(strcmp(lanes->domain, "ops") == 0);
         ASSERT(strcmp(impact->domain, "ops") == 0);
@@ -593,6 +598,7 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(strcmp(ops->domain, "ops") == 0);
         ASSERT(strcmp(liveness->domain, "ops") == 0);
         ASSERT(strcmp(deploy_guard->domain, "ops") == 0);
+        ASSERT(agent->num_params == 0);
         ASSERT(map->num_params == 0);
         ASSERT(contracts->num_params == 0);
         ASSERT(build->num_params == 0);
@@ -606,13 +612,21 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(impact->params[0].required == false);
         ASSERT(impact->params[0].default_json != NULL);
         ASSERT(impact->self_test_args != NULL);
-        ASSERT(contains(impact->description, "recommended focused tests"));
+        const struct agent_contract *agent_contract =
+            agent_contract_lookup("agent");
+        const struct agent_contract *ops_contract =
+            agent_contract_lookup("agentops");
+        ASSERT(agent_contract != NULL);
+        ASSERT(ops_contract != NULL);
+        ASSERT_STR_EQ(agent->description, agent_contract->purpose);
+        ASSERT_STR_EQ(ops->description, ops_contract->purpose);
+        ASSERT(contains(impact->description, "focused validation"));
         ASSERT(deploy_guard->num_params == 1);
         ASSERT(strcmp(deploy_guard->params[0].name, "action") == 0);
         ASSERT(deploy_guard->params[0].type == MCP_PARAM_STR);
         ASSERT(deploy_guard->params[0].required == false);
         ASSERT(deploy_guard->params[0].default_json != NULL);
-        ASSERT(contains(deploy_guard->description, "C-native"));
+        ASSERT(contains(deploy_guard->description, "allow/refuse"));
         PASS();
     } _test_next:;
     return failures;
@@ -1416,10 +1430,10 @@ static int test_zcl_operator_summary_honors_mirror_contract(void)
     return failures;
 }
 
-static int test_zcl_agent_alias_shape(void)
+static int test_zcl_agent_contract_shape(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_agent aliases the simple operator summary") {
+    TEST("controllers: zcl_agent returns the bounded native agent contract") {
         register_all();
         mcp_rpc_client_set_test_hook(mock_operator_healthy_rpc);
         struct json_value args;
@@ -1432,11 +1446,14 @@ static int test_zcl_agent_alias_shape(void)
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
-                      "zcl.operator_summary.v1");
-        ASSERT_STR_EQ(json_get_str(json_get(&root, "api_version")), "v1");
-        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
-        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
-                      "none");
+                      "zcl.public_status.v1");
+        const struct json_value *lane = json_get(&root, "operator_lane");
+        ASSERT(lane != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "schema")),
+                      "zcl.operator_lane.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(lane, "lane")), "canonical");
+        ASSERT(json_get_bool(json_get(lane,
+                                      "requires_operator_confirmation")));
 
         json_free(&root);
         json_free(&args);
@@ -3101,7 +3118,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_operator_summary_degraded_shape();
     failures += test_zcl_operator_summary_healthy_shape();
     failures += test_zcl_operator_summary_honors_mirror_contract();
-    failures += test_zcl_agent_alias_shape();
+    failures += test_zcl_agent_contract_shape();
     failures += test_zcl_agent_dev_tools_dispatch();
     failures += test_zcl_operator_summary_names_operator_needed_detail();
     failures += test_zcl_milestone_shape();
