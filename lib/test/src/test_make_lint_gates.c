@@ -3161,7 +3161,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_lanes_buf,
                       "agent_push_runtime_services_json") != NULL);
         ASSERT(strstr(agent_lanes_buf, "default_deploy_target") != NULL);
-        ASSERT(strstr(agent_lanes_buf, "zcl23-dev") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "agent_operator_lane_topology_count") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "zcl.agent_runtime_services.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf,
@@ -3185,6 +3186,15 @@ static int t_native_agent_api_contract(void)
                       "zcl.operator_deployment_safety.v1") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "agent_fill_operator_lane_contract_json") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "agent_operator_lane_topology_lookup") != NULL);
+        ASSERT(strstr(agent_runtime_buf, "zcl23-dev") != NULL);
+        ASSERT(strstr(agent_iface_buf, "~/.zclassic-c23-dev") == NULL);
+        ASSERT(strstr(agent_iface_buf, "agent_deploy_action_target_lane")
+               != NULL);
+        ASSERT(strstr(agent_iface_buf,
+                      "agent_fill_known_operator_lane_contract_json")
+               != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "agent_push_operator_lane_fields_json") != NULL);
         ASSERT(strstr(agent_summary_buf,
@@ -3353,6 +3363,8 @@ static int t_native_agent_api_contract(void)
                       "zclassic23 agentdeployguard deploy-dev")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "target_lane_name=\"dev\"") != NULL);
+        ASSERT(strstr(agent_doc_buf, "target_lane_name=\"canonical\"")
+               != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "zclassic23 agentdeployguard -operator-lane=dev deploy")
                != NULL);

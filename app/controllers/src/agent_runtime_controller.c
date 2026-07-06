@@ -41,6 +41,48 @@ static struct agent_runtime_context g_agent_runtime = {
     .fs_port = 0,
 };
 
+static const struct agent_operator_lane_topology g_operator_lane_topologies[] = {
+    {
+        .lane = "canonical",
+        .unit = "zclassic23",
+        .datadir = "~/.zclassic-c23",
+        .rpc_port = 18232,
+        .p2p_port = 8033,
+        .https_port = 8443,
+        .fs_port = 0,
+        .role = "public daily-driver",
+        .binary_role = "long_running_public_node",
+        .deploy_command = "make deploy requires explicit canonical guard",
+        .restart_command = "operator window only",
+    },
+    {
+        .lane = "soak",
+        .unit = "zclassic23-soak",
+        .datadir = "~/.zclassic-c23-soak",
+        .rpc_port = 18242,
+        .p2p_port = 8043,
+        .https_port = 0,
+        .fs_port = 0,
+        .role = "long-uptime evidence",
+        .binary_role = "pinned_binary_soak_lane",
+        .deploy_command = "manual rebaseline only",
+        .restart_command = "operator window only",
+    },
+    {
+        .lane = "dev",
+        .unit = "zcl23-dev",
+        .datadir = "~/.zclassic-c23-dev",
+        .rpc_port = 18252,
+        .p2p_port = 8053,
+        .https_port = 0,
+        .fs_port = 18034,
+        .role = "fresh-build development",
+        .binary_role = "restartable_development_lane",
+        .deploy_command = "make deploy-dev",
+        .restart_command = "make deploy-dev or systemctl --user restart zcl23-dev",
+    },
+};
+
 struct agent_runtime_probe_method {
     const char *method;
     const char *capability;
@@ -185,6 +227,32 @@ static const char *agent_lane_safe_default_action(const char *lane)
     if (agent_lane_is(lane, "copy"))
         return "prove_on_copy";
     return "refuse_automation_until_lane_declared";
+}
+
+size_t agent_operator_lane_topology_count(void)
+{
+    return sizeof(g_operator_lane_topologies) /
+           sizeof(g_operator_lane_topologies[0]);
+}
+
+const struct agent_operator_lane_topology *
+agent_operator_lane_topology_at(size_t index)
+{
+    if (index >= agent_operator_lane_topology_count())
+        return NULL;
+    return &g_operator_lane_topologies[index];
+}
+
+const struct agent_operator_lane_topology *
+agent_operator_lane_topology_lookup(const char *operator_lane)
+{
+    if (!operator_lane || !operator_lane[0])
+        return NULL;
+    for (size_t i = 0; i < agent_operator_lane_topology_count(); i++) {
+        if (strcmp(g_operator_lane_topologies[i].lane, operator_lane) == 0)
+            return &g_operator_lane_topologies[i];
+    }
+    return NULL;
 }
 
 void rpc_agent_set_boot_context(const char *operator_lane,
@@ -546,6 +614,43 @@ void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
                      agent_lane_safe_default_action(lane));
     json_push_kv(lane_obj, "deployment_safety", &safety);
     json_free(&safety);
+}
+
+bool agent_fill_known_operator_lane_contract_json(struct json_value *lane_obj,
+                                                  const char *operator_lane)
+{
+    const struct agent_operator_lane_topology *topology =
+        agent_operator_lane_topology_lookup(operator_lane);
+    if (!topology)
+        return false;
+    agent_fill_operator_lane_contract_json(lane_obj, topology->lane, "full",
+                                           topology->datadir,
+                                           topology->rpc_port,
+                                           topology->p2p_port,
+                                           topology->https_port,
+                                           topology->fs_port);
+    return true;
+}
+
+void agent_fill_operator_lane_topology_json(
+    struct json_value *lane_obj,
+    const struct agent_operator_lane_topology *topology)
+{
+    if (!lane_obj || !topology)
+        return;
+    agent_fill_operator_lane_contract_json(lane_obj, topology->lane, "full",
+                                           topology->datadir,
+                                           topology->rpc_port,
+                                           topology->p2p_port,
+                                           topology->https_port,
+                                           topology->fs_port);
+    json_push_kv_str(lane_obj, "unit", topology->unit);
+    json_push_kv_str(lane_obj, "role", topology->role);
+    json_push_kv_str(lane_obj, "binary_role", topology->binary_role);
+    json_push_kv_str(lane_obj, "health_probe",
+                     "zclassic-cli -datadir=<datadir> -rpcport=<rpcport> agent");
+    json_push_kv_str(lane_obj, "deploy_command", topology->deploy_command);
+    json_push_kv_str(lane_obj, "restart_command", topology->restart_command);
 }
 
 void agent_push_operator_lane_fields_json(struct json_value *out)

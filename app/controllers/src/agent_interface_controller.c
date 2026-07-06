@@ -117,6 +117,9 @@ static const char *agent_deploy_action_target_lane(const char *action)
 {
     if (!action)
         return "";
+    if (strcmp(action, "canonical-deploy") == 0 ||
+        strcmp(action, "canonical-restart") == 0)
+        return "canonical";
     if (strcmp(action, "deploy-dev") == 0 ||
         strcmp(action, "dev-deploy") == 0 ||
         strcmp(action, "restart-dev") == 0 ||
@@ -134,9 +137,10 @@ static void agent_deploy_push_target_lane(struct json_value *out,
     json_init(&lane);
 
     if (target[0]) {
-        agent_fill_operator_lane_contract_json(&lane, target, "full",
-                                               "~/.zclassic-c23-dev",
-                                               18252, 8053, 0, 18034);
+        if (!agent_fill_known_operator_lane_contract_json(&lane, target)) {
+            agent_fill_operator_lane_contract_json(
+                &lane, target, "unknown", "", 0, 0, 0, 0);
+        }
     } else {
         const struct json_value *current = json_get(out, "operator_lane");
         if (current && current->type == JSON_OBJ) {

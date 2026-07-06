@@ -3360,6 +3360,22 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&guard,
                                                 "safe_default_action")),
                           "observe_only_or_use_dev_lane") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&guard, "action_scope")),
+                          "explicit_target_lane") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&guard,
+                                                "current_lane_name")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&guard,
+                                                "target_lane_name")),
+                          "canonical") == 0;
+        const struct json_value *canonical_target =
+            json_get(&guard, "target_lane");
+        ok = ok && canonical_target &&
+            canonical_target->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(canonical_target, "lane")),
+                          "canonical") == 0;
+        ok = ok && json_get_int(json_get(canonical_target,
+                                         "https_port")) == 8443;
 
         struct json_value guard_object_params;
         json_init(&guard_object_params);
@@ -3417,6 +3433,49 @@ int test_syncdiag_rpc(void)
                                                 "safe_default_action")),
                           "deploy_dev_lane") == 0;
 
+        rpc_agent_set_boot_context("dev", "full",
+                                   "/tmp/zcl-agent-dev",
+                                   18252, 8053, 0, 18034);
+        struct json_value canonical_from_dev_params;
+        json_init(&canonical_from_dev_params);
+        json_set_array(&canonical_from_dev_params);
+        json_init(&action);
+        json_set_str(&action, "canonical-deploy");
+        json_push_back(&canonical_from_dev_params, &action);
+        json_free(&action);
+        struct json_value canonical_from_dev;
+        json_init(&canonical_from_dev);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &canonical_from_dev_params,
+                                     &canonical_from_dev);
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "action")),
+                          "canonical-deploy") == 0;
+        ok = ok && !json_get_bool(json_get(&canonical_from_dev,
+                                           "allowed"));
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "decision")),
+                          "refuse") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "reason")),
+                          "operator_confirmation_required") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "action_scope")),
+                          "explicit_target_lane") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "current_lane_name")),
+                          "dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "target_lane_name")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&canonical_from_dev,
+                                                "operator_lane_name")),
+                          "canonical") == 0;
+        ok = ok && !json_get_bool(json_get(&canonical_from_dev,
+                                           "automation_deploy_ok"));
+        ok = ok && json_get_bool(json_get(&canonical_from_dev,
+                                          "requires_operator_confirmation"));
+
         json_free(&params);
         json_free(&contracts);
         json_free(&ops);
@@ -3433,6 +3492,8 @@ int test_syncdiag_rpc(void)
         json_free(&guard_object);
         json_free(&dev_guard_params);
         json_free(&dev_guard);
+        json_free(&canonical_from_dev_params);
+        json_free(&canonical_from_dev);
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);
         if (old_quality_env_set)
             setenv("ZCL_QUALITY_STATE_DIR", old_quality_env_buf, 1);

@@ -9,6 +9,20 @@
 
 struct json_value;
 
+struct agent_operator_lane_topology {
+    const char *lane;
+    const char *unit;
+    const char *datadir;
+    int rpc_port;
+    int p2p_port;
+    int https_port;
+    int fs_port;
+    const char *role;
+    const char *binary_role;
+    const char *deploy_command;
+    const char *restart_command;
+};
+
 /* Set once from node-mode main after CLI/env parsing and before app_init()
  * starts RPC-serving threads. Tests may reset the context directly. */
 void rpc_agent_set_boot_context(const char *operator_lane,
@@ -22,6 +36,16 @@ void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
                                             const char *datadir,
                                             int rpc_port, int p2p_port,
                                             int https_port, int fs_port);
+size_t agent_operator_lane_topology_count(void);
+const struct agent_operator_lane_topology *
+agent_operator_lane_topology_at(size_t index);
+const struct agent_operator_lane_topology *
+agent_operator_lane_topology_lookup(const char *operator_lane);
+bool agent_fill_known_operator_lane_contract_json(struct json_value *lane_obj,
+                                                  const char *operator_lane);
+void agent_fill_operator_lane_topology_json(
+    struct json_value *lane_obj,
+    const struct agent_operator_lane_topology *topology);
 void agent_push_operator_lane_fields_json(struct json_value *out);
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key);

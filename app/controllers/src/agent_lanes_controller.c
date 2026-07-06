@@ -38,30 +38,12 @@ static void agent_lanes_push_command(struct json_value *arr, const char *name,
 }
 
 static void agent_push_lane_topology(struct json_value *arr,
-                                     const char *lane,
-                                     const char *unit,
-                                     const char *datadir,
-                                     int rpc_port,
-                                     int p2p_port,
-                                     int https_port,
-                                     int fs_port,
-                                     const char *role,
-                                     const char *binary_role,
-                                     const char *deploy_command,
-                                     const char *restart_command)
+                                     const struct agent_operator_lane_topology
+                                         *topology)
 {
     struct json_value obj;
     json_init(&obj);
-    agent_fill_operator_lane_contract_json(&obj, lane, "full", datadir,
-                                           rpc_port, p2p_port,
-                                           https_port, fs_port);
-    json_push_kv_str(&obj, "unit", unit);
-    json_push_kv_str(&obj, "role", role);
-    json_push_kv_str(&obj, "binary_role", binary_role);
-    json_push_kv_str(&obj, "health_probe",
-                     "zclassic-cli -datadir=<datadir> -rpcport=<rpcport> agent");
-    json_push_kv_str(&obj, "deploy_command", deploy_command);
-    json_push_kv_str(&obj, "restart_command", restart_command);
+    agent_fill_operator_lane_topology_json(&obj, topology);
     json_push_back(arr, &obj);
     json_free(&obj);
 }
@@ -97,27 +79,9 @@ bool rpc_agent_lanes(const struct json_value *params, bool help,
 
     json_init(&lanes);
     json_set_array(&lanes);
-    agent_push_lane_topology(&lanes, "canonical", "zclassic23",
-                             "~/.zclassic-c23", 18232, 8033,
-                             8443, 0,
-                             "public daily-driver",
-                             "long_running_public_node",
-                             "make deploy requires explicit canonical guard",
-                             "operator window only");
-    agent_push_lane_topology(&lanes, "soak", "zclassic23-soak",
-                             "~/.zclassic-c23-soak", 18242, 8043,
-                             0, 0,
-                             "long-uptime evidence",
-                             "pinned_binary_soak_lane",
-                             "manual rebaseline only",
-                             "operator window only");
-    agent_push_lane_topology(&lanes, "dev", "zcl23-dev",
-                             "~/.zclassic-c23-dev", 18252, 8053,
-                             0, 18034,
-                             "fresh-build development",
-                             "restartable_development_lane",
-                             "make deploy-dev",
-                             "make deploy-dev or systemctl --user restart zcl23-dev");
+    for (size_t i = 0; i < agent_operator_lane_topology_count(); i++)
+        agent_push_lane_topology(&lanes,
+                                 agent_operator_lane_topology_at(i));
     json_push_kv(result, "lanes", &lanes);
     json_free(&lanes);
 
