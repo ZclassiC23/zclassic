@@ -51,18 +51,26 @@ CHAOS_SWEEP_SCENARIO ?= tools/sim/scenarios/seeded_peer_churn.scenario
 # App layer (MVC)
 APP_DIRS = models controllers views services supervisors conditions jobs events
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
-APP_SRCS = $(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c))
+# Lint-gate tests intentionally plant short-lived fixture files inside the
+# production scan tree so the lint scopes stay honest. Those files must remain
+# visible to lint, but concurrent builds must never compile them.
+ZCL_EPHEMERAL_SOURCE_PATTERNS = %/_%fixture%.c
+zcl_filter_ephemeral_sources = $(filter-out $(ZCL_EPHEMERAL_SOURCE_PATTERNS),$(1))
+APP_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c)))
 
 # Config layer
 CONFIG_INCLUDES = -Iconfig/include
-CONFIG_SRCS = $(wildcard config/src/*.c)
+CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard config/src/*.c))
 
 # Library layer
 LIB_MODULES = bloom chain coins consensus core crypto crypto_registry encoding event framework health kernel \
 	json keys metrics mining net platform policy primitives rpc script sim storage \
 	support sync util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
-LIB_SRCS = $(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))
+LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c)))
 
 # Ports layer (Clean Architecture / Hexagonal interface headers).
 # Headers only — adapters that implement these interfaces live elsewhere.
@@ -73,25 +81,29 @@ PORTS_INCLUDES = -Iports/include
 # Bounded contexts under domain/<context>/ each expose include/domain/<context>/.
 DOMAIN_CONTEXTS = consensus wallet encoding
 DOMAIN_INCLUDES = $(foreach c,$(DOMAIN_CONTEXTS),-Idomain/$(c)/include)
-DOMAIN_SRCS = $(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c))
+DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c)))
 
 # Application layer (use cases / service objects).
 # May depend on domain/, ports/, primitives, util — never on adapters or I/O.
 APPLICATION_CONTEXTS = consensus
 APPLICATION_INCLUDES = $(foreach c,$(APPLICATION_CONTEXTS),-Iapplication/$(c)/include)
-APPLICATION_SRCS = $(foreach c,$(APPLICATION_CONTEXTS),$(wildcard application/$(c)/src/*.c))
+APPLICATION_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(foreach c,$(APPLICATION_CONTEXTS),$(wildcard application/$(c)/src/*.c)))
 
 # Adapters layer (port implementations).
 # Outbound adapters implement the port interfaces. Inbound surfaces currently
 # live in app/controllers, tools/mcp, and tools/cli until a real adapter shape
 # is introduced.
 ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include
-ADAPTERS_SRCS = $(wildcard adapters/outbound/persistence/src/*.c)
+ADAPTERS_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard adapters/outbound/persistence/src/*.c))
 
 # MCP router + future controllers (schema-driven tool dispatch)
 MCP_INCLUDES = -Itools
-MCP_SRCS = $(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
-	$(wildcard tools/mcp/views/*.c)
+MCP_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
+	$(wildcard tools/mcp/views/*.c))
 
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
@@ -193,7 +205,8 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
 all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
-TEST_SRCS = $(wildcard lib/test/src/*.c)
+TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard lib/test/src/*.c))
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 

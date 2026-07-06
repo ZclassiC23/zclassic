@@ -4627,6 +4627,43 @@ static int t_sha3_window_tool_check_contract(void)
     return failures;
 }
 
+static int t_make_ignores_ephemeral_lint_fixture_sources(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("Makefile source globs ignore ephemeral lint fixture sources") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "ZCL_EPHEMERAL_SOURCE_PATTERNS") != NULL);
+        ASSERT(strstr(buf, "%/_%fixture%.c") != NULL);
+        ASSERT(strstr(buf, "zcl_filter_ephemeral_sources") != NULL);
+        ASSERT(count_occurrences(buf,
+                   "$(call zcl_filter_ephemeral_sources,") >= 8);
+        ASSERT(strstr(buf,
+               "APP_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
+        ASSERT(strstr(buf,
+               "CONFIG_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
+        ASSERT(strstr(buf,
+               "LIB_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
+        ASSERT(strstr(buf,
+               "DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
+        ASSERT(strstr(buf,
+               "APPLICATION_SRCS = $(call zcl_filter_ephemeral_sources")
+               != NULL);
+        ASSERT(strstr(buf,
+               "ADAPTERS_SRCS = $(call zcl_filter_ephemeral_sources")
+               != NULL);
+        ASSERT(strstr(buf,
+               "MCP_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
+        ASSERT(strstr(buf,
+               "TEST_SRCS = $(call zcl_filter_ephemeral_sources") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_block_index_flat_atomic_save_contract(void)
 {
     int failures = 0;
@@ -5262,6 +5299,7 @@ int test_make_lint_gates(void)
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_refold_from_anchor_explicit_span_gate_contract();
     failures += t_sha3_window_tool_check_contract();
+    failures += t_make_ignores_ephemeral_lint_fixture_sources();
     failures += t_block_index_flat_atomic_save_contract();
     failures += t_projection_deferral_is_not_block_rejected_contract();
     failures += t_trusted_peer_stall_guard_contract();
