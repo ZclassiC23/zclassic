@@ -296,6 +296,17 @@ static bool entry_fast_sync_useful(const struct peer_lifecycle_entry *e)
            subver_is_zcl23(e->subver, e->services);
 }
 
+static bool entry_cache_skip_actionable(const struct peer_lifecycle_entry *e)
+{
+    if (!e || e->cache_skipped <= 0)
+        return false;
+    if (source_is_inbound(e->source) &&
+        entry_current_connection_handshaked(e) &&
+        strcmp(e->last_reason, "inbound_ephemeral_port") == 0)
+        return false;
+    return true;
+}
+
 static int64_t entry_incident_score(const struct peer_lifecycle_entry *e,
                                     int64_t duplicate_host_entries)
 {
@@ -307,7 +318,8 @@ static int64_t entry_incident_score(const struct peer_lifecycle_entry *e,
     score += e->rejected * 3;
     score += e->pre_handshake_disconnects * 2;
     score += e->disconnected;
-    score += e->cache_skipped;
+    if (entry_cache_skip_actionable(e))
+        score += e->cache_skipped;
     if (duplicate_host_entries > 1)
         score += (duplicate_host_entries - 1) * 2;
     return score;

@@ -208,6 +208,78 @@ static int test_peer_lifecycle_skips_inbound_ephemeral_cache(void)
     return failures;
 }
 
+static int test_peer_lifecycle_inbound_ephemeral_skip_is_not_incident(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: active inbound ephemeral cache skip "
+              "is not incident")
+    {
+        struct p2p_node inbound;
+        struct p2p_node outbound;
+        struct json_value incidents;
+        const struct json_value *top;
+
+        peer_lifecycle_reset_for_test();
+        memset(&inbound, 0, sizeof(inbound));
+        test_addr_ipv4(&inbound.addr, 81, 4, 164, 198, 56435);
+        inbound.id = 501;
+        inbound.inbound = true;
+        inbound.state = PEER_HANDSHAKE_COMPLETE;
+        inbound.services = NODE_NETWORK;
+        snprintf(inbound.addr_name, sizeof(inbound.addr_name),
+                 "81.4.164.198:56435");
+        snprintf(inbound.sub_ver, sizeof(inbound.sub_ver),
+                 "%s", "/MagicBean:2.1.2-beta6/");
+
+        peer_lifecycle_note_connected(&inbound,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&inbound, inbound.services,
+                                             3171981, inbound.sub_ver);
+        peer_lifecycle_note_handshake_complete(&inbound);
+        peer_lifecycle_note_active(&inbound);
+        peer_lifecycle_note_cache_skipped(&inbound,
+                                          "inbound_ephemeral_port");
+
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        ASSERT(json_get_int(json_get(&incidents, "incident_count")) == 0);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "bootstrap_useful_count")) == 1);
+        top = json_get(&incidents, "top_incidents");
+        ASSERT(top && top->type == JSON_ARR);
+        ASSERT(json_size(top) == 0);
+        json_free(&incidents);
+
+        memset(&outbound, 0, sizeof(outbound));
+        test_addr_ipv4(&outbound.addr, 149, 50, 116, 7, 20022);
+        outbound.id = 502;
+        outbound.state = PEER_HANDSHAKE_COMPLETE;
+        outbound.services = NODE_NETWORK;
+        snprintf(outbound.addr_name, sizeof(outbound.addr_name),
+                 "149.50.116.7:20022");
+        snprintf(outbound.sub_ver, sizeof(outbound.sub_ver),
+                 "%s", msg_version_user_agent());
+
+        peer_lifecycle_note_connected(&outbound,
+                                      PEER_LIFECYCLE_SOURCE_MANUAL);
+        peer_lifecycle_note_version_received(&outbound, outbound.services,
+                                             3171981, outbound.sub_ver);
+        peer_lifecycle_note_handshake_complete(&outbound);
+        peer_lifecycle_note_cache_skipped(&outbound, "save_advisory");
+
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        ASSERT(json_get_int(json_get(&incidents, "incident_count")) == 1);
+        top = json_get(&incidents, "top_incidents");
+        ASSERT(top && top->type == JSON_ARR);
+        ASSERT(json_size(top) == 1);
+        ASSERT(find_lifecycle_obj_str(top, "addr",
+                                      "149.50.116.7:20022") != NULL);
+        json_free(&incidents);
+    } TEST_END
+    return failures;
+}
+
 static int test_peer_lifecycle_counters(void)
 {
     int failures = 0;
@@ -549,6 +621,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_version_build();
     failures += test_peer_lifecycle_learns_inbound_advertised_addr();
     failures += test_peer_lifecycle_skips_inbound_ephemeral_cache();
+    failures += test_peer_lifecycle_inbound_ephemeral_skip_is_not_incident();
     failures += test_peer_lifecycle_counters();
     failures += test_peer_lifecycle_inbound_source_bucket();
     failures += test_peer_lifecycle_duplicate_connect_duration();
