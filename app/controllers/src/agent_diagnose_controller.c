@@ -88,11 +88,99 @@ static bool diagnose_agent_normal_lookahead(const struct json_value *agent)
            json_get_bool(json_get(height_contract, "normal_lookahead"));
 }
 
+static bool diagnose_peer_incident_material(const struct json_value *incident)
+{
+    if (!incident || incident->type != JSON_OBJ)
+        return false;
+    if (json_get_int(json_get(incident, "duplicate_host_entries")) > 1)
+        return true;
+    if (json_get_int(json_get(incident, "reconnects")) > 0)
+        return true;
+    if (json_get_int(json_get(incident, "timeout")) > 0)
+        return true;
+    if (json_get_int(json_get(incident, "rejected")) > 0)
+        return true;
+    if (json_get_int(json_get(incident, "pre_handshake_disconnects")) > 1)
+        return true;
+    return false;
+}
+
+static int64_t diagnose_peer_material_incidents(const struct json_value *peers)
+{
+    const struct json_value *top =
+        peers ? json_get(peers, "top_incidents") : NULL;
+    if (!top || top->type != JSON_ARR)
+        return 0;
+    int64_t material = 0;
+    for (size_t i = 0; i < json_size(top); i++) {
+        if (diagnose_peer_incident_material(json_at(top, i)))
+            material++;
+    }
+    return material;
+}
+
+static bool diagnose_peer_group_material(const struct json_value *group)
+{
+    if (!group || group->type != JSON_OBJ)
+        return false;
+    if (json_get_int(json_get(group, "entries")) > 1)
+        return true;
+    if (json_get_int(json_get(group, "reconnects")) > 0)
+        return true;
+    if (json_get_int(json_get(group, "timeout")) > 0)
+        return true;
+    if (json_get_int(json_get(group, "rejected")) > 0)
+        return true;
+    if (json_get_int(json_get(group, "pre_handshake_disconnects")) > 1)
+        return true;
+    return false;
+}
+
+static int64_t diagnose_peer_material_groups(const struct json_value *peers)
+{
+    const struct json_value *groups =
+        peers ? json_get(peers, "duplicate_host_groups") : NULL;
+    if (!groups || groups->type != JSON_ARR)
+        return 0;
+    int64_t material = 0;
+    for (size_t i = 0; i < json_size(groups); i++) {
+        if (diagnose_peer_group_material(json_at(groups, i)))
+            material++;
+    }
+    return material;
+}
+
+static const char *diagnose_peer_detail(int64_t peer_count,
+                                        int64_t peer_incidents,
+                                        int64_t material_signals)
+{
+    if (peer_count <= 0)
+        return "no connected peers";
+    if (material_signals > 0)
+        return "peer lifecycle has material reconnect, duplicate, timeout, or reject incidents";
+    if (peer_incidents > 0)
+        return "minor peer lifecycle incidents only; no duplicate or reconnect storm";
+    return "peer lifecycle has no scored incidents";
+}
+
+static const char *diagnose_peer_next_action(int64_t peer_count,
+                                             int64_t peer_incidents,
+                                             int64_t material_signals)
+{
+    if (peer_count <= 0)
+        return "inspect peer lifecycle and bootstrap status";
+    if (material_signals > 0)
+        return "dumpstate peer_lifecycle incidents";
+    if (peer_incidents > 0)
+        return "monitor peer lifecycle incidents";
+    return "monitor getnetworkinfo peer_lifecycle";
+}
+
 static const char *diagnose_next_action(bool operator_needed,
                                         bool agent_healthy,
                                         bool chain_attention,
                                         int64_t peer_count,
-                                        int64_t peer_incidents,
+                                        bool peer_attention,
                                         bool mirror_unhealthy)
 {
     if (operator_needed)
@@ -101,7 +189,7 @@ static const char *diagnose_next_action(bool operator_needed,
         return "inspect_agent_healthcheck_and_chain_timeline";
     if (peer_count <= 0)
         return "inspect_peer_lifecycle_incidents_and_bootstrapstatus";
-    if (peer_incidents > 0)
+    if (peer_attention)
         return "inspect_peer_lifecycle_incidents";
     if (mirror_unhealthy)
         return "inspect_mirror_status";
@@ -197,6 +285,21 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         json_get_int(json_get(&peers, "incident_count"));
     int64_t duplicate_groups =
         json_get_int(json_get(&peers, "duplicate_host_group_count"));
+    int64_t material_peer_incidents =
+        diagnose_peer_material_incidents(&peers);
+    int64_t material_peer_groups =
+        diagnose_peer_material_groups(&peers);
+    int64_t informational_peer_incidents =
+        peer_incidents > material_peer_incidents
+            ? peer_incidents - material_peer_incidents : 0;
+    bool peer_attention =
+        peer_count <= 0 || material_peer_incidents > 0 ||
+        material_peer_groups > 0 || duplicate_groups > 0;
+    const char *peer_severity =
+        peer_attention ? "attention" :
+        (peer_incidents > 0 ? "info" : "ok");
+    int64_t material_peer_signals =
+        material_peer_incidents + material_peer_groups;
     const struct json_value *mirror_contract =
         mirror_present ? json_get(&mirror, "mirror_contract") : NULL;
     const char *mirror_status =
@@ -215,16 +318,26 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_int(result, "peer_count", peer_count);
     json_push_kv_int(result, "peer_incident_count", peer_incidents);
     json_push_kv_int(result, "duplicate_host_group_count", duplicate_groups);
+    json_push_kv_str(result, "peer_incident_severity", peer_severity);
+    json_push_kv_bool(result, "peer_stability_blocker", peer_attention);
+    json_push_kv_int(result, "peer_material_incident_count",
+                     material_peer_incidents);
+    json_push_kv_int(result, "peer_material_group_count",
+                     material_peer_groups);
+    json_push_kv_int(result, "peer_informational_incident_count",
+                     informational_peer_incidents);
+    json_push_kv_str(result, "peer_incident_summary",
+                     diagnose_peer_detail(peer_count, peer_incidents,
+                                          material_peer_signals));
     json_push_kv_bool(result, "partial_result", partial);
 
     bool chain_attention =
         !chain_serving_ready || (!normal_lookahead && gap > 0);
     const char *next_action =
         diagnose_next_action(operator_needed, agent_healthy, chain_attention,
-                             peer_count, peer_incidents, mirror_unhealthy);
+                             peer_count, peer_attention, mirror_unhealthy);
     bool attention = operator_needed || !agent_healthy || chain_attention ||
-                     peer_count <= 0 || peer_incidents > 0 ||
-                     mirror_unhealthy;
+                     peer_attention || mirror_unhealthy;
     json_push_kv_str(result, "verdict",
                      attention ? "attention_needed" : "healthy");
     json_push_kv_str(result, "safe_next_action", next_action);
@@ -239,14 +352,12 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                               ? "inspect sync timeline and reducer frontier"
                               : "continue monitoring H* and peer target");
     diagnose_push_finding(&findings, "peer_lifecycle",
-                          peer_incidents > 0 || peer_count <= 0
-                              ? "attention" : "ok",
-                          peer_incidents > 0
-                              ? "peer lifecycle has scored incidents"
-                              : "peer lifecycle has no scored incidents",
-                          peer_incidents > 0
-                              ? "dumpstate peer_lifecycle incidents"
-                              : "monitor getnetworkinfo peer_lifecycle");
+                          peer_severity,
+                          diagnose_peer_detail(peer_count, peer_incidents,
+                                               material_peer_signals),
+                          diagnose_peer_next_action(peer_count,
+                                                    peer_incidents,
+                                                    material_peer_signals));
     diagnose_push_finding(&findings, "mirror",
                           mirror_unhealthy ? "attention" : "ok",
                           mirror_present ? mirror_status

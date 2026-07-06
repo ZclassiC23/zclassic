@@ -2449,6 +2449,16 @@ int test_syncdiag_rpc(void)
         ok = ok && peer != NULL;
         if (peer)
             peer->starting_height = target_height;
+        struct p2p_node flaky;
+        memset(&flaky, 0, sizeof(flaky));
+        syncdiag_set_ipv4(&flaky.addr, 149, 50, 116, 7, 20022);
+        flaky.id = 404;
+        flaky.state = PEER_CONNECTING;
+        snprintf(flaky.addr_name, sizeof(flaky.addr_name),
+                 "149.50.116.7:20022");
+        peer_lifecycle_note_connected(&flaky,
+                                      PEER_LIFECYCLE_SOURCE_ADDRMAN);
+        peer_lifecycle_note_disconnected(&flaky, "cleanup");
 
         struct download_manager *dm = msg_get_download_mgr();
         dl_drain_for_backpressure(dm);
@@ -2480,6 +2490,8 @@ int test_syncdiag_rpc(void)
         const struct json_value *findings = json_get(&result, "findings");
         const struct json_value *chain_finding =
             find_object_with_str(findings, "name", "chain_serving");
+        const struct json_value *peer_finding =
+            find_object_with_str(findings, "name", "peer_lifecycle");
         const struct json_value *agent = json_get(&result, "agent");
         const struct json_value *height_contract =
             agent ? json_get(agent, "height_contract") : NULL;
@@ -2490,6 +2502,21 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_bool(json_get(&result,
                                           "chain_serving_ready"));
         ok = ok && json_get_bool(json_get(&result, "normal_lookahead"));
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_incident_count")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_incident_severity")),
+                          "info") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "peer_stability_blocker"));
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_material_incident_count")) == 0;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_informational_incident_count"))
+            == 1;
+        ok = ok && strstr(json_get_str(json_get(&result,
+                                                "peer_incident_summary")),
+                          "minor peer lifecycle incidents") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
                           "healthy") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
@@ -2497,8 +2524,80 @@ int test_syncdiag_rpc(void)
                           "monitor_agent_and_liveness") == 0;
         ok = ok && chain_finding && strcmp(json_get_str(json_get(
             chain_finding, "severity")), "ok") == 0;
+        ok = ok && peer_finding && strcmp(json_get_str(json_get(
+            peer_finding, "severity")), "info") == 0;
         ok = ok && height_contract && json_get_bool(json_get(
             height_contract, "normal_lookahead"));
+
+        json_free(&result);
+
+        peer_lifecycle_reset_for_test();
+        struct p2p_node zigma_a;
+        struct p2p_node zigma_b;
+        memset(&zigma_a, 0, sizeof(zigma_a));
+        syncdiag_set_ipv4(&zigma_a.addr, 40, 160, 53, 56, 45474);
+        zigma_a.id = 405;
+        zigma_a.inbound = true;
+        zigma_a.state = PEER_HANDSHAKE_COMPLETE;
+        zigma_a.services = NODE_NETWORK;
+        snprintf(zigma_a.addr_name, sizeof(zigma_a.addr_name),
+                 "40.160.53.56:45474");
+        snprintf(zigma_a.sub_ver, sizeof(zigma_a.sub_ver),
+                 "%s", "/Zigma:0.1.0/");
+        peer_lifecycle_note_connected(&zigma_a,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&zigma_a, zigma_a.services,
+                                             target_height,
+                                             zigma_a.sub_ver);
+        peer_lifecycle_note_handshake_complete(&zigma_a);
+        peer_lifecycle_note_active(&zigma_a);
+        peer_lifecycle_note_disconnected(&zigma_a, "cleanup");
+        peer_lifecycle_note_connected(&zigma_a,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&zigma_a, zigma_a.services,
+                                             target_height,
+                                             zigma_a.sub_ver);
+        peer_lifecycle_note_handshake_complete(&zigma_a);
+        peer_lifecycle_note_active(&zigma_a);
+
+        memset(&zigma_b, 0, sizeof(zigma_b));
+        syncdiag_set_ipv4(&zigma_b.addr, 40, 160, 53, 56, 39030);
+        zigma_b.id = 406;
+        zigma_b.inbound = true;
+        zigma_b.state = PEER_CONNECTING;
+        zigma_b.services = NODE_NETWORK;
+        snprintf(zigma_b.addr_name, sizeof(zigma_b.addr_name),
+                 "40.160.53.56:39030");
+        snprintf(zigma_b.sub_ver, sizeof(zigma_b.sub_ver),
+                 "%s", "/Zigma:0.1.0/");
+        peer_lifecycle_note_connected(&zigma_b,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_timeout(&zigma_b, "handshake_timeout");
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &result);
+        findings = json_get(&result, "findings");
+        peer_finding = find_object_with_str(findings, "name",
+                                            "peer_lifecycle");
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "attention_needed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "inspect_peer_lifecycle_incidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_incident_severity")),
+                          "attention") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "peer_stability_blocker"));
+        ok = ok && json_get_int(json_get(&result,
+                                         "duplicate_host_group_count")) == 1;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_material_incident_count")) >= 1;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_material_group_count")) >= 1;
+        ok = ok && peer_finding && strcmp(json_get_str(json_get(
+            peer_finding, "severity")), "attention") == 0;
 
         json_free(&params);
         json_free(&result);

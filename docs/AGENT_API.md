@@ -77,10 +77,18 @@ at next?" packet. It composes `agent`, default bounded `healthcheck`,
 `peer_lifecycle incidents`, advisory `getmirrorstatus`, and a small semantic
 timeline slice while staying inside `zcl.first_call_contract.v1`. The response
 duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
-`gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`) and
+`gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`,
+`peer_incident_severity`, `peer_stability_blocker`,
+`peer_material_incident_count`, `peer_material_group_count`,
+`peer_informational_incident_count`, and `peer_incident_summary`) and
 marks skipped lower-priority sections as `partial_result=true` instead of
 hanging. Use it before raw logs when the node is behaving oddly but still
 answers RPC.
+`peer_incident_severity=info` means the raw peer lifecycle view still has
+forensic detail, but there is no duplicate/reconnect storm and the overall
+verdict can remain healthy. `peer_incident_severity=attention` means the
+incident view found material duplicate, reconnect, timeout, reject, or no-peer
+signals and `safe_next_action` will point at peer-lifecycle drill-downs.
 `tools/z mirror --json` mirrors that interpretation only as a compatibility
 shim for long-running older binaries: it clears a `hash-disagreement` active
 blocker only when the payload itself proves equal height and equal hash.
