@@ -259,33 +259,28 @@ bool rpc_agent_map(const struct json_value *params, bool help,
 
     json_init(&commands);
     json_set_array(&commands);
-    agent_push_command(&commands, "status", "zclassic23 agent",
-                       "zcl_agent", "compact live health/status contract");
-    agent_push_command(&commands, "map", "zclassic23 agentmap",
-                       "zcl_agent_map", "where code, docs, and tests live");
-    agent_push_command(&commands, "impact",
-                       "zclassic23 agentimpact <changed-file>...",
-                       "zcl_agent_impact",
-                       "changed files to recommended tests and risk flags");
-    agent_push_command(&commands, "contracts", "zclassic23 agentcontracts",
-                       "zcl_agent_contracts",
-                       "versioned schemas and transport contract list");
-    agent_push_command(&commands, "build", "zclassic23 agentbuild",
-                       "zcl_agent_build",
-                       "incremental/cache/reproducible build contract");
-    agent_push_command(&commands, "interface", "zclassic23 agentinterface",
-                       "zcl_agent_interface",
-                       "preferred AI/operator transport and JSON rules");
-    agent_push_command(&commands, "lanes", "zclassic23 agentlanes",
-                       "zcl_agent_lanes",
-                       "canonical/soak/dev topology and restart/deploy rules");
-    agent_push_command(&commands, "liveness", "zclassic23 agentliveness",
-                       "zcl_agent_liveness",
-                       "lane/service/supervisor/background-quality liveness");
-    agent_push_command(&commands, "deploy_guard",
-                       "zclassic23 agentdeployguard [action]",
-                       "zcl_agent_deploy_guard",
-                       "C-native deploy/restart allow-refuse decision");
+    agent_push_contract_command_json(&commands, "status", "agent",
+                                     "compact live health/status contract");
+    agent_push_contract_command_json(&commands, "map", "agentmap",
+                                     "where code, docs, and tests live");
+    agent_push_contract_command_json(&commands, "impact", "agentimpact",
+                                     "changed files to recommended tests and risk flags");
+    agent_push_contract_command_json(&commands, "contracts",
+                                     "agentcontracts",
+                                     "versioned schemas and transport contract list");
+    agent_push_contract_command_json(&commands, "build", "agentbuild",
+                                     "incremental/cache/reproducible build contract");
+    agent_push_contract_command_json(&commands, "interface",
+                                     "agentinterface",
+                                     "preferred AI/operator transport and JSON rules");
+    agent_push_contract_command_json(&commands, "lanes", "agentlanes",
+                                     "canonical/soak/dev topology and restart/deploy rules");
+    agent_push_contract_command_json(&commands, "liveness",
+                                     "agentliveness",
+                                     "lane/service/supervisor/background-quality liveness");
+    agent_push_contract_command_json(&commands, "deploy_guard",
+                                     "agentdeployguard",
+                                     "C-native deploy/restart allow-refuse decision");
     agent_push_command(&commands, "command_center",
                        "zclassic23 agent",
                        "zcl_operator_summary",
@@ -298,14 +293,13 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zcl_health", "strict health drill-down");
     agent_push_command(&commands, "logs", "zclassic23 getnodelog <regex>",
                        "zcl_node_log", "bounded server-side log search");
-    agent_push_command(&commands, "timeline",
-                       "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
-                       "zcl_timeline",
-                       "category-filtered event timeline with bounded filters");
+    agent_push_contract_command_json(&commands, "timeline", "timeline",
+                                     "category-filtered event timeline with bounded filters");
     agent_push_command(&commands, "state", "zclassic23 dumpstate <subsystem>",
                        "zcl_state", "generic subsystem diagnostics");
-    agent_push_command(&commands, "state_catalog", "zclassic23 statecatalog",
-                       "zcl_state_catalog", "zcl_state subsystem catalog");
+    agent_push_contract_command_json(&commands, "state_catalog",
+                                     "statecatalog",
+                                     "zcl_state subsystem catalog");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
 
@@ -321,10 +315,9 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zclassic23 dumpstate <subsystem>",
                        "zcl_state",
                        "semantic subsystem internals through diagnostics registry");
-    agent_push_command(&telemetry, "subsystem_catalog",
-                       "zclassic23 statecatalog",
-                       "zcl_state_catalog",
-                       "machine catalog of diagnostics registry subsystems");
+    agent_push_contract_command_json(&telemetry, "subsystem_catalog",
+                                     "statecatalog",
+                                     "machine catalog of diagnostics registry subsystems");
     agent_push_command(&telemetry, "node_log",
                        "zclassic23 getnodelog <regex>",
                        "zcl_node_log",
@@ -337,10 +330,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zclassic23 eventlog <count>",
                        "zcl_events",
                        "recent structured node events");
-    agent_push_command(&telemetry, "timeline",
-                       "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
-                       "zcl_timeline",
-                       "versioned category-filtered event timeline with bounded filters");
+    agent_push_contract_command_json(&telemetry, "timeline", "timeline",
+                                     "versioned category-filtered event timeline with bounded filters");
     agent_push_command(&telemetry, "quality_lanes",
                        "make quality-linger-status",
                        "zcl_agent_build",

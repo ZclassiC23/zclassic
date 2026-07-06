@@ -2364,9 +2364,13 @@ int test_syncdiag_rpc(void)
             json_get(&ops, "runtime_availability");
         const struct json_value *ops_availability_methods =
             ops_availability ? json_get(ops_availability, "methods") : NULL;
+        const struct json_value *ops_direct_commands =
+            json_get(&ops, "direct_commands");
         const struct json_value *ops_method_agentops =
             find_object_with_str(ops_availability_methods, "method",
                                  "agentops");
+        const struct json_value *ops_direct_agentops =
+            find_object_with_str(ops_direct_commands, "method", "agentops");
         ok = ok && ops.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&ops, "schema")),
                           "zcl.agent_ops.v1") == 0;
@@ -2383,6 +2387,15 @@ int test_syncdiag_rpc(void)
                           "zcl_state_catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "timeline_tool")),
                           "zcl_timeline") == 0;
+        ok = ok && ops_direct_agentops &&
+            strcmp(json_get_str(json_get(ops_direct_agentops, "schema")),
+                   "zcl.agent_ops.v1") == 0;
+        ok = ok && ops_direct_agentops &&
+            strcmp(json_get_str(json_get(ops_direct_agentops, "native")),
+                   "zclassic23 agentops") == 0;
+        ok = ok && ops_direct_agentops &&
+            strcmp(json_get_str(json_get(ops_direct_agentops, "mcp")),
+                   "zcl_agent_ops") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;

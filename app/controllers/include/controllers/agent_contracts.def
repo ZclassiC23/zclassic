@@ -39,7 +39,7 @@ AGENT_CONTRACT("agentimpact", "changed_files_to_tests",
                "map edits to risk flags, docs, and focused validation")
 AGENT_CONTRACT("agentdeployguard", "deploy_guard",
                "zcl.agent_deploy_guard.v1",
-               "zclassic23 agentdeployguard <action>",
+               "zclassic23 agentdeployguard [action]",
                "zcl_agent_deploy_guard", "",
                "machine allow/refuse decision before restart or deploy")
 AGENT_CONTRACT("statecatalog", "state_catalog", "zcl.state_catalog.v1",

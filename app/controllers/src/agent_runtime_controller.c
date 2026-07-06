@@ -83,17 +83,9 @@ static const struct agent_operator_lane_topology g_operator_lane_topologies[] = 
     },
 };
 
-struct agent_runtime_probe_method {
-    const char *method;
-    const char *capability;
-    const char *native_command;
-    const char *mcp_tool;
-    const char *schema;
-};
-
-static const struct agent_runtime_probe_method g_probe_methods[] = {
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) \
-    { method, capability, native, mcp, schema },
+enum {
+    AGENT_RUNTIME_METHOD_CAPACITY = 0
+#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) + 1
 #include "controllers/agent_contracts.def"
 #undef AGENT_CONTRACT
 };
@@ -113,8 +105,7 @@ struct agent_runtime_availability_state {
     int rpc_port;
     char probe_status[64];
     char target_build_commit[128];
-    struct agent_runtime_method_probe methods[
-        sizeof(g_probe_methods) / sizeof(g_probe_methods[0])];
+    struct agent_runtime_method_probe methods[AGENT_RUNTIME_METHOD_CAPACITY];
 };
 
 static struct agent_runtime_availability_state g_agent_availability = {
@@ -125,9 +116,6 @@ static struct agent_runtime_availability_state g_agent_availability = {
     .probe_status = "self_declared_current_runtime",
     .target_build_commit = "",
 };
-
-static const size_t g_probe_method_count =
-    sizeof(g_probe_methods) / sizeof(g_probe_methods[0]);
 
 static bool agent_lane_is(const char *lane, const char *want)
 {
@@ -276,27 +264,35 @@ void rpc_agent_set_boot_context(const char *operator_lane,
     g_agent_runtime.fs_port = fs_port;
 }
 
+static size_t agent_runtime_contract_count(void)
+{
+    size_t n = agent_contract_count();
+    return n < AGENT_RUNTIME_METHOD_CAPACITY ? n
+                                             : AGENT_RUNTIME_METHOD_CAPACITY;
+}
+
 static size_t agent_runtime_method_index(const char *method)
 {
+    size_t n = agent_runtime_contract_count();
     if (!method || !method[0])
-        return g_probe_method_count;
-    for (size_t i = 0; i < g_probe_method_count; i++) {
-        if (strcmp(g_probe_methods[i].method, method) == 0)
+        return n;
+    for (size_t i = 0; i < n; i++) {
+        const struct agent_contract *c = agent_contract_at(i);
+        if (c && strcmp(c->method, method) == 0)
             return i;
     }
-    return g_probe_method_count;
+    return n;
 }
 
 size_t agent_runtime_probe_method_count(void)
 {
-    return g_probe_method_count;
+    return agent_runtime_contract_count();
 }
 
 const char *agent_runtime_probe_method_name(size_t index)
 {
-    if (index >= g_probe_method_count)
-        return "";
-    return g_probe_methods[index].method;
+    const struct agent_contract *c = agent_contract_at(index);
+    return c ? c->method : "";
 }
 
 void agent_runtime_availability_reset(void)
@@ -342,11 +338,14 @@ void agent_runtime_availability_record_method(const char *method,
                                               const char *error_message)
 {
     size_t idx = agent_runtime_method_index(method);
-    if (idx >= g_probe_method_count)
+    if (idx >= agent_runtime_contract_count())
+        return;
+    const struct agent_contract *c = agent_contract_at(idx);
+    if (!c)
         return;
     struct agent_runtime_method_probe *m =
         &g_agent_availability.methods[idx];
-    snprintf(m->method, sizeof(m->method), "%s", g_probe_methods[idx].method);
+    snprintf(m->method, sizeof(m->method), "%s", c->method);
     snprintf(m->support, sizeof(m->support), "%s",
              support && support[0] ? support
                                    : AGENT_AVAILABILITY_SUPPORT_UNKNOWN);
@@ -375,7 +374,7 @@ static bool agent_availability_probe_attempted(void)
 
 static bool agent_availability_probe_reachable(void)
 {
-    for (size_t i = 0; i < g_probe_method_count; i++) {
+    for (size_t i = 0; i < agent_runtime_contract_count(); i++) {
         if (g_agent_availability.methods[i].recorded)
             return true;
     }
@@ -384,7 +383,7 @@ static bool agent_availability_probe_reachable(void)
 
 static const char *agent_availability_method_support(size_t idx)
 {
-    if (idx >= g_probe_method_count)
+    if (idx >= agent_runtime_contract_count())
         return AGENT_AVAILABILITY_SUPPORT_UNKNOWN;
     if (!g_agent_availability.probe_started)
         return AGENT_AVAILABILITY_SUPPORT_SUPPORTED;
@@ -456,7 +455,7 @@ void agent_push_runtime_availability_json(struct json_value *out,
     int64_t error_count = 0;
     int64_t unknown_count = 0;
 
-    for (size_t i = 0; i < g_probe_method_count; i++) {
+    for (size_t i = 0; i < agent_runtime_contract_count(); i++) {
         const char *support = agent_availability_method_support(i);
         if (strcmp(support, AGENT_AVAILABILITY_SUPPORT_SUPPORTED) == 0)
             supported_count++;
@@ -507,8 +506,10 @@ void agent_push_runtime_availability_json(struct json_value *out,
 
     json_init(&methods);
     json_set_array(&methods);
-    for (size_t i = 0; i < g_probe_method_count; i++) {
-        const struct agent_runtime_probe_method *pm = &g_probe_methods[i];
+    for (size_t i = 0; i < agent_runtime_contract_count(); i++) {
+        const struct agent_contract *pm = agent_contract_at(i);
+        if (!pm)
+            continue;
         const struct agent_runtime_method_probe *probe =
             &g_agent_availability.methods[i];
         const char *support = agent_availability_method_support(i);

@@ -55,11 +55,15 @@ static void contracts_push_registry_schema(struct json_value *arr,
 
 static void contracts_push_agent_registry_schemas(struct json_value *arr)
 {
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) \
-    contracts_push_registry_schema(arr, method, capability, schema, native,   \
-                                   mcp, rest, purpose);
-#include "controllers/agent_contracts.def"
-#undef AGENT_CONTRACT
+    for (size_t i = 0; i < agent_contract_count(); i++) {
+        const struct agent_contract *c = agent_contract_at(i);
+        if (!c)
+            continue;
+        contracts_push_registry_schema(arr, c->method, c->capability,
+                                       c->schema, c->native_command,
+                                       c->mcp_tool, c->rest_route,
+                                       c->purpose);
+    }
 }
 
 bool rpc_agent_contracts(const struct json_value *params, bool help,

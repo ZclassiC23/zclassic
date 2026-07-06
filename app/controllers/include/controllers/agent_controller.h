@@ -9,6 +9,16 @@
 
 struct json_value;
 
+struct agent_contract {
+    const char *method;
+    const char *capability;
+    const char *schema;
+    const char *native_command;
+    const char *mcp_tool;
+    const char *rest_route;
+    const char *purpose;
+};
+
 struct agent_operator_lane_topology {
     const char *lane;
     const char *unit;
@@ -46,6 +56,19 @@ bool agent_fill_known_operator_lane_contract_json(struct json_value *lane_obj,
 void agent_fill_operator_lane_topology_json(
     struct json_value *lane_obj,
     const struct agent_operator_lane_topology *topology);
+size_t agent_contract_count(void);
+const struct agent_contract *agent_contract_at(size_t index);
+const struct agent_contract *agent_contract_lookup(const char *method);
+bool agent_push_contract_command_json(struct json_value *arr,
+                                      const char *name,
+                                      const char *method,
+                                      const char *purpose_override);
+bool agent_push_contract_native_field_json(struct json_value *obj,
+                                           const char *key,
+                                           const char *method);
+bool agent_push_contract_mcp_field_json(struct json_value *obj,
+                                        const char *key,
+                                        const char *method);
 void agent_push_operator_lane_fields_json(struct json_value *out);
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key);

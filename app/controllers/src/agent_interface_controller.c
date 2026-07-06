@@ -66,11 +66,14 @@ static void agent_interface_push_capability(struct json_value *arr,
 
 static void agent_interface_push_registry_capabilities(struct json_value *arr)
 {
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) \
-    agent_interface_push_capability(arr, capability, schema, native, mcp,      \
-                                    rest, purpose);
-#include "controllers/agent_contracts.def"
-#undef AGENT_CONTRACT
+    for (size_t i = 0; i < agent_contract_count(); i++) {
+        const struct agent_contract *c = agent_contract_at(i);
+        if (!c)
+            continue;
+        agent_interface_push_capability(arr, c->capability, c->schema,
+                                        c->native_command, c->mcp_tool,
+                                        c->rest_route, c->purpose);
+    }
 }
 
 static const char *agent_interface_param0_str(const struct json_value *params,
@@ -249,17 +252,26 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&loop);
     json_set_object(&loop);
-    json_push_kv_str(&loop, "discover", "zclassic23 agentinterface");
-    json_push_kv_str(&loop, "status", "zcl_agent");
-    json_push_kv_str(&loop, "mirror_status", "zcl_mirror_status");
-    json_push_kv_str(&loop, "lane_topology", "zcl_agent_lanes");
-    json_push_kv_str(&loop, "liveness", "zcl_agent_liveness");
-    json_push_kv_str(&loop, "code_map", "zcl_agent_map");
-    json_push_kv_str(&loop, "changed_files_to_tests", "zcl_agent_impact");
-    json_push_kv_str(&loop, "build_contract", "zcl_agent_build");
-    json_push_kv_str(&loop, "ops_command_center", "zcl_agent_ops");
-    json_push_kv_str(&loop, "contract_registry", "zcl_agent_contracts");
-    json_push_kv_str(&loop, "deploy_guard", "zcl_agent_deploy_guard");
+    agent_push_contract_native_field_json(&loop, "discover",
+                                          "agentinterface");
+    agent_push_contract_mcp_field_json(&loop, "status", "agent");
+    agent_push_contract_mcp_field_json(&loop, "mirror_status",
+                                       "getmirrorstatus");
+    agent_push_contract_mcp_field_json(&loop, "lane_topology",
+                                       "agentlanes");
+    agent_push_contract_mcp_field_json(&loop, "liveness",
+                                       "agentliveness");
+    agent_push_contract_mcp_field_json(&loop, "code_map", "agentmap");
+    agent_push_contract_mcp_field_json(&loop, "changed_files_to_tests",
+                                       "agentimpact");
+    agent_push_contract_mcp_field_json(&loop, "build_contract",
+                                       "agentbuild");
+    agent_push_contract_mcp_field_json(&loop, "ops_command_center",
+                                       "agentops");
+    agent_push_contract_mcp_field_json(&loop, "contract_registry",
+                                       "agentcontracts");
+    agent_push_contract_mcp_field_json(&loop, "deploy_guard",
+                                       "agentdeployguard");
     json_push_kv_str(&loop, "subsystem_state", "zcl_state");
     json_push_kv_str(&loop, "logs", "zcl_node_log");
     json_push_kv_str(&loop, "database", "zcl_sql");
