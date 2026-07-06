@@ -281,7 +281,9 @@ For peer churn, reconnect, or duplicate-entry reports, start with
 `zcl_state(subsystem="peer_lifecycle", key="incidents")`. It returns bounded
 `zcl.peer_incidents.v1` JSON with `top_incidents`, `duplicate_host_groups`,
 reconnect counts, last reasons, direction, handshake age, advertised height,
-services, and bootstrap usefulness. Use the full
+service summaries, bootstrap readiness/usefulness, current open/handshaked
+connection counts, and separate duplicate-host counts for historical entries
+versus live open/handshaked duplicates. Use the full
 `dumpstate peer_lifecycle` only after the compact incident view identifies the
 host or peer worth drilling into.
 

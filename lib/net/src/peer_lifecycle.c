@@ -59,6 +59,10 @@ struct peer_lifecycle_host_group {
     int64_t inbound_entries;
     int64_t outbound_entries;
     int64_t unknown_entries;
+    int64_t open_connections;
+    int64_t handshaked_open_connections;
+    int64_t bootstrap_useful_connections;
+    int64_t fast_sync_useful_connections;
     int64_t connected;
     int64_t handshake_complete;
     int64_t active;
@@ -283,11 +287,61 @@ static int64_t entry_reconnects(const struct peer_lifecycle_entry *e)
     return e->connected - 1;
 }
 
+static void append_summary_token(char *out, size_t out_sz, const char *token)
+{
+    if (!out || out_sz == 0 || !token || !token[0])
+        return;
+    size_t used = strlen(out);
+    if (used >= out_sz - 1)
+        return;
+    int n = snprintf(out + used, out_sz - used, "%s%s",
+                     used > 0 ? "|" : "", token);
+    if (n < 0)
+        out[out_sz - 1] = '\0';
+}
+
+static void services_summary(uint64_t services, char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0)
+        return;
+    out[0] = '\0';
+    if ((services & NODE_NETWORK) != 0)
+        append_summary_token(out, out_sz, "NODE_NETWORK");
+    if ((services & NODE_BLOOM) != 0)
+        append_summary_token(out, out_sz, "NODE_BLOOM");
+    if ((services & NODE_ZCL23) != 0)
+        append_summary_token(out, out_sz, "NODE_ZCL23");
+    uint64_t known = NODE_NETWORK | NODE_BLOOM | NODE_ZCL23;
+    uint64_t unknown = services & ~known;
+    if (unknown != 0) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "UNKNOWN_0x%llx",
+                 (unsigned long long)unknown);
+        append_summary_token(out, out_sz, buf);
+    }
+    if (out[0] == '\0')
+        snprintf(out, out_sz, "none");
+}
+
 static bool entry_bootstrap_useful(const struct peer_lifecycle_entry *e)
 {
     return entry_current_connection_handshaked(e) &&
            (e->services & NODE_NETWORK) != 0 &&
            e->start_height > 0;
+}
+
+static const char *entry_bootstrap_readiness(
+    const struct peer_lifecycle_entry *e)
+{
+    if (!e || !entry_connection_open(e))
+        return "not_connected";
+    if (!entry_current_connection_handshaked(e))
+        return "handshake_incomplete";
+    if ((e->services & NODE_NETWORK) == 0)
+        return "missing_NODE_NETWORK";
+    if (e->start_height <= 0)
+        return "missing_advertised_height";
+    return "useful";
 }
 
 static bool entry_fast_sync_useful(const struct peer_lifecycle_entry *e)
@@ -592,6 +646,13 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_int(out, "cache_skipped", e->cache_skipped);
     json_push_kv_int(out, "pre_handshake_disconnects",
                      e->pre_handshake_disconnects);
+    json_push_kv_str(out, "direction", entry_direction(e));
+    json_push_kv_int(out, "reconnects", entry_reconnects(e));
+    json_push_kv_bool(out, "connection_open", entry_connection_open(e));
+    json_push_kv_bool(out, "current_connection_handshaked",
+                      entry_current_connection_handshaked(e));
+    json_push_kv_int(out, "handshake_age_secs",
+                     entry_handshake_age_secs(e, GetTime()));
     json_push_kv_int(out, "first_seen", e->first_seen);
     json_push_kv_int(out, "last_seen", e->last_seen);
     json_push_kv_int(out, "connected_at", e->connected_at);
@@ -599,8 +660,18 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_int(out, "handshake_duration_secs",
                      handshake_duration_secs(e));
     json_push_kv_int(out, "services", (int64_t)e->services);
+    char summary[128];
+    services_summary(e->services, summary, sizeof(summary));
+    json_push_kv_str(out, "services_summary", summary);
     json_push_kv_int(out, "startingheight", e->start_height);
+    json_push_kv_int(out, "advertised_height", e->start_height);
     json_push_kv_str(out, "subver", e->subver);
+    json_push_kv_str(out, "bootstrap_readiness",
+                     entry_bootstrap_readiness(e));
+    json_push_kv_bool(out, "bootstrap_useful",
+                      entry_bootstrap_useful(e));
+    json_push_kv_bool(out, "fast_sync_useful",
+                      entry_fast_sync_useful(e));
     json_push_kv_bool(out, "magicbean",
                       subver_is_magicbean(e->subver));
     json_push_kv_bool(out, "legacy_compatible",
@@ -610,6 +681,7 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_bool(out, "zclassic_c23",
                       subver_is_zcl23(e->subver, e->services));
     json_push_kv_str(out, "last_reason", e->last_reason);
+    json_push_kv_str(out, "last_disconnect_reason", e->last_reason);
 }
 
 bool peer_lifecycle_peer_json(const struct p2p_node *node,
@@ -731,6 +803,14 @@ static void host_group_add_entry(struct peer_lifecycle_host_group *group,
         group->outbound_entries++;
     else
         group->unknown_entries++;
+    if (entry_connection_open(e))
+        group->open_connections++;
+    if (entry_current_connection_handshaked(e))
+        group->handshaked_open_connections++;
+    if (entry_bootstrap_useful(e))
+        group->bootstrap_useful_connections++;
+    if (entry_fast_sync_useful(e))
+        group->fast_sync_useful_connections++;
     group->connected += e->connected;
     group->handshake_complete += e->handshake_complete;
     group->active += e->active;
@@ -859,13 +939,19 @@ static void append_incident_peer_json(
     json_push_kv_int(&obj, "handshake_age_secs",
                      entry_handshake_age_secs(e, now));
     json_push_kv_int(&obj, "services", (int64_t)e->services);
+    char summary[128];
+    services_summary(e->services, summary, sizeof(summary));
+    json_push_kv_str(&obj, "services_summary", summary);
     json_push_kv_int(&obj, "advertised_height", e->start_height);
     json_push_kv_str(&obj, "subver", e->subver);
+    json_push_kv_str(&obj, "bootstrap_readiness",
+                     entry_bootstrap_readiness(e));
     json_push_kv_bool(&obj, "bootstrap_useful",
                       entry_bootstrap_useful(e));
     json_push_kv_bool(&obj, "fast_sync_useful",
                       entry_fast_sync_useful(e));
     json_push_kv_str(&obj, "last_reason", e->last_reason);
+    json_push_kv_str(&obj, "last_disconnect_reason", e->last_reason);
     json_push_kv_int(&obj, "last_seen", e->last_seen);
     json_push_back(arr, &obj);
     json_free(&obj);
@@ -881,6 +967,17 @@ static void append_host_group_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_int(&obj, "inbound_entries", g->inbound_entries);
     json_push_kv_int(&obj, "outbound_entries", g->outbound_entries);
     json_push_kv_int(&obj, "unknown_entries", g->unknown_entries);
+    json_push_kv_int(&obj, "open_connections", g->open_connections);
+    json_push_kv_int(&obj, "handshaked_open_connections",
+                     g->handshaked_open_connections);
+    json_push_kv_int(&obj, "bootstrap_useful_connections",
+                     g->bootstrap_useful_connections);
+    json_push_kv_int(&obj, "fast_sync_useful_connections",
+                     g->fast_sync_useful_connections);
+    json_push_kv_bool(&obj, "duplicate_current_connections",
+                      g->open_connections > 1);
+    json_push_kv_bool(&obj, "duplicate_handshaked_connections",
+                      g->handshaked_open_connections > 1);
     json_push_kv_int(&obj, "connected", g->connected);
     json_push_kv_int(&obj, "handshake_complete", g->handshake_complete);
     json_push_kv_int(&obj, "active", g->active);
@@ -891,12 +988,16 @@ static void append_host_group_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_int(&obj, "pre_handshake_disconnects",
                      g->pre_handshake_disconnects);
     json_push_kv_int(&obj, "services_or", (int64_t)g->services_or);
+    char summary[128];
+    services_summary(g->services_or, summary, sizeof(summary));
+    json_push_kv_str(&obj, "services_summary", summary);
     json_push_kv_int(&obj, "max_advertised_height",
                      g->max_advertised_height);
     json_push_kv_bool(&obj, "bootstrap_useful", g->bootstrap_useful);
     json_push_kv_bool(&obj, "fast_sync_useful", g->fast_sync_useful);
     json_push_kv_int(&obj, "last_seen", g->last_seen);
     json_push_kv_str(&obj, "last_reason", g->last_reason);
+    json_push_kv_str(&obj, "last_disconnect_reason", g->last_reason);
     json_push_back(arr, &obj);
     json_free(&obj);
 }
@@ -916,6 +1017,10 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
     size_t pick_count = 0;
     int64_t incident_count = 0;
     int64_t duplicate_group_count = 0;
+    int64_t duplicate_open_group_count = 0;
+    int64_t duplicate_handshaked_group_count = 0;
+    int64_t open_connection_count = 0;
+    int64_t handshaked_open_connection_count = 0;
     int64_t bootstrap_useful_count = 0;
     int64_t fast_sync_useful_count = 0;
 
@@ -924,6 +1029,10 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
             continue;
         if (groups[i].entries > 1)
             duplicate_group_count++;
+        if (groups[i].open_connections > 1)
+            duplicate_open_group_count++;
+        if (groups[i].handshaked_open_connections > 1)
+            duplicate_handshaked_group_count++;
     }
 
     for (size_t i = 0; i < PEER_LIFECYCLE_MAX; i++) {
@@ -936,6 +1045,10 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
         int64_t score = entry_incident_score(e, duplicate_entries);
         if (score > 0)
             incident_count++;
+        if (entry_connection_open(e))
+            open_connection_count++;
+        if (entry_current_connection_handshaked(e))
+            handshaked_open_connection_count++;
         if (entry_bootstrap_useful(e))
             bootstrap_useful_count++;
         if (entry_fast_sync_useful(e))
@@ -954,6 +1067,14 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
     json_push_kv_int(out, "count_returned", (int64_t)pick_count);
     json_push_kv_int(out, "duplicate_host_group_count",
                      duplicate_group_count);
+    json_push_kv_int(out, "duplicate_open_host_group_count",
+                     duplicate_open_group_count);
+    json_push_kv_int(out, "duplicate_handshaked_host_group_count",
+                     duplicate_handshaked_group_count);
+    json_push_kv_int(out, "current_open_connection_count",
+                     open_connection_count);
+    json_push_kv_int(out, "current_handshaked_connection_count",
+                     handshaked_open_connection_count);
     json_push_kv_int(out, "host_group_overflow", group_overflow);
     json_push_kv_int(out, "bootstrap_useful_count",
                      bootstrap_useful_count);
