@@ -7,6 +7,7 @@
 #include "controllers/agent_background_quality.h"
 
 #include "json/json.h"
+#include "util/clientversion.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -107,13 +108,32 @@ static bool agent_quality_read_json_file(const char *path,
     return parsed && out->type == JSON_OBJ;
 }
 
+static bool agent_quality_commit_matches(const char *expected,
+                                         const char *observed)
+{
+    size_t elen;
+    size_t olen;
+
+    if (!expected || !expected[0] || !observed || !observed[0])
+        return false;
+    elen = strlen(expected);
+    olen = strlen(observed);
+    if (elen == olen)
+        return strcmp(expected, observed) == 0;
+    if (elen < olen)
+        return strncmp(expected, observed, elen) == 0;
+    return strncmp(expected, observed, olen) == 0;
+}
+
 static void agent_push_quality_lane(struct json_value *arr, const char *lane,
                                     const char *service, const char *timer,
                                     const char *cadence,
                                     const char *status_dir,
                                     int *present_count, int *valid_count,
                                     int *failed_count, int *running_count,
-                                    int *passed_count, int *skipped_count)
+                                    int *passed_count, int *skipped_count,
+                                    int *current_count, int *stale_count,
+                                    int *unknown_commit_count)
 {
     struct json_value obj, latest;
     char status_file[AGENT_QUALITY_PATH_MAX];
@@ -123,6 +143,11 @@ static void agent_push_quality_lane(struct json_value *arr, const char *lane,
     bool present = false;
     bool valid = false;
     const char *latest_status = "unknown";
+    const char *expected_commit = zcl_build_commit();
+    const char *latest_commit = "";
+    const char *commit_freshness = "no_verdict";
+    bool commit_present = false;
+    bool commit_matches = false;
     int n;
 
     n = snprintf(status_file, sizeof(status_file), "%s/%s.json",
@@ -157,8 +182,27 @@ static void agent_push_quality_lane(struct json_value *arr, const char *lane,
         valid = agent_quality_read_json_file(status_file, &latest);
         if (valid) {
             const struct json_value *status_v = json_get(&latest, "status");
+            const struct json_value *commit_v = json_get(&latest, "commit");
             if (status_v)
                 latest_status = json_get_str(status_v);
+            if (commit_v)
+                latest_commit = json_get_str(commit_v);
+            commit_present = latest_commit && latest_commit[0];
+            commit_matches =
+                agent_quality_commit_matches(expected_commit, latest_commit);
+            if (commit_matches) {
+                commit_freshness = "current";
+                if (current_count)
+                    (*current_count)++;
+            } else if (commit_present) {
+                commit_freshness = "stale";
+                if (stale_count)
+                    (*stale_count)++;
+            } else {
+                commit_freshness = "unknown";
+                if (unknown_commit_count)
+                    (*unknown_commit_count)++;
+            }
             if (valid_count)
                 (*valid_count)++;
             if (strcmp(latest_status, "failed") == 0 && failed_count)
@@ -175,6 +219,11 @@ static void agent_push_quality_lane(struct json_value *arr, const char *lane,
     }
     json_push_kv_bool(&obj, "latest_json_valid", valid);
     json_push_kv_str(&obj, "latest_status", latest_status);
+    json_push_kv_str(&obj, "expected_commit", expected_commit);
+    json_push_kv_str(&obj, "latest_commit", latest_commit ? latest_commit : "");
+    json_push_kv_bool(&obj, "commit_present", commit_present);
+    json_push_kv_bool(&obj, "commit_matches_expected", commit_matches);
+    json_push_kv_str(&obj, "commit_freshness", commit_freshness);
     json_push_kv(&obj, "latest", &latest);
     json_free(&latest);
 
@@ -198,6 +247,9 @@ void agent_build_background_quality_status(struct json_value *out)
     int running_count = 0;
     int passed_count = 0;
     int skipped_count = 0;
+    int current_count = 0;
+    int stale_count = 0;
+    int unknown_commit_count = 0;
 
     state_ok = agent_quality_state_dir(state_dir, sizeof(state_dir),
                                        &state_source);
@@ -228,19 +280,22 @@ void agent_build_background_quality_status(struct json_value *out)
                                 "zclassic23-fuzz.timer", "hourly",
                                 status_dir, &present_count, &valid_count,
                                 &failed_count, &running_count, &passed_count,
-                                &skipped_count);
+                                &skipped_count, &current_count, &stale_count,
+                                &unknown_commit_count);
         agent_push_quality_lane(&lanes, "coverage",
                                 "zclassic23-coverage.service",
                                 "zclassic23-coverage.timer", "weekly",
                                 status_dir, &present_count, &valid_count,
                                 &failed_count, &running_count, &passed_count,
-                                &skipped_count);
+                                &skipped_count, &current_count, &stale_count,
+                                &unknown_commit_count);
         agent_push_quality_lane(&lanes, "tests",
                                 "zclassic23-test-suite.service",
                                 "zclassic23-test-suite.timer", "hourly",
                                 status_dir, &present_count, &valid_count,
                                 &failed_count, &running_count, &passed_count,
-                                &skipped_count);
+                                &skipped_count, &current_count, &stale_count,
+                                &unknown_commit_count);
     }
     json_push_kv(out, "lanes", &lanes);
     json_free(&lanes);
@@ -248,6 +303,9 @@ void agent_build_background_quality_status(struct json_value *out)
     if (failed_count > 0) {
         summary = "background_quality_failures_present";
         next_action = "inspect_failed_lane_log";
+    } else if (stale_count > 0) {
+        summary = "background_quality_stale";
+        next_action = "restart_or_wait_for_current_commit_quality_lanes";
     } else if (running_count > 0) {
         summary = "background_quality_lane_running";
         next_action = "wait_or_inspect_running_lane_log";
@@ -265,6 +323,9 @@ void agent_build_background_quality_status(struct json_value *out)
     json_push_kv_int(out, "skipped_count", skipped_count);
     json_push_kv_int(out, "running_count", running_count);
     json_push_kv_int(out, "failed_count", failed_count);
+    json_push_kv_int(out, "current_commit_count", current_count);
+    json_push_kv_int(out, "stale_commit_count", stale_count);
+    json_push_kv_int(out, "unknown_commit_count", unknown_commit_count);
     json_push_kv_str(out, "summary", summary);
     json_push_kv_str(out, "agent_next_action", next_action);
 }

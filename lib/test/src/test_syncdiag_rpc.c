@@ -3652,13 +3652,23 @@ int test_syncdiag_rpc(void)
                           quality_root ? quality_root : "") == 0;
         ok = ok && strcmp(json_get_str(json_get(quality_status,
                                                 "summary")),
-                          "background_quality_incomplete") == 0;
+                          "background_quality_stale") == 0;
+        ok = ok && strcmp(json_get_str(json_get(quality_status,
+                                                "agent_next_action")),
+                          "restart_or_wait_for_current_commit_quality_lanes")
+            == 0;
         ok = ok && json_get_int(json_get(quality_status,
                                          "status_files_present")) == 1;
         ok = ok && json_get_int(json_get(quality_status,
                                          "status_files_valid")) == 1;
         ok = ok && json_get_int(json_get(quality_status,
                                          "passed_count")) == 1;
+        ok = ok && json_get_int(json_get(quality_status,
+                                         "current_commit_count")) == 0;
+        ok = ok && json_get_int(json_get(quality_status,
+                                         "stale_commit_count")) == 1;
+        ok = ok && json_get_int(json_get(quality_status,
+                                         "unknown_commit_count")) == 0;
         ok = ok && quality_lanes && quality_lanes->type == JSON_ARR &&
             json_size(quality_lanes) == 3;
         ok = ok && fuzz_lane &&
@@ -3672,8 +3682,24 @@ int test_syncdiag_rpc(void)
         ok = ok && latest_fuzz &&
             strcmp(json_get_str(json_get(latest_fuzz, "commit")),
                    "deadbeef1234") == 0;
+        ok = ok && fuzz_lane &&
+            strcmp(json_get_str(json_get(fuzz_lane, "latest_commit")),
+                   "deadbeef1234") == 0;
+        ok = ok && fuzz_lane &&
+            strcmp(json_get_str(json_get(fuzz_lane, "expected_commit")),
+                   zcl_build_commit()) == 0;
+        ok = ok && fuzz_lane &&
+            json_get_bool(json_get(fuzz_lane, "commit_present"));
+        ok = ok && fuzz_lane &&
+            !json_get_bool(json_get(fuzz_lane, "commit_matches_expected"));
+        ok = ok && fuzz_lane &&
+            strcmp(json_get_str(json_get(fuzz_lane, "commit_freshness")),
+                   "stale") == 0;
         ok = ok && coverage_lane &&
             !json_get_bool(json_get(coverage_lane, "status_file_present"));
+        ok = ok && coverage_lane &&
+            strcmp(json_get_str(json_get(coverage_lane, "commit_freshness")),
+                   "no_verdict") == 0;
 
         struct json_value liveness;
         json_init(&liveness);
@@ -3718,7 +3744,7 @@ int test_syncdiag_rpc(void)
         ok = ok && live_summary &&
             strcmp(json_get_str(json_get(live_summary,
                                          "background_quality_summary")),
-                   "background_quality_incomplete") == 0;
+                   "background_quality_stale") == 0;
         ok = ok && live_summary &&
             json_get_int(json_get(live_summary,
                                   "background_quality_status_files_valid")) == 1;

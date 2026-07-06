@@ -575,9 +575,13 @@ Status JSON is written under `~/.local/state/zclassic23-quality`. The native
 reader for those status files. It reports the resolved state/status directory,
 one entry each for `fuzz`, `coverage`, and `tests`, whether each lane verdict
 file exists, whether it parsed as JSON, and the latest parsed
-`zcl.background_quality_lane.v1` payload when present. Agents should read that
-field first and use `make quality-linger-status` when they need systemd timer
-logs or human-formatted service output.
+`zcl.background_quality_lane.v1` payload when present. Each lane also carries
+`expected_commit`, `latest_commit`, `commit_matches_expected`, and
+`commit_freshness` (`current`, `stale`, `unknown`, or `no_verdict`). Treat
+`background_quality_stale` as proof debt: a passed fuzz/test/coverage verdict
+from an older commit is useful history, not evidence for the running build.
+Agents should read that field first and use `make quality-linger-status` when
+they need systemd timer logs or human-formatted service output.
 
 ## Background proof lanes
 

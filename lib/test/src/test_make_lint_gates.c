@@ -3357,6 +3357,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_bg_quality_buf, "ZCL_QUALITY_STATE_DIR") != NULL);
         ASSERT(strstr(agent_bg_quality_buf,
                       "agent_quality_read_json_file") != NULL);
+        ASSERT(strstr(agent_bg_quality_buf,
+                      "commit_matches_expected") != NULL);
+        ASSERT(strstr(agent_bg_quality_buf,
+                      "background_quality_stale") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make quality-linger-status") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23-fuzz.timer") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23-coverage.timer") != NULL);
@@ -3496,6 +3500,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.background_quality_lane.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "commit_freshness") != NULL);
+        ASSERT(strstr(agent_doc_buf, "background_quality_stale") != NULL);
         ASSERT(strstr(agent_doc_buf, "Do not add new operator logic to `tools/z`")
                != NULL);
         PASS();
