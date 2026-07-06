@@ -50,7 +50,6 @@ DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
 DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
 DEFINE_PT(h_zcl_agent_ops,      "agentops",       "mcp.ops")
-DEFINE_PT(h_zcl_agent_diagnose, "agentdiagnose",  "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -969,6 +968,18 @@ static int h_zcl_agent_deploy_guard(const struct mcp_request *req,
     return mcp_return_rpc_body(res, body, "agentdeployguard", "mcp.ops");
 }
 
+static int h_zcl_agent_diagnose(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, json_get_str_or(req->args, "mode", "full"));
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("agentdiagnose", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, body, "agentdiagnose", "mcp.ops");
+}
+
 DEFINE_PT(h_zcl_mirror_status, "getmirrorstatus",       "mcp.ops")
 DEFINE_PT(h_zcl_filemanifest,  "getfilemanifeststatus", "mcp.ops")
 
@@ -1501,6 +1512,11 @@ static const struct mcp_param_spec p_agent_deploy_guard[] = {
       "Action to evaluate: canonical-deploy, canonical-restart, deploy, or restart",
       0, 0, 0, 64, NULL, "\"canonical-deploy\"" },
 };
+static const struct mcp_param_spec p_agent_diagnose[] = {
+    { "mode", MCP_PARAM_STR, false,
+      "Detail mode: full embeds drill-down payloads; brief/compact/summary returns only decision fields",
+      0, 0, 0, 16, "full,brief,compact,summary", "\"full\"" },
+};
 
 struct agent_mcp_binding {
     const char *method;
@@ -1524,7 +1540,8 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "agentbuild", NULL, 0, h_zcl_agent_build, 0, NULL },
     { "agentinterface", NULL, 0, h_zcl_agent_interface, 0, NULL },
     { "agentops", NULL, 0, h_zcl_agent_ops, 0, NULL },
-    { "agentdiagnose", NULL, 0, h_zcl_agent_diagnose, 0, NULL },
+    { "agentdiagnose", p_agent_diagnose, PARAM_COUNT(p_agent_diagnose),
+      h_zcl_agent_diagnose, 0, "{\"mode\":\"brief\"}" },
     { "agentdeployguard", p_agent_deploy_guard,
       PARAM_COUNT(p_agent_deploy_guard), h_zcl_agent_deploy_guard, 0,
       "{\"action\":\"canonical-deploy\"}" },

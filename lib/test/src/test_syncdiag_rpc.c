@@ -2836,6 +2836,53 @@ int test_syncdiag_rpc(void)
 
         json_free(&result);
 
+        struct json_value brief_params;
+        json_init(&brief_params);
+        json_set_array(&brief_params);
+        struct json_value brief_arg;
+        json_init(&brief_arg);
+        json_set_str(&brief_arg, "brief");
+        json_push_back(&brief_params, &brief_arg);
+        json_free(&brief_arg);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose",
+                                     &brief_params, &result);
+        const struct json_value *brief_first_call =
+            json_get(&result, "first_call");
+        const struct json_value *brief_omitted =
+            json_get(&result, "omitted_sections");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_diagnose.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "detail_mode")),
+                          "brief") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "embedded_drilldowns"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "healthy") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "monitor_agent_and_liveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_status")),
+                          "healthy") == 0;
+        ok = ok && json_get(&result, "agent") == NULL;
+        ok = ok && json_get(&result, "healthcheck") == NULL;
+        ok = ok && json_get(&result, "peer_incidents") == NULL;
+        ok = ok && json_get(&result, "mirror") == NULL;
+        ok = ok && json_get(&result, "timeline") == NULL;
+        ok = ok && brief_omitted &&
+            json_array_has_str(brief_omitted, "timeline");
+        ok = ok && brief_first_call &&
+            strcmp(json_get_str(json_get(brief_first_call, "source")),
+                   "bounded_status_peer_mirror_brief") == 0;
+        ok = ok && brief_first_call &&
+            strcmp(json_get_str(json_get(brief_first_call,
+                                         "full_mode_command")),
+                   "zclassic23 agentdiagnose full") == 0;
+        json_free(&result);
+        json_free(&brief_params);
+
         tip.nHeight = served_height + 2;
         ms.pindex_best_header = &tip;
         ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);

@@ -21,6 +21,11 @@
 #include <stdint.h>
 #include <string.h>
 
+enum diagnose_detail_mode {
+    DIAGNOSE_DETAIL_FULL = 0,
+    DIAGNOSE_DETAIL_BRIEF = 1,
+};
+
 static void diagnose_push_str(struct json_value *arr, const char *s)
 {
     struct json_value v = {0};
@@ -55,6 +60,73 @@ static void diagnose_push_skipped(struct json_value *out, const char *key,
     json_push_kv_str(&skipped, "partial_reason", reason ? reason : "");
     json_push_kv(out, key, &skipped);
     json_free(&skipped);
+}
+
+static const char *diagnose_detail_mode_name(enum diagnose_detail_mode mode)
+{
+    return mode == DIAGNOSE_DETAIL_BRIEF ? "brief" : "full";
+}
+
+static bool diagnose_detail_mode_is_brief(const char *mode)
+{
+    return mode && (strcmp(mode, "brief") == 0 ||
+                    strcmp(mode, "compact") == 0 ||
+                    strcmp(mode, "summary") == 0);
+}
+
+static bool diagnose_detail_mode_is_full(const char *mode)
+{
+    return !mode || !mode[0] || strcmp(mode, "full") == 0 ||
+           strcmp(mode, "default") == 0 || strcmp(mode, "detailed") == 0;
+}
+
+static bool diagnose_parse_detail_mode(const struct json_value *params,
+                                       struct json_value *result,
+                                       enum diagnose_detail_mode *mode)
+{
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 0, 1);
+    const char *raw = rpc_permit_str(&p, 0, "mode", "full");
+    if (rpc_params_invalid(&p)) {
+        json_set_object(result);
+        json_push_kv_str(result, "schema", "zcl.agent_diagnose.v1");
+        json_push_kv_str(result, "status", "error");
+        json_push_kv_str(result, "error", p.error);
+        json_push_kv_str(result, "allowed_modes",
+                         "full,brief,compact,summary");
+        return false;
+    }
+    if (diagnose_detail_mode_is_brief(raw)) {
+        *mode = DIAGNOSE_DETAIL_BRIEF;
+        return true;
+    }
+    if (diagnose_detail_mode_is_full(raw)) {
+        *mode = DIAGNOSE_DETAIL_FULL;
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.agent_diagnose.v1");
+    json_push_kv_str(result, "status", "error");
+    json_push_kv_str(result, "error", "invalid_agentdiagnose_mode");
+    json_push_kv_str(result, "mode", raw ? raw : "");
+    json_push_kv_str(result, "allowed_modes",
+                     "full,brief,compact,summary");
+    return false;
+}
+
+static void diagnose_push_brief_omissions(struct json_value *out)
+{
+    struct json_value omitted = {0};
+    json_set_array(&omitted);
+    diagnose_push_str(&omitted, "agent");
+    diagnose_push_str(&omitted, "healthcheck");
+    diagnose_push_str(&omitted, "peer_incidents");
+    diagnose_push_str(&omitted, "mirror");
+    diagnose_push_str(&omitted, "timeline");
+    json_push_kv(out, "omitted_sections", &omitted);
+    json_free(&omitted);
 }
 
 static void diagnose_timeline_params(struct json_value *params)
@@ -218,18 +290,23 @@ static const char *diagnose_next_action(bool operator_needed,
 bool rpc_agent_diagnose(const struct json_value *params, bool help,
                         struct json_value *result)
 {
-    (void)params;
     RPC_HELP(help, result,
-        "agentdiagnose\n"
+        "agentdiagnose [full|brief]\n"
         "\nReturn a bounded no-jq diagnosis packet for AI/operators. It "
         "composes cheap status, healthcheck, peer incident, mirror, and "
-        "timeline views without requiring a client-side pipeline.\n"
+        "timeline views without requiring a client-side pipeline. The "
+        "default full mode preserves embedded drill-downs; brief mode keeps "
+        "only the stable decision fields and findings.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.agent_diagnose.v1\", "
         "\"verdict\":\"healthy|attention_needed\", "
         "\"findings\":[...] }\n");
 
     int64_t started_us = agent_first_call_start_us();
+    enum diagnose_detail_mode detail_mode = DIAGNOSE_DETAIL_FULL;
+    if (!diagnose_parse_detail_mode(params, result, &detail_mode))
+        return true;
+    bool brief_mode = detail_mode == DIAGNOSE_DETAIL_BRIEF;
     const struct agent_contract *contract =
         agent_contract_lookup("agentdiagnose");
     struct json_value empty_params = {0};
@@ -257,11 +334,16 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_str(result, "mcp_tool",
                      contract ? contract->mcp_tool
                               : "zcl_agent_diagnose");
+    json_push_kv_str(result, "detail_mode",
+                     diagnose_detail_mode_name(detail_mode));
+    json_push_kv_bool(result, "embedded_drilldowns", !brief_mode);
     json_set_array(&empty_params);
 
     bool agent_ok = rpc_agent_summary(&empty_params, false, &agent);
-    bool health_ok = true;
-    if (agent_first_call_budget_exceeded(
+    bool health_ok = false;
+    if (brief_mode) {
+        partial = true;
+    } else if (agent_first_call_budget_exceeded(
             started_us, ZCL_AGENT_FIRST_CALL_BUDGET_DIAGNOSE_MS)) {
         partial = true;
         diagnose_push_skipped(result, "healthcheck",
@@ -284,9 +366,11 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     if (agent_first_call_budget_exceeded(
             started_us, ZCL_AGENT_FIRST_CALL_BUDGET_DIAGNOSE_MS)) {
         partial = true;
-    } else {
+    } else if (!brief_mode) {
         diagnose_timeline_params(&timeline_params);
         timeline_present = rpc_timeline(&timeline_params, false, &timeline);
+    } else {
+        partial = true;
     }
 
     bool agent_healthy = agent_ok && json_get_bool(json_get(&agent, "healthy"));
@@ -426,31 +510,42 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv(result, "recommended_commands", &commands);
     json_free(&commands);
 
-    if (agent_ok)
+    if (brief_mode) {
+        diagnose_push_brief_omissions(result);
+        json_push_kv_str(result, "full_diagnose_command",
+                         "zclassic23 agentdiagnose full");
+        json_push_kv_str(result, "full_diagnose_tool",
+                         "zcl_agent_diagnose(mode=\"full\")");
+    } else if (agent_ok) {
         json_push_kv(result, "agent", &agent);
-    else
+    } else {
         diagnose_push_skipped(result, "agent", "agent_status_unavailable");
-    if (health_ok)
+    }
+    if (!brief_mode && health_ok)
         json_push_kv(result, "healthcheck", &health);
-    if (mirror_present)
+    if (!brief_mode && mirror_present)
         json_push_kv(result, "mirror", &mirror);
-    else if (!json_get(result, "mirror"))
+    else if (!brief_mode && !json_get(result, "mirror"))
         diagnose_push_skipped(result, "mirror",
                               "first_call_budget_exhausted_before_mirror");
-    json_push_kv(result, "peer_incidents", &peers);
-    if (timeline_present)
+    if (!brief_mode)
+        json_push_kv(result, "peer_incidents", &peers);
+    if (!brief_mode && timeline_present)
         json_push_kv(result, "timeline", &timeline);
-    else
+    else if (!brief_mode)
         diagnose_push_skipped(result, "timeline",
                               "first_call_budget_exhausted_before_timeline");
 
     agent_push_first_call_simple_json(
         result, "first_call", "agentdiagnose",
-        "bounded_status_health_peer_mirror_timeline",
+        brief_mode ? "bounded_status_peer_mirror_brief"
+                   : "bounded_status_health_peer_mirror_timeline",
         ZCL_AGENT_FIRST_CALL_BUDGET_DIAGNOSE_MS, started_us, true,
+        brief_mode ? "brief_mode_omits_embedded_drilldowns" :
         partial ? "lower_priority_sections_skipped_by_budget"
                 : "bounded_diagnosis_not_full_forensics",
-        "zclassic23 healthcheck full");
+        brief_mode ? "zclassic23 agentdiagnose full"
+                   : "zclassic23 healthcheck full");
 
     json_free(&timeline);
     json_free(&timeline_params);

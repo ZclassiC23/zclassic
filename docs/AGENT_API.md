@@ -94,6 +94,13 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 marks skipped lower-priority sections as `partial_result=true` instead of
 hanging. Use it before raw logs when the node is behaving oddly but still
 answers RPC.
+Use `zclassic23 agentdiagnose brief` or `zcl_agent_diagnose(mode="brief")`
+when the first packet should stay compact: it preserves the top-level verdict,
+safe next action, peer/mirror counts, findings, and recommended commands while
+omitting the embedded `agent`, `healthcheck`, `peer_incidents`, `mirror`, and
+`timeline` drill-down objects. The response includes `detail_mode`,
+`embedded_drilldowns=false`, `omitted_sections`, and a `full_diagnose_command`
+that expands back to the default payload.
 For chain status, `agentdiagnose` follows the same `zcl.agent_readiness.v1`
 contract as `agent`: a small non-material tip gap remains healthy when
 `chain_serving_ready=true`. It also echoes `chain_readiness_status` and
