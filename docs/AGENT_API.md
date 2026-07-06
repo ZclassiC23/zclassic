@@ -37,9 +37,12 @@ First-call method/schema/tool metadata lives in the C-owned registry
 the contract registry, the interface capability matrix, the `agentops`
 direct/drilldown command lists, and the REST API index's native/MCP command
 fields consume that table instead of maintaining separate lists. Generic
-diagnostic primitives such as `dumpstate` / `zcl_state` and `getnodelog` /
-`zcl_node_log` are registry rows too, so agent command catalogs do not hand-copy
-their native/MCP names. Operator drilldowns exposed by the REST index
+diagnostic primitives such as `dumpstate` / `zcl_state`, `getnodelog` /
+`zcl_node_log`, and the bounded SQL primitive `dbquery` / `zcl_sql` are
+registry rows too, so agent command catalogs do not hand-copy their native/MCP
+names. Registry rows also own `probe_params_json`; parameterized first-call
+probes such as `dbquery` must declare a bounded sample there instead of adding
+method-specific CLI branches. Operator drilldowns exposed by the REST index
 (`healthcheck` / `zcl_health`, `milestone` / `zcl_milestone`, and `refold` /
 `zcl_refold_status`) also live there, so native, MCP, and REST discovery share
 the same command/tool/schema metadata.
@@ -220,7 +223,8 @@ produced by the binary you just ran, but that producer may be newer than the
 target lane still serving RPC. The availability block separates those facts:
 `producer_build_commit` names the local producer, `availability_scope` says
 whether the answer is producer-only or a target RPC probe, and each
-`methods[]` entry reports `target_runtime_support`. If a target returns
+`methods[]` entry reports `target_runtime_support` plus the
+`probe_params_json` used by the bounded availability probe. If a target returns
 `unsupported_method_not_found`, do not call that method on that lane; deploy and
 smoke the dev lane first or use methods marked `supported`. If the probe says
 `no_cookie` or `connect_failed`, treat target support as unknown instead of

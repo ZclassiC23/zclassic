@@ -159,8 +159,10 @@ controller `k_routes[]` arrays.
   `agentmap` command rows and telemetry drilldowns are grouped in
   `app/controllers/src/agent_contract_registry.c`
   (`g_agent_command_surfaces`), including generic diagnostic primitives like
-  `dumpstate`/`zcl_state` and `getnodelog`/`zcl_node_log`, not as local string
-  tables in the controllers. REST-index operator drilldowns such as
+  `dumpstate`/`zcl_state`, `getnodelog`/`zcl_node_log`, and
+  `dbquery`/`zcl_sql`, not as local string tables in the controllers. The same
+  registry owns `probe_params_json` for parameterized availability probes.
+  REST-index operator drilldowns such as
   `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
   `refold`/`zcl_refold_status` also belong in that registry.
 - `zclassic23 agentops` / `zcl_agent_ops` — compact no-`jq` operator command

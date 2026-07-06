@@ -3411,6 +3411,11 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf,
                       "agentmap.commands.drilldown") != NULL);
         ASSERT(strstr(agent_registry_buf, "agentmap.telemetry") != NULL);
+        ASSERT(strstr(agent_registry_buf, "\"node_db\", \"dbquery\"")
+               != NULL);
+        ASSERT(strstr(agent_registry_buf, "agent_contract_probe_params_json")
+               != NULL);
+        ASSERT(strstr(agent_registry_buf, "sqlite_master") != NULL);
         ASSERT(strstr(agent_registry_buf, "agentops.api_gaps") != NULL);
         ASSERT(strstr(agent_registry_buf, "agentops.top_next_work") != NULL);
         ASSERT(strstr(agent_registry_buf,
@@ -3512,9 +3517,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "background_quality") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "telemetry_drilldowns") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl_sql") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_events") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zclassic23 dbquery <select>") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23 dbquery <select>") == NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.sql_result.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_sql") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 dbquery <SELECT>")
+               != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality_lanes") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality_status") != NULL);
         ASSERT(strstr(agent_bg_quality_buf, "native_status_reader") != NULL);
@@ -3615,6 +3623,7 @@ static int t_native_agent_api_contract(void)
                       "agent_push_contract_command_json()` for "
                       "registry-owned commands")
                != NULL);
+        ASSERT(strstr(agent_doc_buf, "probe_params_json") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "tools/scripts/lane_health.sh --json")
                != NULL);

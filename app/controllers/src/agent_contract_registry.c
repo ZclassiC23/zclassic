@@ -82,6 +82,8 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "versioned category-filtered event timeline with bounded filters" },
     { "agentmap.telemetry", 5, "anchor_status", "anchorstatus",
       "read-only progress.kv status for the sovereign anchor producer" },
+    { "agentmap.telemetry", 6, "node_db", "dbquery",
+      "SELECT-only node.db inspection with limits" },
 };
 
 static const size_t g_agent_command_surface_count =
@@ -237,6 +239,15 @@ const struct agent_contract *agent_contract_lookup(const char *method)
     return NULL;
 }
 
+const char *agent_contract_probe_params_json(const char *method)
+{
+    if (!method || !method[0])
+        return "[]";
+    if (strcmp(method, "dbquery") == 0)
+        return "[\"SELECT name FROM sqlite_master WHERE type = 'table'\",1]";
+    return "[]";
+}
+
 bool agent_push_contract_json(struct json_value *arr,
                               const struct agent_contract *contract)
 {
@@ -258,6 +269,8 @@ bool agent_push_contract_json(struct json_value *arr,
     json_push_kv_int(&obj, "ops_rank", contract->ops_rank);
     json_push_kv_str(&obj, "ops_name", contract->ops_name);
     json_push_kv_str(&obj, "ops_purpose", contract->ops_purpose);
+    json_push_kv_str(&obj, "probe_params_json",
+                     agent_contract_probe_params_json(contract->method));
     json_push_kv_str(&obj, "purpose", contract->purpose);
     json_push_back(arr, &obj);
     json_free(&obj);

@@ -126,6 +126,11 @@ AGENT_CONTRACT("getnodelog", "node_log_search", "zcl.node_log.v1",
                "direct,drilldown", 7, "log_search",
                "bounded server-side regex search over node.log",
                "reverse-scanned node.log search with pattern, time, level, and line limits")
+AGENT_CONTRACT("dbquery", "sql_inspection", "zcl.sql_result.v1",
+               "zclassic23 dbquery <SELECT>", "zcl_sql", "",
+               "sql_command", "sql_tool",
+               "", 0, "", "",
+               "bounded SELECT-only node.db inspection with validation, timeout, and row caps")
 AGENT_CONTRACT("timeline", "semantic_timeline", "zcl.timeline.v1",
                "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
                "zcl_timeline", "",

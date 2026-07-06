@@ -393,6 +393,8 @@ void agent_push_runtime_availability_json(struct json_value *out,
         json_push_kv_str(&method, "native_command", pm->native_command);
         json_push_kv_str(&method, "mcp_tool", pm->mcp_tool);
         json_push_kv_str(&method, "schema", pm->schema);
+        json_push_kv_str(&method, "probe_params_json",
+                         agent_contract_probe_params_json(pm->method));
         json_push_kv_bool(&method, "producer_advertises", true);
         json_push_kv_str(&method, "target_runtime_support", support);
         json_push_kv_bool(&method, "target_runtime_supports",

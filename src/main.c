@@ -752,11 +752,14 @@ static void cli_probe_static_agent_target(const char *datadir)
     agent_runtime_availability_set_probe_status("probing");
     for (size_t i = 0; i < agent_runtime_probe_method_count(); i++) {
         const char *method = agent_runtime_probe_method_name(i);
+        const char *probe_params = agent_contract_probe_params_json(method);
+        if (!probe_params || !probe_params[0])
+            probe_params = "[]";
         char body[512];
         int blen = snprintf(body, sizeof(body),
             "{\"jsonrpc\":\"1.0\",\"id\":\"agent-availability\","
-            "\"method\":\"%s\",\"params\":[]}",
-            method);
+            "\"method\":\"%s\",\"params\":%s}",
+            method, probe_params);
         if (blen <= 0 || (size_t)blen >= sizeof(body)) {
             agent_runtime_availability_record_method(method, "unknown",
                                                      RPC_INTERNAL_ERROR,
