@@ -1217,25 +1217,8 @@ static void print_usage(const char *prog)
 {
     printf("Usage:\n");
     printf("  %s [node options]          Run full node\n", prog);
-    printf("  %s api                     API discovery from running node\n", prog);
-    printf("  %s agent                   Compact status from running node\n", prog);
-    printf("  %s agentmap                AI-coder code/docs/test map\n", prog);
-    printf("  %s agentlanes              Canonical/soak/dev lane topology JSON\n", prog);
-    printf("  %s agentliveness           Lane/service/supervisor/quality liveness\n", prog);
-    printf("  %s agentimpact <files...>  Changed files to tests/risk\n", prog);
-    printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
-    printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
-    printf("  %s anchorstatus            Offline anchor-mint progress JSON\n", prog);
-    printf("  %s appprotocols            Application protocol catalog JSON\n", prog);
-    printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
-    printf("  %s agentops                Compact no-jq AI/operator command center\n", prog);
-    printf("  %s agentdiagnose           Bounded no-jq live diagnosis\n", prog);
-    printf("  %s statecatalog            zcl_state subsystem catalog JSON\n", prog);
-    printf("  %s timeline [cat] [count]  Semantic event timeline from running node\n", prog);
-    printf("  %s agentdeployguard [act]  C-native deploy/restart guard JSON\n", prog);
-    printf("  %s getmirrorstatus         Mirror lag/blocker contract JSON\n", prog);
-    printf("  %s milestone               ASCII milestone status from running node\n", prog);
-    printf("  %s refold                  UTXO anchor rebuild readiness from running node\n", prog);
+    printf("\nAgent/operator API commands (from agent_contracts.def):\n");
+    agent_print_native_usage(stdout, prog);
     printf("  %s --agent                 Same compact status\n", prog);
     printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);

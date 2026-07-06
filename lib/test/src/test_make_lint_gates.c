@@ -2967,25 +2967,14 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
         ASSERT(read_entire_file(api_status_path, &api_status_buf) == 0);
         ASSERT(read_entire_file(agent_doc_path, &agent_doc_buf) == 0);
-        ASSERT(strstr(main_buf, "%s api") != NULL);
-        ASSERT(strstr(main_buf, "zclassic23 agent") != NULL);
-        ASSERT(strstr(main_buf, "%s agentmap") != NULL);
-        ASSERT(strstr(main_buf, "%s agentlanes") != NULL);
-        ASSERT(strstr(main_buf, "%s agentliveness") != NULL);
-        ASSERT(strstr(main_buf, "%s agentimpact") != NULL);
-        ASSERT(strstr(main_buf, "%s agentcontracts") != NULL);
-        ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
-        ASSERT(strstr(main_buf, "%s anchorstatus") != NULL);
-        ASSERT(strstr(main_buf, "%s appprotocols") != NULL);
-        ASSERT(strstr(main_buf, "%s agentinterface") != NULL);
-        ASSERT(strstr(main_buf, "%s agentops") != NULL);
-        ASSERT(strstr(main_buf, "%s agentdiagnose") != NULL);
-        ASSERT(strstr(main_buf, "%s statecatalog") != NULL);
-        ASSERT(strstr(main_buf, "%s timeline") != NULL);
-        ASSERT(strstr(main_buf, "%s agentdeployguard") != NULL);
-        ASSERT(strstr(main_buf, "%s getmirrorstatus") != NULL);
-        ASSERT(strstr(main_buf, "zclassic23 milestone") != NULL);
-        ASSERT(strstr(main_buf, "zclassic23 refold") != NULL);
+        ASSERT(strstr(main_buf,
+                      "Agent/operator API commands (from agent_contracts.def)")
+               != NULL);
+        ASSERT(strstr(main_buf, "agent_print_native_usage(stdout, prog)")
+               != NULL);
+        ASSERT(strstr(main_buf, "AI-coder code/docs/test map") == NULL);
+        ASSERT(strstr(main_buf, "Compact no-jq AI/operator command center")
+               == NULL);
         ASSERT(strstr(main_buf, "-operator-lane=<name>") != NULL);
         ASSERT(strstr(main_buf, "ZCL_OPERATOR_LANE") != NULL);
         ASSERT(strstr(main_buf, "strncmp(argv[i], \"-operator-lane=\", 15)")
@@ -3394,6 +3383,11 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf, "dry_agent_contract_registry")
                == NULL);
         ASSERT(strstr(agent_registry_buf, "agent_contract_lookup") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agent_print_native_usage") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agent_native_usage_tail") != NULL);
+        ASSERT(strstr(agent_registry_buf, "native_command[prefix_len]")
+               != NULL);
+        ASSERT(strstr(agent_registry_buf, "c->native_command") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_command_json") != NULL);
         ASSERT(strstr(agent_registry_buf,

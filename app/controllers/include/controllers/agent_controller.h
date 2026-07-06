@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 struct json_value;
 
@@ -97,6 +98,7 @@ bool agent_push_contract_mcp_field_json(struct json_value *obj,
                                         const char *method);
 void agent_push_contract_api_cli_fields_json(struct json_value *obj);
 void agent_push_contract_api_mcp_fields_json(struct json_value *obj);
+void agent_print_native_usage(FILE *out, const char *prog);
 void agent_push_operator_lane_fields_json(struct json_value *out);
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key);

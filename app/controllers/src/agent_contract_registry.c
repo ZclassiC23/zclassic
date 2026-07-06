@@ -136,6 +136,40 @@ static void agent_push_str(struct json_value *arr, const char *s)
     json_free(&v);
 }
 
+static const char *agent_native_usage_tail(const char *native_command)
+{
+    const char *prefix = "zclassic23";
+    size_t prefix_len = strlen(prefix);
+    if (!native_command)
+        return "";
+    if (strncmp(native_command, prefix, prefix_len) != 0)
+        return native_command;
+    if (native_command[prefix_len] != '\0' &&
+        native_command[prefix_len] != ' ')
+        return native_command;
+    const char *tail = native_command + prefix_len;
+    while (*tail == ' ')
+        tail++;
+    return tail;
+}
+
+void agent_print_native_usage(FILE *out, const char *prog)
+{
+    FILE *dst = out ? out : stdout;
+    const char *program = prog && prog[0] ? prog : "zclassic23";
+
+    for (size_t i = 0; i < g_agent_contract_count; i++) {
+        const struct agent_contract *c = &g_agent_contracts[i];
+        if (!c->native_command || !c->native_command[0])
+            continue;
+        const char *tail = agent_native_usage_tail(c->native_command);
+        const char *summary = c->ops_purpose && c->ops_purpose[0]
+            ? c->ops_purpose : c->purpose;
+        fprintf(dst, "  %s %-38s %s\n", program, tail,
+                summary ? summary : "");
+    }
+}
+
 static void agent_append_summary(char *buf, size_t buf_sz, size_t *pos,
                                  const char *separator, const char *text)
 {
