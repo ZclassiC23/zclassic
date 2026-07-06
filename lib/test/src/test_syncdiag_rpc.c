@@ -3735,6 +3735,21 @@ int test_syncdiag_rpc(void)
             !json_get_bool(json_get(live_summary,
                                     "target_runtime_reachable"));
         ok = ok && live_summary &&
+            !json_get_bool(json_get(live_summary,
+                                    "effective_runtime_reachable"));
+        ok = ok && live_summary &&
+            strcmp(json_get_str(json_get(live_summary,
+                                         "producer_runtime_state")),
+                   "inactive_or_static_probe") == 0;
+        ok = ok && live_summary &&
+            strcmp(json_get_str(json_get(live_summary,
+                                         "target_runtime_state")),
+                   "not_probed") == 0;
+        ok = ok && live_summary &&
+            strcmp(json_get_str(json_get(live_summary,
+                                         "effective_runtime_scope")),
+                   "none") == 0;
+        ok = ok && live_summary &&
             strcmp(json_get_str(json_get(live_summary,
                                          "runtime_observation_scope")),
                    "producer_runtime") == 0;
@@ -3765,6 +3780,21 @@ int test_syncdiag_rpc(void)
             json_get_bool(json_get(probed_summary,
                                    "target_runtime_reachable"));
         ok = ok && probed_summary &&
+            json_get_bool(json_get(probed_summary,
+                                   "effective_runtime_reachable"));
+        ok = ok && probed_summary &&
+            strcmp(json_get_str(json_get(probed_summary,
+                                         "producer_runtime_state")),
+                   "inactive_or_static_probe") == 0;
+        ok = ok && probed_summary &&
+            strcmp(json_get_str(json_get(probed_summary,
+                                         "target_runtime_state")),
+                   "reachable") == 0;
+        ok = ok && probed_summary &&
+            strcmp(json_get_str(json_get(probed_summary,
+                                         "effective_runtime_scope")),
+                   "target_rpc_probe") == 0;
+        ok = ok && probed_summary &&
             strcmp(json_get_str(json_get(probed_summary,
                                          "runtime_observation_scope")),
                    "target_rpc_probe") == 0;
@@ -3773,7 +3803,7 @@ int test_syncdiag_rpc(void)
                                    "target_rpc_reachable"));
         ok = ok && strcmp(json_get_str(json_get(&probed_liveness,
                                                 "agent_next_action")),
-                          "call_target_runtime_for_in_process_liveness_or_use_mcp") == 0;
+                          "monitor_target_runtime_or_use_mcp") == 0;
         json_free(&probed_liveness);
         agent_runtime_availability_reset();
 

@@ -72,9 +72,10 @@ then adds direct fields such as `overall_liveness`, `agent_next_action`,
 `liveness_summary`, and `recommended_drilldowns`. `runtime_services` is only
 the producer process' in-process listener state; when a native static command
 has successfully probed a target lane over RPC, `runtime_availability` marks
-`target_rpc_reachable=true` and `overall_liveness` becomes
-`target_runtime_reachable` instead of conflating a reachable target with an
-offline local producer. Use it when deciding whether a lane is alive, stalled,
+`target_rpc_reachable=true`, `liveness_summary.effective_runtime_reachable=true`,
+and `liveness_summary.effective_runtime_scope="target_rpc_probe"`. This keeps
+`producer_runtime_state="inactive_or_static_probe"` from being mistaken for an
+offline target lane. Use it when deciding whether a lane is alive, stalled,
 missing quality verdicts, or merely being inspected from a static binary outside
 a running node.
 

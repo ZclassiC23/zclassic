@@ -121,8 +121,9 @@ static void agent_liveness_push_summary(struct json_value *out,
         json_get_str(json_get(quality, "summary"));
     const char *lane_name =
         json_get_str(json_get(lane, "lane"));
-    bool runtime_active = supervisor_running || supervisor_thread_alive ||
-                          rpc_running || https_running || fs_running;
+    bool in_process_runtime_active =
+        supervisor_running || supervisor_thread_alive ||
+        rpc_running || https_running || fs_running;
     bool target_rpc_attempted =
         json_get_bool(json_get(availability, "target_rpc_attempted"));
     bool target_rpc_reachable =
@@ -133,27 +134,49 @@ static void agent_liveness_push_summary(struct json_value *out,
                             sup.stale_child_count > 0 ||
                             sup.stall_fires_total > 0 ||
                             (supervisor_running && !supervisor_thread_alive);
+    bool effective_runtime_reachable =
+        in_process_runtime_active || target_rpc_reachable;
+    const char *effective_runtime_scope =
+        in_process_runtime_active ? "producer_runtime" :
+        (target_rpc_reachable ? "target_rpc_probe" : "none");
+    const char *producer_runtime_state =
+        in_process_runtime_active ? "active" : "inactive_or_static_probe";
+    const char *target_runtime_state =
+        target_rpc_attempted ? (target_rpc_reachable ? "reachable"
+                                                     : "unreachable")
+                             : "not_probed";
     const char *overall = attention_needed ? "attention_needed" :
-        (runtime_active ? "active" :
+        (in_process_runtime_active ? "active" :
          (target_rpc_reachable ? "target_runtime_reachable"
                                : "static_or_offline_context"));
     const char *next_action = attention_needed
         ? "inspect_agent_liveness_drilldowns"
-        : (runtime_active ? "monitor_liveness_and_quality_lanes"
+        : (in_process_runtime_active ? "monitor_liveness_and_quality_lanes"
           : (target_rpc_reachable
-                 ? "call_target_runtime_for_in_process_liveness_or_use_mcp"
+                 ? "monitor_target_runtime_or_use_mcp"
                  : "probe_target_runtime_or_start_dev_lane"));
 
     struct json_value summary;
     json_init(&summary);
     json_set_object(&summary);
     json_push_kv_str(&summary, "lane", lane_name);
-    json_push_kv_bool(&summary, "runtime_active", runtime_active);
-    json_push_kv_bool(&summary, "in_process_runtime_active", runtime_active);
+    json_push_kv_bool(&summary, "runtime_active", in_process_runtime_active);
+    json_push_kv_bool(&summary, "in_process_runtime_active",
+                      in_process_runtime_active);
+    json_push_kv_bool(&summary, "producer_runtime_active",
+                      in_process_runtime_active);
+    json_push_kv_str(&summary, "producer_runtime_state",
+                     producer_runtime_state);
     json_push_kv_bool(&summary, "target_rpc_attempted",
                       target_rpc_attempted);
     json_push_kv_bool(&summary, "target_runtime_reachable",
                       target_rpc_reachable);
+    json_push_kv_str(&summary, "target_runtime_state",
+                     target_runtime_state);
+    json_push_kv_bool(&summary, "effective_runtime_reachable",
+                      effective_runtime_reachable);
+    json_push_kv_str(&summary, "effective_runtime_scope",
+                     effective_runtime_scope);
     json_push_kv_str(&summary, "runtime_observation_scope",
                      availability_scope && availability_scope[0]
                          ? availability_scope : "producer_runtime");

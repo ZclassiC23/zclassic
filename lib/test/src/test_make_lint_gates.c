@@ -3158,6 +3158,10 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_liveness_buf,
                       "agent_build_background_quality_status") != NULL);
+        ASSERT(strstr(agent_liveness_buf, "effective_runtime_reachable")
+               != NULL);
+        ASSERT(strstr(agent_liveness_buf, "effective_runtime_scope")
+               != NULL);
         ASSERT(strstr(agent_diagnose_buf, "zcl.agent_diagnose.v1")
                != NULL);
         ASSERT(strstr(agent_diagnose_buf,
@@ -3438,6 +3442,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl.agent_diagnose.v1") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "zcl.agent_runtime_availability.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "effective_runtime_reachable") != NULL);
+        ASSERT(strstr(agent_doc_buf, "effective_runtime_scope") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 statecatalog") != NULL);
