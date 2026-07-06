@@ -294,6 +294,8 @@ static void api_contract_push(struct json_value *out, const char *method,
     const char *schema = response_schema && response_schema[0]
         ? response_schema : "zcl.rest.response.v1";
     const char *fresh = freshness && freshness[0] ? freshness : "none";
+    const struct api_app_protocol_contract *protocol =
+        api_app_protocol_for_resource(resource);
     const char *crud_operation = api_contract_crud_operation(method);
     const char *resource_scope =
         api_contract_resource_scope(method, action, public_path);
@@ -332,6 +334,17 @@ static void api_contract_push(struct json_value *out, const char *method,
     if (strcmp(path, "/api/supply") == 0)
         json_push_kv_str(&item, "compat_response_schema",
                          "zcl.supply_legacy_number.v1");
+    if (protocol) {
+        json_push_kv_str(&item, "layer", protocol->layer);
+        json_push_kv_str(&item, "application_protocol", protocol->name);
+        json_push_kv_str(&item, "protocol_status", protocol->status);
+        json_push_kv_str(&item, "source_anchor", protocol->anchor);
+        json_push_kv_str(&item, "read_model", protocol->read_model);
+        json_push_kv_str(&item, "write_semantics",
+                         protocol->write_semantics);
+        json_push_kv_str(&item, "consensus_boundary",
+                         protocol->consensus_boundary);
+    }
     json_push_kv_str(&item, "freshness", fresh);
     json_push_kv_bool(&item, "freshness_scoped",
                       api_contract_freshness_scoped(fresh));

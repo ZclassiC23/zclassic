@@ -36,6 +36,11 @@ First-call method/schema/tool metadata lives in the C-owned registry
 the contract registry, the interface capability matrix, the `agentops`
 direct/drilldown command lists, and the REST API index's native/MCP command
 fields consume that table instead of maintaining separate lists.
+REST application-layer protocol metadata lives in
+`app/controllers/src/api_controller_app_protocols.c`; the same rows feed
+`layer_model`, route-contract `application_protocol` fields, and generated
+OpenAPI `x-zcl-application-protocol` extensions for ZSLP, ZNAM, market,
+messaging, and script-contract resources.
 
 ## Preferred Interface
 

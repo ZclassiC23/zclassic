@@ -728,10 +728,12 @@ int test_api(void)
             api_test_find_named(protocols, "zslp");
         const struct json_value *znam_protocol =
             api_test_find_named(protocols, "znam");
+        const struct json_value *script_protocol =
+            api_test_find_named(protocols, "script_contracts");
         const struct json_value *swap_protocol =
             api_test_find_named(protocols, "atomic_swaps");
         ok = ok && protocols && protocols->type == JSON_ARR &&
-             json_size(protocols) >= 5;
+             json_size(protocols) >= 6;
         ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "status")),
                     "active") == 0;
@@ -749,10 +751,22 @@ int test_api(void)
         ok = ok && znam_protocol &&
              strcmp(json_get_str(json_get(znam_protocol, "anchor")),
                     "OP_RETURN name registry transactions") == 0;
+        ok = ok && script_protocol &&
+             strcmp(json_get_str(json_get(script_protocol, "status")),
+                    "in_progress") == 0;
+        ok = ok && script_protocol &&
+             strstr(json_get_str(json_get(script_protocol, "anchor")),
+                    "HTLC atomic swaps") != NULL;
         ok = ok && swap_protocol &&
              strcmp(json_get_str(json_get(swap_protocol, "status")),
                     "in_progress") == 0;
-        ok = ok && json_size(json_get(&root, "resources")) >= 4;
+        const struct json_value *resources = json_get(&root, "resources");
+        const struct json_value *zslp_resource =
+            api_test_find_named(resources, "zslp_tokens");
+        ok = ok && resources && json_size(resources) >= 4;
+        ok = ok && zslp_resource &&
+             strcmp(json_get_str(json_get(zslp_resource, "collection")),
+                    "/api/v1/zslp/tokens") == 0;
         const struct json_value *routes = json_get(&root, "route_contracts");
         ok = ok && routes &&
              json_size(routes) == api_route_contract_count();
@@ -847,6 +861,16 @@ int test_api(void)
         ok = ok && zslp && strcmp(json_get_str(json_get(zslp,
                                     "crud_name")),
                                   "read_collection") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                                    "application_protocol")),
+                    "zslp") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "layer")),
+                    "zclassic23_application_layer") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "source_anchor")),
+                    "OP_RETURN token transactions") == 0;
         ok = ok && events && api_test_contract_has_query(events, "limit");
         ok = ok && events && api_test_contract_has_query(events, "type");
         ok = ok && events && strcmp(json_get_str(json_get(events,
@@ -890,6 +914,10 @@ int test_api(void)
         ok = ok && names && strcmp(json_get_str(json_get(names,
                                     "resource_scope")),
                                    "item") == 0;
+        ok = ok && names &&
+             strcmp(json_get_str(json_get(names,
+                                    "application_protocol")),
+                    "znam") == 0;
         ok = ok && names && api_test_contract_has_id_param(names, "name");
         ok = ok && legacy_name &&
              !json_get_bool(json_get(legacy_name, "canonical"));
@@ -898,6 +926,14 @@ int test_api(void)
                     "/api/v1/names/{name}") == 0;
         ok = ok && swap_chains && json_get_bool(json_get(swap_chains,
                                                          "canonical"));
+        ok = ok && swap_chains &&
+             strcmp(json_get_str(json_get(swap_chains,
+                                    "application_protocol")),
+                    "script_contracts") == 0;
+        ok = ok && swap_chains &&
+             strstr(json_get_str(json_get(swap_chains,
+                                          "source_anchor")),
+                    "HTLC atomic swaps") != NULL;
         ok = ok && legacy_swap_chains &&
              strcmp(json_get_str(json_get(legacy_swap_chains,
                                           "legacy_alias_of")),
@@ -978,6 +1014,10 @@ int test_api(void)
              api_test_find_named(json_get(openapi_layer,
                                           "application_protocols"),
                                  "znam") != NULL;
+        ok = ok && openapi_layer &&
+             api_test_find_named(json_get(openapi_layer,
+                                          "application_protocols"),
+                                 "script_contracts") != NULL;
         ok = ok && json_get_int(json_get(&root,
                           "x-route-contract-count")) ==
                           (int64_t)api_route_contract_count();
@@ -988,6 +1028,12 @@ int test_api(void)
             api_test_openapi_get(&root, "/api/v1/wallet");
         const struct json_value *events =
             api_test_openapi_get(&root, "/api/v1/events");
+        const struct json_value *zslp =
+            api_test_openapi_get(&root, "/api/v1/zslp/tokens");
+        const struct json_value *names =
+            api_test_openapi_get(&root, "/api/v1/names/{name}");
+        const struct json_value *swap_chains =
+            api_test_openapi_get(&root, "/api/v1/swaps/chains");
         const struct json_value *block_show =
             api_test_openapi_get(&root, "/api/v1/blocks/{height_or_hash}");
         const struct json_value *legacy_name =
@@ -1043,6 +1089,22 @@ int test_api(void)
         ok = ok && events &&
              strcmp(json_get_str(json_get(events, "x-crud-name")),
                     "read_collection") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                    "x-zcl-application-protocol")), "zslp") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "x-zcl-layer")),
+                    "zclassic23_application_layer") == 0;
+        ok = ok && names &&
+             strcmp(json_get_str(json_get(names,
+                    "x-zcl-application-protocol")), "znam") == 0;
+        ok = ok && swap_chains &&
+             strcmp(json_get_str(json_get(swap_chains,
+                    "x-zcl-application-protocol")),
+                    "script_contracts") == 0;
+        ok = ok && swap_chains &&
+             strstr(json_get_str(json_get(swap_chains,
+                    "x-zcl-source-anchor")), "HTLC atomic swaps") != NULL;
         ok = ok && block_show &&
              api_test_openapi_has_param(block_show, "height_or_hash", "path");
         ok = ok && block_show &&

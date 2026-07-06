@@ -250,8 +250,10 @@ Route contracts must be self-describing for CRUD clients. Every entry emitted
 by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
 `update`, `delete`), `resource_scope` (`collection`, `item`, `singleton`,
 `subcollection`, `subresource`), `crud_name` (`read_item`, etc.), and
-`id_params`. Keep `/api/v1` and `/api/v1/openapi` generated from that one
-contract source and pin representative collection/item/singleton routes in
+`id_params`. Application-layer routes also carry `application_protocol`,
+`layer`, `source_anchor`, `read_model`, `write_semantics`, and
+`consensus_boundary`. Keep `/api/v1` and `/api/v1/openapi` generated from that
+one contract source and pin representative collection/item/singleton routes in
 `test_api` whenever adding a new route shape.
 
 Application protocols such as ZSLP, ZNAM, market, messaging, and future
@@ -260,9 +262,11 @@ chain-derived projections. Reads come from indexed projections at the served
 frontier; mutations construct/broadcast explicit transactions or operator-gated
 actions and never bypass the base-layer reducer/consensus path with direct
 state writes. The machine-readable version of this boundary is
-`layer_model` in `zclassic23 api` / `/api/v1` and `x-zcl-layer-model` in
-`/api/v1/openapi`; update that C-owned contract before adding wrapper prose or
-out-of-band docs for a new application protocol.
+`app/controllers/src/api_controller_app_protocols.c`, surfaced as
+`layer_model` in `zclassic23 api` / `/api/v1`, `x-zcl-layer-model` in
+`/api/v1/openapi`, and per-route `application_protocol` /
+`x-zcl-application-protocol`; update that C-owned registry before adding
+wrapper prose or out-of-band docs for a new application protocol.
 
 Public status/freshness endpoints must get their served height through
 `api_served_tip_height()`, not by reading one endpoint-specific cursor. That

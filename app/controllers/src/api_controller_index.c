@@ -26,6 +26,7 @@ static void api_rest_index_aliases_json(struct json_value *aliases)
     json_push_kv_str(aliases, "node", "/api/v1/node");
     json_push_kv_str(aliases, "node_summary", "/api/v1/node/summary");
     json_push_kv_str(aliases, "status", "/api/v1/status");
+    json_push_kv_str(aliases, "zslp_tokens", "/api/v1/zslp/tokens");
     json_push_kv_str(aliases, "names_show", "/api/v1/names/{name}");
     json_push_kv_str(aliases, "legacy_name_show", "/api/v1/name/{name}");
     json_push_kv_str(aliases, "swap_chains", "/api/v1/swaps/chains");
@@ -105,6 +106,9 @@ static void api_rest_index_resources_json(struct json_value *resources)
                                  "/api/v1/hodl", "", false);
     api_rest_index_push_resource(resources, "factoids",
                                  "/api/v1/factoids", "", false);
+    api_rest_index_push_resource(resources, "zslp_tokens",
+                                 "/api/v1/zslp/tokens",
+                                 "/api/v1/zslp/tokens/{token_id}", false);
     api_rest_index_push_resource(resources, "names",
                                  "/api/v1/names",
                                  "/api/v1/names/{name}", false);
@@ -454,6 +458,7 @@ static void api_openapi_operation_json(const struct json_value *contract,
                                             "gateway_auth_compatible")));
     json_push_kv_str(operation, "x-response-schema", response_schema);
     json_push_kv_str(operation, "x-error-schema", error_schema);
+    api_app_protocol_push_openapi_extensions(contract, operation);
     json_push_kv_str(operation, "x-freshness", freshness);
     json_push_kv_bool(operation, "x-freshness-scoped", freshness_scoped);
     json_push_kv_bool(operation, "x-pagination", pagination);
