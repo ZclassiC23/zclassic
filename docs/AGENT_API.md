@@ -50,6 +50,9 @@ First-call recommendation arrays should use
 `agent_push_contract_native_command_json()` or
 `agent_push_contract_mcp_tool_json()` for registry-owned command/tool names;
 keep only parameterized, composite, or subsystem-local commands inline.
+Structured command arrays such as `agentlanes.commands` should use
+`agent_push_contract_command_json()` for registry-owned commands and keep only
+external helper scripts such as `tools/scripts/lane_health.sh --json` inline.
 The static no-cookie native commands in `src/main.c` use one
 `g_cli_static_agent_routes` table of method-to-handler pairs and only dispatch
 routes whose method also exists in `agent_contracts.def`. Do not add a second

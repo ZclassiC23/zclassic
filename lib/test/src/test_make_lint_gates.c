@@ -3460,6 +3460,23 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_lane_runtime_buf,
                       "agent_operator_lane_topology_lookup") != NULL);
         ASSERT(strstr(agent_lane_runtime_buf, "zcl23-dev") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "agent_push_contract_command_json(&commands, "
+                      "\"status\", \"agent\"") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "agent_push_contract_command_json(&commands, "
+                      "\"lane_topology\"") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "\"agentlanes\"") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "agent_push_contract_command_json(&commands, "
+                      "\"deploy_guard\"") != NULL);
+        ASSERT(strstr(agent_lanes_buf,
+                      "\"agentdeployguard\"") != NULL);
+        ASSERT(strstr(agent_lanes_buf, "zclassic23 agent\",") == NULL);
+        ASSERT(strstr(agent_lanes_buf, "zcl_agent\",") == NULL);
+        ASSERT(strstr(agent_lanes_buf, "agent_lanes_push_external_command")
+               != NULL);
         ASSERT(strstr(agent_iface_buf, "~/.zclassic-c23-dev") == NULL);
         ASSERT(strstr(agent_iface_buf, "agent_deploy_action_target_lane")
                != NULL);
@@ -3594,6 +3611,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl.agent_liveness.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "agent_contracts.def") != NULL);
         ASSERT(strstr(agent_doc_buf, "g_cli_static_agent_routes") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "agent_push_contract_command_json()` for "
+                      "registry-owned commands")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "tools/scripts/lane_health.sh --json")
+               != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "Do not add a second\nallowlist") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 getmirrorstatus") != NULL);

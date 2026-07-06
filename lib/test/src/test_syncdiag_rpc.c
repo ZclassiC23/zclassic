@@ -4291,6 +4291,16 @@ int test_syncdiag_rpc(void)
             json_get(&lanes, "current_runtime_services");
         const struct json_value *runtime_availability =
             json_get(&lanes, "current_runtime_availability");
+        const struct json_value *lane_commands =
+            json_get(&lanes, "commands");
+        const struct json_value *lane_status_cmd =
+            find_object_with_str(lane_commands, "name", "status");
+        const struct json_value *lane_topology_cmd =
+            find_object_with_str(lane_commands, "name", "lane_topology");
+        const struct json_value *deploy_guard_cmd =
+            find_object_with_str(lane_commands, "name", "deploy_guard");
+        const struct json_value *lane_health_cmd =
+            find_object_with_str(lane_commands, "name", "lane_health");
         const struct json_value *canonical =
             find_object_with_str(lane_arr, "lane", "canonical");
         const struct json_value *dev =
@@ -4305,6 +4315,38 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&lanes,
                                                 "default_deploy_target")),
                           "dev") == 0;
+        ok = ok && lane_commands && lane_commands->type == JSON_ARR &&
+            json_size(lane_commands) >= 4;
+        ok = ok && lane_status_cmd &&
+            strcmp(json_get_str(json_get(lane_status_cmd, "method")),
+                   "agent") == 0;
+        ok = ok && lane_status_cmd &&
+            strcmp(json_get_str(json_get(lane_status_cmd, "native")),
+                   "zclassic23 agent") == 0;
+        ok = ok && lane_status_cmd &&
+            strcmp(json_get_str(json_get(lane_status_cmd, "mcp")),
+                   "zcl_agent") == 0;
+        ok = ok && lane_status_cmd &&
+            strcmp(json_get_str(json_get(lane_status_cmd, "schema")),
+                   "zcl.public_status.v1") == 0;
+        ok = ok && lane_topology_cmd &&
+            strcmp(json_get_str(json_get(lane_topology_cmd, "method")),
+                   "agentlanes") == 0;
+        ok = ok && lane_topology_cmd &&
+            strcmp(json_get_str(json_get(lane_topology_cmd, "mcp")),
+                   "zcl_agent_lanes") == 0;
+        ok = ok && deploy_guard_cmd &&
+            strcmp(json_get_str(json_get(deploy_guard_cmd, "method")),
+                   "agentdeployguard") == 0;
+        ok = ok && deploy_guard_cmd &&
+            strcmp(json_get_str(json_get(deploy_guard_cmd, "native")),
+                   "zclassic23 agentdeployguard [action]") == 0;
+        ok = ok && deploy_guard_cmd &&
+            strcmp(json_get_str(json_get(deploy_guard_cmd, "mcp")),
+                   "zcl_agent_deploy_guard") == 0;
+        ok = ok && lane_health_cmd &&
+            strcmp(json_get_str(json_get(lane_health_cmd, "native")),
+                   "tools/scripts/lane_health.sh --json") == 0;
         ok = ok && runtime_services &&
             strcmp(json_get_str(json_get(runtime_services, "schema")),
                    "zcl.agent_runtime_services.v1") == 0;

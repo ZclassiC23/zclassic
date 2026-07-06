@@ -22,10 +22,15 @@ static void agent_lanes_push_str(struct json_value *arr, const char *s)
     json_free(&v);
 }
 
-static void agent_lanes_push_command(struct json_value *arr, const char *name,
-                                     const char *native, const char *mcp,
-                                     const char *purpose)
+static void agent_lanes_push_external_command(struct json_value *arr,
+                                              const char *name,
+                                              const char *native,
+                                              const char *mcp,
+                                              const char *purpose)
 {
+    if (!arr)
+        return;
+
     struct json_value cmd;
     json_init(&cmd);
     json_set_object(&cmd);
@@ -104,19 +109,18 @@ bool rpc_agent_lanes(const struct json_value *params, bool help,
 
     json_init(&commands);
     json_set_array(&commands);
-    agent_lanes_push_command(&commands, "status", "zclassic23 agent",
-                             "zcl_agent", "current node status");
-    agent_lanes_push_command(&commands, "lane_topology",
-                             "zclassic23 agentlanes", "zcl_agent_lanes",
-                             "all operator lanes and safety contracts");
-    agent_lanes_push_command(&commands, "deploy_guard",
-                             "zclassic23 agentdeployguard [action]",
-                             "zcl_agent_deploy_guard",
-                             "current-lane deploy/restart allow/refuse");
-    agent_lanes_push_command(&commands, "lane_health",
-                             "tools/scripts/lane_health.sh --json",
-                             "zcl_agent_lanes",
-                             "external systemd/RPC readiness probe for all lanes");
+    agent_push_contract_command_json(&commands, "status", "agent",
+                                     "current node status");
+    agent_push_contract_command_json(&commands, "lane_topology",
+                                     "agentlanes",
+                                     "all operator lanes and safety contracts");
+    agent_push_contract_command_json(&commands, "deploy_guard",
+                                     "agentdeployguard",
+                                     "current-lane deploy/restart allow/refuse");
+    agent_lanes_push_external_command(
+        &commands, "lane_health", "tools/scripts/lane_health.sh --json",
+        "zcl_agent_lanes",
+        "external systemd/RPC readiness probe for all lanes");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
     return true;
