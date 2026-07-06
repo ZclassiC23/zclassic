@@ -32,8 +32,9 @@ owns the bounded diagnosis packet. MCP routes in
 currently exposes the public status contract at `GET /api/v1/agent`.
 First-call method/schema/tool metadata lives in the C-owned registry
 `app/controllers/include/controllers/agent_contracts.def`; runtime availability,
-the contract registry, and the interface capability matrix consume that table
-instead of maintaining separate lists.
+the contract registry, the interface capability matrix, and the REST API
+index's native/MCP command fields consume that table instead of maintaining
+separate lists.
 
 ## Preferred Interface
 
@@ -66,11 +67,16 @@ runtime or cached field once mentioned a transient `hash-disagreement`.
 
 `agentliveness` (`zcl.agent_liveness.v1`) is the one-call runtime liveness
 rollup. It composes `current_runtime_lane`, observed runtime listeners,
-`supervisor_state`, and `background_quality_status`, then adds direct fields
-such as `overall_liveness`, `agent_next_action`, `liveness_summary`, and
-`recommended_drilldowns`. Use it when deciding whether a lane is alive,
-stalled, missing quality verdicts, or merely being inspected from a static
-binary outside a running node.
+`runtime_availability`, `supervisor_state`, and `background_quality_status`,
+then adds direct fields such as `overall_liveness`, `agent_next_action`,
+`liveness_summary`, and `recommended_drilldowns`. `runtime_services` is only
+the producer process' in-process listener state; when a native static command
+has successfully probed a target lane over RPC, `runtime_availability` marks
+`target_rpc_reachable=true` and `overall_liveness` becomes
+`target_runtime_reachable` instead of conflating a reachable target with an
+offline local producer. Use it when deciding whether a lane is alive, stalled,
+missing quality verdicts, or merely being inspected from a static binary outside
+a running node.
 
 `agentdiagnose` (`zcl.agent_diagnose.v1`) is the bounded "what should I look
 at next?" packet. It composes `agent`, default bounded `healthcheck`,
@@ -110,8 +116,9 @@ versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and
 `zcl.agent_machine_contract.v1`. Future operator APIs should extend that matrix
 before adding new wrapper behavior.
 
-`agentinterface` and `agentops` also include `runtime_availability`
-(`zcl.agent_runtime_availability.v1`). Native static first-call commands are
+`agentinterface`, `agentops`, `agentlanes`, and `agentliveness` also include
+`runtime_availability` (`zcl.agent_runtime_availability.v1`). Native static
+first-call commands are
 produced by the binary you just ran, but that producer may be newer than the
 target lane still serving RPC. The availability block separates those facts:
 `producer_build_commit` names the local producer, `availability_scope` says

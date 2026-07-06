@@ -16,6 +16,8 @@ struct agent_contract {
     const char *native_command;
     const char *mcp_tool;
     const char *rest_route;
+    const char *api_cli_field;
+    const char *api_mcp_field;
     const char *purpose;
 };
 
@@ -78,6 +80,8 @@ bool agent_push_contract_native_field_json(struct json_value *obj,
 bool agent_push_contract_mcp_field_json(struct json_value *obj,
                                         const char *key,
                                         const char *method);
+void agent_push_contract_api_cli_fields_json(struct json_value *obj);
+void agent_push_contract_api_mcp_fields_json(struct json_value *obj);
 void agent_push_operator_lane_fields_json(struct json_value *out);
 void agent_push_operator_lane_json(struct json_value *out,
                                    const char *key);

@@ -3371,91 +3371,34 @@ static int t_native_agent_api_contract(void)
                       "app/controllers/src/agent_liveness_controller.c")
                != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_agent_liveness") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "\"api_command\", \"api_tool\"") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "\"first_command\", \"first_tool\"") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "\"ops_command\", \"ops_tool\"") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "\"mirror_command\", \"mirror_tool\"") != NULL);
+        ASSERT(strstr(agent_registry_buf, "api_cli_field") != NULL);
+        ASSERT(strstr(agent_registry_buf, "api_mcp_field") != NULL);
         ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"api_command\", \"api\")") != NULL);
+                      "agent_push_contract_api_cli_fields_json(cli)")
+               != NULL);
+        ASSERT(strstr(api_buf,
+                      "agent_push_contract_api_mcp_fields_json(mcp)")
+               != NULL);
+        ASSERT(strstr(api_buf,
+                      "agent_push_contract_native_field_json(cli,")
+               == NULL);
+        ASSERT(strstr(api_buf,
+                      "agent_push_contract_mcp_field_json(mcp,")
+               == NULL);
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"milestone_command\", "
                       "\"zclassic23 milestone\")") != NULL);
         ASSERT(strstr(api_buf,
                       "json_push_kv_str(cli, \"refold_command\", "
                       "\"zclassic23 refold\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"map_command\", \"agentmap\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"lanes_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"agentlanes\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"liveness_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"agentliveness\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"diagnose_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"agentdiagnose\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"impact_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"agentimpact\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"build_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"agentbuild\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"interface_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"agentinterface\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"ops_command\", \"agentops\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"state_catalog_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"statecatalog\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"timeline_command\"")
-               != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"deploy_guard_command\"")
-               != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_native_field_json(cli, "
-                      "\"mirror_command\"") != NULL);
-        ASSERT(strstr(api_buf, "\"getmirrorstatus\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"build_tool\", \"agentbuild\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"lanes_tool\", \"agentlanes\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"liveness_tool\"") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"diagnose_tool\"") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"interface_tool\"") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"ops_tool\", \"agentops\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"state_catalog_tool\"") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"timeline_tool\", \"timeline\")") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"deploy_guard_tool\"") != NULL);
-        ASSERT(strstr(api_buf,
-                      "agent_push_contract_mcp_field_json(mcp, "
-                      "\"mirror_tool\"") != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);

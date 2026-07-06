@@ -8,8 +8,10 @@
 #include <string.h>
 
 static const struct agent_contract g_agent_contracts[] = {
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) \
-    { method, capability, schema, native, mcp, rest, purpose },
+#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest,          \
+                       api_cli_field, api_mcp_field, purpose)                 \
+    { method, capability, schema, native, mcp, rest,                           \
+      api_cli_field, api_mcp_field, purpose },
 #include "controllers/agent_contracts.def"
 #undef AGENT_CONTRACT
 };
@@ -84,6 +86,8 @@ bool agent_push_contract_json(struct json_value *arr,
     json_push_kv_str(&obj, "native", contract->native_command);
     json_push_kv_str(&obj, "mcp", contract->mcp_tool);
     json_push_kv_str(&obj, "rest", contract->rest_route);
+    json_push_kv_str(&obj, "api_cli_field", contract->api_cli_field);
+    json_push_kv_str(&obj, "api_mcp_field", contract->api_mcp_field);
     json_push_kv_str(&obj, "purpose", contract->purpose);
     json_push_back(arr, &obj);
     json_free(&obj);
@@ -185,4 +189,28 @@ bool agent_push_contract_mcp_field_json(struct json_value *obj,
     if (!obj || !key || !c)
         return false;
     return json_push_kv_str(obj, key, c->mcp_tool);
+}
+
+void agent_push_contract_api_cli_fields_json(struct json_value *obj)
+{
+    if (!obj)
+        return;
+    for (size_t i = 0; i < g_agent_contract_count; i++) {
+        const struct agent_contract *c = &g_agent_contracts[i];
+        if (!c->api_cli_field || !c->api_cli_field[0])
+            continue;
+        json_push_kv_str(obj, c->api_cli_field, c->native_command);
+    }
+}
+
+void agent_push_contract_api_mcp_fields_json(struct json_value *obj)
+{
+    if (!obj)
+        return;
+    for (size_t i = 0; i < g_agent_contract_count; i++) {
+        const struct agent_contract *c = &g_agent_contracts[i];
+        if (!c->api_mcp_field || !c->api_mcp_field[0])
+            continue;
+        json_push_kv_str(obj, c->api_mcp_field, c->mcp_tool);
+    }
 }

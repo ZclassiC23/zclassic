@@ -49,7 +49,8 @@ static struct agent_runtime_context g_agent_runtime = {
 
 enum {
     AGENT_RUNTIME_METHOD_CAPACITY = 0
-#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest, purpose) + 1
+#define AGENT_CONTRACT(method, capability, schema, native, mcp, rest,          \
+                       api_cli_field, api_mcp_field, purpose) + 1
 #include "controllers/agent_contracts.def"
 #undef AGENT_CONTRACT
 };

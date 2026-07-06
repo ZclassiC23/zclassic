@@ -1547,6 +1547,8 @@ int test_syncdiag_rpc(void)
                           "zcl_agent_interface") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "deploy_guard_tool")),
                           "zcl_agent_deploy_guard") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "api_tool")),
+                          "zcl_openapi") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
@@ -2922,6 +2924,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "agentops");
         const struct json_value *contract_diagnose =
             find_object_with_str(contract_list, "method", "agentdiagnose");
+        const struct json_value *contract_api =
+            find_object_with_str(contract_list, "method", "api");
         ok = ok && contracts.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
@@ -2935,12 +2939,26 @@ int test_syncdiag_rpc(void)
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops, "mcp")),
                    "zcl_agent_ops") == 0;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops,
+                                         "api_cli_field")),
+                   "ops_command") == 0;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops,
+                                         "api_mcp_field")),
+                   "ops_tool") == 0;
         ok = ok && contract_diagnose &&
             strcmp(json_get_str(json_get(contract_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
         ok = ok && contract_diagnose &&
             strcmp(json_get_str(json_get(contract_diagnose, "mcp")),
                    "zcl_agent_diagnose") == 0;
+        ok = ok && contract_api &&
+            strcmp(json_get_str(json_get(contract_api, "api_cli_field")),
+                   "api_command") == 0;
+        ok = ok && contract_api &&
+            strcmp(json_get_str(json_get(contract_api, "api_mcp_field")),
+                   "api_tool") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
@@ -3427,6 +3445,8 @@ int test_syncdiag_rpc(void)
         const struct json_value *lane_arr = json_get(&lanes, "lanes");
         const struct json_value *runtime_services =
             json_get(&lanes, "current_runtime_services");
+        const struct json_value *runtime_availability =
+            json_get(&lanes, "current_runtime_availability");
         const struct json_value *canonical =
             find_object_with_str(lane_arr, "lane", "canonical");
         const struct json_value *dev =
@@ -3444,6 +3464,13 @@ int test_syncdiag_rpc(void)
         ok = ok && runtime_services &&
             strcmp(json_get_str(json_get(runtime_services, "schema")),
                    "zcl.agent_runtime_services.v1") == 0;
+        ok = ok && runtime_availability &&
+            strcmp(json_get_str(json_get(runtime_availability, "schema")),
+                   "zcl.agent_runtime_availability.v1") == 0;
+        ok = ok && runtime_availability &&
+            strcmp(json_get_str(json_get(runtime_availability,
+                                         "availability_scope")),
+                   "producer_runtime") == 0;
         ok = ok && runtime_services &&
             json_get_int(json_get(runtime_services,
                                   "rpc_configured_port")) == 0;
@@ -3612,6 +3639,8 @@ int test_syncdiag_rpc(void)
             json_get(&liveness, "liveness_summary");
         const struct json_value *live_runtime =
             json_get(&liveness, "runtime_services");
+        const struct json_value *live_availability =
+            json_get(&liveness, "runtime_availability");
         const struct json_value *live_quality =
             json_get(&liveness, "background_quality_status");
         const struct json_value *live_supervisor =
@@ -3652,6 +3681,19 @@ int test_syncdiag_rpc(void)
         ok = ok && live_runtime &&
             strcmp(json_get_str(json_get(live_runtime, "schema")),
                    "zcl.agent_runtime_services.v1") == 0;
+        ok = ok && live_availability &&
+            strcmp(json_get_str(json_get(live_availability, "schema")),
+                   "zcl.agent_runtime_availability.v1") == 0;
+        ok = ok && live_availability &&
+            !json_get_bool(json_get(live_availability,
+                                    "target_rpc_attempted"));
+        ok = ok && live_summary &&
+            !json_get_bool(json_get(live_summary,
+                                    "target_runtime_reachable"));
+        ok = ok && live_summary &&
+            strcmp(json_get_str(json_get(live_summary,
+                                         "runtime_observation_scope")),
+                   "producer_runtime") == 0;
         ok = ok && live_quality &&
             strcmp(json_get_str(json_get(live_quality, "schema")),
                    "zcl.background_quality_runtime.v1") == 0;
@@ -3659,6 +3701,37 @@ int test_syncdiag_rpc(void)
             json_get(live_supervisor, "running") != NULL;
         ok = ok && live_drilldowns &&
             json_array_has_substr(live_drilldowns, "zcl_state");
+
+        agent_runtime_availability_begin_probe("test_target_rpc",
+                                               "/tmp/zcl-canonical",
+                                               18232, "ok");
+        agent_runtime_availability_record_method("agent", "supported", 0, "");
+        struct json_value probed_liveness;
+        json_init(&probed_liveness);
+        ok = ok && rpc_table_execute(&tbl, "agentliveness", &params,
+                                     &probed_liveness);
+        const struct json_value *probed_summary =
+            json_get(&probed_liveness, "liveness_summary");
+        const struct json_value *probed_availability =
+            json_get(&probed_liveness, "runtime_availability");
+        ok = ok && strcmp(json_get_str(json_get(&probed_liveness,
+                                                "overall_liveness")),
+                          "target_runtime_reachable") == 0;
+        ok = ok && probed_summary &&
+            json_get_bool(json_get(probed_summary,
+                                   "target_runtime_reachable"));
+        ok = ok && probed_summary &&
+            strcmp(json_get_str(json_get(probed_summary,
+                                         "runtime_observation_scope")),
+                   "target_rpc_probe") == 0;
+        ok = ok && probed_availability &&
+            json_get_bool(json_get(probed_availability,
+                                   "target_rpc_reachable"));
+        ok = ok && strcmp(json_get_str(json_get(&probed_liveness,
+                                                "agent_next_action")),
+                          "call_target_runtime_for_in_process_liveness_or_use_mcp") == 0;
+        json_free(&probed_liveness);
+        agent_runtime_availability_reset();
 
         struct json_value interface;
         json_init(&interface);

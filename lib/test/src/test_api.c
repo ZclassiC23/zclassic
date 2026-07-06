@@ -842,6 +842,9 @@ int test_api(void)
                                                 "first_tool")),
                           "zcl_agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "api_tool")),
+                          "zcl_openapi") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),

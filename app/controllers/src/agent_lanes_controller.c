@@ -76,6 +76,8 @@ bool rpc_agent_lanes(const struct json_value *params, bool help,
                      "native_c_agent_controller_lane_topology");
     agent_push_operator_lane_json(result, "current_runtime_lane");
     agent_push_runtime_services_json(result, "current_runtime_services");
+    agent_push_runtime_availability_json(result,
+                                         "current_runtime_availability");
 
     json_init(&lanes);
     json_set_array(&lanes);

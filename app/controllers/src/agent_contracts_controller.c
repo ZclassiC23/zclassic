@@ -31,26 +31,24 @@ static void contracts_push_schema(struct json_value *arr, const char *schema,
     json_free(&obj);
 }
 
-static void contracts_push_registry_schema(struct json_value *arr,
-                                           const char *method,
-                                           const char *capability,
-                                           const char *schema,
-                                           const char *native,
-                                           const char *mcp,
-                                           const char *rest,
-                                           const char *purpose)
+static void contracts_push_registry_schema(
+    struct json_value *arr, const struct agent_contract *contract)
 {
-    (void)method;
-    (void)capability;
+    if (!arr || !contract)
+        return;
     char producer[320];
-    if (rest && rest[0]) {
+    if (contract->rest_route && contract->rest_route[0]) {
         snprintf(producer, sizeof(producer), "%s / %s / %s",
-                 native ? native : "", mcp ? mcp : "", rest);
+                 contract->native_command ? contract->native_command : "",
+                 contract->mcp_tool ? contract->mcp_tool : "",
+                 contract->rest_route);
     } else {
         snprintf(producer, sizeof(producer), "%s / %s",
-                 native ? native : "", mcp ? mcp : "");
+                 contract->native_command ? contract->native_command : "",
+                 contract->mcp_tool ? contract->mcp_tool : "");
     }
-    contracts_push_schema(arr, schema, producer, purpose);
+    contracts_push_schema(arr, contract->schema, producer,
+                          contract->purpose);
 }
 
 static void contracts_push_agent_registry_schemas(struct json_value *arr)
@@ -59,10 +57,7 @@ static void contracts_push_agent_registry_schemas(struct json_value *arr)
         const struct agent_contract *c = agent_contract_at(i);
         if (!c)
             continue;
-        contracts_push_registry_schema(arr, c->method, c->capability,
-                                       c->schema, c->native_command,
-                                       c->mcp_tool, c->rest_route,
-                                       c->purpose);
+        contracts_push_registry_schema(arr, c);
     }
 }
 
