@@ -176,6 +176,21 @@ static bool api_test_array_has_str(const struct json_value *arr,
     return false;
 }
 
+static const struct json_value *api_test_find_named(
+    const struct json_value *arr,
+    const char *name)
+{
+    if (!arr || !name)
+        return NULL;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *item = json_at(arr, i);
+        const char *item_name = json_get_str(json_get(item, "name"));
+        if (item_name && strcmp(item_name, name) == 0)
+            return item;
+    }
+    return NULL;
+}
+
 static bool api_test_expect_readiness_shape(const struct json_value *root)
 {
     const struct json_value *readiness = json_get(root, "readiness");
@@ -688,6 +703,55 @@ int test_api(void)
                             "read_subcollection") != NULL;
         ok = ok && json_get(json_get(&root, "crud"),
                             "contract_fields") != NULL;
+        const struct json_value *layer_model =
+            json_get(&root, "layer_model");
+        ok = ok && layer_model &&
+             strcmp(json_get_str(json_get(layer_model, "schema")),
+                    "zcl.rest_layer_model.v1") == 0;
+        ok = ok && layer_model &&
+             strcmp(json_get_str(json_get(layer_model, "base_layer")),
+                    "zclassic_l1") == 0;
+        ok = ok && layer_model &&
+             strcmp(json_get_str(json_get(layer_model, "service_layer")),
+                    "zclassic23_application_layer") == 0;
+        ok = ok && layer_model &&
+             strcmp(json_get_str(json_get(layer_model,
+                                          "consensus_authority")),
+                    "local_consensus_reducer") == 0;
+        ok = ok && layer_model &&
+             strstr(json_get_str(json_get(layer_model,
+                                          "consensus_boundary")),
+                    "must not change block") != NULL;
+        const struct json_value *protocols =
+            layer_model ? json_get(layer_model, "application_protocols") : NULL;
+        const struct json_value *zslp_protocol =
+            api_test_find_named(protocols, "zslp");
+        const struct json_value *znam_protocol =
+            api_test_find_named(protocols, "znam");
+        const struct json_value *swap_protocol =
+            api_test_find_named(protocols, "atomic_swaps");
+        ok = ok && protocols && protocols->type == JSON_ARR &&
+             json_size(protocols) >= 5;
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol, "status")),
+                    "active") == 0;
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol, "rest_resource")),
+                    "/api/v1/zslp/tokens") == 0;
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol,
+                                          "consensus_boundary")),
+                    "interprets_or_constructs_valid_zcl_transactions_only")
+             == 0;
+        ok = ok && znam_protocol &&
+             strcmp(json_get_str(json_get(znam_protocol, "status")),
+                    "active") == 0;
+        ok = ok && znam_protocol &&
+             strcmp(json_get_str(json_get(znam_protocol, "anchor")),
+                    "OP_RETURN name registry transactions") == 0;
+        ok = ok && swap_protocol &&
+             strcmp(json_get_str(json_get(swap_protocol, "status")),
+                    "in_progress") == 0;
         ok = ok && json_size(json_get(&root, "resources")) >= 4;
         const struct json_value *routes = json_get(&root, "route_contracts");
         ok = ok && routes &&
@@ -898,6 +962,22 @@ int test_api(void)
                           "x-zcl-crypto-policy"),
                           "service_auth_secondary_digest")),
                           "GOST R 34.11-2012-512") == 0;
+        const struct json_value *openapi_layer =
+            json_get(&root, "x-zcl-layer-model");
+        ok = ok && openapi_layer &&
+             strcmp(json_get_str(json_get(openapi_layer, "schema")),
+                    "zcl.rest_layer_model.v1") == 0;
+        ok = ok && openapi_layer &&
+             strcmp(json_get_str(json_get(openapi_layer, "base_layer")),
+                    "zclassic_l1") == 0;
+        ok = ok && openapi_layer &&
+             api_test_find_named(json_get(openapi_layer,
+                                          "application_protocols"),
+                                 "zslp") != NULL;
+        ok = ok && openapi_layer &&
+             api_test_find_named(json_get(openapi_layer,
+                                          "application_protocols"),
+                                 "znam") != NULL;
         ok = ok && json_get_int(json_get(&root,
                           "x-route-contract-count")) ==
                           (int64_t)api_route_contract_count();

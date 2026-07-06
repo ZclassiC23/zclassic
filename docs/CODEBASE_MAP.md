@@ -257,7 +257,10 @@ script-contract workflows should expose noun-shaped REST resources over
 chain-derived projections. Reads come from indexed projections at the served
 frontier; mutations construct/broadcast explicit transactions or operator-gated
 actions and never bypass the base-layer reducer/consensus path with direct
-state writes.
+state writes. The machine-readable version of this boundary is
+`layer_model` in `zclassic23 api` / `/api/v1` and `x-zcl-layer-model` in
+`/api/v1/openapi`; update that C-owned contract before adding wrapper prose or
+out-of-band docs for a new application protocol.
 
 Public status/freshness endpoints must get their served height through
 `api_served_tip_height()`, not by reading one endpoint-specific cursor. That

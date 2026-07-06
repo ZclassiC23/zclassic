@@ -601,6 +601,12 @@ static void api_openapi_json(struct json_value *root)
     json_push_kv(root, "x-zcl-crypto-policy", &crypto_policy);
     json_free(&crypto_policy);
 
+    struct json_value layer_model;
+    json_init(&layer_model);
+    api_rest_layer_model_json(&layer_model);
+    json_push_kv(root, "x-zcl-layer-model", &layer_model);
+    json_free(&layer_model);
+
     struct json_value info;
     json_init(&info);
     json_set_object(&info);
@@ -672,6 +678,12 @@ static void api_rest_index_json(struct json_value *root)
     api_rest_index_crud_json(&crud);
     json_push_kv(root, "crud", &crud);
     json_free(&crud);
+
+    struct json_value layer_model;
+    json_init(&layer_model);
+    api_rest_layer_model_json(&layer_model);
+    json_push_kv(root, "layer_model", &layer_model);
+    json_free(&layer_model);
 
     struct json_value resources;
     json_init(&resources);

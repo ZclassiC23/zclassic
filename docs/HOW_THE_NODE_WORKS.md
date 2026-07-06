@@ -70,7 +70,7 @@ answer.
 | Call | Shows |
 |------|-------|
 | `zclassic23 agentinterface` | Preferred AI/operator interface contract. Same contract as MCP `zcl_agent_interface`: MCP first, native CLI JSON second, REST read-only, no Python or `tools/z` logic required. |
-| `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, and first native/MCP/REST calls. Start here when choosing an interface. |
+| `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / zclassic23 application-layer boundary, and first native/MCP/REST calls. Start here when choosing an interface. |
 | `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract. Same contract as MCP `zcl_agent_lanes`; use it before choosing a deploy or restart target. |
 | `zclassic23 agentliveness` | Unified lane/service/supervisor/background-quality liveness. Same contract as MCP `zcl_agent_liveness`; use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. |
 | `zcl_agent` | The simple first MCP check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `zcl_operator_summary` is the longer compatible alias. Start here when checking live state. |
