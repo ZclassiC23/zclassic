@@ -158,7 +158,9 @@ controller `k_routes[]` arrays.
   `app/controllers/include/controllers/agent_contracts.def`; add agent-facing
   direct/drilldown command-center entries there, including generic diagnostic
   primitives like `dumpstate`/`zcl_state` and `getnodelog`/`zcl_node_log`, not
-  as local string tables in the controllers.
+  as local string tables in the controllers. REST-index operator drilldowns
+  such as `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
+  `refold`/`zcl_refold_status` also belong in that registry.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology and `zcl.operator_deployment_safety.v1` policy. Use this before
   deciding where a fresh binary may be deployed or restarted.

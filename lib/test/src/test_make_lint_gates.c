@@ -3458,11 +3458,26 @@ static int t_native_agent_api_contract(void)
                       "agent_push_contract_mcp_field_json(mcp,")
                == NULL);
         ASSERT(strstr(api_buf,
-                      "json_push_kv_str(cli, \"milestone_command\", "
-                      "\"zclassic23 milestone\")") != NULL);
+                      "json_push_kv_str(cli, \"milestone_command\"")
+               == NULL);
         ASSERT(strstr(api_buf,
-                      "json_push_kv_str(cli, \"refold_command\", "
-                      "\"zclassic23 refold\")") != NULL);
+                      "json_push_kv_str(cli, \"refold_command\"")
+               == NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"milestone_tool\"")
+               == NULL);
+        ASSERT(strstr(api_buf,
+                      "json_push_kv_str(mcp, \"refold_tool\"")
+               == NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "\"drilldown_command\", \"drilldown_tool\"") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.healthcheck.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "zcl.milestone_status.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.refold_status.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_milestone") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_refold_status") != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);

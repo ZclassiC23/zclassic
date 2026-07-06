@@ -1019,6 +1019,9 @@ int test_api(void)
                                                 "app_protocols_tool")),
                           "zcl_app_protocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "drilldown_tool")),
+                          "zcl_health") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
@@ -1033,6 +1036,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "first_command")),
                           "zclassic23 agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "drilldown_command")),
+                          "zclassic23 healthcheck") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "milestone_command")),
                           "zclassic23 milestone") == 0;

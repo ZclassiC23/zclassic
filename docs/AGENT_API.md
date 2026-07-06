@@ -39,7 +39,10 @@ direct/drilldown command lists, and the REST API index's native/MCP command
 fields consume that table instead of maintaining separate lists. Generic
 diagnostic primitives such as `dumpstate` / `zcl_state` and `getnodelog` /
 `zcl_node_log` are registry rows too, so agent command catalogs do not hand-copy
-their native/MCP names.
+their native/MCP names. Operator drilldowns exposed by the REST index
+(`healthcheck` / `zcl_health`, `milestone` / `zcl_milestone`, and `refold` /
+`zcl_refold_status`) also live there, so native, MCP, and REST discovery share
+the same command/tool/schema metadata.
 REST application-layer protocol metadata lives in
 `app/controllers/src/api_controller_app_protocols.c`; the same rows feed
 `zclassic23 appprotocols`, `zcl_app_protocols`, `GET /api/v1/protocols`,

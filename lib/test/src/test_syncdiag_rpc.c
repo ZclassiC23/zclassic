@@ -1751,6 +1751,8 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(mcp,
                                                 "app_protocols_tool")),
                           "zcl_app_protocols") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp, "drilldown_tool")),
+                          "zcl_health") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
@@ -1779,6 +1781,8 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "deploy_guard_command")),
                           "zclassic23 agentdeployguard [action]") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli, "drilldown_command")),
+                          "zclassic23 healthcheck") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "milestone_command")),
                           "zclassic23 milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "refold_command")),
@@ -3352,6 +3356,12 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "dumpstate");
         const struct json_value *contract_getnodelog =
             find_object_with_str(contract_list, "method", "getnodelog");
+        const struct json_value *contract_healthcheck =
+            find_object_with_str(contract_list, "method", "healthcheck");
+        const struct json_value *contract_milestone =
+            find_object_with_str(contract_list, "method", "milestone");
+        const struct json_value *contract_refold =
+            find_object_with_str(contract_list, "method", "refold");
         ok = ok && contracts.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
@@ -3434,6 +3444,32 @@ int test_syncdiag_rpc(void)
         ok = ok && contract_getnodelog &&
             strcmp(json_get_str(json_get(contract_getnodelog, "mcp")),
                    "zcl_node_log") == 0;
+        ok = ok && contract_healthcheck &&
+            strcmp(json_get_str(json_get(contract_healthcheck, "schema")),
+                   "zcl.healthcheck.v1") == 0;
+        ok = ok && contract_healthcheck &&
+            strcmp(json_get_str(json_get(contract_healthcheck, "mcp")),
+                   "zcl_health") == 0;
+        ok = ok && contract_healthcheck &&
+            strcmp(json_get_str(json_get(contract_healthcheck,
+                                         "api_cli_field")),
+                   "drilldown_command") == 0;
+        ok = ok && contract_healthcheck &&
+            strcmp(json_get_str(json_get(contract_healthcheck,
+                                         "api_mcp_field")),
+                   "drilldown_tool") == 0;
+        ok = ok && contract_milestone &&
+            strcmp(json_get_str(json_get(contract_milestone, "rest")),
+                   "GET /api/v1/milestone") == 0;
+        ok = ok && contract_milestone &&
+            strcmp(json_get_str(json_get(contract_milestone, "mcp")),
+                   "zcl_milestone") == 0;
+        ok = ok && contract_refold &&
+            strcmp(json_get_str(json_get(contract_refold, "rest")),
+                   "GET /api/v1/refold") == 0;
+        ok = ok && contract_refold &&
+            strcmp(json_get_str(json_get(contract_refold, "mcp")),
+                   "zcl_refold_status") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
@@ -3467,6 +3503,12 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.node_log.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.healthcheck.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.milestone_status.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.refold_status.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_liveness.v1") != NULL;
@@ -3494,6 +3536,9 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(transports, "zcl_state");
         ok = ok && json_array_has_substr(transports, "zcl_node_log");
         ok = ok && json_array_has_substr(transports, "zcl_timeline");
+        ok = ok && json_array_has_substr(transports, "zcl_health");
+        ok = ok && json_array_has_substr(transports, "zcl_milestone");
+        ok = ok && json_array_has_substr(transports, "zcl_refold_status");
 
         struct json_value ops;
         json_init(&ops);
