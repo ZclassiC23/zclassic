@@ -129,6 +129,8 @@ bool condition_engine_get_registered_snapshot(
 void condition_engine_tick(void);
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
 int condition_engine_get_active_count(void);
+/* Count active episodes that have reached operator-needed state. This includes
+ * max-attempt exhaustion and age-budget pages whose attempts remain below max. */
 int condition_engine_get_unresolved_count(void);
 
 /* Re-baseline the engine's wall-keyed cadence anchors (last_poll/last_remedy)

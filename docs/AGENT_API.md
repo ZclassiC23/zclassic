@@ -95,6 +95,15 @@ smoke the dev lane first or use methods marked `supported`. If the probe says
 `no_cookie` or `connect_failed`, treat target support as unknown instead of
 inferring it from source files or local CLI output.
 
+When a native first-call method from the C-owned registry is sent to a target
+lane that returns JSON-RPC `-32601`, the CLI prints
+`zcl.cli_rpc_diagnostic.v1` instead of a bare "Method not found" line. That
+diagnostic includes `producer_build_commit`, `target_datadir`,
+`target_rpcport`, `probable_cause`, and the same `runtime_availability` block,
+so agents can distinguish a stale runtime lane from a missing source route.
+This is expected during dev/canonical skew; it is not evidence that the new
+method is absent from the producer binary.
+
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions
 belong in C under `app/controllers/src/agent_controller.c`,

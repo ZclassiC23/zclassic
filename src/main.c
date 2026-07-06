@@ -773,6 +773,101 @@ static void cli_probe_static_agent_target(const char *datadir)
         "partial_error" : "ok");
 }
 
+static bool cli_agent_contract_method(const char *method)
+{
+    if (!method || !method[0])
+        return false;
+    for (size_t i = 0; i < agent_runtime_probe_method_count(); i++) {
+        const char *probe = agent_runtime_probe_method_name(i);
+        if (probe && strcmp(probe, method) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool cli_rpc_error_is_method_not_found(const char *resp,
+                                              char *message,
+                                              size_t message_len)
+{
+    if (message && message_len)
+        message[0] = '\0';
+    if (!resp || !resp[0])
+        return false;
+
+    struct json_value root;
+    json_init(&root);
+    if (!json_read(&root, resp, strlen(resp)) || root.type != JSON_OBJ) {
+        json_free(&root);
+        return false;
+    }
+
+    const struct json_value *err = json_get(&root, "error");
+    if (!err || err->type != JSON_OBJ) {
+        json_free(&root);
+        return false;
+    }
+
+    int64_t code = json_get_int(json_get(err, "code"));
+    const char *msg = json_get_str(json_get(err, "message"));
+    if (message && message_len)
+        snprintf(message, message_len, "%s", msg);
+    json_free(&root);
+    return code == RPC_METHOD_NOT_FOUND;
+}
+
+static bool cli_print_contract_method_skew_diagnostic(
+    const char *method,
+    const char *datadir,
+    enum zcl_operator_lane operator_lane,
+    enum zcl_runtime_profile runtime_profile,
+    const char *rpc_message)
+{
+    if (!cli_agent_contract_method(method))
+        return false;
+
+    agent_runtime_availability_reset();
+    rpc_agent_set_boot_context(app_operator_lane_name(operator_lane),
+                               app_runtime_profile_name(runtime_profile),
+                               datadir, cli_port, 0, 0, 0);
+    cli_probe_static_agent_target(datadir);
+
+    struct json_value diag;
+    json_init(&diag);
+    json_set_object(&diag);
+    json_push_kv_str(&diag, "schema", "zcl.cli_rpc_diagnostic.v1");
+    json_push_kv_int(&diag, "schema_version", 1);
+    json_push_kv_str(&diag, "status", "error");
+    json_push_kv_str(&diag, "error", "target_runtime_method_not_found");
+    json_push_kv_str(&diag, "method", method);
+    json_push_kv_str(&diag, "rpc_error_message",
+                     rpc_message && rpc_message[0] ? rpc_message
+                                                   : "Method not found");
+    json_push_kv_str(&diag, "producer_build_commit", zcl_build_commit());
+    json_push_kv_str(&diag, "target_datadir", datadir ? datadir : "");
+    json_push_kv_int(&diag, "target_rpcport", cli_port);
+    json_push_kv_str(&diag, "probable_cause",
+                     "target_runtime_version_skew_or_contract_not_deployed");
+    json_push_kv_str(&diag, "summary",
+                     "The local binary advertises this agent/operator method, "
+                     "but the running target RPC does not support it.");
+    json_push_kv_str(&diag, "safe_next_action",
+                     "inspect runtime_availability, then target a lane whose "
+                     "runtime supports the method or deploy the fresh binary "
+                     "to a safe lane");
+    agent_push_runtime_availability_json(&diag, "runtime_availability");
+
+    char out[262144];
+    size_t need = json_write(&diag, out, sizeof(out));
+    if (need >= sizeof(out)) {
+        json_free(&diag);
+        fprintf(stderr, "Error: CLI diagnostic exceeded output buffer\n");
+        return true;
+    }
+    printf("%s\n", out);
+    json_free(&diag);
+    return true;
+}
+
 static void print_usage(const char *prog);
 
 static bool cli_static_agent_method(const char *method)
@@ -956,6 +1051,16 @@ static int cli_main(int argc, char **argv)
 
     char *resp = cli_rpc_call(body, (size_t)blen);
     if (!resp) { fprintf(stderr, "RPC failed\n"); return 1; }
+    char rpc_error_message[192];
+    if (cli_rpc_error_is_method_not_found(resp, rpc_error_message,
+                                          sizeof(rpc_error_message)) &&
+        cli_print_contract_method_skew_diagnostic(method, datadir,
+                                                  operator_lane,
+                                                  runtime_profile,
+                                                  rpc_error_message)) {
+        free(resp);
+        return 1;
+    }
     int rc = rpc_cli_print_json_result(resp, stdout, stderr);
     free(resp);
     return rc;

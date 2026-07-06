@@ -484,8 +484,12 @@ int condition_engine_get_unresolved_count(void)
     for (int i = 0; i < g_condition_count; i++) {
         const struct condition *c = g_conditions[i];
         int max_attempts = c->max_attempts > 0 ? c->max_attempts : 1;
-        if (atomic_load(&c->state.currently_active) &&
-            atomic_load(&c->state.attempts) >= max_attempts)
+        bool active = atomic_load(&c->state.currently_active);
+        bool operator_needed =
+            atomic_load(&c->state.operator_needed_emitted) ||
+            atomic_load(&c->state.last_operator_needed_unix) > 0;
+        bool exhausted = atomic_load(&c->state.attempts) >= max_attempts;
+        if (active && (operator_needed || exhausted))
             n++;
     }
     pthread_mutex_unlock(&g_condition_mu);

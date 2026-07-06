@@ -68,6 +68,10 @@ static pthread_mutex_t g_local_recovery_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void sync_monitor_init(void)
 {
+    g_condition_cm = NULL;
+    g_condition_dm = NULL;
+    g_condition_ms = NULL;
+    condition_engine_set_main_state(NULL);
     pthread_mutex_lock(&g_local_recovery_lock);
     memset(&g_local_recovery, 0, sizeof(g_local_recovery));
     pthread_mutex_unlock(&g_local_recovery_lock);

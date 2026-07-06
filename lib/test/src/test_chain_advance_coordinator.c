@@ -1239,9 +1239,13 @@ static int test_cac_dump_populates_local_import_recovery(void)
         ASSERT(json_get_int(progress_total) == 101);
         json_free(&root);
 
+        sync_monitor_set_context(NULL, NULL, NULL);
         cm.manager.nodes = NULL;
         cm.manager.num_nodes = 0;
         block_source_policy_reset_for_test();
+        zcl_mutex_destroy(&dm.cs);
+        zcl_mutex_destroy(&cm.manager.cs_nodes);
+        zcl_mutex_destroy(&ms.cs_main);
     } TEST_END
     return failures;
 }

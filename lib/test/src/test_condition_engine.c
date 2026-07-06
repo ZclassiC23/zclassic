@@ -62,7 +62,7 @@ static void operator_observer(enum event_type type, uint32_t peer_id,
 static void reset_fixture(void)
 {
     condition_engine_reset_for_testing();
-    event_clear_all_observers();
+    event_log_init();
     atomic_store(&g_detect, false);
     atomic_store(&g_witness, false);
     atomic_store(&g_detect_calls, 0);

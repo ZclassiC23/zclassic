@@ -2924,6 +2924,15 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "cli_probe_static_agent_target") != NULL);
         ASSERT(strstr(main_buf, "agent_runtime_probe_method_name") != NULL);
         ASSERT(strstr(main_buf, "RPC_METHOD_NOT_FOUND") != NULL);
+        ASSERT(strstr(main_buf, "cli_agent_contract_method") != NULL);
+        ASSERT(strstr(main_buf,
+                      "cli_print_contract_method_skew_diagnostic") != NULL);
+        ASSERT(strstr(main_buf, "zcl.cli_rpc_diagnostic.v1") != NULL);
+        ASSERT(strstr(main_buf,
+                      "target_runtime_method_not_found") != NULL);
+        ASSERT(strstr(main_buf,
+                      "target_runtime_version_skew_or_contract_not_deployed")
+               != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
