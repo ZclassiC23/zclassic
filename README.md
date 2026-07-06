@@ -54,6 +54,11 @@ TicTacToe).
 
 ## Quick start
 
+Public start here: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) is the
+fresh-machine path for people cloning from GitHub. This README is the overview;
+`docs/HANDOFF.md` and `docs/RUNBOOK.md` are maintainer/operator documents for
+the project's own hosted lanes.
+
 **Prerequisites:** gcc 14+ (or clang with `-std=c23`), GNU make, plus
 `cmake`, `autoconf`, `curl`/`wget`, and `unzip` for the one-time vendored-library
 build. **The first build needs internet** — it fetches pinned third-party source
@@ -65,7 +70,7 @@ minutes on a modern multi-core box.
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
-make test           # full suite (460 parallel groups)
+make test           # full suite (488 parallel groups)
 make lint           # defensive-coding gates
 ```
 
@@ -300,7 +305,7 @@ zclassic23 (~15 MB, static)
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (460 parallel groups); bugs become 64-bit seeds in a
+- **Tests:** `make test` (488 parallel groups); bugs become 64-bit seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
   hermetic kill-9 / restart harness (`tools/crash_recovery_test.c`, isolated
@@ -336,10 +341,11 @@ Break-glass checklist. Over MCP each step is a typed tool; over the shell it is 
 
 **No peers (`peers: 0` stays at 0).**
 ```bash
-zcl-rpc getpeerinfo | jq 'length'      # count peers (MCP: zcl_peers)
-zcl-rpc getnetworkinfo | jq .connections
-zcl-rpc addnode "IP:PORT" "onetry"     # add a known peer (MCP: zcl_addnode)
-ss -tlnp | grep 8033                   # P2P port reachable?
+build/bin/zclassic23 agent                  # compact status; MCP: zcl_agent
+build/bin/zclassic-cli getpeerinfo          # connected peers; MCP: zcl_peers
+build/bin/zclassic-cli getnetworkinfo       # connection summary
+build/bin/zclassic-cli addnode "IP:PORT" "onetry"
+ss -tlnp | grep 8033                        # P2P port reachable?
 ```
 Add onion seeds in `~/.config/zclassic23/onion-seeds` (one `.onion` per line) so
 the node can harvest peers without DNS or fixed IPs.
@@ -349,8 +355,10 @@ either a growing tip gap or a named blocker:
 ```bash
 # MCP: zcl_status → check sync.state, header_gap, health.checks, blockers
 # MCP: zcl_syncstate (sync phase), zcl_blockers / zcl_state subsystem=supervisor
-zcl-rpc syncstate                      # sync FSM state
-zcl-rpc healthcheck | jq .checks       # synced / has_peers / tip_stale / tip_lag
+build/bin/zclassic23 agent             # compact status and named blocker
+build/bin/zclassic23 agentops          # no-jq command center and next work
+build/bin/zclassic-cli syncstate       # sync FSM state
+build/bin/zclassic-cli healthcheck     # synced / has_peers / tip_stale / tip_lag
 ```
 Look at `blockers` / `dominant_blocker` in `zcl_status` for the named reason. A
 transient `sync.state: failed` often clears on `systemctl --user restart
@@ -370,6 +378,7 @@ paths and the kill-9 / OOM cases are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 ## Documentation
 
 - [`CLAUDE.md`](CLAUDE.md) — MCP reference, build/test/deploy, recovery
+- [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — public fresh-machine first run
 - [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md) — canonical architecture
 - [`docs/MVP.md`](docs/MVP.md) — v1 criteria + honest readiness
 - [`docs/SYNC.md`](docs/SYNC.md) · [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — sync + troubleshooting

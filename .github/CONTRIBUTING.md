@@ -3,25 +3,29 @@
 ## Prerequisites
 
 - **gcc 14+** (or a clang with working `-std=c23` support) and GNU make.
-- Vendored static libraries under `vendor/lib/` (LevelDB, SQLite, libevent,
-  OpenSSL, zlib, Tor). Only `libsecp256k1.a` is tracked in-tree today; the
-  remaining archives must currently be built locally and dropped into
-  `vendor/lib/` — a fresh clone will not link until they are present. See
-  [`docs/BUILD.md`](../docs/BUILD.md) for each one's source, version, and build
-  command. This is a known gap (`make vendor` automation is on the roadmap).
+- For the one-time vendored-library build: `cmake`, `autoconf`, an autotools
+  toolchain, `curl` or `wget`, `unzip`, and `sha256sum`.
+- Vendored static libraries under `vendor/lib/` are built locally by
+  `make vendor` from pinned source tarballs and SHA-256 hashes. A fresh clone
+  links without manual archive copying; see [`docs/BUILD.md`](../docs/BUILD.md)
+  for each dependency's source, version, and build notes.
 
 ## Build and test
 
 ```bash
 make                     # test_zcl + zclassic23 + zclassic-cli
+make vendor              # build missing vendor/lib archives from pinned sources
+make build-only          # compile check, no final link
+make t-fast ONLY=<group> # one fast test group, e.g. make t-fast ONLY=service_state_driver
+make fast-ci             # cache-aware lint/build/focused-test agent loop
 make test                # full test suite
 make lint                # defensive-coding gates (must be clean)
-make t ONLY=<group>      # one parallel test group, e.g. make t ONLY=service_state_driver
 make ci                  # local full gate: lint + tests + MVP slices + fuzz where available
 ```
 
-`make t ONLY=<group>` is the inner loop: it rebuilds the harness and runs
-only the matching group(s) of the parallel suite. Never run the full
+`make t-fast ONLY=<group>` is the normal inner loop: it rebuilds the fast
+harness and runs only the matching group(s). `make fast-ci` adds cache-aware
+lint/build/focused-test selection from changed files. Never run the full
 `test_zcl` binary in the inner loop.
 
 ## The defensive-coding contract
@@ -56,14 +60,15 @@ Files under `app/` must live in exactly one of the eight shape folders
 
 Add `lib/test/src/test_<name>.c` and register its group in the
 `TEST_LIST` X-macro in `lib/test/src/test_parallel.c`. Run it with
-`make t ONLY=<name>`.
+`make t-fast ONLY=<name>`.
 
 ## Pull requests
 
 Before opening a PR:
 
 1. `make lint` — clean, no new gate violations or baseline regressions.
-2. `make test` (or at minimum the groups you touched) — green.
+2. `make t-fast ONLY=<group>` for focused groups you touched.
+3. `make test` for broad shared behavior or before release-sized changes.
 
 CI runs on the maintainers' own servers (`make ci` — lint + full suite),
 not on GitHub Actions; maintainers run the full gate on every PR before

@@ -2604,6 +2604,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(rules, "deploy/*.service") != NULL);
         ASSERT(strstr(rules, "lib/net/include/net/msg_internal.h") != NULL);
         ASSERT(strstr(rules, "lib/net/include/net/port_policy.h") != NULL);
+        ASSERT(strstr(rules, "README.md") != NULL);
+        ASSERT(strstr(rules, ".github/CONTRIBUTING.md") != NULL);
+        ASSERT(strstr(rules, "docs/GETTING_STARTED.md") != NULL);
         ASSERT(strstr(rules, "app/controllers/include/controllers/network_controller.h")
                != NULL);
         ASSERT(strstr(rules, "app/jobs/src/tip_finalize_stage*.c") != NULL);
@@ -2700,6 +2703,46 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "zclassic23-coverage.timer") != NULL);
         ASSERT(strstr(buf, "zclassic23-test-suite.timer") != NULL);
         ASSERT(strstr(buf, "zcl.background_quality_status.v1") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "README.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "docs/GETTING_STARTED.md") != NULL);
+        ASSERT(strstr(buf, "Public start here") != NULL);
+        ASSERT(strstr(buf, "488 parallel groups") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23 agentops") != NULL);
+        ASSERT(strstr(buf, "| jq") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "docs/GETTING_STARTED.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "public first-run path for a fresh machine")
+               != NULL);
+        ASSERT(strstr(buf, "make vendor") != NULL);
+        ASSERT(strstr(buf, "make -j\"$(nproc)\"") != NULL);
+        ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" agent")
+               != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" agentops")
+               != NULL);
+        ASSERT(strstr(buf, "zcl_agent_ops") != NULL);
+        ASSERT(strstr(buf, "docs/BOOTSTRAPPING.md") != NULL);
+        ASSERT(strstr(buf, "operator_needed=false") != NULL);
+        ASSERT(strstr(buf, "docs/HANDOFF.md") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), ".github/CONTRIBUTING.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "make vendor") != NULL);
+        ASSERT(strstr(buf, "make build-only") != NULL);
+        ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
+        ASSERT(strstr(buf, "make fast-ci") != NULL);
+        ASSERT(strstr(buf, "fresh clone will not link") == NULL);
+        ASSERT(strstr(buf, "make vendor` automation is on the roadmap")
+               == NULL);
         free(buf);
         buf = NULL;
 
