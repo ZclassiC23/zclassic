@@ -2530,6 +2530,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES") != NULL);
         ASSERT(strstr(buf, "pre-push-ci") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE=0 $(MAKE) fast-ci") != NULL);
+        ASSERT(strstr(buf, "check-agent-cli: zclassic23") != NULL);
+        ASSERT(strstr(buf,
+                      "tools/scripts/check_agentdeployguard_cli_exit.sh")
+               != NULL);
         ASSERT(strstr(buf, "install-quality-linger") != NULL);
         ASSERT(strstr(buf, "quality-linger-status") != NULL);
         ASSERT(strstr(buf, "tools/scripts/background_quality_lane.sh") != NULL);
@@ -2552,6 +2556,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "impact_rules_file") != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
+        ASSERT(strstr(buf,
+                      "tools/scripts/check_agentdeployguard_cli_exit.sh")
+               != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
         ASSERT(strstr(buf, "make_fast build-only") != NULL);
         ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
@@ -3602,6 +3609,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "JSON `exit_code`") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "Scripts therefore do not need\n`jq`") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make check-agent-cli") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "hermetic executable regression") != NULL);
         ASSERT(strstr(agent_doc_buf, "target_lane_name=\"dev\"") != NULL);
         ASSERT(strstr(agent_doc_buf, "target_lane_name=\"canonical\"")
                != NULL);
