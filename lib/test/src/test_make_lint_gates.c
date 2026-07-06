@@ -3152,6 +3152,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ops_buf, "top_next_work") != NULL);
         ASSERT(strstr(agent_ops_buf, "finish_self_verified_utxo_anchor_rebuild")
                != NULL);
+        ASSERT(strstr(agent_ops_buf, "harden_peer_bootstrap_lifecycle")
+               != NULL);
+        ASSERT(strstr(agent_ops_buf, "promote_mvp_operator_proofs") != NULL);
+        ASSERT(strstr(agent_ops_buf, "shrink_boot_refold_supervised_units")
+               != NULL);
+        ASSERT(strstr(agent_ops_buf, "dry_agent_contract_registry") == NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_runtime_identity.v1")
                != NULL);
         ASSERT(strstr(agent_contracts_buf, "No Python is required") != NULL);

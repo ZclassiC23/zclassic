@@ -2400,6 +2400,19 @@ int test_syncdiag_rpc(void)
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
         ok = ok && ops_work && json_size(ops_work) == 5;
+        ok = ok && find_object_with_str(ops_work, "name",
+                                        "finish_self_verified_utxo_anchor_rebuild")
+            != NULL;
+        ok = ok && find_object_with_str(ops_work, "name",
+                                        "harden_peer_bootstrap_lifecycle")
+            != NULL;
+        ok = ok && find_object_with_str(ops_work, "name",
+                                        "promote_mvp_operator_proofs") != NULL;
+        ok = ok && find_object_with_str(ops_work, "name",
+                                        "shrink_boot_refold_supervised_units")
+            != NULL;
+        ok = ok && find_object_with_str(ops_work, "name",
+                                        "dry_agent_contract_registry") == NULL;
         ok = ok && json_get(&ops, "architecture_review") != NULL;
         ok = ok && ops_availability &&
             strcmp(json_get_str(json_get(ops_availability, "schema")),

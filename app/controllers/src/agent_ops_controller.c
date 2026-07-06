@@ -212,22 +212,22 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "It replaces the borrowed snapshot seed with a UTXO anchor rebuilt from zclassic23's own verified block history.",
         "copy-prove -refold-from-anchor artifact and cutover gates",
         "copy fixture, refold tests, parity checks, live H* climb");
-    agent_ops_push_work(&work, 2, "dry_agent_contract_registry",
-        "The first-call contracts now exist, but their method/schema/tool names still appear in several tables.",
-        "move repeated agent command metadata into one C-owned registry",
-        "syncdiag_rpc + mcp_controllers + make_lint_gates");
-    agent_ops_push_work(&work, 3, "promote_diagnostics_catalog",
-        "Every subsystem should be semantically discoverable without source search.",
-        "keep zcl.state_catalog.v1 complete as dumpers grow and route agents through it first",
-        "statecatalog RPC + MCP route + docs tests");
+    agent_ops_push_work(&work, 2, "harden_peer_bootstrap_lifecycle",
+        "Tip-following depends on failing over slow peers, avoiding duplicate peer rows, and proving zclassic23 peers can bootstrap other nodes.",
+        "promote peer lifecycle incidents, downloader failover, and bootstrapstatus into one operator proof",
+        "download + peer_lifecycle + syncdiag_rpc + bootstrap harness");
+    agent_ops_push_work(&work, 3, "promote_mvp_operator_proofs",
+        "MRS is 4/8; cold-start sync, live store flow, 168h soak, and exact parity still need full run-pass evidence.",
+        "wire the remaining full proofs into milestone and background quality verdicts",
+        "mvp-verify + soak-evidence + parity service");
     agent_ops_push_work(&work, 4, "extend_semantic_timeline_durability",
         "The event-ring timeline is semantic now; longer root-cause windows need durable event_log/node.log references.",
         "extend zcl.timeline.v1 toward durable event_log/node.log references",
         "event + mcp_controllers + syncdiag_rpc");
-    agent_ops_push_work(&work, 5, "harden_agent_liveness_slos",
-        "zcl.agent_liveness.v1 now composes lanes, supervisor, and quality; the next step is explicit SLO thresholds.",
-        "add production SLO thresholds and alert semantics to the liveness summary",
-        "supervisor production tree + lane health + background quality tests");
+    agent_ops_push_work(&work, 5, "shrink_boot_refold_supervised_units",
+        "The largest code-health risk is still oversized boot/refold orchestration that future agents must understand before changing liveness.",
+        "split one behavior-preserving boot/refold responsibility behind existing supervisor contracts",
+        "make lint + boot smoke + refold tests + live H* climb");
     json_push_kv(result, "top_next_work", &work);
     json_free(&work);
     return true;
