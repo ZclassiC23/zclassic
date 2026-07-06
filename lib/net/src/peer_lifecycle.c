@@ -12,6 +12,8 @@
 #include <string.h>
 
 #define PEER_LIFECYCLE_MAX 1024
+#define PEER_LIFECYCLE_INCIDENT_LIMIT 16
+#define PEER_LIFECYCLE_GROUP_LIMIT 64
 
 struct peer_lifecycle_entry {
     bool used;
@@ -21,14 +23,17 @@ struct peer_lifecycle_entry {
     int64_t first_seen;
     int64_t last_seen;
     int64_t connected_at;
+    uint64_t connected_seq;
     int64_t version_sent_at;
     int64_t version_received_at;
     int64_t verack_received_at;
     int64_t handshake_complete_at;
+    uint64_t handshake_complete_seq;
     int64_t active_at;
     int64_t disconnected_at;
     int64_t timeout_at;
     int64_t rejected_at;
+    uint64_t terminal_seq;
     int64_t attempted;
     int64_t connected;
     int64_t version_sent;
@@ -40,16 +45,48 @@ struct peer_lifecycle_entry {
     int64_t timeout;
     int64_t rejected;
     int64_t cache_skipped;
+    int64_t pre_handshake_disconnects;
     uint64_t services;
     int start_height;
     char subver[MAX_SUBVERSION_LENGTH];
     char last_reason[128];
 };
 
+struct peer_lifecycle_host_group {
+    bool used;
+    char host[256];
+    int64_t entries;
+    int64_t inbound_entries;
+    int64_t outbound_entries;
+    int64_t unknown_entries;
+    int64_t connected;
+    int64_t handshake_complete;
+    int64_t active;
+    int64_t disconnected;
+    int64_t timeout;
+    int64_t rejected;
+    int64_t reconnects;
+    int64_t pre_handshake_disconnects;
+    int64_t last_seen;
+    int64_t max_advertised_height;
+    uint64_t services_or;
+    bool bootstrap_useful;
+    bool fast_sync_useful;
+    char last_reason[128];
+};
+
+struct peer_lifecycle_incident_pick {
+    const struct peer_lifecycle_entry *entry;
+    int64_t score;
+    int64_t duplicate_host_entries;
+    char host[256];
+};
+
 static struct {
     pthread_mutex_t lock;
     struct peer_lifecycle_entry entries[PEER_LIFECYCLE_MAX];
     struct peer_lifecycle_summary totals;
+    uint64_t seq;
 } g_pl = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
@@ -153,6 +190,129 @@ static int64_t handshake_duration_secs(const struct peer_lifecycle_entry *e)
     return e->handshake_complete_at - e->connected_at;
 }
 
+static void addr_host_key(const char *addr, char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0)
+        return;
+    out[0] = '\0';
+    if (!addr || !addr[0]) {
+        snprintf(out, out_sz, "unknown");
+        return;
+    }
+
+    if (addr[0] == '[') {
+        const char *end = strchr(addr, ']');
+        if (end && end > addr + 1) {
+            size_t n = (size_t)(end - addr - 1);
+            if (n >= out_sz)
+                n = out_sz - 1;
+            memcpy(out, addr + 1, n);
+            out[n] = '\0';
+            return;
+        }
+    }
+
+    const char *first_colon = strchr(addr, ':');
+    const char *last_colon = strrchr(addr, ':');
+    if (first_colon && first_colon == last_colon && first_colon > addr) {
+        size_t n = (size_t)(first_colon - addr);
+        if (n >= out_sz)
+            n = out_sz - 1;
+        memcpy(out, addr, n);
+        out[n] = '\0';
+        return;
+    }
+
+    snprintf(out, out_sz, "%s", addr);
+}
+
+static bool source_is_inbound(enum peer_lifecycle_source source)
+{
+    return source == PEER_LIFECYCLE_SOURCE_INBOUND;
+}
+
+static bool source_is_outbound(enum peer_lifecycle_source source)
+{
+    return source == PEER_LIFECYCLE_SOURCE_ADDNODE ||
+           source == PEER_LIFECYCLE_SOURCE_ADDRMAN ||
+           source == PEER_LIFECYCLE_SOURCE_ZCL23_DB ||
+           source == PEER_LIFECYCLE_SOURCE_MANUAL;
+}
+
+static const char *entry_direction(const struct peer_lifecycle_entry *e)
+{
+    if (!e)
+        return "unknown";
+    if (source_is_inbound(e->source))
+        return "inbound";
+    if (source_is_outbound(e->source))
+        return "outbound";
+    return "unknown";
+}
+
+static bool entry_connection_open(const struct peer_lifecycle_entry *e)
+{
+    if (!e || e->connected_seq == 0)
+        return false;
+    return e->connected_seq > e->terminal_seq;
+}
+
+static bool entry_current_connection_handshaked(
+    const struct peer_lifecycle_entry *e)
+{
+    if (!entry_connection_open(e))
+        return false;
+    return e->handshake_complete_seq >= e->connected_seq &&
+           e->handshake_complete_seq > e->terminal_seq;
+}
+
+static int64_t entry_handshake_age_secs(const struct peer_lifecycle_entry *e,
+                                        int64_t now)
+{
+    if (!entry_current_connection_handshaked(e))
+        return -1;
+    if (now <= e->handshake_complete_at)
+        return 0;
+    return now - e->handshake_complete_at;
+}
+
+static int64_t entry_reconnects(const struct peer_lifecycle_entry *e)
+{
+    if (!e || e->connected <= 1)
+        return 0;
+    return e->connected - 1;
+}
+
+static bool entry_bootstrap_useful(const struct peer_lifecycle_entry *e)
+{
+    return entry_current_connection_handshaked(e) &&
+           (e->services & NODE_NETWORK) != 0 &&
+           e->start_height > 0;
+}
+
+static bool entry_fast_sync_useful(const struct peer_lifecycle_entry *e)
+{
+    return entry_bootstrap_useful(e) &&
+           subver_is_zcl23(e->subver, e->services);
+}
+
+static int64_t entry_incident_score(const struct peer_lifecycle_entry *e,
+                                    int64_t duplicate_host_entries)
+{
+    if (!e)
+        return 0;
+    int64_t score = 0;
+    score += entry_reconnects(e) * 3;
+    score += e->timeout * 3;
+    score += e->rejected * 3;
+    score += e->pre_handshake_disconnects * 2;
+    score += e->disconnected;
+    score += e->cache_skipped;
+    if (duplicate_host_entries > 1)
+        score += (duplicate_host_entries - 1) * 2;
+    return score;
+}
+
 void peer_lifecycle_note_attempt(const struct net_address *addr,
                                  enum peer_lifecycle_source source)
 {
@@ -179,18 +339,19 @@ void peer_lifecycle_note_connected(const struct p2p_node *node,
     struct peer_lifecycle_entry *e = entry_for_node_locked(node, true);
     if (e) {
         int64_t now = GetTime();
+        uint64_t seq = ++g_pl.seq;
         bool terminal_after_connect =
-            e->disconnected_at >= e->connected_at ||
-            e->timeout_at >= e->connected_at ||
-            e->rejected_at >= e->connected_at;
+            e->terminal_seq > 0 && e->terminal_seq >= e->connected_seq;
         e->peer_id = node ? node->id : e->peer_id;
         e->connected++;
         if (e->connected_at == 0 || terminal_after_connect) {
             e->connected_at = now;
+            e->connected_seq = seq;
             e->version_sent_at = 0;
             e->version_received_at = 0;
             e->verack_received_at = 0;
             e->handshake_complete_at = 0;
+            e->handshake_complete_seq = 0;
             e->active_at = 0;
         }
         e->last_seen = now;
@@ -274,6 +435,7 @@ void peer_lifecycle_note_handshake_complete(const struct p2p_node *node)
     if (e) {
         e->handshake_complete++;
         e->handshake_complete_at = GetTime();
+        e->handshake_complete_seq = ++g_pl.seq;
         e->last_seen = e->handshake_complete_at;
         magicbean = subver_is_magicbean(e->subver);
         zcl23 = subver_is_zcl23(e->subver, e->services);
@@ -316,10 +478,12 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
     struct peer_lifecycle_entry *e = entry_for_node_locked(node, true);
     if (e) {
         int64_t now = GetTime();
-        bool pre_handshake = e->handshake_complete == 0;
+        bool pre_handshake =
+            e->handshake_complete_seq <= e->connected_seq;
         e->last_seen = now;
         snprintf(e->last_reason, sizeof(e->last_reason), "%s",
                  reason ? reason : "");
+        e->terminal_seq = ++g_pl.seq;
         if (timeout) {
             e->timeout++;
             e->timeout_at = now;
@@ -332,6 +496,8 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
         }
         if (pre_handshake)
             g_pl.totals.pre_handshake_disconnects++;
+        if (pre_handshake)
+            e->pre_handshake_disconnects++;
     }
     if (timeout) g_pl.totals.timeout++;
     else if (reject) g_pl.totals.rejected++;
@@ -412,6 +578,8 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_int(out, "timeout", e->timeout);
     json_push_kv_int(out, "rejected", e->rejected);
     json_push_kv_int(out, "cache_skipped", e->cache_skipped);
+    json_push_kv_int(out, "pre_handshake_disconnects",
+                     e->pre_handshake_disconnects);
     json_push_kv_int(out, "first_seen", e->first_seen);
     json_push_kv_int(out, "last_seen", e->last_seen);
     json_push_kv_int(out, "connected_at", e->connected_at);
@@ -511,9 +679,316 @@ static void summary_add_entry(struct peer_lifecycle_summary *s,
     if (e->handshake_complete > 0 &&
         subver_is_zcl23(e->subver, e->services))
         s->zcl23_handshakes += e->handshake_complete;
-    if (e->handshake_complete == 0)
-        s->pre_handshake_disconnects += e->disconnected + e->rejected +
-                                        e->timeout;
+    s->pre_handshake_disconnects += e->pre_handshake_disconnects;
+}
+
+static struct peer_lifecycle_host_group *find_host_group(
+    struct peer_lifecycle_host_group *groups, const char *host,
+    int64_t *overflow)
+{
+    struct peer_lifecycle_host_group *free_slot = NULL;
+    for (size_t i = 0; i < PEER_LIFECYCLE_GROUP_LIMIT; i++) {
+        if (!groups[i].used) {
+            if (!free_slot)
+                free_slot = &groups[i];
+            continue;
+        }
+        if (strcmp(groups[i].host, host) == 0)
+            return &groups[i];
+    }
+    if (!free_slot) {
+        if (overflow)
+            (*overflow)++;
+        return NULL;
+    }
+    memset(free_slot, 0, sizeof(*free_slot));
+    free_slot->used = true;
+    snprintf(free_slot->host, sizeof(free_slot->host), "%s", host);
+    return free_slot;
+}
+
+static void host_group_add_entry(struct peer_lifecycle_host_group *group,
+                                 const struct peer_lifecycle_entry *e)
+{
+    if (!group || !e)
+        return;
+    group->entries++;
+    if (source_is_inbound(e->source))
+        group->inbound_entries++;
+    else if (source_is_outbound(e->source))
+        group->outbound_entries++;
+    else
+        group->unknown_entries++;
+    group->connected += e->connected;
+    group->handshake_complete += e->handshake_complete;
+    group->active += e->active;
+    group->disconnected += e->disconnected;
+    group->timeout += e->timeout;
+    group->rejected += e->rejected;
+    group->reconnects += entry_reconnects(e);
+    group->pre_handshake_disconnects += e->pre_handshake_disconnects;
+    group->services_or |= e->services;
+    if (e->start_height > group->max_advertised_height)
+        group->max_advertised_height = e->start_height;
+    if (entry_bootstrap_useful(e))
+        group->bootstrap_useful = true;
+    if (entry_fast_sync_useful(e))
+        group->fast_sync_useful = true;
+    if (e->last_seen >= group->last_seen) {
+        group->last_seen = e->last_seen;
+        snprintf(group->last_reason, sizeof(group->last_reason), "%s",
+                 e->last_reason);
+    }
+}
+
+static int64_t build_host_groups_locked(
+    struct peer_lifecycle_host_group *groups)
+{
+    int64_t overflow = 0;
+    for (size_t i = 0; i < PEER_LIFECYCLE_MAX; i++) {
+        const struct peer_lifecycle_entry *e = &g_pl.entries[i];
+        if (!e->used)
+            continue;
+        char host[256];
+        addr_host_key(e->addr, host, sizeof(host));
+        struct peer_lifecycle_host_group *group =
+            find_host_group(groups, host, &overflow);
+        host_group_add_entry(group, e);
+    }
+    return overflow;
+}
+
+static int64_t duplicate_entries_for_host(
+    const struct peer_lifecycle_host_group *groups, const char *host)
+{
+    for (size_t i = 0; i < PEER_LIFECYCLE_GROUP_LIMIT; i++) {
+        if (groups[i].used && strcmp(groups[i].host, host) == 0)
+            return groups[i].entries;
+    }
+    return 1;
+}
+
+static bool incident_pick_better(const struct peer_lifecycle_incident_pick *a,
+                                 const struct peer_lifecycle_incident_pick *b)
+{
+    if (a->score != b->score)
+        return a->score > b->score;
+    int64_t a_seen = a->entry ? a->entry->last_seen : 0;
+    int64_t b_seen = b->entry ? b->entry->last_seen : 0;
+    return a_seen > b_seen;
+}
+
+static void incident_pick_sort(struct peer_lifecycle_incident_pick *picks,
+                               size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        for (size_t j = i + 1; j < count; j++) {
+            if (incident_pick_better(&picks[j], &picks[i])) {
+                struct peer_lifecycle_incident_pick tmp = picks[i];
+                picks[i] = picks[j];
+                picks[j] = tmp;
+            }
+        }
+    }
+}
+
+static void incident_pick_consider(
+    struct peer_lifecycle_incident_pick *picks, size_t *count,
+    const struct peer_lifecycle_entry *e, int64_t score,
+    int64_t duplicate_host_entries, const char *host)
+{
+    if (!picks || !count || !e || score <= 0)
+        return;
+    struct peer_lifecycle_incident_pick candidate = {
+        .entry = e,
+        .score = score,
+        .duplicate_host_entries = duplicate_host_entries,
+    };
+    snprintf(candidate.host, sizeof(candidate.host), "%s", host);
+    if (*count < PEER_LIFECYCLE_INCIDENT_LIMIT) {
+        picks[*count] = candidate;
+        (*count)++;
+        incident_pick_sort(picks, *count);
+        return;
+    }
+    if (incident_pick_better(&candidate,
+                             &picks[PEER_LIFECYCLE_INCIDENT_LIMIT - 1])) {
+        picks[PEER_LIFECYCLE_INCIDENT_LIMIT - 1] = candidate;
+        incident_pick_sort(picks, *count);
+    }
+}
+
+static void append_incident_peer_json(
+    const struct peer_lifecycle_incident_pick *pick, int64_t now,
+    struct json_value *arr)
+{
+    const struct peer_lifecycle_entry *e = pick->entry;
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_int(&obj, "peer_id", e->peer_id);
+    json_push_kv_str(&obj, "addr", e->addr);
+    json_push_kv_str(&obj, "host", pick->host);
+    json_push_kv_str(&obj, "source", peer_lifecycle_source_name(e->source));
+    json_push_kv_str(&obj, "direction", entry_direction(e));
+    json_push_kv_int(&obj, "incident_score", pick->score);
+    json_push_kv_int(&obj, "duplicate_host_entries",
+                     pick->duplicate_host_entries);
+    json_push_kv_int(&obj, "reconnects", entry_reconnects(e));
+    json_push_kv_int(&obj, "connected", e->connected);
+    json_push_kv_int(&obj, "handshake_complete", e->handshake_complete);
+    json_push_kv_int(&obj, "disconnected", e->disconnected);
+    json_push_kv_int(&obj, "timeout", e->timeout);
+    json_push_kv_int(&obj, "rejected", e->rejected);
+    json_push_kv_int(&obj, "pre_handshake_disconnects",
+                     e->pre_handshake_disconnects);
+    json_push_kv_bool(&obj, "connection_open", entry_connection_open(e));
+    json_push_kv_bool(&obj, "current_connection_handshaked",
+                      entry_current_connection_handshaked(e));
+    json_push_kv_int(&obj, "handshake_age_secs",
+                     entry_handshake_age_secs(e, now));
+    json_push_kv_int(&obj, "services", (int64_t)e->services);
+    json_push_kv_int(&obj, "advertised_height", e->start_height);
+    json_push_kv_str(&obj, "subver", e->subver);
+    json_push_kv_bool(&obj, "bootstrap_useful",
+                      entry_bootstrap_useful(e));
+    json_push_kv_bool(&obj, "fast_sync_useful",
+                      entry_fast_sync_useful(e));
+    json_push_kv_str(&obj, "last_reason", e->last_reason);
+    json_push_kv_int(&obj, "last_seen", e->last_seen);
+    json_push_back(arr, &obj);
+    json_free(&obj);
+}
+
+static void append_host_group_json(const struct peer_lifecycle_host_group *g,
+                                   struct json_value *arr)
+{
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "host", g->host);
+    json_push_kv_int(&obj, "entries", g->entries);
+    json_push_kv_int(&obj, "inbound_entries", g->inbound_entries);
+    json_push_kv_int(&obj, "outbound_entries", g->outbound_entries);
+    json_push_kv_int(&obj, "unknown_entries", g->unknown_entries);
+    json_push_kv_int(&obj, "connected", g->connected);
+    json_push_kv_int(&obj, "handshake_complete", g->handshake_complete);
+    json_push_kv_int(&obj, "active", g->active);
+    json_push_kv_int(&obj, "disconnected", g->disconnected);
+    json_push_kv_int(&obj, "timeout", g->timeout);
+    json_push_kv_int(&obj, "rejected", g->rejected);
+    json_push_kv_int(&obj, "reconnects", g->reconnects);
+    json_push_kv_int(&obj, "pre_handshake_disconnects",
+                     g->pre_handshake_disconnects);
+    json_push_kv_int(&obj, "services_or", (int64_t)g->services_or);
+    json_push_kv_int(&obj, "max_advertised_height",
+                     g->max_advertised_height);
+    json_push_kv_bool(&obj, "bootstrap_useful", g->bootstrap_useful);
+    json_push_kv_bool(&obj, "fast_sync_useful", g->fast_sync_useful);
+    json_push_kv_int(&obj, "last_seen", g->last_seen);
+    json_push_kv_str(&obj, "last_reason", g->last_reason);
+    json_push_back(arr, &obj);
+    json_free(&obj);
+}
+
+bool peer_lifecycle_incidents_json(struct json_value *out)
+{
+    if (!out)
+        return false;
+    pthread_mutex_lock(&g_pl.lock);
+    int64_t now = GetTime();
+    struct peer_lifecycle_host_group groups[PEER_LIFECYCLE_GROUP_LIMIT];
+    memset(groups, 0, sizeof(groups));
+    int64_t group_overflow = build_host_groups_locked(groups);
+
+    struct peer_lifecycle_incident_pick picks[PEER_LIFECYCLE_INCIDENT_LIMIT];
+    memset(picks, 0, sizeof(picks));
+    size_t pick_count = 0;
+    int64_t incident_count = 0;
+    int64_t duplicate_group_count = 0;
+    int64_t bootstrap_useful_count = 0;
+    int64_t fast_sync_useful_count = 0;
+
+    for (size_t i = 0; i < PEER_LIFECYCLE_GROUP_LIMIT; i++) {
+        if (!groups[i].used)
+            continue;
+        if (groups[i].entries > 1)
+            duplicate_group_count++;
+    }
+
+    for (size_t i = 0; i < PEER_LIFECYCLE_MAX; i++) {
+        const struct peer_lifecycle_entry *e = &g_pl.entries[i];
+        if (!e->used)
+            continue;
+        char host[256];
+        addr_host_key(e->addr, host, sizeof(host));
+        int64_t duplicate_entries = duplicate_entries_for_host(groups, host);
+        int64_t score = entry_incident_score(e, duplicate_entries);
+        if (score > 0)
+            incident_count++;
+        if (entry_bootstrap_useful(e))
+            bootstrap_useful_count++;
+        if (entry_fast_sync_useful(e))
+            fast_sync_useful_count++;
+        incident_pick_consider(picks, &pick_count, e, score,
+                               duplicate_entries, host);
+    }
+
+    json_set_object(out);
+    json_push_kv_str(out, "schema", "zcl.peer_incidents.v1");
+    json_push_kv_int(out, "schema_version", 1);
+    json_push_kv_bool(out, "bounded", true);
+    json_push_kv_int(out, "peer_limit", PEER_LIFECYCLE_INCIDENT_LIMIT);
+    json_push_kv_int(out, "group_limit", PEER_LIFECYCLE_GROUP_LIMIT);
+    json_push_kv_int(out, "incident_count", incident_count);
+    json_push_kv_int(out, "count_returned", (int64_t)pick_count);
+    json_push_kv_int(out, "duplicate_host_group_count",
+                     duplicate_group_count);
+    json_push_kv_int(out, "host_group_overflow", group_overflow);
+    json_push_kv_int(out, "bootstrap_useful_count",
+                     bootstrap_useful_count);
+    json_push_kv_int(out, "fast_sync_useful_count", fast_sync_useful_count);
+    json_push_kv_str(out, "semantics",
+                     "bounded peer lifecycle incident view grouped by host; "
+                     "use full peer_lifecycle only for raw forensic dumps");
+    json_push_kv_str(out, "safe_next_action",
+                     incident_count > 0
+                         ? "inspect top_incidents and duplicate_host_groups"
+                         : "peer lifecycle has no scored incidents");
+
+    struct json_value incidents = {0};
+    json_set_array(&incidents);
+    for (size_t i = 0; i < pick_count; i++)
+        append_incident_peer_json(&picks[i], now, &incidents);
+    json_push_kv(out, "top_incidents", &incidents);
+    json_free(&incidents);
+
+    struct json_value duplicate_groups = {0};
+    json_set_array(&duplicate_groups);
+    for (size_t i = 0; i < PEER_LIFECYCLE_GROUP_LIMIT; i++) {
+        if (!groups[i].used)
+            continue;
+        if (groups[i].entries <= 1 && groups[i].reconnects == 0 &&
+            groups[i].timeout == 0 && groups[i].rejected == 0 &&
+            groups[i].pre_handshake_disconnects == 0)
+            continue;
+        append_host_group_json(&groups[i], &duplicate_groups);
+    }
+    json_push_kv(out, "duplicate_host_groups", &duplicate_groups);
+    json_free(&duplicate_groups);
+
+    struct json_value drilldowns = {0};
+    json_set_array(&drilldowns);
+    struct json_value d = {0};
+    json_set_str(&d, "zclassic23 dumpstate peer_lifecycle");
+    json_push_back(&drilldowns, &d);
+    json_set_str(&d, "zclassic23 timeline '{\"category\":\"peer\",\"count\":50,\"since_secs\":3600}'");
+    json_push_back(&drilldowns, &d);
+    json_set_str(&d, "zclassic23 dumpstate chain_advance_coordinator");
+    json_push_back(&drilldowns, &d);
+    json_free(&d);
+    json_push_kv(out, "recommended_drilldowns", &drilldowns);
+    json_free(&drilldowns);
+    pthread_mutex_unlock(&g_pl.lock);
+    return true;
 }
 
 static void append_sources_locked(struct json_value *out)
@@ -559,9 +1034,13 @@ bool peer_lifecycle_summary_json(struct json_value *out)
 bool peer_lifecycle_dump_state_json(struct json_value *out,
                                     const char *key)
 {
-    (void)key;
     if (!out) return false;
     pthread_mutex_lock(&g_pl.lock);
+    if (key && (strcmp(key, "incidents") == 0 ||
+                strcmp(key, "incident") == 0)) {
+        pthread_mutex_unlock(&g_pl.lock);
+        return peer_lifecycle_incidents_json(out);
+    }
     struct peer_lifecycle_summary totals = g_pl.totals;
     struct json_value summary = {0};
     summary_to_json(&totals, &summary);
@@ -598,5 +1077,6 @@ void peer_lifecycle_reset_for_test(void)
     pthread_mutex_lock(&g_pl.lock);
     memset(g_pl.entries, 0, sizeof(g_pl.entries));
     memset(&g_pl.totals, 0, sizeof(g_pl.totals));
+    g_pl.seq = 0;
     pthread_mutex_unlock(&g_pl.lock);
 }

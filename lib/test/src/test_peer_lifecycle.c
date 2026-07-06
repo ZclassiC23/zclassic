@@ -61,6 +61,20 @@ static const struct json_value *find_lifecycle_source(
     return NULL;
 }
 
+static const struct json_value *find_lifecycle_obj_str(
+    const struct json_value *arr, const char *key, const char *value)
+{
+    if (!arr || arr->type != JSON_ARR || !key || !value)
+        return NULL;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *entry = json_at(arr, i);
+        const struct json_value *field = json_get(entry, key);
+        if (field && strcmp(json_get_str(field), value) == 0)
+            return entry;
+    }
+    return NULL;
+}
+
 static int test_peer_lifecycle_user_agent(void)
 {
     int failures = 0;
@@ -404,6 +418,129 @@ static int test_peer_lifecycle_inbound_classifies_remote_version(void)
     return failures;
 }
 
+static int test_peer_lifecycle_incident_view(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: compact incident view groups reconnecting hosts")
+    {
+        struct p2p_node zigma_a;
+        struct p2p_node zigma_b;
+        struct p2p_node stable;
+        struct json_value incidents;
+        struct json_value keyed;
+
+        peer_lifecycle_reset_for_test();
+        memset(&zigma_a, 0, sizeof(zigma_a));
+        test_addr_ipv4(&zigma_a.addr, 40, 160, 53, 56, 45474);
+        zigma_a.id = 201;
+        zigma_a.inbound = true;
+        zigma_a.state = PEER_HANDSHAKE_COMPLETE;
+        zigma_a.services = NODE_NETWORK;
+        snprintf(zigma_a.addr_name, sizeof(zigma_a.addr_name),
+                 "40.160.53.56:45474");
+        snprintf(zigma_a.sub_ver, sizeof(zigma_a.sub_ver),
+                 "%s", "/Zigma:0.1.0/");
+
+        peer_lifecycle_note_connected(&zigma_a,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&zigma_a, zigma_a.services,
+                                             3170406, zigma_a.sub_ver);
+        peer_lifecycle_note_handshake_complete(&zigma_a);
+        peer_lifecycle_note_active(&zigma_a);
+        peer_lifecycle_note_disconnected(&zigma_a, "cleanup");
+        peer_lifecycle_note_connected(&zigma_a,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&zigma_a, zigma_a.services,
+                                             3170407, zigma_a.sub_ver);
+        peer_lifecycle_note_handshake_complete(&zigma_a);
+        peer_lifecycle_note_active(&zigma_a);
+
+        memset(&zigma_b, 0, sizeof(zigma_b));
+        test_addr_ipv4(&zigma_b.addr, 40, 160, 53, 56, 39030);
+        zigma_b.id = 202;
+        zigma_b.inbound = true;
+        zigma_b.state = PEER_CONNECTING;
+        zigma_b.services = NODE_NETWORK;
+        snprintf(zigma_b.addr_name, sizeof(zigma_b.addr_name),
+                 "40.160.53.56:39030");
+        snprintf(zigma_b.sub_ver, sizeof(zigma_b.sub_ver),
+                 "%s", "/Zigma:0.1.0/");
+        peer_lifecycle_note_connected(&zigma_b,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_timeout(&zigma_b, "handshake_timeout");
+
+        memset(&stable, 0, sizeof(stable));
+        test_addr_ipv4(&stable.addr, 198, 51, 100, 10, 8033);
+        stable.id = 203;
+        stable.state = PEER_HANDSHAKE_COMPLETE;
+        stable.services = NODE_NETWORK;
+        snprintf(stable.addr_name, sizeof(stable.addr_name),
+                 "198.51.100.10:8033");
+        snprintf(stable.sub_ver, sizeof(stable.sub_ver),
+                 "%s", "/MagicBean:2.1.2-beta6/");
+        peer_lifecycle_note_connected(&stable,
+                                      PEER_LIFECYCLE_SOURCE_ADDNODE);
+        peer_lifecycle_note_version_received(&stable, stable.services,
+                                             3171817, stable.sub_ver);
+        peer_lifecycle_note_handshake_complete(&stable);
+        peer_lifecycle_note_active(&stable);
+
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        ASSERT(strcmp(json_get_str(json_get(&incidents, "schema")),
+                      "zcl.peer_incidents.v1") == 0);
+        ASSERT(json_get_bool(json_get(&incidents, "bounded")));
+        ASSERT(json_get_int(json_get(&incidents, "incident_count")) == 2);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "duplicate_host_group_count")) == 1);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "bootstrap_useful_count")) == 2);
+
+        const struct json_value *groups =
+            json_get(&incidents, "duplicate_host_groups");
+        const struct json_value *group =
+            find_lifecycle_obj_str(groups, "host", "40.160.53.56");
+        ASSERT(group && group->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(group, "entries")) == 2);
+        ASSERT(json_get_int(json_get(group, "inbound_entries")) == 2);
+        ASSERT(json_get_int(json_get(group, "reconnects")) == 1);
+        ASSERT(json_get_int(json_get(group, "timeout")) == 1);
+        ASSERT(json_get_int(json_get(group,
+                                     "pre_handshake_disconnects")) == 1);
+        ASSERT(json_get_bool(json_get(group, "bootstrap_useful")));
+
+        const struct json_value *top =
+            json_get(&incidents, "top_incidents");
+        const struct json_value *a =
+            find_lifecycle_obj_str(top, "addr", "40.160.53.56:45474");
+        const struct json_value *b =
+            find_lifecycle_obj_str(top, "addr", "40.160.53.56:39030");
+        ASSERT(a && a->type == JSON_OBJ);
+        ASSERT(b && b->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(a, "duplicate_host_entries")) == 2);
+        ASSERT(json_get_int(json_get(a, "reconnects")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(a, "direction")), "inbound") == 0);
+        ASSERT(json_get_int(json_get(a, "advertised_height")) == 3170407);
+        ASSERT(json_get_int(json_get(a, "handshake_age_secs")) >= 0);
+        ASSERT(json_get_bool(json_get(a, "bootstrap_useful")));
+        ASSERT(!json_get_bool(json_get(a, "fast_sync_useful")));
+        ASSERT(json_get_int(json_get(b, "timeout")) == 1);
+        ASSERT(json_get_int(json_get(b,
+                                     "pre_handshake_disconnects")) == 1);
+        ASSERT(!json_get_bool(json_get(b, "bootstrap_useful")));
+        json_free(&incidents);
+
+        json_init(&keyed);
+        json_set_object(&keyed);
+        ASSERT(peer_lifecycle_dump_state_json(&keyed, "incidents"));
+        ASSERT(strcmp(json_get_str(json_get(&keyed, "schema")),
+                      "zcl.peer_incidents.v1") == 0);
+        ASSERT(json_get(&keyed, "peers") == NULL);
+        json_free(&keyed);
+    } TEST_END
+    return failures;
+}
+
 int test_peer_lifecycle(void)
 {
     int failures = 0;
@@ -416,6 +553,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_inbound_source_bucket();
     failures += test_peer_lifecycle_duplicate_connect_duration();
     failures += test_peer_lifecycle_inbound_classifies_remote_version();
+    failures += test_peer_lifecycle_incident_view();
 
     return failures;
 }

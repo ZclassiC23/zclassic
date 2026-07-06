@@ -18,6 +18,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
+| Peer incident view | `zclassic23 dumpstate peer_lifecycle incidents` | `zcl_state subsystem=peer_lifecycle key=incidents` |
 | Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
 | Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
@@ -229,6 +230,15 @@ tie a timeline slice to later drill-downs. The same payload includes
 `semantic_summary`, `type_counts`, `peer_counts`, `log_references`,
 `safe_next_action`, and `recommended_drilldowns` so common root-cause triage
 stays server-side.
+
+For peer churn, reconnect, or duplicate-entry reports, start with
+`zclassic23 dumpstate peer_lifecycle incidents` /
+`zcl_state(subsystem="peer_lifecycle", key="incidents")`. It returns bounded
+`zcl.peer_incidents.v1` JSON with `top_incidents`, `duplicate_host_groups`,
+reconnect counts, last reasons, direction, handshake age, advertised height,
+services, and bootstrap usefulness. Use the full
+`dumpstate peer_lifecycle` only after the compact incident view identifies the
+host or peer worth drilling into.
 
 ## Operator Lane
 
