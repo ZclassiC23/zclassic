@@ -91,6 +91,10 @@ _Atomic int64_t  g_ua_upstream_hole_first_unix = 0;
 _Atomic uint64_t g_ua_upstream_hole_consec = 0;
 _Atomic uint64_t g_ua_upstream_hole_warn_total = 0;
 _Atomic uint64_t g_ua_label_splice_total = 0;
+_Atomic uint64_t g_ua_window_miss_total = 0;
+_Atomic int64_t  g_ua_window_miss_height = -1;
+_Atomic uint64_t g_ua_hash_bound_fallback_total = 0;
+_Atomic int64_t  g_ua_hash_bound_fallback_height = -1;
 
 /* Author the validated block delta into the progress.kv `coins` table
  * (coins_kv) on the stage's own db handle, INSIDE stage_run_once's BEGIN
@@ -279,12 +283,6 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                    "proof_validate", NULL);
     }
 
-    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
-    if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
-        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
-    }
-
     /* Hash-bound verdict gate — the structural stop for the header
      * height-splice class. Stage logs are keyed BY HEIGHT, so after an
      * in-memory header relabel the script_validate_log row at next_h can be
@@ -302,6 +300,13 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         ua_fatal_permanent_blocker(next_h,
                                    "script_validate_log verdict read returned error");
         return JOB_FATAL;
+    }
+
+    struct block_index *bi = utxo_apply_select_apply_block(
+        ms, next_h, sv_found == 1 ? &sv_row : NULL);
+    if (!bi) {
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
+        return JOB_IDLE;
     }
     if (sv_found == 1 && sv_row.has_block_hash &&
         !uint256_eq(&sv_row.block_hash, bi->phashBlock)) {
@@ -749,6 +754,10 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
     atomic_store(&g_ua_upstream_hole_warn_total, (uint64_t)0);
     atomic_store(&g_ua_label_splice_total, (uint64_t)0);
+    atomic_store(&g_ua_window_miss_total, (uint64_t)0);
+    atomic_store(&g_ua_window_miss_height, (int64_t)-1);
+    atomic_store(&g_ua_hash_bound_fallback_total, (uint64_t)0);
+    atomic_store(&g_ua_hash_bound_fallback_height, (int64_t)-1);
     utxo_apply_observe_reset();
     pthread_mutex_unlock(&g_lock);
 }

@@ -319,6 +319,7 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     sc->upstream_fail_height = upstream_fail_height;
     memset(ms, 0, sizeof(*ms));
     active_chain_init(&ms->chain_active);
+    block_map_init(&ms->map_block_index);
     if (!synth_chain_uv_build(sc, n)) return 2;
     active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
@@ -335,6 +336,7 @@ static void uv_teardown(const char *dir, struct main_state *ms,
 {
     utxo_apply_stage_shutdown();
     active_chain_free(&ms->chain_active);
+    block_map_free(&ms->map_block_index);
     synth_chain_uv_free(sc);
     progress_store_close();
     test_cleanup_tmpdir(dir);
@@ -571,6 +573,38 @@ int test_utxo_apply_stage(void)
         UV_CHECK("label_splice: cursor at 3 after heal",
                  utxo_apply_stage_cursor() == 3);
         blocker_clear("utxo_apply.label_splice");
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* Hash-bound apply fallback: the self-mint anchor producer can have
+         * proof/script/body logs proving the next height while the active-chain
+         * window does not expose that height. If the script verdict is ok,
+         * hash-bound to a block in the map, and that block extends the visible
+         * parent, utxo_apply must use that exact block instead of idling. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("hash_fallback: setup",
+                 uv_setup("hash_fallback", 3, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("hash_fallback: retract visible window to h0",
+                 active_chain_move_window_tip(&ms.chain_active,
+                                              &sc.blocks[0]));
+        UV_CHECK("hash_fallback: block_map has h1 by hash",
+                 block_map_insert(&ms.map_block_index, sc.blocks[1].phashBlock,
+                                  &sc.blocks[1]));
+        UV_CHECK("hash_fallback: seed h1 script hash verdict",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          sc.blocks[1].phashBlock));
+        UV_CHECK("hash_fallback: h0 applies through active window",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        UV_CHECK("hash_fallback: h1 applies through hash-bound fallback",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        UV_CHECK("hash_fallback: cursor at 2",
+                 utxo_apply_stage_cursor() == 2);
+        UV_CHECK("hash_fallback: fallback counter recorded",
+                 uv_dump_has("\"hash_bound_fallback_total\":1"));
+        UV_CHECK("hash_fallback: fallback height recorded",
+                 uv_dump_has("\"hash_bound_fallback_height\":1"));
         uv_teardown(dir, &ms, &sc);
     }
 

@@ -129,6 +129,14 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
      * (typed blocker utxo_apply.label_splice carries the live evidence). */
     json_push_kv_int (out, "label_splice_total",
                       (int64_t)atomic_load(&g_ua_label_splice_total));
+    json_push_kv_int (out, "window_miss_total",
+                      (int64_t)atomic_load(&g_ua_window_miss_total));
+    json_push_kv_int (out, "window_miss_height",
+                      atomic_load(&g_ua_window_miss_height));
+    json_push_kv_int (out, "hash_bound_fallback_total",
+                      (int64_t)atomic_load(&g_ua_hash_bound_fallback_total));
+    json_push_kv_int (out, "hash_bound_fallback_height",
+                      atomic_load(&g_ua_hash_bound_fallback_height));
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);
