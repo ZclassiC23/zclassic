@@ -1766,9 +1766,21 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(&result, "full_mode_command") != NULL;
         ok = ok && json_get(&result, "healthy") != NULL;
         ok = ok && json_get(&result, "serving") != NULL;
+        ok = ok && json_get(&result, "readiness_status") != NULL;
+        ok = ok && json_get(&result, "chain_serving_ready") != NULL;
+        ok = ok && json_get(&result, "height_contract_status") != NULL;
+        ok = ok && json_get(&result, "normal_lookahead") != NULL;
+        ok = ok && json_get(&result, "sync_fsm_at_tip") != NULL;
         ok = ok && checks && checks->type == JSON_OBJ;
         ok = ok && json_get_bool(json_get(checks, "bounded"));
         ok = ok && json_get_bool(json_get(checks, "partial_result"));
+        ok = ok && json_get(checks, "height_contract_status") != NULL;
+        ok = ok && json_get(checks, "normal_lookahead") != NULL;
+        ok = ok && json_get(checks, "sync_fsm_at_tip") != NULL;
+        ok = ok && json_get(checks, "chain_serving_ready") != NULL;
+        ok = ok && json_get(checks, "serving_ready") != NULL;
+        ok = ok && json_get(checks, "index_projection_ready") != NULL;
+        ok = ok && json_get(checks, "agent_work_ready") != NULL;
         ok = ok && json_get(checks, "peer_count") != NULL;
         ok = ok && json_get(checks, "log_head") != NULL;
         ok = ok && json_get(checks, "chain_evidence") == NULL;
@@ -3002,6 +3014,35 @@ int test_syncdiag_rpc(void)
             mirror_finding, "severity")), "ok") == 0;
         ok = ok && height_contract && json_get_bool(json_get(
             height_contract, "normal_lookahead"));
+
+        struct json_value bounded_health;
+        json_init(&bounded_health);
+        ok = ok && rpc_table_execute(&tbl, "healthcheck", &params,
+                                     &bounded_health);
+        const struct json_value *bounded_checks =
+            json_get(&bounded_health, "checks");
+        ok = ok && bounded_health.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&bounded_health,
+                                                "height_contract_status")),
+                          "normal_lookahead") == 0;
+        ok = ok && json_get_bool(json_get(&bounded_health,
+                                          "normal_lookahead"));
+        ok = ok && json_get_bool(json_get(&bounded_health,
+                                          "chain_serving_ready"));
+        ok = ok && !json_get_bool(json_get(&bounded_health,
+                                           "sync_fsm_at_tip"));
+        ok = ok && bounded_checks && bounded_checks->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(bounded_checks,
+                                                "height_contract_status")),
+                          "normal_lookahead") == 0;
+        ok = ok && json_get_bool(json_get(bounded_checks,
+                                          "normal_lookahead"));
+        ok = ok && json_get_bool(json_get(bounded_checks, "synced"));
+        ok = ok && !json_get_bool(json_get(bounded_checks,
+                                           "sync_fsm_at_tip"));
+        ok = ok && json_get_bool(json_get(bounded_checks,
+                                          "serving_ready"));
+        json_free(&bounded_health);
 
         json_free(&result);
 

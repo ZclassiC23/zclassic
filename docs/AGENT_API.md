@@ -255,6 +255,12 @@ an embedded `agent` summary. Use `zclassic23 healthcheck full` or
 condition-engine, and chain-advance dumps. Agents should rely on the explicit
 `result_completeness` field instead of assuming the default response is the
 full evidence tree.
+The bounded response duplicates the most important height/readiness fields at
+top level and under `checks`: `readiness_status`, `chain_serving_ready`,
+`height_contract_status`, `normal_lookahead`, and `sync_fsm_at_tip`. In bounded
+mode, `checks.synced=true` means the served frontier is current or in normal
+one-block lookahead and the chain surface is serving; `sync_fsm_at_tip` is the
+raw legacy sync-state predicate for callers that specifically need it.
 
 `agent`, default `healthcheck`, `agentliveness`, and `agentdiagnose` also include
 `first_call` (`zcl.first_call_contract.v1`): `api`,

@@ -164,6 +164,18 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
     const struct json_value *height_contract = json_get(&agent,
                                                         "height_contract");
     const char *sync_state = json_get_str(json_get(&agent, "sync_state"));
+    const char *height_contract_status =
+        json_get_str(json_get(height_contract, "status"));
+    bool normal_lookahead =
+        json_get_bool(json_get(height_contract, "normal_lookahead"));
+    bool sync_fsm_at_tip = sync_state && strcmp(sync_state, "at_tip") == 0;
+    bool chain_serving_ready =
+        json_get_bool(json_get(&agent, "chain_serving_ready"));
+    bool height_contract_current =
+        height_contract_status &&
+        (strcmp(height_contract_status, "current") == 0 ||
+         strcmp(height_contract_status, "normal_lookahead") == 0);
+    bool bounded_synced = chain_serving_ready && height_contract_current;
 
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.healthcheck.v1");
@@ -190,6 +202,14 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
     healthcheck_copy_key(result, &agent, "build_commit");
     healthcheck_copy_key(result, &agent, "runtime_build");
     healthcheck_copy_key(result, &agent, "sync_state");
+    healthcheck_copy_key(result, &agent, "readiness_status");
+    healthcheck_copy_key(result, &agent, "chain_serving_ready");
+    healthcheck_copy_key(result, &agent, "index_projection_ready");
+    healthcheck_copy_key(result, &agent, "agent_work_ready");
+    json_push_kv_bool(result, "sync_fsm_at_tip", sync_fsm_at_tip);
+    json_push_kv_bool(result, "normal_lookahead", normal_lookahead);
+    json_push_kv_str(result, "height_contract_status",
+                     height_contract_status);
     healthcheck_copy_key(result, &agent, "healthy");
     healthcheck_copy_key(result, &agent, "serving");
     healthcheck_copy_from_object(result, "warning_count", health,
@@ -202,8 +222,19 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
     json_push_kv_bool(&checks, "partial_result", true);
     json_push_kv_str(&checks, "partial_reason",
                      "expensive evidence is available in full mode");
-    json_push_kv_bool(&checks, "synced",
-                      sync_state && strcmp(sync_state, "at_tip") == 0);
+    json_push_kv_bool(&checks, "synced", bounded_synced);
+    json_push_kv_bool(&checks, "sync_fsm_at_tip", sync_fsm_at_tip);
+    json_push_kv_str(&checks, "height_contract_status",
+                     height_contract_status);
+    json_push_kv_bool(&checks, "normal_lookahead", normal_lookahead);
+    json_push_kv_bool(&checks, "chain_serving_ready", chain_serving_ready);
+    json_push_kv_bool(&checks, "serving_ready", chain_serving_ready);
+    healthcheck_copy_from_object(&checks, "readiness_status", &agent,
+                                 "readiness_status");
+    healthcheck_copy_from_object(&checks, "index_projection_ready", &agent,
+                                 "index_projection_ready");
+    healthcheck_copy_from_object(&checks, "agent_work_ready", &agent,
+                                 "agent_work_ready");
     healthcheck_copy_from_object(&checks, "has_peers", peers, "has_peers");
     healthcheck_copy_from_object(&checks, "peer_count", peers, "total");
     healthcheck_copy_from_object(&checks, "magicbean_peer_count", peers,
