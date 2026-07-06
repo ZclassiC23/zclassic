@@ -340,6 +340,43 @@ static int test_dl_timeout_retry_failover(void)
     return failures;
 }
 
+static int test_dl_timeout_retry_failover_peer_zero(void)
+{
+    int failures = 0;
+    TEST("timeout requeue avoids peer zero and fails over") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 h1 = make_hash(6);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        int timeout = dl_get_request_timeout_secs();
+        ASSERT(dl_mark_requested(&dm, &h1, 152, 0));
+        ASSERT(dl_check_timeouts(&dm, now + timeout + 1) == 1);
+
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.queue_peer_avoid_count == 1);
+        ASSERT(diag.queue_peer_avoid_max_seconds > 0);
+
+        struct uint256 out[1];
+        ASSERT(dl_assign_to_peer(&dm, 0, out, 1) == 0);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.last_assign_result == DL_ASSIGN_PEER_AVOID_COOLDOWN);
+
+        uint64_t queued = 0;
+        dl_get_stats(&dm, NULL, NULL, NULL, NULL, &queued);
+        ASSERT(queued == 1);
+
+        ASSERT(dl_assign_to_peer(&dm, 2, out, 1) == 1);
+        ASSERT(uint256_eq(&out[0], &h1));
+        ASSERT(dl_is_in_flight(&dm, &h1));
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dl_timeout_retry_avoid_expiry(void)
 {
     int failures = 0;
@@ -1005,6 +1042,7 @@ int test_download(void)
     failures += test_dl_peer_disconnected();
     failures += test_dl_check_timeouts();
     failures += test_dl_timeout_retry_failover();
+    failures += test_dl_timeout_retry_failover_peer_zero();
     failures += test_dl_timeout_retry_avoid_expiry();
     failures += test_dl_diagnostics();
     failures += test_gap_fill_timeout_sweep();

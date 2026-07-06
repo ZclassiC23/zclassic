@@ -365,7 +365,7 @@ static bool dl_queue_push(struct download_manager *dm,
     dm->queue[pos] = *hash;
     dm->queue_heights[pos] = height;
     dm->queue_avoid_peers[pos] = avoid_peer;
-    dm->queue_avoid_until[pos] = avoid_peer ? avoid_until : 0;
+    dm->queue_avoid_until[pos] = avoid_until;
     dm->queue_len++;
     qset_insert_raw(dm, hash);
     return true;
@@ -378,7 +378,9 @@ static bool dl_queue_item_avoids_peer(const struct download_manager *dm,
 {
     if (!dm->queue_avoid_peers || !dm->queue_avoid_until)
         return false;
-    if (peer_id == 0 || idx >= dm->queue_len)
+    if (idx >= dm->queue_len)
+        return false;
+    if (dm->queue_avoid_until[idx] <= now)
         return false;
     return dm->queue_avoid_peers[idx] == peer_id &&
            dm->queue_avoid_until[idx] > now;
@@ -1105,8 +1107,7 @@ void dl_get_diagnostics(struct download_manager *dm,
     out->last_assign_global_limit = dm->last_assign_global_limit;
     out->last_assign_result = dm->last_assign_result;
     for (size_t i = 0; i < dm->queue_len; i++) {
-        if (dm->queue_avoid_peers[i] == 0 ||
-            dm->queue_avoid_until[i] <= now)
+        if (dm->queue_avoid_until[i] <= now)
             continue;
         int64_t remaining = dm->queue_avoid_until[i] - now;
         out->queue_peer_avoid_count++;
